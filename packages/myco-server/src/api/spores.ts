@@ -1,12 +1,18 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
-import { getSpore, listSporePage, listSupersedingSporeIds, sporeListWindow, MAX_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, RESOLUTION_ACTIONS } from '../core/spores.js';
+import {
+  getSpore,
+  listSporePage,
+  listSupersedingSporeIds,
+  sporeListWindow,
+  MAX_SPORE_LIMIT,
+  RESOLUTION_ACTIONS,
+} from '../core/spores.js';
 import { writeSpore } from '../core/spore-admission.js';
 import { refused } from '../ingest/events.js';
 import { refusal } from '../telemetry.js';
 import { parseJsonObject } from './scope.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
-export { MAX_SPORE_CONTENT_BYTES };
 const parseBody = parseJsonObject;
 const str = (v: unknown, max = 192): string | null => typeof v === 'string' && v.length > 0 && v.length <= max ? v : null;
 const int = (v: unknown): number | undefined => typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined;

@@ -193,7 +193,7 @@ export interface TranscriptResponse {
 }
 
 export type SessionChild = 'unplaced' | 'unplaced-records' | 'plans' | 'attachments' | 'context-injections';
-/** A record of what Myco served the session as a whole; see the Deployment's `read/children.ts`. */
+/** A record of what Myco served the session as a whole; see the Deployment's `read/catalog/children.ts`. */
 export interface ContextInjectionRow { kind: string; createdAt: number; orderedAt: number; delivery: 'unnamed_prompt' | 'not_delivered' | null }
 
 /** The prefix of an answer no named prompt received, in a session's context records. */

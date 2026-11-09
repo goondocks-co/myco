@@ -6,7 +6,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { fleetExecution } from '@myco-server-worker/core/harness.js';
 import { claimSettings } from '@myco-server-worker/core/worker-selection.js';
 import { readTaskStartPreview } from '@myco-server-worker/read/task-start.js';
-import { readFleetProjection } from '@myco-server-worker/read/fleet.js';
+import { readFleetProjection } from '@myco-server-worker/db/runs/fleet.js';
 /**
  * Runners: a Deployment-owned execution identity, registered through the device flow, that claims and drives the
  * Deployment's queued work on its own credential and nothing else.
@@ -762,7 +762,6 @@ describe('runner update commands', () => {
       expect(r.row('SELECT version FROM runner_contacts WHERE runner_id = ?', runnerId)).toEqual({ version: '2.0.0-alpha.1' });
     } finally { r.e.sqlite.close(); }
   });
-
 
   const report = (at: number, lastResult?: Record<string, unknown>) => ({ observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.2', latestVersion: '2.0.0-alpha.3', lastCheckAt: at, ...(lastResult === undefined ? {} : { lastResult }) });
 

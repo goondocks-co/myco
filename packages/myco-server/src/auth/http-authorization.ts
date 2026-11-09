@@ -43,7 +43,7 @@ export async function credentialListScope(env: ServerEnv, principal: HttpPrincip
   return owner && !authorize(subject, 'read', { ...resource, protectedOwner: true, ownerMemberId: owner }) ? { excludedMemberId: owner } : {};
 }
 
-export interface HttpResourceInput {
+interface HttpResourceInput {
   params?: Record<string, string>;
   projectId?: string;
   machineId?: string;
@@ -153,7 +153,7 @@ export async function authorizeHttp(env: ServerEnv, declaration: AuthorizationDe
   return (await httpAuthorizationDecision(env, declaration, principal, input)).allowed;
 }
 
-export interface HttpAuthorizationDecision {
+interface HttpAuthorizationDecision {
   allowed: boolean;
   subject?: AuthorizationSubject;
   resource?: AuthorizationResource;

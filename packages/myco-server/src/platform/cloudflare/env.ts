@@ -22,11 +22,11 @@ import { wrappingKeyFromText } from '../wrapping-key.js';
 import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
 import { cloudflareEmbeddingProvider, type EmbeddingBinding } from './embedding.js';
 import { cloudflareEmbeddingLaunch, type HostedRunLifetime } from './embedding-runtime.js';
-import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
+import { EMBEDDING_TASK } from '../../core/embedding/task.js';
 import { configuredEmbeddingProvider, embeddingProviderFor, type EmbeddingPlatform } from '../../core/embedding/configured-provider.js';
 
 /** This Worker's embedding platform: the Cloudflare target, and Workers AI where the binding is declared. */
-export function embeddingPlatform(bindings: Pick<CloudflareBindings, 'AI'>): EmbeddingPlatform {
+function embeddingPlatform(bindings: Pick<CloudflareBindings, 'AI'>): EmbeddingPlatform {
   const ai = bindings.AI;
   return { target: 'cloudflare', ...(ai === undefined ? {} : { bindingProvider: (selection) => cloudflareEmbeddingProvider(ai, selection) }) };
 }
@@ -106,9 +106,6 @@ export type _VectorStoreSatisfies = AssertAssignable<VectorIndex, VectorizeIndex
 export type _EmbeddingSatisfies = AssertAssignable<EmbeddingBinding, Ai>;
 export type _StagingBucketSatisfies = AssertAssignable<StagingBucket, R2Bucket>;
 
-/** Every binding the Worker requires to serve a request. */
-export const REQUIRED_BINDINGS = ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT'] as const;
-
 /** D1 reports its own failures with a `D1_ERROR` prefix; nothing else does. */
 /**
  * D1's own failures. A reached limit is refused in the words D1 documents
@@ -120,6 +117,9 @@ export const classifyD1Error: ErrorClassifier = (message) => {
   return message.startsWith('D1_ERROR') ? 'db' : null;
 };
 
+/** Every binding the Worker requires to serve a request. */
+export const REQUIRED_BINDINGS = ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT'] as const;
+
 /** Cloudflare admission failures are matched here; their text never enters telemetry. */
 export const classifyCloudflareError: ErrorClassifier = (message) => {
   if (message === 'this Deployment carries no recovery export target') return 'configuration';
@@ -127,7 +127,7 @@ export const classifyCloudflareError: ErrorClassifier = (message) => {
   return classifyD1Error(message);
 };
 
-export { classifyR2BlobFailure, R2_BAD_DIGEST_CODE } from './r2-digest.js';
+export { classifyR2BlobFailure } from './r2-digest.js';
 
 /**
  * One pass of a draining job on this target. A Worker invocation may make 1,000 calls to the platform's own services
@@ -135,9 +135,9 @@ export { classifyR2BlobFailure, R2_BAD_DIGEST_CODE } from './r2-digest.js';
  * the free plan's CPU allowance, not this count, that bounds a pass there. Fifteen seconds of wall time sits well
  * inside the CPU the Worker declares (`[limits] cpu_ms` in wrangler.toml).
  */
-export const CLOUDFLARE_JOB_BUDGET: JobBudget = { calls: 500, wallMs: 15_000 };
+const CLOUDFLARE_JOB_BUDGET: JobBudget = { calls: 500, wallMs: 15_000 };
 
-export function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntime = false): PlatformDescriptor {
+function cloudflarePlatform(bindings: CloudflareBindings, embeddingRuntime = false): PlatformDescriptor {
   const absent = (name: string): boolean =>
     (bindings as unknown as Record<string, unknown>)[name] === undefined;
 

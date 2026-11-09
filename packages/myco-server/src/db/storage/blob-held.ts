@@ -3,7 +3,7 @@ import { BLOB_REFERENCES, BUNDLE_REFERENCES, blobReferenceColumn, kindFilter, ty
 import { read, readSet } from '../index.js';
 
 /** SQL true when a row of `ref` names blob `key` in Project `project`; both are SQL expressions in the enclosing statement. */
-export function referenceHolds(ref: Omit<BlobReference, 'sinceSchema'>, project: string, key: string): string {
+function referenceHolds(ref: Omit<BlobReference, 'sinceSchema'>, project: string, key: string): string {
   return `EXISTS (SELECT 1 FROM ${ref.table} WHERE project_id = ${project} AND ${blobReferenceColumn(ref)} = ${key}${kindFilter(ref)})`;
 }
 

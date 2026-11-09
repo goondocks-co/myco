@@ -8,10 +8,8 @@ import {
   deleteStoredSwitch, holdStoredSwitch, insertStoredSwitch, pauseStoredSwitch, progressStoredSwitch, resumeStoredSwitch, storedProjectArchived, storedSwitch,
   waitStoredSwitch,
 } from '../../db/embeddings/switch.js';
-export { SWITCH_STANDS_SQL } from '../../db/embeddings/switch.js';
 
-
-export type SwitchState = 'building' | 'paused';
+type SwitchState = 'building' | 'paused';
 
 export interface EmbeddingSwitch {
   id: string;

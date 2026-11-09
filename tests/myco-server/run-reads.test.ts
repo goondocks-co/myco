@@ -12,7 +12,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { MAX_RUN_READS, recordRunReads, recordRunWrite } from '@myco-server-worker/db/runs/evidence.js';
 import { pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';

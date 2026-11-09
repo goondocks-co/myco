@@ -16,7 +16,11 @@ import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { searchAcross, searchProject, StaleSearch } from '@myco-server-worker/read/search.js';
+import {
+  search_searchAcross as searchAcross,
+  search_searchProject as searchProject,
+  search_StaleSearch as StaleSearch,
+} from '@myco-server-worker/read/catalog/search.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { SearchOptions } from '@goondocks/myco-shared/search-types';
 

@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '../../packages/myco-server/src/platform/bun/sqlite.js';
-import { readBudgetStatus } from '../../packages/myco-server/src/read/budget.js';
+import { readBudgetStatus } from '../../packages/myco-server/src/db/runs/budget.js';
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 
 export function seedRecoveryBudget(db: Database, priced: boolean, now: number): void {

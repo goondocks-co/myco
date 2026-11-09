@@ -118,7 +118,7 @@ export const PRE_CONDITIONS: Readonly<Record<string, ScheduleCondition & { descr
 export const ACCELERATORS: Readonly<Record<string, (args: { db: RelationalStore; projectId: string; limit: number }) => Promise<number>>> = {};
 
 /** The schedule block an owner set for one task, or undefined where they set none. */
-export function scheduleOverride(task: string, overrides: Record<string, unknown>): unknown {
+function scheduleOverride(task: string, overrides: Record<string, unknown>): unknown {
   const entry = overrides[task];
   return entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? (entry as Record<string, unknown>).schedule : undefined;
 }

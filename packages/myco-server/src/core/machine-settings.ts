@@ -12,16 +12,11 @@ import { sha256Hex } from '../hash.js';
 import type { RelationalStore } from './adapters.js';
 import { leafRuleViolation, type LeafSpec } from './settings.js';
 
-/** The leaf a machine uses to find its agents' plans beyond the folders each agent's manifest names. */
-export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
-
-/** The folders a machine captures repositories under without being asked: a repository beneath one joins by itself. */
-export const AUTO_JOIN_ROOTS_LEAF = 'capture.auto_join_roots';
 /**
  * The repositories a machine is told to connect from "Needs you", by key: each names the project it joins, or `''` for
  * the project it resolves by its remote or creates. Written by the connect, read by the machine's next hook there.
  */
-export const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
+const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
 
 /** Every leaf a machine holds, with its rule and its default; `serverWritten` leaves are written by the Deployment alone, never set on the dashboard. */
 export const MACHINE_LEAF_SPECS: Readonly<Record<string, { spec: LeafSpec; default: unknown; serverWritten?: true }>> = Object.fromEntries(
@@ -105,7 +100,7 @@ export async function readMachineSettings(db: RelationalStore, machineId: string
   });
 }
 
-export type MachineWrite = { applied: true } | { applied: false; reason: 'unknown_leaf' | 'invalid_value' | 'absent' | 'conflict'; detail?: string };
+type MachineWrite = { applied: true } | { applied: false; reason: 'unknown_leaf' | 'invalid_value' | 'absent' | 'conflict'; detail?: string };
 
 /**
  * Set one leaf of the machine `actor` claims. The default removes the row. Both writes are conditioned on that claim

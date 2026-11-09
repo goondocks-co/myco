@@ -1,6 +1,6 @@
 import { recordReport } from '@myco-server-worker/core/run-postconditions.js';
 import { handleUpdateRun } from '@myco-server-worker/api/runs.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { runRouteFixture } from './helpers/run-routes.js';
 import { shapeRunError } from '@goondocks/myco-shared/run-text';
@@ -503,7 +503,6 @@ describe('POST /runs/update holds a run to what its task owes at close', () => {
 
   });
 });
-
 
 it('judges a late harness error on the run update route after its accepted report', async () => {
   const f = await harness();

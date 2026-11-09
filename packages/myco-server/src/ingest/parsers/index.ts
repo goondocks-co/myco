@@ -87,7 +87,7 @@ export interface ParserInput {
 }
 
 /** The record that owns a harness key, by its thread and uuid. */
-export interface PromptOwner { thread: string; record: string }
+interface PromptOwner { thread: string; record: string }
 /** Read-only owners of harness keys, as a pass is handed them. */
 export interface PromptOwners { get(key: string): PromptOwner | undefined }
 /** The owners a pass reads, behind an accessor no parse can write through. */
@@ -96,7 +96,7 @@ export function promptOwners(entries: Iterable<readonly [string, PromptOwner]>):
   return Object.freeze({ get: (key: string) => held.get(key) });
 }
 
-export interface PendingCall {
+interface PendingCall {
   identity?: readonly string[];
   toolCallId: string;
   toolName: string;
@@ -244,7 +244,7 @@ export interface DerivedEvent {
  * and deriving them into the continued session would attribute one session's
  * work to another.
  */
-export interface Continuation {
+interface Continuation {
   /** Where a record names the session it belonged to. */
   parentSessionIdPath: string;
   /** Flags marking a record that belongs to this session wherever it sits. */
@@ -307,7 +307,7 @@ export const claudeRecordIdFor = async (sessionId:string,record:ClaudeRecordKey,
 export const promptIdAtOffset = async (namespace:OffsetPromptNamespace,sessionId:string,offset:number,view?:Pick<ParserInput,'transcriptId'|'scheme'>&IdentityInput):Promise<string> =>
   promptIdentity(view,view?.scheme==='offset-v2'?{scheme:'offset-v2',namespace,sessionId,transcriptId:view.transcriptId,offset}:{scheme:'offset-v1',namespace,sessionId,offset});
 /** The instant a line's own time field carries, never ahead of the server's clock; null for a line that carries none. */
-export function datedAt(raw: unknown, now: number): number | null {
+function datedAt(raw: unknown, now: number): number | null {
   if (typeof raw !== 'string') return null;
   const parsed = Date.parse(raw);
   return Number.isNaN(parsed) || parsed < 0 ? null : Math.min(parsed, now);
@@ -333,7 +333,7 @@ export const blocksOf = (content: unknown): Record<string, unknown>[] => (Array.
 export const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined);
 
 /** The value at a dotted path, or undefined. */
-export function atPath(value: Record<string, unknown>, path: string): unknown {
+function atPath(value: Record<string, unknown>, path: string): unknown {
   let held: unknown = value;
   for (const segment of path.split('.')) {
     if (held === null || typeof held !== 'object') return undefined;
@@ -394,7 +394,7 @@ const RESPONSE_TEXT_BYTES = MAX_PAYLOAD_BYTES - utf8(JSON.stringify({ responseId
 const payloadBytes = (text: string): number => utf8(JSON.stringify(text)).byteLength - 2;
 
 /** How far a response's text may run: both the catalogue's character bound and the payload's byte bound hold. */
-export interface ResponseBound {
+interface ResponseBound {
   chars: number;
   bytes: number;
 }
@@ -469,7 +469,7 @@ export function replyChunks(parts: readonly ReplyPart[], bound: ResponseBound = 
 export const TOOL_OUTPUT_PREVIEW_CHARS = 4096;
 
 /** The first Markdown heading of a body, for a plan the transcript gives no title. */
-export function firstHeading(content: string): string | undefined {
+function firstHeading(content: string): string | undefined {
   for (const line of content.split('\n')) {
     const m = /^#{1,6}\s+(.+?)\s*$/.exec(line);
     if (m) return m[1].slice(0, 256);

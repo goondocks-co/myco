@@ -7,7 +7,7 @@ import {budgetFixture,PROFILE} from './helpers/budget-fixture.js';
 import {sqliteBudgetMeter,type MeterStatement} from './helpers/budget-meter.js';
 import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
 import {completeBudgetMigration} from '@myco-server-worker/db/meta/budget-activation.js';
-import {readBudgetStatus} from '@myco-server-worker/read/budget.js';
+import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
 import {BUDGET_WINDOW_MS} from '@myco-server-worker/core/budget-policy.js';
 import {expireSpend,SPEND_DUE_READ_LIMIT} from '@myco-server-worker/db/runs/admission.js';
 import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
@@ -82,7 +82,6 @@ it('keeps mint, claim and status reads independent of attempt history, inside an
     }
   }finally{meter.close();await mf.dispose();}
 },240_000);
-
 
 it('keeps the first claim after an idle day and the claim of a retried run at bounded D1 reads',async()=>{
   const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response(null)}}',compatibilityDate:'2026-07-01',d1Databases:['DB']}));

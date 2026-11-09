@@ -27,7 +27,8 @@ import { sessionWriteAdmission } from '../ingest/projections.js';
 import type { AskNaming } from '../core/injection.js';
 import { ASK_IDENTITY_MARKER, isPromptIdScheme, isPromptScopeReason, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { sharesSessionScheme } from '../ingest/prompt-scheme.js';
-import { MAX_REMOTE_CHARS, normalizeRemote, recordProjectRemote } from '../core/remotes.js';
+import { recordProjectRemote } from '../core/remotes.js';
+import { MAX_REMOTE_CHARS, normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 
 const MAX_SESSION_CHARS = 384;
 const MAX_PROMPT_ID_CHARS = 192;

@@ -18,14 +18,14 @@ import { HARNESS_MEMBER_ID } from '../constants.js';
 export const CAPTURE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** A claimed machine: its name, and the member it belongs to. */
-export interface MachineOwner {
+interface MachineOwner {
   name: string | null;
   memberId: string;
   memberLabel: string | null;
 }
 
 /** Every claimed machine with its own label and its member. The claims are the Deployment's machines, a handful of rows. */
-export function machineClaimsStatement(db: RelationalStore): PreparedStatement {
+function machineClaimsStatement(db: RelationalStore): PreparedStatement {
   return db.prepare(
     `SELECT mc.machine_id, mc.member_id, mc.label, m.label AS member_label
        FROM machine_claims mc CROSS JOIN members m ON m.id = mc.member_id`,
@@ -33,7 +33,7 @@ export function machineClaimsStatement(db: RelationalStore): PreparedStatement {
 }
 
 /** The label each machine's live credentials carry, newest first: the name of a machine whose claim holds none. */
-export function machineNamesStatement(db: RelationalStore, nowMs: number): PreparedStatement {
+function machineNamesStatement(db: RelationalStore, nowMs: number): PreparedStatement {
   return db.prepare(
     `SELECT machine_id, runtime_label FROM member_credentials INDEXED BY idx_member_credentials_live_successor
       WHERE revoked_at IS NULL AND expires_at > ? AND machine_id IS NOT NULL AND runtime_label IS NOT NULL
@@ -42,7 +42,7 @@ export function machineNamesStatement(db: RelationalStore, nowMs: number): Prepa
 }
 
 /** Each claimed machine's name and member, from what `machineClaimsStatement` and `machineNamesStatement` answer. */
-export function machineOwnersOf(claims: readonly unknown[], credentials: readonly unknown[]): Map<string, MachineOwner> {
+function machineOwnersOf(claims: readonly unknown[], credentials: readonly unknown[]): Map<string, MachineOwner> {
   const carried = new Map<string, string>();
   for (const row of credentials as { machine_id: string; runtime_label: string }[]) {
     if (!carried.has(row.machine_id)) carried.set(row.machine_id, row.runtime_label);
@@ -55,10 +55,10 @@ export function machineOwnersOf(claims: readonly unknown[], credentials: readonl
 }
 
 /** The two statements `machineOwnersOf` reads, for a caller to batch beside its own. */
-export const machineOwnerStatements = (db: RelationalStore, nowMs: number): PreparedStatement[] => [machineClaimsStatement(db), machineNamesStatement(db, nowMs)];
+const machineOwnerStatements = (db: RelationalStore, nowMs: number): PreparedStatement[] => [machineClaimsStatement(db), machineNamesStatement(db, nowMs)];
 
 /** What `viewerId` is shown as a machine's name: the name of a machine that is theirs, and null for anyone else's. */
-export function shownMachineName(owner: MachineOwner | undefined, viewerId: string): string | null {
+function shownMachineName(owner: MachineOwner | undefined, viewerId: string): string | null {
   return owner !== undefined && owner.memberId === viewerId ? owner.name : null;
 }
 
@@ -113,7 +113,7 @@ export function captureRecencyStatement(db: RelationalStore, nowMs: number, mach
 }
 
 /** The rows `captureRecencyStatement` answers, as `viewerId` is shown them. */
-export function captureRowsOf(rows: readonly unknown[], owners: ReadonlyMap<string, MachineOwner>, viewerId: string): CaptureRow[] {
+function captureRowsOf(rows: readonly unknown[], owners: ReadonlyMap<string, MachineOwner>, viewerId: string): CaptureRow[] {
   return (rows as Record<string, unknown>[]).map((row) => {
     const owner = owners.get(String(row.machine_id));
     return {

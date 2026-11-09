@@ -16,7 +16,7 @@
 import { commandShape, pathShape } from '@goondocks/myco-shared/command-shape';
 import { agentProse } from '@goondocks/myco-shared/run-text';
 
-export interface RunAuditFailure {
+interface RunAuditFailure {
   what: string;
   recovery: string;
 }
@@ -39,13 +39,13 @@ export const MAX_FAILURES = 40;
 /** The most characters a serialized audit offered as text may hold before it is read. */
 export const MAX_AUDIT_CHARS = 256 * 1024;
 
-export const RUN_AUDIT_FIELDS = ['steps', 'examined', 'commands', 'failures', 'reasoning'] as const;
+const RUN_AUDIT_FIELDS = ['steps', 'examined', 'commands', 'failures', 'reasoning'] as const;
 
 /** What a report whose audit is refused is told to file: the fields, their shape and their bounds. */
 export const RUN_AUDIT_SHAPE = `audit is an object of steps (what you did, in order; at least one), examined (the files and areas you read), commands (the commands you ran), failures (each failure as {what, recovery}) and reasoning (why the outcome is what it is; required); up to ${MAX_STEPS} steps, ${MAX_LISTED} files or commands and ${MAX_FAILURES} failures, each entry at most ${MAX_ITEM_CHARS} characters, reasoning at most ${MAX_REASONING_CHARS} characters`;
 
 /** What one audit answered: the stored shape and the repairs that reach it, or why it is refused. */
-export type AuditParse = { ok: true; audit: RunAudit; repairs: string[] } | { ok: false; error: string };
+type AuditParse = { ok: true; audit: RunAudit; repairs: string[] } | { ok: false; error: string };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 

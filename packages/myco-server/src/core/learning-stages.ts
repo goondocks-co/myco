@@ -18,14 +18,22 @@ import { EXTRACTION_TASK } from './task-catalogue.js';
 import { EXTRACTION_RULES } from './extraction-rules.js';
 import { EXTRACTION_REPORT_ACTION } from './run-postconditions.js';
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
-import { CARD_TASK, claimCardsWrites as claimCardsStatements, dueCardTurns } from './turn-cards.js';
+import { claimCardsWrites as claimCardsStatements, dueCardTurns } from './turn-cards.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { TURN_CARD_PROMPT } from './turn-card-prompt.js';
-import { buildLearningAssignment, claimLearningWrites as claimLearningStatements, learningHead, learningHeadFrom, LEARNING_TOOL, type LearningAssignment } from './learning-sessions.js';
+import {
+  buildLearningAssignment,
+  claimLearningWrites as claimLearningStatements,
+  learningHead,
+  learningHeadFrom,
+  type LearningAssignment,
+} from './learning-sessions.js';
+import { LEARNING_TOOL } from './tool-catalogue.js';
 /** A card run's assignment: the turns it cards, each with the change count its write is guarded by. */
 export interface CardAssignment { kind: 'cards'; turns: { turnKey: string; changes: number }[] }
 
-export const learningSubject = (sessionId: string): string => `session:${sessionId}`;
-export const cardSubject = (sessionId: string): string => `cards:${sessionId}`;
+const learningSubject = (sessionId: string): string => `session:${sessionId}`;
+const cardSubject = (sessionId: string): string => `cards:${sessionId}`;
 
 /** No run of `task` for the session the SQL expression `session` names is in flight. */
 const notInFlight = (task: string, subject: (session: string) => string, session: string): string => `NOT EXISTS (SELECT 1
@@ -56,7 +64,7 @@ async function inputHashOf(parts: unknown): Promise<string> {
 }
 
 /** A session-learning run's input for this session, or null when no card of it is due. */
-export async function buildLearningInput(db: RelationalStore, projectId: string, sessionId: string, now = Date.now()): Promise<TaskInput | null> {
+async function buildLearningInput(db: RelationalStore, projectId: string, sessionId: string, now = Date.now()): Promise<TaskInput | null> {
   const quiet = await db.prepare(`SELECT 1 AS quiet FROM learning_sessions WHERE project_id = ? AND session_id = ? AND quiet_at <= ?`)
     .bind(projectId, sessionId, now).first();
   if (quiet === null) return null;

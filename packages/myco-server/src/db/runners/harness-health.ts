@@ -1,9 +1,9 @@
 import { read, readSet } from '../index.js';
 import type { RelationalStore } from '../../core/adapters.js';
 
-export interface HarnessCaptureRow { machine_id: string; agent: string; at: number }
-export interface MachineActivityRow { machine_id: string; at: number }
-export interface HarnessReportRow { machine_id: string; harnesses: string; reported_at: number }
+interface HarnessCaptureRow { machine_id: string; agent: string; at: number }
+interface MachineActivityRow { machine_id: string; at: number }
+interface HarnessReportRow { machine_id: string; harnesses: string; reported_at: number }
 
 /** The current snapshot for one machine, for the report writer's state transition. */
 export async function machineHarnessReport(db: RelationalStore, machineId: string): Promise<string | null> {
@@ -14,12 +14,6 @@ export async function machineHarnessReport(db: RelationalStore, machineId: strin
 /** Live session starts created after a machine's oldest pending trust confirmation. */
 export async function machineHarnessCaptureSince(db: RelationalStore, machineId: string, since: number): Promise<Array<{ agent: string; at: number }>> {
   const rows = (await readSet(db, machineHarnessCaptureSinceRead.bind(machineId, since, since, since)))[0];
-  return rows;
-}
-
-/** Snapshots for claimed machines whose member remains active. */
-export async function provisionedHarnessReportRows(db: RelationalStore): Promise<HarnessReportRow[]> {
-  const rows = (await readSet(db, provisionedHarnessReportRowsRead.bind()))[0];
   return rows;
 }
 
@@ -41,30 +35,18 @@ export async function trustConfirmationCapture(db: RelationalStore, since: numbe
   return rows;
 }
 
-/** Recent worker contact can establish that a machine is active while one harness is quiet. */
-export async function workerMachineActivity(db: RelationalStore): Promise<MachineActivityRow[]> {
-  const rows = (await readSet(db, workerMachineActivityRead.bind()))[0];
-  return rows;
-}
+const machineHarnessReportRead = read<[string], { harnesses: string }>({ name: 'runners.machineHarnessReport', sql: `SELECT harnesses FROM machine_harness_reports WHERE machine_id = ?` });
 
-/** A claimed machine's own label, shown on the administrator's Health page. */
-export async function claimedMachineNames(db: RelationalStore): Promise<Array<{ machine_id: string; label: string | null }>> {
-  const rows = (await readSet(db, claimedMachineNamesRead.bind()))[0];
-  return rows;
-}
-
-export const machineHarnessReportRead = read<[string], { harnesses: string }>({ name: 'runners.machineHarnessReport', sql: `SELECT harnesses FROM machine_harness_reports WHERE machine_id = ?` });
-
-export const machineHarnessCaptureSinceRead = read<[string, number, number, number], { agent: string; at: number }>({ name: 'runners.machineHarnessCaptureSince', sql: `SELECT s.agent, MAX(e.created_at) AS at FROM sessions s
+const machineHarnessCaptureSinceRead = read<[string, number, number, number], { agent: string; at: number }>({ name: 'runners.machineHarnessCaptureSince', sql: `SELECT s.agent, MAX(e.created_at) AS at FROM sessions s
       JOIN events e ON e.project_id = s.project_id AND e.session_id = s.session_id
       WHERE s.machine_id = ? AND s.agent IS NOT NULL AND s.last_received_at > ?
         AND e.received_at > ? AND e.created_at > ? AND e.kind = 'session.start' AND e.channel <> 'import' GROUP BY s.agent` });
 
-export const provisionedHarnessReportRowsRead = read<[], HarnessReportRow>({ name: 'runners.provisionedHarnessReportRows', sql: `SELECT r.machine_id, r.harnesses, r.reported_at FROM machine_harness_reports r
+const provisionedHarnessReportRowsRead = read<[], HarnessReportRow>({ name: 'runners.provisionedHarnessReportRows', sql: `SELECT r.machine_id, r.harnesses, r.reported_at FROM machine_harness_reports r
     JOIN machine_claims mc ON mc.machine_id = r.machine_id
     JOIN members m ON m.id = mc.member_id WHERE m.revoked_at IS NULL` });
 
-export const latestHarnessCaptureRead = read<[], Omit<HarnessCaptureRow, 'at'> & { at: number | null }>({ name: 'runners.latestHarnessCapture', sql: `SELECT r.machine_id, json_extract(j.value, '$.id') AS agent,
+const latestHarnessCaptureRead = read<[], Omit<HarnessCaptureRow, 'at'> & { at: number | null }>({ name: 'runners.latestHarnessCapture', sql: `SELECT r.machine_id, json_extract(j.value, '$.id') AS agent,
       (SELECT s.last_live_received_at FROM sessions s
        WHERE s.machine_id = r.machine_id AND s.agent = json_extract(j.value, '$.id')
          AND s.last_live_received_at IS NOT NULL ORDER BY s.last_live_received_at DESC LIMIT 1) AS at
@@ -73,18 +55,18 @@ export const latestHarnessCaptureRead = read<[], Omit<HarnessCaptureRow, 'at'> &
       JOIN members m ON m.id = mc.member_id
       JOIN json_each(r.harnesses) j WHERE m.revoked_at IS NULL` });
 
-export const recentMachineCaptureRead = read<[number], MachineActivityRow>({ name: 'runners.recentMachineCapture', sql: `SELECT machine_id, MAX(last_live_received_at) AS at FROM sessions INDEXED BY idx_sessions_machine_live
+const recentMachineCaptureRead = read<[number], MachineActivityRow>({ name: 'runners.recentMachineCapture', sql: `SELECT machine_id, MAX(last_live_received_at) AS at FROM sessions INDEXED BY idx_sessions_machine_live
     WHERE last_live_received_at >= ? AND machine_id IS NOT NULL GROUP BY machine_id` });
 
-export const trustConfirmationCaptureRead = read<[number, number, number], HarnessCaptureRow>({ name: 'runners.trustConfirmationCapture', sql: `SELECT s.machine_id, s.agent, MAX(e.created_at) AS at FROM sessions s
+const trustConfirmationCaptureRead = read<[number, number, number], HarnessCaptureRow>({ name: 'runners.trustConfirmationCapture', sql: `SELECT s.machine_id, s.agent, MAX(e.created_at) AS at FROM sessions s
     JOIN events e ON e.project_id = s.project_id AND e.session_id = s.session_id
     WHERE s.machine_id IS NOT NULL AND s.agent IS NOT NULL AND s.last_received_at > ?
       AND e.received_at > ? AND e.created_at > ? AND e.kind = 'session.start' AND e.channel <> 'import'
     GROUP BY s.machine_id, s.agent` });
 
-export const workerMachineActivityRead = read<[], MachineActivityRow>({ name: 'runners.workerMachineActivity', sql: `SELECT machine_id, MAX(last_seen_at) AS at FROM worker_contacts WHERE machine_id IS NOT NULL GROUP BY machine_id` });
+const workerMachineActivityRead = read<[], MachineActivityRow>({ name: 'runners.workerMachineActivity', sql: `SELECT machine_id, MAX(last_seen_at) AS at FROM worker_contacts WHERE machine_id IS NOT NULL GROUP BY machine_id` });
 
-export const claimedMachineNamesRead = read<[], { machine_id: string; label: string | null }>({ name: 'runners.claimedMachineNames', sql: `SELECT machine_id, label FROM machine_claims` });
+const claimedMachineNamesRead = read<[], { machine_id: string; label: string | null }>({ name: 'runners.claimedMachineNames', sql: `SELECT machine_id, label FROM machine_claims` });
 export async function harnessAttentionRows(db: RelationalStore, since: number) {
   return readSet(db, provisionedHarnessReportRowsRead.bind(), latestHarnessCaptureRead.bind(), recentMachineCaptureRead.bind(since),
     workerMachineActivityRead.bind(), claimedMachineNamesRead.bind());

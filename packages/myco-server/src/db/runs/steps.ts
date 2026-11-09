@@ -19,7 +19,7 @@ import type { ReadScope } from '../../read/scope.js';
 import { commit, read, write } from '../index.js';
 
 /** What storing a page answered: how many of its steps were new, or why the page is refused. */
-export type StepPageOutcome = { stored: true; landed: number } | { stored: false; reason: string };
+type StepPageOutcome = { stored: true; landed: number } | { stored: false; reason: string };
 
 /** What a page naming an attempt this Deployment does not hold, or holds for another worker, is answered. */
 export const STEP_ATTEMPT_UNHELD = 'no attempt of that run belongs to this worker';
@@ -66,7 +66,7 @@ export async function storeStepPage(
 }
 
 /** Whether `worker` owns a recorded attempt: the same runner for a runner's attempt; for a legacy worker's, its claiming credential or its machine. */
-export function attemptOwnedBy(attempt: AttemptOwner, worker: WorkerPrincipal): boolean {
+function attemptOwnedBy(attempt: AttemptOwner, worker: WorkerPrincipal): boolean {
   if (attempt.ownerKind === 'runner') return worker.kind === 'runner' && attempt.runnerId === worker.runnerId;
   return worker.kind === 'member' && (attempt.leasedBy === worker.tokenId || (attempt.machineId !== null && attempt.machineId === worker.machineId));
 }

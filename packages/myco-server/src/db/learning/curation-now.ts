@@ -1,11 +1,11 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { CURATION_DAILY_LIMIT_MAX, curationDailyLimitSql } from '../../core/settings.js';
-import { CURATION_MAX_FAILURES } from '../../core/spore-curation.js';
+import { CURATION_MAX_FAILURES } from '../runs/pull-policy.js';
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { read, readSet } from '../index.js';
 
-export const NOW_FAILING_GROUPS = 3;
+const NOW_FAILING_GROUPS = 3;
 type Row = Record<string, unknown>;
 const due = read<[string], Row>({ name: 'curation.todayDue', sql: `SELECT cluster_key,due_at FROM spore_curation_work INDEXED BY idx_curation_due
   WHERE project_id=? AND due_at IS NOT NULL AND failures=0 ORDER BY due_at LIMIT 1` });

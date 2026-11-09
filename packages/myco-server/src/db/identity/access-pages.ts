@@ -33,7 +33,7 @@ const membersAfter = read<[now: number, limit: number, createdAt: number, id: st
   name: 'memberPage.after', sql: `SELECT ${memberColumns} FROM members m INDEXED BY idx_members_created WHERE (m.created_at,m.id)>(?3,?4) ORDER BY m.created_at ASC,m.id ASC LIMIT ?2`,
 });
 
-export interface MemberPage extends Page<MemberPageRow> { readonly countsReady: boolean }
+interface MemberPage extends Page<MemberPageRow> { readonly countsReady: boolean }
 
 /** One page of members, each with a key-bounded runtime count over its live heads, read beside the heads' readiness. */
 export async function memberPage(db: RelationalStore, now: number, opts: { limit?: number; cursor?: string } = {}): Promise<MemberPage> {
@@ -44,7 +44,7 @@ export async function memberPage(db: RelationalStore, now: number, opts: { limit
   return { ...page(rows, limit, row => ({ createdAt: row.created_at, id: row.id })), countsReady: ready[0]?.done === 1 };
 }
 
-export interface InvitationPageRow {
+interface InvitationPageRow {
   id: string;
   member_id: string | null;
   created_by_member: string | null;
@@ -74,7 +74,7 @@ export async function invitationPage(db: RelationalStore, now: number, opts: { l
   return page(rows, limit, row => ({ createdAt: row.created_at, id: row.id }));
 }
 
-export interface GrantPageRow {
+interface GrantPageRow {
   id: string;
   project_id: string;
   label: string | null;

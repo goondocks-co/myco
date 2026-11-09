@@ -6,17 +6,14 @@ import { bundleArchiveStatements,discardArchiveBundle,prepareArchiveBundle,ARCHI
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
 import { emit } from '../telemetry.js';
 
-
-
-export const STORAGE_CLEANUP_ROWS = 100;
-export const STORAGE_CLEANUP_TARGET_BYTES = 64 * 1024;
-export const STORAGE_CLEANUP_GAIN_MARGIN = 0.2;
-export const STORAGE_CLEANUP_PAGE_BYTES = ARCHIVE_BUNDLE_BYTES;
+const STORAGE_CLEANUP_ROWS = 100;
+const STORAGE_CLEANUP_TARGET_BYTES = 64 * 1024;
+const STORAGE_CLEANUP_GAIN_MARGIN = 0.2;
+const STORAGE_CLEANUP_PAGE_BYTES = ARCHIVE_BUNDLE_BYTES;
 const ROW_RESERVE = 48;
 const PENDING_STATUS_RESERVE = 2;
 const STATEMENT_RESERVE = ROW_RESERVE + PENDING_STATUS_RESERVE;
 const BLOB_RESERVE = 8;
-export type { CleanupState,CleanupOmissionCursor };
 /** Metadata is read first; exact UTF-8 bodies use a bounded page or checkpointed slices. */
 async function candidates(db:RelationalStore,ids:Candidate[],retention=false):Promise<Map<string,ContentRow>> {
   const found=await cleanupCandidateRows(db,ids,retention);

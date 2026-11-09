@@ -6,7 +6,9 @@ import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { emit, refusal, StorageContractError, TokenRevokedError, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
-import { pendingSearchBlobs } from '../core/search-index.js';
+import {
+  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
+} from '../read/catalog/search-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { RecordSchemeError } from './record-scheme.js';
 import {
@@ -32,11 +34,10 @@ import {
 import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
 
-
 import { materialFields, materialMerge } from './material-mutation.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
-export interface TranscriptExtra {
+interface TranscriptExtra {
   transcript?: { size: number; segmentCount: number };
 }
 
@@ -57,7 +58,7 @@ export type IngestResult =
  * credential's liveness. A member's credential rotates; the events derived from
  * the bytes that credential shipped must not stop landing when it does.
  */
-export type WriteOrigin = 'member' | 'server';
+type WriteOrigin = 'member' | 'server';
 
 export type IngestContext = Pick<
   RouteContext,
@@ -77,7 +78,7 @@ export function refused(
 }
 
 /** Digest of the whole envelope: session, kind, caller time, channel, producer, and the serialized payload. */
-export async function envelopeHash(e: CaptureEnvelope): Promise<string> {
+async function envelopeHash(e: CaptureEnvelope): Promise<string> {
   const header = utf8(
     `${JSON.stringify([e.sessionId, e.kind, e.createdAt, e.channel, e.producer.adapter, e.producer.version])}\n`,
   );
@@ -145,17 +146,17 @@ export async function ingestEvent(
 }
 
 /** The statements one event needs and how to read their answers, without executing them. Callers with one event run their own batch; a caller with many concatenates the statements of each into ONE batch and interprets each write's own slice — the difference between one database call per event and one per pass. */
-export interface EventWrite {
+interface EventWrite {
   proof: Fragment;
   replayAdmission?: Fragment;
   statements: PreparedStatement[];
   interpret(results: BatchResult[]): IngestResult;
 }
 
-export type PlannedWrite = { ok: true; write: EventWrite } | Refused;
+type PlannedWrite = { ok: true; write: EventWrite } | Refused;
 
 /** Evidence that one canonical event is held with the expected raw bytes. */
-export function eventProof(projectId: string, eventId: string, hash: string): Fragment {
+function eventProof(projectId: string, eventId: string, hash: string): Fragment {
   return {
     sql: 'EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND envelope_hash = ?)',
     params: [projectId, eventId, hash],

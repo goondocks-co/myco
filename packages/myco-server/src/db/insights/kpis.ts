@@ -13,7 +13,7 @@ export type KpiWindow = typeof KPI_WINDOWS[number] | null;
 const MIN_DAY = Number.MIN_SAFE_INTEGER;
 const MIN_MS = Number.MIN_SAFE_INTEGER;
 
-export interface KpiMetadata {
+interface KpiMetadata {
   /** Complete UTC days before today, or null for all history through today. */
   windowDays: number | null;
   /** Inclusive lower time bound in epoch milliseconds; null for all history. */
@@ -32,12 +32,12 @@ export type KpiAnswer = KpiReport | (KpiMetadata & {
   progress: { completed: number; total: number };
 });
 
-export interface Measure {
+interface Measure {
   value: number | null;
   sampleSize: number;
 }
 
-export interface HarnessMeasure extends Measure {
+interface HarnessMeasure extends Measure {
   harness: string;
   calls: number;
 }
@@ -69,7 +69,7 @@ export interface KpiReport extends KpiMetadata {
   promptIdentity: PromptIdentityCounts[];
 }
 
-export interface PromptIdentityCounts {
+interface PromptIdentityCounts {
   /** Agent recorded by the session primary transcript, or the transcript agent for scheme counts. */
   harness: string;
   /** Live prompts carrying a claim in the window. */
@@ -99,7 +99,7 @@ export function kpiWindow(raw: string | null): KpiWindow | undefined {
   return KPI_WINDOWS.find(days => String(days) === raw);
 }
 
-export function utcWindow(window: KpiWindow, now: number) {
+function utcWindow(window: KpiWindow, now: number) {
   const today = Math.floor(now / KPI_DAY_MS);
   const sinceDay = window === null ? null : today - window;
   return {
@@ -133,7 +133,7 @@ const lineageSamples = read<[number, number], { ms: number }>({
     WHERE started_at BETWEEN ? AND ? AND first_served_at>=started_at ORDER BY 1`,
 });
 
-export function formatKpis(rows: readonly Daily[], samples: readonly number[]): KpiMeasures {
+function formatKpis(rows: readonly Daily[], samples: readonly number[]): KpiMeasures {
   const total = (column: KpiMeasure) => rows.reduce((sum, row) => sum + row[column], 0);
   return {
     promptsServed: total('served'),

@@ -1,5 +1,5 @@
 import { allOf, enrollmentAdmission, type Fragment } from '../db/identity/enrollment-policy.js';
-export { allOf, authorityAdmitted, enrollmentAdmission, machineClaimable, type Fragment } from '../db/identity/enrollment-policy.js';
+export { enrollmentAdmission, type Fragment } from '../db/identity/enrollment-policy.js';
 import type { Bound } from '../db/index.js';
 import { memberIdentityInsert, enrollmentMemberStatement, type MemberIdentityGate } from '../db/identity/enrollment.js';
 /**
@@ -24,7 +24,7 @@ import type { Page } from '../read/scope.js';
 import { authorize, enrollmentAuthorityPredicate, enrollmentResourceOf, memberSubjectOf, memberWritePredicate } from './authorization.js';
 import { readAuthorization } from '../db/auth/authorization.js';
 
-export type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
+type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
 
 /** The identity grammar for enrolled machines and their runtime labels and kinds. */
 export const ENROLLMENT_IDENTITY_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
@@ -62,7 +62,7 @@ const ENROLLMENT_ID_BYTES = 12;
 /** Shape of every minted key: `ENROLLMENT_KEY_BYTES` random bytes as unpadded base64url. */
 export const ENROLLMENT_KEY_PATTERN = new RegExp(`^[A-Za-z0-9_-]{${Math.ceil((ENROLLMENT_KEY_BYTES * 4) / 3)}}$`);
 
-export interface IssuedEnrollmentAuthority {
+interface IssuedEnrollmentAuthority {
   key: string;
   id: string;
   expiresAt: number;
@@ -161,7 +161,7 @@ export async function enrollmentTarget(db: RelationalStore, keyHash: string): Pr
 }
 
 /** Why a key could not be spent, or that nothing about the key refuses it. */
-export type SpendRefusal = { admissible: false; reason: EnrollmentRefusal } | { admissible: true };
+type SpendRefusal = { admissible: false; reason: EnrollmentRefusal } | { admissible: true };
 
 /** Describes enrollment refusals in wire precedence order after a transaction admits no credential. */
 export async function explainEnrollment(
@@ -184,7 +184,7 @@ export async function explainEnrollment(
   return { admissible: true };
 }
 
-export type SpendResult =
+type SpendResult =
   | { ok: true; id: string; memberId: string | null; role: MemberRole; projectId: string | null }
   | { ok: false; reason: EnrollmentRefusal };
 

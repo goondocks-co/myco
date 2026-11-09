@@ -23,7 +23,8 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { dispatchTask as currentDispatch, endLeasedRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { dispatchTask as currentDispatch, endLeasedRun } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { EXTRACTION_REPORT_ACTION, RUN_CLOSE_ARTIFACT_ERROR, RUN_CLOSE_ERROR, RUN_SKIP_ACTION, runCloseRefusal, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { RUN_TOOL_EVENT } from '@myco-server-worker/db/runs/evidence.js';
@@ -32,7 +33,6 @@ import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { publishFixture, memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
-import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { verifyWorkerOutcome } from '../helpers/worker-smoke-evidence.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
@@ -463,7 +463,6 @@ describe('whose title a titling run is held to', () => {
     expect(r.outcome(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
   });
 });
-
 
 describe('a harness error after the task evidence', () => {
   for (const evidence of ['complete', 'missing artifact', 'missing report', 'missing audit', 'error before report'] as const) {

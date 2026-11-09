@@ -30,15 +30,15 @@ const PARSER_CHECKPOINT_HEADROOM = 64;
 const PARSER_CLOSE_HEADROOM = 12;
 
 /** Normal read floor; an unfinished first record may use the bounded segment lookahead. */
-export const TRANSCRIPT_PARSE_BYTES_PER_READ = 524288;
+const TRANSCRIPT_PARSE_BYTES_PER_READ = 524288;
 
-export const VIEW_PARSE_BYTES_PER_READ = 65536;
+const VIEW_PARSE_BYTES_PER_READ = 65536;
 
 /** Segments read in one pass. Bytes alone do not bound the READS: a transcript shipped in many small segments sits inside the byte budget while costing one read each. */
 export const TRANSCRIPT_PARSE_SEGMENTS_PER_READ = 8;
 
 /** Maximum bytes retained while completing the first record across segments. */
-export const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
+const TRANSCRIPT_PARSE_RECORD_BYTES = MAX_BLOB_BYTES;
 
 /** An unanswered live turn closes after ten minutes without new transcript bytes. */
 export const TRANSCRIPT_IDLE_MS = 600000;
@@ -66,7 +66,7 @@ export const TRANSCRIPT_PARSE_MALFORMED_LIMIT = 8;
  * `parse_awaited_size` holds the size that pass read, so the wait is keyed on
  * bytes rather than on a clock.
  */
-export const AWAITING_BYTES = 'awaiting_bytes';
+const AWAITING_BYTES = 'awaiting_bytes';
 
 /**
  * A checkpoint that carries a prompt forward (a turn open at its cursor, or calls or a reply unfinished) written under
@@ -136,7 +136,7 @@ export interface ParseTarget {
 }
 
 /** A segment row as a pass reads it: where it sits in the transcript, its bytes' stored object, and the time its event carries. */
-export interface SegmentRow {
+interface SegmentRow {
     base_offset: number;
     length: number;
     blob_key: string;
@@ -145,7 +145,7 @@ export interface SegmentRow {
 }
 
 /** Both hot and archived segments provide the parser's exact registered object and original creation time. */
-export const segmentSource = (project: string, transcript: string, after: string): string => {
+const segmentSource = (project: string, transcript: string, after: string): string => {
     const [hotAfter, coldAfter] = after === '?' ? ['?3', '?6'] : [after, after];
     const [hotProject, coldProject] = project === '?' ? ['?1', '?4'] : [project, project];
     const [hotTranscript, coldTranscript] = transcript === '?' ? ['?2', '?5'] : [transcript, transcript];
@@ -178,7 +178,7 @@ export const segmentSource = (project: string, transcript: string, after: string
  * the catalogue refused, a parser defect a deploy answers; `parse` is bytes
  * that cannot be read as the agent's transcript.
  */
-export type ParseFailure = Extract<Classifier, 'parse'> | 'event_refused' | 'blob_absent' | 'record_too_large';
+type ParseFailure = Extract<Classifier, 'parse'> | 'event_refused' | 'blob_absent' | 'record_too_large';
 
 /** The prompt that opens a turn; delayed results retain their own prompt without changing the active turn. */
 function turnOf(event: DerivedEvent): string | null {
@@ -323,7 +323,7 @@ function finalRecord(bytes: Uint8Array, offset: number): {
 }
 
 /** The bytes of one segment from `from` on, by the stored object its registered blob names, or null when nothing registers or stores them. */
-export async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, objectKey: string | null, from: number): Promise<Uint8Array | null> {
+async function segmentBytes(env: Pick<ServerEnv, 'blobs'>, objectKey: string | null, from: number): Promise<Uint8Array | null> {
     if (objectKey === null)
         return null;
     const held = await env.blobs.get(objectKey, from > 0 ? { range: { offset: from } } : undefined);
@@ -352,7 +352,7 @@ export function terminalRule(target: ParseTarget, now: number, limits: PassLimit
     return target.turnEnded ? 'turn_end' : undefined;
 }
 
-export interface PassReport {
+interface PassReport {
     /** Events that landed this pass. */
     derived: number;
     /** Store and blob calls this pass spent, excluding the caller's own selection of it. */
@@ -598,7 +598,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
 export { rereadTranscripts, type RereadSelector } from '../db/documents/rebuild.js';
 
 /** The transcripts that still owe a pass, and the bytes they have left to read; the half an import sent, apart. */
-export type TranscriptBacklog = { state: 'building' } | {
+type TranscriptBacklog = { state: 'building' } | {
   state?: 'ready'; limited?: true; transcripts: number; bytes: number;
   imported: { transcripts: number; bytes: number };
 };
@@ -612,7 +612,7 @@ export async function pendingTranscripts(db: RelationalStore, now=Date.now()): P
 }
 
 /** Transcripts of one Project the current parser stopped on a fault, and when the latest of them stopped. */
-export interface StoppedTranscripts {
+interface StoppedTranscripts {
     projectId: string;
     transcripts: number;
     latestAt: number | null;
@@ -648,7 +648,7 @@ const pages = (count: number): number => Math.ceil(count / KEYS_PER_STATEMENT);
 const CLAIM_ROUNDS = 3;
 
 /** One record's claim on a harness key, as a window's parse made it. */
-export interface KeyClaim {
+interface KeyClaim {
     key: string;
     thread: string;
     record: string;

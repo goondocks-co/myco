@@ -1,7 +1,8 @@
 import type { ServerEnv } from './adapters.js';
-import { searchProject, type SearchOptions, type SearchAnswer } from '../read/search.js';
+import { search_searchProject as searchProject } from '../read/catalog/search.js';
+import { type SearchOptions, type SearchAnswer } from '@goondocks/myco-shared/search-types';
 import type { ReadScope } from '../read/scope.js';
-import type { SemanticSearch } from '../read/embedding.js';
+import type { embedding_SemanticSearch as SemanticSearch } from '../read/catalog/embedding.js';
 
 export async function resolveSemanticSearch(env: ServerEnv): Promise<SemanticSearch | null> {
   if (env.vectors === undefined) return null;

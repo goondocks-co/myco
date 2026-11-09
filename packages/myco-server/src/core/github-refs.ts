@@ -49,7 +49,7 @@ export type GithubRead<T> = { ok: true; value: T } | { ok: false; failure: Githu
 
 export type CompareStatus = 'ahead' | 'identical' | 'behind' | 'diverged';
 
-export interface ListedRef {
+interface ListedRef {
   ref: string;
   sha: string;
 }
@@ -76,7 +76,7 @@ export interface GithubReads {
   lookupsUsed(): number;
 }
 
-export interface GithubReadOptions {
+interface GithubReadOptions {
   repo: string;
   token: string | null;
   maxLookups: number;

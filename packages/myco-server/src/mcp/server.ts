@@ -30,7 +30,8 @@ import { acceptedActions } from '../core/run-postconditions.js';
 import { RunWriteExpired } from '../core/run-write-store.js';
 import { isServedTool, isWriteOp, NO_OP, PROJECT_PIVOT, type AnyTool } from '../core/tool-catalogue.js';
 import { emit } from '../telemetry.js';
-import { normalizeRemote, projectForRemote } from '../core/remotes.js';
+import { projectForRemote } from '../core/remotes.js';
+import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 import { boundProject, isToolFailure, namedProject, principalFields, recordRunToolCall, type ToolContext, type ProtocolContext } from './context.js';
 import { resolveTenancyArgument } from '../api/scope.js';
 import { TOOL_DEFINITIONS, definitionOf, type ToolDefinition } from './definitions.js';
@@ -48,7 +49,7 @@ import { GrantEndedError } from '../auth/write-authority-store.js';
 import { TokenRevokedError } from '../telemetry.js';
 import { authorizeTool, readToolAuthorization } from '../auth/mcp-authorization.js';
 
-export const SERVER_NAME = 'myco';
+const SERVER_NAME = 'myco';
 
 /**
  * What the Deployment tells a client about itself at `initialize`.
@@ -107,7 +108,7 @@ export const GRANT_INSTRUCTIONS = [
 /** The ceiling on what rides every handshake. */
 export const SERVER_INSTRUCTIONS_MAX_BYTES = 2048;
 /** The JSON-RPC error code every tool failure answers with; `data.code` carries the name. */
-export const TOOL_ERROR_CODE = -32000;
+const TOOL_ERROR_CODE = -32000;
 /**
  * The first protocol revision of the SDK's modern era. The Deployment serves the
  * revisions before it, by declaration: the low-level `Server` registers a
@@ -122,7 +123,7 @@ export { FIRST_MODERN_REVISION };
 export const SERVED_PROTOCOL_VERSIONS: readonly string[] = servedMcpVersions(SUPPORTED_PROTOCOL_VERSIONS);
 
 /** Every result answers its JSON. */
-export function serializeResult(_tool: AnyTool, result: unknown): string {
+function serializeResult(_tool: AnyTool, result: unknown): string {
   return JSON.stringify(result);
 }
 
@@ -174,7 +175,7 @@ async function namesBoundProject(ctx: Pick<ToolContext, 'env'>, named: unknown, 
  * answering undefined is the whole of "you may not call this" — a name that is
  * not a tool and a tool off this surface are the same refusal.
  */
-export interface Surface {
+interface Surface {
   principalKind: ToolContext['principal']['kind'];
   memberId: string | null;
   instructions: string;
@@ -191,7 +192,7 @@ export interface Surface {
 const servedOnly = (name: string): ToolDefinition | undefined => definitionOf(name);
 
 /** The surface this principal calls through. */
-export function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
+function surfaceFor(ctx: Pick<ToolContext, 'principal'>): Surface {
   const p = ctx.principal;
   if (p.kind === 'grant') {
     return {

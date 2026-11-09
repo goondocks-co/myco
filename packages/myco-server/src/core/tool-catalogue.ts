@@ -128,7 +128,3 @@ export function isWriteOp(tool: AnyTool, op: string): boolean {
   return (WRITE_OPS[tool] ?? []).includes(op);
 }
 
-/** Whether this Deployment answers this op of this tool. */
-export function isServedOp(tool: ServedTool, op: string): boolean {
-  return UNSERVED_OPS[tool]?.[op] === undefined;
-}

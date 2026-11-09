@@ -1,5 +1,5 @@
 import { contextAdmission, type ContextAdmission } from '../db/context-records.js';
-import { archivedTranscriptRangeSql } from '../core/transcript-ranges.js';
+import { archivedTranscriptRangeSql } from '../db/documents/ranges.js';
 import { DOCUMENT_ID_FIELDS, DOCUMENT_IDENTITIES_SQL } from '../db/document-tables.js';
 import { processedResourceProofSql } from '../core/processed-resources.js';
 
@@ -15,11 +15,9 @@ import { emit, refusal, type Refusal } from '../telemetry.js';
 
 import { PROJECT_ARCHIVED } from './projects.js';
 
-import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
+import { NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
 
 import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
-
-
 
 import { admittedScheme } from './prompt-scheme.js';
 
@@ -28,7 +26,6 @@ import { admittedRecordScheme } from './record-scheme.js';
 import { materialFields, materialMerge, type MaterialAssignment } from './material-mutation.js';
 
 import { presentedDatesAfterEvent, presentedDatesAfterSegment, settleSessionEnd, settleSessionTurn } from '../db/documents/lifecycle.js';
-
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
 export interface WriteContext {
@@ -42,27 +39,23 @@ export interface WriteContext {
   processing?: boolean;
 }
 
-
 /** A SQL fragment with its bound parameters. */
 export interface Fragment {
   sql: string;
   params: unknown[];
 }
 
-
 /** Rows read in the same batch after the writes; the kind decides the response from them. */
 export type ReadRows = Record<string, unknown>[][];
 
-
 /** A continued row a kind writes under a member-minted key, and how its owning machine is read: `row` when the table carries `machine_id` itself, `session` when ownership runs through the row's session. */
-export interface Identity {
+interface Identity {
   table: string;
   index?: string;
   keyColumn: string;
   key: string;
   owner: 'row' | 'session';
 }
-
 
 export interface KindPlan {
   /** The continued rows this kind names beyond its session; each is admitted, read, and refused by the shared checks, in identity order. */
@@ -95,31 +88,27 @@ export interface KindPlan {
   extra?(rows: ReadRows): Record<string, unknown>;
 }
 
-
 /** The raw row this request wrote, named by its nonce; a duplicate or conflict written by another request never matches. */
 export const RAW_ROW_GATE = 'EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)';
 
-export const rawGateParams = (ctx: WriteContext, e: CaptureEnvelope): unknown[] => [
+const rawGateParams = (ctx: WriteContext, e: CaptureEnvelope): unknown[] => [
   ctx.projectId,
   e.eventId,
   ctx.nonce,
 ];
 
+const IDENTITY_MISMATCH: Refusal = refusal('machine identity mismatch', 'identity_mismatch');
 
-export const IDENTITY_MISMATCH: Refusal = refusal('machine identity mismatch', 'identity_mismatch');
-
-export const BLOB_ABSENT = (key: string): Refusal => refusal(`blob not present: ${key}`, 'blob_absent');
+const BLOB_ABSENT = (key: string): Refusal => refusal(`blob not present: ${key}`, 'blob_absent');
 
 const NOT_STORED: Refusal = refusal('not stored');
 
-
 /** One shared precondition: the admission fragment the raw insert carries, the same-batch read that explains a refusal, and the refusal decided from that read's first row. */
-export interface SharedCheck {
+interface SharedCheck {
   admission: Fragment;
   read: Fragment;
   refusal(row: Record<string, unknown> | undefined): Refusal | null;
 }
-
 
 /** A continued row may only be written, referenced, or continued by the machine that owns it — the row's own `machine_id`, or its session's; an absent row passes, so a first write and a reference to a not-yet-stored row are always admitted. The admission, the read, and the refusal are three views of this one predicate. */
 const owned = (ctx: WriteContext, { table, index, keyColumn, key, owner }: Identity): SharedCheck => {
@@ -143,7 +132,6 @@ const owned = (ctx: WriteContext, { table, index, keyColumn, key, owner }: Ident
   };
 };
 
-
 /** A member may reference only uploaded bytes they possess; server processing uses its recorded input. */
 const present = (ctx: WriteContext, key: string, retainedPlan?: string): SharedCheck => {
   const upload = rawMemberResourceSql('?', 'blob', '?', '(SELECT member_id FROM member_credentials WHERE id = ?)');
@@ -163,7 +151,6 @@ const present = (ctx: WriteContext, key: string, retainedPlan?: string): SharedC
   };
 };
 
-
 const opt = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
 
 /** The instant an ordering is decided by: the payload's, or the envelope's caller time when the field is absent. The field must carry the catalogue's `time` bound, so an ordering can never be decided by a value the envelope's clock rule does not reach. */
@@ -172,7 +159,6 @@ const orderingTime = (spec: KindSpec, p: Payload, field: string, fallback: numbe
   if (bound?.type !== 'time') throw new Error(`ordering field ${spec.name}.${field} must carry the time bound`);
   return (opt(p[field]) as number | null) ?? fallback;
 };
-
 
 interface Inputs {
   db: RelationalStore;
@@ -185,7 +171,6 @@ interface Inputs {
   envelopeHash?: string;
 }
 
-
 /** A capture lands only in a live Project: an archived one refuses every event, whatever route carried it. The admission fragment sits on the raw insert; the read tells an archived Project from an absent row. */
 export const projectLive = (ctx: WriteContext): SharedCheck => ({
   admission: {
@@ -197,9 +182,8 @@ export const projectLive = (ctx: WriteContext): SharedCheck => ({
     row !== undefined && row.archived_at !== null ? refusal(PROJECT_ARCHIVED, 'project_archived') : null,
 });
 
-
 /** A deleted session takes no further writes. The check is here rather than in a handler so it covers EVERY kind by construction: capture continues on a machine after a person deletes the session, and a sweep that only removed rows would be repopulated behind itself. */
-export const SESSION_TOMBSTONED: Refusal = refusal('session is deleted', 'session_tombstoned');
+const SESSION_TOMBSTONED: Refusal = refusal('session is deleted', 'session_tombstoned');
 
 const notTombstoned = (ctx: WriteContext, sessionId: string): SharedCheck => ({
   admission: { sql: NOT_TOMBSTONED_PARAMS, params: [ctx.projectId, sessionId] },
@@ -209,7 +193,6 @@ const notTombstoned = (ctx: WriteContext, sessionId: string): SharedCheck => ({
   },
   refusal: (row) => (row === undefined ? null : SESSION_TOMBSTONED),
 });
-
 
 /**
  * A Deployment with import switched off takes no import-channel write.
@@ -228,7 +211,6 @@ const importEnabled = (): SharedCheck => ({
   ...importEnabledChecks(),
   refusal: (row) => (row === undefined ? null : IMPORT_DISABLED),
 });
-
 
 /** The checks every kind shares, derived from the catalogue and the kind's declared identities in the one order they are admitted, read, and refused: the session carries no tombstone, then the session's machine, then every continued row the kind names, then every referenced blob present, then every referenced prompt absent or owned by this machine. */
 export function sharedChecks(
@@ -255,7 +237,6 @@ export function sharedChecks(
   ];
 }
 
-
 /**
  * What a record naming a session, written outside an event, is admitted by: the same tombstone and session-ownership
  * checks every event is admitted by. `admission` sits on the write itself, so a session deleted or claimed while the
@@ -266,7 +247,6 @@ export interface SessionWriteAdmission {
   admission: ContextAdmission;
   refusal(db: RelationalStore): Promise<Refusal | null>;
 }
-
 
 export function sessionWriteAdmission(
   ctx: Pick<WriteContext, 'projectId' | 'machineId'>,
@@ -293,7 +273,6 @@ export function sessionWriteAdmission(
   };
 }
 
-
 const rawOnly = (): KindPlan => ({
   identities: [],
   admission: [],
@@ -302,10 +281,8 @@ const rawOnly = (): KindPlan => ({
   refusal: () => NOT_STORED,
 });
 
-
 /** The longest name a project takes from a path; the rename route's grammar. */
-export const MAX_PROJECT_NAME_CHARS = 200;
-
+const MAX_PROJECT_NAME_CHARS = 200;
 
 /** The last segment of a path, split on either separator; null when the path names nothing a person would call a project (`''`, `.`, `..`, the home shorthand `~`, or a segment longer than a name may be). */
 export function basenameOf(path: unknown): string | null {
@@ -317,7 +294,6 @@ export function basenameOf(path: unknown): string | null {
   const last = segments.length === 0 ? '' : segments[segments.length - 1];
   return acceptableProjectName(last);
 }
-
 
 /** A single display-name segment within the rename route's length bound. */
 export function acceptableProjectName(value: unknown): string | null {
@@ -333,12 +309,10 @@ export function acceptableProjectName(value: unknown): string | null {
     : name;
 }
 
-
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
 /** A session end row's observation error when the member could not read whether tracked files differed from the commit. */
 export const GIT_STATUS_UNREADABLE = 'status_unreadable';
-
 
 /**
  * The commit a session stood on, as the git provenance release reconciliation
@@ -391,7 +365,6 @@ const sessionCommit = (
       ),
   ];
 };
-
 
 /** Session facts come from the earliest `session.start` in the total order (client time, then the smaller event id), so any delivery order converges — ties included: an event that ranks earlier than the one whose facts are held replaces every fact, an absent one included; a later one changes nothing. `started_at` is the minimum and `ended_at` the maximum of the events that carry them; identity columns (`machine_id`, `created_by_token_id`, `first_received_at`) stay with the first writer. A Project still named by its own id takes the repository name of the first start that carries one, falling back to its origin path's basename; a renamed or onboarded Project keeps its name. */
 const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
@@ -457,7 +430,6 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   };
 };
 
-
 /**
  * A session's lifecycle is decided from its keyed facts (`db/documents/lifecycle.ts`), which every lifecycle event
  * maintains in its own commit, so no decision reads the session's history. An end, on any channel, applies when it is the
@@ -493,11 +465,9 @@ const importedTitle = (db: RelationalStore, ctx: WriteContext, e: CaptureEnvelop
           ),
       ];
 
-
 /** An import end that names no instant and carries a title: it stores the title and nothing of the session's lifecycle. */
 const titleOnly = (e: CaptureEnvelope, p: Payload): boolean =>
   e.channel === 'import' && p.endedAt === undefined && typeof p.title === 'string';
-
 
 const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
   if (titleOnly(e, p)) {
@@ -524,7 +494,6 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
     refusal: () => NOT_STORED,
   };
 };
-
 
 const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   const planKey = p.planKey as string;
@@ -650,7 +619,6 @@ const plan = ({ db, ctx, e, p, contentHash }: Inputs): KindPlan => {
   };
 };
 
-
 const attachment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   const blob = p.blob as string;
   const incoming = {
@@ -701,7 +669,6 @@ const attachment = ({ db, ctx, e, p }: Inputs): KindPlan => {
     conflict: () => 'attachment id already stored',
   };
 };
-
 
 const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   const transcriptId = p.transcriptId as string;
@@ -855,7 +822,6 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
   };
 };
 
-
 const documentOnly = (input: Inputs): KindPlan => {
   const { db, ctx, e, p } = input;
   return {
@@ -878,7 +844,6 @@ const PLANNERS: Record<KindSpec['projection'], (input: Inputs) => KindPlan> = {
   attachments: attachment,
   transcript_segments: transcriptSegment,
 };
-
 
 /** The projection plan for one validated event. */
 export function planKind(spec: KindSpec, input: Omit<Inputs, 'spec'>): KindPlan {

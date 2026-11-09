@@ -28,9 +28,9 @@ import { grantPage } from '../db/identity/access-pages.js';
 import { emit } from '../telemetry.js';
 
 /** The bearer's prefix: a log line names the class, and the member-token pattern never matches it. */
-export const GRANT_KEY_PREFIX = 'mycoext_';
-export const GRANT_KEY_BYTES = 32;
-export const GRANT_ID_PREFIX = 'eg_';
+const GRANT_KEY_PREFIX = 'mycoext_';
+const GRANT_KEY_BYTES = 32;
+const GRANT_ID_PREFIX = 'eg_';
 const GRANT_ID_BYTES = 12;
 export const GRANT_KEY_PATTERN = new RegExp(`^${GRANT_KEY_PREFIX}[A-Za-z0-9_-]{${Math.ceil((GRANT_KEY_BYTES * 4) / 3)}}$`);
 /** A label a person reads: printable, bounded. */
@@ -65,7 +65,7 @@ export interface GrantRow {
   rotatedTo: string | null;
 }
 
-export interface IssuedGrant {
+interface IssuedGrant {
   key: string;
   id: string;
   expiresAt: number;
@@ -76,7 +76,7 @@ export interface IssuedGrant {
  * the record is. Not a `Classifier`: the answer is 401 with no wire code, and
  * nothing a member reads carries this value.
  */
-export type GrantRefusal = 'revoked' | 'expired';
+type GrantRefusal = 'revoked' | 'expired';
 
 const freshKey = (): string => `${GRANT_KEY_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(GRANT_KEY_BYTES)))}`;
 const freshId = (): string => `${GRANT_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(GRANT_ID_BYTES)))}`;

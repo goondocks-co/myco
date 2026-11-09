@@ -20,7 +20,8 @@ import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { DeploymentContext } from '../context.js';
-import { claimNextRun, endLeasedRun, renewLease, type OfferedHarness } from '../core/harness.js';
+import { claimNextRun, endLeasedRun, renewLease } from '../core/harness.js';
+import { type OfferedHarness } from '../core/worker-selection.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';

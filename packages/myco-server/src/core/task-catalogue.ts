@@ -34,12 +34,8 @@ export const TITLING_TASK = 'title-summary';
 /** The task that learns durable knowledge from session material. */
 export const EXTRACTION_TASK = 'extract-curate';
 export const CURATION_TASK = 'curate-spores';
-export { CARD_TASK };
 /** The task that seeds a Project from a checkout of its code and git history. */
 export const SEEDING_TASK = 'vault-seed';
-
-/** The task that keeps a Project's repository map from a checkout of its code. */
-export { MAP_TASK };
 
 /** The worker run outcomes: every worker-served task with a prompt of its own. */
 export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK, CURATION_TASK];

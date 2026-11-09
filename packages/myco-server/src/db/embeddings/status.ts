@@ -4,7 +4,7 @@ import { hasSourcesToEmbed } from './work.js';
 import { SOURCE_STATES, type SourceState } from './state.js';
 
 /** Built and total current sources under a model, with whether those totals are complete as of `asOf`. */
-export interface ModelTotals {
+interface ModelTotals {
   state: 'ready' | 'building';
   /** Sources holding an indexed vector under the model. */
   ready: number;

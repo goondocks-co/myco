@@ -82,7 +82,7 @@ export function clampLimit(limit: number | undefined): number {
 }
 
 /** How a keyset page is ordered: the column no later write moves, the tie-breaking id, and the direction. */
-export interface KeysetSpec {
+interface KeysetSpec {
   order: string;
   id: string;
   direction: 'ASC' | 'DESC';
@@ -103,7 +103,7 @@ export function keyset(opts: { limit?: number; cursor?: string }, spec: KeysetSp
 }
 
 /** The most ids one statement names in an `IN (…)` list. The hosted store admits 100 bound parameters per statement; the scope's own binding takes one, and a margin keeps a statement that binds a few more still under the ceiling. */
-export const MAX_IN_LIST = 90;
+const MAX_IN_LIST = 90;
 
 /**
  * The most Projects a read across Projects may name. Its statements bind the list beside their own filters, a keyset

@@ -1,11 +1,26 @@
-import { queuedPriority } from '../db/runs/pull-policy.js';
+import { queuedPriority, queuedAdmissible } from '../db/runs/pull-policy.js';
 import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
-import { automaticFits, budgetHold } from './run-budget.js';
+import { automaticFits, budgetHold } from '../db/runs/budget-policy.js';
 import { reserveForStage, BUDGET_WORKER_TASKS } from './budget-policy.js';
-import { pulledStages, PULL_RESELECTIONS, queuedAdmissible, selectPulled, switchedOnStages, type PulledStage, type ServedQueue } from './pulled-stages.js';
-import { queueHeads, unclaimedQueued } from './queue-heads.js';
+import {
+  pulledStages,
+  PULL_RESELECTIONS,
+  selectPulled,
+  switchedOnStages,
+  type PulledStage,
+  type ServedQueue,
+} from './pulled-stages.js';
+import {
+  queueHeads,
+  unclaimedQueued,
+  nextClaimable,
+  recordQueueHolder,
+  recordTaskHolder,
+  failQueuedRun,
+  listQueuedAcrossProjects,
+} from '../db/runs/queue.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
 import { NOTHING_DUE } from './learning-sessions.js';
@@ -36,31 +51,38 @@ import { repositoryIdentity } from './repositories.js';
  * Deterministic embedding work uses the configured embedding provider.
  * Credentials travel only in the runtime environment, never in telemetry or answers.
  */
-import { DEPLOYMENT_WIDE_HOLDS, heldBy, readDispatchLimits, LIMIT_LEAVES, type DispatchLimits, type HeldBy } from './limits.js';
+import {
+  DEPLOYMENT_WIDE_HOLDS,
+  heldBy,
+  readDispatchLimits,
+  LIMIT_LEAVES,
+  type DispatchLimits,
+} from './limits.js';
+import {
+  type HeldBy,
+  CAPABILITY_HOLDS,
+  credentialUnavailable,
+  type CapabilityHold,
+} from '@goondocks/myco-shared/run-holds';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember, ensureMemberWrite as ensureMemberStatement } from '../auth/enrollment.js';
 import { mintWrite, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
 import { type ProjectCapability, projectWorkEnabled, observedSettingsGuard } from './settings.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
-export { HARNESS_MEMBER_ID };
 import { pruneUncaptured } from '../ingest/uncaptured.js';
 import { runnerContactStatement, workerContactStatement, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
 import { catalogResolution, pruneModelCatalogs, type CatalogOwner } from './model-catalogs.js';
 import { workerKey, type WorkerPrincipal } from './worker-lease.js';
 import { runnerAcceptsWork } from '../auth/runners.js';
-import { CAPABILITY_HOLDS, credentialUnavailable, type CapabilityHold } from '@goondocks/myco-shared/run-holds';
 import { emit } from '../telemetry.js';
 import { UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
 import { claimQueuedRun, claimPulledRun } from './worker-claim.js';
 import { deploymentTaskEntriesSince } from '../db/runs/claim.js';
 import { lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
-import { nextClaimable, recordQueueHolder, recordTaskHolder } from '../db/runs/queue.js';
-export type { ActorCeiling } from './runs.js';
 import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, getRun, type RunRow } from '../db/runs/lifecycle.js';
 import { ensureAgent } from '../db/runs/state.js';
 import { getDispatchActor, recordDispatch, hasSuccessorOf, launchQueued, recordQueued, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS } from '../db/runs/claim.js';
 import { dispatchLoad } from '../db/runs/live.js';
-import { failQueuedRun, listQueuedAcrossProjects } from '../db/runs/queue.js';
 import { INPUT_UNCHANGED } from '../db/schedule-entry.js';
 import { openHarnessCredential } from './provider-credentials.js';
 import { embeddingWorkPlan } from './embedding/switch.js';
@@ -68,26 +90,28 @@ import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { ExecutionProfile, ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { taskTierRefusal } from './execution-profile.js';
 import {
-  capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, fleetSelection, harnessPreference, RUNTIME_SERVED_TASKS, availableLogin, selectExecution, workerPreference,
-  type FleetReport, type LoginStep, type OfferedHarness,
+  capabilityOf,
+  capabilityOn,
+  CLAIM_SETTING_LEAVES,
+  claimSettings,
+  fleetSelection,
+  RUNTIME_SERVED_TASKS,
+  availableLogin,
+  selectExecution,
+  type FleetReport,
+  type LoginStep,
+  type OfferedHarness,
 } from './worker-selection.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from './run-deadline.js';
 
-export {
-  capabilityOf, capabilityOn, CLAIM_SETTING_LEAVES, chooseHarness, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS, workerPreference,
-  type FleetReport, type OfferedHarness,
-};
 import { PULLED_ONLY_TASKS, admissionForTask, OUTCOME_TASKS, runTimeoutForTask, UNLANDED_TASKS, EXTRACTION_TASK } from './task-catalogue.js';
 import { buildTaskInput, inputBuilderFor, instructionFor, instructionsFileFor, uninstructedError } from './task-inputs.js';
 
 /** The agent identity a dispatched runtime claims under when its task names none. */
 export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
-export { RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';
-export { MAX_RUN_ERROR_CHARS } from '../constants.js';
-/** What a run whose runtime would not start carries, before the refusal's own word. */
-export { LAUNCH_REFUSED_ERROR } from './reader-codes.js';
 /** The admission a capture-driven task carries into its runtime, in place of a capability name. */
-export const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
+const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
 
 /** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
 export const REPLACED_REQUEUES_PER_DAY = 2;
@@ -169,14 +193,14 @@ export interface LaunchSpec {
 }
 
 /** What a caller asks of one dispatch beyond the task and its parameters. */
-export interface DispatchOptions {
+interface DispatchOptions {
   /** The run does its work and writes nothing; its write routes answer `written: false`. */
   dryRun?: boolean;
   /** The run writes its artifact from the material alone rather than carrying the current one forward. */
   fresh?: boolean;
 }
 
-export interface Launched {
+interface Launched {
   runId: string;
   task: string;
   projectId: string;
@@ -185,7 +209,7 @@ export interface Launched {
 }
 
 /** A dispatch the Deployment holds back: the run row waits in the queue under the limit that holds it. */
-export interface Queued {
+interface Queued {
   runId: string;
   task: string;
   projectId: string;
@@ -264,15 +288,15 @@ export class AlreadyRunning extends Error {
 }
 
 /** A queued row the drain found no longer queued: another drain launched it, or it failed. */
-export class NotQueued extends Error {
+class NotQueued extends Error {
   constructor() { super('the run is not queued'); this.name = 'NotQueued'; }
 }
 
 /** A runtime refusal to accept work during drain or loss of its execution channel. */
-export type RuntimeUnavailable = 'draining' | 'unreachable';
+type RuntimeUnavailable = 'draining' | 'unreachable';
 
 /** A launch refusal recorded as the run's terminal state. */
-export class LaunchRefused extends Error {
+class LaunchRefused extends Error {
   constructor(message: string, options: { cause: unknown }) { super(message, options); this.name = 'LaunchRefused'; }
 }
 
@@ -309,7 +333,7 @@ export class RuntimeDraining extends Error {
  * Reads the limits and the load fresh on every ask, so a limit changed in
  * Settings applies to the next dispatch and the next drain alike.
  */
-export async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits, exclude?: string): Promise<HeldBy | null> {
+async function admitDispatch(env: ServerEnv, task: string, now: number, limits?: DispatchLimits, exclude?: string): Promise<HeldBy | null> {
   const [read, load] = await Promise.all([
     limits === undefined ? readDispatchLimits(env) : Promise.resolve(limits),
     // A row already in the table is admitted against the others; a fresh
@@ -505,7 +529,6 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
   }
   return launched;
 }
-
 
 const record = (value: unknown): Record<string, unknown> => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {});
 
@@ -720,7 +743,7 @@ export async function dispatchTask(env: ServerEnv, task: string, projectId: stri
 }
 
 /** The run the platform replaced, with everything a fresh dispatch of it needs that the row does not carry. */
-export interface ReplacedRun {
+interface ReplacedRun {
   run: RunRow;
   projectId: string;
   /** The origin the successor's runtime calls back to — the failing run's own request origin. */
@@ -729,7 +752,7 @@ export interface ReplacedRun {
 }
 
 /** What became of the ask to run a replaced run again. */
-export type RequeueOutcome =
+type RequeueOutcome =
   | { requeued: true; runId: string; queued: boolean }
   | { requeued: false; reason: 'no_task' | 'already_requeued' | 'daily_cap' | 'unchanged' | 'refused' };
 
@@ -830,7 +853,7 @@ export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now
 // ---------------------------------------------------------------------------
 
 /** What a claim answers a worker: the run, the harness chosen for it, the credentials it runs under, and what the worker lays out in the run's directory. */
-export interface ClaimedRun extends ClaimedRunRow {
+interface ClaimedRun extends ClaimedRunRow {
   repository?: RepositoryCheckoutSpec;
   harness: string;
   profile: ExecutionProfile;
@@ -843,7 +866,7 @@ export interface ClaimedRun extends ClaimedRunRow {
   instructions: string | null;
 }
 
-export type ClaimOutcome =
+type ClaimOutcome =
   | { claimed: true; run: ClaimedRun }
   | { claimed: false; reason: 'no_work' | 'no_harness' | 'lost_race' | 'at_limit' | 'paused' };
 

@@ -53,7 +53,7 @@ export interface ScanProgress {
   scanBytes: string;
 }
 
-export interface ProducerOperation {
+interface ProducerOperation {
   name: 'source read' | 'multipart create' | `upload part ${number}` | 'multipart complete' | 'reconcile' | 'inventory' | 'copy' | 'manifest';
   startedAt: number;
 }
@@ -310,7 +310,7 @@ export interface ProducerLimits {
 export const PRODUCER_STALL_MS = 30 * 60_000;
 
 /** How long each clean-up step of a failed attempt may take: aborting its upload, clearing its signed download. */
-export const FAILURE_CLEANUP_MS = 30_000;
+const FAILURE_CLEANUP_MS = 30_000;
 
 export const PRODUCER_LIMITS: ProducerLimits = {
   // An export ends by completing, or by the provider cancelling it once nothing polls it, and either happens well
@@ -499,7 +499,7 @@ async function restartExport(
 }
 
 /** How often an attempt waiting out an unsettled export looks again, so its checkpoint commits well inside the stall fence. */
-export const UNSETTLED_RECHECK_MS = 60_000;
+const UNSETTLED_RECHECK_MS = 60_000;
 
 /**
  * How long after the request of an unsettled export an attempt may wait on it: the time a polled export may run, and
@@ -931,7 +931,7 @@ function tableColumnsOf(captured: TableDefinitions): Record<string, readonly str
 }
 
 /** The fields a staging manifest carries from admission, which completion keeps rather than writes again. */
-export interface AdmittedManifest {
+interface AdmittedManifest {
   source: { target: string; locator: string };
   startedAt: string;
   schema: { sha256: string; bytes: number };
@@ -943,7 +943,7 @@ export interface AdmittedManifest {
  * The manifest a completed staging carries: what admission published, the fingerprint of the export every recorded
  * part is held to, and every object the export's own rows name with the digest its staged copy answered.
  */
-export function completeStagingManifest(input: {
+function completeStagingManifest(input: {
   admitted: AdmittedManifest;
   completedAt: number;
   database: { sha256: string; bytes: number };
@@ -1135,7 +1135,7 @@ function splitCharacters(bytes: Uint8Array): { text: string; tail: Uint8Array } 
  * with: a `CREATE TABLE` inside a row value stays inside that value, and a definition split across parts is read
  * once it is whole.
  */
-export function readDefinitions(
+function readDefinitions(
   attempt: AttemptState, bytes: Uint8Array, last: boolean,
 ): ScanProgress {
   const held = fromHex(attempt.scanBytes);
@@ -1208,7 +1208,7 @@ async function reconcileStored(
 }
 
 /** What one attempt's staging is opened from: where it goes, what produced it, and the schema it captured. */
-export interface AttemptPublication {
+interface AttemptPublication {
   prefix: string;
   target: string;
   locator: string;
@@ -1258,7 +1258,7 @@ export function openStagingManifest(input: {
  * What a producer produces. The hosted producer stages a capture in its object store; a native Deployment's
  * producer writes the verified artifact directly.
  */
-export type RecoveryForm = 'staging' | 'artifact';
+type RecoveryForm = 'staging' | 'artifact';
 
 /** What an owner may see of an attempt: its progress, never a credential and never a claim of recoverability. */
 export interface RecoveryProducerStatus {

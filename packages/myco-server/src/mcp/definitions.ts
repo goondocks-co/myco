@@ -24,7 +24,7 @@ import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
  * is refused: a member credential reaches every Project of the Deployment, so an
  * unnamed write would land wherever the transport happened to point.
  */
-export const PROJECT_DESCRIPTION = "The Project this call reads or writes: a project id, or the repository's git remote. Optional on a read, which falls back to this request's own Project; required on a write. An unknown Project answers not found.";
+const PROJECT_DESCRIPTION = "The Project this call reads or writes: a project id, or the repository's git remote. Optional on a read, which falls back to this request's own Project; required on a write. An unknown Project answers not found.";
 
 export interface JsonSchemaProperty {
   minLength?: number;
@@ -42,14 +42,14 @@ export interface JsonSchemaProperty {
   description?: string;
 }
 
-export interface ToolInputSchema {
+interface ToolInputSchema {
   examples?: Record<string,unknown>[];
   type: 'object';
   properties: Record<string, JsonSchemaProperty>;
   required?: string[];
 }
 
-export interface ToolAnnotations {
+interface ToolAnnotations {
   readOnlyHint: boolean;
   destructiveHint: boolean;
   idempotentHint: boolean;
@@ -70,7 +70,7 @@ export interface ToolDefinition {
 }
 
 /** A definition of one of the catalogued tools; the run-only surface declares its own beside these. */
-export type ServedToolDefinition = ToolDefinition & { name: ServedTool };
+type ServedToolDefinition = ToolDefinition & { name: ServedTool };
 
 /**
  * A retired spore-list text filter's refusal: the same text as a spore search through the one list-to-search translation,

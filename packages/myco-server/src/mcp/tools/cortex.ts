@@ -13,7 +13,7 @@
  * served; nothing here answers them.
  */
 import { readCanopyMap } from '../../read/canopy.js';
-import { listProjects } from '../../read/sessions.js';
+import { sessions_listProjects as listProjects } from '../../read/catalog/sessions.js';
 import { instructionsTemplate } from '../../core/settings.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
@@ -23,7 +23,7 @@ const ACTIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** The answer when a Deployment holds no template; an empty answer would read as a failure to retrieve one. */
 export const NO_INSTRUCTIONS_MESSAGE = 'This Deployment has no session-start instructions. An owner writes them under Settings.';
 
-export interface InstructionsResult {
+interface InstructionsResult {
   content: string;
   project_id: string;
   configured: boolean;
@@ -43,7 +43,7 @@ export async function handleCortexInstructions(input: ToolInput, ctx: ToolContex
 /** The answer when the Project holds no map yet. */
 export const NO_MAP_MESSAGE = 'No repository map yet. A map run writes one once the Project connects its repository.';
 
-export interface CanopyMapResult {
+interface CanopyMapResult {
   content: string;
   project_id: string;
   generated_at?: number;

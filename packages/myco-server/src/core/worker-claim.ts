@@ -31,7 +31,7 @@ export const claimPulledRun = (env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, 
   claimWorkerRun(env, { kind: 'pulled', pull }, { ...claim, input: pull.input });
 
 /** Admission, named stage assertions, credentials, heads and lease companions settle in one atomic batch. */
-export async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, form: ClaimForm, claim: WorkerClaim): Promise<ClaimResult> {
+async function claimWorkerRun(env: Pick<ServerEnv,'db'|'fleet'|'wrappingKey'>, form: ClaimForm, claim: WorkerClaim): Promise<ClaimResult> {
   const {db}=env;
   if (!isExecutionProfile(claim.profile)) throw new Error('a worker claim requires a resolved execution profile');
   const candidate: ClaimCandidate = form.kind === 'queued' ? form.candidate

@@ -1,4 +1,3 @@
-export { observedRevisionPredicate } from '../db/settings/leaves.js';
 import { observedSettingsAssertion } from '../db/meta/settings-observation.js';
 import type { Bound } from '../db/index.js';
 import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';
@@ -17,8 +16,8 @@ import {
   EMBEDDING_SELECTION_LEAVES, embeddingEndpointRefusal, heldPartition, resolveEmbedding, selectionChangeRefusal,
   type EmbeddingSelection, type EmbeddingSelectionLeaf, type StoredEmbedding,
 } from './embedding/policy.js';
-import { SWITCH_STANDS_SQL, readSwitch } from './embedding/switch-store.js';
-import { heldModels } from '../db/embeddings/switch.js';
+import { readSwitch } from './embedding/switch-store.js';
+import { SWITCH_STANDS_SQL, heldModels } from '../db/embeddings/switch.js';
 
 /**
  * Deployment Settings: one operation every write goes through.
@@ -277,7 +276,7 @@ function preserveRetiredTaskOverrides(value: unknown, previous: unknown): unknow
  * The schedule counts a task override carries, each a whole number of 0 or more when given: the clock's own daily
  * ceiling and a member's daily allowance for starts by hand.
  */
-export const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
+const SCHEDULE_COUNT_FIELDS = ['maxRunsPerDay', 'memberRunsPerDay'] as const;
 
 /** What a changed per-task override violates; unchanged stored fields remain available for a separate repair. */
 function taskOverridesViolation(value: unknown, previous?: unknown): string | null {
@@ -481,15 +480,15 @@ export type SettingsResult = { applied: true } | { applied: false; refusal: Sett
  * the signed-in member, never a second secret — plugs in here, one place rather
  * than a new branch at each caller.
  */
-export type SettingsAuthorizer = (change: { leaf: string; value?: unknown; actor: string }) => Promise<boolean>;
+type SettingsAuthorizer = (change: { leaf: string; value?: unknown; actor: string }) => Promise<boolean>;
 
 /** Re-arms whatever the change may have moved. Supplied by the caller so this module never decides what runs. */
-export type ScheduleRearm = (change: { leaf: string }) => Promise<void>;
+type ScheduleRearm = (change: { leaf: string }) => Promise<void>;
 
 /** The embedding selection one write sets: a provider, and its model and endpoint, each left at its default when absent. */
 export interface EmbeddingChoice { provider: unknown; model?: unknown; endpoint?: unknown }
 
-export interface SettingsWriter {
+interface SettingsWriter {
   setProjectLeaf(projectId: string, leaf: string, value: unknown, actor: string, nowMs: number, expectedRevision?: number): Promise<SettingsResult>;
   /** Set one Deployment leaf. */
   setLeaf(leaf: string, value: unknown, actor: string, nowMs: number, expectedRevision?: number): Promise<SettingsResult>;
@@ -578,7 +577,7 @@ export async function observedSettingsGuard(db:RelationalStore,leaves:readonly s
 }
 
 /** One stored leaf as a policy that judges its own stored values reads it: the value, and what its rule says of it. */
-export interface StoredSetting { value: unknown; violation: string | null }
+interface StoredSetting { value: unknown; violation: string | null }
 
 /**
  * Each named leaf's stored value with its rule's verdict, for a policy that does not fall back to the default when the
@@ -596,7 +595,7 @@ export async function storedSettings(db: RelationalStore, leaves: readonly strin
 }
 
 /** The stored value of each named leaf, as the JSON text the settings surface wrote; a leaf never written is absent from the map. */
-export async function leafValues(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, string>> {
+async function leafValues(db: RelationalStore, leaves: readonly string[]): Promise<Map<string, string>> {
   if (leaves.length === 0) return new Map();
   const snapshot = SNAPSHOTS.get(db);
   if (snapshot !== undefined) return new Map(leaves.flatMap((leaf) => { const row = snapshot.get(leaf); return row === undefined ? [] : [[leaf, row.value] as const]; }));
@@ -615,7 +614,7 @@ export async function leafValues(db: RelationalStore, leaves: readonly string[])
 const SELF_JUDGED: ReadonlySet<string> = new Set(['task-overrides', 'profile-model', 'profile-effort', 'credential-source', 'embedding']);
 
 /** Why a stored leaf's text is unusable, or null when it holds its rule. */
-export function storedLeafViolation(leaf: string, text: string): string | null {
+function storedLeafViolation(leaf: string, text: string): string | null {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec === undefined) return 'not a Deployment leaf';
   let value: unknown;
@@ -694,7 +693,7 @@ function judgeEmbeddingCandidate(candidate: StoredEmbedding, changes: StoredEmbe
 }
 
 /** The leaves a whole embedding choice writes: a provider, and its model and endpoint, each absent where the choice leaves it at its default. */
-export const embeddingChoiceLeaves = (choice: EmbeddingChoice): StoredEmbedding =>
+const embeddingChoiceLeaves = (choice: EmbeddingChoice): StoredEmbedding =>
   ({ 'embedding.provider': choice.provider, 'embedding.model': choice.model, 'embedding.base_url': choice.endpoint });
 
 /**
@@ -1043,7 +1042,7 @@ export function settingsWriter(
 }
 
 /** An absent task preference enables learning; invalid stored preferences retain its source. */
-export function taskEnabledSql(task: typeof EXTRACTION_TASK): string {
+function taskEnabledSql(task: typeof EXTRACTION_TASK): string {
   return `NOT EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.tasks'
     AND CASE WHEN json_valid(value) THEN json_type(value, '$."${task}".enabled') = 'false' ELSE 0 END)`;
 }
@@ -1059,7 +1058,6 @@ export function learningEnabledSql(history = false): string {
 export const effectiveBudgetSql = (): string => `COALESCE((SELECT CASE WHEN json_valid(value) THEN
   CASE WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$')>=${BUDGET_MINIMUM_USD} AND json_extract(value,'$')<=${Number.MAX_VALUE}
   THEN json_extract(value,'$') END END FROM deployment_settings WHERE leaf='${BUDGET_LEAF}'),${BUDGET_DEFAULT_USD})`;
-
 
 export async function dailyBudget(db: RelationalStore): Promise<number> {
   const text=(await settingTexts(db,[BUDGET_LEAF])).get(BUDGET_LEAF);
@@ -1097,9 +1095,8 @@ export function curationAnyEnabledSql(): string {
 }
 
 export const CURATION_DAILY_LIMIT_LEAF = CURATION_DAILY_LIMIT_SETTING.leaf;
-export const CURATION_DAILY_LIMIT_DEFAULT = CURATION_DAILY_LIMIT_SETTING.rule.default;
 export const CURATION_DAILY_LIMIT_MAX = CURATION_DAILY_LIMIT_SETTING.rule.max;
-export const PROJECT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
+const PROJECT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   [CURATION_DAILY_LIMIT_LEAF]: CURATION_DAILY_LIMIT_SETTING.rule,
 };
 export const PROJECT_LEAVES = Object.keys(PROJECT_LEAF_SPECS);

@@ -6,7 +6,7 @@ import { jsonKeys } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
 
 const columns=['session_id','agent','prompt_identity_scheme','record_identity_scheme','role','read_before'];
-export function reconcilePublicationPins(keys:string):string[] {
+function reconcilePublicationPins(keys:string):string[] {
   const source=`SELECT t.project_id,t.transcript_id,t.session_id,COALESCE(t.agent,'') agent,
     COALESCE(t.prompt_identity_scheme,'') prompt_identity_scheme,t.record_identity_scheme,COALESCE(t.role,'') role,
     (t.prompt_identity_scheme IS NULL AND (t.parser_version>0 OR t.parsed_at IS NOT NULL OR t.parsed_offset>0)) read_before

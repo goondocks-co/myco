@@ -16,13 +16,13 @@ export interface VectorMetadata {
   release_state: string;
   release_confidence: string;
 }
-export const VECTOR_FILTER_KEYS = ['type', 'status', 'session_id', 'created_at', 'observation_type', 'release_state', 'release_confidence'] as const;
-export type VectorFilterKey = typeof VECTOR_FILTER_KEYS[number];
+const VECTOR_FILTER_KEYS = ['type', 'status', 'session_id', 'created_at', 'observation_type', 'release_state', 'release_confidence'] as const;
+type VectorFilterKey = typeof VECTOR_FILTER_KEYS[number];
 export type VectorFilters = Partial<Record<VectorFilterKey, string | { gte?: number; lte?: number }>>;
 export interface StoredVector { id: string; values: number[]; metadata: VectorMetadata }
 export interface VectorHit { id: string; score: number }
-export interface VectorReference { id: string; type: VectorType; recordId: string; revision: string }
-export interface VectorQuery { values: number[]; topK: number; minScore?: number; filters?: VectorFilters }
+interface VectorReference { id: string; type: VectorType; recordId: string; revision: string }
+interface VectorQuery { values: number[]; topK: number; minScore?: number; filters?: VectorFilters }
 
 /** Every operation is bound to one project and one embedding model identity. */
 export interface VectorStore {

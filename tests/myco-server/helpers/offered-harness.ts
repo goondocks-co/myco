@@ -1,5 +1,5 @@
 import { harnessById } from '@myco/runner/harnesses.js';
-import type { OfferedHarness } from '@myco-server-worker/core/harness.js';
+import type { OfferedHarness } from '@myco-server-worker/core/worker-selection.js';
 
 export function offeredHarness(id: string): OfferedHarness {
   const harness = harnessById(id);

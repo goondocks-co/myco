@@ -3,16 +3,19 @@ import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './helpers/vector-index.js';
-import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
+import { prepareEmbeddingDue, retiringReceipt } from '@myco-server-worker/db/embeddings/work.js';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { machineActivity } from '@myco-server-worker/read/machines.js';
-import { pageProjectPlans } from '@myco-server-worker/read/plans.js';
-import { listPlans } from '@myco-server-worker/read/children.js';
-import { listSessions } from '@myco-server-worker/read/sessions.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
-import { retiringReceipt } from '@myco-server-worker/core/embedding/selection.js';
+import {
+  plans_pageProjectPlans as pageProjectPlans,
+} from '@myco-server-worker/read/catalog/plans.js';
+import { children_listPlans as listPlans } from '@myco-server-worker/read/catalog/children.js';
+import {
+  sessions_listSessions as listSessions,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { taskRunFacts } from '@myco-server-worker/db/runs/task-facts.js';
 import { pageSegments } from '@myco-server-worker/read/transcript.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';

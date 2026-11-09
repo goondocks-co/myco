@@ -35,7 +35,7 @@ const STATUS = `CASE WHEN m.state IS NOT NULL
  * current vector nor a member loses its row; every other key holds exactly one row, stamped with its model's epoch.
  * Replaying it, or interleaving it with triggers, never double-counts.
  */
-export function reconcileCalibrationState(keys: string): string[] {
+function reconcileCalibrationState(keys: string): string[] {
   return [
     `DELETE FROM embedding_calibration_state WHERE (project_id,model_key,kind,id) IN (SELECT project_id,model_key,'${KIND}',id FROM (${keys}))
       AND NOT EXISTS (SELECT 1 FROM embedding_hubness_members m WHERE m.project_id=embedding_calibration_state.project_id
@@ -302,7 +302,7 @@ export async function settledMoments(db: RelationalStore, projectId: string, mod
 }
 
 /** Another model a Project still holds calibration members under, read from the two partitions either side of `model`. */
-export async function foreignMemberModel(db: RelationalStore, projectId: string, model: string): Promise<string | null> {
+async function foreignMemberModel(db: RelationalStore, projectId: string, model: string): Promise<string | null> {
   const [below, above] = await readSet(db, foreignBelow.bind(projectId, model), foreignAbove.bind(projectId, model));
   return below[0]?.model_key ?? above[0]?.model_key ?? null;
 }
@@ -315,7 +315,7 @@ const mintToken = write<[string]>({ name: 'calibration.mintToken', sql: 'UPDATE 
 const moveProbe = write<[string, number, string]>({ name: 'calibration.moveProbe', sql: 'UPDATE embedding_cursors SET hubness_probe=?1,hubness_probe_at=?2 WHERE project_id=?3' });
 
 /** One step's view of a calibration: the population, and the cursor whose token fences everything decided from it. */
-export interface CalibrationView {
+interface CalibrationView {
   population: CalibrationPopulation;
   token: string;
   cursor: string | null;

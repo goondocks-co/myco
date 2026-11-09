@@ -9,7 +9,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet } from '../index.js';
 
 export const BUDGET_ENABLED = 'budget_enabled_at';
-export const BUDGET_QUEUE_OPENED_AT = 'budget_queue_opened_at';
+const BUDGET_QUEUE_OPENED_AT = 'budget_queue_opened_at';
 export const BUDGET_QUEUE_OPENED_SQL = `COALESCE((SELECT value FROM schema_meta WHERE key='${BUDGET_QUEUE_OPENED_AT}'),(SELECT value FROM schema_meta WHERE key='${BUDGET_ENABLED}'))`;
 const queueOpened = read<[], { at: string | null }>({ name: 'meta.budgetQueueOpenedAt', sql: `SELECT ${BUDGET_QUEUE_OPENED_SQL} AS at` });
 
@@ -19,7 +19,7 @@ export async function budgetQueueOpenedAt(db: RelationalStore): Promise<string |
   return row?.at ?? null;
 }
 
-export const BUDGET_REFUSAL = 'budget_activation_refusal';
+const BUDGET_REFUSAL = 'budget_activation_refusal';
 const BUDGET_INDEX_ROWS = 'budget_index_rows';
 const BUDGET_STARTED = 'budget_activation_started_at';
 export const BUDGET_INDEX_ROW_LIMIT = 100_000;
@@ -29,10 +29,10 @@ export const BUDGET_INDEXES = [
   { name: 'idx_agent_runs_queue_head', table: 'agent_runs', columns: 'task,origin,queued_at,id', suffix: " WHERE status='queued' AND dispatched_by IS NULL" },
 ] as const;
 export interface BudgetActivation { active: boolean; reason: string | null }
-export type BudgetCompletion = BudgetActivation | { active: null; reason: string };
+type BudgetCompletion = BudgetActivation | { active: null; reason: string };
 export const budgetCompletionMessage = (result: BudgetCompletion): string | null => result.active === true ? null
   : `${result.active === null ? 'Budget governor state not verified' : 'Budget governor inactive'}: ${result.reason}. Automatic work requires an active validated governor; capture and manual work remain available.`;
-export interface BudgetMigrationStatement { sql: string; read: boolean }
+interface BudgetMigrationStatement { sql: string; read: boolean }
 const literal = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 const normalize = (sql: string): string => sql.toLowerCase().replace(/\bif not exists\b|[\s"`\[\]]/g, '');
 const indexSql = (index: typeof BUDGET_INDEXES[number]): string => `CREATE INDEX IF NOT EXISTS ${index.name} ON ${index.table}(${index.columns})${index.suffix}`;

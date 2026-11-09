@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
-import { bootstrapOwnership, claimUnknownRaw, rawClaimPreview } from '@myco-server-worker/core/raw-claims.js';
+import { claimUnknownRaw, rawClaimPreview } from '@myco-server-worker/core/raw-claims.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { registerBlob, seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';

@@ -37,12 +37,12 @@ export interface EmbeddingSelection {
 export type StoredEmbedding = Partial<Record<EmbeddingSelectionLeaf, unknown>>;
 
 /** What the Deployment has to compute vectors with. Absent, readiness is not judged: a write may name a provider before its key exists. */
-export interface EmbeddingReadiness {
+interface EmbeddingReadiness {
   workersAi: boolean;
   credentials: ReadonlySet<string>;
 }
 
-export interface EmbeddingLeafAnswer {
+interface EmbeddingLeafAnswer {
   effective: unknown;
   source: SettingSource;
   state: SettingState;
@@ -95,7 +95,7 @@ function modelKeyOf(provider: EmbeddingProviderId, model: string, url: string | 
 }
 
 /** The provider and model a stored partition identity names, when the catalogue knows them. */
-export function partitionModel(modelKey: string): { provider: EmbeddingProviderId; model: string } | null {
+function partitionModel(modelKey: string): { provider: EmbeddingProviderId; model: string } | null {
   let parsed: unknown;
   try { parsed = JSON.parse(modelKey); } catch { return null; }
   if (!Array.isArray(parsed) || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string') return null;

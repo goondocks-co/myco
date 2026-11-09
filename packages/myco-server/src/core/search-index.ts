@@ -1,4 +1,3 @@
-export { core_search_index_pendingSearchBlobs as pendingSearchBlobs, core_search_index_searchBacklog as searchBacklog } from "../read/catalog/search-index.js";
 import { claimSearchBlob, commitSearchChunks, nextSearchBlob } from '../db/search/index-queue.js';
 import type { BlobStore, RelationalStore } from './adapters.js';
 import { projectsBoundOnce, type ProjectSet } from '../read/scope.js';

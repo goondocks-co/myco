@@ -1,6 +1,6 @@
 import { statementRecorder } from '../../helpers/statement-recorder.ts';
 import worker, { DeploymentClock, RecoveryProducer } from '../../../packages/myco-server/src/index.ts';
-import { readFleetProjection } from '../../../packages/myco-server/src/read/fleet.ts';
+import { readFleetProjection } from '../../../packages/myco-server/src/db/runs/fleet';
 import type { RelationalStore } from '../../../packages/myco-server/src/core/adapters.ts';
 import { serverEnvFromBindings, type CloudflareBindings, type DeferredWork } from '../../../packages/myco-server/src/platform/cloudflare/env.ts';
 

@@ -1,5 +1,9 @@
-import {pruneSelectedPromptAnswers,type ExpiredPromptAnswer} from './prompt-answer-retention.js';
-import {preparePromptAnswer,prepareSessionRecord,commitContextWrite,type ContextCommit} from './context-writes.js';
+import {
+  pruneSelectedPromptAnswers,
+  type ExpiredPromptAnswer,
+} from '../db/prompt-answer-retention.js';
+import { commitContextWrite, type ContextCommit } from './context-writes.js';
+import { preparePromptAnswer, prepareSessionRecord } from '../db/context-records.js';
 /**
  * What a session is served: the plan-intent nudge and the session's ranked
  * items at prompt-submit time, and the Project id and the Deployment's
@@ -35,7 +39,7 @@ import {preparePromptAnswer,prepareSessionRecord,commitContextWrite,type Context
 import type { ErrorClassifier, RelationalStore } from './adapters.js';
 import type { ContextTimings } from './context-timing.js';
 import { INJECTION_LEAVES, InjectionFailure, emptyInjectionCounts, injectionLeaves, selectSporesForPrompt, type AskNaming, type InjectionCounts, type InjectionLeaves, type InjectionSkip } from './injection.js';
-import type { SemanticSearch } from '../read/embedding.js';
+import type { embedding_SemanticSearch as SemanticSearch } from '../read/catalog/embedding.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingTexts } from './settings.js';
 import { sha256Hex } from '../hash.js';
 import type { ReadScope } from '../read/scope.js';
@@ -44,7 +48,6 @@ import type { Refusal } from '../telemetry.js';
 import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
 import { promptKeyHash, type DeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
-export { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
 export const PROMPT_CONTEXT_MAX_CHARS = 10_000;
@@ -77,17 +80,17 @@ export const PLAN_INTENT_NUDGE =
   'Myco is where plans live — persist and update them with `myco_plans` (op: "save", with `status` transitions), and pick up an existing plan in a new session by its ID with op: "get".';
 
 /** The leaf default, applied where the Deployment has written none. */
-export const PLAN_NUDGE_DEFAULT = true;
+const PLAN_NUDGE_DEFAULT = true;
 const PLAN_NUDGE_LEAF = 'cortex.plans.inject_intent_nudge_on_prompt_submit';
 
 const INSTRUCTIONS_START_LEAF = 'cortex.instructions.inject_on_session_start';
 const INSTRUCTIONS_SUBAGENT_LEAF = 'cortex.instructions.inject_on_subagent_start';
 
 /** Instructions travel to a starting session and to a starting subagent unless the Deployment says not to. */
-export const INSTRUCTIONS_START_DEFAULT = true;
-export const INSTRUCTIONS_SUBAGENT_DEFAULT = true;
+const INSTRUCTIONS_START_DEFAULT = true;
+const INSTRUCTIONS_SUBAGENT_DEFAULT = true;
 /** The leaves recall reads. */
-export const RECALL_LEAVES: readonly string[] = [
+const RECALL_LEAVES: readonly string[] = [
   ...INJECTION_LEAVES, PLAN_NUDGE_LEAF,
   INSTRUCTIONS_START_LEAF, INSTRUCTIONS_SUBAGENT_LEAF, INSTRUCTIONS_TEMPLATE_LEAF,
 ];
@@ -130,7 +133,7 @@ export async function readRecallLeaves(db: RelationalStore): Promise<RecallLeave
  * The outcome of recording that a session is served `kind`: a new record, a `repeat` of one the session already holds
  * (the caller serves nothing), or the session's admission refusing the write (the caller answers the refusal).
  */
-export type SessionRecordWrite = { outcome: 'recorded' } | { outcome: 'repeat' } | { outcome: 'refused'; refusal: Refusal };
+type SessionRecordWrite = { outcome: 'recorded' } | { outcome: 'repeat' } | { outcome: 'refused'; refusal: Refusal };
 
 /** Records that this session has been served `kind`, once per (project, session, kind). */
 export async function recordSessionInjection(
@@ -149,20 +152,20 @@ export async function recordSessionInjection(
 }
 
 /** What one part of a served block is, named so a reader knows what it carries. */
-export type PromptContextPart =
+type PromptContextPart =
   | { kind: 'plan-nudge' }
   | { kind: 'spores'; sporeIds: string[]; planIds: string[] };
 
 /** What one part of a session's served block is. */
-export type SessionContextPart =
+type SessionContextPart =
   | { kind: 'project' }
   | { kind: 'instructions' };
 
 /** Why the nudge stood down when nothing went wrong. */
-export type NudgeSkip = 'off' | 'no_intent' | 'repeat' | 'unwritable';
+type NudgeSkip = 'off' | 'no_intent' | 'repeat' | 'unwritable';
 
 /** Why the instructions stood down when nothing went wrong. */
-export type CortexSkip = 'off' | 'empty';
+type CortexSkip = 'off' | 'empty';
 
 /**
  * Why a contributor served nothing, and why a whole block did.
@@ -185,7 +188,7 @@ export type RecallSkip =
   | `plan-nudge:${NudgeSkip}`
   | `instructions:${CortexSkip}`;
 
-export interface PromptContext {
+interface PromptContext {
   context: string;
   parts: PromptContextPart[];
   skipped: RecallSkip[];
@@ -199,7 +202,7 @@ export interface PromptContext {
 }
 
 /** A failed contributor's coded cause; no prompt body or arbitrary error text is retained. */
-export interface RecallFailure {
+interface RecallFailure {
   contributor: 'spores' | 'plan-nudge' | 'instructions';
   error: ErrorClass;
   operation?: InjectionFailure['operation'];
@@ -277,7 +280,7 @@ export async function prunePromptAnswers(db: RelationalStore, cutoffMs: number, 
   return pruneSelectedPromptAnswers(db, targets, cutoffMs);
 }
 
-export interface RecallSessionBlock {
+interface RecallSessionBlock {
   context: string;
   parts: SessionContextPart[];
   skipped: RecallSkip[];
@@ -394,14 +397,6 @@ export async function composePromptContext(
     ...(kept.some((c) => c.part.kind === 'plan-nudge') ? { sessionRecord: 'plan-nudge' as const } : {}),
   }, failures, counts, input.now, classifyError,commit);
 }
-
-/**
- * The three lines a delegated subagent is handed above the Project's
- * instructions, telling it what the text below is and how far its own authority
- * runs. Carried verbatim from the member-side surface they were written for.
- */
-/** The Project line every session block starts with: one copy, shared with the member that renders it from its cache. */
-export { projectLine };
 
 export const SUBAGENT_CORTEX_GUIDANCE = [
   'You are a delegated subagent working inside a Myco-connected project.',

@@ -6,7 +6,7 @@ import { refusal, type Refusal } from '../telemetry.js';
 /** The longest a task name or state key may be, matching the identifier bound the ingest envelope applies. */
 const MAX_ID_CHARS = 192;
 /** The largest state value this surface accepts, bounding one row against a caller that would grow it without limit. */
-export const MAX_STATE_BYTES = 256 * 1024;
+const MAX_STATE_BYTES = 256 * 1024;
 
 export const BAD_BODY: Refusal = refusal('body is not an object', 'parse');
 
@@ -60,7 +60,7 @@ export const RUN_REQUEST_FIELDS = {
 } as const;
 
 /** Decode only declared fields; handler reads outside its table are an invalid contract. */
-export function decodeRunFields<T extends FieldTable>(body: Record<string, unknown>, fields: T, partial = false): Fields<T> {
+function decodeRunFields<T extends FieldTable>(body: Record<string, unknown>, fields: T, partial = false): Fields<T> {
   const declared = <V extends Record<string, unknown>>(target: V): V => new Proxy(target, { get: (target, key) => {
     if (typeof key === 'string' && !Object.hasOwn(fields, key)) throw new Error(`undeclared run field: ${key}`);
     return Reflect.get(target, key);

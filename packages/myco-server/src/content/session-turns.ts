@@ -11,7 +11,11 @@ import { listSporesByIds, MAX_SPORE_LIMIT } from '../core/spores.js';
 import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { encodeCursor, type Page, type ReadScope } from '../read/scope.js';
-import { getPlan, progressOf, type ProjectPlanRow } from '../read/plans.js';
+import {
+  plans_getPlan as getPlan,
+  plans_progressOf as progressOf,
+  type plans_ProjectPlanRow as ProjectPlanRow,
+} from '../read/catalog/plans.js';
 import { receiptPlans } from '../read/catalog/injection-served-items.js';
 import { promptLocator } from '../db/documents/prompt-locator.js';
 import { locatorRepairPending, TurnLocatorBuilding } from '../db/documents/locators.js';
@@ -35,12 +39,12 @@ export type TurnCollection = (typeof TURN_COLLECTIONS)[number];
 
 interface Located { record: DocRecord; at: PageLocator }
 
-export interface ToolUsage { toolName: string; count: number }
+interface ToolUsage { toolName: string; count: number }
 /**
  * A prompt's tool calls in brief: counts by tool, every failure up to a bound, the files changed and the Myco calls.
  * `complete` is false when its lists cover only the opened pages; catalog rollups supply the full turn's counts.
  */
-export interface ToolSummary {
+interface ToolSummary {
   complete: boolean;
   total: number;
   failed: number;
@@ -50,16 +54,16 @@ export interface ToolSummary {
   filesNamed: number;
   myco: { tool: string; op: string | null; count: number; failed: number }[];
 }
-export interface PlanAppearanceRow {
+interface PlanAppearanceRow {
   planKey: string; promptId: string | null; title: string | null; status: string; content: string | null; blobKey: string | null;
   originPath: string | null; progress: string; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number;
   locator: PageLocator;
 }
-export interface AttachmentRow {
+interface AttachmentRow {
   attachmentId: string; promptId: string | null; blobKey: string; mediaType: string; byteSize: number; description: string | null;
   createdAt: number; orderedAt: number;
 }
-export interface PromptAnswer {
+interface PromptAnswer {
   id: string; createdAt: number; outcome: string; contextChars: number; parts: unknown[]; skipped: string[]; failures: unknown[];
   selection: Record<string, number>;
 }
@@ -77,7 +81,7 @@ export interface DocumentTurnDetail {
   children: DocumentTurnChild[];
   cursors: Record<TurnCollection, string | null>;
 }
-export interface DocumentTurnChild {
+interface DocumentTurnChild {
   prompt: PromptWireRow; responses: ResponseWireRow[]; toolCallCount: number; responsesCursor: string | null;
   body: DocumentTurnDetail; childCount: number;
 }
@@ -86,7 +90,7 @@ const located = (pages: readonly LocatedPage[], generation: number): Located[] =
   pages.flatMap((page) => page.records.map((record) => ({ record, at: { generation, owner: page.owner, page: page.page, revision: page.revision } })));
 
 /** Summarizes the tool records of one prompt; `complete` says whether they are all of its calls. */
-export function toolSummary(tools: readonly Located[], complete: boolean, harness: string | null = null, calls: ToolState['calls'] = {}): ToolSummary {
+function toolSummary(tools: readonly Located[], complete: boolean, harness: string | null = null, calls: ToolState['calls'] = {}): ToolSummary {
   const byTool = new Map<string, number>();
   const myco = new Map<string, { tool: string; op: string | null; count: number; failed: number }>();
   const files = new Set<string>();
@@ -382,7 +386,7 @@ async function hookCollection(db: RelationalStore, scope: ReadScope, sessionId: 
   return { rows, cursor: next };
 }
 
-export interface UnplacedDocumentRecord { key: string; kind: string; id: string; promptHint: string | null; label: string; createdAt: number; failed: boolean }
+interface UnplacedDocumentRecord { key: string; kind: string; id: string; promptHint: string | null; label: string; createdAt: number; failed: boolean }
 
 /** The records no turn holds, from the session's own pages in page order, a few pages a request; the cursor names the next page. */
 export async function documentUnplacedRecords(env: ContentStore, scope: ReadScope, sessionId: string,

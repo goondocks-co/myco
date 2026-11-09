@@ -14,9 +14,9 @@ import { assembleToolOutcome, type OutcomeSource, type ToolAssembly } from '../i
 import { DOCUMENT_PREVIEW_BYTES, type DocRecord, type RecordKind } from './document.js';
 
 /** Characters a tool's one-line input summary keeps. */
-export const TOOL_SUMMARY_CHARS = 200;
+const TOOL_SUMMARY_CHARS = 200;
 
-export interface RecordOrigin {
+interface RecordOrigin {
   src?: readonly [string, number, number];
   ev?: string;
   received_at: number;
@@ -34,7 +34,7 @@ const text = (value: unknown): string => (typeof value === 'string' ? value : JS
 const preview = (value: unknown): string | null => (typeof value === 'string' ? utf8Preview(value, DOCUMENT_PREVIEW_BYTES).preview : null);
 
 /** One line naming what a tool call acted on: its command, path, pattern or URL, else its input's first line. */
-export function toolSummary(input: unknown): string {
+function toolSummary(input: unknown): string {
   const held = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : null;
   const named = held === null ? null
     : ['command', 'cmd', 'file_path', 'path', 'notebook_path', 'pattern', 'url', 'query', 'description']

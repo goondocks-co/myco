@@ -24,7 +24,13 @@ import { acceptedActions } from '../core/run-postconditions.js';
  * A view over the registries: nothing here resolves an op or dispatches a call.
  */
 import { RUN_TOOLS, NO_OP } from '../core/tool-catalogue.js';
-import { ALWAYS_ALLOWED, isRunCall, RUN_TOOL_MAP, runAllowlist, type RunAllowlist, type RunSurfaceTarget } from './run-allowlist.js';
+import {
+  ALWAYS_ALLOWED,
+  isRunCall,
+  RUN_TOOL_MAP,
+  runAllowlist,
+  type RunAllowlist,
+} from './run-allowlist.js';
 import { narrowDefinitions } from './external.js';
 import { TOOL_DEFINITIONS, type ToolDefinition } from './definitions.js';
 import { RUN_DEFINITIONS, RUN_PROJECT_DESCRIPTION } from './run-definitions.js';
@@ -81,7 +87,7 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
   },
 };
 
-export { ALWAYS_ALLOWED, isRunCall, RUN_PROJECT_DESCRIPTION, RUN_TOOL_MAP, runAllowlist, type RunAllowlist, type RunSurfaceTarget };
+export { ALWAYS_ALLOWED, isRunCall, RUN_TOOL_MAP, runAllowlist, type RunAllowlist };
 
 /** The definitions a run is listed: its allowlisted names across both sets, each op enum narrowed to what it may call. */
 export function runDefinitions(allow: RunAllowlist, task: string | null = null): ToolDefinition[] {

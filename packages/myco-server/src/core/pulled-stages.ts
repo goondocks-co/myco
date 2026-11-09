@@ -17,7 +17,7 @@ import { admissionForTask } from './task-catalogue.js';
 import { CURATION_STAGE } from './spore-curation.js';
 import { LEARNING_STAGES } from './learning-stages.js';
 
-export interface SqlTerm { sql: string; params: unknown[] }
+interface SqlTerm { sql: string; params: unknown[] }
 
 /** One due item: its Project, the single-flight subject its run carries, and what its stage reasserts at the write. */
 export interface PulledItem { projectId: string; subject: string; key: string; observed: string | number | null }
@@ -42,7 +42,7 @@ export interface PulledStage {
 }
 
 /** The production stages in strict claim priority. */
-export const PULLED_STAGES: readonly PulledStage[] = [...LEARNING_STAGES, CURATION_STAGE];
+const PULLED_STAGES: readonly PulledStage[] = [...LEARNING_STAGES, CURATION_STAGE];
 
 let installed: readonly PulledStage[] = PULLED_STAGES;
 
@@ -75,7 +75,7 @@ function acceptsSql(project: string, task: string): string {
 }
 
 /** Named stage assertions share the claim transaction and its observed compatibility set. */
-export function pulledAssertions(stage:PulledStage,item:PulledItem,compatible:readonly PulledStage[],limits:DispatchLimits,now:number):Bound[] {
+function pulledAssertions(stage:PulledStage,item:PulledItem,compatible:readonly PulledStage[],limits:DispatchLimits,now:number):Bound[] {
   return [stage.policy.head(item,limits,now,stage.estimateKey),
     ...compatible.filter(other=>other.level<stage.level).map(other=>other.policy.higher(item,limits,now,other.estimateKey)),
     ...compatible.filter(other=>other.level===stage.level).map(other=>other.policy.fair(item,limits,now,other.estimateKey))];
@@ -84,9 +84,7 @@ export function pulledAssertions(stage:PulledStage,item:PulledItem,compatible:re
 /** A queue the worker can execute: its task and the estimate key its execution prices an automatic row by. */
 export interface ServedQueue { task: string; estimateKey: string }
 
-export { queuedAdmissible } from '../db/runs/pull-policy.js';
-
-export interface PulledSelection { stage: PulledStage; item: PulledItem; assertions: Bound[] }
+interface PulledSelection { stage: PulledStage; item: PulledItem; assertions: Bound[] }
 
 /**
  * The best due item for a worker: the lowest level with an item in E(worker) (`eligible`: compatible stages whose task

@@ -1,4 +1,7 @@
-import { currentSporeVectorIds } from '../../packages/myco-server/src/db/embeddings/calibration.js';
+import {
+  currentSporeVectorIds,
+  missingSporeVectors,
+} from '../../packages/myco-server/src/db/embeddings/calibration.js';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
@@ -6,11 +9,10 @@ import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { reconcileEmbedding, type EmbeddingContext, type EmbeddingStep } from '../../packages/myco-server/src/core/embedding/reconcile.js';
-import { missingSporeVectors } from '../../packages/myco-server/src/core/embedding/hubness.js';
 import { VECTOR_DELETE_CONFIRM_MS as C, VECTOR_LOST_MS as LOST, VECTOR_REWRITE_LIMIT, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { embeddingRunReport, runEmbeddingSteps } from '../../packages/myco-server/src/core/embedding/run.js';
 import { cosineSimilarity, type VectorStore } from '../../packages/myco-server/src/core/embedding/vectors.js';
-import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/work.js';
 import type { RelationalStore } from '../../packages/myco-server/src/core/adapters.js';
 
 configureSqliteLibrary();

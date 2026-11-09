@@ -66,7 +66,7 @@ export interface SecretDescription {
  * Line-structure and control characters are refused, never repaired: an
  * input shaped like an injection gets an error, not a silent rewrite.
  */
-export type SecretValueCheck = { ok: true; value: string } | { ok: false; reason: string };
+type SecretValueCheck = { ok: true; value: string } | { ok: false; reason: string };
 
 export function normalizeSecretValue(raw: string): SecretValueCheck {
   const value = raw.replace(/[ \t]+/g, '');
@@ -168,15 +168,6 @@ async function open(key: CryptoKey, row: SecretRow): Promise<string> {
   const checked = normalizeSecretValue(decoder.decode(opened));
   if (!checked.ok) throw new SecretValueError(checked.reason);
   return checked.value;
-}
-
-/**
- * Whether the store holds a value under `name`, read without opening it: no
- * wrapping key is touched, so a preview can ask it where only the claim may
- * open what it holds.
- */
-export async function secretStored(db: RelationalStore, name: string): Promise<boolean> {
-  return (await db.prepare(`SELECT 1 AS one FROM deployment_secrets WHERE name = ?`).bind(name).first<{ one: number }>()) !== null;
 }
 
 /** The store, over a relational store and the deployment's wrapping key. */

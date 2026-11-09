@@ -10,7 +10,7 @@ const DIGEST_BYTES = 32;
 const VECTOR_PAGE_NAME = /^vector-pages\/([A-Za-z0-9._-]{1,64})\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Why a stored vector could not be used: the store failed, or its bytes are gone, short or damaged. */
-export type VectorPageFault = 'store' | 'absent' | 'partial' | 'corrupt';
+type VectorPageFault = 'store' | 'absent' | 'partial' | 'corrupt';
 
 /** A stored page that cannot be read. Named and retryable: a step answers it rather than computing without the vector. */
 export class VectorPageUnavailable extends Error {
@@ -19,8 +19,8 @@ export class VectorPageUnavailable extends Error {
   }
 }
 
-export interface PageSlot { id: string; offset: number; length: number }
-export interface EncodedPage { bytes: Uint8Array<ArrayBuffer>; slots: PageSlot[]; sha256: string }
+interface PageSlot { id: string; offset: number; length: number }
+interface EncodedPage { bytes: Uint8Array<ArrayBuffer>; slots: PageSlot[]; sha256: string }
 
 const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 const digestOf = async (bytes: Uint8Array<ArrayBuffer>) => new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));

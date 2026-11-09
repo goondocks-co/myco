@@ -1,10 +1,10 @@
 import { RunControlError, type RunControl } from '@goondocks/myco-shared/run-control';
 import type { ServerEnv } from '../adapters.js';
 import { HARNESS_AGENT_ID } from '../harness.js';
-import { MISSING_REPORT_LIMIT, type MissingSporeVectors } from './hubness.js';
+import { MISSING_REPORT_LIMIT, type MissingSporeVectors } from '../../db/embeddings/calibration.js';
 import { VECTOR_REWRITE_LIMIT } from './provider.js';
 
-export const EMBEDDING_RUN_STEPS = 16;
+const EMBEDDING_RUN_STEPS = 16;
 const CLOSE_RESERVE_MS = 45_000;
 const CONTROL_TIMEOUT_MS = 30_000;
 const CLOSE_TIMEOUT_MS = 5_000;
@@ -56,7 +56,7 @@ export async function runEmbeddingSteps(step: () => Promise<Record<string, unkno
   return missing === undefined || missing.rewriting + missing.waiting + missing.abandoned === 0 ? { processed, phase } : { processed, phase, missing };
 }
 
-export type EmbeddingLaunch = Parameters<NonNullable<ServerEnv['harnessLaunch']>>[0];
+type EmbeddingLaunch = Parameters<NonNullable<ServerEnv['harnessLaunch']>>[0];
 
 /** Claim, advance, report and close one dispatched embedding run under its credential. */
 export async function executeEmbeddingRun(

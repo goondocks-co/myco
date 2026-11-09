@@ -1,6 +1,11 @@
 import type { CredentialContext, OwnerContext } from '../context.js';
 import type { ServerEnv } from '../core/adapters.js';
-import { RawClaimRefusal, bootstrapOwnership, claimUnknownRaw, ownershipPreview, rawClaimPreview } from '../core/raw-claims.js';
+import { claimUnknownRaw, rawClaimPreview } from '../core/raw-claims.js';
+import {
+  OwnershipRefusal as RawClaimRefusal,
+  bootstrapOwnership,
+  ownershipPreview,
+} from '../core/ownership.js';
 
 type ActorContext = Pick<CredentialContext, 'memberId' | 'body' | 'now'>;
 async function answer<T>(operation: () => Promise<T>): Promise<Response> {

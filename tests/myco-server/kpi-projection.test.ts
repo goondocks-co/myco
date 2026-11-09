@@ -6,7 +6,11 @@ import { KPI_MEASURES, kpiTriggers, reconcileKpi } from '@myco-server-worker/db/
 import { catchUpPhase, catchUpProjections, kpiPageStatements, projectionReadiness, resetProjectionCatchup, PROJECTION_PAGE_SIZE } from '@myco-server-worker/db/projections/catchup.js';
 import { kpiCatchupSeed } from '@myco-server-worker/db/insights/kpi-catchup.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { readKpis, KPI_METRIC_VERSION, type KpiWindow } from '@myco-server-worker/read/kpis.js';
+import {
+  readKpis,
+  KPI_METRIC_VERSION,
+  type KpiWindow,
+} from '@myco-server-worker/db/insights/kpis.js';
 import { kpis_readKpis as sourceKpis } from './helpers/kpi-oracle.js';
 import { BACKUP_FORMAT, deploymentId, backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';

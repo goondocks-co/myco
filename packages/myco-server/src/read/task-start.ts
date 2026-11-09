@@ -1,7 +1,12 @@
 import { visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import type { QueueReason } from '@goondocks/myco-shared/runner-fleet';
 import { readDispatchLimits } from '../core/limits.js';
-import { fleetAvailability, fleetSelectionContext, previewFleet, fleetTaskReason } from './fleet.js';
+import {
+  fleetAvailability,
+  fleetSelectionContext,
+  previewFleet,
+  fleetTaskReason,
+} from '../db/runs/fleet.js';
 /**
  * What starting one task by hand in one Project would do right now, read before
  * anything is dispatched: every agent and model the workers heard from lately
@@ -26,7 +31,7 @@ import { previewOwners, previewLiveTask } from '../db/runs/preview.js';
 import { ownMachineNames } from './capture.js';
 
 /** A machine heard from lately: named only to the member it belongs to, and to anyone else as that member's. */
-export interface StartWorker {
+interface StartWorker {
   credentialId: string;
   machineId: string | null;
   machineName: string | null;

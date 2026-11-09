@@ -45,7 +45,7 @@ export interface CatalogTurnRow {
  * A session's turns of the named origins in turn order, read from its top-level prompt rows; `promptId` names any
  * prompt of the turn to return. At most one page of prompt rows is read.
  */
-export interface TurnOptions {
+interface TurnOptions {
   origins: readonly string[]; limit?: number; cursor?: string; order?: 'ASC' | 'DESC'; promptId?: string;
   filter?: 'key' | 'failed' | 'myco'; around?: string;
 }
@@ -126,7 +126,7 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
   return { cursor: paged.cursor, rows: paged.rows.map(({ position: _position, ...row }) => row) };
 }
 
-export interface DocumentCounters {
+interface DocumentCounters {
   prompts: number;
   userPrompts: number;
   replies: number;

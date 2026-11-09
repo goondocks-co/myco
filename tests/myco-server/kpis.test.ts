@@ -10,7 +10,13 @@
  */
 import { statementRecorder } from '../helpers/statement-recorder.js';
 import { describe, expect, it } from 'bun:test';
-import { kpiWindow, median, readKpis, KPI_WINDOWS, type KpiWindow } from '@myco-server-worker/read/kpis.js';
+import {
+  kpiWindow,
+  median,
+  readKpis,
+  KPI_WINDOWS,
+  type KpiWindow,
+} from '@myco-server-worker/db/insights/kpis.js';
 import { recallQuality, caseCount } from '@myco-server-worker/evals/recall-baseline.js';
 
 import { rig, NOW, DAY, PROJECT, OTHER } from './helpers/kpi-fixture.js';

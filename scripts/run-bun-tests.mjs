@@ -283,7 +283,6 @@ const NO_ISOLATE_NODE_TARGETS = [
 const SOLO_NODE_FILES = [
   // Scale fixtures reserve one process's duration budget.
   'tests/myco-server/extraction-coverage-budget.test.ts',
-  'tests/myco-server/extraction-coverage-steady-state-budget.test.ts',
   // The RSS fixture runs from a fresh launcher process.
   'tests/server/cloudflare-backup-streaming.test.ts',
 ];

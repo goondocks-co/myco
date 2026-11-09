@@ -23,7 +23,7 @@ export const STAGING_TARGET = 'cloudflare';
 export const R2_MINIMUM_PART_BYTES = 5 * 1024 * 1024;
 
 /** The bindings that name what a hosted recovery records about this Deployment, all rendered from its deployment record. */
-export interface RecoveryConfigurationBindings {
+interface RecoveryConfigurationBindings {
   MYCO_RECOVERY_CONFIGURATION?: string;
   MYCO_RECOVERY_ACCOUNT_ID?: string;
   MYCO_RECOVERY_DATABASE_ID?: string;
@@ -101,7 +101,7 @@ export function admittedStarter(wire: RecoveryAdmissionWire): string {
   throw new Error('a recovery admission names no member who started it');
 }
 
-export interface ExportTarget {
+interface ExportTarget {
   accountId: string;
   databaseId: string;
   tables: readonly string[];
@@ -184,7 +184,7 @@ async function stored<T>(work: () => Promise<T>): Promise<T> {
  * Where a staged object's bytes are read from: the Deployment's own object store, which a recovery copies out of and
  * never writes to.
  */
-export interface SourceObjects {
+interface SourceObjects {
   get(key: string): Promise<{ body: ReadableStream<Uint8Array>; size: number } | null>;
 }
 

@@ -27,7 +27,7 @@ import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-s
 const MAX_TOOL_CALLS = 200;
 
 /** A run as the list shows it: what ran, how it ended, and what it cost. The error text stays in the detail; the list carries only that there is one. */
-export interface RunListRow {
+interface RunListRow {
   result: RunResult | null;
   requested: ExecutionProfile | null;
   identity: RecordedIdentity;
@@ -100,7 +100,7 @@ export interface RunPageRow extends RunListRow {
  * phase list: the stored checkpoint state carries the resolved provider
  * configuration, which may hold a provider key.
  */
-export interface RunDetailRow extends RunListRow {
+interface RunDetailRow extends RunListRow {
   instruction: string | null;
   /** Standing rules are not part of the stored launch record. */
   instructions: string | null;
@@ -123,7 +123,7 @@ export interface RunDetailRow extends RunListRow {
 }
 
 /** One phase of a run, as the harness checkpointed it. */
-export interface PhaseRow {
+interface PhaseRow {
   name: string;
   status: string;
   updatedAt: number | null;
@@ -139,7 +139,7 @@ export interface PhaseRow {
 }
 
 /** One call a run made back to the Deployment, in the order the calls landed. */
-export interface RunToolCallRow {
+interface RunToolCallRow {
   id: number;
   status: 'success' | 'failed' | 'unknown';
   tool: string;
@@ -152,7 +152,7 @@ export interface RunToolCallRow {
 
 /** One claim of a run, and what its worker's step log holds. */
 /** Who took an attempt: a runner by its id and name, or a legacy worker by the member its credential belongs to. */
-export type RunAttemptExecutor = { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'legacy-worker'; memberId: string | null };
+type RunAttemptExecutor = { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'legacy-worker'; memberId: string | null };
 
 export interface RunAttemptRow {
   attemptId: string;
@@ -206,7 +206,7 @@ export interface RunDetail {
   steps: RunStepPage | null;
 }
 
-export interface RunFilters {
+interface RunFilters {
   includeSignIn?: boolean;
   status?: string;
   task?: string;
@@ -413,7 +413,7 @@ function toToolCall(row: Record<string, unknown>): RunToolCallRow {
 }
 
 /** Calls admitted by the Deployment, oldest first, with totals covering the whole run. */
-export async function runToolCallPage(db: RelationalStore, scope: ReadScope, runId: string, opts: { limit?: number; cursor?: string } = {}): Promise<{ rows: RunToolCallRow[]; total: number | null; failed: number | null; cursor: string | null }> {
+async function runToolCallPage(db: RelationalStore, scope: ReadScope, runId: string, opts: { limit?: number; cursor?: string } = {}): Promise<{ rows: RunToolCallRow[]; total: number | null; failed: number | null; cursor: string | null }> {
   const k = keyset({ ...opts, limit: opts.limit ?? MAX_TOOL_CALLS }, { order: 'recorded_at', id: 'id', direction: 'ASC' });
   if (k === null) throw new Error('Malformed call cursor.');
   const [calls, head] = await Promise.all([
@@ -484,7 +484,7 @@ async function runAttempt(db: RelationalStore, scope: ReadScope, runId: string, 
 }
 
 /** One page of an attempt's step log, in step order. */
-export async function runStepPage(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<RunStepPage> {
+async function runStepPage(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<RunStepPage> {
   const k = keyset({ ...opts, limit: opts.limit ?? MAX_PAGE }, { order: 'seq', id: 'seq', direction: 'ASC' });
   if (k === null) throw new Error('Malformed step cursor.');
   const { results } = await db.prepare(

@@ -2,7 +2,7 @@ import { collectBounded, type ChunkReader } from '../bytes.js';
 
 export const MAX_BODY_BYTES = 327_680;
 
-export type BoundedBody = { ok: true; text: string; bytes: number } | { ok: false; reason: string };
+type BoundedBody = { ok: true; text: string; bytes: number } | { ok: false; reason: string };
 
 const decoder = new TextDecoder();
 

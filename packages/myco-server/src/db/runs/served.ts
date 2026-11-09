@@ -4,19 +4,19 @@
  */
 import type { RelationalStore } from '../../core/adapters.js';
 import { writeGuardStore } from '../../core/write-guard-store.js';
-import { notTombstonedSql } from '../../core/tombstones.js';
+import { notTombstonedSql } from '../session-read-model.js';
 import type { ReadScope } from '../../read/scope.js';
 import { LEDGER_ENABLED_AT } from '../schema-v95.js';
 import { commit, read, write } from '../index.js';
 
 /** A captured material item identified by the canonical prompt and session ids. */
-export interface PromptMaterial {
+interface PromptMaterial {
   promptId: string; sessionId: string; createdAt: number; endedAt: number | null;
   text?: string | null; response?: string | null;
 }
 
 /** A body page's item with its immutable serving identity. */
-export type ServedPrompt = PromptMaterial & { servedId: string };
+type ServedPrompt = PromptMaterial & { servedId: string };
 
 const MATCH = `m.project_id = ?1 AND m.run_id = ?2 AND m.record_id = json_extract(j.value, '$.promptId') AND m.instance_id IS ?3`;
 const servedInsert = write<[string, string, string | null, string, number]>({ name: 'runs.recordServed', sql:

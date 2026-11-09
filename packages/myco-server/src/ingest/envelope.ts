@@ -20,9 +20,9 @@ export const AHEAD_OF_CLOCK = (field: string): string => `${field} is more than 
 export const PAYLOAD_CAP_REASON = `payload exceeds ${MAX_PAYLOAD_BYTES} bytes; spill to POST /blobs/{sha256} and reference it`;
 
 /** How an event reached the Deployment. `import` is a member shipping bytes that already existed on its disk (#1148): the same kinds and the same path, marked so the parse reads it beside live work, never ahead of it, and no title is scheduled for a session that ended weeks ago. */
-export type Channel = 'cli' | 'http' | 'import';
+type Channel = 'cli' | 'http' | 'import';
 
-export interface Producer {
+interface Producer {
   adapter: string;
   version: string;
 }
@@ -40,7 +40,7 @@ export interface CaptureEnvelope {
 }
 
 export type Refused = { ok: false } & Refusal;
-export type ParseResult = { ok: true; value: CaptureEnvelope } | Refused;
+type ParseResult = { ok: true; value: CaptureEnvelope } | Refused;
 /** A refusal of the envelope's own shape: `invalid_field` unless a more specific classifier names it. */
 const refused = (reason: string, classifier: Refusal['classifier'] = 'invalid_field'): Refused => ({ ok: false, ...refusal(reason, classifier) });
 

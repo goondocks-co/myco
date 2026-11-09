@@ -17,7 +17,7 @@ const row = read<[string], ConnectionRow>({
   SELECT revision,url,branch,username,secret_slot AS secretSlot,updated_at AS updatedAt,updated_by AS updatedBy
     FROM project_repositories WHERE project_id=?`,
 });
-export const REPOSITORY_REVISION_CONFLICT = refusalCode('repository_revision_conflict');
+const REPOSITORY_REVISION_CONFLICT = refusalCode('repository_revision_conflict');
 const unchanged = assertion<[string, string | null]>({
   name: 'storage.repositoryUnchanged',
   refusal: REPOSITORY_REVISION_CONFLICT, when: `(SELECT revision FROM project_repositories WHERE project_id=?1) IS ?2`,

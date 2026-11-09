@@ -9,8 +9,10 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { composePromptContext, composeSessionContext, PROMPT_ANSWER_RETENTION_DAYS, prunePromptAnswers, type RecallLeaves } from '@myco-server-worker/core/recall.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { listContextInjections } from '@myco-server-worker/read/children.js';
-import { readKpis } from '@myco-server-worker/read/kpis.js';
+import {
+  children_listContextInjections as listContextInjections,
+} from '@myco-server-worker/read/catalog/children.js';
+import { readKpis } from '@myco-server-worker/db/insights/kpis.js';
 import { spyOn } from 'bun:test';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';

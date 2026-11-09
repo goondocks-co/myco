@@ -15,10 +15,10 @@ import { deploymentIdentity } from './authorization.js';
 import { registerRunner, runnerOfRegistration, RUNNER_NAME_PATTERN, RUNNER_TOKEN_PATTERN } from './runners.js';
 
 export const DEVICE_TTL_MS = 10 * 60 * 1000;
-export const DEVICE_POLL_SECONDS = 5;
-export const DEVICE_SLOW_DOWN_SECONDS = 5;
-export const DEVICE_PENDING_PER_SOURCE = 5;
-export const DEVICE_STARTS_PER_MINUTE = 10;
+const DEVICE_POLL_SECONDS = 5;
+const DEVICE_SLOW_DOWN_SECONDS = 5;
+const DEVICE_PENDING_PER_SOURCE = 5;
+const DEVICE_STARTS_PER_MINUTE = 10;
 const DEVICE_START_WINDOW_MS = 60_000;
 const USER_ALPHABET = 'BCDFGHJKLMNPQRSTVWXYZ23456789';
 const USER_CODE_LENGTH = 8;

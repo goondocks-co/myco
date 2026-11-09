@@ -220,4 +220,9 @@ function lineage_placed(rows: ReadonlyMap<string, lineage_Row>, uncaptured: Read
   return out;
 }
 
-export { lineage_LINEAGE_MAX_DEPTH, lineage_LINEAGE_MAX_NODES, lineage_LINEAGE_EDGE_KINDS, type lineage_LineageEdgeKind, type lineage_LineageEdge, type lineage_LineageNode, type lineage_SessionLineage, lineage_CHILDREN_INDEX, lineage_sessionLineage };
+export {
+  lineage_LINEAGE_MAX_NODES,
+  type lineage_SessionLineage,
+  lineage_CHILDREN_INDEX,
+  lineage_sessionLineage,
+};

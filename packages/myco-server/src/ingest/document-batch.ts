@@ -9,8 +9,10 @@ import { jsonPages, STATEMENT_JSON_BYTES } from '../db/json-pages.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
 import { contentAssertion, prepareDerivedStream, type ContentPublicationGuard, type DerivedContentSource } from '../core/registered-content.js';
 import { CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
-import { registeredBlobsGuard, recordHolderCandidates, releaseBlobs } from '../core/object-release.js';
-import { trimTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
+import { releaseBlobs } from '../core/object-release.js';
+import { registeredBlobsGuard, recordHolderCandidates } from '../db/storage/release-queue.js';
+import { trimTurn } from '../core/turn-card-rules.js';
+import { TURN_QUIET_MS } from '../db/schema-v110.js';
 import { learningSessionStatement, pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
 import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
@@ -36,7 +38,7 @@ const SEALED_ROWS_PER_COMMIT = 40_000;
 
 /** Statements one chunk version's registration may spend, and its blob calls: a store or durability check, then its verifying read. */
 export const VERSION_STATEMENTS = 12;
-export const VERSION_BLOB_CALLS = 2;
+const VERSION_BLOB_CALLS = 2;
 
 /** Whether the invocation can no longer pay for `statements` more without spending the wake's reserve. */
 export function reserveReached(db: RelationalStore, statements: number, blobCalls: number): boolean {
@@ -90,12 +92,12 @@ export interface BatchDocument {
 }
 
 /** The statements a caller runs before and after the shared catalog statements of a commit. */
-export interface Commit { before: PreparedStatement[]; after: PreparedStatement[] }
+interface Commit { before: PreparedStatement[]; after: PreparedStatement[] }
 
 /** One chunk version a batch writes, with its source and the directory row it supersedes. */
 export interface ChunkVersion { metadata?: number; chunkNo: number; key: string; bytes: number; kind: 'page' | 'body'; encoding: string; sourceId: string; previous?: ChunkRow }
 
-export const preview = (text: unknown): string | null =>
+const preview = (text: unknown): string | null =>
   typeof text === 'string' ? text.replace(/\s+/g, ' ').trim().slice(0, DOCUMENT_PREVIEW_CHARS) : null;
 
 /** The canonical plan a plan appearance belongs to. */

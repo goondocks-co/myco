@@ -4,7 +4,7 @@ import { CURRENT_EMBEDDING_SOURCES } from '../embedding-sources.js';
 import { read, readSet } from '../index.js';
 import { currentPassedOver } from './passed-over.js';
 
-export const PASSED_OVER_PAGE_SIZE = 100;
+const PASSED_OVER_PAGE_SIZE = 100;
 const membership = `FROM (${currentPassedOver('?1', '?2')})`;
 const pageSql = `SELECT project_id,type,record_id,model_key,reason,MAX(recorded_at) AS at ${membership}
   GROUP BY project_id,type,record_id ORDER BY at DESC,record_id,project_id,type LIMIT ${PASSED_OVER_PAGE_SIZE}`;

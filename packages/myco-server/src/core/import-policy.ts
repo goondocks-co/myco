@@ -27,15 +27,15 @@ import { refusal, type Refusal } from '../telemetry.js';
 import { IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { leafOffChecks, settingTexts } from './settings.js';
 
-export const IMPORT_ENABLED_LEAF = 'import.enabled';
-export const IMPORT_WINDOW_DAYS_LEAF = 'import.window_days';
-export const IMPORT_MAX_SESSIONS_LEAF = 'import.max_sessions_per_harness';
+const IMPORT_ENABLED_LEAF = 'import.enabled';
+const IMPORT_WINDOW_DAYS_LEAF = 'import.window_days';
+const IMPORT_MAX_SESSIONS_LEAF = 'import.max_sessions_per_harness';
 
 /** Every leaf this policy reads, in one list so the route and the tests enumerate rather than spell. */
-export const IMPORT_LEAVES: readonly string[] = [IMPORT_ENABLED_LEAF, IMPORT_WINDOW_DAYS_LEAF, IMPORT_MAX_SESSIONS_LEAF];
+const IMPORT_LEAVES: readonly string[] = [IMPORT_ENABLED_LEAF, IMPORT_WINDOW_DAYS_LEAF, IMPORT_MAX_SESSIONS_LEAF];
 
 /** The stored form of a leaf a Deployment has turned off, in the encoding the settings surface writes. */
-export const LEAF_OFF = JSON.stringify(false);
+const LEAF_OFF = JSON.stringify(false);
 
 /** What a member is answered when it offers import-channel bytes to a Deployment that has import switched off. */
 export const IMPORT_DISABLED: Refusal = refusal('import is disabled on this Deployment', 'import_disabled');
@@ -44,14 +44,14 @@ export const IMPORT_DISABLED: Refusal = refusal('import is disabled on this Depl
 export const IMPORT_WINDOW_DAYS_DEFAULT = 30;
 export const IMPORT_MAX_SESSIONS_DEFAULT = 50;
 
-export interface ImportPolicy {
+interface ImportPolicy {
   enabled: boolean;
   windowDays: number;
   maxPerAgent: number;
 }
 
 /** What a caller may ask to widen. Absent means the Deployment's own bound. */
-export interface ImportPolicyAsk {
+interface ImportPolicyAsk {
   windowDays?: number;
   maxPerAgent?: number;
 }
@@ -60,7 +60,7 @@ export interface ImportPolicyAsk {
 export const importEnabledChecks = () => leafOffChecks(IMPORT_ENABLED_LEAF, LEAF_OFF);
 
 /** Whether a leaf's stored text is the off value. The one reader; `LEAF_OFF` is what the admission binds. */
-export const leafIsOff = (raw: string | undefined): boolean => raw === LEAF_OFF;
+const leafIsOff = (raw: string | undefined): boolean => raw === LEAF_OFF;
 
 /** A stored integer leaf, or the fallback when it is absent or unreadable. */
 function storedInteger(raw: string | undefined, fallback: number): number {

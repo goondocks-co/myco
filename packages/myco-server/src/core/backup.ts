@@ -4,7 +4,10 @@ import { pinBackup } from '../db/storage/backup-pin.js';
 import { recordBackupPrune, type BackupPruneOutcome } from '../db/meta/backup-prune.js';
 import { resetProjectionCatchup } from '../db/projections/catchup.js';
 import { restoreRunBodyStatement } from '../db/runs/body-restore.js';
-import { clearArchivedTranscriptRanges, restoreTranscriptSegmentStatement } from './transcript-ranges.js';
+import {
+  clearArchivedTranscriptRanges,
+  restoreTranscriptSegmentStatement,
+} from '../db/documents/ranges.js';
 import { excludeDeletedRestoreRows, excludeRetiredRuns, restoreBlobReferences } from './restore-rows.js';
 import { contentAssertion } from './registered-content.js';
 import { eventReferenceStatement } from '../db/event-references.js';
@@ -19,8 +22,12 @@ import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
-import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
-import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw-claims.js';
+import {
+  restoreAuthorityAuditStatement,
+  restoreMembershipBatch,
+  restoreOwnership,
+} from './ownership.js';
+import { effectiveRawOwnerSql, reserveRawRestore } from './raw-claims.js';
 /**
  * Deployment backup and restore.
  *
@@ -35,19 +42,26 @@ import { effectiveRawOwnerSql, reserveRawRestore, restoreOwnership } from './raw
 import type { BlobStore, PreparedStatement, RelationalStore } from './adapters.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { readStoredObject } from './stored-object.js';
-import { publishBackupObject, referencedBlobsOf, registeredBlobsGuard, releaseBackups, unregisteredAmong,
-  recordBlobCandidates, releaseBlobs } from './object-release.js';
-export { retentionVictims } from './backup-retention.js';
+import {
+  publishBackupObject,
+  referencedBlobsOf,
+  releaseBackups,
+  releaseBlobs,
+} from './object-release.js';
+import {
+  registeredBlobsGuard,
+  unregisteredAmong,
+  recordBlobCandidates,
+} from '../db/storage/release-queue.js';
 import { BUNDLE_REFERENCES } from './blob-references.js';
 import { bundleHeld } from '../db/storage/blob-held.js';
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
-import { restoreArchivedEvent } from './event-content.js';
+import { restoreArchivedEvent } from './event-content-restore.js';
 import { clearDeletedParentsStatement } from './tombstones.js';
 import { prepareRestoredSessionUnread } from '../read/catalog/sessions.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
-export { RelationalSnapshotAdmissionError as BackupAdmissionError } from './relational-snapshot.js';
 import { restoredPin, restoreSchemeDecisions, restoreRecordSchemeDecisions } from '../db/documents/restore-pins.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { authorizeRestore, RestoreAuthorizationError, type RestoreAuthorization } from './restore-authorization.js';
@@ -157,13 +171,13 @@ export const FOREIGN_AUTHORITY_TABLES: readonly string[] = ['members', 'enrollme
 /** What a foreign-lineage preview tells the owner about the people and access the artifact carries. */
 export const FOREIGN_AUTHORITY_NOTICE = 'People from the other server are listed here but cannot sign in until the owner re-admits them on the People page. Its machine sign-ins, runner credentials, enrollment and account-link keys, and external agent grants arrive revoked and cannot be used here: enroll machines, register runners and issue agent grants again on this server. This server keeps its own owner.';
 
-export interface ForeignAuthorityExclusion {
+interface ForeignAuthorityExclusion {
   /** The `FOREIGN_AUTHORITY_TABLES` this artifact holds rows for. */
   tables: string[];
   notice: string;
 }
 
-export interface BackupHeader {
+interface BackupHeader {
   format: string;
   deploymentId: string;
   schemaVersion: number;
@@ -440,7 +454,7 @@ function revokeForeignAuthority(byTable: ReadonlyMap<string, Record<string, unkn
 }
 
 /** What a restore does to session documents, decided before any write: sessions converted, merged and refused. */
-export interface DocumentRestoreSummary { convert: number; merge: number; records: number; refuse: string[] }
+interface DocumentRestoreSummary { convert: number; merge: number; records: number; refuse: string[] }
 /**
  * The document side of a restore: a plan read before any write and atomically published once the rows are restored.
  */
@@ -450,7 +464,7 @@ export interface RestoreDocuments {
   }>;
 }
 /** The refusal of an artifact whose legacy-classified content a live document may hold under another id. */
-export const ARTIFACT_PRECEDENCE_AMBIGUOUS = 'artifact_precedence_ambiguous';
+const ARTIFACT_PRECEDENCE_AMBIGUOUS = 'artifact_precedence_ambiguous';
 
 export interface RestoreOutcome {
   danglingEventBlobs?: { table: string; projectId: string; eventId: string; key: string }[];
@@ -1020,7 +1034,6 @@ function retentionConflict(error: unknown): boolean {
   return error instanceof Error && (/backup_retention_(?:policy_)?conflict|settings_revision_conflict/.test(error.message)
     || retentionConflict(error.cause));
 }
-
 
 /**
  * Prune under one revision-bound policy and catalog observation. A failed decision preserves the index and records

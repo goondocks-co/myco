@@ -6,7 +6,7 @@ import { ADMIN_IDENTITY_LINK_TTL_MS, issueIdentityLinkAuthority, memberLinkState
 import { listMembers, memberState, revokeMember } from '../auth/members-admin.js';
 import { revokeCredentialAsMember } from '../auth/tokens.js';
 import { credentialActivity, credentialMember, listCredentials } from '../read/credentials.js';
-import { projectExists } from '../read/sessions.js';
+import { sessions_projectExists as projectExists } from '../read/catalog/sessions.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 import { HARNESS_MEMBER_ID, MEMBER_ID, MINUTE_MS } from '../constants.js';
@@ -17,7 +17,7 @@ import { decodeProjectCursor, PROJECT_CURSOR_REFUSAL } from '../read/project-cur
 import { credentialListScope } from '../auth/http-authorization.js';
 
 /** The longest invitation the dashboard mints, in minutes: one day. */
-export const MAX_INVITATION_MINUTES = 1440;
+const MAX_INVITATION_MINUTES = 1440;
 
 export async function handleMembers(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const page = paging(ctx.url);

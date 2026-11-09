@@ -12,7 +12,7 @@ import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { controlRunner, renameRunner, registerRunner, RUNNER_NAME_PATTERN, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
 import { runnerContactStatement, runnerObservationStatement, readWorkerFleet } from '../core/worker-contacts.js';
-import { readFleetProjection } from '../read/fleet.js';
+import { readFleetProjection } from '../db/runs/fleet.js';
 import { requestByUserCode } from '../auth/device.js';
 import { sha256Hex } from '../hash.js';
 import type { RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';

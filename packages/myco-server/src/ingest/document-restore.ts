@@ -30,26 +30,21 @@ const CONTENT = [
 type ContentKind = (typeof CONTENT)[number]['kind'];
 type Row = Record<string, unknown>;
 
-export interface SessionRef { projectId: string; sessionId: string }
+interface SessionRef { projectId: string; sessionId: string }
 interface ArtifactDocument { records:DocRecord[]; states:Map<string,Row>; owners:DecodedChunk['owners']; plans:Set<string>; frontiers:readonly Row[]; chunks:readonly Row[] }
 type HeldRows = SessionRef & { snapshot?:ArtifactDocument; rows: { kind: ContentKind; row: Row }[]; transcripts?: readonly Row[]; checkpoints?: readonly Row[]; owners?: readonly Row[] };
-export interface DocumentRestorePlan {
+interface DocumentRestorePlan {
   convert: HeldRows[];
   merge: HeldRows[];
   refuse: SessionRef[];
 }
 const PLAN_STALE = 'restore_plan_stale';
-export class RestorePlanStale extends Error {
+class RestorePlanStale extends Error {
   constructor() { super(`${PLAN_STALE}: a session this restore converts went live after the restore was planned; restore the artifact again`); }
 }
 const IN_PROGRESS = 'restore_in_progress';
-export class RestoreInProgress extends Error {
+class RestoreInProgress extends Error {
   constructor() { super(`${IN_PROGRESS}: another restore holds a session this restore converts; restore the artifact again once it finishes`); }
-}
-export class ArtifactPrecedenceAmbiguous extends Error {
-  constructor(readonly sessions: readonly SessionRef[]) {
-    super(`artifact_precedence_ambiguous: ${sessions.map((s) => s.sessionId).join(', ')}; restore these sessions through the staged restore`);
-  }
 }
 
 /** Every record id a live document holds, as `kind:id`, read chunk by chunk. */
@@ -114,7 +109,7 @@ async function artifactDocument(env:Pick<ServerEnv,'db'|'blobs'>, tables:Readonl
 }
 
 /** Decides each session the artifact holds content for, reading the target before anything is written. */
-export async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, byTable: ReadonlyMap<string, readonly Row[]>): Promise<DocumentRestorePlan> {
+async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, byTable: ReadonlyMap<string, readonly Row[]>): Promise<DocumentRestorePlan> {
   const legacy = new Set((byTable.get('fact_classes') ?? []).filter((row) => row.class === 'legacy')
     .map((row) => JSON.stringify([row.project_id, row.table_name, row.record_id])));
   const artifactSessions = new Set((byTable.get('sessions') ?? []).map(row=>JSON.stringify([row.project_id,row.session_id])));
@@ -284,7 +279,6 @@ export function restoreDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>): RestoreD
     },
   };
 }
-
 
 /** Legacy artifact references fill only absent values of events the destination holds. */
 export async function restoreLegacyEventReferences(db: ServerEnv['db'], tables: ReadonlyMap<string, readonly Row[]>): Promise<void> {

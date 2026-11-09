@@ -42,7 +42,7 @@ export function searchRepairCall(n: ListNarrowing): { tool: 'myco_search' } & Re
 }
 
 /** The same search over HTTP: one Project's search route, or the search across the Projects the list reads. */
-export function searchRepairPath(n: ListNarrowing): string {
+function searchRepairPath(n: ListNarrowing): string {
   const { tool: _tool, query, project, ...args } = searchRepairCall(n);
   const params = new URLSearchParams({ q: String(query) });
   for (const [key, value] of Object.entries(args)) params.set(key, String(value));

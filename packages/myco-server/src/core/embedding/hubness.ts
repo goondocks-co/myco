@@ -4,7 +4,6 @@ import {
   foreignModelToRetire, leftOutVectors, moveCalibrationProbe, operatingMembers, outlivesPopulation, settledMembers, settledMoments, uncoveredVectors,
   type CalibrationPopulation, type CalibrationProbe, type MemberMoments, type MemberVector, type QueuedVector,
 } from '../../db/embeddings/calibration.js';
-export { MISSING_REPORT_LIMIT, type MissingSporeVectors, missingSporeVectors } from '../../db/embeddings/calibration.js';
 import { beginVectorPage, inlineVectors, noteVectorPageMissing, reclaimVectorPages, releaseUnsealedObject, vectorPageRows, VECTOR_PAGE_MEMBERS } from '../../db/embeddings/vector-pages.js';
 import { OBJECT_PUT_IN_FLIGHT_MS } from '../../constants.js';
 import { emit } from '../../telemetry.js';

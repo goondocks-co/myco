@@ -12,7 +12,6 @@ export const NIGHTLY_ONLY_FILES = [
   'tests/myco-server/embedding-running-cost.test.ts',
   'tests/myco-server/events-read-budget-runtime.test.ts',
   'tests/myco-server/extraction-coverage-budget.test.ts',
-  'tests/myco-server/extraction-coverage-steady-state-budget.test.ts',
   'tests/myco-server/injection-snapshot-budget-runtime.test.ts',
   'tests/myco-server/legacy-history-budget.test.ts',
   'tests/myco-server/raw-proof-plan.test.ts',

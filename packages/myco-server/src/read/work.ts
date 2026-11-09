@@ -3,7 +3,6 @@ import { type RepositoryFailure } from '@goondocks/myco-shared/repository';
 import { heldPartition } from '../core/embedding/policy.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { type RunResult } from './run-outcome.js';
-export { type RunResult } from './run-outcome.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 /**
@@ -33,7 +32,7 @@ import type { ProjectSet } from './scope.js';
 export type OutcomeKind = 'learn' | 'title' | 'map' | 'seed';
 
 /** Each outcome task and the kind of work it is. */
-export const OUTCOME_KINDS: Readonly<Record<string, OutcomeKind>> = {
+const OUTCOME_KINDS: Readonly<Record<string, OutcomeKind>> = {
   [EXTRACTION_TASK]: 'learn',
   [TITLING_TASK]: 'title',
   [MAP_TASK]: 'map',
@@ -48,7 +47,7 @@ export const MAX_WORK_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
 export const DEFAULT_WORK_WINDOW_DAYS = 7;
 
 /** A least and greatest value over the runs that reported one; null where none did. */
-export type Range = readonly [number, number] | null;
+type Range = readonly [number, number] | null;
 
 /** One Project's work of one kind over the window. */
 export interface WorkOutcome {
@@ -76,7 +75,7 @@ export interface WorkOutcome {
 }
 
 /** A Project's current code map. */
-export interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string }
+interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string }
 
 /** A run that published output or failed, listed in the timeline. */
 export interface WorkRun {
@@ -118,7 +117,7 @@ export interface Upkeep {
 }
 
 /** Whether the rollups cover history yet: 'building' while the first catch-up runs, never a partial total. */
-export type WorkState = 'ready' | 'building';
+type WorkState = 'ready' | 'building';
 
 export interface WorkAnswer {
   window: { since: number; until: number };
@@ -288,7 +287,7 @@ export function defaultWorkWindow(now: number): { since: number; until: number }
 }
 
 /** An outcome task that is failing in a Project: its runs that failed having produced nothing after the task last completed there. */
-export interface FailingOutcome {
+interface FailingOutcome {
   projectId: string;
   task: string;
   kind: OutcomeKind;
@@ -317,7 +316,7 @@ export async function failingOutcomes(db: RelationalStore, tasks: readonly strin
 }
 
 /** Runs, in one Project, that ended without the agent's account of its steps, against the runs that owed one. */
-export interface AuditFailures {
+interface AuditFailures {
   projectId: string;
   runs: number;
   closed: number;

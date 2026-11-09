@@ -37,7 +37,5 @@ A later agent reads only these cards to learn what is worth remembering from the
 
 Copy error messages, commands, file paths, flags, versions, config keys and identifiers EXACTLY as they appear in the turn, character for character, inside the field. Never paraphrase, shorten or "clean up" them. A routine turn gets a short card. A turn with an error, a fix, a decision or a correction gets as much detail as it needs.`;
 
-/** A card's fields, in the fixed order every reader sees them. */
-export const CARD_FIELDS = ['asked', 'done', 'outcome', 'decisions', 'rejected', 'errors', 'corrections', 'files', 'commands', 'open_questions'] as const;
 export const CARD_SIGNALS = ['none', 'low', 'high'] as const;
 export type CardSignal = (typeof CARD_SIGNALS)[number];

@@ -31,16 +31,16 @@ export function sessionFrom(indexedBy: string): string {
 }
 
 /** The Deployment-wide order every read of sessions across Projects walks: the instant, the id, then the Project. */
-export const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_deployment';
+const SESSIONS_ACROSS_INDEX = 'idx_sessions_occurred_deployment';
 
 /**
  * The index an activity window reads: it leads with the last receipt, so the read seeks the sessions received from
  * the window's start on, however long ago they started, and sorts that set alone.
  */
-export const SESSIONS_ACTIVE_INDEX = 'idx_sessions_capture';
+const SESSIONS_ACTIVE_INDEX = 'idx_sessions_capture';
 
 /** The index the sessions working now are read through: it holds the sessions with an open turn alone. */
-export const SESSIONS_WORKING_INDEX = 'idx_sessions_working';
+const SESSIONS_WORKING_INDEX = 'idx_sessions_working';
 
 /**
  * How long a turn may stay open and still read as working. A turn ends when its end reaches the Deployment; this
@@ -55,7 +55,7 @@ const FULL_FIDELITY = `${sessionMaterialReadySql('s')} AND NOT EXISTS (SELECT 1 
   WHERE t.project_id = s.project_id AND t.session_id = s.session_id
     AND t.fidelity IS NOT NULL AND t.fidelity <> 'full')`;
 
-export interface SessionBrowseFilters {
+interface SessionBrowseFilters {
   since?: number;
   until?: number;
   branch?: string;
@@ -69,9 +69,9 @@ export interface SessionBrowseFilters {
 }
 
 /** The key after which a page starts: within one Project the instant and the id; across Projects the Project too. */
-export interface SessionPageKey { createdAt: number; projectId?: string; id: string }
+interface SessionPageKey { createdAt: number; projectId?: string; id: string }
 
-export interface SessionPageRequest {
+interface SessionPageRequest {
   /** One Project, or a set of Projects read across. */
   scope: { projectId: string } | ProjectSet;
   filters: SessionBrowseFilters;

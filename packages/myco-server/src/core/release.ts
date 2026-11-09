@@ -5,9 +5,10 @@ import { emit } from '../telemetry.js';
 import type { ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import { revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
-import { drainQueue, HARNESS_MEMBER_ID } from './harness.js';
+import { drainQueue } from './harness.js';
+import { HARNESS_MEMBER_ID } from '../constants.js';
 
-export interface ReleasableRun {
+interface ReleasableRun {
   id: string;
   dispatchedBy: string | null;
 }

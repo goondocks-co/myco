@@ -3,9 +3,9 @@ import { assertion, read, readSet, refusalCode, refused } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 
 /** The refusal an aborted consolidation carries: it stores no wisdom spore and moves no source. */
-export const CONSOLIDATION_SOURCES_CHANGED = refusalCode('spore_consolidation_sources_changed');
+const CONSOLIDATION_SOURCES_CHANGED = refusalCode('spore_consolidation_sources_changed');
 
-export interface ConsolidationSource { id: string; revision?: number }
+interface ConsolidationSource { id: string; revision?: number }
 export interface StaleConsolidationSource { id: string; status: string | null; revision: number | null; expected: number | null }
 
 const STALE = `FROM json_each(?2) j LEFT JOIN spores s ON s.project_id=?1 AND s.id=json_extract(j.value,'$.id')

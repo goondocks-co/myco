@@ -46,7 +46,7 @@ export interface PowerThresholds {
   deepSleepMs: number;
 }
 
-export interface PowerResolution {
+interface PowerResolution {
   state: PowerState;
   /** The assertion that held the state shallower than inactivity alone would put it, when one did. */
   heldBy: string | null;

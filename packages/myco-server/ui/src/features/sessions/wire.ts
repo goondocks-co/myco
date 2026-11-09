@@ -2,7 +2,7 @@
  * The shapes the Sessions pages read off the wire: a row of `GET /api/sessions`
  * and the `outcome` and `resume` of `GET /api/projects/{p}/sessions/{s}`.
  *
- * The server's declarations (`read/sessions.ts`, `read/run-reads.ts`) pull in
+ * The server's declarations (`read/catalog/sessions.ts`, `read/run-reads.ts`) pull in
  * the server's runtime modules, which this dashboard's build does not carry, so
  * the shapes are declared here and held to the server's by
  * `tests/myco-server/sessions-wire.test.ts`, which the tests typecheck compiles.

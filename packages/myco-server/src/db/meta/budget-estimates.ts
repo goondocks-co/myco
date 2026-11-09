@@ -12,7 +12,7 @@ const RESTORED_FLOOR_KEY = 'budget.restored_estimate_floor';
 
 const refreshedAt = read<[], { value: string }>({ name: 'meta.estimatesRefreshedAt', sql: `SELECT value FROM schema_meta WHERE key='${REFRESHED_KEY}'` });
 
-export interface EstimateCursor {
+interface EstimateCursor {
   value: string | null; epoch: string | null; enabled: string | null; restoredFloor: string | null; watermark: string | null; latest: number;
 }
 const cursor = read<[], EstimateCursor>({

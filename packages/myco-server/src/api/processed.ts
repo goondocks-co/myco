@@ -1,6 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { isProcessedBodyKind, processedAttachment, processedBody } from '../read/processed.js';
+import { processedAttachment, processedBody } from '../read/processed.js';
+import { processed_isProcessedBodyKind as isProcessedBodyKind } from '../read/catalog/processed.js';
 import { bundleContentEnv } from '../core/archive-bundle.js';
 import { notFound, resolveProjectScope, sessionInScope } from './scope.js';
 import { documentBody, isDocumentBodyKind } from '../content/session-pages.js';

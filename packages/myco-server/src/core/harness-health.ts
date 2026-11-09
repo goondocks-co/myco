@@ -4,14 +4,15 @@ import {
   type ProvisionedHarnessFact, type ProvisionedHarnessReport,
   HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS,
 } from '@goondocks/myco-shared/harness-health';
-export { HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS } from '@goondocks/myco-shared/harness-health';
 import {
-  machineHarnessCaptureSince, machineHarnessReport, provisionedHarnessReportRows,
-  trustConfirmationCapture, harnessAttentionRows, harnessHealthRows,
+  machineHarnessCaptureSince,
+  machineHarnessReport,
+  trustConfirmationCapture,
+  harnessAttentionRows,
+  harnessHealthRows,
 } from '../db/runners/harness-health.js';
 
 type StoredHarnessFact = ProvisionedHarnessFact & { sinceAt: number };
-type StoredReport = { machineId: string; harnesses: StoredHarnessFact[]; reportedAt: number };
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const knownFields = (value: Record<string, unknown>, fields: readonly string[]): boolean => Object.keys(value).every((key) => fields.includes(key));
@@ -81,12 +82,6 @@ export async function recordProvisionedHarnessReport(db: RelationalStore, machin
   await db.prepare(`INSERT INTO machine_harness_reports (machine_id, harnesses, reported_at) VALUES (?, ?, ?)
     ON CONFLICT (machine_id) DO UPDATE SET harnesses = excluded.harnesses, reported_at = excluded.reported_at`)
     .bind(machineId, JSON.stringify(harnesses), now).run();
-}
-
-/** Every machine's latest report; malformed stored evidence makes the Health check unavailable. */
-export async function readProvisionedHarnessReports(db: RelationalStore): Promise<StoredReport[]> {
-  const rows = await provisionedHarnessReportRows(db);
-  return rows.map((row) => ({ machineId: row.machine_id, harnesses: storedFacts(row.harnesses), reportedAt: row.reported_at }));
 }
 
 const HOUR_MS = 60 * 60_000;

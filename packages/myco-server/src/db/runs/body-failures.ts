@@ -11,7 +11,7 @@ import { read, readSet, write, commit } from '../index.js';
 export type RunBodyKind = 'instruction' | 'report_details' | 'report_audit';
 
 export const RUN_BODY_RETRY_MS = 60 * 60 * 1000;
-export const RUN_BODY_RETRY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+const RUN_BODY_RETRY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 /** How long a body keeps failing before an administrator is told. */
 export const RUN_BODY_STUCK_MS = 24 * 60 * 60 * 1000;
 

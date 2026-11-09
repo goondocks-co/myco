@@ -3,7 +3,10 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
-import { countUnplacedContextRecords, HOOK_STATUS_WINDOW_DAYS } from '@myco-server-worker/read/hook-placement.js';
+import {
+  hook_placement_countUnplacedContextRecords as countUnplacedContextRecords,
+  hook_placement_HOOK_STATUS_WINDOW_DAYS as HOOK_STATUS_WINDOW_DAYS,
+} from '@myco-server-worker/read/catalog/hook-placement.js';
 import { LocalVolume } from './local-volume.js';
 import type { LocalDeploymentPaths } from './local.js';
 import { operatorLogin, peekCommandDir, readDeploymentRecord, type CloudflareFetch } from './cloudflare.js';

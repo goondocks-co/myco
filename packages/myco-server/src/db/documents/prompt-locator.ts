@@ -5,7 +5,7 @@ import { SESSION_OWNER } from '../document-tables.js';
 import { read, readSet } from '../index.js';
 
 /** Where a prompt sits in a session's live document: the whole identity a read binds before it opens that document's pages. */
-export interface PromptLocator {
+interface PromptLocator {
   projectId: string;
   sessionId: string;
   generation: number;

@@ -3,7 +3,8 @@ import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { MAX_REMOTE_CHARS, normalizeRemote, projectForRemote, recordProjectRemote } from '@myco-server-worker/core/remotes.js';
+import { projectForRemote, recordProjectRemote } from '@myco-server-worker/core/remotes.js';
+import { MAX_REMOTE_CHARS, normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 
 describe('normalizeRemote', () => {
   it('maps every written form of one repository to one name', () => {

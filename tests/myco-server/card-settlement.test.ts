@@ -7,7 +7,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { settleCards, SETTLE_TURNS_PER_WAKE } from '@myco-server-worker/ingest/card-settle.js';
 import { SETTLE_PROMOTE_PAGE } from '@myco-server-worker/db/documents/card-settlement.js';
-import { TURN_QUIET_MS } from '@myco-server-worker/core/turn-card-rules.js';
+import { TURN_QUIET_MS } from '@myco-server-worker/db/schema-v110.js';
 import { rereadTranscripts } from '@myco-server-worker/db/documents/rebuild.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';

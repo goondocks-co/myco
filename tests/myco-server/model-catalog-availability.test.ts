@@ -3,7 +3,7 @@ import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { catalogResolution, readModelCatalogs, recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
 import { CONTACT_THROTTLE_MS, recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';

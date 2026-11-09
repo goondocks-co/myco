@@ -13,13 +13,22 @@ import { describe, expect, it } from 'bun:test';
 import { turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { claimNextRun, endLeasedRun, expireLeases, renewLease, chooseHarness, RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
+import {
+  HARNESS_MEMBER_ID,
+  WORKER_HEARTBEAT_MS,
+  WORKER_LEASE_MS,
+} from '@myco-server-worker/constants.js';
+import {
+  claimNextRun,
+  endLeasedRun,
+  expireLeases,
+  renewLease,
+} from '@myco-server-worker/core/harness.js';
+import { chooseHarness, RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/worker-selection.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { workerLiveness } from '@myco-server-worker/db/runs/status.js';
-import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { TASK_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/core/task-catalogue.js';
-import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
+import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/run-deadline.js';
 
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };

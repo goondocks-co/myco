@@ -1,4 +1,4 @@
-import { admitProject, type ProjectCreator } from './project-creation.js';
+import { admitProject, type ProjectCreator } from '../db/storage/projects.js';
 /**
  * Git remotes as Project names: the middle leg of Project Resolution.
  *
@@ -22,8 +22,6 @@ import { admitProject, type ProjectCreator } from './project-creation.js';
  */
 import type { RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
-
-export { MAX_REMOTE_CHARS, normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 
 /** The Project a remote names, or null where no Project has claimed it. */
 export async function projectForRemote(db: RelationalStore, remote: string): Promise<string | null> {
@@ -64,7 +62,7 @@ export async function recordProjectRemote(db: RelationalStore, projectId: string
 }
 
 /** What resolving a member's repository to a project came to. */
-export type RepositoryResolution =
+type RepositoryResolution =
   | { resolved: true; projectId: string; name: string; created: boolean }
   | { resolved: false; reason: 'auto_create_off' | 'refused' | 'archived' };
 

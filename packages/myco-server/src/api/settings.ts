@@ -10,7 +10,18 @@ import { isAdmin } from '../auth/roles.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
 import { SecretValueError, deploymentSecretStore, type SecretDescription } from '../core/secrets.js';
 import { SECRET_SLOT_NAMES } from '@goondocks/myco-shared/secret-slots';
-import { projectSettingsEditor, cleanTaskDocument, settingsRevisions, DEPLOYMENT_LEAVES, PROJECT_CAPABILITIES, settingsSnapshot, settingsWriter, taskOverridesMetadata, type ProjectCapability, type SettingsRefusal, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../core/settings.js';
+import {
+  projectSettingsEditor,
+  cleanTaskDocument,
+  settingsRevisions,
+  DEPLOYMENT_LEAVES,
+  settingsSnapshot,
+  settingsWriter,
+  taskOverridesMetadata,
+  type SettingsRefusal,
+  RETIRED_LEAVES,
+  RETIRED_SECRET_SLOTS,
+} from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
 import { EMBEDDING_SELECTION_LEAVES } from '../core/embedding/policy.js';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
@@ -71,7 +82,6 @@ function writerFor(env: ServerEnv) {
   } });
 }
 
-
 /**
  * The longest credential this surface accepts.
  *
@@ -80,7 +90,6 @@ function writerFor(env: ServerEnv) {
  * value is a large sealed row nothing can use.
  */
 const MAX_SECRET_CHARS = 4096;
-
 
 /** An outcome's effective tier and whether a task override supplies it. */
 export type TaskTierRow =
@@ -165,7 +174,7 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
 }
 
 /** One harness's models as a machine's worker last listed them, as Settings offers them: the models, how and when. */
-export type SettingsModelCatalog = StoredModelCatalog;
+type SettingsModelCatalog = StoredModelCatalog;
 
 /**
  * `GET /api/settings`: the Deployment's leaves on the dashboard, raw to an admin and redacted to every other member.
@@ -451,4 +460,3 @@ export async function handleDeleteSecret(env: ServerEnv, ctx: OwnerContext): Pro
   return ok(await deploymentSecretStore(env.db, env.wrappingKey).delete(ctx.params.name, ctx.member.id, ctx.now));
 }
 
-export { SECRET_SLOTS, PROJECT_CAPABILITIES, type ProjectCapability };

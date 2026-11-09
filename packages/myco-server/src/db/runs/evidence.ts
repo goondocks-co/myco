@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { storedAudit, type RunAudit } from '../../core/run-audit.js';
-import { notTombstonedSql } from '../../core/tombstones.js';
+import { notTombstonedSql } from '../session-read-model.js';
 import { emit } from '../../telemetry.js';
 import type { ReadScope } from '../../read/scope.js';
 import { commit, read, write } from '../index.js';
@@ -78,7 +78,7 @@ export const RUN_TOOL_EVENT = 'run_tool';
 export const RUN_CALL_FAILED = 'failed';
 
 /** The longest failure message a recorded call keeps. */
-export const RUN_CALL_FAILURE_CHARS = 300;
+const RUN_CALL_FAILURE_CHARS = 300;
 
 /** Why the Deployment answered a run's call with a failure: the error's code, and what it said. */
 export interface RunCallFailure {
@@ -130,7 +130,6 @@ export async function recordRunCall(
  */
 export const RUN_WRITE_EVENT = 'run_write';
 
-
 const recordedWrite = read<[string, string, string], { one: number }>({ name: 'runs.recordedWrite', sql:
   `SELECT 1 AS one FROM agent_run_events WHERE project_id = ? AND run_id = ? AND event_type = '${RUN_WRITE_EVENT}' AND tool_name = ? LIMIT 1` });
 
@@ -155,7 +154,6 @@ export async function recordRunWrite(db: RelationalStore, scope: ReadScope, writ
     payload: JSON.stringify({ op: write.op, ...(write.detail ?? {}) }), recordedAt: write.recordedAt,
   }]);
 }
-
 
 /**
  * The most sessions one run's reads are recorded for. A run past it still reads; the sessions after the bound are
@@ -190,7 +188,7 @@ export async function recordRunReads(
   return inserted.results.length;
 }
 
-export interface RunEventRowInsert {
+interface RunEventRowInsert {
   runId: string;
   phaseName: string | null;
   eventType: string;
@@ -202,7 +200,7 @@ export interface RunEventRowInsert {
 }
 
 /** Record a burst of run events in one batch; each row lands independently through its own EXISTS guard, and a row naming a run this Project does not hold writes nothing. Answers how many landed. */
-export async function recordRunEvents(db: RelationalStore, scope: ReadScope, events: readonly RunEventRowInsert[]): Promise<number> {
+async function recordRunEvents(db: RelationalStore, scope: ReadScope, events: readonly RunEventRowInsert[]): Promise<number> {
   const statements = events.map((event) => db
     .prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
@@ -214,7 +212,7 @@ export async function recordRunEvents(db: RelationalStore, scope: ReadScope, eve
 }
 
 /** What a page or a run answers about its evidence, or null while the projection is still counting history. */
-export interface RunEvidenceHead { attempts: number; calls: number; failed: number }
+interface RunEvidenceHead { attempts: number; calls: number; failed: number }
 const headRead = read<[string, string], { ready: number; attempts: number | null; calls: number | null; failed: number | null }>({ name: 'runs.head', sql:
   `SELECT (${RUN_EVIDENCE_READY_SQL}) AS ready, h.attempts, h.calls, h.calls_failed AS failed
    FROM (SELECT 1) LEFT JOIN run_head h ON h.project_id = ? AND h.run_id = ?` });

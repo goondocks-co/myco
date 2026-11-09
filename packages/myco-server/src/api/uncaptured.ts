@@ -19,7 +19,7 @@ import { HELD_STATES, isUncapturedReason, type HeldState, type UncapturedReason 
 
 const isHeldState = (value: string): value is HeldState => (HELD_STATES as readonly string[]).includes(value);
 import { emit } from '../telemetry.js';
-import { mayCreateProjects } from '../core/project-creation.js';
+import { mayCreateProjects } from '../db/storage/projects.js';
 import { clearUncapturedStatement } from '../ingest/uncaptured.js';
 import { badRequest, listVisibleProjects, notFound, ok, readJsonObject } from './scope.js';
 

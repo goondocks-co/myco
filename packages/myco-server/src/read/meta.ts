@@ -1,5 +1,4 @@
 import type { ErrorClassifier, RelationalStore } from '../core/adapters.js';
-export { statusMetadata, type StatusMetadata } from '../db/documents/failure-head.js';
 import { within } from '../core/recovery-inventory.js';
 import { databaseAnswers, storedSchemaVersion } from '../db/meta/deployment.js';
 import { readFailureTelemetry, StorageContractError } from '../telemetry.js';

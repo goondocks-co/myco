@@ -3,19 +3,38 @@ import { callWords } from '@goondocks/myco-shared/call-words';
 import { isReasoningTier, OFFERABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { POWER_STATE_DEPTH, type PowerState } from '../core/power.js';
-import { listProjects } from './sessions.js';
+import { sessions_listProjects as listProjects } from './catalog/sessions.js';
 import type { ProjectSet } from './scope.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { readMapSettings } from '../core/canopy.js';
 import { fixedTaskHarness, resolveExecutionProfile, taskOverride, taskTierRefusal } from '../core/execution-profile.js';
-import { capabilityOf, claimSettings, DEFAULT_DISPATCH_TIMEOUT_SECONDS, harnessPreference, RUNTIME_SERVED_TASKS } from '../core/worker-selection.js';
+import {
+  capabilityOf,
+  claimSettings,
+  harnessPreference,
+  RUNTIME_SERVED_TASKS,
+} from '../core/worker-selection.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '../core/run-deadline.js';
 import { EMBEDDING_RETRY_MS } from '../core/embedding/task.js';
 import { jobDispatchesAt, SERVER_JOBS, TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE, type TaskSchedule } from '../core/jobs.js';
 import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { RUN_CLOSE_RULES } from '../core/run-postconditions.js';
 import { ACCELERATORS, effectiveIntervalSeconds, PRE_CONDITIONS, scheduleFor, scheduleLeaves } from '../core/schedule-rules.js';
 import { enabledCapabilities } from '../core/settings.js';
-import { CURATION_TASK, TASK_EXECUTION_PROFILES, RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, TITLING_TASK, EXTRACTION_TASK, CARD_TASK, PULLED_ONLY_TASKS, UNLANDED_TASKS } from '../core/task-catalogue.js';
+import {
+  CURATION_TASK,
+  TASK_EXECUTION_PROFILES,
+  RETAINED_TASKS,
+  TASK_TOOLS,
+  TASK_TIERS,
+  TASK_WORDS,
+  runTimeoutForTask,
+  TITLING_TASK,
+  EXTRACTION_TASK,
+  PULLED_ONLY_TASKS,
+  UNLANDED_TASKS,
+} from '../core/task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { curationPrompt, CURATION_SEED_CLOSENESS } from '../core/spore-curation.js';
 import { TURN_CARD_PROMPT } from '../core/turn-card-prompt.js';
 import { EXTRACTION_RULES } from '../core/extraction-rules.js';
@@ -47,7 +66,7 @@ export interface TaskDescription {
 export const startableByHand = (task: string): boolean => (RETAINED_TASKS as readonly string[]).includes(task) && !RUNTIME_SERVED_TASKS.includes(task) && task !== TITLING_TASK && !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task);
 
 /** The launch builder owns its template; runtime tasks carry no server-built prompt. */
-export function taskTemplate(task: string, patterns: readonly string[]): TaskTemplate {
+function taskTemplate(task: string, patterns: readonly string[]): TaskTemplate {
   const builder = inputBuilderFor(task);
   if (builder !== null) return builder.template(patterns);
   if (UNLANDED_TASKS.includes(task)) return { promptTemplate: null, standingRules: task === EXTRACTION_TASK ? EXTRACTION_RULES : null, templateVariants: [] };
@@ -58,7 +77,7 @@ export function taskTemplate(task: string, patterns: readonly string[]): TaskTem
 }
 
 /** A count and its unit in reader words. */
-export const unitWords = (count: number, unit: string): string => `${count} ${unit}${count === 1 ? '' : 's'}`;
+const unitWords = (count: number, unit: string): string => `${count} ${unit}${count === 1 ? '' : 's'}`;
 const STATE_WORDS: Readonly<Record<PowerState, string>> = { active: 'in use', idle: 'idle', sleep: 'asleep', deep_sleep: 'deeply asleep' };
 
 /** A schedule's effective gates in reader words. */

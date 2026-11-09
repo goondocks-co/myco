@@ -42,34 +42,34 @@ export interface MemberAuth {
   rotates: boolean;
 }
 
-export interface IssuedMemberToken {
+interface IssuedMemberToken {
   token: string;
   tokenId: string;
   expiresAt: number;
 }
 
 /** The chain a successor joins: the token it succeeds, and the root and start it inherits from it. */
-export interface TokenLineage {
+interface TokenLineage {
   predecessorId: string;
   lineageRoot: string;
   lineageStartedAt: number;
 }
 
 /** What a refresh needs of the presented token. */
-export type RefreshSubject = Pick<MemberAuth, 'memberId' | 'tokenId' | 'machineId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime'>;
+type RefreshSubject = Pick<MemberAuth, 'memberId' | 'tokenId' | 'machineId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime'>;
 
 export type RefreshResult =
   | { refreshed: true; token: string; tokenId: string; expiresAt: number; refreshAfter: number }
   | { refreshed: false; code: Classifier; reason: string; refreshAfter?: number };
 
-export const REFRESH_TOO_EARLY = 'refresh window not yet open';
+const REFRESH_TOO_EARLY = 'refresh window not yet open';
 /** The `revoked_by` of every row of a lineage the pipeline ended when a superseded credential of it asked to rotate: a credential used from two places, ended by no member. */
 export const LINEAGE_REPLAY_REVOKER = 'lineage-replay';
 
-export const LINEAGE_INACTIVE = 'token lineage inactive';
+const LINEAGE_INACTIVE = 'token lineage inactive';
 
 /** The instant a token's refresh window opens: `MEMBER_TOKEN_REFRESH_WINDOW_MS` before it expires. Every `refreshAfter` on the wire is this instant for some token. */
-export const windowOpensAt = (expiresAt: number): number => expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS;
+const windowOpensAt = (expiresAt: number): number => expiresAt - MEMBER_TOKEN_REFRESH_WINDOW_MS;
 
 interface AuthRow {
   schema_version: string;
@@ -108,7 +108,7 @@ export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKin
  * could fork the lineage. Such a credential is refused on the refresh route, lives out its TTL or a Stop, and is
  * renewed by minting another. A credential that rotates is the default; a successor always rotates.
  */
-export interface MintOptions {
+interface MintOptions {
   rotates?: boolean;
   /** A condition the insert must also meet; a caller batching it decides the outcome from the statement's returned row. */
   claim?: {write:import('../db/index.js').Statement<readonly unknown[],never,'write'>;values:readonly unknown[]};
@@ -167,7 +167,7 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
  * its successor is banked, and any successor already minted from it. Each is the same machine's credential at another moment,
  * and a live one left behind would rotate on. `memberId` confines it to that member's own rows.
  */
-export function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null, controlActor?: string): PreparedStatement {
+function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null, controlActor?: string): PreparedStatement {
   return db
     .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE} AND ${memberWritePredicate('?', 'member_credentials.member_id')}`} RETURNING id`)
     .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]), ...(controlActor === undefined ? [] : [controlActor, controlActor]));
@@ -326,7 +326,7 @@ export async function authenticateServerMemberToken(
  * A presented credential that has already been superseded: its successor has been
  * activated, so the lineage has moved on and this one no longer authenticates.
  */
-export interface LineageReplay {
+interface LineageReplay {
   tokenId: string;
   memberId: string;
   lineageRoot: string;

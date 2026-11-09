@@ -5,7 +5,7 @@ import { deploymentOwnerSql } from './ownership.js';
 export type RestoreAuthorization = { kind: 'member'; memberId: string } | { kind: 'recovery' };
 
 /** These rows can grant credentials, connect accounts, or attribute administrative authority. */
-export const RESTORE_AUTHORITY_TABLES: ReadonlySet<string> = new Set([
+const RESTORE_AUTHORITY_TABLES: ReadonlySet<string> = new Set([
   'members', 'machine_claims', 'enrollment_authorities', 'identity_link_authorities', 'member_credentials',
   'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'external_grants',
   'raw_credentials', 'raw_claims', 'raw_resources',
@@ -18,7 +18,7 @@ export class RestoreAuthorizationError extends Error {
   }
 }
 
-export type RestoreAdmission = { allowed: true; requiresOwner: boolean; code: null } | {
+type RestoreAdmission = { allowed: true; requiresOwner: boolean; code: null } | {
   allowed: false; requiresOwner: boolean; code: RestoreAuthorizationError['code'];
 };
 

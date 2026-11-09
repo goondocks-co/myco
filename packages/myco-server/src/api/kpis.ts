@@ -7,7 +7,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, ok } from './scope.js';
-import { kpiWindow, readKpis } from '../read/kpis.js';
+import { kpiWindow, readKpis } from '../db/insights/kpis.js';
 
 export async function handleKpis(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const window = kpiWindow(ctx.url.searchParams.get('window'));

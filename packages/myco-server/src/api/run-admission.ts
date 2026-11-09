@@ -1,7 +1,7 @@
 /** Shared admission for the live run principal and the retained runtime protocol. */
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
-import { HARNESS_MEMBER_ID } from '../core/harness.js';
+import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runDeadline } from '../core/run-deadline.js';
 export { runDeadline } from '../core/run-deadline.js';
 import { getRun, isTerminalRunStatus, liveRunsOfCredential, runsOfCredential, type HeldRun, type RunRow, type RunCaller } from '../db/runs/lifecycle.js';
@@ -27,7 +27,7 @@ export async function inProcessCredential(env: ServerEnv, tokenId: string): Prom
 
 const WORK_CONTROL_PATHS = new Set(['/runs/embedding-step']);
 
-export type RunControlAdmission = { held: true; run: HeldRun; settled?: Response } | { held: false };
+type RunControlAdmission = { held: true; run: HeldRun; settled?: Response } | { held: false };
 
 /** Bind a retained operation to one dispatch, its Project, lifecycle and task capability. */
 export async function admitRunControl(

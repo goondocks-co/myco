@@ -22,25 +22,33 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { LIVE_LEAVES, SETTING_POLICIES } from '@myco-server-worker/core/settings-policies.js';
 import { DEPLOYMENT_LEAF_SPECS, settingTexts, learningHistoryEnabledSql } from '@myco-server-worker/core/settings.js';
-import { budgetHeld } from '@myco-server-worker/core/run-budget.js';
+import { budgetHeld } from '@myco-server-worker/db/runs/budget-policy.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
-import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
-import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
+import { runScheduledTasks, decideTask } from '@myco-server-worker/core/scheduled-tasks.js';
+import {
+  scheduleLeaves,
+  scheduledTasks,
+  scheduleFor,
+} from '@myco-server-worker/core/schedule-rules.js';
+import { TASK_SCHEDULE, STAGING_RETENTION_JOB } from '@myco-server-worker/core/jobs.js';
 import { taskFactsKey } from '@myco-server-worker/db/runs/task-facts.js';
 import { backfillTitles, titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
-import { CLAIM_SETTING_LEAVES, dispatchTask, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
+import { dispatchTask, selectWorkerExecution } from '@myco-server-worker/core/harness.js';
+import {
+  CLAIM_SETTING_LEAVES,
+  type OfferedHarness,
+} from '@myco-server-worker/core/worker-selection.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '@myco-server-worker/core/recall.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
 import { reconcileReleaseProvenance, releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
 import { agentRunRetention, JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
-import { STAGING_RETENTION_JOB } from '@myco-server-worker/core/staging-retention.js';
 import { retentionDecision } from '@myco-server-worker/core/backup-retention.js';
 import { maintenanceDue } from '@myco-server-worker/core/store-maintenance.js';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { handleMemberStatus } from '@myco-server-worker/api/status.js';
-import { mayCreateProjects } from '@myco-server-worker/core/project-creation.js';
+import { mayCreateProjects } from '@myco-server-worker/db/storage/projects.js';
 import { embeddingKeepsAwake } from '@myco-server-worker/core/embedding/jobs.js';
 import { configuredEmbeddingProvider } from '@myco-server-worker/core/embedding/configured-provider.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
@@ -261,15 +269,15 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   },
   'agent.titling_idle_close_minutes': { consumer: at('core/titling.ts', backfillTitles), value: () => 30, invalid: () => 4, observe: titlesQuietSession },
   'cortex.canopy.refresh.background_period_minutes': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true]],
+    consumer: at('core/schedule-rules.ts', scheduledTasks), setup: () => [['agent.scheduled_tasks_enabled', true]],
     value: () => 30, invalid: () => 20_000, invalidMeans: { value: 10_080 }, observe: async (r) => (await mapSchedule(r))?.intervalSeconds ?? null,
   },
   'agent.tasks': {
-    consumer: at('core/scheduled-tasks.ts', scheduledTasks), value: () => ({ 'canopy-map': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
+    consumer: at('core/schedule-rules.ts', scheduledTasks), value: () => ({ 'canopy-map': { schedule: { intervalSeconds: 600 } } }), invalid: () => [], invalidDocument: true,
     observe: async (r) => scheduledTasks((await scheduleLeaves(r.env)).overrides).find((t) => t.task === 'canopy-map')?.schedule.intervalSeconds,
   },
   'agent.budget.daily_usd': {
-    consumer:at('core/run-budget.ts',budgetHeld),value:()=>5,invalid:()=>0.5,
+    consumer:at('db/runs/budget-policy.ts',budgetHeld),value:()=>5,invalid:()=>0.5,
     async observe(r) {
       await completeBudgetMigration(r.env.db,NOW);
       r.sqlite.run("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,0)");
@@ -365,7 +373,7 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
     ];
   })),
   'capture.auto_create_projects': {
-    consumer: at('core/project-creation.ts', mayCreateProjects), value: () => false, invalid: () => 0, observe: (r) => mayCreateProjects(r.env.db, MEMBER_PRINCIPAL.id),
+    consumer: at('db/storage/projects.ts', mayCreateProjects), value: () => false, invalid: () => 0, observe: (r) => mayCreateProjects(r.env.db, MEMBER_PRINCIPAL.id),
   },
   'import.enabled': { consumer: at('api/import.ts', handleImportPlan), value: () => false, invalid: () => 0, observe: importPlan },
   'import.window_days': { consumer: at('api/import.ts', handleImportPlan), value: () => 7, invalid: () => 2.5, observe: importPlan },

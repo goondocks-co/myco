@@ -3,7 +3,7 @@ import { HARNESS_MEMBER_ID } from '../../constants.js';
 import { credentialLive, runCredential } from '../liveness.js';
 import { read, readSet } from '../index.js';
 
-export interface CredentialPageRow {
+interface CredentialPageRow {
   id: string;
   member_id: string;
   machine_id: string | null;
@@ -37,7 +37,7 @@ type AllAfter = [now: number, harness: string, excluded: string | null, purpose:
 const allFirst = read<All, CredentialPageRow>({ name: 'credentialPage.allFirst', sql: `SELECT ${columns} FROM member_credentials INDEXED BY idx_member_credentials_started WHERE ${filtered} ${order} LIMIT ?5` });
 const allAfter = read<AllAfter, CredentialPageRow>({ name: 'credentialPage.allAfter', sql: `SELECT ${columns} FROM member_credentials INDEXED BY idx_member_credentials_started WHERE ${filtered} AND (lineage_started_at,id)<(?6,?7) ${order} LIMIT ?5` });
 
-export interface CredentialPageQuery {
+interface CredentialPageQuery {
   now: number;
   /** Rows to read, including the one that proves another page exists. */
   fetch: number;

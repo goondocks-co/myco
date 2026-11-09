@@ -13,7 +13,7 @@ export interface PhaseSource {
 }
 
 /** One statement of a page's reconcile: bound to the page's JSON keys, or to those keys and the instant the page runs. */
-export type PageStatement = { bind(keys: string): Bound } | { bindAt(keys: string, now: number): Bound };
+type PageStatement = { bind(keys: string): Bound } | { bindAt(keys: string, now: number): Bound };
 
 export interface PageContext {
   readonly db: RelationalStore;

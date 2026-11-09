@@ -15,7 +15,7 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {createProject} from '@myco-server-worker/read/sessions.js';
+import { createProject } from '@myco-server-worker/db/storage/projects.js';
 
 const storeTargets=new WeakMap<RelationalStore,'native'|'D1'>();
 

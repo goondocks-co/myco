@@ -14,7 +14,7 @@ import { classify, emit } from '../telemetry.js';
 import { within } from './recovery-inventory.js';
 
 /** How long settling a hold may wait for the producer's answer before the hold is kept, unverified, for the next pass. */
-export const HOLD_SETTLE_MS = 30_000;
+const HOLD_SETTLE_MS = 30_000;
 
 /** The producer hold open now, if any. An operator hold is not settled here: only its own operator releases it. */
 async function openHold(env: Pick<ServerEnv, 'db'>): Promise<string | null> {
@@ -95,9 +95,9 @@ export async function recoveryHoldRelease(env: ServerEnv, now: number): Promise<
  * artifact completes or when it gives the attempt up. While it is open, deletion defers, and for its first day
  * (`OPERATOR_HOLD_DEFERS_MS`) this Deployment admits none of its own exports.
  */
-export type OperatorHoldState = 'open' | 'released' | 'absent' | 'producer';
+type OperatorHoldState = 'open' | 'released' | 'absent' | 'producer';
 
-export interface OperatorHold {
+interface OperatorHold {
   state: OperatorHoldState;
   acquiredAt: number | null;
   releasedAt: number | null;

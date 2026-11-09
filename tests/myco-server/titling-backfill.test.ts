@@ -9,15 +9,28 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import {
-  backfillTitles, freshReserve, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, titlingIdleCloseMinutes, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
+  backfillTitles,
+  freshReserve,
+  titleReadySessions,
+  titleSession,
+  titlingBackfillPolicy,
+  titlingBackfillProgress,
+  titlingIdleCloseMinutes,
+  TITLING_BACKFILL_ACTOR,
+  TITLING_BACKFILL_BATCH,
 } from '@myco-server-worker/core/titling.js';
+import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { deploymentTaskCeilingWindow } from '@myco-server-worker/db/runs/claim.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { overwriteTitle, writeTitle } from '@myco-server-worker/read/sessions.js';
-import { listTitleCandidates, untitledReason, type TitleCandidateWindow } from '@myco-server-worker/read/children.js';
+import { overwriteTitle, writeTitle } from '@myco-server-worker/db/session-titles.js';
+import {
+  children_listTitleCandidates as listTitleCandidates,
+  children_untitledReason as untitledReason,
+  type children_TitleCandidateWindow as TitleCandidateWindow,
+} from '@myco-server-worker/read/catalog/children.js';
 import { count, withHarness } from './helpers/fixtures.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 

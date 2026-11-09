@@ -22,7 +22,7 @@ export function sporeTags(value: unknown): string | null {
 }
 
 /** A resolution as a caller asks for it, whatever names its own surface gives the fields. */
-export interface SporeResolutionRequest {
+interface SporeResolutionRequest {
   action: ResolutionAction;
   sporeId?: string;
   newSporeId?: string;
@@ -30,7 +30,7 @@ export interface SporeResolutionRequest {
 }
 
 /** A resolution the store will accept: one spore moving, with the status it lands on and the spore it lands under. */
-export interface SporeResolutionPlan {
+interface SporeResolutionPlan {
   action: ResolutionAction;
   status: SporeStatus;
   sporeId: string;
@@ -38,7 +38,7 @@ export interface SporeResolutionPlan {
   reason: string | null;
 }
 
-export type SporeResolutionOutcome = { ok: true; plan: SporeResolutionPlan } | { ok: false; reason: string };
+type SporeResolutionOutcome = { ok: true; plan: SporeResolutionPlan } | { ok: false; reason: string };
 
 /**
  * The resolution this request describes, or the one thing wrong with it.
@@ -75,21 +75,21 @@ export async function planSporeResolution(
 }
 
 /** A consolidation that records the wisdom spore as part of the move: the sources it merges, and the body and kind that replace them. */
-export interface SporeConsolidationRequest {
+interface SporeConsolidationRequest {
   sources?: readonly SporeSource[];
   content?: string;
   observationType?: string;
   reason?: string;
 }
 
-export interface SporeConsolidationPlan {
+interface SporeConsolidationPlan {
   sources: readonly SporeSource[];
   content: string;
   observationType: string;
   reason: string | null;
 }
 
-export type SporeConsolidationOutcome = { ok: true; plan: SporeConsolidationPlan } | { ok: false; reason: string };
+type SporeConsolidationOutcome = { ok: true; plan: SporeConsolidationPlan } | { ok: false; reason: string };
 
 /**
  * The consolidation this request describes, or the one thing wrong with it.

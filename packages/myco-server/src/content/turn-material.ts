@@ -31,7 +31,7 @@ export function turnInput(turnKey: string, records: readonly DocRecord[]): TurnI
 }
 
 /** A turn read from the live document, and whether the read held every page of it. */
-export interface DocumentTurn { input: TurnInput; complete: boolean }
+interface DocumentTurn { input: TurnInput; complete: boolean }
 
 /**
  * A turn of the session's live document, read from at most `TURN_PAGES` of its pages: the first `TURN_PAGES - 1`, and

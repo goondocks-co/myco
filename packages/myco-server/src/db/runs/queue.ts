@@ -11,7 +11,7 @@ import { effectiveBudgetSql } from '../../core/settings.js';
 import type { BudgetHolds } from './budget.js';
 import type { RunErrorCode } from '../../core/reader-codes.js';
 import type { BindValue } from '../index.js';
-import { budgetClaimPredicate, type ClaimBudget } from '../../core/run-budget.js';
+import { budgetClaimPredicate, type ClaimBudget } from './budget-policy.js';
 
 /** Readiness is read from the projection and never stored on a run. */
 export function storedQueueHold(holder: string): string | null {

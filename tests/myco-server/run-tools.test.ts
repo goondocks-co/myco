@@ -1,6 +1,6 @@
 import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { TITLE_MAX_CHARS } from '@myco-server-worker/core/titling-params.js';
-import { MATERIAL_EXCERPT_CHARS } from '@myco-server-worker/constants.js';
+import { MATERIAL_EXCERPT_CHARS, HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import ts from 'typescript-v6';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
@@ -20,7 +20,6 @@ import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
@@ -691,14 +690,12 @@ describe('the run map', () => {
   });
 });
 
-
 it('requires an explicit report op and directs the agent to finish after the accepted report', () => {
   expect(RUN_DEFINITIONS.find(definition => definition.name === 'myco_run')?.inputSchema.required).toContain('op');
   expect(RUN_DEFINITIONS.find(definition => definition.name === 'myco_run')?.description).toContain('Every call requires an explicit op');
   expect(runInstructionsFor(['report'])).toContain('After the report is accepted, end your response.');
   expect(runInstructionsFor(['report'])).toContain('there is no separate close call');
 });
-
 
 it('repairs a missing report reasoning and an oversized title through the named next calls', async () => {
   const f = await setup();

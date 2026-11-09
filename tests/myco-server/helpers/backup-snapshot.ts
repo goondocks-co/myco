@@ -2,7 +2,8 @@ import type { BlobStore, PreparedStatement, RelationalStore } from '@myco-server
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
-import { getSession, writeTitle } from '@myco-server-worker/read/sessions.js';
+import { sessions_getSession as getSession } from '@myco-server-worker/read/catalog/sessions.js';
+import { writeTitle } from '@myco-server-worker/db/session-titles.js';
 import { relationalSnapshot, RelationalSnapshotTooLargeError } from '@myco-server-worker/core/relational-snapshot.js';
 import type { ParserState } from '@myco-server-worker/ingest/parsers/index.js';
 

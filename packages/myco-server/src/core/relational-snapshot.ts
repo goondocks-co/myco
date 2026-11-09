@@ -10,8 +10,8 @@ export class RelationalSnapshotTooLargeError extends RelationalSnapshotError {
   constructor(readonly bytes: number) { super(`the relational snapshot needs ${bytes} bytes`); }
 }
 
-export const MAX_RELATIONAL_SNAPSHOT_ROWS = 10_000;
-export const MAX_RELATIONAL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+const MAX_RELATIONAL_SNAPSHOT_ROWS = 10_000;
+const MAX_RELATIONAL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 const JSON_ESCAPE_BYTES = 6;
 const ROW_FRAME_BYTES = 24;
 const NULL_FIELD_FRAME_BYTES = 8;

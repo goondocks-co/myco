@@ -31,13 +31,11 @@ import { reconcileStoredObjects } from '../db/storage/object-reconciliation.js';
 import { RELEASE_PAGE, decideRecordedBlobs, releaseCandidatesDue, type ReleaseOutcome } from '../db/storage/release-queue.js';
 import { classify, emit } from '../telemetry.js';
 
-export { HOLD_OPEN, RELEASE_PAGE, assignRestoreGeneration, recordBlobCandidates, recordHolderCandidates, recordObservedCandidates, releaseAgedOrphans, registeredBlobsGuard, unregisteredAmong, type ReleaseOutcome } from '../db/storage/release-queue.js';
-
 /** Journal rows, expired authorities and deferred candidates one drain pass takes, each. */
 export const DRAIN_PAGE = 16;
 /** How long one store delete may take before the drain leaves its journal row for the next pass. */
-export const DRAIN_DELETE_MS = 15_000;
-export const DRAIN_FAILURE_LIMIT = 2;
+const DRAIN_DELETE_MS = 15_000;
+const DRAIN_FAILURE_LIMIT = 2;
 
 const deleteStoredObject = (blobs: BlobStore, key: string, clock: () => number = Date.now) => within(() => blobs.delete(key), DRAIN_DELETE_MS, clock);
 
@@ -107,12 +105,12 @@ export function referencedBlobsOf(table: string, row: Readonly<Record<string, un
 }
 
 /** Who took a hold: this Deployment's own export producer, or an operator's full backup. */
-export type RecoveryHoldHolder = 'producer' | 'operator';
+type RecoveryHoldHolder = 'producer' | 'operator';
 /** Why an operator released its hold: the artifact completed, or the operator gave it up. */
 export type OperatorHoldRelease = 'complete' | 'abandoned';
 
 /** A hold row as an inspection reads it. */
-export interface RecoveryHoldRow {
+interface RecoveryHoldRow {
   token: string;
   holder: RecoveryHoldHolder;
   acquiredAt: number;
@@ -201,7 +199,7 @@ function instant(value: number): string {
 }
 
 /** What one `recoveryHoldSql.reading` row says: the hold, and the Deployment that answered for it. */
-export interface RecoveryHoldReadingRow {
+interface RecoveryHoldReadingRow {
   holder: string | null;
   acquired_at: number | null;
   released_at: number | null;
@@ -269,7 +267,7 @@ export function recoveryHoldOf(token: string, row: RecoveryHoldReadingRow | null
 }
 
 /** The identity a reading row carries, or null when it names no Deployment or no schema version this code can read. */
-export function recoveryHoldSourceOf(row: Pick<RecoveryHoldReadingRow, 'deployment_id' | 'schema_version'> | null): RecoveryHoldSource | null {
+function recoveryHoldSourceOf(row: Pick<RecoveryHoldReadingRow, 'deployment_id' | 'schema_version'> | null): RecoveryHoldSource | null {
   const deploymentId = row?.deployment_id ?? null;
   const schemaVersion = Number(row?.schema_version ?? Number.NaN);
   if (deploymentId === null || deploymentId === '' || !Number.isSafeInteger(schemaVersion) || schemaVersion < 1) return null;
@@ -282,7 +280,7 @@ export async function openRecoveryHold(db: RelationalStore, holder: RecoveryHold
   return row === null ? null : { token: row.token, acquiredAt: Number(row.acquired_at) };
 }
 
-export interface DrainReport {
+interface DrainReport {
   /** Expired upload authorities consumed, their bytes journaled. */
   expired: number;
   /** Journal rows the store acknowledged deleting, and removed. */

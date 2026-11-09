@@ -21,7 +21,7 @@ export interface MachineHarnessHealth {
  * the fields it reads of a session and a spore listed across Projects.
  *
  * The server's own declarations (`read/work.ts`, `core/attention.ts`,
- * `read/capture.ts`, `read/sessions.ts`, `core/spores.ts`) pull in the server's
+ * `read/capture.ts`, `read/catalog/sessions.ts`, `core/spores.ts`) pull in the server's
  * runtime modules, which this dashboard's build does not carry, so the shapes
  * are declared here and held to the server's by
  * `tests/myco-server/today-wire.test.ts`, which the tests typecheck compiles.

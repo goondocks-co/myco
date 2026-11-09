@@ -1,7 +1,7 @@
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { applySchemaSteps } from './helpers/migrate.js';
 import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
-import { promptAnswerRetentionStatements } from '@myco-server-worker/core/prompt-answer-retention.js';
+import { promptAnswerRetentionStatements } from '@myco-server-worker/db/prompt-answer-retention.js';
 /**
  * Recall: the capability gate over everything, the contributors and the order
  * they stand in, the once-per-session records, the bounds at a part boundary,
@@ -14,12 +14,24 @@ import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import {
-  composePromptContext, composeSessionContext, detectsPlanIntent, partsWithinBound, projectLine,
-  PLAN_INTENT_NUDGE, PROMPT_CONTEXT_MAX_CHARS, recallLeaves, recordSessionInjection,
-  SESSION_CONTEXT_MAX_CHARS, sessionInjectionKind, SUBAGENT_CORTEX_GUIDANCE,
-  PROMPT_ANSWER_RETENTION_DAYS, PROMPT_ANSWER_RETENTION_SQL,
-  type Contribution, type RecallLeaves, type RecallSkip, type SessionContextKind,
+  composePromptContext,
+  composeSessionContext,
+  detectsPlanIntent,
+  partsWithinBound,
+  PLAN_INTENT_NUDGE,
+  PROMPT_CONTEXT_MAX_CHARS,
+  recallLeaves,
+  recordSessionInjection,
+  SESSION_CONTEXT_MAX_CHARS,
+  SUBAGENT_CORTEX_GUIDANCE,
+  PROMPT_ANSWER_RETENTION_DAYS,
+  PROMPT_ANSWER_RETENTION_SQL,
+  type Contribution,
+  type RecallLeaves,
+  type RecallSkip,
+  type SessionContextKind,
 } from '@myco-server-worker/core/recall.js';
+import { projectLine, sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { CURATE_LINE } from '@myco-server-worker/core/injection.js';
@@ -39,7 +51,7 @@ import { emptyInjectionCounts, type InjectionCounts } from '@myco-server-worker/
 import { ContextTimings, type ContextTimingStage } from '@myco-server-worker/core/context-timing.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { EmbeddingUnavailable } from '@myco-server-worker/core/embedding/provider.js';
-import * as plans from '@myco-server-worker/read/plans.js';
+import * as plans from '@myco-server-worker/read/catalog/plans.js';
 import { agentRunRetention, JOB_BATCH } from '@myco-server-worker/core/jobs-run.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
@@ -168,7 +180,6 @@ describe('the recall leaves', () => {
     expect(recallLeaves({ 'cortex.instructions.inject_on_session_start': false }).instructionsAtSessionStart).toBe(false);
     expect(recallLeaves({ 'cortex.instructions.inject_on_subagent_start': false }).instructionsAtSubagentStart).toBe(false);
   });
-
 
 });
 
@@ -384,7 +395,7 @@ describe('prompt selection diagnostics', () => {
     try {
       await ask('no-hits', async () => ({ ...semantic, vectors: { ...semantic.vectors, query: async () => [] } }));
       expect(selectionOf(sqlite, 'no-hits')).toEqual(emptyInjectionCounts());
-      const nullPlan = spyOn(plans, 'getPlan').mockResolvedValue(null);
+      const nullPlan = spyOn(plans, 'plans_getPlan').mockResolvedValue(null);
       try { await ask('null-plan'); expect(nullPlan).toHaveBeenCalledTimes(1); } finally { nullPlan.mockRestore(); }
       const missing = selectionOf(sqlite, 'null-plan');
       expect(missing).toMatchObject({ planRawMatches: 5, planJoined: 5, planHits: 5, planUnserved: 5, planCalibration: 'project', planHydrated: 0, budgetKept: 0 });
@@ -602,7 +613,6 @@ describe('the bound', () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // Session start and subagent start
 // ---------------------------------------------------------------------------
@@ -620,7 +630,6 @@ const forSession = (
 
 /** An empty block for a start, with the gates it closed on. */
 const emptyStart = (skipped: RecallSkip[]) => ({ context: '', parts: [], skipped, kind: 'cortex' });
-
 
 describe('a session start', () => {
   it('names the Project first, then serves the template with no heading of its own', async () => {
@@ -671,7 +680,6 @@ describe('a session start', () => {
     expect(sessionRows(sqlite)).toHaveLength(1);
   });
 });
-
 
 describe('a subagent start', () => {
   it('hands the delegated agent the guidance lines above the instructions', async () => {

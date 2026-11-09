@@ -32,7 +32,7 @@ import { optimizeStore, TABLE_DISCOVERY_STATEMENTS, walkStoreIntegrity } from '.
 /** D1's maximum SQL query duration. */
 export const D1_QUERY_LIMIT_MS = 30_000;
 /** Initial statements before the check discovers and records its full work budget. */
-export const D1_INITIAL_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: TABLE_DISCOVERY_STATEMENTS + MAINTENANCE_PROGRESS_STATEMENTS };
+const D1_INITIAL_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: TABLE_DISCOVERY_STATEMENTS + MAINTENANCE_PROGRESS_STATEMENTS };
 
 export const SIZE_LIMIT_UNAVAILABLE =
   'the plan\'s database size limit is not readable from the Worker (500 MB on Workers Free, 10 GB on Workers Paid)';

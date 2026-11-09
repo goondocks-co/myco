@@ -12,7 +12,7 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { reportSessionArtifact } from '@myco-server-worker/core/session-artifacts.js';
 import { asOwner, asOwnerPatch, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
-import { MAX_FEED } from '@myco-server-worker/read/activity.js';
+import { activity_MAX_FEED as MAX_FEED } from '@myco-server-worker/read/catalog/activity.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 
 const NOW = 1_700_000_000_000;
@@ -192,7 +192,6 @@ describe('a project\'s name', () => {
     expect(feed.map((i) => [i.id, i.summary])).toEqual([['s_p', 'Fix the flaky test'], ['s_t', 'Titled by the model']]);
   });
 });
-
 
 describe('a session\'s lineage', () => {
   async function family() {

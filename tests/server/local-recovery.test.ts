@@ -23,9 +23,11 @@ import { reconcileEmbedding, type EmbeddingContext } from '../../packages/myco-s
 import { reconcileHubness } from '../../packages/myco-server/src/core/embedding/hubness.js';
 import { calibrationHasWork } from '../../packages/myco-server/src/db/embeddings/calibration.js';
 import { prepareEmbeddingDue } from '../../packages/myco-server/src/db/embeddings/work.js';
-import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/work.js';
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
-import { searchProject } from '../../packages/myco-server/src/read/search.js';
+import {
+  search_searchProject as searchProject,
+} from '../../packages/myco-server/src/read/catalog/search.js';
 import { createBackup, setBackupPinned } from '../../packages/myco-server/src/core/backup.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { indexFixture } from '../myco-server/helpers/vector-index.js';
@@ -102,7 +104,6 @@ async function storedBlobs(source: ReturnType<typeof sqliteEnv>) {
   }
   return held;
 }
-
 
 const RECOVERED_TOOL_ID = uuid(9002);
 const RECOVERED_TOOL_INPUT = { text: 'restore input '.repeat(300), file_path: '/repo/recovered.ts' };

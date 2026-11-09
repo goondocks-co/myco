@@ -2,7 +2,7 @@ import { parseMapArtifact, renderMap, type StoredMap } from '@goondocks/myco-sha
 import type { RelationalStore } from '../core/adapters.js';
 import type { ReadScope } from './scope.js';
 
-export type CanopyMapRow = StoredMap;
+type CanopyMapRow = StoredMap;
 
 /** The project's current map; markdown is rendered from its canonical artifact and source identity. */
 export async function readCanopyMap(db: RelationalStore, scope: ReadScope): Promise<CanopyMapRow | null> {
