@@ -3,6 +3,10 @@ import type { UpsertDeclaration } from './server-upsert-inventory.js';
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/schema-v728.ts#<module>': [{tables:['session_user_prompt_firsts','session_lifecycle_facts'],order:'unverified'}],
   'db/documents/dependencies.ts#<module>': [{tables:['publication_dependencies'],order:'unverified'}],
+  'db/schema-vNEXT-s4b.ts#<module>': [{tables:['spore_resolution_edges'],order:'unverified'}],
+  'db/spores/curation-work.ts#<module>': [{tables:['spore_curation_receipts'],order:'unverified'}],
+  'db/spores/curation-discovery.ts#<module>': [{tables:['spore_curation_cursor'],order:'unverified'}],
+  'db/spores/edges.ts#<module>': [{tables:['spore_resolution_edges'],order:'unverified'}],
   'db/documents/lifecycle.ts#sessionLifecycleSchema': [{tables:['session_user_prompt_firsts'],order:'unverified'}],
   'db/documents/lifecycle.ts#<module>': [{tables:['session_user_prompt_firsts'],order:'unverified'}],
   "db/schema-v731.ts#<module>": [
@@ -353,10 +357,8 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['kpi_lineage'], order: 'unverified' },
   ],
   'db/schema-v708.ts#captureHeadInsert': [{ tables: ['machine_capture_heads'], order: 'unverified' }],
-  'core/spore-curation.ts#closeStatements': [{ tables: ['spore_curation_receipts'], order: 'unverified' }],
   'db/curation-changes.ts#curationChangeSql': [{ tables: ['spore_curation_changes'], order: 'unverified' }],
   'db/meta/budget-activation.ts#indexWitness': [{ tables: ['schema_meta'], order: 'catalogue-snapshot' }],
-  'core/spore-curation.ts#discoverSporeClusters': [{ tables: ['spore_curation_cursor'], order: 'unverified' }],
   'core/activity.ts#stampRequestStatement': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/maintenance/outcomes.ts#<module>': [{ tables: ['schema_meta'], order: 'arrival-order' }],
   'db/meta/member-naming-failure.ts#<module>': [{ tables: ['member_naming_failures'], order: 'unverified' }],

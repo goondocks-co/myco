@@ -10,7 +10,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/knowledge/wire.ts';
-import type { SporeAcrossRow, SporeFacets, SporeRow, getSpore, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
+import type { SporeAcrossRow, SporeFacets, SporeRow, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
+import type { getSpore } from '../../packages/myco-server/src/db/spores/records.ts';
 import type {
   plans_PlanAcrossRow as PlanAcrossRow,
   plans_ProjectPlanRow as ProjectPlanRow,

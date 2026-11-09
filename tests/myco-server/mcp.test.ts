@@ -1187,7 +1187,6 @@ describe('guarded spore lifecycle on MCP', () => {
     const f = await runSetup();
     try {
       await f.dispatch(f.harness, 'run_1', SWEEP);
-      f.sqlite.run("UPDATE schema_meta SET value='1' WHERE key='guard_enabled_at'");
       const saved = (await f.call(f.member.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'guard me' })).result;
       expect((await f.call(f.harness.token, 'myco_run_spores', { op: 'get', id: saved.id })).result.spore.revision).toBe(0);
       expect((await f.call(f.harness.token, 'myco_run_spores', { op: 'list' })).result.spores[0].revision).toBe(0);
@@ -1201,7 +1200,7 @@ describe('guarded spore lifecycle on MCP', () => {
       expect(stale).toMatchObject({ status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected active at revision 1' });
       expectRunRefusal((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete', expect_revision: 1 })).result, 'runs require active', { tool: 'myco_spores', op: 'obsolete' });
       expect((await f.call(f.member.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete', expect_revision: 0 })).result)
-        .toEqual({ ok: false, error: 'stale', status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected obsolete at revision 0' });
+        .toEqual({ ok: false, error: 'stale', status: 'obsolete', revision: 1, reason: 'source is obsolete at revision 1; expected obsolete at revision 0', spore_id: saved.id, repair: 'Nothing was saved. Reread it, then decide again.', repairCall: { tool: 'myco_spores', op: 'get', id: saved.id } });
       expect((await f.call(f.member.token, 'myco_spores', { ...obsolete, expect_status: 'obsolete' })).result.status).toBe('obsolete');
       expect(f.sqlite.query('SELECT COUNT(*) AS n FROM resolution_events').get()).toEqual({ n: 2 });
       for (const expect_revision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
@@ -1210,22 +1209,18 @@ describe('guarded spore lifecycle on MCP', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('uses dispatch time for old-instruction compatibility and checks optional revisions', async () => {
+  it('requires every run to name the revision it read, and refuses a stale one', async () => {
     const f = await runSetup();
     try {
       await f.dispatch(f.harness, 'run_1', SWEEP);
-      const boundary = Date.now() - 1000;
-      f.sqlite.run("UPDATE schema_meta SET value=? WHERE key='guard_enabled_at'", [String(boundary)]);
-      f.sqlite.run("UPDATE agent_runs SET queued_at=?, started_at=? WHERE id='run_1'", [boundary - 1, Date.now()]);
       const saved = (await f.call(f.member.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'old run' })).result;
       const obsolete = { op: 'obsolete', id: saved.id, reason: 'retired' };
       expectRunRefusal((await f.call(f.harness.token, 'myco_spores', obsolete)).result, 'expect_revision is required', { tool: 'myco_spores', op: 'obsolete' });
-      f.sqlite.run("UPDATE agent_runs SET started_at=? WHERE id='run_1'", [boundary - 1]);
       const stale = (await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result;
       expectRunRefusal(stale, 'source is active at revision 0; expected active at revision 1', { tool: 'myco_run_spores', op: 'get', id: saved.id });
       expect(stale).toMatchObject({ status: 'active', revision: 0, reason: 'source is active at revision 0; expected active at revision 1' });
-      expect((await f.call(f.harness.token, 'myco_spores', obsolete)).result.status).toBe('obsolete');
-      expectRunRefusal((await f.call(f.harness.token, 'myco_spores', obsolete)).result, 'source is obsolete at revision 1; expected active', { tool: 'myco_run_spores', op: 'get', id: saved.id });
+      expect((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 0 })).result.status).toBe('obsolete');
+      expectRunRefusal((await f.call(f.harness.token, 'myco_spores', { ...obsolete, expect_revision: 1 })).result, 'source is obsolete at revision 1; expected active at revision 1', { tool: 'myco_run_spores', op: 'get', id: saved.id });
     } finally { f.sqlite.close(); }
   });
 
@@ -1233,7 +1228,6 @@ describe('guarded spore lifecycle on MCP', () => {
     const f = await runSetup();
     try {
       await f.dispatch(f.harness, 'run_1', SWEEP);
-      f.sqlite.run("UPDATE schema_meta SET value='1' WHERE key='guard_enabled_at'");
       const saved = (await f.call(f.member.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'source' })).result;
       const args = { op: 'consolidate', source_spore_ids: [saved.id], consolidated_content: 'wisdom', observation_type: 'wisdom' };
       expectRunRefusal((await f.call(f.harness.token, 'myco_spores', args)).result, 'is missing revision', { tool: 'myco_spores', op: 'consolidate' });

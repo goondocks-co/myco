@@ -15,15 +15,9 @@ import { SPORE_READ_STATE_PREFIX } from '../../constants.js';
  * guarded write every other state value is moved by, and is spent before the
  * row is fetched — a read of an id the Project does not hold still costs a unit.
  */
-import {
-  getSpore,
-  listSporePage,
-  listSupersededSporeIds,
-  listSupersedingSporeIds,
-  DEFAULT_SPORE_LIMIT,
-  SPORE_STATUSES,
-  type SporeRow,
-} from '../../core/spores.js';
+import { listSporePage, DEFAULT_SPORE_LIMIT, SPORE_STATUSES, type SporeRow } from '../../core/spores.js';
+import { getSpore } from '../../db/spores/records.js';
+import { listSupersededSporeIds, listSupersedingSporeIds } from '../../db/spores/edges.js';
 import { mutateState } from '../../db/runs/state.js';
 import { RUN_ANSWER_BYTES, type ReadWindow } from '../../core/read-window.js';
 import { answerBytes } from '../../core/material-pages.js';

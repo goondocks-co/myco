@@ -9,7 +9,8 @@ import type { ServerEnv } from './adapters.js';
 import { embedding_semanticSearch as semanticSearch } from '../read/catalog/embedding.js';
 import type { ReadScope } from '../read/scope.js';
 import { resolveSemanticSearch } from './search.js';
-import { activeSporesMatchingAnyWord, listSporesByIds, SPORE_PREVIEW_CHARS } from './spores.js';
+import { SPORE_PREVIEW_CHARS } from './spores.js';
+import { activeSporesMatchingAnyWord, listSporesByIds } from '../db/spores/records.js';
 
 /** The neighbours one save answers with. */
 const NEAR_MATCH_LIMIT = 5;

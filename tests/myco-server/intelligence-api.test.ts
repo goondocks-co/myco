@@ -10,7 +10,8 @@ import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
-import { insertSpore, resolveSpore } from '@myco-server-worker/core/spores.js';
+import { insertSpore } from '@myco-server-worker/db/spores/records.js';
+import { resolveSpore } from '@myco-server-worker/db/spores/lifecycle.js';
 
 const AGENT = 'agent_1';
 const NOW = 1_700_000_000_000;
@@ -69,10 +70,10 @@ describe('spores through the product surface', () => {
     const { get, db, scope } = await harness();
     await insertSpore(db, scope, spore('old'));
     await insertSpore(db, scope, spore('new'));
-    await resolveSpore(db, scope, 'superseded', {
+    await resolveSpore(db, scope, { status: 'superseded', event: {
       id: 're1', agentId: AGENT, sporeId: 'old', action: 'supersede',
       newSporeId: 'new', reason: null, sessionId: null, author: null, createdAt: NOW,
-    }, NOW);
+    }, now: NOW });
 
     const { body } = await get('/api/projects/proj_1/spores/old');
     expect(body.supersededBy).toEqual(['new']);
@@ -164,9 +165,9 @@ describe('replaying a spore resolution', () => {
     await insertSpore(db, scope, spore('old'));
     await insertSpore(db, scope, spore('new'));
     const event = { id: 're1', agentId: AGENT, sporeId: 'old', action: 'supersede' as const, newSporeId: 'new', reason: null, sessionId: null, author: null, createdAt: NOW - 5 };
-    expect(await resolveSpore(db, scope, 'superseded', event, NOW - 5)).toBe(true);
+    expect(await resolveSpore(db, scope, { status: 'superseded', event: event, now: NOW - 5 })).toBe(true);
     sqlite.run(`UPDATE spores SET status = 'active', updated_at = ? WHERE id = 'old'`, [NOW]);
-    expect(await resolveSpore(db, scope, 'superseded', event, NOW + 5)).toBe('duplicate');
+    expect(await resolveSpore(db, scope, { status: 'superseded', event: event, now: NOW + 5 })).toBe('duplicate');
     expect(sqlite.query(`SELECT status, updated_at FROM spores WHERE id = 'old'`).get()).toEqual({ status: 'active', updated_at: NOW });
     expect(sqlite.query(`SELECT COUNT(*) AS n, MAX(created_at) AS at FROM resolution_events`).get()).toEqual({ n: 1, at: NOW - 5 });
   });

@@ -43,8 +43,10 @@ export function writeGuardStore(
 }
 
 /** `writeGuardStore` for a kernel assertion, prepared on the same store the batch runs on. */
-export function boundWriteGuardStore(db: RelationalStore, assertion: () => Bound, refusal: (error: unknown) => never): RelationalStore {
-  return writeGuardStore(db, () => prepareBound(db, assertion()), refusal);
+export function boundWriteGuardStore(db: RelationalStore, assertion: () => Bound, refusal: (error: unknown) => never, options: { before?: () => readonly Bound[] } = {}): RelationalStore {
+  const compile = (bounds: readonly Bound[]) => bounds.map(bound => prepareBound(db, bound));
+  const { before } = options;
+  return writeGuardStore(db, () => compile([assertion()])[0]!, refusal, before === undefined ? {} : { before: () => compile(before()) });
 }
 
 /** The assertion and every supplied mutation commit together or leave no rows. */

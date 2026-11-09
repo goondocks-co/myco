@@ -7,7 +7,8 @@ import { heldToolCalls } from './tool-statistics.js';
  */
 import type { ContentStore, RelationalStore } from '../core/adapters.js';
 import { oneLine, type PromptInjection } from '../core/injection.js';
-import { listSporesByIds, MAX_SPORE_LIMIT } from '../core/spores.js';
+import { MAX_SPORE_LIMIT } from '../core/spores.js';
+import { listSporesByIds } from '../db/spores/records.js';
 import { sourceTimestampsRecorded } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { encodeCursor, type Page, type ReadScope } from '../read/scope.js';
