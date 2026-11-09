@@ -35,14 +35,17 @@ const event = write<[string, string, string, string, number]>({ name: 'runs.attr
   (project_id,run_id,phase_name,event_type,tool_name,outcome,duration_ms,payload,recorded_at)
   VALUES(?1,?2,NULL,'run_write',?3,'written',NULL,?4,?5)` });
 
+type Companions = readonly Bound[] | readonly PreparedStatement[];
+const named = (after: Companions): after is readonly Bound[] => after.every(statement => 'kind' in statement);
+
 /** A refused mutation rolls back its companions and records no attribution. */
 export async function commitAttributedWrite(db: RelationalStore, scope: ReadScope, change: AttributedMutation, attribution?: RunWrite,
-  after: readonly PreparedStatement[] = []): Promise<RunResult> {
+  after: Companions = []): Promise<RunResult> {
   if (!mutations.has(change)) throw new Error('Attribution requires an admitted mutation definition');
   const statements = [change.guard, change.mutation, change.landed, ...(attribution === undefined ? [] : [event.bind(scope.projectId,
     attribution.runId, attribution.toolName, JSON.stringify({ op: attribution.op, ...(attribution.detail ?? {}) }), attribution.recordedAt)])];
   try {
-    const results = after.length === 0 ? await commit(db, ...statements)
+    const results = named(after) ? await commit(db, ...statements, ...after)
       : await db.batch([...statements.map(statement => prepareBound(db, statement)), ...after]);
     return results[1]!;
   } catch (error) {

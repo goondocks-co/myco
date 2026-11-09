@@ -1,7 +1,6 @@
 import { commit, readSet, read, write } from './index.js';
 import { attributedUpdate } from './runs/attribution.js';
-import { prepareBound } from './kernel/statement.js';
-import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
+import type { RelationalStore } from '../core/adapters.js';
 import { commitAttributedWrite } from './runs/attribution.js';
 import { titleRunInFlightSql, notTombstonedSql } from './session-read-model.js';
 import { type RunWrite } from './runs/evidence.js';
@@ -67,21 +66,21 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
  * Records on the session's live document the user prompts the title just written covers. It runs right after the title
  * write in one batch and lands only when that write changed a row: the attribution between them is gated the same way.
  */
-function titledUserPrompts(db: RelationalStore, projectId: string, sessionId: string): PreparedStatement {
-  return prepareBound(db, titledPrompts.bind(projectId, sessionId));
+function titledUserPrompts(projectId: string, sessionId: string) {
+  return titledPrompts.bind(projectId, sessionId);
 }
 
 /** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
 export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null, attribution?: RunWrite): Promise<boolean> {
   const statement = overwrite.bind(title, summary, titledBy, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId)]);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(projectId, sessionId)]);
   return result.results.length > 0;
 }
 
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, attribution?: RunWrite): Promise<boolean> {
   const statement = writeFirst.bind(title, summary, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId)]);
+  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(projectId, sessionId)]);
   return result.results.length > 0;
 }
 

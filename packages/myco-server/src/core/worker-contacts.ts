@@ -1,5 +1,5 @@
 import { contactAuthorityIndex, workerContactUpsert, runnerContactUpsert } from '../db/runs/contact-writes.js';
-import type { Bound } from '../db/index.js';
+import { commit, type Bound } from '../db/index.js';
 import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { parseHarnessSignInFailure, harnessSignInFailureWords, runnerAgentLoginReady, storedRunnerCredentialChoices, type HarnessSignInFailure, type StoredRunnerCredentialChoices } from '@goondocks/myco-shared/runner-fleet';
 /**
@@ -234,9 +234,11 @@ export function runnerContactWrite(
 }
 
 /** Record one contact through the same statement used by atomic worker operations. */
-export async function recordWorkerContact(db: RelationalStore, contact: Parameters<typeof workerContactStatement>[1]): Promise<boolean> {
-  const statement = await workerContactStatement(db, contact);
-  return statement !== null && (await statement.run()).meta.changes > 0;
+export async function recordWorkerContact(db: RelationalStore, contact: Parameters<typeof workerContactWrite>[1]): Promise<boolean> {
+  const statement = await workerContactWrite(db, contact);
+  if (statement === null) return false;
+  const [result] = await commit(db, statement);
+  return result.meta.changes > 0;
 }
 
 /**
@@ -619,11 +621,6 @@ export async function pruneWorkerContacts(db: RelationalStore, now: number, olde
          LIMIT ?)`,
   ).bind(now - olderThanMs, now, batch).run();
   return (result.meta.changes ?? 0) + (runners.meta.changes ?? 0);
-}
-
-export async function workerContactStatement(...args: Parameters<typeof workerContactWrite>): Promise<PreparedStatement | null> {
- const bound = await workerContactWrite(...args);
- return bound === null ? null : prepareClaimCompanion(args[0], bound);
 }
 
 export function runnerContactStatement(...args: Parameters<typeof runnerContactWrite>): PreparedStatement { return prepareClaimCompanion(args[0], runnerContactWrite(...args)); }

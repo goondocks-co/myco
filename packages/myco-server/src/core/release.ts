@@ -1,5 +1,5 @@
-import { runUpdateStatement, isTerminalRunStatus, type RunCaller, type RunUpdate } from '../db/runs/lifecycle.js';
-import { commitRunChange } from '../db/runs/change.js';
+import { isTerminalRunStatus, type RunCaller, type RunUpdate } from '../db/runs/lifecycle.js';
+import { commitRunChange, runUpdateStatement } from '../db/runs/change.js';
 import type { RunErrorCode } from './reader-codes.js';
 import { emit } from '../telemetry.js';
 import type { ServerEnv } from './adapters.js';

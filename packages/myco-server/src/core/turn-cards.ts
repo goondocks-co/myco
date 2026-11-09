@@ -18,7 +18,7 @@ import { answerRoom, materialPages, type PagedEntry } from './material-pages.js'
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
-import { claimLearningRetryWrite, claimLearningRetryStatement, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
+import { claimLearningRetryWrite, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
 import { FRESH_LEARNING_MS, learningRangeSql } from '../db/runs/learning-policy.js';
 import { learningHistoryEnabledSql } from './settings.js';
 import { writeGuardBatch } from './write-guard-store.js';
