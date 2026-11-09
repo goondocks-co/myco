@@ -2,7 +2,7 @@ import { statementRecorder } from '../helpers/statement-recorder.js';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
+import { sessionsWithTranscript } from '@myco-server-worker/read/transcript.js';
 import { importedLegacyRows } from '@myco-server-worker/read/legacy-history.js';
 import {
   sessions_sessionsWithImportedPrompts as sessionsWithImportedPrompts,
@@ -34,8 +34,8 @@ it('D1 source proof reads a bounded set of identities independently of retained 
       measured.reset();
       const proof = await importedLegacyRows(measured.db, 'project', 'member', 'machine', sporeIds, lineageIds);
       expect(proof.sporeIds.size).toBe(count); expect(proof.lineageIds.size).toBe(count);
-      const transcripts = await heldTranscriptsFor(measured.db, { projectId: 'project' }, sessions, [], 'machine');
-      expect(transcripts).toHaveLength(count);
+      const transcripts = await sessionsWithTranscript(measured.db, { projectId: 'project' }, sessions, { machineId: 'machine', nonEmpty: true });
+      expect(transcripts.size).toBe(count);
       expect([...await sessionsWithImportedPrompts(measured.db, { projectId: 'project' }, sessions, 'legacy-import')]).toEqual(['session-1']);
       expect(measured.writes()).toBe(0);
       return measured.reads();

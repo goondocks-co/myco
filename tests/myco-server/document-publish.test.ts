@@ -8,7 +8,8 @@ import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtif
 import { PARSER_VERSION, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { documentTurnCollection } from '@myco-server-worker/content/session-turns.js';
 import { blobHeld } from '@myco-server-worker/db/storage/blob-held.js';
-import { stoppedTranscripts, rereadTranscripts, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import { stoppedTranscripts, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
+import { rereadTranscripts } from './helpers/reread.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { expect, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';

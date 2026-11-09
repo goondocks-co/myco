@@ -1,5 +1,5 @@
 import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
-import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { rereadTranscripts } from './helpers/reread.js';
 import { insertSwitch,pauseSwitch,resumeSwitch,deleteSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { recordedWork } from '@myco-server-worker/core/embedding/work-state.js';
 import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
@@ -362,6 +362,9 @@ test('calibration publication pages publish every settled member, a page at a ti
   });
 });
 
+/** One job row per reread page, plus the row the request opens: the job's own bookkeeping, 256 transcripts to a page. */
+const REREAD_JOB_WRITES = 64;
+
 test('bulk reread makes fully published sessions due and restores their byte lag', async () => {
   await world(async m=>{
     await documents(m.db,4_000);
@@ -376,7 +379,7 @@ test('bulk reread makes fully published sessions due and restores their byte lag
     m.reset();
     expect(await rereadTranscripts(m.db,{agent:'test'})).toBe(4_000);
     console.info(`reread 4000: ${m.reads()} read / ${m.writes()} written`);
-    expect(m.writes()).toBeLessThanOrEqual((REREAD_CATALOG_WRITES + REREAD_CONTRIBUTION_WRITES + REREAD_VERSION_INDEX_WRITES)*4_000);
+    expect(m.writes()).toBeLessThanOrEqual((REREAD_CATALOG_WRITES + REREAD_CONTRIBUTION_WRITES + REREAD_VERSION_INDEX_WRITES)*4_000 + REREAD_JOB_WRITES);
     expect((await readyDocumentStatus(m.db)).lagBytes).toBe(400_100);
     expect((await pendingPublication(m.db,NOW)).limited).toBe(true);
   });

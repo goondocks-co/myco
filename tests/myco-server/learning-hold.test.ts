@@ -3,7 +3,7 @@ import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 import { withDocumentStores, captureDocumentSession } from './helpers/document-stores.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';

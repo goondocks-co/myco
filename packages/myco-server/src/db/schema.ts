@@ -15,6 +15,7 @@ import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from './schema-vNEXT-s8a2.js';
 import { VNEXT_S4B_STEPS } from './schema-vNEXT-s4b.js';
 import { VNEXT_S2C_STEPS } from './schema-vNEXT-s2c.js';
 import { VNEXT_S6B_STEPS } from './schema-vNEXT-s6b.js';
+import { VNEXT_S2D_STEPS } from './schema-vNEXT-s2d.js';
 import { V717, V717_STATEMENTS } from './schema-v717.js';
 import { V719, V719_STATEMENTS } from './schema-v719.js';
 import { V710_STATEMENTS } from './schema-v710.js';
@@ -2249,6 +2250,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...VNEXT_S4B_STEPS.map(step => withStamp(step.version, step.statements)),
   ...VNEXT_S2C_STEPS.map(step => withStamp(step.version, step.statements)),
   ...VNEXT_S6B_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...VNEXT_S2D_STEPS.map(step => withStamp(step.version, step.statements)),
 ];
 
 /** Every statement of every step, in application order. */

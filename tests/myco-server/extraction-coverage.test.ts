@@ -9,7 +9,7 @@ import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';

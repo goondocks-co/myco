@@ -34,7 +34,7 @@ import { handleWake } from './api/wake.js';
 import { handleStorageCleanup,handleSetStorageCleanup } from './api/storage-cleanup.js';
 import { handleMaintenanceStatus, handleRunMaintenance } from './api/maintenance.js';
 import { handleSetTitlingBackfill, handleTitlingBackfill } from './api/titling-backfill.js';
-import { handleRereadTranscripts } from './api/transcript-reread.js';
+import { handleRereadJob, handleRereadTranscripts } from './api/transcript-reread.js';
 import {
   handleDeleteSecret, handleProjectCapabilities, handleSecrets, handleSetProjectCapability,
   handleMemberSettings, handleRepairTaskDocument, handleResetSetting, handleSetEmbedding, handlePassedOverSources, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
@@ -60,7 +60,7 @@ import {
   handleRevokeCredential, handleRevokeInvitation, handleRevokeMember,
 } from './api/access.js';
 import { handleGrants, handleMintGrant, handleRevokeGrant, handleRotateGrant } from './api/grants.js';
-import { CHILD_SEGMENTS, handleEndSession, handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleSessionCommits, handleSessionArtifacts, handleSessionActivity, handleSessionLineage, handleSessionTurn, handleSessionTurnToolCalls, handleSessionFiles, handleSessionTurns, handleSetPlanStatus, handleTitleSession, handleTombstoneSession, handleTranscript } from './api/sessions.js';
+import { CHILD_SEGMENTS, handleSessionDeletion, handleEndSession, handleProjectActivity, handleProjectSessions, handleSession, handleSessionChildren, handleSessionCommits, handleSessionArtifacts, handleSessionActivity, handleSessionLineage, handleSessionTurn, handleSessionTurnToolCalls, handleSessionFiles, handleSessionTurns, handleSetPlanStatus, handleTitleSession, handleTombstoneSession, handleTranscript } from './api/sessions.js';
 import { handleProjectRun, handleProjectRunCalls, handleProjectRunSteps, handleProjectRuns } from './api/agent-runs.js';
 import { handleProjectPlan, handleProjectPlans } from './api/plans.js';
 import { handleKpis } from './api/kpis.js';
@@ -177,6 +177,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/titling-backfill', auth: 'session', authority: 'admin', handler: handleTitlingBackfill },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'PUT', path: '/api/titling-backfill', auth: 'session', authority: 'admin', handler: handleSetTitlingBackfill },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/transcripts/reread', auth: 'session', authority: 'admin', handler: handleRereadTranscripts },
+  { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/transcripts/reread/{jobId}', pattern: /^\/api\/transcripts\/reread\/(?<jobId>[^/]{1,64})$/, auth: 'session', authority: 'admin', handler: handleRereadJob },
   { authorization: httpPolicy('processed', 'capture', 'project', ['member']), method: 'POST', path: '/events', auth: 'member', bodyMode: 'json', shape: 'persisted', handler: handleEvents },
   { authorization: httpPolicy('raw', 'append', 'project', ['member']), method: 'POST', path: '/blobs/{sha256}', pattern: /^\/blobs\/(?<key>[0-9a-f]{64})$/, auth: 'member', bodyMode: 'stream', shape: 'stored', maxBodyBytes: MAX_BLOB_BYTES, handler: handleBlob },
   { authorization: httpPolicy('credential', 'edit', 'credential', ['member']), method: 'POST', path: '/tokens/refresh', auth: 'member', bodyMode: 'json', shape: 'refreshed', capture: false, scope: 'credential', admitsLapsed: true, mintsAuthority: true, credential: handleRefresh },
@@ -261,6 +262,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/title', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/title$/, auth: 'session', authority: 'admin', handler: handleTitleSession },
   // #1147 — transcript-first ingest
   { authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/tombstone', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/tombstone$/, auth: 'session', authority: 'admin', handler: handleTombstoneSession },
+  { authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/deletion', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/deletion$/, auth: 'session', authority: 'admin', handler: handleSessionDeletion },
   { authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'POST', path: '/api/projects/{projectId}/sessions/{sessionId}/end', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/end$/, auth: 'session', authority: 'admin', handler: handleEndSession },
   // A session as turns: the list, one turn's body, and one turn's tool calls. A prompt id is member-minted under the envelope's id grammar.
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/sessions/{sessionId}/files', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/sessions\/(?<sessionId>[^/]{1,384})\/files$/, auth: 'session', authority: 'member', handler: handleSessionFiles },

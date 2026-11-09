@@ -533,7 +533,7 @@ export function useDeleteSession() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ projectId, sessionId }: { projectId: string; sessionId: string }) =>
-      postJson<{ applied: boolean; removed: number; blobsFreed: number; blobsLeft: number }>(`${project(projectId)}/sessions/${seg(sessionId)}/tombstone`, {}),
+      postJson<{ persisted: boolean; deletion: { state: string; phase: string; pausedBy: string | null } }>(`${project(projectId)}/sessions/${seg(sessionId)}/tombstone`, {}),
     onSuccess: async (_, { projectId }) => {
       await client.invalidateQueries({ predicate: (query) => query.queryKey[1] === projectId, refetchType: 'none' });
       await Promise.all([

@@ -31,6 +31,7 @@ import { V725, V725_STATEMENTS } from '@myco-server-worker/db/schema-v725.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s8a2.js';
 import { NEXT_S4B } from '@myco-server-worker/db/schema-vNEXT-s4b.js';
+import { NEXT_S2D, VNEXT_S2D_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2d.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
@@ -79,6 +80,14 @@ const LISTED: readonly Exception[] = [
       reason: match[2] === 'projects' ? 'Every Project write keeps the active count exact, restore included, so the limit never counts.'
         : 'A due-row deadline moves in the commit that finishes the row, and the job reads it by this index.' }];
   })),
+  ...VNEXT_S2D_STEPS.at(-1)!.statements.flatMap(sql => {
+    const match = /^CREATE TRIGGER(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: NEXT_S2D, object: match[1]!, table: match[2]!, reason: 'Turn cards and plans of a deleted session drop out of a ranked page on its tombstone, so a cursor over them restarts when one is written.' }];
+  }),
+  ...VNEXT_S2D_STEPS.slice(0, 3).flatMap(({ version, statements: [sql] }) => {
+    const match = /^CREATE INDEX(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql!);
+    return match === null ? [] : [{ step: version, object: match[1]!, table: match[2]!, reason: 'A deletion job pages these rows by the session they belong to, and a page must not walk the whole table.' }];
+  }),
   ...VNEXT_S6_INDEX_STEPS.flatMap(({ version, statements: [sql] }) => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql!);
     return match === null ? [] : [{ step: version, object: match[1]!, table: match[2]!, reason: 'Lineage heads re-derive from a lineage\'s unrevoked credentials, and a member\'s credential page reads newest lineage first.' }];
@@ -433,6 +442,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V721, sql, reason: 'Spore and plan totals record whether existing rows need counting by the catch-up.' })),
   ...NEXT_S8A2_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({ step: NEXT_S8A2, sql, reason: 'The walk over the object store seeds its one position row.' })),
   { step: NEXT_S4B, sql: "INSERT INTO projection_catchup(projection,phase,done) SELECT 'spore_resolution_edges','sporeResolutionEdges',NOT EXISTS(SELECT 1 FROM resolution_events) ON CONFLICT DO NOTHING", reason: 'Lineage edges record whether existing resolution events need replaying by the catch-up.' },
+  ...VNEXT_S2D_STEPS.at(-1)!.statements.filter(sql => /^(ALTER TABLE|DROP INDEX)/.test(sql)).map(sql => ({ step: NEXT_S2D, sql, reason:
+    sql.startsWith('DROP') ? 'Nothing reads the deletion-window index once the orphan audit replaced its gate.'
+      : 'The orphan audit keeps the floor it may release from and when its next pass begins beside the cursor it already holds.' })),
   ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
   ...V716_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V716, sql,
     reason: sql.includes('epoch') ? 'Each Project model carries the epoch a reset advances.'

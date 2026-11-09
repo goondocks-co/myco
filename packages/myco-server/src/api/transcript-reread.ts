@@ -3,14 +3,14 @@
  *
  * `POST /api/transcripts/reread` with `{ agent }` rereads every transcript that
  * agent's parser reads; with `{ projectId, sessionId }`, one session's, in a
- * Project the owner can see (an unknown Project answers 404). It
- * rewinds the parse (`rereadTranscripts`), wakes the Deployment so the tick
- * starts on it, and answers how many transcripts it rewound. The parse itself
- * runs in the tick under its ordinary budget, not in this request.
+ * Project the owner can see (an unknown Project answers 404). It answers 202
+ * with a job the tick walks in pages, and `GET /api/transcripts/reread/{id}`
+ * reports its progress. The parse itself runs in the tick under its ordinary
+ * budget, not in this request.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { rereadTranscripts, type RereadSelector } from '../ingest/parse.js';
+import { requestReread, rereadJob, type RereadJob, type RereadSelector } from '../db/documents/reread.js';
 import { parserFor } from '../ingest/parsers/registry.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
@@ -40,8 +40,15 @@ export async function handleRereadTranscripts(env: ServerEnv, ctx: OwnerContext)
     if (scope === null) return notFound();
     selector.projectId = scope.projectId;
   }
-  const reread = await rereadTranscripts(env.db, selector);
-  emit({ kind: 'transcripts_reread_requested', actor: ctx.member.id, transcripts: reread });
+  const job = await requestReread(env.db, selector, ctx.member.id, ctx.now);
+  emit({ kind: 'transcripts_reread_requested', actor: ctx.member.id, job: job.id });
   try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
-  return ok({ reread });
+  return Response.json(rereadBody(job), { status: 202 });
+}
+
+const rereadBody = (job: RereadJob) => ({ job });
+
+export async function handleRereadJob(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const job = await rereadJob(env.db, ctx.params.jobId ?? '');
+  return job === null ? notFound() : ok(rereadBody(job));
 }

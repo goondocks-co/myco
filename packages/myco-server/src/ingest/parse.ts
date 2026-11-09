@@ -595,8 +595,6 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   }
 }
 
-export { rereadTranscripts, type RereadSelector } from '../db/documents/rebuild.js';
-
 /** The transcripts that still owe a pass, and the bytes they have left to read; the half an import sent, apart. */
 type TranscriptBacklog = { state: 'building' } | {
   state?: 'ready'; limited?: true; transcripts: number; bytes: number;

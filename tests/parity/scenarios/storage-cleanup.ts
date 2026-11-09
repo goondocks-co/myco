@@ -2,7 +2,7 @@ import type { PageLocator } from '@myco-server-worker/content/session-pages.js';
 import { expect } from 'bun:test';
 import { sha256Hex, sha256HexOf } from '@myco-server-worker/hash.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js';
+import { rawMemberResourceSql } from '@myco-server-worker/db/raw/resources.js';
 import { documentsPublished, expectPersisted, lit, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const DAY_MS = 86_400_000;

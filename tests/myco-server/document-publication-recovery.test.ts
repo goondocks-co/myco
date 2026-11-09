@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import type { ContentStore } from '@myco-server-worker/core/adapters.js';
 import { DocumentBatch, type BatchDocument } from '@myco-server-worker/ingest/document-batch.js';
 import { publishDocuments, PUBLISH_BACKOFF_MIN_MS } from '@myco-server-worker/ingest/publish.js';
-import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { rereadTranscripts } from './helpers/reread.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';

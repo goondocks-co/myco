@@ -1,7 +1,7 @@
 import type { BlobStore, PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './session-deletion.js';
 import { sessions_getSession as getSession } from '@myco-server-worker/read/catalog/sessions.js';
 import { writeTitle } from '@myco-server-worker/db/session-titles.js';
 import { relationalSnapshot, RelationalSnapshotTooLargeError } from '@myco-server-worker/core/relational-snapshot.js';
