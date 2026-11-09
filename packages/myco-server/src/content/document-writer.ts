@@ -14,10 +14,8 @@ import { PublicationOwnershipBuilding, type KeyOwner, type MetadataShard } from 
  * looked for on the owner's open pages and on the one sealed page, if any, that catalog names for it. An owner's last
  * page is never sealed.
  */
-import {
-  DOCUMENT_CHUNK_BYTES, DOCUMENT_PAGE_BYTES, fitRecord, pageBytes, pageHeaderBytes, recordBytes, SESSION_OWNER,
-  type BodyRef, type DecodedChunk, type DocRecord, type Page,
-} from './document.js';
+import { DOCUMENT_CHUNK_BYTES, DOCUMENT_PAGE_BYTES, fitRecord, pageBytes, pageHeaderBytes, recordBytes, type BodyRef, type DecodedChunk, type DocRecord, type Page } from './document.js';
+import { SESSION_OWNER } from '../db/document-tables.js';
 import { mergeRecord } from './document-records.js';
 import type { ChunkRow } from './document-reader.js';
 import type { PublicationDirectory } from '../db/documents/directory.js';

@@ -13,6 +13,7 @@ import { decodeCursor } from '../read/scope.js';
 import { listAttachments, listContextInjections, listPlans, untitledReason } from '../read/children.js';
 import { parseOrigins, sessionTurnContexts } from '../read/turns.js';
 import { documentCounters, listCatalogTurns } from '../read/document-catalog.js';
+import { TurnLocatorBuilding } from '../db/documents/locators.js';
 import { documentPromptTools, documentTurnCollection, documentTurnDetail, documentUnplacedRecords, TURN_COLLECTIONS, type TurnCollection } from '../content/session-turns.js';
 import { documentSessionActivity } from '../content/session-activity.js';
 import { sessionFiles } from '../read/session-files.js';
@@ -274,8 +275,13 @@ export async function handleSessionTurn(env: ServerEnv, ctx: OwnerContext): Prom
     const rows = await documentTurnCollection(env, scope, sessionId, ctx.params.promptId, collection as TurnCollection, page.cursor);
     return rows === null ? notFound() : rows === 'stale' ? staleCursor() : ok(rows);
   }
-  const detail = await documentTurnDetail(env, scope, sessionId, ctx.params.promptId);
-  return detail === null ? notFound() : ok(detail);
+  try {
+    const detail = await documentTurnDetail(env, scope, sessionId, ctx.params.promptId);
+    return detail === null ? notFound() : ok(detail);
+  } catch (error) {
+    if (error instanceof TurnLocatorBuilding) return Response.json({ error: 'turn_locator_building', retryable: true, message: error.message }, { status: 503 });
+    throw error;
+  }
 }
 
 /** One turn's tool calls, oldest first, paged; read when the reader opens them. */

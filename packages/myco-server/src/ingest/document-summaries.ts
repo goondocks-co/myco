@@ -6,7 +6,7 @@ import { sessionEditStatements } from './session-edits.js';
 import { contentAssertion } from '../core/registered-content.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { readBodyChunk, readPageChunk, type ChunkRow } from '../content/document-reader.js';
-import { SESSION_OWNER } from '../content/document.js';
+import { SESSION_OWNER } from '../db/document-tables.js';
 import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, needsToolInput, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
 import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached, SESSION_PATHS_LIMIT } from './document-batch.js';
 import { turnStatisticsStatements, type StatisticsChange } from '../content/tool-statistics.js';

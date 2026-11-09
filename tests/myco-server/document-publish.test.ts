@@ -13,7 +13,8 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
 import { LOCATE_CHUNKS_PER_WAKE, locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
 import { readPage, readDirectory, readPageChunk } from '@myco-server-worker/content/document-reader.js';
-import { encodePageChunk, SESSION_OWNER, type DocRecord } from '@myco-server-worker/content/document.js';
+import { encodePageChunk, type DocRecord } from '@myco-server-worker/content/document.js';
+import { SESSION_OWNER } from '@myco-server-worker/db/document-tables.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { prepareArchive } from '@myco-server-worker/core/event-content.js';
@@ -33,7 +34,7 @@ import { statusMetadata } from '@myco-server-worker/read/meta.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { envelope, memoryBlobStore, uuid, readFixtureRecords } from './helpers/fixtures.js';
-import { MIN, tx, item, user, reply, call, output, limits, one, counters, ran, seedRecords } from './helpers/document-publication.js';
+import { MIN, tx, item, user, reply, call, output, limits, one, counters, ran, seedRecords, queueLocatorRepair } from './helpers/document-publication.js';
 
 test('a transcript publishes after a failed pass, its closed turn takes a late result in place, and the old version retires', async () => {
   await withDocumentStores(async (db, name) => {
@@ -210,7 +211,7 @@ async function unlocated(db: RelationalStore, session: string, turns: number) {
   const expected: Record<string, number> = {};
   for (const at of pages) for (const record of (await readPage(env, 'project', session, at.owner, at.page))!) if (record.k === 'prompt') expected[record.id] = at.page;
   await db.prepare(`UPDATE session_prompts SET page=NULL WHERE session_id=?`).bind(session).run();
-  await db.prepare(`UPDATE session_documents SET locate_after=NULL WHERE session_id=?`).bind(session).run();
+  await queueLocatorRepair(db);
   return { env, blobs, expected, at: t0 + 11 * MIN };
 }
 
