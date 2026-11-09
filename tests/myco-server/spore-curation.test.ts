@@ -14,7 +14,7 @@ import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/v
 import { vectorId } from '@myco-server-worker/core/embedding/vectors.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { claimNextRun, endLeasedRun } from '@myco-server-worker/core/harness.js';
-import { getRun } from '@myco-server-worker/core/runs.js';
+import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { runToolContext } from '@myco-server-worker/mcp/context.js';
 import { handleRunCuration } from '@myco-server-worker/mcp/tools/run-curation.js';
 import { handleSpores } from '@myco-server-worker/mcp/tools/spores.js';
@@ -353,7 +353,7 @@ test('ready session learning is claimed before curation, and an observed price s
   const { installPulledStages } = await import('@myco-server-worker/core/pulled-stages.js');
   const { PULL_FIXTURE_TABLE, testPulledStage } = await import('../helpers/pulled-test-stage.js');
   const { estimateKey } = await import('@myco-server-worker/core/budget-estimates.js');
-  const { mutateState } = await import('@myco-server-worker/core/runs.js');
+  const { mutateState } = await import('@myco-server-worker/db/runs/state.js');
   const f = await fixture();
   let restore = () => {};
   try {
@@ -558,7 +558,7 @@ test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without
   const {legacyWorker}=await import('./helpers/worker-principal.js');
   const {completeBudgetMigration}=await import('@myco-server-worker/db/meta/budget-activation.js');
   const {estimateKey}=await import('@myco-server-worker/core/budget-estimates.js');
-  const {mutateState}=await import('@myco-server-worker/core/runs.js');
+  const {mutateState} = await import('@myco-server-worker/db/runs/state.js');
   const f=await fixture(), attempts=300;
   const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default { fetch() { return new Response(null); } }',compatibilityDate:'2026-07-01',d1Databases:['DB']}));
   try {

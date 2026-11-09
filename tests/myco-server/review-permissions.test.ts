@@ -8,7 +8,8 @@ import { ensureMember, issueEnrollmentAuthority } from '@myco-server-worker/auth
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { HARNESS_MEMBER_ID, MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import { parseCardWrites } from '@myco-server-worker/core/turn-cards.js';
-import { recordDispatch, applyRunUpdate } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
+import { applyRunUpdate } from '@myco-server-worker/db/runs/lifecycle.js';
 import { writeSpore } from '@myco-server-worker/core/spore-admission.js';
 import { handleRun } from '@myco-server-worker/mcp/tools/run.js';
 import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';

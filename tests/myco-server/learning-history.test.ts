@@ -1,5 +1,5 @@
 import { commit } from '@myco-server-worker/db/index.js';
-import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
+import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import { expect, it } from 'bun:test';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import { settingsWriter, learningHistoryEnabled } from '@myco-server-worker/core/settings.js';
@@ -22,7 +22,7 @@ import { writeRunCards, NONE_CARD } from '@myco-server-worker/core/turn-cards.js
 import { type CardAssignment } from '@myco-server-worker/core/learning-stages.js';
 import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { LEARNING_SOURCE_REPAIR_PAGE, readLearningStatus, learningStatusLine, completeLearning, type LearningAssignment } from '@myco-server-worker/core/learning-sessions.js';
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
+import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { switchedOnStages } from '@myco-server-worker/core/pulled-stages.js';
 

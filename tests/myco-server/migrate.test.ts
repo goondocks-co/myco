@@ -747,6 +747,11 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0728_v728.sql': 'f1c83a9a70b127604d05e862bcd8e400df647e41b6ee9719897401e2e7e376a0',
   '0729_v729.sql': 'b7079b30f3cafd2752df176d84ce4f1121b86bdf1f7c0ab5dd6007d7080b2a6a',
   '0730_v730.sql': 'ec2327b12f300dd41ce161c5087fed7ec0e5fb14fae6b541fe938751cb9bc571',
+  '0731_v731.sql': 'ecc8254e197e89e335362b2b8ef5dcec5c86f1bdb524aed7914603a6cbb1aed3',
+  '0732_v732.sql': '0e3de9d33d52ab4686584dfe45e39e423180c7b4b614b7297091a8e1e1bb6ac6',
+  '0733_v733.sql': '9d0b6a713de6027c7ec42a1133ea93b14d00d1ec9870bfa70b71402a1f9ff0c7',
+  '0734_v734.sql': 'bd929456cca8026733567fe457abbf3cbd56f3e9becb8aed4fde1b5cc2dc4061',
+  '0735_v735.sql': 'd23e3af03a6e73e372d86af54c6496c1778401bc28ecce7f993c881111092d13',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1473,7 +1478,7 @@ describe('versioned schema steps', () => {
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',
       'document_publication_contributions','document_publication_totals','document_publication_ready',
-      'object_settlement_intents', 'attempt_spend', 'budget_totals', 'run_live', 'run_output_membership', 'task_runtime', 'task_due', 'work_daily', 'work_run_contribution', 'work_window_sessions', 'work_window_totals',
+      'object_settlement_intents', 'attempt_spend', 'attempt_head', 'budget_totals', 'run_head', 'run_bodies', 'run_body_failures', 'run_retirements', 'run_live', 'run_output_membership', 'task_runtime', 'task_due', 'work_daily', 'work_run_contribution', 'work_window_sessions', 'work_window_totals',
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_calibration_state', 'embedding_calibration_population', 'embedding_passed_over', 'embedding_source_state', 'embedding_vector_pages', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',

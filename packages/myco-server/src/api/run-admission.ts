@@ -4,7 +4,7 @@ import type { RouteContext } from '../context.js';
 import { HARNESS_MEMBER_ID } from '../core/harness.js';
 import { runDeadline } from '../core/run-deadline.js';
 export { runDeadline } from '../core/run-deadline.js';
-import { getRun, isTerminalRunStatus, liveRunsOfCredential, runsOfCredential, type HeldRun, type RunRow, type RunCaller } from '../core/runs.js';
+import { getRun, isTerminalRunStatus, liveRunsOfCredential, runsOfCredential, type HeldRun, type RunRow, type RunCaller } from '../db/runs/lifecycle.js';
 import { projectWorkEnabled, taskWorkEnabled } from '../core/settings.js';
 import { strictName } from '@goondocks/myco-shared/run-text';
 import { decodeRunUpdate, endedAnswer, RUN_UPDATE_FIELDS } from './run-fields.js';

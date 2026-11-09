@@ -4,7 +4,7 @@ import { ROUTES, RETIRED_ROUTES } from '@myco-server-worker/routes.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { IN_PROCESS_SCOPE } from '@myco-server-worker/api/run-admission.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './helpers/vector-index.js';

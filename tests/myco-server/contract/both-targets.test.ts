@@ -39,7 +39,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
-import { applyRunUpdate } from '@myco-server-worker/core/runs.js';
+import { applyRunUpdate } from '@myco-server-worker/db/runs/lifecycle.js';
 import { FAILURE_REASON_KEY } from '@myco-server-worker/db/run-context.js';
 import { issueExternalGrant, revokeExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { externalDefinitions } from '@myco-server-worker/mcp/external.js';

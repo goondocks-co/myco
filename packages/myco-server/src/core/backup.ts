@@ -3,8 +3,9 @@ import { retentionDecision } from './backup-retention.js';
 import { pinBackup } from '../db/storage/backup-pin.js';
 import { recordBackupPrune, type BackupPruneOutcome } from '../db/meta/backup-prune.js';
 import { resetProjectionCatchup } from '../db/projections/catchup.js';
+import { restoreRunBodyStatement } from '../db/runs/body-restore.js';
 import { clearArchivedTranscriptRanges, restoreTranscriptSegmentStatement } from './transcript-ranges.js';
-import { excludeDeletedRestoreRows, restoreBlobReferences } from './restore-rows.js';
+import { excludeDeletedRestoreRows, excludeRetiredRuns, restoreBlobReferences } from './restore-rows.js';
 import { contentAssertion } from './registered-content.js';
 import { eventReferenceStatement } from '../db/event-references.js';
 import { restoreLegacyEventReferences } from '../ingest/document-restore.js';
@@ -75,7 +76,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'spore_curation_work', 'spore_curation_receipts', 'spore_curation_owners',
   'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts',
   'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
-  'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports',
+  'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports', 'run_bodies',
   'knowledge_git_provenance', 'session_artifacts', 'turn_cards', ...DOCUMENT_ARTIFACT_TABLES,
 ];
 
@@ -121,7 +122,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'document_failure_contributions', 'document_failure_totals', 'document_failure_head', 'publication_dependency_totals',
   'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
   'setting_revisions', 'embedding_passed_over', 'change_marks', 'member_naming_failures', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
-  'storage_usage', 'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',
+  'storage_usage', 'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'run_head', 'attempt_head', 'run_body_failures', 'run_retirements', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',
   'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
@@ -454,6 +455,8 @@ export const ARTIFACT_PRECEDENCE_AMBIGUOUS = 'artifact_precedence_ambiguous';
 export interface RestoreOutcome {
   danglingEventBlobs?: { table: string; projectId: string; eventId: string; key: string }[];
   retiredNotice?: string;
+  /** Runs in the artifact that retention removed here, left out with their evidence. */
+  retiredRunsExcluded?: number;
   documents?: DocumentRestoreSummary;
   /** `reused` counts `blobs` rows this Deployment already registers, kept as they stand. */
   tables: Record<string, { rows: number; inserted: number; skipped?: string; reused?: number }>;
@@ -488,6 +491,7 @@ type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, decided: Restore
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
   agent_state: restoreAgentStateStatement,
+  run_bodies: restoreRunBodyStatement,
   agent_run_attempts: restoreAttemptStatement,
   extraction_acks: restoreExtractionAckStatement,
   transcript_segments: restoreTranscriptSegmentStatement,
@@ -632,6 +636,8 @@ export async function restoreArtifact(
     throw new BackupApplyError('blobs', 'a row carries no project and key');
   }
   db = await excludeDeletedRestoreRows(db, byTable);
+  const retiredRuns = await excludeRetiredRuns(db, byTable, foreign);
+  if (retiredRuns.unrecoverable > 0) throw new BackupObjectsMissingError(retiredRuns.unrecoverable);
   try { assertArchivedContentClosure(byTable); }
   catch (error) { throw new BackupApplyError('archive_bundles', error instanceof Error ? error.message : String(error)); }
   try { await admitRestoredArtifacts(db, byTable.get('session_artifacts') ?? [], byTable.get('sessions') ?? []); }
@@ -690,6 +696,7 @@ export async function restoreArtifact(
     throw new BackupApplyError('documents', `${ARTIFACT_PRECEDENCE_AMBIGUOUS}: sessions ${documents.summary.refuse.join(', ')} hold legacy-classified content their live documents may keep under other ids; restore them through the staged restore`);
   }
   const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
+    ...(retiredRuns.excluded === 0 ? {} : { retiredRunsExcluded: retiredRuns.excluded, retiredNotice: [admitted.retiredNotice, `${retiredRuns.excluded} run${retiredRuns.excluded === 1 ? '' : 's'} this Deployment has removed under retention ${retiredRuns.excluded === 1 ? 'is' : 'are'} left out.`].filter(Boolean).join(' ') }),
     ...(documents === undefined ? {} : { documents: documents.summary }) };
   const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
   await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);

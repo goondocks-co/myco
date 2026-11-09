@@ -41,6 +41,7 @@ import { within } from './recovery-inventory.js';
 import { RUNTIME_SERVED_TASKS } from './harness.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { provisionedHarnessAttention, type HarnessAttentionFact } from './harness-health.js';
+import { stuckRunBodies, type StuckRunBody } from '../db/runs/body-failures.js';
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -72,6 +73,7 @@ export type AttentionItem =
   | { kind: 'no_worker'; tone: 'bad'; runs: number; since: number | null; lastContactAt: number | null }
   | { kind: 'access_key_expiring'; tone: 'warn'; grantId: string; projectId: string; label: string | null; expiresAt: number }
   | { kind: 'member_naming_failed'; tone: 'warn'; members: MemberNamingFailure[]; hasMore: boolean }
+  | { kind: 'run_body_stuck'; tone: 'warn'; bodies: StuckRunBody[]; hasMore: boolean }
   | { kind: 'schema_mismatch'; tone: 'bad'; expected: number; found: number | null }
   | { kind: 'harness_needs_repair'; tone: 'bad'; machineId: string; machineName: string | null; harness: string; state: 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed'; action: string; since: number }
   | { kind: 'harness_capture_silent'; tone: 'warn'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
@@ -196,6 +198,13 @@ const RULES: readonly Rule[] = [
     read: async (env) => {
       const page = await memberNamingFailures(env.db);
       return page.members.length === 0 ? [] : [{ kind: 'member_naming_failed', tone: 'warn', ...page }];
+    },
+  },
+  {
+    kind: 'run_body_stuck',
+    read: async (env, now) => {
+      const page = await stuckRunBodies(env.db, now);
+      return page.bodies.length === 0 ? [] : [{ kind: 'run_body_stuck', tone: 'warn', ...page }];
     },
   },
 ];

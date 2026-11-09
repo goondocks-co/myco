@@ -14,7 +14,8 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { claimNextRun, endLeasedRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { RUN_CLOSE_AUDIT_ERROR, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
-import { listReports, recordDispatch } from '@myco-server-worker/core/runs.js';
+import { listReports } from '@myco-server-worker/db/runs/evidence.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { parseRunAudit, RUN_AUDIT_INSTRUCTION } from '@myco-server-worker/core/run-audit.js';
 import { runErrorCode } from '@myco-server-worker/core/reader-codes.js';
 import { INPUT_BUILDERS } from '@myco-server-worker/core/task-inputs.js';
@@ -72,7 +73,7 @@ describe('a run whose report carries no audit', () => {
     const answered = await r.asRun(run.runToken, { op: 'report', action: TITLING_REPORT_ACTION, summary: 'titled one session' });
     expect(answered.ok).toBe(false);
     expect(String(answered.error)).toContain('the report was recorded without its audit');
-    expect((await listReports(r.e.db, SCOPE, run.id)).map((report) => [report.action, report.audit])).toEqual([[TITLING_REPORT_ACTION, null]]);
+    expect((await listReports(r.e.db, SCOPE, run.id)).reports.map((report) => [report.action, report.audit])).toEqual([[TITLING_REPORT_ACTION, null]]);
 
     expect(await r.end(run.id)).toEqual({ ended: true, status: 'failed' });
     expect(r.row(run.id)).toEqual({ status: 'failed', error: RUN_CLOSE_AUDIT_ERROR, errorCode: 'report_without_audit' });
@@ -94,7 +95,7 @@ describe('a run whose report carries no audit', () => {
       .toEqual({ recorded: true, action: TITLING_REPORT_ACTION });
     expect(await r.end(run.id)).toEqual({ ended: true, status: 'completed' });
     expect(r.row(run.id)).toEqual({ status: 'completed', error: null, errorCode: null });
-    expect((await listReports(r.e.db, SCOPE, run.id)).map((report) => report.audit)).toEqual([null, { ...RUN_AUDIT, omitted: 0 }]);
+    expect((await listReports(r.e.db, SCOPE, run.id)).reports.map((report) => report.audit)).toEqual([null, { ...RUN_AUDIT, omitted: 0 }]);
   });
 
   it('closes as it did for a run claimed before attempts were recorded, which owes no audit', async () => {

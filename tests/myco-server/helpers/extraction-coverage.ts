@@ -1,7 +1,8 @@
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
-import { ensureAgent, recordDispatch } from '@myco-server-worker/core/runs.js';
+import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
 import { prepareLearningSlice } from './extraction.js';
 import { uuid } from './fixtures.js';

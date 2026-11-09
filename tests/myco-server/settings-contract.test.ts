@@ -26,7 +26,7 @@ import { budgetHeld } from '@myco-server-worker/core/run-budget.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { runScheduledTasks, decideTask, scheduleLeaves, scheduledTasks, scheduleFor } from '@myco-server-worker/core/scheduled-tasks.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
-import { taskFactsKey } from '@myco-server-worker/core/runs.js';
+import { taskFactsKey } from '@myco-server-worker/db/runs/task-facts.js';
 import { backfillTitles, titlingBackfillPolicy } from '@myco-server-worker/core/titling.js';
 import { CLAIM_SETTING_LEAVES, dispatchTask, selectWorkerExecution, type OfferedHarness } from '@myco-server-worker/core/harness.js';
 import { composePromptContext, composeSessionContext, readRecallLeaves } from '@myco-server-worker/core/recall.js';

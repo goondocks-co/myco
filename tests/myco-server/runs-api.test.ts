@@ -20,7 +20,7 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
 import { RETIRED_ROUTES } from '@myco-server-worker/routes.js';
 import { STALE_CREDENTIAL_REFUSAL } from '@myco-server-worker/core/harness.js';
-import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { EMBEDDING_CATALOGUE } from '@goondocks/myco-shared/settings-contract';
 import { EMBEDDING_MODEL_LEAF, EMBEDDING_PROVIDER_LEAF, resolveEmbedding, type StoredEmbedding } from '@myco-server-worker/core/embedding/policy.js';

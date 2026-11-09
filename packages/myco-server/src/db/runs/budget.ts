@@ -3,7 +3,7 @@ import type { BudgetStatus } from '@goondocks/myco-shared/budget-status';
 import { admissionReady } from './live.js';
 import { readSpendSnapshot, type SpendTotals } from './admission.js';
 import { ESTIMATE_AGENT, estimateKey, type EstimateSample } from '../../core/budget-estimates.js';
-import { getState } from '../../core/runs.js';
+import { getState } from './state.js';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 
 /** What the governor is holding now: each budgeted task's queue head it recorded as held by the budget, and why. */

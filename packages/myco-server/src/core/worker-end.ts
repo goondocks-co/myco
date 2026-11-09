@@ -2,7 +2,7 @@ import { parseWorkerAccounting, type WorkerUsage, type ExecutionIdentity } from 
 import { MAX_RUN_ERROR_CHARS } from '../constants.js';
 import { resolveWorkerCost } from './cost/worker.js';
 import { decideRunEnd, runEndingContext } from './run-postconditions.js';
-import { getRequestedWorkerProfile, type RunUpdate } from './runs.js';
+import { getRequestedWorkerProfile, type RunUpdate } from '../db/runs/lifecycle.js';
 import { withLeasedRun, type WorkerRunIdentity } from './worker-run.js';
 import { profileModelVerdict, MODEL_MISMATCH, MODEL_UNCONFIRMED, type ProfileRefusal } from '@goondocks/myco-shared/execution-profile';
 import { FAILURE_REASON_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY } from '../db/run-context.js';

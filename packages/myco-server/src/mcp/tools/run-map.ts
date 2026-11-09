@@ -14,7 +14,8 @@ import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
  */
 import { MapArtifactError, mapReceived } from '@goondocks/myco-shared/canopy';
 import { mapInputUnchanged, readMapSettings, writeCanopyMap } from '../../core/canopy.js';
-import { getRun, mapSourcePinOfRun, repositoryPinOfRun } from '../../core/runs.js';
+import { getRun } from '../../db/runs/lifecycle.js';
+import { mapSourcePinOfRun, repositoryPinOfRun } from '../../db/runs/preparation.js';
 import { MAP_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { readCanopyMap } from '../../read/canopy.js';
 import { runOf, type ToolContext } from '../context.js';

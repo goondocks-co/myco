@@ -48,6 +48,20 @@ function harness() {
   return { fixture, env, sqlite, run, spore, read, kinds, publication };
 }
 
+describe('a run body that cannot move', () => {
+  it('is an administrator\'s item once it has failed for a day, naming the run, and goes when the body moves', async () => {
+    const h = harness();
+    const { sqlite } = h as unknown as { sqlite: import('bun:sqlite').Database };
+    sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 1)`);
+    sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable) VALUES ('proj_1', 'run_stuck', 'agent_1', 't', 'completed', 1, 2, 0)`);
+    sqlite.run(`INSERT INTO run_body_failures (project_id, run_id, body_kind, item_id, failures, error, first_failed_at, retry_at) VALUES ('proj_1', 'run_stuck', 'instruction', 0, 3, 'run_body_not_text', ?, ?)`, [NOW - 2 * DAY, NOW + DAY]);
+    const items = async () => (await h.read()).items.filter((item) => item.kind === 'run_body_stuck');
+    expect(await items()).toMatchObject([{ tone: 'warn', hasMore: false, bodies: [{ projectId: 'proj_1', runId: 'run_stuck', kind: 'instruction', item: 0, failures: 3, error: 'run_body_not_text' }] }]);
+    sqlite.run(`DELETE FROM run_body_failures`);
+    expect(await items()).toEqual([]);
+  });
+});
+
 describe('Needs you', () => {
   it('answers an administrator and refuses a member who is not one', async () => {
     const { env, sqlite, fixture } = harness();

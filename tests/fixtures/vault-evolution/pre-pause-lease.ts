@@ -1,6 +1,6 @@
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
-import type { LeaseOwner } from '@myco-server-worker/core/runs.js';
+import type { LeaseOwner } from '@myco-server-worker/db/runs/leases.js';
 
 export async function oldRequeueLapsedLease(db: RelationalStore, scope: ReadScope, runId: string, owner: LeaseOwner | null, now: number): Promise<boolean> {
   const named = owner === null ? 'leased_by IS NULL AND leased_runner_id IS NULL'

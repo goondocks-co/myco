@@ -1,6 +1,6 @@
 import type { PreparedStatement, RelationalStore, RunResult } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
-import type { RunWrite } from '../../core/runs.js';
+import type { RunWrite } from './evidence.js';
 import { assertion, write, commit, refusalCode, refused, type Bound } from '../index.js';
 import { bindSlots } from '../kernel/limits.js';
 import { prepareBound } from '../kernel/statement.js';

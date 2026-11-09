@@ -184,7 +184,7 @@ it('budget status names every held Project head and keeps each run quote with it
     f.queue('next', 'automatic', 'proj_1', 'title-summary', f.now + 1);
     f.queue('other-project', 'automatic', 'proj_2');
     f.queue('manual', 'manual', 'proj_1');
-    const { recordQueueHolder } = await import('@myco-server-worker/core/runs.js');
+    const { recordQueueHolder } = await import('@myco-server-worker/db/runs/queue.js');
     await recordQueueHolder(f.db, { projectId: 'proj_1' }, 'first', 'budget', { usd: 2, at: f.now });
     await recordQueueHolder(f.db, { projectId: 'proj_2' }, 'other-project', 'budget', { usd: 0.5, at: f.now });
     await recordQueueHolder(f.db, { projectId: 'proj_1' }, 'manual', 'budget', { usd: 3, at: f.now });

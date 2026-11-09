@@ -1,7 +1,7 @@
 import type { RelationalStore } from './adapters.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { expireCarriedDeviceRequests } from '../auth/device.js';
-import { IN_FLIGHT_RUN_STATUSES } from './runs.js';
+import { IN_FLIGHT_RUN_STATUSES } from '../db/run-statuses.js';
 
 export type RecoveryTenantMode = 'replacement' | 'fork';
 

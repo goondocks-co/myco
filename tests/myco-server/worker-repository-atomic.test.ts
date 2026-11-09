@@ -184,7 +184,7 @@ for (const change of ['demotion', 'revocation'] as const) {
 for (const refused of [false, true]) {
   it(`records knowledge-only preparation only when its admitted mutation lands (refused=${refused})`, async () => {
     const { budgetFixture } = await import('./helpers/budget-fixture.js');
-    const { getRun, recordKnowledgeRepositoryUnavailable } = await import('@myco-server-worker/core/runs.js');
+    const { getRun } = await import('@myco-server-worker/db/runs/lifecycle.js') ; const { recordKnowledgeRepositoryUnavailable } = await import('@myco-server-worker/db/runs/preparation.js');
     const f = await budgetFixture();
     try {
       f.queue('knowledge-settlement', 'manual', 'proj_1', 'extract-curate');

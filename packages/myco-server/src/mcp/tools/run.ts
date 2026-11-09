@@ -27,7 +27,7 @@ import {
  */
 import { sha256Hex } from '../../hash.js';
 import { isServerStateKey } from '../../core/scheduler-state.js';
-import { getState, mutateState } from '../../core/runs.js';
+import { getState, mutateState } from '../../db/runs/state.js';
 import {
   MAX_REPORT_DETAILS_CHARS as MAX_DETAILS_CHARS,
   MAX_REPORT_SUMMARY_CHARS as MAX_SUMMARY_CHARS,

@@ -2,9 +2,13 @@ import { runtimeCaller } from './run-admission.js';
 /** The authenticated in-process embedding channel; store mutations stay in core/runs.ts. */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext, RouteContext } from '../context.js';
-import { RUN_UPDATE_COLUMNS, claimRun, getRun, isTerminalRunStatus, listAgents, type RunInsert, type RunUpdate, upsertAgent } from '../core/runs.js';
+import { type RunInsert } from '../core/runs.js';
+import { RUN_UPDATE_COLUMNS, getRun, isTerminalRunStatus, type RunUpdate } from '../db/runs/lifecycle.js';
+import { claimRun } from '../db/runs/claim.js';
+import { listAgents, upsertAgent } from '../db/runs/state.js';
 import { PROJECT_CAPABILITIES, type ProjectCapability } from '../core/settings.js';
-import type { RunAdmissionGate, RunRow } from '../core/runs.js';
+import type { RunAdmissionGate } from '../core/runs.js';
+import type { RunRow } from '../db/runs/lifecycle.js';
 import { commitRunUpdate } from '../core/release.js';
 import { recordReport, decideRunEnd, runEndingContext, emitLateHarnessError } from '../core/run-postconditions.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';

@@ -2,7 +2,7 @@ import { budgetActivation } from '../db/meta/budget-activation.js';
 import { estimateAdvanceStatement, estimateCompletionStatements, estimateCursor, estimateProgressGuard, estimatesRefreshedAt } from '../db/meta/budget-estimates.js';
 import type { RelationalStore } from './adapters.js';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
-import { ensureAgent, getState, guardedStateStatement } from './runs.js';
+import { ensureAgent, getState, guardedStateStatement } from '../db/runs/state.js';
 import { seedForStage, BUDGET_WORKER_TASKS, BUDGET_ESTIMATE_PREFIX } from './budget-policy.js';
 
 export const ESTIMATE_INTERVAL_MS = 3_600_000;

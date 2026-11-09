@@ -1,6 +1,6 @@
 import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { publishFixture } from './helpers/fixtures.js';
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
+import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 /**
  * `POST /mcp` through the deployed entry: the member tool surface as a client
  * meets it. JSON-RPC in, JSON-RPC out; every refusal an error envelope whose
@@ -42,7 +42,7 @@ import { grantToolContext, memberOf } from '@myco-server-worker/mcp/context.js';
 import { handlePlans } from '@myco-server-worker/mcp/tools/plans.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { launchQueued, recordDispatch, returnToQueue } from '@myco-server-worker/core/runs.js';
+import { launchQueued, recordDispatch, returnToQueue } from '@myco-server-worker/db/runs/claim.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 import type { ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';

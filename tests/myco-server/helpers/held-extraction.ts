@@ -1,6 +1,7 @@
 import { claimNextRun, type DispatchOutcome, type LaunchSpec } from '@myco-server-worker/core/harness.js';
 import { EXTRACTION_TASK } from '@myco-server-worker/core/task-catalogue.js';
-import { ensureAgent, recordQueued } from '@myco-server-worker/core/runs.js';
+import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
+import { recordQueued } from '@myco-server-worker/db/runs/claim.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 
 /** The synthetic run is queued before the pause and attributed to its dispatch actor. */

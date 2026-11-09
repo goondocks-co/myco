@@ -216,7 +216,7 @@ async function follow<T>(
  * Every call a run made back to Myco, a page at a time from the page its detail carried: the run's panel lists them
  * all beside its steps, and checks the agent's account against them all.
  */
-export function useAllRunCalls(projectId: string, runId: string, first: { rows: readonly RunCall[]; cursor: string | null; total: number }): Loaded<RunCall> {
+export function useAllRunCalls(projectId: string, runId: string, first: { rows: readonly RunCall[]; cursor: string | null; total: number | null }): Loaded<RunCall> {
   const query = useQuery({
     queryKey: ['run-calls', projectId, runId, first.total, first.rows.length],
     enabled: first.cursor !== null,

@@ -116,6 +116,7 @@ export type AttentionItem =
   | { kind: 'runs_held_for_capability'; tone: 'warn'; capability: string; runs: number; since: number }
   | { kind: 'no_worker'; tone: 'bad'; runs: number; since: number | null; lastContactAt: number | null }
   | { kind: 'access_key_expiring'; tone: 'warn'; grantId: string; projectId: string; label: string | null; expiresAt: number }
+  | { kind: 'run_body_stuck'; tone: 'warn'; bodies: Array<{ projectId: string; runId: string; kind: string; item: number; failures: number; error: string; since: number }>; hasMore: boolean }
   | { kind: 'member_naming_failed'; tone: 'warn'; members: Array<{ memberId: string; errorClass: string; failures: number; lastFailedAt: number }>; hasMore: boolean }
   | { kind: 'schema_mismatch'; tone: 'bad'; expected: number; found: number | null }
   | { kind: 'harness_needs_repair'; tone: 'bad'; machineId: string; machineName: string | null; harness: string; state: 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed'; action: string; since: number }

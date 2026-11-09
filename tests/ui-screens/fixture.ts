@@ -31,7 +31,7 @@ import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
-import { RUN_WRITE_EVENT } from '@myco-server-worker/core/runs.js';
+import { RUN_WRITE_EVENT } from '@myco-server-worker/db/runs/evidence.js';
 import { recordSessionInjection } from '@myco-server-worker/core/recall.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { REPORT_UNCAPTURED_PATH, RESOLVE_PROJECT_PATH } from '@goondocks/myco-shared/member-protocol';
@@ -768,6 +768,7 @@ function seedRuns(databasePath: string, now: number, sporeIds: string[], session
       sqlite.query(`INSERT INTO agent_run_steps (project_id, run_id, attempt_id, seq, call_id, kind, tool, target, outcome, exit_code, started_at, ended_at, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`)
         .run(idOf('myco'), mapRun, attempt, seq, `call-${seq + 1}`, step.kind, step.tool, step.target, step.outcome ?? 'ok', callStart + step.at, callStart + step.at + step.ms, callStart + 5 * MINUTE);
     }
+    sqlite.query(`INSERT INTO attempt_head (project_id, run_id, attempt_id, received) VALUES (?, ?, ?, 8)`).run(idOf('myco'), mapRun, attempt);
     sqlite.query('UPDATE agent_reports SET audit = ? WHERE project_id = ? AND run_id = ?').run(JSON.stringify({
       steps: ['Read the current code map', 'Read the files changed since the map was made', 'Wrote the updated map', 'Corrected one entry the map refused and saved it again'],
       examined: ['packages/myco/src/runner/loop.ts', 'packages/myco-shared/src'],

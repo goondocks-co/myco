@@ -1,5 +1,5 @@
 import { REPOSITORY_PREPARATION_TIMEOUT_MS } from '@goondocks/myco-shared/repository';
-import type { RunRow } from './runs.js';
+import type { RunRow } from '../db/runs/lifecycle.js';
 
 /** Millisecond UTC time evaluated by SQLite at statement execution. */
 export const SQL_NOW_MS = "(CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))";

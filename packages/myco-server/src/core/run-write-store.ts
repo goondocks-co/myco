@@ -1,5 +1,6 @@
 import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { runCallerGuard, type RunCaller } from './runs.js';
+import { runCallerGuard } from '../db/runs/claim.js';
+import { type RunCaller } from '../db/runs/lifecycle.js';
 import { writeGuardStore } from './write-guard-store.js';
 
 const EXPIRED_PATH = '$[myco_run_write_expired]';

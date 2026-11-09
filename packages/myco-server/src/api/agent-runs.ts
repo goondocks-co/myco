@@ -1,4 +1,5 @@
 import { fleetWaits } from '../read/fleet.js';
+import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 /**
  * Agent runs, read through the product surface.
  *
@@ -10,9 +11,9 @@ import { fleetWaits } from '../read/fleet.js';
 import { isAdmin } from '../auth/roles.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { listReports } from '../core/runs.js';
+import { RunBodyUnavailable, RunNotFound, listReportsWithBodies, runInstructionBody } from '../db/runs/bodies.js';
 import { getRunCalls, getRunDetail, getRunSteps, listRuns } from '../read/runs.js';
-import { runReads } from '../read/run-reads.js';
+import { runReads } from '../db/runs/reads.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
 import { memberSubject } from '../auth/authorization.js';
 import { RUN_CANCEL_POLICY, authorizeHttp } from '../auth/http-authorization.js';
@@ -89,7 +90,15 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   const waits = await fleetWaits(env, detail.run.status === 'queued' ? [detail.run.task] : [], ctx.now, isAdmin(ctx.member.role));
   const answer: DashboardRunDetail = { ...detail, run: { ...detail.run, ...(detail.run.status === 'queued' ? { fleetWait: waits.get(detail.run.task) } : {}), canCancel,
     cancelReason: canCancel ? null : 'Only the member who requested this run or an administrator can cancel it.' } };
-  return ok({ ...answer, reports: await listReports(env.db, scope, runId), ...await runReads(env.db, scope, runId), projectId: scope.projectId });
+  try {
+    const instruction = answer.run.instruction ?? await runInstructionBody(env, scope, runId);
+    const reports = await listReportsWithBodies(env, scope, runId);
+    return ok({ ...answer, run: { ...answer.run, instruction: instruction === null ? null : redactSecrets(instruction) }, reports: reports.reports, reportsHasMore: reports.hasMore, ...await runReads(env.db, scope, runId), projectId: scope.projectId });
+  } catch (error) {
+    if (error instanceof RunNotFound) return notFound();
+    if (error instanceof RunBodyUnavailable) return Response.json({ error: error.code, retryable: error.retryable, message: error.message }, { status: 503 });
+    throw error;
+  }
 }
 
 /** One page of admitted calls, without the run's instructions, reports or current artifacts. */

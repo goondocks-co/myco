@@ -10,6 +10,7 @@
  * recovery snapshot check; the held check itself is `db/storage/blob-held.ts`.
  */
 import { KINDS, blobFields } from '../ingest/kinds.js';
+import { V731 } from '../db/schema-v731.js';
 
 export interface BlobReference {
   table: string;
@@ -48,6 +49,7 @@ export const BLOB_REFERENCES: readonly BlobReference[] = [
     { table: 'raw_archive_refs', column: 'receipt_key' },
     { table: 'registered_content_proofs', column: 'key' },
   ]),
+  ...atSchema(V731, [{ table: 'run_bodies', column: 'key' }]),
 ];
 
 /** Physical rows that retain an archive bundle in their Project. */

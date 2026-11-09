@@ -22,7 +22,7 @@ import { changePlanStatus } from '../core/plans.js';
 import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
 import { tombstoneSession } from '../core/tombstones.js';
 import { endSession } from '../core/session-end.js';
-import { sessionOutcome } from '../read/run-reads.js';
+import { sessionOutcome } from '../db/runs/reads.js';
 import { sessionCommits } from '../read/session-commits.js';
 import { sessionLineage } from '../read/lineage.js';
 import { listSessionArtifacts } from '../read/session-artifacts.js';
