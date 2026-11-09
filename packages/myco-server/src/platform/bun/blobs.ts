@@ -12,7 +12,7 @@ import type { Stats } from 'node:fs';
 import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { fileBody } from './file-body.js';
-import type { BlobGetOptions, BlobPutOptions, BlobStore, StoredObject, StoredObjectBody } from '../../core/adapters.js';
+import type { BlobGetOptions, BlobPutOptions, BlobStore, ListedObject, StoredObject, StoredObjectBody } from '../../core/adapters.js';
 
 /** The message a digest rejection carries. This store's own platform recognises it; shared code matches no message text. */
 export const DIGEST_MISMATCH_MESSAGE = 'stored bytes do not match the declared sha256 digest';
@@ -171,6 +171,36 @@ export function diskBlobStore(root: string, sync: SyncHandle = syncHandle): Blob
 
     async delete(key) {
       await fs.rm(pathFor(key), { force: true });
+    },
+
+    async list({ limit, startAfter = '' }) {
+      const objects: ListedObject[] = [];
+      let truncated = false;
+      const walk = async (dir: string, prefix: string): Promise<boolean> => {
+        let entries: Array<{ name: string; isDirectory(): boolean }>;
+        try {
+          entries = await fs.readdir(dir, { withFileTypes: true, encoding: 'utf8' });
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+          throw err;
+        }
+        const named = entries.map(entry => ({ entry, order: entry.name + (entry.isDirectory() ? '/' : '') })).sort((a, b) => (a.order < b.order ? -1 : a.order > b.order ? 1 : 0));
+        for (const { entry } of named) {
+          const key = `${prefix}${entry.name}`;
+          if (entry.isDirectory()) {
+            const child = `${key}/`;
+            if (child <= startAfter && !startAfter.startsWith(child)) continue;
+            if (!await walk(path.join(dir, entry.name), child)) return false;
+          } else if (!entry.name.endsWith(PARTIAL_SUFFIX) && key > startAfter) {
+            if (objects.length === limit) { truncated = true; return false; }
+            const stat = await statObject(path.join(dir, entry.name));
+            if (stat !== null) objects.push({ key, uploaded: stat.mtime });
+          }
+        }
+        return true;
+      };
+      await walk(path.resolve(root), '');
+      return { objects, truncated };
     },
   };
 }

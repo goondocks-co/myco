@@ -1,12 +1,11 @@
-import { admitBlobUpload, journalUnpublishedUpload, reconcileBlobUpload } from '../db/storage/blob-admission.js';
-import { beginUploadIntent, settleObjectIntent, consumeUpload, discardUnissuedUpload } from '../db/storage/object-lifecycle.js';
-import { verifiedBlobReference } from '../core/raw-provenance.js';
+import { admitBlobUpload, reconcileBlobUpload } from '../db/storage/blob-admission.js';
+import { beginUploadIntent, settleUpload } from '../db/storage/object-lifecycle.js';
+import { contentRegistration, credentialMember, publishMemberUpload } from '../db/storage/content-lifecycle.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { StreamContext } from '../context.js';
 import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES, RETRY_AFTER_SECONDS } from '../constants.js';
 import { RawResourceReader } from '../core/raw-resources.js';
 import { classifyBlobStore, emit, TokenRevokedError, UNAVAILABLE, type Classifier } from '../telemetry.js';
-import { registerContentStatement } from '../core/content-registration.js';
 
 export const MAX_MEDIA_TYPE_CHARS = 128;
 const TOKEN = String.raw`[A-Za-z0-9!#$%&'*+.^_\`|~-]+`;
@@ -53,11 +52,12 @@ function refuse(ctx: StreamContext, reason: string, classifier: Classifier): Res
  *   store under another name are never taken as this upload's.
  * - **Reconcile.** The reservation moves to the size the store recorded, while the credential is still live.
  * - **Registration consumes the authority.** One batch registers the row only while the reservation is live, counts
- *   the bytes on the credential, and removes the reservation; the same batch journals this upload's bytes when a row already
- *   registers the content or the authority expired.
+ *   the bytes on the credential, removes the reservation and resolves the settlement intent; the same batch journals this
+ *   upload's bytes when a row already registers the content or the authority expired.
  * - **Every other exit consumes it too.** A refusal, a failed or unknown store write, or an error journals the
- *   generation's bytes and removes the reservation in one batch. An unresolved PUT retains a durable settlement intent;
- *   the wake job revisits its exact key after authority is consumed, including after an acknowledged delete.
+ *   generation's bytes and removes the reservation in one batch (`settleUpload`). An unresolved PUT retains a durable
+ *   settlement intent; the wake job revisits its exact key after authority is consumed, including after an acknowledged
+ *   delete, and the walk over the store finds anything else that lands with no owner.
  *
  * An upload whose authority expired, or another consumer took first, is answered as retryable: a retry stores under a fresh
  * generation.
@@ -86,14 +86,15 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     return Response.json({ stored: true, duplicate: true, key, size: row.size, mediaType: row.media_type } satisfies BlobResult);
   };
 
+  let settled = false;
   let consumed = false;
   let physical: string | undefined;
-  let putSettled = false;
+  let stored = false;
   try {
-    const existing = await db.prepare(`SELECT size, media_type FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key).first<{ size: number; media_type: string }>();
+    const existing = await contentRegistration(db, ctx.projectId, key);
     if (existing) {
-      const credential = await db.prepare('SELECT member_id FROM member_credentials WHERE id = ?').bind(ctx.tokenId).first<{ member_id: string }>();
-      if (credential !== null && await new RawResourceReader(env, { projectId: ctx.projectId }, { kind: 'member', memberId: credential.member_id })
+      const memberId = await credentialMember(db, ctx.tokenId);
+      if (memberId !== null && await new RawResourceReader(env, { projectId: ctx.projectId }, { kind: 'member', memberId })
         .allows({ kind: 'blob', id: key }, 'read')) return duplicate(existing);
     }
 
@@ -101,7 +102,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     try {
       physical = await beginUploadIntent(db,reservationId,ctx.clock());
       const object = await env.blobs.put(physical, request.body, { sha256: key, httpMetadata: { contentType: mediaType } });
-      putSettled = true;
+      stored = true;
       storedSize = object.size;
     } catch (err) {
       if (classifyBlobStore(err, env.platform?.classifyBlobFailure) === 'digest') return refuse(ctx, 'digest mismatch', 'digest_mismatch');
@@ -116,19 +117,8 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     }
     if (reconciled === 'revoked') throw new TokenRevokedError(ctx.tokenId);
 
-    const at = ctx.clock();
-    const live = `EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ? AND expires_at > ?)`;
-    await db.batch([
-      journalUnpublishedUpload(db,physical,at,reservationId,ctx.projectId,key),
-      registerContentStatement(db,{projectId:ctx.projectId,key,size:storedSize,mediaType,tokenId:ctx.tokenId,
-        receivedAt:at,generation:reservationId,authority:{sql:live,params:[reservationId,at]}}),
-      db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
-      verifiedBlobReference(db, { projectId: ctx.projectId, key, tokenId: ctx.tokenId, reservationId, at }),
-      db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),
-    ]);
-    consumed = true;
-    const row = await db.prepare(`SELECT size, media_type, generation FROM blobs WHERE project_id = ? AND key = ?`).bind(ctx.projectId, key)
-      .first<{ size: number; media_type: string; generation: string | null }>();
+    const row = await publishMemberUpload(db, { physical, reservation: reservationId, projectId: ctx.projectId, key, size: storedSize, mediaType, tokenId: ctx.tokenId, at: ctx.clock() });
+    settled = true;
     if (row?.generation === reservationId) {
       emit({ kind: 'blob_stored', projectId: ctx.projectId, tokenId: ctx.tokenId });
       return Response.json({ stored: true, duplicate: false, key, size: storedSize, mediaType } satisfies BlobResult);
@@ -136,11 +126,6 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     if (row !== null) return duplicate(row);
     return expired();
   } finally {
-    if (!consumed) {
-      await (physical === undefined
-        ? discardUnissuedUpload(db,reservationId)
-        : consumeUpload(db,reservationId,ctx.clock()));
-    }
-    if (physical !== undefined) await settleObjectIntent(db,physical,ctx.clock(),putSettled);
+    if (!settled) await settleUpload(db, { reservation: reservationId, ...(physical === undefined ? {} : { physical }), authorityConsumed: consumed, stored }, ctx.clock());
   }
 }

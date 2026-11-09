@@ -26,6 +26,7 @@ import { V721, V721_STATEMENTS } from '@myco-server-worker/db/schema-v721.js';
 import { V722, V722_STATEMENTS } from '@myco-server-worker/db/schema-v722.js';
 import { V725, V725_STATEMENTS } from '@myco-server-worker/db/schema-v725.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
+import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s8a2.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
@@ -408,6 +409,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT OR IGNORE INTO search_revisions')).map(sql => ({ step: V721, sql, reason: 'Each searched kind starts at search revision 0.' })),
   ...V721_STATEMENTS.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({ step: V721, sql, reason: 'The Deployment-wide spore index is replaced under its own name with the Project after the id.' })),
   ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V721, sql, reason: 'Spore and plan totals record whether existing rows need counting by the catch-up.' })),
+  ...NEXT_S8A2_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({ step: NEXT_S8A2, sql, reason: 'The walk over the object store seeds its one position row.' })),
   ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
   ...V716_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V716, sql,
     reason: sql.includes('epoch') ? 'Each Project model carries the epoch a reset advances.'

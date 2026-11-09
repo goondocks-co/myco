@@ -78,7 +78,7 @@ export async function snapshotScenario(db: RelationalStore, target: RelationalSt
 export async function snapshotRefusals(db: RelationalStore, blobs: BlobStore) {
   let publications = 0;
   const observedBlobs: BlobStore = {
-    head: (key) => blobs.head(key), get: (key, options) => blobs.get(key, options), delete: (key) => blobs.delete(key),
+    head: (key) => blobs.head(key), get: (key, options) => blobs.get(key, options), delete: (key) => blobs.delete(key), list: (options) => blobs.list(options),
     put: (key, value, options) => { publications += 1; return blobs.put(key, value, options); },
   };
   const refusal = async (store: RelationalStore) => {

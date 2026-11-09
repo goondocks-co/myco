@@ -179,3 +179,16 @@ it('reads a volume identity from its own database, and answers what it can for a
     expect(volumeIdentity(path.join(home, 'absent.sqlite'), () => null)).toEqual({ deploymentId: null, schemaVersion: null, device: -1, inode: -1 });
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
+
+it('refuses to create a database beside stored objects it would not know, and says what to do', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-volume-'));
+  const paths = resolveLocalPaths(home);
+  try {
+    fs.mkdirSync(path.join(paths.blobDir, 'project'), { recursive: true });
+    fs.writeFileSync(path.join(paths.blobDir, 'project', 'object'), 'x');
+    expect(() => createLocalDeployment(DEFAULT_LOCAL_RECORD, undefined as never, paths))
+      .toThrow(`${paths.blobDir} holds stored objects, but there is no database at ${paths.databasePath}`);
+    expect(fs.existsSync(paths.databasePath)).toBe(false);
+    expect(fs.existsSync(paths.recordFile)).toBe(false);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});

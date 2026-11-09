@@ -11,6 +11,7 @@ import { V724, V724_STATEMENTS } from './schema-v724.js';
 import { V725, V725_STATEMENTS } from './schema-v725.js';
 import { V726, V726_STATEMENTS } from './schema-v726.js';
 import { V731, V731_INDEX_STEPS, V731_STATEMENTS } from './schema-v731.js';
+import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from './schema-vNEXT-s8a2.js';
 import { V717, V717_STATEMENTS } from './schema-v717.js';
 import { V719, V719_STATEMENTS } from './schema-v719.js';
 import { V710_STATEMENTS } from './schema-v710.js';
@@ -2242,6 +2243,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...VNEXT_S6_INDEX_STEPS.map(step => withStamp(step.version, step.statements)),
   withStamp(NEXT_S6, VNEXT_S6_STATEMENTS),
   ...CARD_SETTLE_AND_LOCATOR_STEPS.map(step => withStamp(step.version, step.statements)),
+  withStamp(NEXT_S8A2, NEXT_S8A2_STATEMENTS),
 ];
 
 /** Every statement of every step, in application order. */

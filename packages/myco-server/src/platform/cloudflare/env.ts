@@ -96,6 +96,10 @@ function durableR2Bucket(bucket: BlobStore): BlobStore {
       return { size: stored.size, durable: true };
     },
     delete: (key) => bucket.delete(key),
+    list: async (options) => {
+      const listed = await bucket.list(options);
+      return { objects: listed.objects.map(object => ({ key: object.key, uploaded: object.uploaded })), truncated: listed.truncated };
+    },
   };
 }
 export type _VectorStoreSatisfies = AssertAssignable<VectorIndex, VectorizeIndex>;

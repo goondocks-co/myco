@@ -1,10 +1,10 @@
 import { objectJournalSql as journalSql } from './object-journal.js';
 import { clearStorageUsage, restartStorageUsage } from './usage.js';
 import { OBJECT_PUT_IN_FLIGHT_MS } from '../../constants.js';
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import { blobObjectKeySql } from '../../core/blob-objects.js';
 import { assertion, commit, read, readSet, write } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import { resetObjectStoreWalk } from './object-reconciliation.js';
 
 export const RELEASE_RETRY_BASE_MS = 30_000;
 export const RELEASE_RETRY_MAX_MS = 60 * 60 * 1000;
@@ -14,7 +14,8 @@ const uploadPhysical = blobObjectKeySql('r.project_id','r.key','r.reservation_id
 const uploadIntentSql = (expiry: string, predicate: string, returning = false) =>
   `INSERT INTO object_settlement_intents(physical,kind,expires_at,project_id,key,generation) SELECT ${uploadPhysical},'upload',${expiry},project_id,key,reservation_id FROM blob_reservations r WHERE ${predicate} ${returning ? 'RETURNING physical' : 'ON CONFLICT(physical) DO NOTHING'}`;
 const unowned = (alias: string) => `NOT (${registered(alias)}) AND NOT EXISTS(SELECT 1 FROM blob_reservations r WHERE r.reservation_id=${alias}.generation) AND NOT EXISTS(SELECT 1 FROM backup_publications p WHERE p.key=${alias}.physical)`;
-const intent = write<[reservation: string, now: number], { physical: string }>({
+/** Names the object an upload authority is about to store, so it has an owner before a byte moves. */
+export const beginUploadIntentStatement = write<[reservation: string, now: number], { physical: string }>({
   name: 'storage.beginObjectIntent', sql:
   uploadIntentSql('expires_at','reservation_id=? AND expires_at>?',true) });
 const uploadAuthority = assertion<[reservation: string, now: number]>({ name: 'storage.uploadIntentAuthority', sql:
@@ -23,7 +24,8 @@ const mark = write<[physical: string, at: number]>({ name: 'storage.settleObject
   'UPDATE object_settlement_intents SET expires_at=MAX(expires_at,?2) WHERE physical=?1' });
 const settleJournal = write<[physical: string, at: number]>({ name: 'storage.journalSettledObject', sql:
   journalSql(`SELECT physical,kind,?2 FROM object_settlement_intents i WHERE physical=?1 AND NOT (${registered('i')})`) });
-const clearSettled = write<[physical: string]>({ name: 'storage.clearSettledIntent', sql:
+/** Retires an intent whose PUT finished and whose object is registered or journaled. */
+export const clearSettledIntent = write<[physical: string]>({ name: 'storage.clearSettledIntent', sql:
   'DELETE FROM object_settlement_intents WHERE physical=?' });
 /** When a journal row is due: its rescheduled attempt, or its creation while no delete has failed. The queue index is over exactly this expression. */
 const EFFECTIVE_DUE = 'CASE WHEN retry_at=0 THEN created_at ELSE retry_at END';
@@ -36,8 +38,10 @@ const retireAcknowledged = write<[physical: string, issued: number, grace: numbe
 const retry = write<[physical: string, at: number, attempts: number, failure: string]>({ name: 'storage.retryObjectRelease', sql:
   'UPDATE object_releases SET retry_at=MAX(retry_at,?2),attempts=MAX(attempts,?3),last_failure=?4 WHERE physical=?1' });
 
-const expiredUploads = `SELECT reservation_id FROM blob_reservations WHERE expires_at<=?1 ORDER BY expires_at,reservation_id LIMIT ?2`;
-const expiredBackups = `SELECT key FROM backup_publications WHERE expires_at<=?1 ORDER BY expires_at,key LIMIT ?2`;
+const expiredUploadsSql = (now: string, limit: string) => `SELECT reservation_id FROM blob_reservations WHERE expires_at<=${now} ORDER BY expires_at,reservation_id LIMIT ${limit}`;
+const expiredBackupsSql = (now: string, limit: string) => `SELECT key FROM backup_publications WHERE expires_at<=${now} ORDER BY expires_at,key LIMIT ${limit}`;
+const expiredUploads = expiredUploadsSql('?1','?2');
+const expiredBackups = expiredBackupsSql('?1','?2');
 const expiredIntents = write<[now: number, limit: number]>({ name: 'storage.retainExpiredUploadIntents', sql:
   uploadIntentSql('MAX(expires_at,?1)',`reservation_id IN (${expiredUploads})`) });
 const journalUploads = write<[now: number, limit: number]>({ name: 'storage.journalExpiredUploads', sql:
@@ -60,14 +64,14 @@ const advance = write<[physical: string]>({ name: 'storage.advanceObjectReconcil
   'UPDATE object_reconciliation_cursor SET physical=? WHERE slot=1' });
 
 export async function beginUploadIntent(db: RelationalStore, reservation: string, now: number): Promise<string> {
-  const [,result] = await commit(db,uploadAuthority.bind(reservation,now),intent.bind(reservation,now));
+  const [,result] = await commit(db,uploadAuthority.bind(reservation,now),beginUploadIntentStatement.bind(reservation,now));
   const row = result.results[0];
   if (row === undefined) throw new Error('upload settlement intent returned no physical key');
   return row.physical;
 }
 /** An unresolved PUT retains its intent through its in-flight grace window. */
 export async function settleObjectIntent(db: RelationalStore, physical: string, now: number, settled: boolean) {
-  await commit(db,mark.bind(physical,now),settleJournal.bind(physical,now),...(settled ? [clearSettled.bind(physical)] : []));
+  await commit(db,mark.bind(physical,now),settleJournal.bind(physical,now),...(settled ? [clearSettledIntent.bind(physical)] : []));
 }
 export async function reconcileObjectIntents(db: RelationalStore, now: number, limit: number) {
   const [[row]] = await readSet(db,cursorPage.bind(now,limit,OBJECT_PUT_IN_FLIGHT_MS));
@@ -75,6 +79,13 @@ export async function reconcileObjectIntents(db: RelationalStore, now: number, l
   const page = JSON.parse(row.page) as string[];
   await commit(db,cursorHeld.bind(row.cursor),retireRegistered.bind(row.page),reconcile.bind(row.page,now),
     advance.bind(page.at(-1) ?? ''));
+}
+const authoritiesDue = read<[now: number], { due: number }>({ name: 'storage.expiredAuthoritiesDue', sql:
+  `SELECT EXISTS(${expiredUploadsSql('?1','1')}) OR EXISTS(${expiredBackupsSql('?1','1')}) AS due` });
+/** Whether the drain's own steps have more than one pass took: expired authorities, or journal rows due now. */
+export async function releaseWorkDue(db: RelationalStore, now: number): Promise<boolean> {
+  const [authorities, journal] = await readSet(db,authoritiesDue.bind(now),due.bind(now,1));
+  return authorities[0]?.due === 1 || journal.length > 0;
 }
 export async function drainAuthorities(db: RelationalStore, now: number, limit: number) {
   const [,,uploads,,backups] = await commit(db,expiredIntents.bind(now,limit),journalUploads.bind(now,limit),consumeUploads.bind(now,limit),
@@ -102,7 +113,7 @@ const resetCandidates = write<[]>({ name: 'storage.resetBackupCandidates', sql: 
 const resetIntents = write<[]>({ name: 'storage.resetObjectIntents', sql: 'DELETE FROM object_settlement_intents' });
 export async function resetObjectLifecycle(db: RelationalStore) {
   await commit(db,resetHolds.bind(),resetJournal.bind(),resetUploads.bind(),resetBackups.bind(),
-    resetCandidates.bind(),resetIntents.bind(),advance.bind(''),clearStorageUsage.bind(),restartStorageUsage.bind());
+    resetCandidates.bind(),resetIntents.bind(),advance.bind(''),resetObjectStoreWalk.bind(Date.now()),clearStorageUsage.bind(),restartStorageUsage.bind());
 }
 
 const retainedAuthority = write<[reservation: string, now: number]>({ name: 'storage.retainConsumedUploadIntent', sql:
@@ -114,13 +125,21 @@ const removedAuthority = write<[reservation: string]>({ name: 'storage.removeUpl
 const uploadAuthorityBindings = (reservation: string, now: number) =>
   [retainedAuthority.bind(reservation,now),releasedAuthority.bind(reservation,now),removedAuthority.bind(reservation)] as const;
 
-/** Composes authority consumption into a caller's publication batch. */
-export function consumeUploadAuthority(db: RelationalStore, reservation: string, now: number): PreparedStatement[] {
-  return uploadAuthorityBindings(reservation,now).map(bound=>prepareBound(db,bound));
-}
 export async function consumeUpload(db: RelationalStore, reservation: string, now: number) {
   await commit(db,...uploadAuthorityBindings(reservation,now));
 }
-export async function discardUnissuedUpload(db: RelationalStore, reservation: string) {
-  await commit(db,removedAuthority.bind(reservation));
+
+/** What a writer leaves behind when it stops: the authority, whether the store answered its PUT, and its object's name if it issued one. */
+export interface UploadExit { reservation: string; physical?: string; authorityConsumed: boolean; stored: boolean }
+
+/**
+ * Every exit of an upload that did not publish, in one commit: an authority still held is consumed and its bytes
+ * journaled, and the settlement intent is resolved when the store answered the PUT and retained when it did not. Whatever fails
+ * here leaves the reservation or the intent standing for the drain.
+ */
+export async function settleUpload(db: RelationalStore, exit: UploadExit, now: number): Promise<void> {
+  const { reservation, physical, authorityConsumed, stored } = exit;
+  await commit(db,
+    ...(authorityConsumed ? [] : physical === undefined ? [removedAuthority.bind(reservation)] : uploadAuthorityBindings(reservation,now)),
+    ...(physical === undefined ? [] : [mark.bind(physical,now),settleJournal.bind(physical,now),...(stored ? [clearSettledIntent.bind(physical)] : [])]));
 }

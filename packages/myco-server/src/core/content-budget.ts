@@ -127,6 +127,10 @@ export function measuredContentEnv<T extends { db: RelationalStore; blobs?: Blob
             blob();
             return Reflect.apply(original.delete, original, [key]);
           },
+          list: async (options) => {
+            blob();
+            return original.list(options);
+          },
           ...(original.ensureDurable
             ? {
                 ensureDurable: async (key: string) => {

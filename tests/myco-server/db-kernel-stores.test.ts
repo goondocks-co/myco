@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { assertion, commit, commitNamed, first, read, refusalCode, refusalDetail, refused, rows, write, type RefusalCode } from '@myco-server-worker/db/index.js';
+import { assertion, commit, commitAfter, commitNamed, first, read, refusalCode, refusalDetail, refused, rows, write, type RefusalCode } from '@myco-server-worker/db/index.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import * as telemetry from '@myco-server-worker/telemetry.js';
@@ -61,6 +61,14 @@ describe.each([['native'], ['D1']])('kernel executors on %s', target => {
     const listed: Item[] = await rows(db, all.bind());
     expect(listed).toEqual([{ id: 'a', n: 2 }]);
     expect(await rows(db, insert.bind('b', 7))).toEqual([{ id: 'b', n: 7 }]);
+  });
+
+  it('refuses a batch guard that holds a second statement, and writes nothing', async () => {
+    const db = store();
+    await reset(db);
+    await expect(commitAfter(db, [{ sql: '1) THEN 1 END; DELETE FROM items; SELECT CASE WHEN (1', params: [] }], bump.bind('a')))
+      .rejects.toThrow('batch guard');
+    expect(await rows(db, all.bind())).toEqual([{ id: 'a', n: 1 }]);
   });
 
   it('keeps results under their keys when a statement is added ahead of them', async () => {

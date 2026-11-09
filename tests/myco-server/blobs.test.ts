@@ -388,7 +388,7 @@ describe('blob route', () => {
       let unavailable=fault==='database unavailable';
       const db=e.env.MYCO_DB;
       e.env.MYCO_DB={...db,batch:async(statements:PreparedStatement[])=>{
-        if(unavailable || fault==='registration batch fails' && statements.some(statement=>'name' in statement && statement.name==='storage.registerContent')) {unavailable=false;throw new Error('store unavailable');}
+        if(unavailable) {unavailable=false;throw new Error('store unavailable');}
         return db.batch(statements);
       }};
       const put=e.bucket.put.bind(e.bucket);
@@ -399,6 +399,7 @@ describe('blob route', () => {
         if(fault==='database unavailable after PUT') unavailable=true;
         return object;
       };
+      if(fault==='registration batch fails') e.sqlite.run("CREATE TRIGGER fail_registration BEFORE INSERT ON blobs BEGIN SELECT RAISE(ABORT,'registration batch fails'); END");
       const before=bytesWritten(e.sqlite,t.tokenId);
       const response=await worker.fetch(blobPost(t.token,await keyOf(bytes),bytes),e.env);
       expect(response.status,fault).toBe(503);

@@ -2,7 +2,7 @@ import type { PreparedStatement, RelationalStore } from '../../core/adapters.js'
 import { blobObjectKeySql } from '../../core/blob-objects.js';
 import { BLOB_RESERVATION_TTL_MS } from '../../constants.js';
 import type { BlobRef } from '../../core/blob-references.js';
-import { commit, read, readSet, write } from '../index.js';
+import { commit, commitNamed, read, readSet, write, type Bound } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 import { blobHeld } from './blob-held.js';
 import { objectJournalSql } from './object-journal.js';
@@ -63,11 +63,11 @@ const recordForBundle = write<[page: string, now: number, project: string, bundl
 /**
  * A holder records the generation its own proof names, so a holder with no proof records nothing. A blob still inside the
  * upload grace may be a member's upload whose event has not arrived, whoever registered it: its candidate waits out the
- * grace as `'*'` and is then judged like any other.
+ * grace as `'*'`, due when the grace ends so it cannot hold the queue's head, and is then judged like any other.
  */
 const recordForHolders = write<[page: string, now: number, cutoff: number]>({ name: 'storage.recordHolderBlobCandidates', sql:
   `INSERT INTO blob_release_candidates(project_id,key,created_at,generation)
-    SELECT r.project_id,r.blob_key,?2,CASE WHEN b.received_at<=?3 THEN b.generation ELSE '*' END FROM json_each(?1) j
+    SELECT r.project_id,r.blob_key,CASE WHEN b.received_at<=?3 THEN ?2 ELSE b.received_at+(?2-?3) END,CASE WHEN b.received_at<=?3 THEN b.generation ELSE '*' END FROM json_each(?1) j
       JOIN retired_objects r ON r.project_id=json_extract(j.value,'$.p') AND r.session_id=json_extract(j.value,'$.s')
         AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i')
       JOIN registered_content_proofs p ON p.project_id=r.project_id AND p.key=r.blob_key AND p.source_kind='document' AND p.source_id=r.source_id
@@ -89,13 +89,22 @@ const observeAgedLegacy = write<[page: string, cutoff: number]>({ name: 'storage
   `UPDATE blob_release_candidates SET generation=(SELECT b.generation FROM blobs b WHERE b.project_id=blob_release_candidates.project_id AND b.key=blob_release_candidates.key)
     WHERE generation='*' AND (project_id,key) IN (SELECT c.p,c.k FROM ${PAGE} c)
       AND EXISTS(SELECT 1 FROM blobs b WHERE b.project_id=blob_release_candidates.project_id AND b.key=blob_release_candidates.key AND b.received_at<=?2)` });
+/** A `'*'` candidate whose blob is still inside the grace moves its due instant to where the grace ends, so it no longer holds the head of the queue. */
+const deferYoungLegacy = write<[page: string, cutoff: number, grace: number]>({ name: 'storage.deferYoungLegacyCandidates', sql:
+  `UPDATE blob_release_candidates SET created_at=(SELECT b.received_at+?3 FROM blobs b WHERE b.project_id=blob_release_candidates.project_id AND b.key=blob_release_candidates.key)
+    WHERE generation='*' AND (project_id,key) IN (SELECT c.p,c.k FROM ${PAGE} c)
+      AND EXISTS(SELECT 1 FROM blobs b WHERE b.project_id=blob_release_candidates.project_id AND b.key=blob_release_candidates.key AND b.received_at>?2)` });
 const clearDecided = write<[page: string], { key: string }>({ name: 'storage.clearDecidedBlobCandidates', sql:
   `DELETE FROM blob_release_candidates WHERE NOT ${HOLD_OPEN} AND (project_id,key) IN (SELECT c.p,c.k FROM ${PAGE} c)
     AND NOT (generation IS '*' AND EXISTS(SELECT 1 FROM blobs b WHERE b.project_id=blob_release_candidates.project_id AND b.key=blob_release_candidates.key)) RETURNING key` });
 const heldCandidates = read<[page: string], { held: number }>({ name: 'storage.heldBlobCandidates', sql:
   `SELECT COUNT(*) AS held FROM blob_release_candidates rc WHERE (rc.project_id,rc.key) IN (SELECT c.p,c.k FROM ${PAGE} c)` });
 
-const decision = (page: string, now: number) => [observeAgedLegacy.bind(page, now - BLOB_RESERVATION_TTL_MS), journalUnreferenced.bind(page, now), removeJournaled.bind(page), clearDecided.bind(page), heldCandidates.bind(page)] as const;
+const decision = (page: string, now: number, deleteDueAt = now) => ({
+  observe: observeAgedLegacy.bind(page, now - BLOB_RESERVATION_TTL_MS),
+  defer: deferYoungLegacy.bind(page, now - BLOB_RESERVATION_TTL_MS, BLOB_RESERVATION_TTL_MS),
+  journal: journalUnreferenced.bind(page, deleteDueAt), removed: removeJournaled.bind(page), cleared: clearDecided.bind(page), held: heldCandidates.bind(page),
+});
 
 /**
  * Statements that record a bundle's `pairs` as blob release candidates, one per page, placed ahead of the statements that
@@ -149,19 +158,22 @@ export interface BlobDecision extends ReleaseOutcome {
  */
 export async function decideRecordedBlobs(db: RelationalStore, pairs: readonly BlobRef[], now: number): Promise<BlobDecision> {
   const page = pageOf(pairs);
-  const [, , removed, cleared, held] = await commit(db, ...decision(page, now));
+  const { removed, cleared, held } = await commitNamed(db, decision(page, now));
   return { released: removed.results.length, deferred: held.results[0]!.held, decided: cleared.results.length };
 }
 
 /**
  * Releases orphans an earlier read found aged and unreferenced. Each is recorded only while the row still holds the
  * generation read and is at or past `cutoff`, in the commit that decides it; a hold keeps that candidate for later.
+ * `deleteDueAt` is when the store delete of what this releases falls due, now unless a caller delays it. `fence`, when
+ * given, must hold in each deciding commit.
  */
-export async function releaseAgedOrphans(db: RelationalStore, observed: readonly ObservedOrphan[], now: number, cutoff: number): Promise<ReleaseOutcome> {
+export async function releaseAgedOrphans(db: RelationalStore, observed: readonly ObservedOrphan[], now: number, cutoff: number, options: { deleteDueAt?: number; fence?: Bound } = {}): Promise<ReleaseOutcome> {
   const outcome: ReleaseOutcome = { released: 0, deferred: 0 };
   for (let at = 0; at < observed.length; at += RELEASE_PAGE) {
     const page = JSON.stringify(observed.slice(at, at + RELEASE_PAGE).map(b => ({ p: b.projectId, k: b.key, g: b.generation })));
-    const [, , , removed, , held] = await commit(db, recordAgedOrphans.bind(page, now, cutoff), ...decision(page, now));
+    const statements = { record: recordAgedOrphans.bind(page, now, cutoff), ...decision(page, now, options.deleteDueAt ?? now) };
+    const { removed, held } = options.fence === undefined ? await commitNamed(db, statements) : await commitNamed(db, { fence: options.fence, ...statements });
     outcome.released += removed.results.length;
     outcome.deferred += held.results[0]!.held;
   }
@@ -169,14 +181,15 @@ export async function releaseAgedOrphans(db: RelationalStore, observed: readonly
 }
 
 const holdIsOpen = read<[], { held: number }>({ name: 'storage.releaseHoldOpen', sql: `SELECT ${HOLD_OPEN} AS held` });
-const blobsDue = read<[limit: number], { project_id: string; key: string }>({ name: 'storage.blobCandidatesDue', sql:
-  'SELECT project_id,key FROM blob_release_candidates ORDER BY created_at,project_id,key LIMIT ?' });
+/** Candidates due now, oldest first: a `'*'` candidate waiting out its grace is due only when it ends. */
+const blobsDue = read<[now: number, limit: number], { project_id: string; key: string }>({ name: 'storage.blobCandidatesDue', sql:
+  'SELECT project_id,key FROM blob_release_candidates WHERE created_at<=?1 ORDER BY created_at,project_id,key LIMIT ?2' });
 const backupsDue = read<[limit: number], { id: string }>({ name: 'storage.backupCandidatesDue', sql:
   'SELECT id FROM backup_release_candidates ORDER BY created_at,id LIMIT ?' });
 
 /** The next candidates of each ordered queue; `held` while a recovery hold keeps every one of them recorded. */
-export async function releaseCandidatesDue(db: RelationalStore, limit: number): Promise<{ held: boolean; blobs: BlobRef[]; backups: string[] }> {
-  const [hold, blobs, backups] = await readSet(db, holdIsOpen.bind(), blobsDue.bind(limit), backupsDue.bind(limit));
+export async function releaseCandidatesDue(db: RelationalStore, now: number, limit: number): Promise<{ held: boolean; blobs: BlobRef[]; backups: string[] }> {
+  const [hold, blobs, backups] = await readSet(db, holdIsOpen.bind(), blobsDue.bind(now, limit), backupsDue.bind(limit));
   return { held: hold[0]?.held === 1, blobs: blobs.map(row => ({ projectId: row.project_id, key: row.key })), backups: backups.map(row => row.id) };
 }
 

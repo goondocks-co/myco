@@ -38,7 +38,7 @@ import { jobDispatchesAt } from './jobs.js';
 import { runEmbeddingJob } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 import { transcriptRetention } from '../ingest/retention.js';
-import { drainObjectReleases } from './object-release.js';
+import { drainObjectReleases, objectReleaseBacklogged } from './object-release.js';
 import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
 import { admitRecoveryExport } from './recovery-admission.js';
@@ -287,7 +287,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
     const prepared = await reconcileArchivePreparations(env.db, now);
     const drained = await drainObjectReleases(env, now);
     return { changed: prepared + drained.expired + drained.deleted + drained.decided,
-      more: await archivePreparationsPending(env.db, now) };
+      more: await objectReleaseBacklogged(env.db, now, drained) || await archivePreparationsPending(env.db, now) };
   },
   [MAINTENANCE_JOB.optimize]: scheduledMaintenance('optimize'),
   [MAINTENANCE_JOB.integrity]: scheduledMaintenance('integrity'),

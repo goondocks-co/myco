@@ -7,6 +7,7 @@ import type { VectorPageRow } from '../../db/embeddings/vector-pages.js';
  * member's id and the digest of the frame, so one member's vector is read and verified without the rest of its page.
  */
 const DIGEST_BYTES = 32;
+const VECTOR_PAGE_NAME = /^vector-pages\/([A-Za-z0-9._-]{1,64})\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Why a stored vector could not be used: the store failed, or its bytes are gone, short or damaged. */
 export type VectorPageFault = 'store' | 'absent' | 'partial' | 'corrupt';
@@ -25,6 +26,8 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, (b) => b.toString(16).padSt
 const digestOf = async (bytes: Uint8Array<ArrayBuffer>) => new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
 /** Where a Project's next page is stored. Each write takes a name no other write uses, so a late delete can only remove what it released. */
 export const vectorPageKey = (projectId: string): string => `vector-pages/${projectId}/${crypto.randomUUID()}`;
+/** The Project a name `vectorPageKey` wrote belongs to, or null for any other name. */
+export const vectorPageProject = (physical: string): string | null => VECTOR_PAGE_NAME.exec(physical)?.[1] ?? null;
 
 async function frame(id: string, vector: Uint8Array): Promise<Uint8Array> {
   const name = new TextEncoder().encode(id);

@@ -1,5 +1,6 @@
 import type { RelationalStore, RunResult } from '../../core/adapters.js';
 import { emit, StorageContractError } from '../../telemetry.js';
+import { abortSql, refusalCode } from './refusal.js';
 import { prepareBound, type Bound } from './statement.js';
 
 export type StatementResult<Row> = Omit<RunResult, 'results'> & { results: Row[] };
@@ -30,6 +31,33 @@ export async function commit<const Statements extends readonly Bound[]>(
     })),
   });
   return results as CommitResults<Statements>;
+}
+
+/** A condition the batch must hold, still rendered as text by the family that owns it. */
+export interface BatchGuard { readonly sql: string; readonly params: readonly unknown[] }
+
+const guardRefused = refusalCode('batch_guard_refused');
+const GUARD_STATEMENT = 'storage.batchGuard';
+
+/**
+ * One atomic batch in which each guard must hold before `statements` run; the results answer only `statements`, in order.
+ * A guard can only be a condition: it is rendered inside a select, and text holding a second statement is refused.
+ */
+export async function commitAfter<const Statements extends readonly Bound[]>(
+  db: RelationalStore, guards: readonly BatchGuard[], ...statements: Statements
+): Promise<CommitResults<Statements>> {
+  if (guards.some(guard => guard.sql.includes(';'))) throw new StorageContractError('a batch guard is one condition and cannot hold a statement separator');
+  const before = guards.map(guard => db.prepare(`SELECT CASE WHEN (${guard.sql}) THEN 1 ELSE ${abortSql(guardRefused)} END`).bind(...guard.params));
+  const results = await db.batch([...before, ...statements.map(statement => prepareBound(db, statement))]);
+  if (results.length !== before.length + statements.length) throw new StorageContractError('batch result count differs from statement count');
+  emit({
+    kind: 'db_batch',
+    statements: results.map((result, index) => ({
+      statement: index < before.length ? GUARD_STATEMENT : statements[index - before.length]!.name,
+      meta: Object.fromEntries(Object.entries(result.meta).filter(([, value]) => typeof value === 'number' && Number.isFinite(value))),
+    })),
+  });
+  return results.slice(before.length) as CommitResults<Statements>;
 }
 
 /**

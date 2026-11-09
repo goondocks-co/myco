@@ -43,6 +43,7 @@ function contents(sqlite: Database): { schema: unknown[]; rows: Record<string, u
 const withoutDeploymentMarkers = (rows: Record<string, unknown[]>) => ({
   ...rows,
   schema_meta: (rows.schema_meta as Array<{ key: string }>).filter((row) => ![DEPLOYMENT_ID_KEY, ...MIGRATION_TIMESTAMPS].includes(row.key)),
+  object_store_reconciliation: (rows.object_store_reconciliation as Array<{ armed_at: number }>).map(({ armed_at: _claimedAt, ...row }) => row),
 });
 const MIGRATIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'myco-server', 'migrations');
 const schemaOf = (sqlite: Database) => sqlite.query(`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`).all();
