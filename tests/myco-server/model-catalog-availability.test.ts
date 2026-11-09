@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { catalogResolution, readModelCatalogs, recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
 import { CONTACT_THROTTLE_MS, recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';

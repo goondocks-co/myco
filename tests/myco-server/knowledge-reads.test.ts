@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import { memberHeaders } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import worker from '@myco-server-worker/index.js';
 
 const NOW = 1_700_000_000_000;

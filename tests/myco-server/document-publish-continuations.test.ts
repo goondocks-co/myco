@@ -5,7 +5,7 @@ import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { DOCUMENT_PAGE_BYTES, pageBytes, type DocRecord } from '@myco-server-worker/content/document.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { V116_STATEMENTS } from '@myco-server-worker/db/schema-v116.js';
 import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';

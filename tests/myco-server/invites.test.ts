@@ -10,9 +10,10 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import {
-  ENROLLMENT_RETENTION_MS, ENROLLMENT_TTL_MS, issueEnrollmentAuthority, listInvitations, revokeEnrollmentAuthority,
+  ENROLLMENT_TTL_MS, issueEnrollmentAuthority, listInvitations, revokeEnrollmentAuthority,
 } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { ENROLLMENT_RETENTION_MS } from '@myco-server-worker/db/identity/authority-retention.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { inviteExpiry } from '@myco-server-worker/core/jobs-run.js';
 import { SERVER_JOBS, jobRunsAt } from '@myco-server-worker/core/jobs.js';

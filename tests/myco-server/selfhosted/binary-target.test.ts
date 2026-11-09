@@ -30,7 +30,7 @@ import { configureSqliteLibrary, resolveSqliteLibrary } from '@myco-server-worke
 import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
 import { vectorId, type VectorMetadata } from '@myco-server-worker/core/embedding/vectors.js';
 import { bootstrapDatabase } from '@myco-server-worker/platform/bun/server-main.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../helpers/member-token.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { FRAME_HEADERS } from '@myco-server-worker/platform/bun/static.js';
 import { memberPost, envelope } from '../helpers/fixtures.js';

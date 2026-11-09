@@ -3,15 +3,11 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import {
-  changeMemberRole,
-  ownershipPreview,
-  transferOwnership,
-  bootstrapOwnership,
-} from '@myco-server-worker/core/ownership.js';
+import { changeMemberRole, ownershipPreview, transferOwnership, bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { issueIdentityLinkAuthority, spendIdentityLinkAuthority, memberByGithubId } from '@myco-server-worker/auth/identity-link.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
-import { issueMemberToken, revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
+import { revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { BACKUP_FORMAT, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { envelope, memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
@@ -40,7 +36,7 @@ describe('owner lifecycle mutation gates', () => {
     for (const kind of ['transfer', 'role'] as const) {
       let armed = false;
       const f = sqliteEnv({ onSql: (sql, sqlite) => {
-        if (!armed || !(kind === 'transfer' ? /UPDATE deployment_ownership SET member_id/.test(sql) : /UPDATE members SET role =/.test(sql))) return;
+        if (!armed || !(kind === 'transfer' ? /member_id=\?1 AND revision=\?2/.test(sql) : /role_revision=\?4 AND role=\?5/.test(sql))) return;
         armed = false;
         if (kind === 'transfer') sqlite.run('UPDATE members SET revoked_at=? WHERE id=?', [NOW, ADMIN]);
         else sqlite.run('UPDATE deployment_ownership SET member_id=?,revision=revision+1 WHERE id=1', [ADMIN]);
@@ -264,6 +260,7 @@ describe('owner bootstrap and migration gates', () => {
         if (!fresh) seed();
         for (const sql of SCHEMA_STEPS.find(s => s.version === 73)!.statements) sqlite.exec(sql);
         if (fresh) seed();
+        for (const step of SCHEMA_STEPS.filter(s => s.version > 73)) for (const sql of step.statements) sqlite.exec(sql);
         const db = sqliteRelationalStore(sqlite);
         const key = (await issueIdentityLinkAuthority(db, OWNER, NOW))!;
         expect(await spendIdentityLinkAuthority(db, key.key, '583231', NOW + 1)).toMatchObject({ ok: true });

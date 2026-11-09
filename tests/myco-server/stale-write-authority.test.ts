@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import worker from '@myco-server-worker/index.js';
 import { grantToolContext, toolContext, unboundToolContext } from '@myco-server-worker/mcp/context.js';
 import { callTool } from '@myco-server-worker/mcp/server.js';

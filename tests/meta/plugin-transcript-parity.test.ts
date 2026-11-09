@@ -26,7 +26,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';

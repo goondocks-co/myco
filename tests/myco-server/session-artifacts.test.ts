@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';

@@ -23,7 +23,7 @@ function catalogPrompts(sqlite: Database): void {
 }
 import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { isServedTool, isWriteOp, PROJECT_PIVOT, UNSERVED_OPS } from '@myco-server-worker/core/tool-catalogue.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';

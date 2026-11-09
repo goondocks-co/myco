@@ -10,7 +10,7 @@ import { captureDocumentSession, captureDocumentTranscript } from './helpers/doc
 import { DocumentBatch, DocumentPassFull, PASS_CLOSING_STATEMENTS } from '@myco-server-worker/ingest/document-batch.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';

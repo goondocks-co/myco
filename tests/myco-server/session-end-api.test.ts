@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { takeTitleRequests } from '@myco-server-worker/db/sessions/title-work.js';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { endSession } from '@myco-server-worker/core/session-end.js';

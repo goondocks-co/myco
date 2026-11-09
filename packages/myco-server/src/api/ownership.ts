@@ -1,6 +1,6 @@
 import type { CredentialContext, OwnerContext } from '../context.js';
 import type { ServerEnv } from '../core/adapters.js';
-import { changeMemberRole, OwnershipRefusal, transferOwnership } from '../core/ownership.js';
+import { changeMemberRole, OwnershipRefusal, transferOwnership } from '../db/identity/ownership.js';
 import { MEMBER_ID } from '../constants.js';
 import { asMemberRole } from '../auth/roles.js';
 import { everyMember } from '../auth/members-admin.js';

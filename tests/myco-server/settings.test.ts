@@ -10,7 +10,7 @@ import worker from '@myco-server-worker/index.js';
 import { settingsWriter, instructionsTemplate, DEPLOYMENT_LEAVES, INSTRUCTIONS_TEMPLATE_LEAF, PROJECT_CAPABILITIES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES } from '@myco-server-worker/constants.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { migrateAndSeed } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';

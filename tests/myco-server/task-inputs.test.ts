@@ -22,7 +22,7 @@ import {
  * ended at the claim, named, and never handed out.
  */
 import { describe, expect, it } from 'bun:test';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import {
   claimNextRun,

@@ -13,11 +13,13 @@ import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import worker from '@myco-server-worker/index.js';
-import { issueEnrollmentAuthority, spendEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { joinMember } from '@myco-server-worker/auth/join.js';
 import { issueIdentityLinkAuthority, linkStatement, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
-import { authenticateServerMemberToken, issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { authenticateServerMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { LINKED_SUB, OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost } from './helpers/owner.js';
@@ -43,7 +45,7 @@ describe('membership is a boundary at authentication', () => {
     const e = sqliteEnv();
     const issued = await issueEnrollmentAuthority(e.db, NOW, { issuer: { kind: 'operator' }, role: 'member', memberId: 'mem_machine_2' });
     e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
-    expect(await spendEnrollmentAuthority(e.db, issued.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
+    expect(await (await joinMember(e.serverEnv, { key: issued.key, machineId: 'runtime' }, NOW + 1)).json()).toMatchObject({ joined: false, code: 'enrollment_revoked' });
   });
 });
 
@@ -70,7 +72,7 @@ describe('revoking a member', () => {
       .toEqual([forThem.id, byThem.id, byThemForOther.id].sort().map((id) => ({ id, revoked_by: PRINCIPAL.id })));
     expect(e.sqlite.query(`SELECT revoked_by FROM identity_link_authorities WHERE id = ?`).get(link.id)).toEqual({ revoked_by: PRINCIPAL.id });
     expect(e.sqlite.query(`SELECT member_id FROM machine_claims WHERE machine_id = 'machine_2'`).get()).toEqual({ member_id: 'mem_machine_2' });
-    expect(await spendEnrollmentAuthority(e.db, byThem.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
+    expect(await (await joinMember(e.serverEnv, { key: byThem.key, machineId: 'runtime' }, NOW + 1)).json()).toMatchObject({ joined: false, code: 'enrollment_revoked' });
   });
 
   it('refuses to leave the Deployment with no live linked member, changing nothing', async () => {
@@ -209,7 +211,7 @@ describe('a revoked minter', () => {
     const minted = await issueEnrollmentAuthority(e.db, NOW, { role: 'member', issuer: { kind: 'member', memberId: 'mem_machine_2' } });
     e.sqlite.query(`UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_2'`).run(NOW);
     expect((await (await worker.fetch(await asOwner(e.db, '/api/enrollment'), env)).json() as { invitations: unknown[] }).invitations).toEqual([]);
-    expect(await spendEnrollmentAuthority(e.db, minted.key, NOW + 1, 'runtime')).toEqual({ ok: false, reason: 'revoked' });
+    expect(await (await joinMember(e.serverEnv, { key: minted.key, machineId: 'runtime' }, NOW + 1)).json()).toMatchObject({ joined: false, code: 'enrollment_revoked' });
     const credentials = await (await worker.fetch(await asOwner(e.db, '/api/credentials'), env)).json() as { rows: { memberId: string; live: boolean }[] };
     expect(credentials.rows.filter((r) => r.memberId === 'mem_machine_2').every((r) => r.live === false)).toBe(true);
   });
@@ -275,10 +277,10 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     }
     expect(writes.sort()).toEqual([
       'src/auth/identity-link.ts: github_id = ?',
-      'src/auth/members-admin.ts: revoked_at = ?, revoked_by = ?',
-      'src/core/ownership.ts: role = ?, role_revision = role_revision + 1, revoked_at = NULL, revoked_by = NULL',
       'src/db/identity/link.ts: github_id=?2',
       'src/db/identity/member-naming.ts: label = ?',
+      'src/db/identity/member-revocation.ts: revoked_at=?2,revoked_by=?3',
+      'src/db/identity/ownership.ts: role=?1,role_revision=role_revision+1,revoked_at=NULL,revoked_by=NULL',
     ]);
   });
 
@@ -301,15 +303,13 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     expect(outsideIdentity.sort(), 'Members-write SQL constants belong to db/identity').toEqual([]);
     expect(writers.sort()).toEqual([
       'src/auth/identity-link.ts: UPDATE',
-      'src/auth/members-admin.ts: UPDATE',
-      'src/core/ownership.ts: UPDATE',
-      'src/db/identity/enrollment.ts: INSERT OR IGNORE INTO',
       'src/db/identity/enrollment.ts: enrollment.firstOwnerIdentity',
-      'src/db/identity/enrollment.ts: enrollment.joinMemberIdentity',
-      'src/db/identity/enrollment.ts: enrollment.joinProjectIdentity',
       'src/db/identity/enrollment.ts: enrollment.memberIdentityInsert',
+      'src/db/identity/join.ts: enrollment.joinMember',
       'src/db/identity/link.ts: identity.linkBind',
       'src/db/identity/member-naming.ts: identity.nameFromLogin',
+      'src/db/identity/member-revocation.ts: memberRevocation.member',
+      'src/db/identity/ownership.ts: ownership.roleChange',
       'src/db/schema.ts: INSERT OR IGNORE INTO',
     ]);
   });

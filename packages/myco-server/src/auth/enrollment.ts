@@ -1,7 +1,6 @@
-import { allOf, enrollmentAdmission, type Fragment } from '../db/identity/enrollment-policy.js';
-export { enrollmentAdmission, type Fragment } from '../db/identity/enrollment-policy.js';
 import type { Bound } from '../db/index.js';
-import { memberIdentityInsert, enrollmentMemberStatement, type MemberIdentityGate } from '../db/identity/enrollment.js';
+import { commitNamed, first, rows } from '../db/index.js';
+import { machineRename, memberIdentityInsert, enrollmentExplanation, enrollmentMint, enrollmentRevoke, enrollmentTargetRead } from '../db/identity/enrollment.js';
 /**
  * Enrollment authorities — evidence exchanged for a member credential by the
  * shared enrollment operation, never credentials used for ordinary requests.
@@ -15,13 +14,12 @@ import { memberIdentityInsert, enrollmentMemberStatement, type MemberIdentityGat
  *   - REVOCABLE before use, and recording which runtime spent it.
  */
 import { toBase64Url } from '../base64.js';
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
+import type { RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
-import { MEMBER_REVOKED_BY, memberLive, memberRevokedByParams } from '../db/liveness.js';
 import { asMemberRole, type MemberRole } from './roles.js';
 import { invitationPage } from '../db/identity/access-pages.js';
 import type { Page } from '../read/scope.js';
-import { authorize, enrollmentAuthorityPredicate, enrollmentResourceOf, memberSubjectOf, memberWritePredicate } from './authorization.js';
+import { authorize, enrollmentResourceOf, memberSubjectOf } from './authorization.js';
 import { readAuthorization } from '../db/auth/authorization.js';
 
 type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
@@ -42,17 +40,6 @@ function enrollmentIssuerMember(issuer: EnrollmentIssuer): string | null {
 /** Bytes of entropy in an enrollment key. 32 = 256 bits. */
 export const ENROLLMENT_KEY_BYTES = 32;
 
-/**
- * How long a spent, expired or revoked authority is kept before it is reclaimed.
- *
- * A finished authority is audit material, not a credential: `used_at` and
- * `used_by_runtime` say which runtime spent which invitation, and that is worth
- * having while a join is still recent enough to be questioned. It is not worth
- * keeping forever: the join it authorised is recorded on the credential itself, so
- * nothing downstream resolves through it.
- */
-export const ENROLLMENT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-
 /** Default lifetime of a freshly minted key. An invitation is handed over in the moment; one that outlives the conversation is a standing credential nobody remembers issuing. */
 export const ENROLLMENT_TTL_MS = 60 * 60 * 1000;
 
@@ -69,7 +56,7 @@ interface IssuedEnrollmentAuthority {
 }
 
 /**
- * The insert that stores a fresh key's digest, and the raw key returned once.
+ * The write that stores a fresh key's digest, and the instant it expires.
  *
  * `memberId` is what the key admits the joiner AS. Null means the join enrolls a
  * new person and the server names the member; a value means the key adds another
@@ -84,19 +71,15 @@ interface IssuedEnrollmentAuthority {
  * write its registry entry, a person joining the Deployment needs none — and a
  * key that carries none is refused the binding rather than given a guess.
  */
-export function enrollmentInsert(
-  db: RelationalStore, nowMs: number, ttlMs: number, issuer: EnrollmentIssuer, keyHash: string, id: string,
-  role: MemberRole, memberId: string | null = null, projectId: string | null = null, gate?: Fragment,
-): { statement: PreparedStatement; expiresAt: number } {
-  const createdByMember = enrollmentIssuerMember(issuer);
+export function enrollmentMintWrite(
+  nowMs: number, ttlMs: number, issuer: EnrollmentIssuer, keyHash: string, id: string,
+  grant: { role: MemberRole; memberId?: string | null; projectId?: string | null },
+): { write: Bound<{ id: string }, 'write'>; expiresAt: number } {
   const expiresAt = nowMs + ttlMs;
-  const statement = db
-    .prepare(`WITH candidate AS (SELECT ? AS created_by_member, ? AS member_id, ? AS role, ? AS id)
-              INSERT INTO enrollment_authorities (id, key_hash, created_at, expires_at, used_at, used_by_runtime, revoked_at, created_by_member, member_id, role, project_id)
-              SELECT candidate.id, ?, ?, ?, NULL, NULL, NULL, candidate.created_by_member, candidate.member_id, candidate.role, ?
-                FROM candidate WHERE ${enrollmentAuthorityPredicate('candidate')}${gate === undefined ? '' : ` AND (${gate.sql})`}`)
-    .bind(createdByMember, memberId, role, id, keyHash, nowMs, expiresAt, projectId, ...(gate?.params ?? []));
-  return { statement, expiresAt };
+  return {
+    write: enrollmentMint.bind(enrollmentIssuerMember(issuer), grant.memberId ?? null, grant.role, id, keyHash, nowMs, expiresAt, grant.projectId ?? null),
+    expiresAt,
+  };
 }
 
 /** Sole enrollment minter. Stores the digest and returns the raw key once. `role` grants a new member's authority; existing members keep their authority. */
@@ -113,48 +96,23 @@ export async function issueEnrollmentAuthority(
   }
   const key = toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
   const id = `${ENROLLMENT_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_ID_BYTES)))}`;
-  const { statement, expiresAt } = enrollmentInsert(
-    db, nowMs, options.ttlMs ?? ENROLLMENT_TTL_MS, issuer, await sha256Hex(key), id,
-    options.role, options.memberId ?? null, options.projectId ?? null,
-  );
-  if ((await statement.run()).meta.changes !== 1) throw new EnrollmentAuthorizationError();
+  const mint = enrollmentMintWrite(nowMs, options.ttlMs ?? ENROLLMENT_TTL_MS, issuer, await sha256Hex(key), id, options);
+  if ((await rows(db, mint.write)).length !== 1) throw new EnrollmentAuthorizationError();
+  const { expiresAt } = mint;
   return { key, id, expiresAt };
 }
 
 /** Why a presented key cannot be spent. */
 export type EnrollmentRefusal = 'unknown' | 'already_used' | 'expired' | 'revoked' | 'no_project';
 
-/** The one statement that spends a key: a conditional update carrying its whole admission. */
-export function spendStatement(db: RelationalStore, admission: Fragment, nowMs: number, runtime: string, gate?: Fragment): PreparedStatement {
-  const where = gate === undefined ? admission : allOf(admission, gate);
-  return db
-    .prepare(`UPDATE enrollment_authorities SET used_at = ?, used_by_runtime = ? WHERE ${where.sql}`)
-    .bind(nowMs, runtime, ...where.params);
-}
-
 /** An existing runtime member keeps its role. */
 export function ensureMemberWrite(db: RelationalStore, id: string, nowMs: number, role: MemberRole, label = id): Bound {
   return memberIdentityInsert.bind(id, label, nowMs, role);
 }
 
-/**
- * The identity claim a join records, gated. `label` names the machine only when this claim is its first: a machine
- * already claimed keeps the name it holds, so a later sign-in never replaces a rename.
- */
-export function claimMachineIdentityStatement(
-  db: RelationalStore, machineId: string, memberId: string, nowMs: number, gate?: Fragment, label: string | null = null,
-): PreparedStatement {
-  return db
-    .prepare(`INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at, label)
-                SELECT ?, ?, ?, ?
-                 ${gate === undefined ? '' : `WHERE ${gate.sql}`}`)
-    .bind(machineId, memberId, nowMs, label, ...(gate?.params ?? []));
-}
-
 /** The invitation's immutable target and granted role, or null for an absent or invalid invitation. */
 export async function enrollmentTarget(db: RelationalStore, keyHash: string): Promise<{ id: string; memberId: string | null; role: MemberRole; projectId: string | null } | null> {
-  const row = await db.prepare(`SELECT id, member_id, role, project_id FROM enrollment_authorities WHERE key_hash = ?`).bind(keyHash)
-    .first<{ id: string; member_id: string | null; role: string; project_id: string | null }>();
+  const row = await first(db, enrollmentTargetRead.bind(keyHash));
   if (row === null) return null;
   const role = asMemberRole(row.role);
   return role === null ? null : { id: row.id, memberId: row.member_id, role, projectId: row.project_id };
@@ -168,12 +126,7 @@ export async function explainEnrollment(
   db: RelationalStore, presentedKey: string, nowMs: number, opts: { forProject?: boolean; memberId?: string } = {},
 ): Promise<SpendRefusal> {
   if (!ENROLLMENT_KEY_PATTERN.test(presentedKey)) return { admissible: false, reason: 'unknown' };
-  const row = await db
-    .prepare(`SELECT a.used_at, a.revoked_at, a.expires_at, a.member_id, a.role, a.project_id,
-                     NOT (${enrollmentAuthorityPredicate('a')}) AS voided
-                FROM enrollment_authorities a WHERE a.key_hash = ?`)
-    .bind(await sha256Hex(presentedKey))
-    .first<{ used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null; role: string; project_id: string | null; voided: number }>();
+  const row = await first(db, enrollmentExplanation.bind(await sha256Hex(presentedKey)));
   if (row === null) return { admissible: false, reason: 'unknown' };
   if (row.revoked_at !== null || Number(row.voided) === 1) return { admissible: false, reason: 'revoked' };
   if (row.used_at !== null) return { admissible: false, reason: 'already_used' };
@@ -184,73 +137,11 @@ export async function explainEnrollment(
   return { admissible: true };
 }
 
-type SpendResult =
-  | { ok: true; id: string; memberId: string | null; role: MemberRole; projectId: string | null }
-  | { ok: false; reason: EnrollmentRefusal };
-
-/**
- * Spends a presented key, once.
- *
- * The spend is a single conditional update guarded on the row still being
- * unused, unrevoked and unexpired, and it reports success only when it changed
- * exactly one row. Two concurrent joins presenting one key therefore produce one
- * winner and one `already_used` — the check and the mark are the same statement,
- * so there is no window between them.
- *
- * A refusal reads the row afterwards only to say WHY, never to decide whether
- * the spend succeeded.
- *
- * `forProject` is the joiner declaring it needs a Project bound to the key — a
- * sandbox writes one into its registry entry before any hook can post. It joins
- * the guard INSIDE the same statement rather than as a read before it: a check
- * that ran first would refuse a key it had already spent, and the spend has no
- * inverse, so that invitation would be gone for a request it answered no.
- */
-export async function spendEnrollmentAuthority(
-  db: RelationalStore, presentedKey: string, nowMs: number, runtime: string, opts: { forProject?: boolean } = {},
-): Promise<SpendResult> {
-  if (!ENROLLMENT_KEY_PATTERN.test(presentedKey)) return { ok: false, reason: 'unknown' };
-  const keyHash = await sha256Hex(presentedKey);
-
-  const spend = await spendStatement(db, enrollmentAdmission(keyHash, nowMs, { forProject: opts.forProject === true }), nowMs, runtime).run();
-
-  // The read only explains a refusal. An invitation whose member, or whose minter, is revoked is void: it answers as revoked.
-  const row = await db
-    .prepare(`SELECT a.id, a.used_at, a.revoked_at, a.expires_at, a.member_id, a.role, a.project_id,
-                     NOT (${enrollmentAuthorityPredicate('a')}) AS voided
-                FROM enrollment_authorities a WHERE a.key_hash = ?`)
-    .bind(keyHash)
-    .first<{ id: string; used_at: number | null; revoked_at: number | null; expires_at: number; member_id: string | null; role: string; project_id: string | null; voided: number }>();
-
-  // The role grammar is a guard on the UPDATE above, so a row carrying an unreadable
-  // role is refused with the invitation still unspent rather than after spending it.
-  if (spend.meta.changes === 1) return { ok: true, id: row!.id, memberId: row!.member_id, role: asMemberRole(row!.role)!, projectId: row!.project_id };
-  if (row === null) return { ok: false, reason: 'unknown' };
-  if (row.revoked_at !== null || Number(row.voided) === 1) return { ok: false, reason: 'revoked' };
-  if (row.used_at !== null) return { ok: false, reason: 'already_used' };
-  if (row.expires_at <= nowMs) return { ok: false, reason: 'expired' };
-  if (opts.forProject === true && row.project_id === null) return { ok: false, reason: 'no_project' };
-  // Live, unspent, and bound as asked: the only remaining guard is a role outside the grammar.
-  return { ok: false, reason: 'revoked' };
-}
-
 /** Revokes an unused key, naming who. `revoked` is false when no unused row matched the id. */
 export async function revokeEnrollmentAuthority(
   db: RelationalStore, id: string, nowMs: number, revokedBy: string,
 ): Promise<{ revoked: boolean }> {
-  const result = await db
-    .prepare(`UPDATE enrollment_authorities SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL AND used_at IS NULL`)
-    .bind(nowMs, revokedBy, id)
-    .run();
-  return { revoked: result.meta.changes === 1 };
-}
-
-/** Every unspent invitation minted for a member or by a member, revoked and attributed — effective only once the member row carries this revocation. */
-export function revokeInvitationsOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
-  return db
-    .prepare(`UPDATE enrollment_authorities SET revoked_at = ?, revoked_by = ?
-               WHERE (member_id = ? OR created_by_member = ?) AND used_at IS NULL AND revoked_at IS NULL AND ${MEMBER_REVOKED_BY}`)
-    .bind(nowMs, revokedBy, memberId, memberId, ...memberRevokedByParams(memberId, nowMs, revokedBy));
+  return { revoked: (await rows(db, enrollmentRevoke.bind(nowMs, revokedBy, id))).length === 1 };
 }
 
 export interface InvitationRow {
@@ -296,47 +187,7 @@ export async function listInvitations(db: RelationalStore, nowMs: number, opts: 
  * INSERT is the shape the read-layer gate refuses.
  */
 export async function ensureMember(db: RelationalStore, id: string, nowMs: number, role: MemberRole, label = id): Promise<void> {
-  await ensureMemberStatement(db, id, nowMs, role, undefined, label).run();
-}
-
-/**
- * Reclaims authorities that are finished — spent, revoked, or expired — and older
- * than `ENROLLMENT_RETENTION_MS`. Undecided device requests expire at their TTL;
- * decided requests retain this window and their independent audit receipts stay.
- *
- * The `invite-expiry` tick job is the one caller. Bounding the delete keeps a
- * Deployment that accumulated a large backlog to a fixed slice per tick; the
- * next tick continues where this one stopped.
- *
- * A LIVE authority is never touched whatever its age — reclaiming an unspent
- * invitation is retention deciding to revoke, which is the operator's call.
- */
-export async function reclaimEnrollmentAuthorities(db: RelationalStore, nowMs: number, limit: number): Promise<{ reclaimed: number }> {
-  const cutoff = nowMs - ENROLLMENT_RETENTION_MS;
-  const result = await db
-    .prepare(`DELETE FROM enrollment_authorities
-               WHERE id IN (
-                 SELECT id FROM enrollment_authorities
-                  WHERE (used_at IS NOT NULL AND used_at <= ?)
-                     OR (revoked_at IS NOT NULL AND revoked_at <= ?)
-                     OR (used_at IS NULL AND revoked_at IS NULL AND expires_at <= ?)
-                  LIMIT ?)`)
-    .bind(cutoff, cutoff, cutoff, limit)
-    .run();
-  const pendingDevices = await db.prepare(`DELETE FROM device_requests WHERE id IN (
-    SELECT id FROM device_requests WHERE decision IS NULL AND expires_at <= ? ORDER BY expires_at LIMIT ?)`)
-    .bind(nowMs, limit).run();
-  const decidedDevices = await db.prepare(`DELETE FROM device_requests WHERE id IN (
-    SELECT id FROM device_requests WHERE decision IS NOT NULL AND expires_at <= ? ORDER BY expires_at LIMIT ?)`)
-    .bind(cutoff, limit).run();
-  return { reclaimed: result.meta.changes + pendingDevices.meta.changes + decidedDevices.meta.changes };
-}
-
-/** Undecided requests and decided requests past retention hold housekeeping depth until reclaimed. */
-export async function deviceReclamationPending(db: RelationalStore, nowMs: number): Promise<boolean> {
-  if (await db.prepare('SELECT 1 AS pending FROM device_requests WHERE decision IS NULL LIMIT 1').first() !== null) return true;
-  return await db.prepare('SELECT 1 AS pending FROM device_requests WHERE decision IS NOT NULL AND expires_at <= ? LIMIT 1')
-    .bind(nowMs - ENROLLMENT_RETENTION_MS).first() !== null;
+  await rows(db, memberIdentityInsert.bind(id, label, nowMs, role));
 }
 
 /**
@@ -345,11 +196,5 @@ export async function deviceReclamationPending(db: RelationalStore, nowMs: numbe
  * which the caller answers alike.
  */
 export async function renameMachine(db: RelationalStore, actor: { memberId: string }, machineId: string, name: string): Promise<boolean> {
-  const result = await db.prepare(`UPDATE machine_claims SET label = ? WHERE machine_id = ? AND ${memberWritePredicate('?', 'machine_claims.member_id')}`)
-    .bind(name, machineId, actor.memberId).run();
-  return result.meta.changes === 1;
-}
-
-export function ensureMemberStatement(db: RelationalStore, id:string, nowMs:number, role:MemberRole, gate?:MemberIdentityGate, label=id): PreparedStatement {
-  return enrollmentMemberStatement(db,[id,label,nowMs,role],gate);
+  return (await rows(db, machineRename.bind(name, machineId, actor.memberId))).length === 1;
 }

@@ -9,7 +9,7 @@ import { Database } from 'bun:sqlite';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { getUncaptured, listUncaptured, UNCAPTURED_LIST_LIMIT } from '@myco-server-worker/read/uncaptured.js';
-import { clearMemberUncapturedStatement, clearUncapturedStatement, heldUncapturedStatement, pruneUncaptured, recordUncapturedStatement } from '@myco-server-worker/ingest/uncaptured.js';
+import { clearUncapturedStatement, heldUncapturedStatement, pruneUncaptured, recordUncapturedStatement } from '@myco-server-worker/ingest/uncaptured.js';
 import { remoteHolder, resolveRepository } from '@myco-server-worker/core/remotes.js';
 import { connectedRoot, connectMachineRoot } from '@myco-server-worker/core/machine-settings.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
@@ -89,16 +89,14 @@ describe('auto-join, under the statistics a Deployment plans from', () => {
     expect(written.filter(({ sql }) => sql.startsWith('DELETE')).map(({ plan }) => plan)).toEqual(Array(3).fill(ROW_KEY.replace('SEARCH u', 'SEARCH uncaptured_roots')));
   });
 
-  it('marks one by its key, forgets a revoked member\'s by member, and the stale ones in index order to the batch', async () => {
+  it('marks one by its key, and the stale ones in index order to the batch', async () => {
     const written = await plans(async (db) => {
       await heldUncapturedStatement(db, 'machine_1', KEY, 'full').run();
-      await clearMemberUncapturedStatement(db, 'mem_1', 'mem_admin', 1).run();
       await pruneUncaptured(db, 1_800_000_000_000, 100);
     });
     for (const { store, sql, plan } of written) {
       expect({ store, sql: sql.slice(0, 60), scans: scans(plan) }).toEqual({ store, sql: sql.slice(0, 60), scans: [] });
       if (sql.startsWith('UPDATE')) expect({ store, plan }).toEqual({ store, plan: ROW_KEY.replace('SEARCH u', 'SEARCH uncaptured_roots') });
-      if (sql.includes('member_id = ?')) expect({ store, plan }).toEqual({ store, plan: expect.stringContaining('idx_uncaptured_roots_member (member_id=?)') });
       if (sql.includes('last_seen_at < ?')) expect({ store, plan }).toEqual({ store, plan: expect.stringContaining('idx_uncaptured_roots_seen (last_seen_at<?)') });
     }
   });

@@ -1,14 +1,15 @@
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { BACKUP_FORMAT } from '@myco-server-worker/core/backup.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { issueIdentityLinkAuthority, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
-import { issueMemberToken, revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
+import { revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { renameMachine } from '@myco-server-worker/auth/enrollment.js';
 
 const OWNER = 'mem_machine_1';

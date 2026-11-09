@@ -2,7 +2,7 @@ import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '@myco-server-worker/core/run-d
 import { indexFixture } from './helpers/vector-index.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
@@ -71,7 +71,7 @@ describe('live authority at administrative writes', () => {
       let armed = false;
       let fired = false;
       const f = await setup((sql, sqlite) => {
-        const write = operation === 'owner bootstrap' ? /UPDATE deployment_ownership SET member_id/ : /UPDATE members SET revoked_at =/;
+        const write = operation === 'owner bootstrap' ? /UPDATE deployment_ownership SET member_id/ : /UPDATE members SET revoked_at\s*=/;
         if (!armed || !write.test(sql)) return;
         armed = false;
         fired = true;

@@ -9,7 +9,7 @@ export function sqlCapture(): { db: RelationalStore; statements: string[] } {
   const db: RelationalStore = {
     prepare: (text: string) => ({
       bind: (...values: unknown[]) => ({
-        run: async () => { let i = 0; statements.push(text.replace(/\?/g, () => literal(values[i++]))); return { results: [], meta: { changes: 1 } }; },
+        run: async () => { let next = 0; statements.push(text.replace(/\?(\d+)?/g, (_, slot: string | undefined) => literal(values[slot === undefined ? next++ : Number(slot) - 1]))); return { results: [], meta: { changes: 1 } }; },
         first: async () => null,
         all: async () => ({ results: [] }),
         bind: () => { throw new Error('rebind unsupported'); },

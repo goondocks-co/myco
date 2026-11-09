@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { FOREIGN_LINEAGE_REVOKER } from '@myco-server-worker/constants.js';
 import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
-import { reclaimEnrollmentAuthorities, ENROLLMENT_RETENTION_MS } from '@myco-server-worker/auth/enrollment.js';
+import { ENROLLMENT_RETENTION_MS, reclaimFinishedAuthorities } from '@myco-server-worker/db/identity/authority-retention.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
@@ -234,9 +234,9 @@ describe('device authorization', () => {
       const pending = await r.start();
       for (let i = 0; i < 4; i++) await r.start();
       r.advance(DEVICE_TTL_MS);
-      await reclaimEnrollmentAuthorities(r.env.db, r.now(), 2);
+      await reclaimFinishedAuthorities(r.env.db, r.now(), 2);
       expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM device_requests WHERE decision IS NULL').get()).toEqual({ n: 3 });
-      await reclaimEnrollmentAuthorities(r.env.db, r.now(), 100);
+      await reclaimFinishedAuthorities(r.env.db, r.now(), 100);
       expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM device_requests WHERE decision IS NULL').get()).toEqual({ n: 0 });
       expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM device_requests').get()).toEqual({ n: 2 });
       expect(await r.poll(pending.device_code)).toEqual({ error: 'invalid_grant' });
@@ -249,7 +249,7 @@ describe('device authorization', () => {
       expect(JSON.stringify(audit)).not.toContain('192.0.2.10');
       expect(() => r.e.sqlite.run("UPDATE device_decision_audit SET decision = 'denied'")).toThrow('immutable');
       r.advance(ENROLLMENT_RETENTION_MS);
-      await reclaimEnrollmentAuthorities(r.env.db, r.now(), 100);
+      await reclaimFinishedAuthorities(r.env.db, r.now(), 100);
       expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM device_requests').get()).toEqual({ n: 0 });
       expect(r.e.sqlite.query('SELECT * FROM device_decision_audit ORDER BY decision').all()).toEqual(audit);
     } finally { r.e.sqlite.close(); }
@@ -299,7 +299,7 @@ describe('device authorization', () => {
   it('denial rechecks live member authority after dashboard authentication', async () => {
     let armed = false;
     const r = rig((sql, sqlite) => {
-      if (!armed || !sql.includes('UPDATE device_requests SET decision = ?')) return;
+      if (!armed || !sql.includes('d.decision IS NULL AND d.expires_at>?2')) return;
       armed = false;
       sqlite.run(`UPDATE members SET revoked_at = ${NOW} WHERE id = '${MEMBER}'`);
     });

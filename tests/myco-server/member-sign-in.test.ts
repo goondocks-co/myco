@@ -10,7 +10,7 @@ import worker from '@myco-server-worker/index.js';
 import { issueIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { LINKED_SUB, OWNER_ENV, PRINCIPAL, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 

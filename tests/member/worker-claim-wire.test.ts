@@ -30,7 +30,7 @@ import { HARNESS_DETECTION_TTL_MS } from '@myco/runner/detect.js';
 import workerServer from '@myco-server-worker/index.js';
 import { asOwnerPost, OWNER_ENV } from '../myco-server/helpers/owner.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';

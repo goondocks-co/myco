@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { signPayload, signSession, verifySession, SESSION_COOKIE, SESSION_TYP } from '@myco-server-worker/auth/owner/cookie.js';
 import { deploymentIdentity, memberSubject } from '@myco-server-worker/auth/authorization.js';
 import { dashboardPermissions } from '@myco-server-worker/auth/dashboard-permissions.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, SESSION_SECRET, LINKED_SUB, MEMBER_SUB, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';

@@ -7,7 +7,7 @@ import { runWorker } from '@myco/runner/loop.js';
 import { detectHarnesses } from '@myco/runner/detect.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { SEEDING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';

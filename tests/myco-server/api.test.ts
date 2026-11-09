@@ -5,7 +5,8 @@ import { publishFixture, sqliteEnv } from './helpers/fixtures.js';
 import { resolveProjectScope } from '@myco-server-worker/api/scope.js';
 import worker from '@myco-server-worker/index.js';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, ownerCookie, PRINCIPAL, asOwner, asOwnerPost, seedMemberRoleAccount } from './helpers/owner.js';
-import { issueMemberToken, MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_PATTERN } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 
 /** The principal the chokepoint takes. Unread today; present so a grant check is one edit. */
 describe('api scope resolution', () => {
@@ -173,7 +174,7 @@ describe('session turns', () => {
 describe('credentials', () => {
   it('lists without the hash, pages newest lineage first, reports what a credential wrote across projects, and revokes naming who', async () => {
     const e = sqliteEnv();
-    const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
+    const { issueMemberToken } = await import('./helpers/member-token.js');
     const first = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
     const second = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 2_000);
     e.sqlite.run(`INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at)
@@ -199,7 +200,7 @@ describe('credentials', () => {
 
   it('denial of enrollment is attributable, not prevented: one member can revoke another\'s credential, and the record names who did', async () => {
     const e = sqliteEnv();
-    const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
+    const { issueMemberToken } = await import('./helpers/member-token.js');
     const theirs = await issueMemberToken(e.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 1_000);
     const revoked = await worker.fetch(await asOwnerPost(e.db, `/api/credentials/${theirs.tokenId}/revoke`), { ...e.env, ...OWNER_ENV });
     expect(await jsonBody(revoked)).toEqual({ revoked: true, revokedBy: PRINCIPAL.id });

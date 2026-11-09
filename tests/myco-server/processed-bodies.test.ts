@@ -1,5 +1,5 @@
 import { rawClaimPreview, claimUnknownRaw } from '@myco-server-worker/core/raw-claims.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { processedAttachment, processedBody } from '@myco-server-worker/read/processed.js';

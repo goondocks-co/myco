@@ -9,7 +9,7 @@ import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { MAX_BACKUP_BYTES } from '@myco-server-worker/core/backup.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 
 const setup = () => {
   const e = sqliteEnv();

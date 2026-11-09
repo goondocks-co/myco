@@ -14,7 +14,7 @@ import worker from '@myco-server-worker/index.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import type { TaskStartPreview } from '@myco-server-worker/read/task-start.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';

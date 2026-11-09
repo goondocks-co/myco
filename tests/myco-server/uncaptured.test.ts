@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { pruneUncaptured, UNCAPTURED_RETENTION_MS } from '@myco-server-worker/ingest/uncaptured.js';

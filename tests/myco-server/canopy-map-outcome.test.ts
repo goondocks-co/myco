@@ -15,7 +15,7 @@ import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION, MAP_LIMITS, MAP_WRITE_BOUND
 import { capabilitiesRequiredBy, REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGEST_TASKS, REPOSITORY_DIGESTS_CAPABILITY, RUN_REPOSITORY_DIGESTS_FILE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { capturedSinceMap, mapInputHash, readMapSettings } from '@myco-server-worker/core/canopy.js';
 import { MAP_RULES } from '@myco-server-worker/core/canopy-input.js';
 import { claimNextRun, dispatchTask, endLeasedRun, prepareDispatch } from '@myco-server-worker/core/harness.js';

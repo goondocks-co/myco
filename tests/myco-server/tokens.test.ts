@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import {
-  MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_LINEAGE_IDLE_MS,
-  mintMemberToken, issueMemberToken, revokeCredentialAsMember, revokeMemberLineage, authenticateServerMemberToken,
-} from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_BYTES, MEMBER_TOKEN_TTL_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_LINEAGE_IDLE_MS, mintMemberToken, revokeCredentialAsMember, revokeMemberLineage, authenticateServerMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { TOKEN_ID_PREFIX } from '@myco-server-worker/constants.js';
 import { SchemaMismatchError } from '@myco-server-worker/telemetry.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';

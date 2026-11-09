@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { ENROLLMENT_RETENTION_MS, ENROLLMENT_TTL_MS, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { ENROLLMENT_TTL_MS, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
+import { ENROLLMENT_RETENTION_MS } from '@myco-server-worker/db/identity/authority-retention.js';
 import { handleJoin } from '@myco-server-worker/auth/join.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { MACHINE_IDENTITY_NOTE } from '@goondocks/myco-shared/member-protocol';
@@ -374,7 +375,7 @@ describe('a refused join leaves no trace', () => {
       },
       async batch(statements) {
         const results = await r.e.db.batch(statements);
-        committed = true;
+        if (statements.length > 1) committed = true;
         return results;
       },
     };

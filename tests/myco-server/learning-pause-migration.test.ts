@@ -4,7 +4,7 @@ import { V102_STATEMENTS } from '@myco-server-worker/db/schema-v102.js';
 import { memberRunsPerDay } from '@myco-server-worker/core/schedule-rules.js';
 import { taskOverridesResolution, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 
 it('preserves extraction choices and unrelated preferences through the pause migration on both stores', async () => {
   await withDocumentStores(async db => {

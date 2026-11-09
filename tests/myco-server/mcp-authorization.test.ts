@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';

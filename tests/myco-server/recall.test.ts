@@ -12,7 +12,7 @@ import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import {
   composePromptContext,
   composeSessionContext,

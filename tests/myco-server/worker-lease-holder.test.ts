@@ -11,7 +11,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
  */
 import { describe, expect, it } from 'bun:test';
 import { turnOnGatedCapabilities } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import {
   claimNextRun,
   endLeasedRun,

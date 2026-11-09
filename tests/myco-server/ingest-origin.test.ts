@@ -18,7 +18,7 @@ import { describe, expect, it } from 'bun:test';
 import { ingestEvent, planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
 import { count, envelope, sqliteEnv, bytesWritten, uuid } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 
 const NOW = 1_000_000;
 const PROJECT = 'proj_1';

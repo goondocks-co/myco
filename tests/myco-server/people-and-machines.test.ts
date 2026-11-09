@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken, refreshMemberToken, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
+import { refreshMemberToken, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { issueIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';

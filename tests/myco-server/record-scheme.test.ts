@@ -5,7 +5,7 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { admittedRecordScheme, restoreRecordSchemeDecisions } from '@myco-server-worker/ingest/record-scheme.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { registerBlob, sqliteD1 } from './helpers/d1.js';

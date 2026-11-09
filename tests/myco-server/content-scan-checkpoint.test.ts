@@ -4,7 +4,7 @@ import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { cleanupCandidate,storageCleanup } from '@myco-server-worker/core/storage-cleanup.js';
 import { eventArchiveStatements,eventContent,prepareArchiveStep,sourceBytes } from '@myco-server-worker/core/event-content.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sqliteEnv,envelope,uuid } from './helpers/fixtures.js';
 

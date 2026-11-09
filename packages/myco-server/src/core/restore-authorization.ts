@@ -1,6 +1,6 @@
 import { authorize, deploymentIdentity, memberSubject, memberWritePredicate } from '../auth/authorization.js';
 import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
-import { deploymentOwnerSql } from './ownership.js';
+import { deploymentOwnerSql } from '../db/identity/ownership-policy.js';
 
 export type RestoreAuthorization = { kind: 'member'; memberId: string } | { kind: 'recovery' };
 

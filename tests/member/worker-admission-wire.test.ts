@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'bun:test';
 import { probeWorkerAdmission } from '@myco/runner/loop.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.ts';
 

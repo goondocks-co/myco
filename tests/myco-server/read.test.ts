@@ -165,7 +165,7 @@ describe('read/credentials', () => {
 
   it('lists the Deployment\'s credentials with quota and lineage, one page at a time', async () => {
     const { db, sqlite, env } = sqliteEnv();
-    const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
+    const { issueMemberToken } = await import('./helpers/member-token.js');
     await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
     const { rows } = await listCredentials(db, 1_000);
     expect(rows).toHaveLength(1);
@@ -176,7 +176,7 @@ describe('read/credentials', () => {
 
   it('lists one member\'s credentials alone where it is asked for them, and every member\'s where it is not (#1491)', async () => {
     const { db } = sqliteEnv();
-    const { issueMemberToken } = await import('@myco-server-worker/auth/tokens.js');
+    const { issueMemberToken } = await import('./helpers/member-token.js');
     await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 1_000);
     await issueMemberToken(db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, 1_000);
     const owners = async (opts: { memberId?: string }) => [...new Set((await listCredentials(db, 1_000, opts)).rows.map((r) => r.memberId))].sort();

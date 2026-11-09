@@ -1,7 +1,7 @@
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, orderingFields, idFields, PROMPT_ORIGINS, PLAN_STATUSES, MAX_ARRAY_ITEMS, MAX_TIME_MS, PROMPT_REFERENCE_COLUMNS, type Bound, type IdRole } from '@myco-server-worker/ingest/kinds.js';
 import { acceptableProjectName, basenameOf, planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
 import { MAX_PAYLOAD_BYTES, PAYLOAD_CAP_REASON } from '@myco-server-worker/ingest/envelope.js';

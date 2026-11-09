@@ -7,7 +7,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { memberHeaders } from './helpers/fixtures.js';
 import { budgetFixture } from './helpers/budget-fixture.js';
 import { legacyWorker } from './helpers/worker-principal.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
@@ -557,7 +557,7 @@ test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without
   const {SCHEMA_STEPS}=await import('@myco-server-worker/db/schema.js');
   const {measuredStore}=await import('./helpers/read-budget.js');
   const {ensureMember}=await import('@myco-server-worker/auth/enrollment.js');
-  const {issueMemberToken}=await import('@myco-server-worker/auth/tokens.js');
+  const {issueMemberToken}=await import('./helpers/member-token.js');
   const {legacyWorker}=await import('./helpers/worker-principal.js');
   const {completeBudgetMigration}=await import('@myco-server-worker/db/meta/budget-activation.js');
   const {estimateKey}=await import('@myco-server-worker/core/budget-estimates.js');

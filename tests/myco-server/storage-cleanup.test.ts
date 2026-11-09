@@ -7,7 +7,7 @@ import { eventContent,eventArchiveStatements,prepareArchive } from '@myco-server
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { LIFECYCLE_PHASE,presentedDatesAfterPublication } from '@myco-server-worker/db/documents/lifecycle.js';
 import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
 import { measuredContentEnv,remainingContentBudget } from '@myco-server-worker/core/content-budget.js';

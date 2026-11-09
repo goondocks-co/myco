@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { LATEST_S6B } from '@myco-server-worker/db/schema-vNEXT-s6b.js';
 import { migrationFileName, readSchemaVersion, renderMigrationFile, renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { applySchemaSteps } from './helpers/migrate.js';
 import { SCHEMA_STEPS, type SchemaStep } from '@myco-server-worker/db/schema.js';
@@ -768,6 +769,14 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0749_v749.sql': '6a53de274598ada0db0ee12ec2b7c7ac267b08d0309cfcde2793a2f78e6303cf',
   '0750_v750.sql': '3e421dea52d543196594f4886e760062c39a817850e3cf63108efa7e90487c91',
   '0751_v751.sql': 'a245686d0a68646d4e1625c822f8de1191287eb7219d1d1b32a788350e24bca9',
+  '0752_v752.sql': 'ccde6e374a7a12cc08f12a88ce4697a4dadf9bacbffa4c9e3d8a6a0afcc89051',
+  '0753_v753.sql': 'd49fdeeb73fba5c3ec1b9277980351170b34789940824341d7b86b9780f2984c',
+  '0754_v754.sql': '21b847182075f740ba94116054413f23f9937f6c1c2c8a8779fddada9043feef',
+  '0755_v755.sql': 'd03bc428aab657f72e9d6b2285b93ab960c85ee71aa961f57196991e29a99da6',
+  '0756_v756.sql': '248466419e434fe97035ff77ff684f7f2c80a1e4215887a77513f7619effa2b6',
+  '0757_v757.sql': '9c0a95908e026537ac71f04e08f60547485fb52497592949c3206486663d25a6',
+  '0758_v758.sql': 'c55fa666daa092b7a4e97583b52a78fed1b05a846bfa7838537b9119d3f8aff5',
+  '0759_v759.sql': '8ae9e0f2233eeff1e55100797b8f53693a32990666354ca6d75abd832162c103',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1233,6 +1242,7 @@ describe('versioned schema steps', () => {
     const retiredColumnsAt709 = new Set(['agent_runs.repository_files', 'spore_curation_candidates.currency']);
     const retiredTriggersAt709 = new Set(['curation_inventory_map_move', 'curation_inventory_map_delete', 'curation_inventory_run_end']);
     const retiredTablesAtS5b = new Set(['embedding_hubness_population', 'embedding_hubness_work']);
+    const retiredTablesAtS6b = new Set(['step_up_authorities']);
     const retiredTriggersAtS5b = new Set(['embedding_hubness_members_population_insert', 'embedding_hubness_members_population_update', 'embedding_hubness_members_population_delete']);
     // Each is replaced in this step by a narrower trigger that still advances the same revision or dirties the same work.
     const narrowedTriggersAtS5b = new Set([...['embedding_versions', 'embedding_receipts'].flatMap(table => ['insert', 'update', 'delete'].map(action => `${table}_hubness_source_${action}`)), 'embedding_hubness_members_work_update']);
@@ -1252,7 +1262,7 @@ describe('versioned schema steps', () => {
       const after = declaredColumns(SCHEMA_STEPS.slice(0, n + 1));
       for (const [table, cols] of before) {
         if (['_v117_reference_ranges','_document_fact_range','_document_due_range','_learning_source_ranges','_learning_quiet_range','_learning_quiet_margin_range'].includes(table) && SCHEMA_STEPS[n]!.statements.includes(`DROP TABLE ${table}`)) { expect(after.has(table)).toBe(false); continue; }
-        if ((n === 85 && retiredAt86.has(table)) || (SCHEMA_STEPS[n]!.version === V722 && retiredTablesAtS5b.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
+        if ((n === 85 && retiredAt86.has(table)) || (SCHEMA_STEPS[n]!.version === V722 && retiredTablesAtS5b.has(table)) || (SCHEMA_STEPS[n]!.version === LATEST_S6B && retiredTablesAtS6b.has(table)) || (dropping && drops.includes(table === DROP_RANGES_TABLE ? table : [...DROPPED_CONTENT].find(name => table === name || name.endsWith('_fts') && table.startsWith(name + '_')) ?? ''))) {
           expect(after.has(table)).toBe(false);
           continue;
         }
@@ -1279,7 +1289,7 @@ describe('versioned schema steps', () => {
       for (const [index, s] of SCHEMA_STEPS[n].statements.entries()) {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
-          const allowedRetirement = dropped === '_learning_quiet_margin_range' && n+1 === 692 || dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || (retiredTablesAtS5b.has(dropped) && SCHEMA_STEPS[n]!.version === V722) || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
+          const allowedRetirement = ['step_up_authorities', 'idx_step_up_authorities_hash'].includes(dropped) && SCHEMA_STEPS[n]!.version === LATEST_S6B || dropped === '_learning_quiet_margin_range' && n+1 === 692 || dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || (retiredTablesAtS5b.has(dropped) && SCHEMA_STEPS[n]!.version === V722) || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
           expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;

@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { CONTACT_RECENT_MS, CONTACT_THROTTLE_MS, readWorkerFleet, recordWorkerContact, pruneWorkerContacts, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';

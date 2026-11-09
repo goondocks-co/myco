@@ -1,7 +1,7 @@
 import { legacyWorker } from './helpers/worker-principal.js';
 import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';

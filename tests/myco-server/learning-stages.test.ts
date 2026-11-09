@@ -4,7 +4,7 @@ import { storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-c
 import { describe, expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';

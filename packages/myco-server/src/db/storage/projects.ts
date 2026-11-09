@@ -15,7 +15,7 @@ type ProjectAdmission =
 const autoCreate = leafOffChecks(AUTO_CREATE_LEAF, JSON.stringify(false)).admission;
 const POLICY = `(? IS NULL OR EXISTS (SELECT 1 FROM members creator WHERE creator.id=? AND creator.revoked_at IS NULL
   AND (creator.role='admin' OR (creator.role='member' AND ${autoCreate.sql}))))`;
-const ACTIVE_PROJECTS = '(SELECT COUNT(*) FROM projects WHERE archived_at IS NULL)';
+const ACTIVE_PROJECTS = '(SELECT active FROM active_project_count WHERE slot=1)';
 const CAPACITY = `${ACTIVE_PROJECTS} < ${MAX_PROJECTS}`;
 const allowed = read<Array<string | null>, { allowed: number }>({
   name: 'storage.projectCreationAllowed',
@@ -32,7 +32,9 @@ const remoteBind = write<[string | null, string, number]>({
   name: 'storage.bindProjectRemote',
   sql: `
   INSERT OR IGNORE INTO project_remotes(remote,project_id,first_seen_at)
-    SELECT ?1,?2,?3 WHERE ?1 IS NOT NULL AND changes()=1`,
+    SELECT ?1,?2,?3 WHERE ?1 IS NOT NULL
+      AND EXISTS(SELECT 1 FROM projects WHERE project_id=?2 AND created_at=?3)
+      AND NOT EXISTS(SELECT 1 FROM project_remotes WHERE project_id=?2)`,
 });
 const held = read<[string, string | null], { projectId: string; name: string; archivedAt: number | null }>({
   name: 'storage.createdProject',

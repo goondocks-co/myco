@@ -24,13 +24,13 @@ import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
  * a worker contact and the backup after it.
  */
 import { Database } from 'bun:sqlite';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { RUN_WRITE_EVENT } from '@myco-server-worker/db/runs/evidence.js';
 import { recordSessionInjection } from '@myco-server-worker/core/recall.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';

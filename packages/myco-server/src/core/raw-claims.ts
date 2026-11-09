@@ -1,7 +1,8 @@
 import type { RawClaimPreview, RawClaimOutcome, DeploymentOwnershipPreview } from '@goondocks/myco-shared/raw-claims';
 import type { RelationalStore } from './adapters.js';
 
-import { deploymentOwnerSql, isDeploymentOwner, ownershipPreview, OwnershipRefusal as RawClaimRefusal } from './ownership.js';
+import { isDeploymentOwner, ownershipPreview, OwnershipRefusal as RawClaimRefusal } from '../db/identity/ownership.js';
+import { deploymentOwnerSql } from '../db/identity/ownership-policy.js';
 
 /** A claim covers only missing provenance at its reviewed revision; recorded and contradictory identities are excluded. */
 export const effectiveRawOwnerSql = (owner: string, provenance: string, revision: string, candidate = 'NULL'): string => `COALESCE(${owner},

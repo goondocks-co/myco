@@ -12,7 +12,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';

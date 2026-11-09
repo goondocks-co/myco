@@ -10,7 +10,7 @@ import { runRouteFixture } from './helpers/run-routes.js';
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { claimNextRun, endLeasedRun } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID, PROJECT_HEADER } from '@myco-server-worker/constants.js';
