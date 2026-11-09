@@ -137,7 +137,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress', 'backup_publications', 'recovery_forget_commands',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
-  'object_settlement_intents', 'object_reconciliation_cursor', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
+  'object_settlement_intents', 'object_reconciliation_cursor', 'object_store_reconciliation', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v68_guard_retired_settings',

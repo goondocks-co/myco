@@ -95,6 +95,7 @@ else if (command === 'd1 time-travel info') {
 else if (command === 'vectorize get myco-server-memory') out({config:{dimensions:1536,metric:'cosine'}});
 else if (args[0] === 'vectorize' && args[1] === 'list-metadata-index') out(state.metadata);
 else if (command === 'r2 bucket create') console.log('Created fixture bucket');
+else if (command === 'r2 bucket list') console.log('');
 else if (args[0] === 'secrets-store' && args[1] === 'store' && args[2] === 'list') console.log('${'f'.repeat(32)}');
 else if (args[0] === 'secrets-store' && args[1] === 'secret' && args[2] === 'list') console.log('│ Name │ ID │\\n│ myco-secret-wrap-key │ '+ 'e'.repeat(32) +' │');
 else if (args[0] === 'secrets-store' && args[1] === 'secret' && args[2] === 'create') console.log('Created fixture secret');
@@ -442,7 +443,7 @@ it('GATE: a populated database stamped zero is refused rather than treated as em
     fs.rmSync(deploymentRecordPath(home));
     await expect(create()).rejects.toThrow('no valid schema version');
     expect(readDeploymentRecord(home)?.databaseId).toBe(OLD_WORKER);
-    expect(calls().some(({ args }) => args.includes('migrations') || args[0] === 'vectorize' || args[0] === 'r2')).toBe(false);
+    expect(calls().some(({ args }) => args.includes('migrations') || ((args[0] === 'vectorize' || args[0] === 'r2') && !args.includes('list')))).toBe(false);
   });
 });
 

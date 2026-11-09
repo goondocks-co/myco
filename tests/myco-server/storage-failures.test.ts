@@ -6,8 +6,8 @@ import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { backupArtifact, createBackup, pruneBackups, setBackupPinned } from '@myco-server-worker/core/backup.js';
-import { drainObjectReleases, consumeUploadAuthority, releaseBackups, DRAIN_PAGE } from '@myco-server-worker/core/object-release.js';
-import { reconcileObjectIntents } from '@myco-server-worker/db/storage/object-lifecycle.js';
+import { drainObjectReleases, releaseBackups, DRAIN_PAGE } from '@myco-server-worker/core/object-release.js';
+import { consumeUpload, reconcileObjectIntents } from '@myco-server-worker/db/storage/object-lifecycle.js';
 import { retentionDecision } from '@myco-server-worker/core/backup-retention.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
@@ -205,7 +205,7 @@ it('B10: reconciliation revisits an uncertain PUT after authority and journal dr
         e.sqlite.query(`INSERT INTO blob_reservations(reservation_id,project_id,key,token_id,size,expires_at)
           VALUES(?,'proj_1',?,?,?,?)`).run(reservation,key,token.tokenId,body.byteLength,Date.now()+60_000);
         await expect(e.bucket.put(blobObjectKey('proj_1',key,reservation),new Response(body).body,{sha256:key})).rejects.toThrow('PUT answer lost');
-        await e.db.batch(consumeUploadAuthority(e.db,reservation,Date.now()));
+        await consumeUpload(e.db,reservation,Date.now());
       }
       const now=Date.now()+1;
       const expiry=(e.sqlite.query('SELECT expires_at FROM object_settlement_intents WHERE physical=?').get(physical) as {expires_at:number}).expires_at;

@@ -41,7 +41,7 @@ const COUNTER_READERS: Record<string, string> = {
   'db/runs/claim-companions.ts': 'a new credential starts at 0',
   'ingest/live-credential.ts': 'the stored-bytes read for reporting, and the carry at rotation',
   'ingest/events.ts': 'the charge for a stored event body',
-  'ingest/blobs.ts': 'the charge for a stored blob',
+  'db/storage/content-lifecycle.ts': 'the charge for a stored blob',
   'read/credentials.ts': 'the dashboard\'s credential list',
   'db/identity/credential-pages.ts': 'the query behind the dashboard\'s credential list',
   'read/machines.ts': 'the dashboard\'s machine lineage totals',

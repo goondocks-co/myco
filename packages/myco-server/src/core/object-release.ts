@@ -25,8 +25,9 @@ import { BLOB_REFERENCES, referencedBlobValue, type BlobRef } from './blob-refer
 import { within } from './recovery-inventory.js';
 import { retentionDecision } from './backup-retention.js';
 import { commitBackupRelease, type RetentionObservation } from '../db/storage/backup-retention.js';
-import { drainAuthorities, dueObjectReleases, acknowledgeRelease, retryRelease, reconcileObjectIntents,
+import { drainAuthorities, dueObjectReleases, acknowledgeRelease, retryRelease, reconcileObjectIntents, releaseWorkDue,
   resetObjectLifecycle, settleObjectIntent } from '../db/storage/object-lifecycle.js';
+import { reconcileStoredObjects } from '../db/storage/object-reconciliation.js';
 import { RELEASE_PAGE, decideRecordedBlobs, releaseCandidatesDue, type ReleaseOutcome } from '../db/storage/release-queue.js';
 import { classify, emit } from '../telemetry.js';
 
@@ -68,8 +69,6 @@ export async function publishBackupObject(db: RelationalStore, blobs: BlobStore,
     throw error;
   }
 }
-
-export { consumeUploadAuthority } from '../db/storage/object-lifecycle.js';
 
 /**
  * Decides the candidates `pairs` name, one transaction per page. A caller records them first, in the batch that removes
@@ -296,7 +295,7 @@ export interface DrainReport {
 
 /**
  * One bounded pass of the only store deleter:
- * 1. consume a page of expired upload authorities, journaling their bytes;
+ * 1. walk one page of the object store and consume a page of expired upload authorities, journaling what no owner holds;
  * 2. delete a page of journaled objects due now, removing each journal row only after the store acknowledged its delete;
  *    a failed delete moves only its own key to a later attempt, so the key behind it is reached;
  * 3. with no hold open, decide a page of recorded release candidates through the same statements a release runs,
@@ -312,6 +311,13 @@ export async function drainObjectReleases(
   const report: DrainReport = { expired: 0, deleted: 0, decided: 0, unacknowledged: 0 };
 
   await reconcileObjectIntents(db,now,DRAIN_PAGE);
+  try {
+    const walked = await reconcileStoredObjects(env,now);
+    if (walked.released + walked.ownerless + walked.vectorPages > 0) emit({ kind: 'stored_objects_reconciled', ...walked });
+  } catch (error) {
+    // The store walk is resumable and the rest of this pass does not depend on it; the next wake revisits this page.
+    emit({ kind: 'object_store_reconcile_failed', error_class: classify(error,env.platform?.classifyError) });
+  }
   report.expired = await drainAuthorities(db,now,DRAIN_PAGE);
   const journal = await dueObjectReleases(db,now,DRAIN_PAGE);
   let consecutiveFailures=0;
@@ -332,7 +338,7 @@ export async function drainObjectReleases(
     report.deleted += await acknowledgeRelease(db,physical,issuedAt);
   }
 
-  const due = await releaseCandidatesDue(db,DRAIN_PAGE);
+  const due = await releaseCandidatesDue(db,now,DRAIN_PAGE);
   if (due.held) return report;
   if (due.blobs.length > 0) report.decided += (await decideRecordedBlobs(db,due.blobs,now)).decided;
   if (due.backups.length > 0) {
@@ -341,6 +347,16 @@ export async function drainObjectReleases(
     report.decided += due.backups.length - outcome.deferred;
   }
   return report;
+}
+
+/**
+ * Whether the drain has more than one pass took: expired authorities, journal rows due now, or candidates due with no
+ * hold open. A failed delete answers no: its key waits for its own retry and the next wake.
+ */
+export async function objectReleaseBacklogged(db: RelationalStore, now: number, report: DrainReport): Promise<boolean> {
+  if (report.unacknowledged > 0) return false;
+  const [due, work] = await Promise.all([releaseCandidatesDue(db,now,1),releaseWorkDue(db,now)]);
+  return work || (!due.held && (due.blobs.length > 0 || due.backups.length > 0));
 }
 
 /**

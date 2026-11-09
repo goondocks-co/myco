@@ -1,12 +1,12 @@
 import { SHA256 } from '@stablelib/sha256';
 import type { PreparedStatement, RelationalStore, ContentStore } from './adapters.js';
 import { blobObjectKey } from './blob-objects.js';
-import { consumeUploadAuthority, recordBlobCandidates, releaseBlobs } from './object-release.js';
+import { admitDerivedUpload, contentRegistration, durableProofHeld, publishDerivedUpload, recordProofOfRegistered, type DerivedAuthority } from '../db/storage/content-lifecycle.js';
+import { settleUpload } from '../db/storage/object-lifecycle.js';
 import { BLOB_RESERVATION_TTL_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import { credentialLive } from '../ingest/live-credential.js';
 import { measuredContentEnv } from './content-budget.js';
-import { registerContentStatement } from './content-registration.js';
 
 export interface DerivedContentSource {
   projectId: string;
@@ -117,64 +117,34 @@ export async function prepareDerivedStream(
     params: [...sourceAuthority.params, ...(typeof publicationGuard.params === 'function'
       ? publicationGuard.params() : publicationGuard.params)],
   };
-  const sourceId = source.resourceId ?? source.eventId;
-  const existing = await db.prepare(`SELECT generation,size FROM blobs WHERE project_id=? AND key=?`)
-    .bind(source.projectId, body.digest).first<{ generation: string | null; size: number }>();
+  const authority: DerivedAuthority = { projectId: source.projectId, key: body.digest, size: body.size, tokenId: source.tokenId, sessionId: source.sessionId,
+    eventId: source.eventId, envelopeHash: source.envelopeHash, sourceKind: source.sourceKind, sourceId: source.resourceId ?? source.eventId };
+  const guards = () => [live()];
+  const existing = await contentRegistration(db, source.projectId, body.digest);
   if (existing !== null) {
     if (existing.size !== body.size) throw new Error('content_registration_unverified');
     const physical = blobObjectKey(source.projectId, body.digest, existing.generation);
-    const durable = await db.prepare(`SELECT 1 AS held FROM registered_content_proofs
-      WHERE project_id=? AND key=? AND generation IS ? AND digest=? AND size=? AND durable=1 LIMIT 1`)
-      .bind(source.projectId, body.digest, existing.generation, body.digest, body.size).first();
-    if (durable === null && await env.blobs.ensureDurable?.(physical) !== true) throw new Error('content_durability_unavailable');
+    if (!await durableProofHeld(db, source.projectId, body.digest, existing.generation, body.size)
+      && await env.blobs.ensureDurable?.(physical) !== true) throw new Error('content_durability_unavailable');
     await verifyContentObject(env, physical, body.size, body.digest);
-    const authority=live();
-    await db.batch([
-      ...contentAssertion(db, `${authority.sql} AND EXISTS (SELECT 1 FROM blobs WHERE project_id=? AND key=? AND generation IS ? AND size=?)`,
-        [...authority.params, source.projectId, body.digest, existing.generation, body.size]),
-      db.prepare(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,event_id,envelope_hash,session_id,digest,size,verified_at,durable)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT DO NOTHING`)
-        .bind(source.projectId, body.digest, existing.generation, source.sourceKind, sourceId, source.eventId, source.envelopeHash, source.sessionId, body.digest, body.size, now),
-    ]);
+    await recordProofOfRegistered(db, guards(), authority, existing.generation, now);
     return { key: body.digest, digest: body.digest, size: body.size, generation: existing.generation };
   }
   const generation = crypto.randomUUID();
-  const physical = blobObjectKey(source.projectId, body.digest, generation);
-  const admission=live();
-  const admitted = await db.batch([
-    ...contentAssertion(db, admission.sql, admission.params),
-    db.prepare(`INSERT INTO blob_reservations(reservation_id,project_id,key,token_id,size,expires_at,authority_kind,
-      source_kind,source_id,source_event_id,source_envelope_hash,source_session_id) VALUES(?,?,?,?,?,?,'server',?,?,?,?,?)`)
-      .bind(generation, source.projectId, body.digest, source.tokenId, body.size, now+BLOB_RESERVATION_TTL_MS,
-        source.sourceKind, sourceId, source.eventId, source.envelopeHash, source.sessionId),
-  ]);
-  if (admitted.at(-1)?.meta.changes !== 1) throw new Error('content_reservation_refused');
+  const physical = await admitDerivedUpload(db, guards(), generation, authority, now + BLOB_RESERVATION_TTL_MS, now);
   let published = false;
+  let stored = false;
   try {
     const object = await env.blobs.put(physical, body.stream(), { size:body.size,sha256: body.digest, httpMetadata: { contentType: 'application/json' } });
+    stored = true;
     if (object.durable !== true) throw new Error('content_durability_unavailable');
     if (object.size !== body.size) throw new Error('content_archive_size_mismatch');
     await verifyContentObject(env, physical, body.size, body.digest);
-    const authority=live();
-    await db.batch([
-      ...contentAssertion(db, `${authority.sql} AND EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id=?
-        AND project_id=? AND key=? AND size=? AND token_id=? AND source_session_id=? AND expires_at>?
-        AND authority_kind='server' AND source_kind=? AND source_id=? AND source_event_id=? AND source_envelope_hash=?)`,
-        [...authority.params,generation,source.projectId,body.digest,body.size,source.tokenId,source.sessionId,now+Math.max(0,Date.now()-publicationStarted),
-          source.sourceKind, sourceId, source.eventId, source.envelopeHash]),
-      registerContentStatement(db,{projectId:source.projectId,key:body.digest,size:body.size,mediaType:'application/json',
-        tokenId:source.tokenId,receivedAt:now,generation,authority}),
-      ...contentAssertion(db, `EXISTS (SELECT 1 FROM blobs WHERE project_id=? AND key=? AND generation IS ? AND size=?)`,
-        [source.projectId, body.digest, generation, body.size]),
-      db.prepare(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,event_id,envelope_hash,session_id,digest,size,verified_at,durable)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,1) ON CONFLICT DO NOTHING`)
-        .bind(source.projectId, body.digest, generation, source.sourceKind, sourceId, source.eventId, source.envelopeHash, source.sessionId, body.digest, body.size, now),
-      db.prepare('DELETE FROM blob_reservations WHERE reservation_id=?').bind(generation),
-    ]);
+    await publishDerivedUpload(db, guards(), { generation, physical, authority, now, liveAt: now + Math.max(0, Date.now() - publicationStarted) });
     published = true;
     return { key: body.digest, digest: body.digest, size: body.size, generation };
   } finally {
-    if (!published) await db.batch(consumeUploadAuthority(db, generation, now));
+    if (!published) await settleUpload(db, { reservation: generation, physical, authorityConsumed: false, stored }, now);
   }
 }
 

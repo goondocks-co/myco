@@ -20,6 +20,7 @@ import {
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
 import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
+import { cloudflareResources } from '@myco/server/cloudflare-resources.js';
 import { deployedWorkerSecretNames, ensureSecretsStore, findSecretsStore, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
@@ -158,6 +159,53 @@ const EVERY_VERB: ReadonlyArray<{ verb: string; run: (options: { accountId: stri
 const recordFor = (home: string): void => {
   writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: 'old-version', deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
 };
+
+describe('a new database and a bucket that already exists', () => {
+  const heldBucket = (name = 'myco-server-blobs') => ({ 'r2 bucket list': { stdout: `name: ${name}\ncreation_date: 2026-01-01\n` } });
+
+  it('refuses before creating anything, naming the bucket and the next command', async () => {
+    const { home, options } = setup();
+    const selected = runner(heldBucket());
+    await expect(createCloudflareDeployment({ ...options, runner: selected })).rejects.toThrow(`R2 bucket myco-server-blobs already exists, but no D1 database myco-server does, so a new database would not know the objects in it. Nothing was created. If this Deployment should use that bucket, run: myco server create --target cloudflare --account-id ${ACCOUNT} --adopt-bucket.`);
+    expect(calls.some((c) => c.args.join(' ').includes('d1 create'))).toBe(false);
+    expect(readDeploymentRecord(home)).toBeNull();
+  });
+
+  it('adopts the bucket when the operator says so', async () => {
+    const { home, options } = setup();
+    const result = await createCloudflareDeployment({ ...options, adoptBucket: true, runner: runner(heldBucket()) });
+    expect(result.record.bucketName).toBe('myco-server-blobs');
+    expect(readDeploymentRecord(home)?.databaseId).toBe(DB_ID);
+  });
+
+  it('keeps working with no flag when the database already exists', async () => {
+    const { home, options } = setup();
+    const selected = runner({ ...heldBucket(), 'd1 list --json': { stdout: JSON.stringify([{ name: 'myco-server', uuid: DB_ID }]) } });
+    const result = await createCloudflareDeployment({ ...options, runner: selected });
+    expect(result.record.databaseId).toBe(DB_ID);
+    expect(readDeploymentRecord(home)?.bucketName).toBe('myco-server-blobs');
+  });
+
+  it('re-runs a Deployment whose record names its database, with no flag', async () => {
+    const { options } = setup();
+    await createCloudflareDeployment({ ...options, runner: runner() });
+    const result = await createCloudflareDeployment({ ...options, runner: runner(heldBucket()) });
+    expect(result.record.bucketName).toBe('myco-server-blobs');
+  });
+});
+
+describe('the bucket a Deployment resolves to', () => {
+  it('stays what it was for the default Worker name, and what a record names', () => {
+    expect(cloudflareResources().bucketName).toBe('myco-server-blobs');
+    expect(cloudflareResources({ workerName: 'myco-server' }).bucketName).toBe('myco-server-blobs');
+    expect(cloudflareResources({ workerName: 'other', bucketName: 'chosen' }).bucketName).toBe('chosen');
+    expect(cloudflareResources({ workerName: 'other', databaseId: DB_ID }).bucketName).toBe('myco-server-blobs');
+  });
+
+  it('is derived from the Worker name for a new Deployment of another name', () => {
+    expect(cloudflareResources({ workerName: 'other' }).bucketName).toBe('other-blobs');
+  });
+});
 
 describe('account secrets store', () => {
   for (const output of ['stdout', 'stderr'] as const) {

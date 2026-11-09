@@ -26,6 +26,7 @@ const storeOf = (object: { size: number; stream: ReadableStream<Uint8Array> } | 
   get: async () => (object === null ? null : { size: object.size, body: object.stream }),
   put: async () => { throw new Error('read-only fixture'); },
   delete: async () => { throw new Error('read-only fixture'); },
+  list: async () => ({ objects: [], truncated: false }),
 });
 
 describe('reading a stored object of known size', () => {

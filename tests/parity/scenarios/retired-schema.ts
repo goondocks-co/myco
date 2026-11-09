@@ -99,5 +99,10 @@ export const retiredSchema: ParityScenario = {
     } finally {
       await target.sql(`DELETE FROM projects WHERE project_id = '${project}'`);
     }
+
+    // A restore rebuilds every projection, and this target is shared with the scenarios that follow.
+    const building = async () => Number((await target.sql('SELECT COUNT(*) AS n FROM projection_catchup WHERE done = 0'))[0]!.n);
+    for (let wake = 0; wake < 100 && await building() > 0; wake += 1) await target.clockWake();
+    expect(await building()).toBe(0);
   },
 };

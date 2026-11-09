@@ -65,6 +65,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   uninstall --target local                Stop it and remove the service. Its data is kept.
 
   create --target cloudflare --account-id <id> [--url <https://…>] [--dry-run]
+                                          --adopt-bucket puts a new database on an R2 bucket that
+                                          already exists; without it, create refuses.
                                           Provision D1/R2/Vectorize/secrets store, install generated
                                           secrets, migrate, deploy, and write the deployment record.
                                           Needs Node and a wrangler login on this machine and nothing
@@ -417,7 +419,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
         for (const line of createPlanLines(plan)) console.log(line);
         return;
       }
-      const created = await createCloudflareDeployment({ ...cloudflareOptions(), ...(urlFlag === undefined ? {} : { url: urlFlag }) });
+      const created = await createCloudflareDeployment({ ...cloudflareOptions(), ...(urlFlag === undefined ? {} : { url: urlFlag }), ...(flags.has('adopt-bucket') ? { adoptBucket: true } : {}) });
       console.log('\nCloudflare Deployment deployed.');
       if (created.createdResources.length > 0) console.log(`  Provisioned: ${created.createdResources.join(', ')}`);
       console.log(`  Version:     ${created.versionId ?? 'unknown'}`);

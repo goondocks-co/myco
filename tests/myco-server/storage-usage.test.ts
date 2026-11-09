@@ -8,7 +8,6 @@ import { acquireRecoveryHold, assignRestoreGeneration, drainObjectReleases, reco
 import { admitBlobUpload } from '@myco-server-worker/db/storage/blob-admission.js';
 import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
 import { releaseHolders } from '@myco-server-worker/ingest/document-batch.js';
-import { registerContentStatement } from '@myco-server-worker/core/content-registration.js';
 import { catchUpProjections, catchUpPhase, resetProjectionCatchup, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { readDeploymentStorageUsage, STORAGE_USAGE_PAGE, STORAGE_USAGE_PHASE } from '@myco-server-worker/db/storage/usage.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -38,7 +37,12 @@ async function migrate(db: RelationalStore) {
   ]);
 }
 
-const register = (db: RelationalStore, row: Row, generation: string) => db.batch([registerContentStatement(db, {
+/** A blob registered the way an upload registers it, under the statement's own condition. */
+const registerRow = (db: RelationalStore, row: { projectId: string; key: string; size: number; mediaType: string; tokenId: string; receivedAt: number; generation: string; authority: { sql: string; params: unknown[] } }) =>
+  db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) SELECT ?,?,?,?,?,?,? WHERE ${row.authority.sql} ON CONFLICT(project_id,key) DO NOTHING`)
+    .bind(row.projectId, row.key, row.size, row.mediaType, row.tokenId, row.receivedAt, row.generation, ...row.authority.params);
+
+const register = (db: RelationalStore, row: Row, generation: string) => db.batch([registerRow(db, {
   projectId: row.project, key: row.key, size: row.size, mediaType: 'text/plain', tokenId: 'credential', receivedAt: 1, generation, authority: ALWAYS,
 })]);
 
@@ -138,7 +142,7 @@ describe('storage usage counters', () => {
   it.each(stores)('reports building until an interrupted keyset build has counted existing blobs, racing writes at every position on %s', async target => {
     await withStore(target, async db => {
       const rows = Array.from({ length: STORAGE_USAGE_PAGE + 40 }, (_, n) => ({ project: PROJECTS[n % 3]!, key: `key-${String(n).padStart(5, '0')}`, size: 3 + (n % 7) }));
-      for (let at = 0; at < rows.length; at += 80) await db.batch(rows.slice(at, at + 80).map((row, i) => registerContentStatement(db,
+      for (let at = 0; at < rows.length; at += 80) await db.batch(rows.slice(at, at + 80).map((row, i) => registerRow(db,
         { projectId: row.project, key: row.key, size: row.size, mediaType: 'text/plain', tokenId: 'credential', receivedAt: 1, generation: GENERATION(at + i + 1), authority: ALWAYS })));
       await resetProjectionCatchup(db);
       expect(await projectionReadiness(db, 'storage_usage')).toBe('building');
@@ -150,7 +154,7 @@ describe('storage usage counters', () => {
       const pastFrontier = { project: 'proj_zz', key: 'zzz-past-the-frontier', size: 222 };
       const behindCursor = { project: 'proj_a', key: 'aaa-behind-the-cursor', size: 333 };
       const removedAhead = rows[rows.length - 1]!;
-      await db.batch([registerContentStatement(db, { projectId: inPageWindow.project, key: inPageWindow.key, size: inPageWindow.size, mediaType: 'text/plain', tokenId: 'credential', receivedAt: 1, generation: GENERATION(9001), authority: ALWAYS })]);
+      await db.batch([registerRow(db, { projectId: inPageWindow.project, key: inPageWindow.key, size: inPageWindow.size, mediaType: 'text/plain', tokenId: 'credential', receivedAt: 1, generation: GENERATION(9001), authority: ALWAYS })]);
       await db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_zz','zz',1)`).run();
       await register(db, pastFrontier, GENERATION(9002));
       await register(db, behindCursor, GENERATION(9003));
@@ -268,7 +272,7 @@ describe('ordered release queues', () => {
         if (batches === 2) {
           await releaseNow(db, [{ projectId: 'proj_a', key: 'orphan' }], NOW);
           await drain(db, store.blobs, NOW + 1);
-          await db.batch([registerContentStatement(db, { projectId: 'proj_a', key: 'orphan', size: 7, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW, generation: GENERATION(2), authority: ALWAYS })]);
+          await db.batch([registerRow(db, { projectId: 'proj_a', key: 'orphan', size: 7, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW, generation: GENERATION(2), authority: ALWAYS })]);
         }
         return db.batch(statements);
       } };
@@ -291,7 +295,7 @@ describe('ordered release queues', () => {
 
   it.each(stores)('refuses a registration newer than the age cutoff, and keeps an aged orphan through a hold on %s', async target => {
     await withStore(target, async db => {
-      await db.batch([registerContentStatement(db, { projectId: 'proj_a', key: 'fresh', size: 2, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW, generation: GENERATION(1), authority: ALWAYS })]);
+      await db.batch([registerRow(db, { projectId: 'proj_a', key: 'fresh', size: 2, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW, generation: GENERATION(1), authority: ALWAYS })]);
       await register(db, { project: 'proj_a', key: 'aged', size: 2 }, GENERATION(2));
       expect(await releaseAgedOrphans(db, [{ projectId: 'proj_a', key: 'fresh', generation: GENERATION(1) }], NOW, NOW - 1)).toEqual({ released: 0, deferred: 0 });
       expect(await generationOf(db, 'fresh')).toBe(GENERATION(1));
@@ -310,7 +314,7 @@ describe('ordered release queues', () => {
       await db.batch(await recordCurrent(db, [{ projectId: 'proj_a', key: 'reused' }], NOW));
       await drain(db, store.blobs, NOW + 1);
       expect(await generationOf(db, 'reused')).toBeNull();
-      await db.batch([registerContentStatement(db, { projectId: 'proj_a', key: 'reused', size: 4, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW + 2, generation: GENERATION(2), authority: ALWAYS })]);
+      await db.batch([registerRow(db, { projectId: 'proj_a', key: 'reused', size: 4, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW + 2, generation: GENERATION(2), authority: ALWAYS })]);
       expect(await releaseBlobs(db, [{ projectId: 'proj_a', key: 'reused' }], NOW + 3)).toEqual({ released: 0, deferred: 0 });
       expect(await generationOf(db, 'reused')).toBe(GENERATION(2));
       await db.prepare(`INSERT INTO blob_release_candidates(project_id,key,created_at,generation) VALUES('proj_a','reused',?,?)`).bind(NOW + 4, GENERATION(1)).run();
@@ -323,7 +327,7 @@ describe('ordered release queues', () => {
 
   it.each(stores)('a candidate from before generations were observed waits out the orphan grace, then releases, on %s', async target => {
     await withStore(target, async db => {
-      await db.batch([registerContentStatement(db, { projectId: 'proj_a', key: 'fresh', size: 1, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW - 1, generation: GENERATION(2), authority: ALWAYS })]);
+      await db.batch([registerRow(db, { projectId: 'proj_a', key: 'fresh', size: 1, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW - 1, generation: GENERATION(2), authority: ALWAYS })]);
       await db.prepare(`INSERT INTO blob_release_candidates(project_id,key,created_at) VALUES('proj_a','fresh',?)`).bind(NOW).run();
       await drain(db, objectStore().blobs, NOW + 20);
       expect(await generationOf(db, 'fresh')).toBe(GENERATION(2));
@@ -379,7 +383,7 @@ describe('ordered release queues', () => {
 
   it.each(stores)('a holder releasing a blob inside the upload grace leaves it until the grace has passed, whoever registered it, on %s', async target => {
     await withStore(target, async db => {
-      await db.batch([registerContentStatement(db, { projectId: 'proj_a', key: 'young', size: 1, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW, generation: GENERATION(4), authority: ALWAYS })]);
+      await db.batch([registerRow(db, { projectId: 'proj_a', key: 'young', size: 1, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW, generation: GENERATION(4), authority: ALWAYS })]);
       await proofFor(db, 'young', GENERATION(4));
       await holder(db, 'young');
       await releaseHolders(db, [{ p: 'proj_a', s: 's', k: 'young', i: 'source' }], NOW);

@@ -68,6 +68,8 @@ export function recordingLimiter() {
 
 export interface MemoryBlobStore extends BlobStore {
   objects: Map<string, { size: number; contentType?: string; bytes: Uint8Array }>;
+  /** When each object's bytes landed, read back by `list`. */
+  uploads: Map<string, Date>;
   puts: string[];
   heads: string[];
   deletes: string[];
@@ -82,13 +84,14 @@ export interface MemoryBlobStore extends BlobStore {
    * and drives a route that trusts the store's reported size. A case that also
    * reads the object back passes the bytes.
    */
-  seed(key: string, object: { size: number; contentType?: string; bytes?: Uint8Array }): void;
+  seed(key: string, object: { size: number; contentType?: string; bytes?: Uint8Array; uploaded?: Date }): void;
 }
 
 /** An in-memory blob store: `put` reads the stream to its end, verifies the declared digest and length like R2, and records the object; `head` answers from memory; `delete` removes the object. */
 export function memoryBlobStore(): MemoryBlobStore {
   const store: MemoryBlobStore = {
     objects: new Map(),
+    uploads: new Map(),
     puts: [],
     heads: [],
     deletes: [],
@@ -124,14 +127,20 @@ export function memoryBlobStore(): MemoryBlobStore {
         throw new Error('put: The SHA-256 checksum you specified did not match what we received. (10037)');
       }
       store.objects.set(key, { size: bytes.byteLength, contentType: options?.httpMetadata?.contentType, bytes });
+      store.uploads.set(key, new Date());
       return { size: bytes.byteLength, durable: true };
     },
     async delete(key) {
       store.deletes.push(key);
       store.objects.delete(key);
     },
+    async list({ limit, startAfter = '' }) {
+      const objects = [...store.objects.entries()].filter(([key]) => key > startAfter).sort(([a], [b]) => (a < b ? -1 : 1));
+      return { objects: objects.slice(0, limit).map(([key]) => ({ key, uploaded: store.uploads.get(key) ?? new Date() })), truncated: objects.length > limit };
+    },
     seed(key, object) {
       store.objects.set(key, { size: object.size, contentType: object.contentType, bytes: object.bytes ?? new Uint8Array(0) });
+      store.uploads.set(key, object.uploaded ?? new Date());
     },
   };
   return store;
