@@ -24,8 +24,22 @@ const OPERATIONS = [
   { path: '/worker/end', body: { status: 'failed' }, expected: { ended: true } },
 ] as const;
 
-async function rig(target: 'cloudflare' | 'bun') {
-  const e = sqliteEnv({ workerLogin: true });
+const AUTHORIZATION_READ = /FROM members m LEFT JOIN deployment_ownership o/;
+
+async function rig(target: 'cloudflare' | 'bun', interceptBatches = false) {
+  const injected: { sawAuthorization: boolean; afterAuthorization: (() => void) | null } = { sawAuthorization: false, afterAuthorization: null };
+  const e = sqliteEnv({ workerLogin: true, onSql: sql => { if (AUTHORIZATION_READ.test(sql)) injected.sawAuthorization = true; } });
+  const store = e.env.MYCO_DB;
+  if (interceptBatches) e.env.MYCO_DB = new Proxy(store, {
+    get(source, property, receiver) {
+      if (property !== 'batch') return Reflect.get(source, property, receiver);
+      return async (statements: PreparedStatement[]) => {
+        const results = await source.batch(statements);
+        if (injected.sawAuthorization && injected.afterAuthorization !== null) { const change = injected.afterAuthorization; injected.afterAuthorization = null; change(); }
+        return results;
+      };
+    },
+  });
   const root = mkdtempSync(join(tmpdir(), 'myco-lease-rotation-'));
   let now = Date.now();
   e.env.SECRET_WRAP_KEY = { get: async () => WRAP_KEY };
@@ -62,11 +76,30 @@ async function rig(target: 'cloudflare' | 'bun') {
   };
   const row = () => e.sqlite.query('SELECT status, leased_by AS leasedBy, dispatched_by AS attemptId, lease_expires_at AS leaseExpiresAt FROM agent_runs WHERE id=?')
     .get(RUN.runId) as { status: string; leasedBy: string; attemptId: string; leaseExpiresAt: number | null };
-  return { e, env, owner, post, claim, rotate, row,
+  return { e, env, owner, injected, post, claim, rotate, row,
     advance: (ms: number) => { now += ms; }, clock: () => now,
     close: () => { e.sqlite.close(); rmSync(root, { recursive: true, force: true }); },
   };
 }
+
+describe('a worker claim whose credential ended after its authorization', () => {
+  for (const [name, change] of [
+    ['revoked', `UPDATE member_credentials SET revoked_at=?, revoked_by='operator' WHERE id=?`],
+    ['expired', 'UPDATE member_credentials SET expires_at=? WHERE id=?'],
+  ] as const) {
+    it(`takes no run and mints no run credential when the credential is ${name}`, async () => {
+      const r = await rig('cloudflare', true);
+      try {
+        r.injected.afterAuthorization = () => { r.e.sqlite.run(change, [r.clock(), r.owner.tokenId]); };
+        const result = await r.post(r.owner.token, '/worker/claim', { harnesses: [offeredHarness('claude-code')], capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] });
+        expect(r.injected.afterAuthorization).toBeNull();
+        expect(result.body).toMatchObject({ persisted: true, claimed: false });
+        expect(r.e.sqlite.query('SELECT status, leased_by AS leasedBy FROM agent_runs WHERE id=?').get(RUN.runId)).toEqual({ status: 'queued', leasedBy: null });
+        expect(r.e.sqlite.query("SELECT COUNT(*) AS n FROM member_credentials WHERE member_id='mem_harness' AND revoked_at IS NULL").get()).toEqual({ n: 0 });
+      } finally { r.close(); }
+    });
+  }
+});
 
 function pauseAuthenticatedOwner(r: Awaited<ReturnType<typeof rig>>) {
   const prior = r.env.tokenLimit;

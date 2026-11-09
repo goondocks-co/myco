@@ -1,6 +1,8 @@
 import { REVISION_KINDS } from '@myco-server-worker/db/search/ranking.js';
 import { V723, V723_STATEMENTS } from '@myco-server-worker/db/schema-v723.js';
 import { V727, V727_STATEMENTS } from '@myco-server-worker/db/schema-v727.js';
+import { NEXT_S6, VNEXT_S6_INDEX_STEPS, VNEXT_S6_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s6.js';
+import { lineageHeadSchemaStatements } from '@myco-server-worker/db/identity/lineage-heads.js';
 import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usage.js';
 import { SESSION_LIFECYCLE_STEPS } from '@myco-server-worker/db/schema-v728.js';
 import { SESSION_LIFECYCLE_EVENTS_INDEX, SESSION_LIFECYCLE_HISTORY_INDEXES, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
@@ -57,6 +59,16 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  ...VNEXT_S6_INDEX_STEPS.flatMap(({ version, statements: [sql] }) => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql!);
+    return match === null ? [] : [{ step: version, object: match[1]!, table: match[2]!, reason: 'Lineage heads re-derive from a lineage\'s unrevoked credentials, and a member\'s credential page reads newest lineage first.' }];
+  }),
+  ...VNEXT_S6_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: NEXT_S6, object: match[1]!, table: match[2]!,
+      reason: sql.startsWith('CREATE TRIGGER') ? 'A person\'s credential change moves the one lineage head it belongs to, and a run credential writes no head.'
+        : 'Member, invitation and head reads page and count by key instead of walking credential or authority history.' }];
+  }),
   ...V727_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{ step: V727, object: match[1]!, table: match[2]!,
@@ -350,6 +362,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
+    step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'
+  })),
   ...V727_STATEMENTS.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|UPDATE object_releases|DROP INDEX)/.test(sql)).map(sql => ({
     step: V727, sql, reason: 'Each release key carries when it is next due, and storage usage stays building until the catch-up has counted every registered blob.'
   })),
@@ -875,6 +890,7 @@ it('pins the frozen publication directory step to its generator', () => {
 });
 
 it('pins the frozen publication ownership step to its generators', () => {
+  expect(VNEXT_S6_STATEMENTS).toEqual(lineageHeadSchemaStatements());
   expect(V727_STATEMENTS.slice(0, storageUsageSchemaStatements().length)).toEqual(storageUsageSchemaStatements());
   expect(SESSION_LIFECYCLE_STEPS.map(step => step.statements)).toEqual([[SESSION_LIFECYCLE_EVENTS_INDEX], SESSION_LIFECYCLE_HISTORY_INDEXES, [...sessionLifecycleSchema(), ...publicationDependencySchema()]]);
   expect(V723_STATEMENTS).toEqual([...publicationOwnershipSchema(),...publicationPinSchema(),...publicationFailureSchema(),...publicationRebuildSchema()]);

@@ -20,7 +20,7 @@ export function faultAt(inner: MemberRig['fetch'], index: number, kind: ImportFa
   return { fetch, count: () => requests };
 }
 
-const VOLATILE = /(_at|_ms|At|Ms)$|^(id|key|value|generation|revision|envelope_hash|lineage_root|predecessor_id|reference_id|event_id|facts_event_id|.*_event_id|bundle_id|deployment_id|source_id|source_blob_key|source_generation|raw_revision)$|^(created|updated|received|first_received|last_received|ts|time)|token|expires|nonce|lease/i;
+const VOLATILE = /(_at|_ms|At|Ms)$|^(id|key|value|generation|revision|envelope_hash|lineage_root|current_id|banked_id|predecessor_id|reference_id|event_id|facts_event_id|.*_event_id|bundle_id|deployment_id|source_id|source_blob_key|source_generation|raw_revision)$|^(created|updated|received|first_received|last_received|ts|time)|token|expires|nonce|lease/i;
 
 /** All server rows as sorted multisets, with generated identities and clock columns omitted. */
 export function importSnapshot(sqlite: MemberRig['env']['sqlite']): Record<string, string[]> {

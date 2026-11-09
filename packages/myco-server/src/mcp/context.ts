@@ -23,6 +23,7 @@
 import { HARNESS_MEMBER_ID, USER_AGENT_ID } from '../constants.js';
 import { runDeadline } from '../core/run-deadline.js';
 import { runWriteStore } from '../core/run-write-store.js';
+import { credentialWriteStore, grantWriteStore } from '../auth/write-authority-store.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
@@ -92,12 +93,28 @@ export const failure = (error: string): ToolFailure => ({ ok: false, error });
 
 export { USER_AGENT_ID };
 
+type MemberCaller = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'now' | 'clock'>;
+
+function memberToolStore(env: ServerEnv, ctx: MemberCaller): ServerEnv {
+  return { ...env, db: credentialWriteStore(env.db, { tokenId: ctx.tokenId, memberId: ctx.memberId, clock: ctx.clock ?? (() => ctx.now) }) };
+}
+
+const memberPrincipal = (ctx: MemberCaller): MemberPrincipal => ({ kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId, tokenId: ctx.tokenId });
+
 export function toolContext(env: ServerEnv, ctx: RouteContext): ToolContext {
-  return { env, projectId: ctx.projectId, principal: { kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId, tokenId: ctx.tokenId }, now: ctx.now };
+  return { env: memberToolStore(env, ctx), projectId: ctx.projectId, principal: memberPrincipal(ctx), now: ctx.now };
+}
+
+/** A member's call before it has named a Project. */
+export function unboundToolContext(env: ServerEnv, ctx: MemberCaller): ProtocolContext {
+  return { env: memberToolStore(env, ctx), projectId: null, principal: memberPrincipal(ctx), now: ctx.now };
 }
 
 export function grantToolContext(env: ServerEnv, ctx: GrantContext): ToolContext {
-  return { env, projectId: ctx.projectId, principal: { kind: 'grant', grantId: ctx.grantId }, now: ctx.now };
+  return {
+    env: { ...env, db: grantWriteStore(env.db, { grantId: ctx.grantId, projectId: ctx.projectId, clock: () => ctx.now }) },
+    projectId: ctx.projectId, principal: { kind: 'grant', grantId: ctx.grantId }, now: ctx.now,
+  };
 }
 
 /** The run's surface is its task's declared tools mapped onto MCP; a dry run keeps the reads and loses every write. */

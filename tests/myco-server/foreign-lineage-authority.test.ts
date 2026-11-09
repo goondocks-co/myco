@@ -145,7 +145,7 @@ describe('foreign-lineage restore of people and access', () => {
       expect(f.sqlite.query(`SELECT role, github_id, revoked_at, revoked_by FROM members WHERE id = 'mem_new'`).get())
         .toEqual({ role: 'admin', github_id: NEW_ADMIN_GITHUB, revoked_at: NOW, revoked_by: FOREIGN_LINEAGE_REVOKER });
       expect(f.sqlite.query(`SELECT revoked_at, revoked_by FROM members WHERE id = 'mem_gone'`).get()).toEqual({ revoked_at: 3, revoked_by: 'mem_a' });
-      const listed = await listMembers(f.db, NOW);
+      const listed = (await listMembers(f.db, NOW)).rows;
       expect(listed.filter((member) => member.awaitingAdmission).map((member) => member.id)).toEqual(['mem_new']);
 
       const again = (await restoreBackup(f.db, f.bucket, { authorization: { kind: 'recovery' }, id: postFork.id, allowForeignLineage: true, now: NOW + 1 }))!;
@@ -184,7 +184,7 @@ describe('foreign-lineage restore of people and access', () => {
           .toEqual(a.sqlite.query(`SELECT id, revoked_at, revoked_by FROM ${table} ORDER BY id`).all());
       }
       expect(await authenticated(replacement)).toEqual(ALL_AUTHORITY);
-      expect((await listMembers(replacement.db, NOW)).some((member) => member.awaitingAdmission)).toBe(false);
+      expect((await listMembers(replacement.db, NOW)).rows.some((member) => member.awaitingAdmission)).toBe(false);
     } finally { a.sqlite.close(); replacement.sqlite.close(); }
   });
 });

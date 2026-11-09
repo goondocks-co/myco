@@ -18,8 +18,10 @@ import type { ErrorClassifier, PreparedStatement, RelationalStore } from '../cor
 import { emit, failureTelemetry } from '../telemetry.js';
 import { nameFromLogin, GITHUB_LOGIN_KEY_PREFIX } from '../db/identity/member-naming.js';
 import { recordMemberNamingFailure } from '../db/meta/member-naming-failure.js';
-import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
-import { credentialLive, runCredential, MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
+import { FOREIGN_LINEAGE_REVOKER } from '../constants.js';
+import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
+import { memberPage, type MemberPageRow, type RuntimeFreshness } from '../db/identity/access-pages.js';
+import { MAX_PAGE, type Page } from '../read/scope.js';
 import { revokeInvitationsOfMember } from './enrollment.js';
 import { removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
 import { revokeLinkKeysOfMember } from './identity-link.js';
@@ -42,33 +44,48 @@ export interface MemberRow {
   revokedBy: string | null;
   /** Whether a restore from another Deployment brought this member in held: listed, unable to sign in, until the owner re-admits it by assigning a role. */
   awaitingAdmission: boolean;
-  /** How many of this member's own runtimes authenticate now. Run credentials are counted under their purpose, not here. */
-  liveCredentials: number;
+  /** How many of this member's own runtimes authenticate now, null while it is still being counted. Run credentials are counted under their purpose, not here. */
+  liveCredentials: number | null;
+  /** The instant `liveCredentials` describes and whether it is counted yet. */
+  runtimeFreshness: RuntimeFreshness;
   /** Whether this member is the Deployment's own, the account the runs it starts sign in as, rather than a person. */
   system: boolean;
 }
 
-export async function listMembers(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
-  const { results } = await db
-    .prepare(`SELECT m.id, m.label, m.role, m.role_revision, ${deploymentOwnerSql('m.id')} AS owner, m.github_id IS NOT NULL AS linked, m.created_at, m.revoked_at, m.revoked_by,
-                     (SELECT COUNT(*) FROM member_credentials c WHERE c.member_id = m.id AND ${credentialLive('c')} AND NOT (${runCredential('c')})) AS live_credentials
-                FROM members m ORDER BY m.created_at ASC, m.id ASC`)
-    .bind(nowMs, HARNESS_MEMBER_ID)
-    .all<Record<string, unknown>>();
-  return results.map((r) => ({
-    id: r.id as string,
-    label: (r.label as string | null) ?? null,
+function memberRowOf(r: MemberPageRow, now: number, countsReady: boolean): MemberRow {
+  return {
+    id: r.id,
+    label: r.label,
     role: asMemberRole(r.role) ?? 'member',
-    effectiveRole: Number(r.owner) === 1 ? 'owner' : asMemberRole(r.role) ?? 'member',
+    effectiveRole: r.owner === 1 ? 'owner' : asMemberRole(r.role) ?? 'member',
     roleRevision: String(r.role_revision),
-    linked: Number(r.linked) === 1,
-    createdAt: r.created_at as number,
-    revokedAt: (r.revoked_at as number | null) ?? null,
-    revokedBy: (r.revoked_by as string | null) ?? null,
+    linked: r.linked === 1,
+    createdAt: r.created_at,
+    revokedAt: r.revoked_at,
+    revokedBy: r.revoked_by,
     awaitingAdmission: r.revoked_at !== null && r.revoked_by === FOREIGN_LINEAGE_REVOKER,
-    liveCredentials: Number(r.live_credentials),
-    system: isSystemMember(String(r.id)),
-  }));
+    liveCredentials: countsReady ? r.live_lineages : null,
+    runtimeFreshness: { state: countsReady ? 'ready' : 'building', asOf: now },
+    system: isSystemMember(r.id),
+  };
+}
+
+/** One page of the Deployment's members, oldest first, with no total. */
+export async function listMembers(db: RelationalStore, nowMs: number, opts: { limit?: number; cursor?: string } = {}): Promise<Page<MemberRow>> {
+  const { rows, cursor, countsReady } = await memberPage(db, nowMs, opts);
+  return { rows: rows.map((row) => memberRowOf(row, nowMs, countsReady)), cursor };
+}
+
+/** Every member, one bounded page at a time: the command-line view of a Deployment's people, which is not paged. */
+export async function everyMember(db: RelationalStore, nowMs: number): Promise<MemberRow[]> {
+  const members: MemberRow[] = [];
+  let cursor: string | undefined;
+  do {
+    const next = await listMembers(db, nowMs, { limit: MAX_PAGE, cursor });
+    members.push(...next.rows);
+    cursor = next.cursor ?? undefined;
+  } while (cursor !== undefined);
+  return members;
 }
 
 /** A GitHub login as GitHub grants one: letters, digits and single hyphens, at most 39. */

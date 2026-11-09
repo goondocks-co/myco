@@ -5,12 +5,16 @@ import {
   issueExternalGrant, listExternalGrants, revokeExternalGrant, rotateExternalGrant,
 } from '../auth/grants.js';
 import { badRequest, notFound, ok, readJsonObject, resolveProjectScope } from './scope.js';
+import { paging } from './sessions.js';
 
 /** Every grant of the Project, live and revoked. Never a key. */
 export async function handleGrants(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
-  return ok({ grants: await listExternalGrants(env.db, scope) });
+  const page = paging(ctx.url);
+  if (page instanceof Response) return page;
+  const { rows, cursor } = await listExternalGrants(env.db, scope, page);
+  return ok({ grants: rows, cursor });
 }
 
 /**

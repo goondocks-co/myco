@@ -25,8 +25,10 @@ export interface MemberRow {
   revokedBy: string | null;
   /** Brought in held by a restore from another server: listed, unable to sign in, until the owner re-admits them by assigning a role. */
   awaitingAdmission?: boolean;
-  /** How many of this member's own runtimes authenticate now. */
-  liveCredentials: number;
+  /** How many of this member's own runtimes authenticate now; null while the server is still counting. */
+  liveCredentials: number | null;
+  /** The instant the count describes and whether it is counted yet. */
+  runtimeFreshness?: { state: 'ready' | 'building'; asOf: number };
   /**
    * The account Myco's own work signs in as, which is no person. The server
    * marks it once it sends the flag; until then the admin pages know it by its
@@ -37,6 +39,7 @@ export interface MemberRow {
 
 export interface MembersAnswer {
   members: MemberRow[];
+  cursor?: string | null;
 }
 
 /** `GET /api/enrollment`: an invitation that can still be redeemed. */
@@ -52,6 +55,7 @@ export interface InvitationRow {
 
 export interface InvitationsAnswer {
   invitations: InvitationRow[];
+  cursor?: string | null;
 }
 
 /** `POST /api/enrollment`: the new invitation's key, answered once. */
@@ -146,4 +150,5 @@ export interface GrantRow {
 
 export interface GrantsAnswer {
   grants: GrantRow[];
+  cursor?: string | null;
 }

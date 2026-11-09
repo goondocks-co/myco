@@ -62,6 +62,24 @@ export function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   return request<T>(path, { method: 'GET', headers: { accept: 'application/json', [AUTOMATIC_HEADER]: '1' }, signal });
 }
 
+/** The largest page the server answers, and the most pages one list follows before answering what it has. */
+const FOLLOWED_PAGE_SIZE = 200;
+const MAX_FOLLOWED_PAGES = 100;
+
+/** Every page of a cursor-paged list, its rows gathered under `key`. A non-null `cursor` in the answer says the list has more rows than were followed. */
+export async function fetchEveryPage<Answer extends { cursor?: string | null }>(path: string, key: keyof Answer & string, signal?: AbortSignal): Promise<Answer> {
+  const sized = `${path}${path.includes('?') ? '&' : '?'}limit=${FOLLOWED_PAGE_SIZE}`;
+  const first = await fetchJson<Answer>(sized, signal);
+  const rows = [...(first[key] as unknown[])];
+  let cursor = first.cursor ?? null;
+  for (let followed = 1; cursor !== null && followed < MAX_FOLLOWED_PAGES; followed += 1) {
+    const next: Answer = await fetchJson<Answer>(`${sized}&cursor=${encodeURIComponent(cursor)}`, signal);
+    rows.push(...(next[key] as unknown[]));
+    cursor = next.cursor ?? null;
+  }
+  return { ...first, [key]: rows, cursor };
+}
+
 /** A write with a JSON body. */
 export function putJson<T>(path: string, body: unknown, headers: Record<string, string> = {}): Promise<T> {
   return request<T>(path, { method: 'PUT', headers: { accept: 'application/json', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });

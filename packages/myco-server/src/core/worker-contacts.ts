@@ -22,7 +22,7 @@ import { parseHarnessSignInFailure, harnessSignInFailureWords, runnerAgentLoginR
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS } from '../constants.js';
 import { asMemberRole, isAdmin } from '../auth/roles.js';
-import { runParentLive } from '../auth/runners.js';
+import { runParentLive } from '../db/runs/run-parent.js';
 import { renewingLeaseAuthority, type LeaseHolder } from './worker-lease.js';
 import { runnerDisplay, type RunnerFleetRecord, type FleetRun, type RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
 import { MODEL_CATALOG_FRESH_MS, parseModelCatalog } from '@goondocks/myco-shared/execution-profile';

@@ -1,6 +1,7 @@
 import { inheritStoreContext } from './adapters.js';
 import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
 import { isSelectStatement } from './sql-statements.js';
+import { prepareBound, type Bound } from '../db/kernel/statement.js';
 
 /** Mutations and their authority assertion execute in one atomic store batch. */
 export function writeGuardStore(
@@ -39,6 +40,11 @@ export function writeGuardStore(
   };
   inheritStoreContext(db,guarded);
   return guarded;
+}
+
+/** `writeGuardStore` for a kernel assertion, prepared on the same store the batch runs on. */
+export function boundWriteGuardStore(db: RelationalStore, assertion: () => Bound, refusal: (error: unknown) => never): RelationalStore {
+  return writeGuardStore(db, () => prepareBound(db, assertion()), refusal);
 }
 
 /** The assertion and every supplied mutation commit together or leave no rows. */

@@ -19,7 +19,10 @@ import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import { MEMBER_REVOKED_BY, memberLive, memberRevokedByParams } from '../db/liveness.js';
 import { asMemberRole, type MemberRole } from './roles.js';
-import { authorize, enrollmentAuthorityPredicate, enrollmentResource, memberSubject, memberWritePredicate } from './authorization.js';
+import { invitationPage } from '../db/identity/access-pages.js';
+import type { Page } from '../read/scope.js';
+import { authorize, enrollmentAuthorityPredicate, enrollmentResourceOf, memberSubjectOf, memberWritePredicate } from './authorization.js';
+import { readAuthorization } from '../db/auth/authorization.js';
 
 export type EnrollmentIssuer = { kind: 'member'; memberId: string } | { kind: 'operator' };
 
@@ -104,9 +107,9 @@ export async function issueEnrollmentAuthority(
   const createdByMember = enrollmentIssuerMember(options.issuer);
   const issuer: EnrollmentIssuer = createdByMember === null ? { kind: 'operator' } : { kind: 'member', memberId: createdByMember };
   if (createdByMember !== null) {
-    const subject = await memberSubject(db, createdByMember, 'http');
-    const resource = await enrollmentResource(db, options.memberId ?? null, options.role);
-    if (!authorize(subject, options.role === 'admin' ? 'owner' : 'admin', resource)) throw new EnrollmentAuthorizationError();
+    const target = options.memberId ?? null;
+    const snapshot = await readAuthorization(db, target === null ? { subjectMember: createdByMember } : { subjectMember: createdByMember, targetMember: target });
+    if (!authorize(memberSubjectOf(snapshot, createdByMember, 'http'), options.role === 'admin' ? 'owner' : 'admin', enrollmentResourceOf(snapshot, target, options.role))) throw new EnrollmentAuthorizationError();
   }
   const key = toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
   const id = `${ENROLLMENT_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_ID_BYTES)))}`;
@@ -264,25 +267,20 @@ export interface InvitationRow {
 }
 
 /** Every live invitation: unspent, unrevoked, unexpired, and its member and minter live. Never the key or its digest. */
-export async function listInvitations(db: RelationalStore, nowMs: number): Promise<InvitationRow[]> {
-  const { results } = await db
-    .prepare(`SELECT id, member_id, created_by_member, created_at, expires_at, role, project_id FROM enrollment_authorities
-               WHERE used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
-                 AND (member_id IS NULL OR ${memberLive('enrollment_authorities.member_id')})
-                 AND (created_by_member IS NULL OR ${memberLive('enrollment_authorities.created_by_member')})
-                 AND ${enrollmentAuthorityPredicate('enrollment_authorities')}
-               ORDER BY created_at DESC, id DESC`)
-    .bind(nowMs)
-    .all<Record<string, unknown>>();
-  return results.map((r) => ({
-    id: r.id as string,
-    memberId: (r.member_id as string | null) ?? null,
-    createdBy: (r.created_by_member as string | null) ?? null,
-    createdAt: r.created_at as number,
-    expiresAt: r.expires_at as number,
-    role: asMemberRole(r.role) ?? 'member',
-    projectId: (r.project_id as string | null) ?? null,
-  }));
+export async function listInvitations(db: RelationalStore, nowMs: number, opts: { limit?: number; cursor?: string } = {}): Promise<Page<InvitationRow>> {
+  const { rows, cursor } = await invitationPage(db, nowMs, opts);
+  return {
+    cursor,
+    rows: rows.map((r) => ({
+      id: r.id,
+      memberId: r.member_id,
+      createdBy: r.created_by_member,
+      createdAt: r.created_at,
+      expiresAt: r.expires_at,
+      role: asMemberRole(r.role) ?? 'member',
+      projectId: r.project_id,
+    })),
+  };
 }
 
 /**

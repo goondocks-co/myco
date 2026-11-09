@@ -15,7 +15,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import type { ServerEnv } from '../core/adapters.js';
 import type { GrantContext, RouteContext, RunContext, UnboundMemberContext } from '../context.js';
 import { SERVER_PROTOCOL } from '../constants.js';
-import { grantToolContext, runToolContext, toolContext, type ProtocolContext } from './context.js';
+import { grantToolContext, runToolContext, toolContext, type ProtocolContext , unboundToolContext } from './context.js';
 import { createProtocolServer } from './server.js';
 
 /** The refusal an `answered` route gives a body that is not JSON-RPC: the pipeline's shape, the `parse` classifier. */
@@ -34,7 +34,7 @@ export async function handleMcp(env: ServerEnv, ctx: RouteContext): Promise<Resp
 }
 
 export async function handleUnboundMcp(env: ServerEnv, ctx: UnboundMemberContext): Promise<Response> {
-  return answerMcp({ env, projectId: null, now: ctx.now, principal: { kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId, tokenId: ctx.tokenId } }, ctx.body);
+  return answerMcp(unboundToolContext(env, ctx), ctx.body);
 }
 
 export async function handleGrantMcp(env: ServerEnv, ctx: GrantContext): Promise<Response> {

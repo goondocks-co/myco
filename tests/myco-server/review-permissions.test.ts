@@ -247,7 +247,7 @@ test('postcommit call observation failures preserve the accepted embedding resul
 test('every worker protocol route reports the same subject-liveness outcome', async () => {
   let armed = false;
   const f = sqliteEnv({ onSql(sql, db) {
-    if (armed && sql.includes('SELECT m.role, m.revoked_at, o.member_id AS owner')) { armed = false; db.run("UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'"); }
+    if (armed && sql.includes('SELECT m.id,m.role,m.revoked_at,o.member_id AS owner')) { armed = false; db.run("UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'"); }
   } });
   try {
     const token = await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());

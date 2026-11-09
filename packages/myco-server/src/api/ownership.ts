@@ -3,7 +3,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import { changeMemberRole, OwnershipRefusal, transferOwnership } from '../core/ownership.js';
 import { MEMBER_ID } from '../constants.js';
 import { asMemberRole } from '../auth/roles.js';
-import { listMembers } from '../auth/members-admin.js';
+import { everyMember } from '../auth/members-admin.js';
 import { parseJsonObject } from './scope.js';
 
 type ActorContext = Pick<CredentialContext, 'memberId' | 'body' | 'now'>;
@@ -49,5 +49,5 @@ export async function handleMemberRole(env: ServerEnv, ctx: OwnerContext): Promi
 export const handleCredentialMemberRole = role.member;
 
 export async function handleCredentialRoles(env: ServerEnv, ctx: CredentialContext): Promise<Response> {
-  return Response.json({ persisted: true, members: await listMembers(env.db, ctx.now) }, { headers: { 'cache-control': 'private, no-store' } });
+  return Response.json({ persisted: true, members: await everyMember(env.db, ctx.now) }, { headers: { 'cache-control': 'private, no-store' } });
 }
