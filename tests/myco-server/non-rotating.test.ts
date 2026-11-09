@@ -16,9 +16,8 @@ import { offeredHarness } from './helpers/offered-harness.js';
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import {
-  issueMemberToken, LINEAGE_REPLAY_REVOKER, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS, refreshMemberToken, activateSuccessor,
-} from '@myco-server-worker/auth/tokens.js';
+import { LINEAGE_REPLAY_REVOKER, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS, refreshMemberToken, activateSuccessor } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { NON_ROTATING, NON_ROTATING_AUTHORITY } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readFileSync } from 'node:fs';

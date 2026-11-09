@@ -5,7 +5,7 @@ import {
   OwnershipRefusal as RawClaimRefusal,
   bootstrapOwnership,
   ownershipPreview,
-} from '../core/ownership.js';
+} from '../db/identity/ownership.js';
 
 type ActorContext = Pick<CredentialContext, 'memberId' | 'body' | 'now'>;
 async function answer<T>(operation: () => Promise<T>): Promise<Response> {

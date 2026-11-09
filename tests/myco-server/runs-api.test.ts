@@ -16,7 +16,7 @@ import { runErrorCode } from '@myco-server-worker/core/reader-codes.js';
 import { describe, expect, it } from 'bun:test';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import worker from '@myco-server-worker/index.js';
 import { RETIRED_ROUTES } from '@myco-server-worker/routes.js';
 import { STALE_CREDENTIAL_REFUSAL } from '@myco-server-worker/core/harness.js';

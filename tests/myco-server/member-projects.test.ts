@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import { resolveProject } from '@myco-server-worker/ingest/projects.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';

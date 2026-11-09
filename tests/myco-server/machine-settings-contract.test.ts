@@ -9,7 +9,7 @@ import { backupArtifact, createBackup, deploymentId, restoreArtifact } from '@my
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { cacheMachineSettings, machineSettingsHeaders, machinePlanDirs, machineAutoJoinLeaves, seedMachineSettings, forgetConnectRoot } from '@myco/member/machine-settings.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { asOwner, asOwnerPut, OWNER_ENV } from './helpers/owner.js';

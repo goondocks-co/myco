@@ -3,9 +3,9 @@ import { CHAINED_WAKE_MS, engineAssertions, runTick } from '@myco-server-worker/
 import worker from '@myco-server-worker/index.js';
 import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { claimUnknownRaw, rawClaimPreview } from '@myco-server-worker/core/raw-claims.js';
-import { bootstrapOwnership, ownershipPreview } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership, ownershipPreview } from '@myco-server-worker/db/identity/ownership.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { registerBlob } from './helpers/d1.js';
 import { backupArtifact, createBackup, restoreArtifact, BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';

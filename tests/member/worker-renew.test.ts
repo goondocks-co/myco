@@ -6,7 +6,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { issueMemberToken, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { attachOptions } from '@myco/cli/worker.js';
 import { acquireRegistryLock, readDeploymentMembership, writeDeploymentMembership } from '@myco/member/registry.js';

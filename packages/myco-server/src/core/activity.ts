@@ -11,7 +11,8 @@
  * read as idle, fall to a depth where no job runs, and stop reclaiming the very
  * invitations those joins are spending.
  */
-import type { PreparedStatement, RelationalStore } from './adapters.js';
+import type { RelationalStore } from './adapters.js';
+import { rows, write, type Bound } from '../db/index.js';
 import { AUTOMATIC_HEADER } from '@goondocks/myco-shared/live-marks';
 
 /**
@@ -36,17 +37,18 @@ export const REQUEST_STAMP_INTERVAL_MS = 60_000;
  * write a minute rather than one per request.
  */
 export async function stampRequest(db: RelationalStore, now: number): Promise<void> {
-  await stampRequestStatement(db, now).run();
+  await rows(db, stampRequestWrite(now));
 }
 
-/** The same conditional write, prepared and unrun. `gate` conjoins a condition the stamp must meet, so a batch stamps only what it admitted. */
-export function stampRequestStatement(db: RelationalStore, now: number, gate?: { sql: string; params: unknown[] }): PreparedStatement {
-  return db.prepare(
-    `INSERT OR REPLACE INTO schema_meta (key, value)
-       SELECT ?, ?
-        WHERE NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ? AND CAST(value AS INTEGER) > ?)${gate === undefined ? '' : ` AND (${gate.sql})`}`,
-  ).bind(LAST_REQUEST_KEY, String(now), LAST_REQUEST_KEY, now - REQUEST_STAMP_INTERVAL_MS, ...(gate?.params ?? []));
-}
+const stampRequestDefinition = write<[key: string, value: string, staleBefore: number]>({
+  name: 'activity.stampRequest',
+  sql: `INSERT OR REPLACE INTO schema_meta (key, value) SELECT ?1,?2
+    WHERE NOT EXISTS (SELECT 1 FROM schema_meta WHERE key=?1 AND CAST(value AS INTEGER)>?3)`,
+});
+
+/** The same conditional write, bound for a caller's commit. */
+export const stampRequestWrite = (now: number): Bound<never, 'write'> =>
+  stampRequestDefinition.bind(LAST_REQUEST_KEY, String(now), now - REQUEST_STAMP_INTERVAL_MS);
 
 export const LAST_ACTIVITY_SQL = `SELECT MAX(at) AS at FROM (
        SELECT MAX(last_received_at) AS at FROM sessions

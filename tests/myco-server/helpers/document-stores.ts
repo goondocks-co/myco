@@ -7,7 +7,7 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { SERVER_PROTOCOL, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
 const TRANSCRIPT_PRODUCER = { adapter: TRANSCRIPT_PARSE_ADAPTER, version: String(SERVER_PROTOCOL) };
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './member-token.js';
 import { envelope, uuid,recordingLimiter } from './fixtures.js';
 import {serverEnvFromBindings} from '@myco-server-worker/platform/cloudflare/env.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
@@ -15,7 +15,6 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createProject } from '@myco-server-worker/db/storage/projects.js';
 
 const storeTargets=new WeakMap<RelationalStore,'native'|'D1'>();
 
@@ -32,7 +31,7 @@ export async function withDocumentStores(run: (db: RelationalStore, target: 'nat
       if(selected!==undefined&&selected!==(index===0?'native':'D1'))continue;
       storeTargets.set(db,index===0?'native':'D1');
       for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
-      for(const project of ['project','other'])await createProject(db,project,project,1);
+      for(const project of ['project','other'])await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project,project).run();
       await run(db, index === 0 ? 'native' : 'D1', index === 0 ? native : undefined);
     }
   } finally { native.close(); await mf.dispose(); }

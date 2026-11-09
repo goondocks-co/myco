@@ -8,7 +8,7 @@ import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
 import { readDocumentStatus } from '@myco-server-worker/db/documents/status.js';
 import { continueWakeStatement, DEPENDENCY_PHASE, DEPENDENCY_WAKE_PAGE, inspectPublicationCycles, wakeDependentsStatement } from '@myco-server-worker/db/documents/dependencies.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';

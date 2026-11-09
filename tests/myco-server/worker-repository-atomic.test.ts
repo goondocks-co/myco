@@ -5,7 +5,7 @@ import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { memberWriteStore } from '@myco-server-worker/auth/member-write-store.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { dispatchTask, claimNextRun } from '@myco-server-worker/core/harness.js';
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';

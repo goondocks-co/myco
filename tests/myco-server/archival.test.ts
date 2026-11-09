@@ -10,7 +10,8 @@ import { runRouteFixture } from './helpers/run-routes.js';
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { blobPost, envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';

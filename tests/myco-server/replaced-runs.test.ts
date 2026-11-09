@@ -17,7 +17,7 @@ import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { markRunReplaced, recordDispatch, taskEntriesSince } from '@myco-server-worker/db/runs/claim.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import worker from '@myco-server-worker/index.js';
 import { memberPost, sqliteEnv, withHarness, turnOnGatedCapabilities } from './helpers/fixtures.js';
 

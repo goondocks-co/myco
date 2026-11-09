@@ -3,7 +3,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
 import { nextClaimable } from '@myco-server-worker/db/runs/queue.js';

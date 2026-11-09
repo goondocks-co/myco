@@ -35,7 +35,7 @@ import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv, withHarness, memberHeaders, noOutboundFetch } from './helpers/fixtures.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 

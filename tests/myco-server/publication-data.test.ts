@@ -1,7 +1,7 @@
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { expect, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 import { GIT_STATUS_UNREADABLE } from '@myco-server-worker/ingest/projections.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';

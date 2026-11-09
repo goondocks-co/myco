@@ -168,25 +168,24 @@ export async function rotateExternalGrant(
   const results = await db.batch([
     db.prepare(`INSERT INTO external_grants (id, project_id, key_hash, label, created_by, created_at, expires_at, last_used_at, revoked_at, revoked_by, rotated_to)
                 SELECT ?, project_id, ?, label, ?, ?, ?, NULL, NULL, NULL, NULL FROM external_grants
-                 WHERE id = ? AND project_id = ? AND revoked_at IS NULL AND expires_at > ?`)
+                 WHERE id = ? AND project_id = ? AND revoked_at IS NULL AND expires_at > ? RETURNING id`)
       .bind(id, await sha256Hex(key), actor, nowMs, expiresAt, grantId, scope.projectId, nowMs),
     grantAgent(db, id, nowMs),
     db.prepare(`UPDATE external_grants SET revoked_at = ?, revoked_by = ?, rotated_to = ?
                  WHERE id = ? AND project_id = ? AND revoked_at IS NULL`)
       .bind(nowMs, actor, id, grantId, scope.projectId),
   ]);
-  if (results[0]?.meta.changes !== 1) return null;
+  if (results[0]?.results.length !== 1) return null;
   emit({ kind: 'grant_rotated', grantId, successorId: id, projectId: scope.projectId, actor });
   return { key, id, expiresAt };
 }
 
 /** Revokes a live grant of the scope's Project, naming who. `revoked` is false when no live row of this Project matched. */
 export async function revokeExternalGrant(db: RelationalStore, scope: ReadScope, grantId: string, actor: string, nowMs: number): Promise<{ revoked: boolean }> {
-  const result = await db
-    .prepare(`UPDATE external_grants SET revoked_at = ?, revoked_by = ? WHERE id = ? AND project_id = ? AND revoked_at IS NULL`)
+  const revoked = await db
+    .prepare(`UPDATE external_grants SET revoked_at = ?, revoked_by = ? WHERE id = ? AND project_id = ? AND revoked_at IS NULL RETURNING id`)
     .bind(nowMs, actor, grantId, scope.projectId)
-    .run();
-  const revoked = result.meta.changes === 1;
+    .first() !== null;
   if (revoked) emit({ kind: 'grant_revoked', grantId, projectId: scope.projectId, actor });
   return { revoked };
 }
@@ -219,11 +218,11 @@ export async function authenticateGrant(db: RelationalStore, keyHash: string, no
 
 /** Records use of a live grant, at most once per `GRANT_TOUCH_INTERVAL_MS`; the throttle is the statement's own predicate. */
 export async function touchGrant(db: RelationalStore, grantId: string, nowMs: number): Promise<{ touched: boolean }> {
-  const result = await db
-    .prepare(`UPDATE external_grants SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at < ?)`)
+  const touched = await db
+    .prepare(`UPDATE external_grants SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at < ?) RETURNING id`)
     .bind(nowMs, grantId, nowMs - GRANT_TOUCH_INTERVAL_MS)
-    .run();
-  return { touched: result.meta.changes === 1 };
+    .first() !== null;
+  return { touched };
 }
 
 /**
@@ -244,8 +243,8 @@ export async function expireGrants(db: RelationalStore, nowMs: number, limit: nu
   const result = await db
     .prepare(`UPDATE external_grants SET revoked_at = COALESCE(expires_at, ?), revoked_by = ?
                WHERE id IN (SELECT id FROM external_grants
-                             WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at <= ?) LIMIT ?)`)
+                             WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at <= ?) LIMIT ?) RETURNING id`)
     .bind(nowMs, GRANT_EXPIRY_ACTOR, nowMs, limit)
     .run();
-  return result.meta.changes;
+  return result.results.length;
 }

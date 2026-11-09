@@ -79,7 +79,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 
 async function ownerCookie(db: ReturnType<typeof sqliteEnv>['db'], now = Date.now()): Promise<string> {
   const value = await signSession(SESSION_SECRET, { aud: await deploymentIdentity(db), sub: '583231', login: 'octocat', iat: now, exp: now + 60_000 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { runWriteStore, RunWriteExpired } from '@myco-server-worker/core/run-write-store.js';

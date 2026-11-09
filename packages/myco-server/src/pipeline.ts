@@ -586,8 +586,9 @@ export function createServer(deps: ServerDeps) {
 
   async function admitted(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number, contextTimings?: ContextTimings): Promise<Response> {
     if (auth.predecessorId !== null && auth.firstUsedAt === null) {
-      await activateSuccessor(env.db, { tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now);
-      emit({ kind: 'successor_activated', memberId: auth.memberId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
+      if (await activateSuccessor(env.db, { tokenId: auth.tokenId, predecessorId: auth.predecessorId }, now)) {
+        emit({ kind: 'successor_activated', memberId: auth.memberId, tokenId: auth.tokenId, predecessorId: auth.predecessorId });
+      }
     }
     if (!(await env.tokenLimit.limit({ key: auth.tokenId })).success) return limited();
     if (!protocolSupported(request)) {

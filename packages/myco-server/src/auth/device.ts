@@ -8,7 +8,10 @@ import type { OwnerContext } from '../context.js';
 import { toBase64Url } from '../base64.js';
 import { sha256Hex } from '../hash.js';
 import { badRequest, readJsonObject, withRunnerSignInRefusal } from '../api/scope.js';
-import { enrollmentInsert, ENROLLMENT_KEY_BYTES, ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN, type Fragment } from './enrollment.js';
+import type { Bound } from '../db/index.js';
+import { enrollmentMintWrite, ENROLLMENT_KEY_BYTES, ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN } from './enrollment.js';
+import { commitNamed, refused } from '../db/index.js';
+import { DEVICE_DECISION_REFUSED, deviceDecisionWrites } from '../db/identity/device-decision.js';
 import { joinMember } from './join.js';
 import { asMemberRole } from './roles.js';
 import { deploymentIdentity } from './authorization.js';
@@ -120,12 +123,12 @@ async function startDeviceRequest(env: ServerEnv, request: Request, now: number,
     (id,device_hash,user_hash,machine_id,machine_name,os,source_ip,created_at,expires_at,interval_seconds,next_poll_at,subject,runner_name,candidate_hash,replacing_runner_id,runner_credential_choices)
     SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE
       NOT EXISTS (SELECT 1 FROM device_requests WHERE source_ip = ? AND decision IS NULL AND expires_at > ? LIMIT 1 OFFSET ?)
-      AND NOT EXISTS (SELECT 1 FROM device_requests WHERE source_ip = ? AND created_at > ? LIMIT 1 OFFSET ?)`)
+      AND NOT EXISTS (SELECT 1 FROM device_requests WHERE source_ip = ? AND created_at > ? LIMIT 1 OFFSET ?) RETURNING id`)
     .bind(id, await sha256Hex(deviceCode), await sha256Hex(userCode.replace('-', '')),
       device.machineId, device.machineName, device.os, source, now, now + DEVICE_TTL_MS, DEVICE_POLL_SECONDS, now,
       device.runner === null ? 'member' : 'runner', device.runner?.name ?? null, device.runner?.candidateHash ?? null, device.runner?.replacingId ?? null, JSON.stringify(device.runner?.credentialChoices ?? {}),
-      source, now, DEVICE_PENDING_PER_SOURCE - 1, source, now - DEVICE_START_WINDOW_MS, DEVICE_STARTS_PER_MINUTE - 1).run();
-  if (inserted.meta.changes !== 1) return deviceError('slow_down', 429, DEVICE_START_WINDOW_MS / 1000);
+      source, now, DEVICE_PENDING_PER_SOURCE - 1, source, now - DEVICE_START_WINDOW_MS, DEVICE_STARTS_PER_MINUTE - 1).first<{ id: string }>();
+  if (inserted === null) return deviceError('slow_down', 429, DEVICE_START_WINDOW_MS / 1000);
   const verificationUri = `${new URL(request.url).origin}/device`;
   return Response.json({ device_code: deviceCode, user_code: userCode, verification_uri: verificationUri, verification_uri_complete: `${verificationUri}?code=${encodeURIComponent(userCode)}`,
     expires_in: DEVICE_TTL_MS / 1000, interval: DEVICE_POLL_SECONDS });
@@ -206,28 +209,17 @@ export async function handleDevicePreview(env: ServerEnv, ctx: OwnerContext): Pr
   return Response.json({ ...shared, subject: 'member', alreadyYours: claim?.member_id === ctx.member.id, scope: 'membership' });
 }
 
-function pendingDevice(id: string, now: number, subject?: 'member'): Fragment {
-  return { sql: `EXISTS (SELECT 1 FROM device_requests d WHERE d.id = ? AND d.decision IS NULL AND d.expires_at > ?${subject === undefined ? '' : ' AND d.subject = ?'}
-    AND NOT EXISTS (SELECT 1 FROM device_decision_audit a WHERE a.request_id = d.id))`, params: [id, now, ...(subject === undefined ? [] : [subject])] };
-}
-
 /** A decision and its immutable audit receipt commit together; a pending request admits exactly one decision. */
-async function decideDevice(env: ServerEnv, ctx: OwnerContext, row: DeviceRow, decision: 'approved' | 'denied', enrollment?: PreparedStatement): Promise<boolean> {
-  const pending = pendingDevice(row.id, ctx.now, decision === 'approved' ? 'member' : undefined);
-  const update = env.db.prepare(`UPDATE device_requests SET decision = ?, decided_by = ?, decided_at = ?
-    WHERE id = ? AND ${pending.sql}
-      AND EXISTS (SELECT 1 FROM members WHERE id = ? AND revoked_at IS NULL AND role IN ('admin','member')
-        AND (role = 'admin' OR EXISTS (SELECT 1 FROM device_requests d WHERE d.id = device_requests.id AND d.subject = 'member')))
-      ${decision === 'approved' ? 'AND EXISTS (SELECT 1 FROM enrollment_authorities WHERE id = ? AND created_by_member = ?)' : ''}`)
-    .bind(decision, ctx.member.id, ctx.now, row.id, ...pending.params, ctx.member.id,
-      ...(decision === 'approved' ? [row.id, ctx.member.id] : []));
-  const audit = env.db.prepare(`INSERT INTO device_decision_audit (request_id,member_id,machine_id,machine_name,os,source_hash,decision,decided_at,subject)
-    SELECT id,decided_by,machine_id,machine_name,os,?,decision,decided_at,subject FROM device_requests
-    WHERE id = ? AND decision = ? AND decided_by = ? AND decided_at = ?
-      AND NOT EXISTS (SELECT 1 FROM device_decision_audit WHERE request_id = ?)`)
-    .bind(await sha256Hex(row.source_ip), row.id, decision, ctx.member.id, ctx.now, row.id);
-  const results = await env.db.batch([...(enrollment ? [enrollment] : []), update, audit]);
-  return results.length === (enrollment ? 3 : 2) && results.every(result => result.meta.changes === 1);
+async function decideDevice(env: ServerEnv, ctx: OwnerContext, row: DeviceRow, decision: 'approved' | 'denied', enrollment?: Bound<{ id: string }>): Promise<boolean> {
+  const writes = deviceDecisionWrites({ id: row.id, now: ctx.now, decision, actor: ctx.member.id, sourceHash: await sha256Hex(row.source_ip) });
+  try {
+    if (enrollment === undefined) await commitNamed(env.db, writes);
+    else await commitNamed(env.db, { admitted: writes.admitted, enrollment, minted: writes.minted!, decided: writes.decided, audit: writes.audit });
+    return true;
+  } catch (error) {
+    if (refused(error, DEVICE_DECISION_REFUSED)) return false;
+    throw error;
+  }
 }
 
 /** Approval records the approving member and enrolls only that same member at their live authority. */
@@ -235,13 +227,11 @@ export async function handleDeviceApprove(env: ServerEnv, ctx: OwnerContext): Pr
   const row = await requestByUserCode(env, ctx.request);
   if (row instanceof Response) return row;
   await tryNameMemberFromLogin(env.db, ctx.member.id, ctx.session.sub, ctx.session.login, env.platform.classifyError);
-  const pending = pendingDevice(row.id, ctx.now, 'member');
   const roleRow = await env.db.prepare('SELECT role FROM members WHERE id = ?').bind(ctx.member.id).first<{ role: string }>();
   const role = asMemberRole(roleRow?.role);
   if (role === null) return deviceError('access_denied', 403);
-  const { statement } = enrollmentInsert(env.db, ctx.now, row.expires_at - ctx.now, { kind: 'member', memberId: ctx.member.id },
-    row.device_hash, row.id, role, ctx.member.id, null, pending);
-  if (!await decideDevice(env, ctx, row, 'approved', statement)) return deviceError('approval_refused', 409);
+  const mint = enrollmentMintWrite(ctx.now, row.expires_at - ctx.now, { kind: 'member', memberId: ctx.member.id }, row.device_hash, row.id, { role, memberId: ctx.member.id });
+  if (!await decideDevice(env, ctx, row, 'approved', mint.write)) return deviceError('approval_refused', 409);
   return Response.json({ approved: true });
 }
 

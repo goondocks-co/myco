@@ -409,7 +409,7 @@ describe('project capability admission through the surface', () => {
 });
 
 import { DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { memberPost } from './helpers/fixtures.js';
 
 /** A value shaped for the leaf, from its name: the kinds the dashboard catalogue renders. */

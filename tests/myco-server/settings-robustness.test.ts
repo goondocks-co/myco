@@ -11,7 +11,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { runRetentionDays } from '@myco-server-worker/core/jobs-run.js';
 import { scheduleLeaves } from '@myco-server-worker/core/schedule-rules.js';
 import { backupRetentionPolicy, currentRetentionVictims } from '@myco-server-worker/core/backup-retention.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 

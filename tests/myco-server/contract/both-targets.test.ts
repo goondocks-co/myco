@@ -38,7 +38,7 @@ import {
   sessions_listSessions as listSessions,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { renameProject } from '@myco-server-worker/db/storage/s2a3.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../helpers/member-token.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
@@ -316,7 +316,7 @@ describe('one server product, two deployment targets', () => {
 
 import { authenticateServerMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { authenticateGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 

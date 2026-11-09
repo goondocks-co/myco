@@ -4,7 +4,7 @@ import { registerBlob } from './helpers/d1.js';
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { classifyR2BlobFailure } from '@myco-server-worker/platform/cloudflare/env.js';
 import { classifyBlobStore } from '@myco-server-worker/telemetry.js';

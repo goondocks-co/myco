@@ -7,7 +7,7 @@ import { prepareDerivedContent } from '@myco-server-worker/core/registered-conte
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';

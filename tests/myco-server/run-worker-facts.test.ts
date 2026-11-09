@@ -9,7 +9,7 @@ import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 import { listCredentials } from '@myco-server-worker/read/credentials.js';
 import { listMembers } from '@myco-server-worker/auth/members-admin.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';

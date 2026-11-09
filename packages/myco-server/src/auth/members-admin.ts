@@ -1,4 +1,4 @@
-import { isSystemMember, personMemberSql } from './member-kind.js';
+import { isSystemMember } from './member-kind.js';
 /**
  * Members, as the dashboard administers them.
  *
@@ -14,19 +14,16 @@ import { isSystemMember, personMemberSql } from './member-kind.js';
  * member row having changed in this very transaction. Machine claims are
  * permanent and untouched: a departed member's history stays theirs.
  */
-import type { ErrorClassifier, PreparedStatement, RelationalStore } from '../core/adapters.js';
+import type { ErrorClassifier, RelationalStore } from '../core/adapters.js';
 import { emit, failureTelemetry } from '../telemetry.js';
-import { nameFromLogin, GITHUB_LOGIN_KEY_PREFIX } from '../db/identity/member-naming.js';
+import { nameFromLogin } from '../db/identity/member-naming.js';
 import { recordMemberNamingFailure } from '../db/meta/member-naming-failure.js';
 import { FOREIGN_LINEAGE_REVOKER } from '../constants.js';
-import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import { memberPage, type MemberPageRow, type RuntimeFreshness } from '../db/identity/access-pages.js';
 import { MAX_PAGE, type Page } from '../read/scope.js';
-import { revokeInvitationsOfMember } from './enrollment.js';
-import { removableAdministratorSql, deploymentOwnerSql } from '../core/ownership.js';
-import { revokeLinkKeysOfMember } from './identity-link.js';
-import { revokeCredentialsOfMember } from './tokens.js';
-import { clearMemberUncapturedStatement } from '../ingest/uncaptured.js';
+import { deploymentOwnerSql } from '../db/identity/ownership-policy.js';
+import { memberRevocationWrites } from '../db/identity/member-revocation.js';
+import { commitNamed } from '../db/index.js';
 import { asMemberRole, type MemberRole } from './roles.js';
 import { memberWriteOutcome } from './member-write-refusal.js';
 
@@ -113,16 +110,6 @@ export async function tryNameMemberFromLogin(db: RelationalStore, memberId: stri
   }
 }
 
-/** Reads the member's role, linked GitHub login and ownership within the credential's transaction. */
-export function identityBehindCredentialStatement(db: RelationalStore, tokenId: string): PreparedStatement {
-  return db
-    .prepare(`SELECT m.role AS role,
-      (SELECT value FROM schema_meta WHERE key = ? || m.github_id) AS memberLabel,
-      ${deploymentOwnerSql('m.id')} AS owner
-      FROM member_credentials c JOIN members m ON m.id = c.member_id WHERE c.id = ?`)
-    .bind(GITHUB_LOGIN_KEY_PREFIX, tokenId);
-}
-
 /** The role a member holds, or null when the Deployment holds no such member. */
 async function memberRole(db: RelationalStore, memberId: string): Promise<MemberRole | null> {
   const row = await db.prepare(`SELECT role FROM members WHERE id = ?`).bind(memberId).first<{ role: string }>();
@@ -152,24 +139,8 @@ type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMemberRefusa
  * names which refusal it was.
  */
 export async function revokeMember(db: RelationalStore, memberId: string, actor: string, nowMs: number): Promise<RevokeMemberResult> {
-  const outcome = await memberWriteOutcome(() => db.batch([
-    db.prepare(`UPDATE members SET revoked_at = ?, revoked_by = ?
-                 WHERE id = ? AND revoked_at IS NULL AND ${personMemberSql('id')}
-                   AND (SELECT COUNT(*) FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?) >= 1
-                   AND ${removableAdministratorSql('members')}
-                   AND (role <> 'admin' OR ${deploymentOwnerSql('?')})
-                   AND EXISTS (SELECT 1 FROM members actor WHERE actor.id = ? AND actor.role = 'admin' AND actor.revoked_at IS NULL)
-                 RETURNING id`)
-      .bind(nowMs, actor, memberId, memberId, actor, actor),
-    revokeCredentialsOfMember(db, memberId, actor, nowMs),
-    revokeInvitationsOfMember(db, memberId, actor, nowMs),
-    revokeLinkKeysOfMember(db, memberId, actor, nowMs),
-    clearMemberUncapturedStatement(db, memberId, actor, nowMs),
-    db.prepare(`DELETE FROM schema_meta WHERE key = (
-      SELECT ? || github_id FROM members WHERE id = ?) AND ${MEMBER_REVOKED_BY}`)
-      .bind(GITHUB_LOGIN_KEY_PREFIX, memberId, ...memberRevokedByParams(memberId, nowMs, actor)),
-  ]));
-  if (outcome.admitted && outcome.value[0]?.results.length === 1) {
+  const outcome = await memberWriteOutcome(() => commitNamed(db, memberRevocationWrites(memberId, actor, nowMs)));
+  if (outcome.admitted && outcome.value.member.results.length === 1) {
     emit({ kind: 'member_revoked', memberId, actor });
     return { ok: true };
   }

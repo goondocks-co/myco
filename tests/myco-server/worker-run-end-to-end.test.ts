@@ -21,7 +21,7 @@ import { MAX_REPOSITORY_HISTORY_DEPTH, WORKER_CAPABILITIES } from '@goondocks/my
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { dispatchTask as currentDispatch, endLeasedRun } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID, PROJECT_HEADER } from '@myco-server-worker/constants.js';

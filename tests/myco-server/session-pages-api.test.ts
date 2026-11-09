@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { reportSessionArtifact } from '@myco-server-worker/core/session-artifacts.js';
 import { asOwner, asOwnerPatch, OWNER_ENV } from './helpers/owner.js';

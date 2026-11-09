@@ -10,8 +10,8 @@
  * link is minted only while no administrator has a linked account.
  */
 import type { RelationalStore } from './adapters.js';
-import { ensureMemberStatement } from '../auth/enrollment.js';
-import { identityLinkStatements } from '../auth/identity-link.js';
+import { identityLinkWrites } from '../auth/identity-link.js';
+import { firstOwnerClaim, firstOwnerMemberWrite, writeAlone } from '../db/identity/enrollment.js';
 import { MEMBER_ID_PREFIX, SERVER_SCHEMA_VERSION } from '../constants.js';
 import { FIRST_MEMBER_KEY, FIRST_OWNER_MEMBER_LABEL } from './ownership.js';
 
@@ -46,19 +46,16 @@ export async function setupFirstOwner(db: RelationalStore, nowMs: number, schema
   if (receipt === null) {
     const claimed = `${MEMBER_ID_PREFIX}${crypto.randomUUID()}`;
     // The receipt is claimed only while no member exists and no other setup holds it; a setup that loses the race stops.
-    const took = await db.prepare(`INSERT INTO schema_meta (key, value) SELECT ?, ?
-                                     WHERE NOT EXISTS (SELECT 1 FROM members) AND NOT EXISTS (SELECT 1 FROM schema_meta WHERE key = ?)`)
-      .bind(FIRST_MEMBER_KEY, claimed, FIRST_MEMBER_KEY).run();
+    const took = await writeAlone(db, firstOwnerClaim.bind(FIRST_MEMBER_KEY, claimed));
     // A claim whose answer went missing is sent again and changes nothing the second time; the receipt then names it.
-    if (took.meta.changes !== 1 && (await receiptOf(db)) !== claimed) throw new FirstOwnerRefused(FIRST_OWNER_HAS_MEMBERS);
+    if (took === null && (await receiptOf(db)) !== claimed) throw new FirstOwnerRefused(FIRST_OWNER_HAS_MEMBERS);
     receipt = claimed;
   }
   const memberId = receipt;
-  await ensureMemberStatement(db, memberId, nowMs, 'admin', { receiptKey: FIRST_MEMBER_KEY, memberId }, FIRST_OWNER_MEMBER_LABEL).run();
-  const issue = await identityLinkStatements(db, memberId, nowMs, { replaceUnspent: true });
-  const [insert, ...rest] = issue.statements;
-  if ((await insert.run()).meta.changes !== 1) throw new FirstOwnerRefused(FIRST_OWNER_LINKED);
-  for (const statement of rest) await statement.run();
+  await writeAlone(db, firstOwnerMemberWrite(memberId, FIRST_OWNER_MEMBER_LABEL, nowMs, 'admin', FIRST_MEMBER_KEY));
+  const issue = await identityLinkWrites(memberId, nowMs, { replaceUnspent: true });
+  if (await writeAlone(db, issue.insert) === null) throw new FirstOwnerRefused(FIRST_OWNER_LINKED);
+  for (const statement of issue.replace) await writeAlone(db, statement);
   return { memberId, key: issue.key, expiresAt: issue.expiresAt };
 }
 

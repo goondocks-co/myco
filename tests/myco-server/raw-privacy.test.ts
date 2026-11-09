@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import worker from '@myco-server-worker/index.js';
 import { createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
 import { assertRawPrivacy } from '../parity/scenarios/raw-privacy.js';
 import type { ParityTarget } from '../parity/harness.js';

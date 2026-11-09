@@ -3,7 +3,7 @@ import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { renewRunLease } from '@myco-server-worker/db/runs/leases.js';
 import { runDeadline } from '@myco-server-worker/api/run-admission.js';

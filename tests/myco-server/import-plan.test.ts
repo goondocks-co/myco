@@ -20,7 +20,7 @@ import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 import { IMPORT_MAX_SESSIONS_DEFAULT, IMPORT_WINDOW_DAYS_DEFAULT } from '@myco-server-worker/core/import-policy.js';
 import { RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { sqliteEnv, count } from './helpers/fixtures.js';
 

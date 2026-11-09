@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';

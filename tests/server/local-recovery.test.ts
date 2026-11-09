@@ -1,5 +1,5 @@
 import { serve } from '@myco-server-worker/entry/bun.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { memberHeaders } from '../myco-server/helpers/fixtures.js';
 import { expect, it } from 'bun:test';

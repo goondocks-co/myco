@@ -4,7 +4,7 @@ import { producedSql } from '../../read/run-outcome.js';
 import { read, readSet } from '../index.js';
 import { repositoriesNeeded } from '../../read/repository-requirements.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
-import { deploymentOwnerSql, linkedHumanAdminSql } from '../../core/ownership.js';
+import { deploymentOwnerSql, linkedHumanAdminSql } from './ownership-policy.js';
 import type { RelationalStore, ServerEnv } from '../../core/adapters.js';
 import { credentialLive } from '../liveness.js';
 import { applyFleetSignInAvailability } from '../runs/fleet.js';

@@ -13,7 +13,7 @@ import { POWER_THRESHOLDS, runTick, WAKE_INTERVALS } from '@myco-server-worker/c
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { envelope, memberPost, publishFixture, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 describe('the events route', () => {

@@ -52,7 +52,7 @@ import { mayCreateProjects } from '@myco-server-worker/db/storage/projects.js';
 import { embeddingKeepsAwake } from '@myco-server-worker/core/embedding/jobs.js';
 import { configuredEmbeddingProvider } from '@myco-server-worker/core/embedding/configured-provider.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { cacheMachineSettings, machineAutoJoinLeaves, machinePlanDirs } from '@myco/member/machine-settings.js';
 import { MACHINE_LEAF_SPECS } from '@myco-server-worker/core/machine-settings.js';
 import { closureOf, codeOf, entryFiles, filesUnder, moduleKey, REPO_ROOT } from '../helpers/import-closure.ts';

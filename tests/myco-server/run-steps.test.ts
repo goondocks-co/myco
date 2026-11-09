@@ -10,7 +10,7 @@ import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { claimNextRun, endLeasedRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';

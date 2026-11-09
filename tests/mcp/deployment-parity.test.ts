@@ -17,7 +17,7 @@ import path from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { issueExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { EXTERNAL_TOOLS } from '@myco-server-worker/mcp/external.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { serve } from '@myco-server-worker/entry/bun.js';

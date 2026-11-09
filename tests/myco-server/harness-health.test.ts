@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { SERVER_FEATURES } from '@myco-server-worker/constants.js';
 import {
   HARNESS_HEALTH_FEATURE,

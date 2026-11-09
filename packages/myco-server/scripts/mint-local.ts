@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
-import { ensureMember } from '../src/auth/enrollment.ts';
+import { ensureMemberWrite } from '../src/auth/enrollment.ts';
 import { issueExternalGrant } from '../src/auth/grants.ts';
-import { mintInsert, NO_RUNTIME_CLAIMS } from '../src/auth/tokens.ts';
-import { nonAdminCredential } from '../src/db/runs/enrollment.ts';
+import { prepareClaimCompanion } from '../src/db/runs/claim-companions.ts';
+import { mintWrite, NO_RUNTIME_CLAIMS } from '../src/auth/tokens.ts';
+import { nonAdminCredential } from '../src/db/identity/credentials.ts';
 import { sqlCapture } from './sql-capture.ts';
 
 const USAGE = [
@@ -63,11 +64,11 @@ if (args.includes('--grant')) {
   // A credential every holder shares never carries the Deployment's authority: its member is created a plain member, the
   // insert lands only while that member is one, and the guard after it fails the applied SQL by name when it did not —
   // a member that already administers the Deployment is never downgraded, and never handed one.
-  await ensureMember(db, memberId, now, nonRotating ? 'member' : 'admin');
-  const { statement, issued } = await mintInsert(db, { memberId, machineId }, now, null, NO_RUNTIME_CLAIMS, nonRotating
+  await prepareClaimCompanion(db, ensureMemberWrite(db, memberId, now, nonRotating ? 'member' : 'admin')).run();
+  const { statement, issued } = await mintWrite(db, { memberId, machineId }, now, null, NO_RUNTIME_CLAIMS, nonRotating
     ? { rotates: false, claim: { write: nonAdminCredential, values: [memberId] } }
     : {});
-  await statement.run();
+  await prepareClaimCompanion(db, statement).run();
   if (nonRotating) statements.push(...NON_ADMIN_GUARD(issued.tokenId));
   console.log(`-- token_id ${issued.tokenId} expires_at ${issued.expiresAt}${nonRotating ? ` non-rotating, for member ${memberId} which must not administer the Deployment` : ''}`);
   for (const statement of statements) console.log(`${statement};`);

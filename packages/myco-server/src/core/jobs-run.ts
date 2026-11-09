@@ -39,7 +39,7 @@ import {
 } from '../read/catalog/search-index.js';
 import { jobDispatchesAt, SCHEDULE_JOB, STAGING_RETENTION_JOB } from './jobs.js';
 import { runEmbeddingJob } from './embedding/jobs.js';
-import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
+import { reclaimFinishedAuthorities } from '../db/identity/authority-retention.js';
 import { transcriptRetention } from '../ingest/retention.js';
 import { drainObjectReleases, objectReleaseBacklogged } from './object-release.js';
 import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
@@ -218,13 +218,13 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
 }
 
 /**
- * Reclaims finished enrollment authorities — spent, revoked or expired — past
- * the retention window, and undecided device requests past their TTL. A live
- * invitation is never touched whatever its age:
- * ending one early is retention deciding to revoke, which the operator does.
+ * Reclaims finished authorities — spent, revoked or expired invitations and link
+ * keys, link receipts, and device requests — past their own deadlines. A live
+ * authority is never touched whatever its age: ending one early is retention
+ * deciding to revoke, which the operator does.
  */
 export async function inviteExpiry(env: ServerEnv, now: number): Promise<number> {
-  const { reclaimed } = await reclaimEnrollmentAuthorities(env.db, now, JOB_BATCH);
+  const { reclaimed } = await reclaimFinishedAuthorities(env.db, now, JOB_BATCH);
   return reclaimed;
 }
 

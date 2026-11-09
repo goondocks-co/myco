@@ -12,7 +12,8 @@ import { refreshed } from './helpers/outcomes.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { activateSuccessor, issueMemberToken, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, refreshMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
+import { activateSuccessor, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, refreshMemberToken, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { LINEAGE_REPLAY_GRACE_MS, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 

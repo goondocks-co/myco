@@ -3,10 +3,8 @@ import type { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
-import {
-  MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS,
-  issueMemberToken, revokeCredentialAsMember, revokeMemberLineage,
-} from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, revokeCredentialAsMember, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { BLOB_RESERVATION_TTL_MS, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, journaled, memberHeaders, memberPost, noOutboundFetch, RETIRED_BYTE_CEILING, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -256,7 +254,7 @@ describe('token refresh', () => {
 
   it('changes nothing when a single-token revoke of the presented token lands between a refresh\'s authentication and its batch: 503, its banked unused successor stays live and keeps working, and the presented token answers 401 next', async () => {
     let hook: ((sqlite: Database) => void) | null = null;
-    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('UPDATE member_credentials SET revoked_at = ? WHERE predecessor_id = ?')) { const h = hook; hook = null; h(sqlite); } } });
+    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('revoked_at IS NULL AND rotates=1')) { const h = hook; hook = null; h(sqlite); } } });
     const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
     r.clock.now += 1;
     const revokedAt = r.clock.now;

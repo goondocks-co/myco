@@ -12,7 +12,8 @@ import { RETIRED_ROUTES, ROUTES, SESSION_AUTHORITIES, UNSERVED_PATHS, grantRoute
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
-import { issueMemberToken, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
@@ -579,7 +580,7 @@ describe('gates', () => {
     // Credential and membership tables are Deployment-scoped by design — a member
     // credential belongs to a member and a Deployment, not to one project — so
     // their indexes lead with what they are actually looked up by.
-    const deploymentScoped = /ON (member_tokens|members|member_naming_failures|member_credentials|enrollment_authorities|step_up_authorities|identity_link_authorities|backups)\b/;
+    const deploymentScoped = /ON (member_tokens|members|member_naming_failures|member_credentials|enrollment_authorities|identity_link_authorities|identity_link_redemptions|backups)\b/;
     // An index read by a Deployment-wide access path leads with what it is read
     // by; the set of those, each with its read, is declared once in
     // `helpers/access-paths.ts` and shared with the v2-table gate.
@@ -1103,7 +1104,7 @@ describe('gates', () => {
     // The parenthesized predecessor predicate — live, and minted to rotate — is conjoined with the admission gate.
     expect(issuing).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?, \?\s+WHERE \(\? IS NULL OR \(\$\{TOKEN_LIVE\} AND \$\{ROTATING_PREDECESSOR\}\)\)`/);
     expect(issuing).toMatch(/const ROTATING_PREDECESSOR = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND rotates = 1\)';/);
-    expect(tokens).toMatch(/UPDATE member_credentials SET revoked_at = \? WHERE predecessor_id = \? AND revoked_at IS NULL AND first_used_at IS NULL AND \$\{TOKEN_LIVE\}`/);
+    expect(readFileSync(join(SRC, 'db', 'identity', 'credentials.ts'), 'utf8')).toMatch(/UPDATE member_credentials SET revoked_at=\?1 WHERE predecessor_id=\?2 AND revoked_at IS NULL AND first_used_at IS NULL/);
     expect(readFileSync(join(SRC, 'ingest', 'live-credential.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)';/);
   });
 
