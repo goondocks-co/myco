@@ -3,6 +3,8 @@ import type { RelationalStore } from '../../core/adapters.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, write } from '../index.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
+import { changed, jsonKeys, trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * Spore totals by structured dimension, maintained on write and never recounted.
@@ -42,19 +44,19 @@ export function reconcileSporeFacts(keys: string): string[] {
 }
 
 /** The spore keys of one catch-up page, carried as one JSON array of `[project_id, id]`. */
-const PAGE_KEYS = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS id FROM json_each(?1)`;
+const PAGE_KEYS = jsonKeys(['project_id', 'id']);
 
 /** One catch-up page: the keys' facts re-derived inside the caller's commit. */
-export const SPORE_COUNT_RECONCILE = reconcileSporeFacts(PAGE_KEYS)
-  .map((sql, i) => write<[string]>({ name: `sporeCounts.page${i}`, sql }));
+export const SPORE_COUNT_CATCHUP = {
+  projection: SPORE_COUNT_PROJECTION,
+  phases: { [SPORE_COUNT_PHASE]: { source: { table: 'spores', columns: ['project_id', 'id'] },
+    reconcile: reconcileSporeFacts(PAGE_KEYS).map((sql, i) => write<[string]>({ name: `sporeCounts.page${i}`, sql })) } },
+} as const satisfies CatchupFamily;
 
 /** The derived tables, their triggers and the catch-up seed, as one schema step freezes them. */
 export function sporeCountSchemaStatements(): string[] {
   const rowKey = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.id AS id`;
   const watched = ['project_id', 'id', 'status', 'observation_type', 'session_id', 'author', 'agent_id', 'created_at'];
-  const changed = (columns: readonly string[]) => columns.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ');
-  const trigger = (name: string, table: string, event: string, when: string | null, body: readonly string[]) =>
-    `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when === null ? '' : ` WHEN ${when}`} BEGIN ${body.join('; ')}; END`;
   const bump = (row: string, delta: 1 | -1) => {
     const sign = delta === 1 ? '+1' : '-1';
     return [
@@ -77,13 +79,12 @@ export function sporeCountSchemaStatements(): string[] {
       status TEXT NOT NULL,observation_type TEXT NOT NULL,n INTEGER NOT NULL,PRIMARY KEY(project_id,session_id,day,status,observation_type)) WITHOUT ROWID`,
     `CREATE TABLE IF NOT EXISTS spore_daily(project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),day INTEGER NOT NULL,status TEXT NOT NULL,
       observation_type TEXT NOT NULL,author_kind TEXT NOT NULL,n INTEGER NOT NULL,PRIMARY KEY(project_id,day,status,observation_type,author_kind)) WITHOUT ROWID`,
-    trigger('spore_count_insert', 'spores', 'INSERT', null, reconcileSporeFacts(rowKey('NEW'))),
-    trigger('spore_count_update', 'spores', `UPDATE OF ${watched.join(',')}`, changed(watched),
-      [...reconcileSporeFacts(rowKey('OLD')), ...reconcileSporeFacts(rowKey('NEW'))]),
-    trigger('spore_count_delete', 'spores', 'DELETE', null, reconcileSporeFacts(rowKey('OLD'))),
-    trigger('spore_count_fact_insert', 'spore_count_facts', 'INSERT', null, bump('NEW', 1)),
-    trigger('spore_count_fact_update', 'spore_count_facts', `UPDATE OF ${FACT_COLUMNS.join(',')}`, changed(FACT_COLUMNS), [...bump('OLD', -1), ...bump('NEW', 1)]),
-    trigger('spore_count_fact_delete', 'spore_count_facts', 'DELETE', null, bump('OLD', -1)),
+    trigger('spore_count_insert', 'spores', 'INSERT', reconcileSporeFacts(rowKey('NEW'))).sql,
+    trigger('spore_count_update', 'spores', `UPDATE OF ${watched.join(',')}`, [...reconcileSporeFacts(rowKey('OLD')), ...reconcileSporeFacts(rowKey('NEW'))], changed(watched)).sql,
+    trigger('spore_count_delete', 'spores', 'DELETE', reconcileSporeFacts(rowKey('OLD'))).sql,
+    trigger('spore_count_fact_insert', 'spore_count_facts', 'INSERT', bump('NEW', 1)).sql,
+    trigger('spore_count_fact_update', 'spore_count_facts', `UPDATE OF ${FACT_COLUMNS.join(',')}`, [...bump('OLD', -1), ...bump('NEW', 1)], changed(FACT_COLUMNS)).sql,
+    trigger('spore_count_fact_delete', 'spore_count_facts', 'DELETE', bump('OLD', -1)).sql,
     `INSERT INTO projection_catchup(projection,phase,done) SELECT '${SPORE_COUNT_PROJECTION}','${SPORE_COUNT_PHASE}',NOT EXISTS(SELECT 1 FROM spores)`,
   ];
 }

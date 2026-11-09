@@ -2,11 +2,12 @@ import type { BlobStore, RelationalStore } from '../../core/adapters.js';
 import { readPageChunk, type ChunkRow } from '../../content/document-reader.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
 import { assertion, commit, read, readSet, refused, write, type Bound } from '../index.js';
-import { DOCUMENT_OWNERSHIP_CONFLICT, PublicationOwnership } from './ownership.js';
+import { DOCUMENT_OWNERSHIP_CONFLICT, METADATA_PHASE_SOURCE, OWNERSHIP_INPUTS_READY, OWNERSHIP_READY_RECONCILE, OWNERSHIP_READY_SOURCE, PublicationOwnership } from './ownership.js';
 import { documentPassFailure } from './failure-head.js';
 import type { DecodedChunk } from '../../content/document.js';
+import type { CatchupFamily, PageContext, PagePlan } from '../projections/family.js';
 
-export const metadataCursorHeld=assertion<[string,number]>({name:'publication.metadataCursorHeld',sql:`SELECT CASE WHEN
+const metadataCursorHeld=assertion<[string,number]>({name:'publication.metadataCursorHeld',sql:`SELECT CASE WHEN
   EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication_ownership' AND phase='publicationMetadata' AND after_key=?1 AND generation=?2 AND done=0)
   THEN 1 ELSE json_extract('[]','$[publication_metadata_changed]') END`});
 const source=read<[string,string,number,number],ChunkRow>({name:'publication.metadataSource',sql:`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,c.metadata,
@@ -52,7 +53,7 @@ const METADATA_FAILURE_LOOKBACK_MS=7*24*60*60*1000;
 type MetadataFailure = 'document_object_missing' | 'document_metadata_unreadable' | 'document_ownership_conflict';
 
 /** Records each session's earliest unresolved chunk among `keys`, and makes a settled session due so its failure is retried and stays visible. */
-export function metadataFailure(keys:readonly (readonly unknown[])[],phaseGeneration:number,now:number,reason:MetadataFailure):Bound[] {
+function metadataFailure(keys:readonly (readonly unknown[])[],phaseGeneration:number,now:number,reason:MetadataFailure):Bound[] {
   const earliest=new Map<string,readonly unknown[]>();
   for(const key of keys){const scope=JSON.stringify(key.slice(0,3));if(!earliest.has(scope))earliest.set(scope,key);}
   return [...earliest.values()].flatMap(key=>{
@@ -99,7 +100,7 @@ async function metadataChunk(db:RelationalStore,blobs:BlobStore,key:readonly unk
 }
 
 /** A bounded metadata page and its source position settle with the shared projection cursor. */
-export async function metadataPage(db:RelationalStore,blobs:BlobStore,keys:readonly (readonly unknown[])[],charge:(calls:number)=>void,phaseGeneration=0,now=Date.now()):Promise<{statements:Bound[];guards:Bound[];complete:boolean}> {
+async function metadataPage(db:RelationalStore,blobs:BlobStore,keys:readonly (readonly unknown[])[],charge:(calls:number)=>void,phaseGeneration=0,now=Date.now()):Promise<{statements:Bound[];guards:Bound[];complete:boolean}> {
   const statements:Bound[]=[];
   const guards:Bound[]=[];
   for(const key of keys){
@@ -168,3 +169,19 @@ export async function repairPublicationMetadata(db:RelationalStore,blobs:BlobSto
   await commit(db,repairHeld.bind(project,session,generation,at,phase),dueNow.bind(project,session,generation));
   return true;
 }
+
+const metadataCatchupPage=async({db,blobs,keys,charge,generation,now}:PageContext):Promise<PagePlan>=>{
+  if(keys.length>0&&blobs===undefined)throw new Error('publication_metadata_blob_store_required');
+  const metadata=await metadataPage(db,blobs!,keys,charge,generation,now);
+  return {statements:metadata.statements,complete:metadata.complete,
+    recover:error=>refused(error,DOCUMENT_OWNERSHIP_CONFLICT)?[...metadata.guards,...metadataFailure(keys,generation,now,DOCUMENT_OWNERSHIP_CONFLICT)]:undefined};
+};
+
+/** Metadata pages read their chunks from the blob store; the readiness pass waits for every page to have been seen. */
+export const PUBLICATION_OWNERSHIP_CATCHUP={
+  projection:'publication_ownership',
+  phases:{
+    publicationMetadata:{source:METADATA_PHASE_SOURCE,reconcile:[],guards:held=>[metadataCursorHeld.bind(held.after_key,held.generation)],page:metadataCatchupPage},
+    publicationOwnershipReady:{source:OWNERSHIP_READY_SOURCE,reconcile:OWNERSHIP_READY_RECONCILE,frontier:()=>[OWNERSHIP_INPUTS_READY.bind()]},
+  },
+} as const satisfies CatchupFamily;

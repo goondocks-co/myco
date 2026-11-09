@@ -5,6 +5,8 @@ import { HUBNESS_MEMBER as MEMBER, RECEIPT } from '../../core/embedding/receipt-
 import { CURRENT_EMBEDDING_SOURCES } from '../embedding-sources.js';
 import { commit, read, readSet, write, type BindValue, type Bound } from '../index.js';
 import { VECTOR_PAGE, reclaimDue, sealDue } from './vector-pages.js';
+import { changed, jsonKeys, trigger, type Trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /** The source type whose vectors calibration covers. */
 const SOURCE_TYPE = 'spore';
@@ -60,17 +62,20 @@ const sourceKeys = (row: string) => `SELECT r.project_id AS project_id,r.model_k
   WHERE r.project_id=${row}.project_id AND r.type='${SOURCE_TYPE}' AND r.record_id=${row}.record_id`;
 
 /** The vector keys carried as one JSON array of `[project_id, model_key, id]`. */
-export const CALIBRATION_KEYS = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS model_key,json_extract(value,'$[2]') AS id FROM json_each(?1)`;
+const CALIBRATION_KEYS = jsonKeys(['project_id', 'model_key', 'id']);
 
 /** One catch-up page: the keys' current calibration state, read inside the caller's commit. */
-export const CALIBRATION_RECONCILE = reconcileCalibrationState(CALIBRATION_KEYS)
+const CALIBRATION_RECONCILE = reconcileCalibrationState(CALIBRATION_KEYS)
   .map((sql, i) => write<[string]>({ name: `calibration.statePage${i}`, sql }));
 
 /** The catch-up sources that initialize calibration state: every indexed vector and every member, in key order. */
-export const CALIBRATION_PHASE_SOURCES = {
-  calibrationReceipts: { table: 'embedding_receipts INDEXED BY idx_embedding_receipts_spore', columns: ['project_id', 'model_key', 'id'], where: `type='${SOURCE_TYPE}' AND ready=${RECEIPT.ready}` },
-  calibrationMembers: { table: 'embedding_hubness_members', columns: ['project_id', 'model_key', 'id'] },
-} as const;
+export const CALIBRATION_CATCHUP = {
+  projection: 'embedding_calibration',
+  phases: {
+    calibrationReceipts: { source: { table: 'embedding_receipts INDEXED BY idx_embedding_receipts_spore', columns: ['project_id', 'model_key', 'id'], where: `type='${SOURCE_TYPE}' AND ready=${RECEIPT.ready}` }, reconcile: CALIBRATION_RECONCILE },
+    calibrationMembers: { source: { table: 'embedding_hubness_members', columns: ['project_id', 'model_key', 'id'] }, reconcile: CALIBRATION_RECONCILE },
+  },
+} as const satisfies CatchupFamily;
 
 /** Each state row's contribution to its population row. */
 const contribution = (row: string) => ({
@@ -94,39 +99,10 @@ const dropEmpty = `DELETE FROM embedding_calibration_population WHERE project_id
     AND total=0 AND member_count=0`;
 
 /**
- * The calibration schema: one row per calibration-relevant vector and model, its queues as a partial index over the
- * rows with work, and the population each state change moves. The index over a member's moment count reads the lowest
- * and highest count of a Project's settled members in two seeks, and the index over left-out receipts seeks those
- * alone, however many indexed spores a model holds. The exhausted index orders those vectors by last write, which is
- * the order the lost-vector probe walks, so waited-on and abandoned vectors are each a seek. `hubness_probe_at` is the
- * last write of the vector the probe stopped at.
- */
-export function calibrationSchema(projectIdCheck: string): string[] {
-  return [
-    `CREATE TABLE IF NOT EXISTS embedding_calibration_state(project_id TEXT NOT NULL CHECK (${projectIdCheck}),model_key TEXT NOT NULL,id TEXT NOT NULL,
-      epoch INTEGER NOT NULL,kind TEXT NOT NULL,is_current INTEGER NOT NULL,rewrites INTEGER NOT NULL,updated_at INTEGER NOT NULL,member INTEGER,status TEXT,
-      PRIMARY KEY(project_id,model_key,kind,id)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS embedding_calibration_population(project_id TEXT NOT NULL CHECK (${projectIdCheck}),model_key TEXT NOT NULL,epoch INTEGER NOT NULL,kind TEXT NOT NULL,
-      total INTEGER NOT NULL,covered INTEGER NOT NULL,member_count INTEGER NOT NULL,operating INTEGER NOT NULL,uncovered INTEGER NOT NULL,departing INTEGER NOT NULL,stale INTEGER NOT NULL,
-      PRIMARY KEY(project_id,model_key,epoch,kind)) WITHOUT ROWID`,
-    'CREATE INDEX IF NOT EXISTS idx_embedding_calibration_queue ON embedding_calibration_state(project_id,model_key,epoch,kind,status,id) WHERE status IS NOT NULL',
-    "CREATE INDEX IF NOT EXISTS idx_embedding_calibration_exhausted ON embedding_calibration_state(project_id,model_key,epoch,kind,updated_at,id) WHERE status='exhausted'",
-    `CREATE INDEX IF NOT EXISTS idx_embedding_hubness_members_moments ON embedding_hubness_members(project_id,model_key,n) WHERE state=${MEMBER.settled}`,
-    'CREATE INDEX IF NOT EXISTS idx_embedding_calibration_left_out ON embedding_calibration_state(project_id,model_key,epoch,kind,id) WHERE is_current=1 AND rewrites>0',
-    "CREATE INDEX IF NOT EXISTS idx_embedding_source_rewriting ON embedding_source_state(project_id,model_key,type,record_id) WHERE state='rewriting'",
-    'ALTER TABLE embedding_cursors ADD COLUMN hubness_probe_at INTEGER',
-  ];
-}
-
-/**
  * The triggers that keep calibration state and its population current: a receipt, source version or membership change
  * re-derives only the vector keys it names, and each state row moves its population by `-old +new`.
  */
-export function calibrationTriggers(): Array<{ name: string; table: string; sql: string }> {
-  const trigger = (name: string, table: string, event: string, when: string | null, body: string[]) => ({
-    name, table, sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when === null ? '' : ` WHEN ${when}`} BEGIN ${body.join('; ')}; END`,
-  });
-  const changed = (columns: readonly string[]) => columns.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ');
+export function calibrationTriggers(): Trigger[] {
   const spore = (...rows: string[]) => rows.map(row => `${row}.type='${SOURCE_TYPE}'`).join(' OR ');
   const receiptColumns = ['project_id', 'model_key', 'id', 'type', 'record_id', 'revision', 'ready', 'rewrites', 'updated_at'];
   const versionColumns = ['project_id', 'type', 'record_id', 'revision'];
@@ -134,24 +110,19 @@ export function calibrationTriggers(): Array<{ name: string; table: string; sql:
   const rest = ['is_current', 'rewrites', 'member', 'status'];
   const reconcile = reconcileCalibrationState;
   return [
-    trigger('embedding_calibration_receipt_insert', 'embedding_receipts', 'INSERT', spore('NEW'), reconcile(vectorKey('NEW'))),
-    trigger('embedding_calibration_receipt_update', 'embedding_receipts', `UPDATE OF ${receiptColumns.join(',')}`, `(${spore('OLD', 'NEW')}) AND (${changed(receiptColumns)})`,
-      [...reconcile(vectorKey('OLD')), ...reconcile(vectorKey('NEW'))]),
-    trigger('embedding_calibration_receipt_delete', 'embedding_receipts', 'DELETE', spore('OLD'), reconcile(vectorKey('OLD'))),
-    trigger('embedding_calibration_version_insert', 'embedding_versions', 'INSERT', spore('NEW'), reconcile(sourceKeys('NEW'))),
-    trigger('embedding_calibration_version_update', 'embedding_versions', `UPDATE OF ${versionColumns.join(',')}`, `(${spore('OLD', 'NEW')}) AND (${changed(versionColumns)})`,
-      [...reconcile(sourceKeys('OLD')), ...reconcile(sourceKeys('NEW'))]),
-    trigger('embedding_calibration_version_delete', 'embedding_versions', 'DELETE', spore('OLD'), reconcile(sourceKeys('OLD'))),
-    trigger('embedding_calibration_member_insert', 'embedding_hubness_members', 'INSERT', null, reconcile(vectorKey('NEW'))),
-    trigger('embedding_calibration_member_update', 'embedding_hubness_members', `UPDATE OF ${memberColumns.join(',')}`, changed(memberColumns),
-      [...reconcile(vectorKey('OLD')), ...reconcile(vectorKey('NEW'))]),
-    trigger('embedding_calibration_member_delete', 'embedding_hubness_members', 'DELETE', null, reconcile(vectorKey('OLD'))),
-    trigger('embedding_calibration_population_insert', 'embedding_calibration_state', 'INSERT', null, [add('NEW')]),
-    trigger('embedding_calibration_population_update', 'embedding_calibration_state', `UPDATE OF ${rest.join(',')}`,
-      `OLD.epoch IS NEW.epoch AND OLD.kind IS NEW.kind AND (${changed(rest)})`, [moved]),
-    trigger('embedding_calibration_population_move', 'embedding_calibration_state', 'UPDATE OF epoch,kind',
-      'OLD.epoch IS NOT NEW.epoch OR OLD.kind IS NOT NEW.kind', [remove('OLD'), add('NEW'), dropEmpty]),
-    trigger('embedding_calibration_population_delete', 'embedding_calibration_state', 'DELETE', null, [remove('OLD'), dropEmpty]),
+    trigger('embedding_calibration_receipt_insert', 'embedding_receipts', 'INSERT', reconcile(vectorKey('NEW')), spore('NEW')),
+    trigger('embedding_calibration_receipt_update', 'embedding_receipts', `UPDATE OF ${receiptColumns.join(',')}`, [...reconcile(vectorKey('OLD')), ...reconcile(vectorKey('NEW'))], `(${spore('OLD', 'NEW')}) AND (${changed(receiptColumns)})`),
+    trigger('embedding_calibration_receipt_delete', 'embedding_receipts', 'DELETE', reconcile(vectorKey('OLD')), spore('OLD')),
+    trigger('embedding_calibration_version_insert', 'embedding_versions', 'INSERT', reconcile(sourceKeys('NEW')), spore('NEW')),
+    trigger('embedding_calibration_version_update', 'embedding_versions', `UPDATE OF ${versionColumns.join(',')}`, [...reconcile(sourceKeys('OLD')), ...reconcile(sourceKeys('NEW'))], `(${spore('OLD', 'NEW')}) AND (${changed(versionColumns)})`),
+    trigger('embedding_calibration_version_delete', 'embedding_versions', 'DELETE', reconcile(sourceKeys('OLD')), spore('OLD')),
+    trigger('embedding_calibration_member_insert', 'embedding_hubness_members', 'INSERT', reconcile(vectorKey('NEW'))),
+    trigger('embedding_calibration_member_update', 'embedding_hubness_members', `UPDATE OF ${memberColumns.join(',')}`, [...reconcile(vectorKey('OLD')), ...reconcile(vectorKey('NEW'))], changed(memberColumns)),
+    trigger('embedding_calibration_member_delete', 'embedding_hubness_members', 'DELETE', reconcile(vectorKey('OLD'))),
+    trigger('embedding_calibration_population_insert', 'embedding_calibration_state', 'INSERT', [add('NEW')]),
+    trigger('embedding_calibration_population_update', 'embedding_calibration_state', `UPDATE OF ${rest.join(',')}`, [moved], `OLD.epoch IS NEW.epoch AND OLD.kind IS NEW.kind AND (${changed(rest)})`),
+    trigger('embedding_calibration_population_move', 'embedding_calibration_state', 'UPDATE OF epoch,kind', [remove('OLD'), add('NEW'), dropEmpty], 'OLD.epoch IS NOT NEW.epoch OR OLD.kind IS NOT NEW.kind'),
+    trigger('embedding_calibration_population_delete', 'embedding_calibration_state', 'DELETE', [remove('OLD'), dropEmpty]),
   ];
 }
 

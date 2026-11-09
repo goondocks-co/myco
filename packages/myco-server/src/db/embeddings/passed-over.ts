@@ -1,9 +1,10 @@
 import { eligibleEmbeddingSource } from '../embedding-sources.js';
 import { INPUT_REFUSAL_RETRY_MS } from '../embedding-due.js';
 import { write } from '../index.js';
+import { jsonKeys, trigger, type Trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
-export const PASSED_OVER_KEYS = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS type,
-  json_extract(value,'$[2]') AS record_id,json_extract(value,'$[3]') AS model_key FROM json_each(?1)`;
+const PASSED_OVER_KEYS = jsonKeys(['project_id', 'type', 'record_id', 'model_key']);
 
 export function reconcilePassedOver(keys: string): string[] {
   const eligible = `SELECT f.* FROM (${keys}) k JOIN embedding_source_failures f
@@ -21,11 +22,8 @@ export function reconcilePassedOver(keys: string): string[] {
   ];
 }
 
-export function passedOverTriggers(): Array<{ name: string; table: string; sql: string }> {
+export function passedOverTriggers(): Trigger[] {
   const keys = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.type AS type,${row}.record_id AS record_id,${row}.model_key AS model_key`;
-  const trigger = (name: string, table: string, event: string, body: string) => ({
-    name, table, sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table} BEGIN ${body}; END`,
-  });
   return [
     ...['INSERT', 'UPDATE'].map(event => trigger(`passed_over_failure_${event.toLowerCase()}`, 'embedding_source_failures', event,
       (event === 'UPDATE' ? [`DELETE FROM embedding_passed_over WHERE (project_id,type,record_id,model_key)=(OLD.project_id,OLD.type,OLD.record_id,OLD.model_key)
@@ -56,4 +54,8 @@ export function currentPassedOver(models: string, now: string, project?: string)
       WHERE model_key IN (SELECT value FROM json_each(${models}) WHERE value<>'') AND recorded_at>${now}-${INPUT_REFUSAL_RETRY_MS}`;
 }
 
-export const PASSED_OVER_RECONCILE = reconcilePassedOver(PASSED_OVER_KEYS).map((sql, i) => write<[string]>({ name: `embedding.passedOverPage${i}`, sql }));
+export const PASSED_OVER_CATCHUP = {
+  projection: 'passed_over',
+  phases: { failures: { source: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'] },
+    reconcile: reconcilePassedOver(PASSED_OVER_KEYS).map((sql, i) => write<[string]>({ name: `embedding.passedOverPage${i}`, sql })) } },
+} as const satisfies CatchupFamily;

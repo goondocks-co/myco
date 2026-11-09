@@ -4,6 +4,8 @@ import { runOriginSql } from '../run-context.js';
 import { LIVE_RUN_STATUSES } from '../run-statuses.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { commit, read, readSet, write } from '../index.js';
+import { changed, jsonKeys, trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * Rolling spend accounting: one `attempt_spend` fact per worker-task attempt, holding the attempt's absolute
@@ -66,7 +68,7 @@ const dispatchedKeys = `SELECT NEW.project_id AS project_id,NEW.id AS run_id,OLD
   UNION SELECT NEW.project_id,NEW.id,NEW.dispatched_by WHERE NEW.dispatched_by IS NOT NULL`;
 /** A run's task or origin reclassifies every attempt of the run. */
 const runKeys = 'SELECT project_id,run_id,attempt_id FROM agent_run_attempts WHERE project_id=NEW.project_id AND run_id=NEW.id';
-export const SPEND_JSON_KEYS = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS run_id,json_extract(value,'$[2]') AS attempt_id FROM json_each(?1)`;
+export const SPEND_JSON_KEYS = jsonKeys(['project_id', 'run_id', 'attempt_id']);
 
 /** The predicate of a due row at `floor`: a settled fact still counted after its claim left the window. */
 const DUE = (floor: string) => `counted=1 AND live=0 AND claimed_at<=${floor}`;
@@ -107,13 +109,10 @@ const SAME_ROLLUP = 'OLD.project_id=NEW.project_id AND OLD.origin=NEW.origin';
 export interface SpendTrigger { name: string; table: string; sql: string }
 /** Triggers in the order the schema step installs them. Their SQL is frozen in the step file. */
 export function spendTriggers(): SpendTrigger[] {
-  const trigger = (name: string, table: string, event: string, body: readonly string[], when = '') =>
-    ({ name, table, sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when ? ` WHEN ${when}` : ''} BEGIN ${body.join('; ')}; END` });
   const worker = (row: string) => workerTaskSql(`${row}.task`);
   const runColumns = ['status', 'dispatched_by', 'cost_usd', 'cost_source'];
   const classColumns = ['task', 'origin'];
   const attemptColumns = ['claimed_at', 'estimate_usd', 'cost_usd', 'cost_source'];
-  const changed = (columns: readonly string[]) => columns.map(column => `OLD.${column} IS NOT NEW.${column}`).join(' OR ');
   return [
     trigger('attempt_spend_add', 'attempt_spend', 'INSERT', [rollup('NEW', 'NEW', null, '1')], 'NEW.counted=1'),
     trigger('attempt_spend_remove', 'attempt_spend', 'DELETE', [rollup('OLD', null, 'OLD', '1')], 'OLD.counted=1'),
@@ -151,14 +150,22 @@ export function spendSchemaStatements(): string[] {
   ];
 }
 
-/** Catch-up pages reconcile attempt keys against the floor of the instant they run. */
 const [spendRetract, spendUpsert] = reconcileSpend(SPEND_JSON_KEYS, '?2');
 const catchupRetract = write<[string]>({ name: 'runs.spendPageRetract', sql: spendRetract! });
 const catchupUpsert = write<[string, number]>({ name: 'runs.spendPageUpsert', sql: spendUpsert! });
-export const SPEND_CATCHUP = [
-  { bind: (keys: string, _floor: number) => catchupRetract.bind(keys) },
-  { bind: (keys: string, floor: number) => catchupUpsert.bind(keys, floor) },
-] as const;
+/** Catch-up pages reconcile attempt keys against the expiry floor of the instant they run. */
+export const BUDGET_CATCHUP = {
+  projection: BUDGET_PROJECTION,
+  phases: {
+    attempts: {
+      source: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] },
+      reconcile: [
+        catchupRetract,
+        { bindAt: (keys: string, now: number) => catchupUpsert.bind(keys, now - BUDGET_WINDOW_MS) },
+      ],
+    },
+  },
+} as const satisfies CatchupFamily;
 
 /** Catch-up readiness, as a SQL predicate: every catch-up phase of the projection is done. */
 export const SPEND_CAUGHT_UP_SQL = `NOT EXISTS (SELECT 1 FROM projection_catchup WHERE projection='${BUDGET_PROJECTION}' AND done=0)`;

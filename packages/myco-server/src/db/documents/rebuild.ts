@@ -1,7 +1,8 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { assertion, commit, read, readSet, write, type Bound } from '../index.js';
+import { assertion, commit, read, readSet, write } from '../index.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { publicationPolicy } from '../../ingest/publication-policy.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 const GENERATION_TABLES = ['session_chunks','session_pages','session_sealed_records','session_prompts','session_paths',
   'session_edit_paths','session_turn_entries','session_turn_totals','session_path_build','myco_tool_calls',
@@ -72,19 +73,18 @@ const versionSource=(version:number,reopen:boolean)=>({
   where:`p.parser_version${reopen?'>=':'>'}0 AND p.parser_version<${version} AND d.state='live'${reopen?" AND p.state='failed' AND p.failure IN ('event_refused','record_too_large')":" AND p.state<>'failed'"}`,
   pageSize:1, startKey:[0,'','',0],
 });
-export const VERSION_PHASE_SOURCES = {
+const VERSION_PHASE_SOURCES = {
   publicationRebuildV6:versionSource(6,false),publicationReopenV6:versionSource(6,true),
 };
-export type VersionPhase=keyof typeof VERSION_PHASE_SOURCES;
 const reconcile = (name:string,sqls:readonly string[]) => sqls.map((sql,i)=>(sql.startsWith('SELECT')?assertion<[string]>:write<[string]>)({name:`publication.${name}${i}`,sql}));
-export const VERSION_RECONCILE = {
-  publicationRebuildV6:reconcile('rebuildV6',rebuildStatements(6)),
-  publicationReopenV6:reconcile('reopenV6',reopenStatements(6)),
-};
 /** A versioned rebuild and a failed-frontier reopen use the same bounded catch-up protocol. */
-export function rebuildForVersion(projectionPhase:VersionPhase,keys:string):Bound[] {
-  return VERSION_RECONCILE[projectionPhase].map(statement=>statement.bind(keys));
-}
+export const PUBLICATION_VERSION_CATCHUP = {
+  projection:'publication_version',
+  phases:{
+    publicationRebuildV6:{source:VERSION_PHASE_SOURCES.publicationRebuildV6,reconcile:reconcile('rebuildV6',rebuildStatements(6))},
+    publicationReopenV6:{source:VERSION_PHASE_SOURCES.publicationReopenV6,reconcile:reconcile('reopenV6',reopenStatements(6))},
+  },
+} as const satisfies CatchupFamily;
 export function publicationRebuildSchema():string[] {
   return [
     'CREATE INDEX IF NOT EXISTS idx_publication_version ON transcript_publication(parser_version,project_id,transcript_id,generation)',

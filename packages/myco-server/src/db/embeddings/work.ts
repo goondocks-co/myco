@@ -9,6 +9,7 @@ import { binaryOrder } from '../../read/scope.js';
 import { eligibleEmbeddingSource } from '../embedding-sources.js';
 import { commit, read, readSet, write } from '../index.js';
 import { SOURCE_STATE_RECONCILE } from './state.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /** Source identities one initialization page of a model reads. */
 export const MODEL_INIT_PAGE = 256;
@@ -281,7 +282,7 @@ export async function resetEmbeddingIndex(db: RelationalStore, projectId: string
 
 /** The reset pages the shared catch-up runs: each removes only rows its Project's reset outdates, so replay is safe. */
 const RESET = (row: string) => `(SELECT seq FROM embedding_resets r WHERE r.project_id=${row}.project_id)`;
-export const RESET_RECONCILE = {
+const RESET_RECONCILE = {
   resetReceipts: [write<[string]>({ name: 'embedding.resetReceiptsPage', sql: `DELETE FROM embedding_receipts WHERE (project_id,model_key,id) IN
     (SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]') FROM json_each(?1)) AND attempt<${RESET('embedding_receipts')}` })],
   resetFailures: [write<[string]>({ name: 'embedding.resetFailuresPage', sql: `DELETE FROM embedding_source_failures WHERE (project_id,type,record_id,model_key) IN
@@ -293,11 +294,19 @@ export const RESET_RECONCILE = {
       AND r.id=embedding_hubness_members.id AND r.attempt>=${RESET('embedding_hubness_members')})` })],
 };
 const RESETTING = 'project_id IN (SELECT project_id FROM embedding_resets)';
-export const RESET_PHASE_SOURCES = {
+const RESET_PHASE_SOURCES = {
   resetFailures: { table: 'embedding_source_failures', columns: ['project_id', 'type', 'record_id', 'model_key'], where: RESETTING },
   resetMembers: { table: 'embedding_hubness_members', columns: ['project_id', 'model_key', 'id'], where: RESETTING },
   resetReceipts: { table: 'embedding_receipts', columns: ['project_id', 'model_key', 'id'], where: RESETTING },
 } as const;
+export const EMBEDDING_RESET_CATCHUP = {
+  projection: 'embedding_reset',
+  phases: {
+    resetFailures: { source: RESET_PHASE_SOURCES.resetFailures, reconcile: RESET_RECONCILE.resetFailures },
+    resetMembers: { source: RESET_PHASE_SOURCES.resetMembers, reconcile: RESET_RECONCILE.resetMembers },
+    resetReceipts: { source: RESET_PHASE_SOURCES.resetReceipts, reconcile: RESET_RECONCILE.resetReceipts },
+  },
+} as const satisfies CatchupFamily;
 
 const typeCursor = read<[string], { next_type: number }>({ name: 'embedding.typeCursor', sql: 'SELECT next_type FROM embedding_cursors WHERE project_id=?1' });
 const nextDue = read<[string, string, string, number, number], { record_id: string; revision: string }>({ name: 'embedding.nextDue',
@@ -322,64 +331,6 @@ export type CheckedWork = ReadonlyArray<readonly [string, 'embedding' | 'hubness
 /** Projects one audit page reads, and the most attention rows one scheduling check reads. */
 export const WORK_AUDIT_PAGE = 50;
 export const WORK_ATTENTION_PAGE = 32;
-
-/**
- * The scheduling schema: a Project-keyed attention set every work-dirtying trigger adds its Project to (one key seek,
- * no write when it is already there), the Deployment's audit frontier, a partial index over work rows waiting on a
- * deadline, and an index that seeks a Project's current passed-over membership by model and expiry.
- */
-export function workScheduleSchema(projectIdCheck: string): string[] {
-  return [
-    'CREATE INDEX IF NOT EXISTS idx_embedding_passed_over_current ON embedding_passed_over(project_id,model_key,expires_at)',
-    `CREATE TABLE IF NOT EXISTS embedding_work_attention(project_id TEXT PRIMARY KEY CHECK (${projectIdCheck})) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS embedding_work_audit(slot INTEGER PRIMARY KEY CHECK (slot=1),scope TEXT NOT NULL,after TEXT NOT NULL,
-      done INTEGER NOT NULL CHECK (done IN (0,1)),audited_at INTEGER NOT NULL,cursor TEXT NOT NULL DEFAULT '')`,
-    'CREATE INDEX IF NOT EXISTS idx_embedding_work_wake ON embedding_work_state(model_key,wake_at) WHERE wake_at IS NOT NULL',
-  ];
-}
-
-/**
- * The work-dirtying triggers: a source version, receipt, failure, plan proof, calibration member or calibration cursor
- * mutation dirties its Project's work rows and adds the Project to the attention set in the same statement; a change to
- * a model's activation, initialization or epoch does the same for that Project's rows.
- */
-export function workDirtyTriggers(sessionEligibility: string): Array<{ name: string; table: string; sql: string }> {
-  const dirty = (table: string, kinds = "'embedding','hubness'", update = 'UPDATE', when?: (operation: string) => string) =>
-    ['INSERT', update, 'DELETE'].map((operation) => {
-      const rows = operation.startsWith('UPDATE') ? ['OLD', 'NEW'] : [operation === 'DELETE' ? 'OLD' : 'NEW'];
-      const name = `${table}_work_${operation.split(' ')[0]!.toLowerCase()}`;
-      return { name, table, sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${operation} ON ${table} ${when === undefined ? '' : `WHEN ${when(operation)}`} BEGIN
-      UPDATE embedding_work_state SET revision=revision+1,pending=1,wake_at=NULL,sweep_cursor=NULL,idle_rounds=0
-        WHERE project_id IN (${rows.map((row) => `${row}.project_id`).join(',')}) AND kind IN (${kinds});
-      INSERT INTO embedding_work_attention(project_id) VALUES${rows.map((row) => `(${row}.project_id)`).join(',')} ON CONFLICT DO NOTHING; END` };
-    });
-  return [
-    ...dirty('embedding_versions', undefined, 'UPDATE OF project_id,type,record_id,revision', (operation) => {
-      const rows = operation === 'INSERT' ? ['NEW'] : operation === 'DELETE' ? ['OLD'] : ['OLD', 'NEW'];
-      return rows.map((row) => `(${row}.type <> 'session' OR EXISTS (SELECT 1 FROM sessions
-      WHERE project_id=${row}.project_id AND session_id=${row}.record_id AND ${sessionEligibility})
-      OR EXISTS (SELECT 1 FROM embedding_receipts WHERE project_id=${row}.project_id AND type='session' AND record_id=${row}.record_id))`).join(' OR ');
-    }),
-    ...dirty('embedding_receipts', undefined, 'UPDATE OF project_id,model_key,id,type,record_id,revision,ready,updated_at,rewrites'),
-    ...dirty('embedding_source_failures'),
-    ...dirty('processed_resources', undefined, undefined, (operation) => operation === 'INSERT' ? "NEW.kind = 'plan'" : operation === 'DELETE' ? "OLD.kind = 'plan'" : "OLD.kind = 'plan' OR NEW.kind = 'plan'"),
-    ...dirty('embedding_hubness_members', "'hubness'", 'UPDATE OF project_id,model_key,id,state'),
-    ...dirty('embedding_cursors', "'hubness'", 'UPDATE OF hubness_model,hubness_count,hubness_cursor'),
-  ];
-}
-
-/** A model registered for a Project, or one whose activation, initialization or epoch moves, re-arms the Project's work. */
-export function workModelTriggers(): Array<{ name: string; table: string; sql: string }> {
-  const body = (row: string) => `UPDATE embedding_work_state SET revision=revision+1,pending=1,wake_at=NULL WHERE project_id=${row}.project_id;
-      INSERT INTO embedding_work_attention(project_id) VALUES(${row}.project_id) ON CONFLICT DO NOTHING;`;
-  return [
-    { name: 'embedding_models_work_insert', table: 'embedding_models', sql: `CREATE TRIGGER IF NOT EXISTS embedding_models_work_insert AFTER INSERT ON embedding_models BEGIN
-      ${body('NEW')} END` },
-    { name: 'embedding_models_work_update', table: 'embedding_models', sql: `CREATE TRIGGER IF NOT EXISTS embedding_models_work_update AFTER UPDATE OF active,complete,epoch ON embedding_models
-      WHEN OLD.active IS NOT NEW.active OR OLD.complete IS NOT NEW.complete OR OLD.epoch IS NOT NEW.epoch BEGIN
-      ${body('NEW')} END` },
-  ];
-}
 
 interface AuditRow { scope: string; after: string; done: number; audited_at: number; cursor: string }
 interface CandidateRow { project_id: string; archived: number; gone: number; marked: number }

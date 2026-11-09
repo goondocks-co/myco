@@ -378,3 +378,12 @@ test('both restore endpoints answer a named retryable conflict while pin initial
     }
   });
 });
+
+for(const [phase,refusal] of [['publicationPinsReady','publication_pins_building'],['publicationOwnershipReady','publication_ownership_building'],['publicationSessions','publication_inputs_building']] as const){
+  test(`${phase} called before the phases it reads have finished refuses with ${refusal}`,async()=>{
+    await withDocumentStores(async(db,target)=>{
+      await resetProjectionCatchup(db);
+      await expect(catchUpPhase(db,phase),target).rejects.toThrow(refusal);
+    });
+  },30_000);
+}

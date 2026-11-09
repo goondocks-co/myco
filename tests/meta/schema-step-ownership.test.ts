@@ -4,15 +4,22 @@ import { V727, V727_STATEMENTS } from '@myco-server-worker/db/schema-v727.js';
 import { NEXT_S6, VNEXT_S6_INDEX_STEPS, VNEXT_S6_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s6.js';
 import { lineageHeadSchemaStatements } from '@myco-server-worker/db/identity/lineage-heads.js';
 import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usage.js';
-import { SESSION_LIFECYCLE_STEPS } from '@myco-server-worker/db/schema-v728.js';
-import { SESSION_LIFECYCLE_EVENTS_INDEX, SESSION_LIFECYCLE_HISTORY_INDEXES, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
-import { publicationDependencySchema } from '@myco-server-worker/db/documents/dependencies.js';
-import { publicationOwnershipSchema } from '@myco-server-worker/db/documents/ownership.js';
+import { SESSION_LIFECYCLE_STEPS, V730 } from '@myco-server-worker/db/schema-v728.js';
+import { SESSION_LIFECYCLE_EVENTS_INDEX, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
 import { publicationRebuildSchema } from '@myco-server-worker/db/documents/rebuild.js';
 import { V718, V718_STATEMENTS } from '@myco-server-worker/db/schema-v718.js';
-import { publicationDirectorySchema } from '@myco-server-worker/db/documents/schema.js';
+import { publicationContributionSchema } from '@myco-server-worker/db/documents/contributions.js';
+import { calibrationTriggers } from '@myco-server-worker/db/embeddings/calibration.js';
+import { passedOverTriggers } from '@myco-server-worker/db/embeddings/passed-over.js';
+import { sourceStateTriggers } from '@myco-server-worker/db/embeddings/state.js';
+import { kpiTriggers } from '@myco-server-worker/db/insights/kpi-reconcile.js';
+import { planCountSchemaStatements } from '@myco-server-worker/db/plans/counts.js';
+import { spendSchemaStatements, spendTriggers } from '@myco-server-worker/db/runs/admission.js';
+import { workSchemaStatements, workTriggers } from '@myco-server-worker/db/runs/history-schema.js';
+import { liveSchemaStatements, liveTriggers } from '@myco-server-worker/db/runs/live.js';
+import { sporeCountSchemaStatements } from '@myco-server-worker/db/spores/counts.js';
 import { V720, V720_STATEMENTS } from '@myco-server-worker/db/schema-v720.js';
 import { V721, V721_STATEMENTS } from '@myco-server-worker/db/schema-v721.js';
 import { V722, V722_STATEMENTS } from '@myco-server-worker/db/schema-v722.js';
@@ -885,13 +892,37 @@ it('schema steps are contiguous from one through the server version and migratio
   ).toEqual(SCHEMA_STEPS.map(migrationFileName));
 });
 
-it('pins the frozen publication directory step to its generator', () => {
-  expect(V718_STATEMENTS).toEqual(publicationDirectorySchema());
-});
+/**
+ * Each generator whose SQL runtime code shares, and the frozen step that holds what it emits: a change to the shared
+ * SQL fails here instead of leaving the trigger behind the catch-up that repeats it.
+ */
+const triggerSql = (triggers: readonly { sql: string }[]) => triggers.map(trigger => trigger.sql);
+const GENERATOR_PINS: readonly (readonly [step: number, generated: () => readonly string[]])[] = [
+  [NEXT_S6, lineageHeadSchemaStatements],
+  [V711, () => triggerSql(kpiTriggers())],
+  [V712, () => triggerSql(passedOverTriggers())],
+  [V714, spendSchemaStatements],
+  [V714, () => triggerSql(spendTriggers())],
+  [V716, () => triggerSql(sourceStateTriggers())],
+  [V717, publicationContributionSchema],
+  [V719, liveSchemaStatements],
+  [V719, () => triggerSql(liveTriggers())],
+  [V721, planCountSchemaStatements],
+  [V721, sporeCountSchemaStatements],
+  [V722, () => triggerSql(calibrationTriggers())],
+  [V723, publicationPinSchema],
+  [V723, publicationFailureSchema],
+  [V723, publicationRebuildSchema],
+  [V724, workSchemaStatements],
+  [V724, () => triggerSql(workTriggers())],
+  [V727, storageUsageSchemaStatements],
+  [SESSION_LIFECYCLE_STEPS[0]!.version, () => [SESSION_LIFECYCLE_EVENTS_INDEX]],
+  [V730, sessionLifecycleSchema],
+];
 
-it('pins the frozen publication ownership step to its generators', () => {
-  expect(VNEXT_S6_STATEMENTS).toEqual(lineageHeadSchemaStatements());
-  expect(V727_STATEMENTS.slice(0, storageUsageSchemaStatements().length)).toEqual(storageUsageSchemaStatements());
-  expect(SESSION_LIFECYCLE_STEPS.map(step => step.statements)).toEqual([[SESSION_LIFECYCLE_EVENTS_INDEX], SESSION_LIFECYCLE_HISTORY_INDEXES, [...sessionLifecycleSchema(), ...publicationDependencySchema()]]);
-  expect(V723_STATEMENTS).toEqual([...publicationOwnershipSchema(),...publicationPinSchema(),...publicationFailureSchema(),...publicationRebuildSchema()]);
+it('every generator the runtime keeps is still verbatim in its frozen step', () => {
+  for (const [step, generated] of GENERATOR_PINS) {
+    const frozen = SCHEMA_STEPS.find(candidate => candidate.version === step)?.statements ?? [];
+    expect({ step, drifted: generated().filter(sql => !frozen.includes(sql)) }).toEqual({ step, drifted: [] });
+  }
 });

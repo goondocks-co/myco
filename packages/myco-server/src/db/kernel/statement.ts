@@ -27,7 +27,7 @@ export interface Statement<Params extends readonly unknown[], Row, Kind extends 
   bind(...values: Params): Bound<Row, Kind>;
 }
 
-const names = new Set<string>();
+const definitions = new Map<string, string>();
 const bindings = new WeakMap<Bound, { sql: string; values: readonly BindValue[] }>();
 
 function define<Params extends readonly unknown[], Row, Kind extends StatementKind>(
@@ -35,7 +35,7 @@ function define<Params extends readonly unknown[], Row, Kind extends StatementKi
 ): Statement<Params, Row, Kind> {
   const { name, sql } = options;
   if (!/^[a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+$/.test(name)) throw new Error('statement name must be a fixed family.operation identifier');
-  if (names.has(name)) throw new Error(`duplicate statement name: ${name}`);
+  if (definitions.has(name)) throw new Error(`duplicate statement name: ${name}`);
   const like = [...(options.like ?? [])];
   const validate = (text: string) => {
     const slots = checkStatement(text);
@@ -45,7 +45,7 @@ function define<Params extends readonly unknown[], Row, Kind extends StatementKi
   };
   if (typeof sql !== 'string') throw new Error(`${name}: statement SQL must be fixed at definition`);
   const slots = validate(sql);
-  names.add(name);
+  definitions.set(name, sql);
   return Object.freeze({
     name, kind,
     bind(...values: Params): Bound<Row, Kind> {
@@ -62,6 +62,9 @@ function define<Params extends readonly unknown[], Row, Kind extends StatementKi
     },
   });
 }
+
+/** The SQL of every statement defined so far, by name: what the schema gate prepares against the final schema. */
+export const definedStatements = (): ReadonlyMap<string, string> => definitions;
 
 export const read = <Params extends readonly unknown[], Row>(options: StatementOptions): Statement<Params, Row, 'read'> => define('read', options);
 export const write = <Params extends readonly unknown[], Row = never>(options: StatementOptions): Statement<Params, Row, 'write'> => define('write', options);

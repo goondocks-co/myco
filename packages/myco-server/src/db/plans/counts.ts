@@ -3,6 +3,8 @@ import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, write } from '../index.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import type { CountAnswer } from '../spores/counts.js';
+import { changed, jsonKeys, trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * Plan totals by status, maintained on write and never recounted. Each plan contributes one `plan_count_facts` row,
@@ -23,19 +25,19 @@ export function reconcilePlanFacts(keys: string): string[] {
   ];
 }
 
-const PAGE_KEYS = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS plan_key FROM json_each(?1)`;
+const PAGE_KEYS = jsonKeys(['project_id', 'plan_key']);
 
 /** One catch-up page: the keys' facts re-derived inside the caller's commit. */
-export const PLAN_COUNT_RECONCILE = reconcilePlanFacts(PAGE_KEYS)
-  .map((sql, i) => write<[string]>({ name: `planCounts.page${i}`, sql }));
+export const PLAN_COUNT_CATCHUP = {
+  projection: PLAN_COUNT_PROJECTION,
+  phases: { [PLAN_COUNT_PHASE]: { source: { table: 'plans', columns: ['project_id', 'plan_key'] },
+    reconcile: reconcilePlanFacts(PAGE_KEYS).map((sql, i) => write<[string]>({ name: `planCounts.page${i}`, sql })) } },
+} as const satisfies CatchupFamily;
 
 /** The derived tables, their triggers and the catch-up seed, as one schema step freezes them. */
 export function planCountSchemaStatements(): string[] {
   const rowKey = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.plan_key AS plan_key`;
   const watched = ['project_id', 'plan_key', 'status'];
-  const changed = watched.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ');
-  const trigger = (name: string, table: string, event: string, when: string | null, body: readonly string[]) =>
-    `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when === null ? '' : ` WHEN ${when}`} BEGIN ${body.join('; ')}; END`;
   const bump = (row: string, delta: 1 | -1) => `INSERT INTO plan_counts(project_id,status,n) VALUES(${row}.project_id,${row}.status,${delta})
       ON CONFLICT(project_id,status) DO UPDATE SET n=n${delta === 1 ? '+1' : '-1'}`;
   return [
@@ -43,12 +45,12 @@ export function planCountSchemaStatements(): string[] {
       PRIMARY KEY(project_id,plan_key)) WITHOUT ROWID`,
     `CREATE TABLE IF NOT EXISTS plan_counts(project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),status TEXT NOT NULL,n INTEGER NOT NULL,
       PRIMARY KEY(project_id,status)) WITHOUT ROWID`,
-    trigger('plan_count_insert', 'plans', 'INSERT', null, reconcilePlanFacts(rowKey('NEW'))),
-    trigger('plan_count_update', 'plans', `UPDATE OF ${watched.join(',')}`, changed, [...reconcilePlanFacts(rowKey('OLD')), ...reconcilePlanFacts(rowKey('NEW'))]),
-    trigger('plan_count_delete', 'plans', 'DELETE', null, reconcilePlanFacts(rowKey('OLD'))),
-    trigger('plan_count_fact_insert', 'plan_count_facts', 'INSERT', null, [bump('NEW', 1)]),
-    trigger('plan_count_fact_update', 'plan_count_facts', 'UPDATE OF status', 'OLD.status IS NOT NEW.status', [bump('OLD', -1), bump('NEW', 1)]),
-    trigger('plan_count_fact_delete', 'plan_count_facts', 'DELETE', null, [bump('OLD', -1)]),
+    trigger('plan_count_insert', 'plans', 'INSERT', reconcilePlanFacts(rowKey('NEW'))).sql,
+    trigger('plan_count_update', 'plans', `UPDATE OF ${watched.join(',')}`, [...reconcilePlanFacts(rowKey('OLD')), ...reconcilePlanFacts(rowKey('NEW'))], changed(watched)).sql,
+    trigger('plan_count_delete', 'plans', 'DELETE', reconcilePlanFacts(rowKey('OLD'))).sql,
+    trigger('plan_count_fact_insert', 'plan_count_facts', 'INSERT', [bump('NEW', 1)]).sql,
+    trigger('plan_count_fact_update', 'plan_count_facts', 'UPDATE OF status', [bump('OLD', -1), bump('NEW', 1)], 'OLD.status IS NOT NEW.status').sql,
+    trigger('plan_count_fact_delete', 'plan_count_facts', 'DELETE', [bump('OLD', -1)]).sql,
     `INSERT INTO projection_catchup(projection,phase,done) SELECT '${PLAN_COUNT_PROJECTION}','${PLAN_COUNT_PHASE}',NOT EXISTS(SELECT 1 FROM plans)`,
   ];
 }
