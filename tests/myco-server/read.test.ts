@@ -1,4 +1,5 @@
 import { legacyBlob } from './helpers/d1.js';
+import { projectStatistics as projectStats } from '@myco-server-worker/db/sessions/statistics.js';
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -12,7 +13,6 @@ import {
   sessions_getSession as getSession,
   sessions_listProjects as listProjects,
   sessions_listSessions as listSessions,
-  sessions_projectStats as projectStats,
   sessions_sessionDurationMs as sessionDurationMs,
   sessions_SESSION_OCCURRED_AT as SESSION_OCCURRED_AT,
 } from '@myco-server-worker/read/catalog/sessions.js';
@@ -126,9 +126,8 @@ describe('read/sessions', () => {
       ['proj_4', 0, null],
       ['proj_3', 0, null],
     ]);
-    const stats = await projectStats(db, { projectId: 'proj_1' }, 1_000);
-    expect([stats.sessions, stats.lastActivityAt]).toEqual([3, 30]);
-    expect((await projectStats(db, { projectId: 'proj_3' }, 1_000)).sessions).toBe(0);
+    expect(await projectStats(db, 'proj_1', 1_000)).toMatchObject({ state: 'ready', sessions: 3, lastActivityAt: 30 });
+    expect(await projectStats(db, 'proj_3', 1_000)).toMatchObject({ state: 'ready', sessions: 0 });
   });
 
   it('hides an archived project by default, lists it on request with who archived it, and restores it', async () => {

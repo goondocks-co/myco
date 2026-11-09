@@ -85,7 +85,7 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/catalog/activity.ts', 2],
   ['read/catalog/children.ts', 2],
   ['read/catalog/embedding.ts', 4],
-  ['read/catalog/hook-placement.ts', 10],
+  ['read/catalog/hook-placement.ts', 7],
   ['read/catalog/injection-served-items.ts', 2],
   ['read/catalog/injection.ts', 4],
   ['read/catalog/lineage.ts', 4],
@@ -95,7 +95,7 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/catalog/search-index.ts', 4],
   ['read/catalog/search.ts', 13],
   ['read/catalog/session-activity.ts', 5],
-  ['read/catalog/sessions.ts', 38],
+  ['read/catalog/sessions.ts', 32],
   ['read/catalog/shared.ts', 1],
   ['read/catalog/turns.ts', 3],
   ['read/credentials.ts', 2],
@@ -109,7 +109,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/session-commits.ts', 2],
   ['read/session-files.ts', 4],
   ['read/task-descriptions.ts', 1],
-  ['read/uncaptured.ts', 5],
   ['routes.ts', 4],
   // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
   ['db/meta/budget-estimates.ts', 3], // A restore's guard is composed from the columns of the rows it replaces.

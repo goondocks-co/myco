@@ -13,7 +13,7 @@ import type { OwnerContext } from '../context.js';
 import { isAdmin } from '../auth/roles.js';
 import { connectMachineRoot } from '../core/machine-settings.js';
 import { recordProjectRemote, remoteHolder } from '../core/remotes.js';
-import { getUncaptured, listUncaptured } from '../read/uncaptured.js';
+import { decodeUncapturedCursor, getUncaptured, listUncaptured, UNCAPTURED_CURSOR_REFUSAL } from '../db/sessions/uncaptured-roots.js';
 import { ownMachineNames } from '../read/capture.js';
 import { HELD_STATES, isUncapturedReason, type HeldState, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 
@@ -47,6 +47,8 @@ export interface UncapturedRootItem {
 /** `GET /api/uncaptured`. */
 export interface UncapturedAnswer {
   items: UncapturedRootItem[];
+  /** Passed back as `cursor` for the next page; null on the last. */
+  cursor: string | null;
 }
 
 /**
@@ -54,13 +56,15 @@ export interface UncapturedAnswer {
  * reads every machine's, any other member their own machines' alone.
  */
 export async function handleListUncaptured(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const rows = await listUncaptured(env.db, isAdmin(ctx.member.role) ? { all: true } : { all: false, memberId: ctx.member.id });
+  const cursor = ctx.url.searchParams.get('cursor') ?? undefined;
+  if (cursor !== undefined && decodeUncapturedCursor(cursor) === null) return badRequest(UNCAPTURED_CURSOR_REFUSAL);
+  const { rows, cursor: next } = await listUncaptured(env.db, isAdmin(ctx.member.role) ? { all: true } : { all: false, memberId: ctx.member.id }, { cursor });
   const names = await ownMachineNames(env.db, ctx.member.id, ctx.now, [...new Set(rows.map(row => row.machineId))]);
   const items = rows.map((row): UncapturedRootItem => ({
     machineId: row.machineId, machineName: names.get(row.machineId) ?? null, member: row.member, rootKey: row.rootKey, label: row.label,
     remote: row.remote, reason: isUncapturedReason(row.reason) ? row.reason : 'refused', misses: row.misses, held: isHeldState(row.held) ? row.held : 'held', firstSeenAt: row.firstSeenAt, lastSeenAt: row.lastSeenAt,
   }));
-  return ok({ items } satisfies UncapturedAnswer);
+  return ok({ items, cursor: next } satisfies UncapturedAnswer);
 }
 
 /** What the connect takes: the project to join, or none for the one the remote names, or one created for it. */

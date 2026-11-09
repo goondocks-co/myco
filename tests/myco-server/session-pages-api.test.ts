@@ -47,7 +47,7 @@ describe('the project home', () => {
     const { get } = await harness();
     expect(await get('/api/projects/proj_1/activity')).toEqual({
       status: 200,
-      body: { items: [], stats: { sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } },
+      body: { items: [], stats: { state: 'ready', sessions: 0, openSessions: 0, sessionsLast7d: 0, prompts: 0, toolCalls: 0, plans: 0, attachments: 0, lastActivityAt: null } },
     });
     expect((await get('/api/projects/absent/activity')).status).toBe(404);
   });

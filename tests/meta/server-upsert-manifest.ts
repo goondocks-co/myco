@@ -309,6 +309,13 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/schema-vNEXT-s2c.ts#refreshReconcile': [{ tables: ['session_title_work'], order: 'unverified' }],
   'db/schema-vNEXT-s2c.ts#cohortBump': [{ tables: ['session_title_work_counts'], order: 'unverified' }],
   'db/sessions/title-work.ts#upsertSql': [{ tables: ['session_title_work'], order: 'unverified' }],
+  'db/sessions/statistics-schema.ts#reconcileSessionStatistics': [{ tables: ['session_statistics'], order: 'unverified' }],
+  'db/sessions/statistics-schema.ts#reconcileAttachmentCounts': [{ tables: ['session_attachment_counts'], order: 'unverified' }],
+  'db/sessions/statistics-schema.ts#counterUpsert': [{ tables: ['project_session_counts'], order: 'unverified' }],
+  'db/sessions/statistics-schema.ts#dayBump': [{ tables: ['project_session_days'], order: 'unverified' }],
+  'db/sessions/statistics-schema.ts#<module>': [{ tables: ['session_attachment_counts'], order: 'unverified' }],
+  'db/sessions/placement-schema.ts#<module>': [{ tables: ['context_placements'], order: 'unverified' }],
+  'db/sessions/placement-schema.ts#dayBump': [{ tables: ['context_placement_days'], order: 'unverified' }],
   'db/plans/counts.ts#reconcilePlanFacts': [{ tables: ['plan_count_facts'], order: 'unverified' }],
   'db/plans/counts.ts#bump': [{ tables: ['plan_counts'], order: 'unverified' }],
   'db/schema-v721.ts#<module>': [

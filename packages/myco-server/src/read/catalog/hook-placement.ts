@@ -72,43 +72,11 @@ async function hook_placement_sessionContextHints(db: hook_placement_import_Rela
   };
 }
 
+/** Why a record is on no turn: it names no prompt, or it names one this session's live document does not hold. */
+type hook_placement_Placement = 'unnamed' | 'unavailable';
+
 interface hook_placement_UnplacedHookRecord {
-  key: string; kind: string; id: string; promptHint: string | null; label: string; createdAt: number;
-}
-
-const hook_placement_HOOK_STATUS_WINDOW_DAYS = 7;
-
-const hook_placement_HOOK_STATUS_WINDOW_MS = hook_placement_HOOK_STATUS_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-
-/** The status window counts delivered receipts and served answers, excluding tombstoned sessions. */
-async function hook_placement_countUnplacedContextRecords(db: hook_placement_import_RelationalStore, scope?: hook_placement_import_ReadScope, sessionId?: string, now = Date.now()): Promise<number> {
-  const from = now - hook_placement_HOOK_STATUS_WINDOW_MS;
-  const conditions = ['r.project_id = s.project_id', 'r.created_at >= ?', 'NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id)'];
-  const params: unknown[] = [from];
-  if (scope !== undefined) { conditions.push('r.project_id = ?'); params.push(scope.projectId); }
-  if (sessionId !== undefined) { conditions.push('r.session_id = ?'); params.push(sessionId); }
-  let total=0;
-  for(const source of hook_placement_DELIVERY_RECORD_SOURCES){
-   total+=await (async()=>{
-    const hint=hook_placement_hookPlacementSql({project:'r.project_id',session:'r.session_id',prompt:source.hint});
-    const prompt='unplacedPrompt' in source?hook_placement_hookPlacementSql({project:'r.project_id',session:'r.session_id',prompt:source.unplacedPrompt}):null;
-    const captures='NULL';
-    const placed=hint;
-    const promptPlaced=prompt!==null?', '+prompt+' AS __myco_delivery_prompt_placed':'';
-    const sql=`SELECT COUNT(*) FILTER (WHERE NOT r.__myco_delivery_placed${prompt!==null?' AND NOT r.__myco_delivery_prompt_placed':''}) AS n,
-      COUNT(*) AS total
-      FROM projects s CROSS JOIN (SELECT project_id, session_id, '${source.kind}:' || ${source.id} AS record_key,
-    '${source.kind}' AS record_kind, ${source.id} AS record_id, ${source.hint} AS prompt_hint,
-    ${source.label} AS label, created_at, ${captures} AS __myco_delivery_capture, ${placed} AS __myco_delivery_placed${promptPlaced} FROM ${source.table} r
-    WHERE ${source.where}) r
-      WHERE ${conditions.join(' AND ')}`;
-    const row=await db.prepare(sql).bind(...params)
-      .first<{n:number;__myco_aggregate_sources:unknown}>();
-    if(row===null)return 0;
-    return row.n;
-   })();
-  }
-  return total;
+  key: string; kind: string; id: string; promptHint: string | null; label: string; createdAt: number; placement: hook_placement_Placement;
 }
 
 /** Unplaced records stay visible at session level, in immutable capture order. */
@@ -127,14 +95,13 @@ async function hook_placement_listUnplacedHookRecordsImpl(db: hook_placement_imp
   const results = pages.flat().sort((a, b) => Number(a.created_at) - Number(b.created_at)
     || hook_placement_import_binaryOrder(String(a.record_key), String(b.record_key)));
   const rows: hook_placement_UnplacedHookRecord[] = results.map(row => ({ key: row.record_key as string, kind: row.record_kind as string,
-    id: row.record_id as string, promptHint: row.prompt_hint as string | null, label: row.label as string, createdAt: row.created_at as number }));
+    id: row.record_id as string, promptHint: row.prompt_hint as string | null, label: row.label as string, createdAt: row.created_at as number,
+    placement: row.prompt_hint === null ? 'unnamed' as const : 'unavailable' as const }));
   return hook_placement_import_page(rows, k.limit, row => ({ createdAt: row.createdAt, id: row.key }));
 }
 
 export {
   hook_placement_listUnplacedHookRecords,
-  hook_placement_HOOK_STATUS_WINDOW_DAYS,
-  hook_placement_countUnplacedContextRecords,
   hook_placement_placedHintSql,
   hook_placement_hookPlacementSql,
   hook_placement_sessionContextHints,

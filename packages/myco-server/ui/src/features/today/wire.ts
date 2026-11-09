@@ -157,6 +157,8 @@ export interface UncapturedRootItem {
 /** `GET /api/uncaptured`. */
 export interface UncapturedAnswer {
   items: UncapturedRootItem[];
+  /** Passed back as `cursor` for the next page; null on the last. */
+  cursor: string | null;
 }
 
 /** `POST /api/uncaptured/{machineId}/{rootKey}/connect`: the project to join, or none for the one its remote names, or a new one. */

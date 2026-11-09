@@ -5,7 +5,7 @@ import type { RelationalStore as sessions_import_RelationalStore } from "../../c
 import type { RunResult as sessions_import_RunResult } from "../../core/adapters.js";
 import { inListChunks as sessions_import_inListChunks } from "../scope.js";
 import { page as sessions_import_page, clampLimit as sessions_import_clampLimit, decodeCursor as sessions_import_decodeCursor } from "../scope.js";
-import { decodeProjectCursor as sessions_import_decodeProjectCursor, projectPage as sessions_import_projectPage } from "../project-cursor.js";
+import { decodeSessionsAcrossCursor as sessions_import_decodeAcrossCursor, sessionsAcrossPage as sessions_import_acrossPage } from "../project-cursor.js";
 import {
   firstPromptSql as sessions_import_firstPromptSql,
   PRESENTED_ENDED_AT as sessions_import_PRESENTED_ENDED_AT,
@@ -83,19 +83,6 @@ interface sessions_SessionRow {
   label: string;
 }
 
-/** What a project holds, counted for its home page. */
-interface sessions_ProjectStats {
-  sessions: number;
-  /** Sessions with no end recorded. A runtime that died never ends its session, so this is what the data says, not a liveness claim. */
-  openSessions: number;
-  sessionsLast7d: number;
-  prompts: number;
-  toolCalls: number;
-  plans: number;
-  attachments: number;
-  lastActivityAt: number | null;
-}
-
 /** Counts of a session's child projections, for a detail view that shows what it holds before fetching any of it. */
 interface sessions_SessionCounts {
   prompts: number;
@@ -145,8 +132,6 @@ const sessions_WORKING_CAP_MS = sessions_import_WORKING_CAP_MS;
 
 /** A deleted session is absent from session reads, project counts, and latest activity. */
 const sessions_LIVE_SESSION = sessions_import_notTombstonedSql('s');
-
-const sessions_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const sessions_text = (value: unknown): string | null => (value as string | null) ?? null;
 
@@ -276,12 +261,9 @@ async function sessions_listSessions(db: sessions_import_RelationalStore, scope:
 }
 
 /**
- * Sessions of every Project in the set, newest first, one keyset page at a time. The read walks
- * `idx_sessions_occurred_deployment`, which indexes the same expression the per-Project read orders by, and stops at
- * its page rather than sorting every session the set holds. The index is named in the
- * statement: with a filter the planner takes to be selective, such as an agent, it reads every session and sorts
- * them instead. A session is keyed by its Project and its id, so the page orders by the instant, the id and then the
- * Project, and the cursor carries all three: sessions of different Projects sharing an instant and an id each keep their place.
+ * Sessions of every Project in the set, newest first, one keyset page at a time: the read walks
+ * `idx_sessions_occurred_project` and stops at its page. A session is keyed by its Project and its id, so the page orders
+ * by the instant, the Project and then the id, and the cursor carries all three.
  */
 async function sessions_listSessionsAcross(db: sessions_import_RelationalStore, set: sessions_import_ProjectSet, opts: { limit?: number; cursor?: string } & sessions_SessionFilters = {}): Promise<sessions_import_Page<sessions_SessionRow & { projectId: string }>> {
   return sessions_selectSessions(db, set, opts);
@@ -306,7 +288,7 @@ async function sessions_selectSessions(
   const active = sessions_activityWindow(opts);
   const across = !('projectId' in scope);
   const limit = sessions_import_clampLimit(opts.limit);
-  const after = opts.cursor === undefined ? null : across ? sessions_import_decodeProjectCursor(opts.cursor) : sessions_import_decodeCursor(opts.cursor);
+  const after = opts.cursor === undefined ? null : across ? sessions_import_decodeAcrossCursor(opts.cursor) : sessions_import_decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
   const { received, working } = await sessions_import_readSessionPage(db, { scope, filters: opts, active, after, limit });
   const rows = sessions_mergeSessionPages(received, working).map((row) => ({ ...sessions_toSession(row, opts.now), projectId: row.project_id as string }));
@@ -314,20 +296,20 @@ async function sessions_selectSessions(
   // already on the row, so this is the SQL COALESCE read back rather than a
   // second definition of it.
   return across
-    ? sessions_import_projectPage(rows, limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, projectId: r.projectId, id: r.sessionId }))
+    ? sessions_import_acrossPage(rows, limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, projectId: r.projectId, id: r.sessionId }))
     : sessions_import_page(rows, limit, (r) => ({ createdAt: r.startedAt ?? r.firstReceivedAt, id: r.sessionId }));
 }
 
 const descending = (x: string, y: string): number => (x < y ? 1 : x === y ? 0 : -1);
 
-/** Two pages of session rows as one, each session once, in the order a page reads: newest occurrence first, then id, then Project. */
+/** Two pages of session rows as one, each session once, in the order a page reads: newest occurrence first, then Project, then id. */
 function sessions_mergeSessionPages(a: Record<string, unknown>[], b: Record<string, unknown>[]): Record<string, unknown>[] {
   if (b.length === 0) return a;
   const key = (row: Record<string, unknown>) => `${row.project_id as string}\u0000${row.session_id as string}`;
   const occurred = (row: Record<string, unknown>) => (row.started_at as number | null) ?? (row.first_received_at as number);
   const seen = new Set(a.map(key));
   return [...a, ...b.filter((row) => !seen.has(key(row)))].sort((x, y) =>
-    occurred(y) - occurred(x) || descending(x.session_id as string, y.session_id as string) || descending(x.project_id as string, y.project_id as string));
+    occurred(y) - occurred(x) || descending(x.project_id as string, y.project_id as string) || descending(x.session_id as string, y.session_id as string));
 }
 
 /** Elapsed source time, or observed time when a recorded endpoint anchors it. Synthetic transcript bounds establish neither. */
@@ -444,31 +426,6 @@ async function sessions_listSessionSummariesAcrossImpl(db: sessions_import_Relat
       const c = counts.get(row.projectId)?.get(row.sessionId);
       return { ...row, promptCount: c?.prompts ?? 0, toolCallCount: c?.toolCalls ?? 0 };
     }),
-  };
-}
-
-/** What the project holds, one count per projection: they share no key, and a join would multiply rows. */
-async function sessions_projectStats(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, nowMs: number): Promise<sessions_ProjectStats> {
-  const sessions = await db.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN ${sessions_PRESENTED_ENDED_AT} IS NULL THEN 1 ELSE 0 END) AS open,
-                     SUM(CASE WHEN ${sessions_SESSION_OCCURRED_AT} >= ? THEN 1 ELSE 0 END) AS recent, MAX(last_received_at) AS last
-                FROM sessions s WHERE s.project_id = ? AND ${sessions_LIVE_SESSION}`)
-    .bind(nowMs - sessions_WEEK_MS, scope.projectId)
-    .first<Record<string, unknown>>();
-  const countOf = async (table: string): Promise<number> => {
-    const row = await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).bind(scope.projectId).first<{ n: number }>();
-    return row?.n ?? 0;
-  };
-  const totals = await db.prepare(`SELECT COALESCE(SUM(prompts), 0) AS prompts, COALESCE(SUM(tool_calls), 0) AS tool_calls
-    FROM session_documents WHERE project_id = ? AND state = 'live'`).bind(scope.projectId).first<Record<string, number>>();
-  return {
-    sessions: (sessions?.total as number | null) ?? 0,
-    openSessions: (sessions?.open as number | null) ?? 0,
-    sessionsLast7d: (sessions?.recent as number | null) ?? 0,
-    prompts: Number(totals?.prompts ?? 0),
-    toolCalls: Number(totals?.tool_calls ?? 0),
-    plans: await countOf('plans'),
-    attachments: await countOf('attachments'),
-    lastActivityAt: (sessions?.last as number | null) ?? null,
   };
 }
 
@@ -610,7 +567,6 @@ export {
   sessions_listSessionSummaries,
   type sessions_SessionAcrossRow,
   sessions_listSessionSummariesAcross,
-  sessions_projectStats,
   sessions_projectExists,
   sessions_existingProjects,
   sessions_sessionInScope,
