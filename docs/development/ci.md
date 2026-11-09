@@ -1,10 +1,21 @@
-# Pull request checks
+The CI workflow has two scopes, and the `check` job is the one required result of both.
 
-The CI workflow runs lint, the native build, six Node test shards, two DOM test
-shards, seven parity shards, UI screen checks, hook startup checks, container checks,
-and Windows contracts independently. Darwin release-recipe build and verification
-jobs run when build or release inputs change.
-The `check` job requires every job to succeed, including every matrix entry.
+**Every pull request and main push:** lint and types, the native build, 18 Node test shards, two DOM test shards,
+a parity smoke (`scripts/ci-scopes.mjs`), a small UI smoke, a Windows smoke, hook startup checks and container checks.
+Darwin release-recipe build and verification jobs run when build or release inputs change.
+
+**The full run** (nightly on main through `.github/workflows/nightly.yml`, a `full-ci` pull request label, or a release
+tag through `publish.yml`) adds the full Windows contract list, all seven parity shards, every dashboard screen, and
+the scale and cost suites listed in `scripts/ci-scopes.mjs`.
+
+A nightly failure opens or updates the one issue titled "Nightly full CI is failing" with the failed jobs and commit.
+A release tag runs the full suite on its own commit and cannot publish unless it passes.
+
+Timing limits (per-test timeout headroom, shard and job budgets, hook startup and work budgets) report as warnings on
+pull requests and main pushes, and fail only a full run from `nightly.yml` or a release. A test over its own timeout
+still fails everywhere.
+
+The `check` job requires every job that belongs to the scope to succeed, including every matrix entry.
 Superseded pull request runs are cancelled; pushes to main are not cancelled.
 
 Each Node shard owns whole phases from `scripts/run-bun-tests.mjs`. Shared-process
@@ -15,7 +26,7 @@ and Cloudflare targets and runs its selected scenarios against both.
 Run a shard locally:
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/6 npm test
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/18 npm test
 MYCO_TEST_KIND=dom MYCO_TEST_SHARD=1/2 npm test
 MYCO_PARITY_SHARD=1/7 npm run test:parity
 ```
@@ -25,7 +36,7 @@ printed by `MYCO_RUNNER_DRY_RUN=1 npm test`. `MYCO_TEST_GROUP` filters after sha
 assignment; an unknown label or a group assigned elsewhere is an error.
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/6 \
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/18 \
   MYCO_TEST_GROUP='node env shared tests-myco-server-3' \
   MYCO_RUNNER_GROUP_BUDGET_MS=3600000 npm test -- --rerun-each 20
 ```

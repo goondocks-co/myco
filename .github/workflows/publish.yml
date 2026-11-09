@@ -47,6 +47,14 @@ jobs:
         if: github.event_name != 'push'
         run: echo 'Dry run verifies release artifacts; publication requires the exact-SHA main CI aggregate.'
 
+  # Runs the full suite on the tagged commit itself, so no release depends on a nightly having covered it.
+  full-ci:
+    name: Full CI for tagged commit
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/ci.yml
+    with:
+      full: true
+
   validate-tag:
     name: Validate Release Tag
     runs-on: ubuntu-latest
@@ -415,13 +423,14 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    needs: [validate-tag, build, require-ci, verify-darwin]
+    needs: [validate-tag, build, require-ci, full-ci, verify-darwin]
     if: |
       always() &&
       needs.validate-tag.outputs.publication_allowed == 'true' &&
       needs.validate-tag.result == 'success' &&
       needs.build.result == 'success' &&
       needs.require-ci.result == 'success' &&
+      needs.full-ci.result == 'success' &&
       needs.verify-darwin.result == 'success' &&
       needs.validate-tag.outputs.tag_prefix == 'myco'
     steps:
