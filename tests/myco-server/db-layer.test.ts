@@ -160,7 +160,7 @@ const PENDING_CHANGE_COUNTS: ReadonlyMap<string, number> = new Map([
   ['core/backup.ts', 1],
   ['core/event-content.ts', 1],
   ['core/first-owner.ts', 2],
-  ['core/machine-settings.ts', 4],
+  ['core/machine-settings.ts', 3],
   ['core/model-catalogs.ts', 3],
   ['core/object-release.ts', 3],
   ['core/ownership.ts', 3],

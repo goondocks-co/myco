@@ -258,12 +258,12 @@ async function editMachineRoots(
     const written = row === null
       ? await db.prepare(`INSERT INTO machine_settings (machine_id, leaf, value, updated_at, updated_by)
           SELECT ?, ?, ?, ?, ? WHERE ${claimed}
-            AND NOT EXISTS (SELECT 1 FROM machine_settings WHERE machine_id = ? AND leaf = ?)`)
-        .bind(machineId, CONNECT_ROOTS_LEAF, value, now, actor, machineId, actor, machineId, CONNECT_ROOTS_LEAF).run()
+            AND NOT EXISTS (SELECT 1 FROM machine_settings WHERE machine_id = ? AND leaf = ?) RETURNING machine_id`)
+        .bind(machineId, CONNECT_ROOTS_LEAF, value, now, actor, machineId, actor, machineId, CONNECT_ROOTS_LEAF).all()
       : await db.prepare(`UPDATE machine_settings SET value = ?, updated_at = ?, updated_by = ?
-          WHERE machine_id = ? AND leaf = ? AND value IS ? AND ${claimed}`)
-        .bind(value, now, actor, machineId, CONNECT_ROOTS_LEAF, row.value, machineId, actor).run();
-    if (written.meta.changes === 1) return { applied: true, changed: row === null ? Object.keys(next).length > 0 : value !== row.value };
+          WHERE machine_id = ? AND leaf = ? AND value IS ? AND ${claimed} RETURNING machine_id`)
+        .bind(value, now, actor, machineId, CONNECT_ROOTS_LEAF, row.value, machineId, actor).all();
+    if (written.results.length === 1) return { applied: true, changed: row === null ? Object.keys(next).length > 0 : value !== row.value };
   }
   return { applied: false, reason: 'conflict' };
 }

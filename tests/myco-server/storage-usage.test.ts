@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { releaseNow } from './helpers/release-now.js';
+import { recordCurrent, releaseNow } from './helpers/release-now.js';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -307,7 +307,7 @@ describe('ordered release queues', () => {
     await withStore(target, async db => {
       const store = objectStore();
       await register(db, { project: 'proj_a', key: 'reused', size: 4 }, GENERATION(1));
-      await db.batch(recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'reused' }], NOW, { callerHoldsReference: true }));
+      await db.batch(await recordCurrent(db, [{ projectId: 'proj_a', key: 'reused' }], NOW));
       await drain(db, store.blobs, NOW + 1);
       expect(await generationOf(db, 'reused')).toBeNull();
       await db.batch([registerContentStatement(db, { projectId: 'proj_a', key: 'reused', size: 4, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW + 2, generation: GENERATION(2), authority: ALWAYS })]);
@@ -340,7 +340,7 @@ describe('ordered release queues', () => {
       await register(db, { project: 'proj_a', key: 'shared', size: 1 }, GENERATION(1));
       await register(db, { project: 'proj_a', key: 'behind', size: 1 }, GENERATION(2));
       await db.prepare(`INSERT INTO blob_release_candidates(project_id,key,created_at,generation) VALUES('proj_a','shared',?,NULL)`).bind(NOW).run();
-      await db.batch(recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'behind' }], NOW + 1, { callerHoldsReference: true }));
+      await db.batch(await recordCurrent(db, [{ projectId: 'proj_a', key: 'behind' }], NOW + 1));
       await drain(db, objectStore().blobs, NOW + 2);
       expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(0);
       expect(await generationOf(db, 'shared')).toBe(GENERATION(1));
@@ -356,17 +356,62 @@ describe('ordered release queues', () => {
     });
   }, 120_000);
 
+  const LATER = NOW + BLOB_RESERVATION_TTL_MS + 1000;
+  const proofFor = (db: RelationalStore, key: string, generation: string) => db.prepare(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,event_id,envelope_hash,session_id,digest,size,verified_at,durable)
+    VALUES('proj_a',?,?,'document','source','event','hash','s','digest',1,1,1)`).bind(key, generation).run();
+  const holder = (db: RelationalStore, key: string) => db.prepare("INSERT INTO retired_objects(project_id,session_id,blob_key,source_id,retired_at) VALUES('proj_a','s',?,'source',1)").bind(key).run();
+
   it.each(stores)('a stale holder release cannot authorize the replacement upload of the same key on %s', async target => {
     await withStore(target, async db => {
       await register(db, { project: 'proj_a', key: 'held', size: 1 }, GENERATION(1));
-      await db.prepare("INSERT INTO retired_objects(project_id,session_id,blob_key,source_id,retired_at) VALUES('proj_a','s','held','source',1)").run();
+      await proofFor(db, 'held', GENERATION(1));
+      await holder(db, 'held');
       const holders = [{ p: 'proj_a', s: 's', k: 'held', i: 'source' }];
-      await releaseHolders(db, holders, NOW);
+      await releaseHolders(db, holders, LATER);
       expect(await generationOf(db, 'held')).toBeNull();
       await register(db, { project: 'proj_a', key: 'held', size: 1 }, GENERATION(2));
-      await releaseHolders(db, holders, NOW + 2);
-      await drain(db, objectStore().blobs, NOW + 3);
+      await releaseHolders(db, holders, LATER + 2);
+      await drain(db, objectStore().blobs, LATER + 3);
       expect(await generationOf(db, 'held')).toBe(GENERATION(2));
+      expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(0);
+    });
+  }, 120_000);
+
+  it.each(stores)('a holder releasing a blob inside the upload grace leaves it until the grace has passed, whoever registered it, on %s', async target => {
+    await withStore(target, async db => {
+      await db.batch([registerContentStatement(db, { projectId: 'proj_a', key: 'young', size: 1, mediaType: 'text/plain', tokenId: 'credential', receivedAt: NOW, generation: GENERATION(4), authority: ALWAYS })]);
+      await proofFor(db, 'young', GENERATION(4));
+      await holder(db, 'young');
+      await releaseHolders(db, [{ p: 'proj_a', s: 's', k: 'young', i: 'source' }], NOW);
+      await drain(db, objectStore().blobs, NOW + 1);
+      expect(await generationOf(db, 'young')).toBe(GENERATION(4));
+      expect(await journalOf(db)).toEqual([]);
+      expect((await db.prepare('SELECT COUNT(*) n FROM retired_objects').first<{ n: number }>())!.n).toBe(0);
+      await drain(db, objectStore().blobs, LATER);
+      expect(await generationOf(db, 'young')).toBeNull();
+      expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(0);
+    });
+  }, 120_000);
+
+  it.each(stores)('a holder whose pass never registered its key cannot release a fresh upload of the same bytes on %s', async target => {
+    await withStore(target, async db => {
+      await register(db, { project: 'proj_a', key: 'same', size: 1 }, GENERATION(3));
+      await holder(db, 'same');
+      await releaseHolders(db, [{ p: 'proj_a', s: 's', k: 'same', i: 'source' }], NOW);
+      await drain(db, objectStore().blobs, NOW + 1);
+      expect(await generationOf(db, 'same')).toBe(GENERATION(3));
+      expect(await journalOf(db)).toEqual([]);
+    });
+  }, 120_000);
+
+  it.each(stores)('a bundle whose proof names another generation records nothing for the current one on %s', async target => {
+    await withStore(target, async db => {
+      await register(db, { project: 'proj_a', key: 'archive', size: 1 }, GENERATION(2));
+      await db.prepare(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,event_id,envelope_hash,session_id,digest,size,verified_at,durable)
+        VALUES('proj_a','archive',?,'bundle','archive','event','hash','s','digest',1,1,1)`).bind(GENERATION(1)).run();
+      await db.prepare(`INSERT INTO prepared_archive_bundles(preparation_id,project_id,archive_key,receipt_key,expires_at) VALUES('prep','proj_a','archive',NULL,?)`).bind(NOW).run();
+      const guard = { preparationId: 'prep', projectId: 'proj_a', archiveKey: 'archive', receiptKey: null, expiresAt: NOW, agedAt: null };
+      await db.batch(recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'archive' }], NOW, guard));
       expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(0);
     });
   }, 120_000);
@@ -374,7 +419,7 @@ describe('ordered release queues', () => {
   it.each(stores)('a pass that read an earlier generation, or a bundle already gone, records nothing against a replacement upload on %s', async target => {
     await withStore(target, async db => {
       await register(db, { project: 'proj_a', key: 'again', size: 1 }, GENERATION(2));
-      await db.batch([...recordObservedCandidates(db, [{ projectId: 'proj_a', key: 'again', generation: GENERATION(1) }], NOW), ...recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'again' }], NOW, { bundle: { projectId: 'proj_a', bundleId: 404 } })]);
+      await db.batch([...recordObservedCandidates(db, [{ projectId: 'proj_a', key: 'again', generation: GENERATION(1) }], NOW), ...recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'again' }], NOW, { bundle: { projectId: 'proj_a', bundleId: 404, archiveKey: 'again' } })]);
       expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(0);
       await db.batch(recordObservedCandidates(db, [{ projectId: 'proj_a', key: 'again', generation: GENERATION(2) }], NOW));
       expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(1);
@@ -384,7 +429,7 @@ describe('ordered release queues', () => {
   it.each(stores)('a candidate held across a restore still reaches its renamed registration on %s', async target => {
     await withStore(target, async db => {
       await register(db, { project: 'proj_a', key: 'kept', size: 1 }, GENERATION(1));
-      await db.batch(recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'kept' }], NOW, { callerHoldsReference: true }));
+      await db.batch(await recordCurrent(db, [{ projectId: 'proj_a', key: 'kept' }], NOW));
       await assignRestoreGeneration(db, GENERATION(9));
       await drain(db, objectStore().blobs, NOW + 1);
       expect(await generationOf(db, 'kept')).toBeNull();
