@@ -13,8 +13,10 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { encodeCursor, type Page, type ReadScope } from '../read/scope.js';
 import { getPlan, progressOf, type ProjectPlanRow } from '../read/plans.js';
 import { receiptPlans } from '../read/catalog/injection-served-items.js';
-import { promptPlace, promptTurn } from '../read/document-catalog.js';
-import { SESSION_OWNER, type DocRecord } from './document.js';
+import { promptLocator } from '../db/documents/prompt-locator.js';
+import { locatorRepairPending, TurnLocatorBuilding } from '../db/documents/locators.js';
+import { type DocRecord } from './document.js';
+import { SESSION_OWNER } from '../db/document-tables.js';
 import { editedFiles, toolFiles, type ToolRollup, type ToolState } from './tool-rollup.js';
 import { liveGenerationSql } from '../read/document-catalog.js';
 import {
@@ -275,12 +277,14 @@ const turnChild = (body: DocumentTurnDetail): DocumentTurnChild => ({
  * plans. The pages between are reached through the collection cursors.
  */
 export async function documentTurnDetail(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string): Promise<DocumentTurnDetail | null> {
-  const place = await promptPlace(env.db, scope, sessionId, promptId);
-  if (place === undefined) return null;
+  const first = await promptLocator(env.db, scope.projectId, sessionId, promptId);
+  if (first === null) return null;
   const doc = await SessionDocument.open(env, scope.projectId, sessionId);
   if (doc === null) return null;
+  const place = first.generation === doc.generation ? first : await promptLocator(env.db, scope.projectId, sessionId, promptId);
+  if (place === null || place.generation !== doc.generation) return null;
   const from = place.page !== null && place.page >= 0 ? place.page : 0;
-  const owner = place.turn ?? SESSION_OWNER;
+  const owner = place.owner;
   const head = await doc.ownerPages(owner, from, TURN_PAGES - 1);
   const last = head.more ? await doc.lastPage(owner) : null;
   const tail = last === null ? [] : located((await doc.ownerPages(owner, last, 1)).pages, doc.generation);
@@ -288,7 +292,10 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
   const whole = !head.more || last === after;
   const records = [...located(head.pages, doc.generation), ...(whole ? tail : tail.filter(({ record }) => record.k === 'reply' || record.k === 'plan'))];
   const top = records.find(({ record }) => record.k === 'prompt' && record.id === promptId);
-  if (top === undefined) return null;
+  if (top === undefined) {
+    if ((place.page === null || place.page < 0) && await locatorRepairPending(env.db, scope.projectId, sessionId)) throw new TurnLocatorBuilding();
+    return null;
+  }
   const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: whole ? null : after })).body(top, 0);
   if (place.turn === promptId) {
     const catalog = await env.db.prepare(`SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.card,c.fields FROM session_prompts p
@@ -311,7 +318,7 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
 /** One prompt's tool calls in source order, a turn's pages at a time; the cursor names the next page. */
 export async function documentPromptTools(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string,
   cursor: string | undefined): Promise<Page<ToolCallWireRow> | 'stale' | null> {
-  const turn = await promptTurn(env.db, scope, sessionId, promptId);
+  const turn = (await promptLocator(env.db, scope.projectId, sessionId, promptId))?.turn;
   if (turn === undefined) return null;
   const doc = await SessionDocument.open(env, scope.projectId, sessionId);
   if (doc === null) return null;
@@ -328,7 +335,7 @@ export async function documentPromptTools(env: ContentStore, scope: ReadScope, s
 export async function documentTurnCollection(env: ContentStore, scope: ReadScope, sessionId: string, promptId: string,
   collection: TurnCollection, cursor: string | undefined): Promise<Page<unknown> | 'stale' | null> {
   if (collection === 'attachments' || collection === 'answers') return hookCollection(env.db, scope, sessionId, promptId, collection, cursor);
-  const turn = await promptTurn(env.db, scope, sessionId, promptId);
+  const turn = (await promptLocator(env.db, scope.projectId, sessionId, promptId))?.turn;
   if (turn === undefined) return null;
   const doc = await SessionDocument.open(env, scope.projectId, sessionId);
   if (doc === null) return null;

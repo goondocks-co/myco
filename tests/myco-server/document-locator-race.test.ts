@@ -1,10 +1,11 @@
 import { expect, test } from 'bun:test';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
+import { LOCATOR_RETRY_MS } from '@myco-server-worker/db/documents/locators.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
-import { MIN, limits, reply, user } from './helpers/document-publication.js';
+import { MIN, limits, queueLocatorRepair, reply, user } from './helpers/document-publication.js';
 
 test('a page chunk that appears while a locator wake reads leaves its prompts reachable at their real pages, never page -1', async () => {
   await withDocumentStores(async (db, name) => {
@@ -19,7 +20,7 @@ test('a page chunk that appears while a locator wake reads leaves its prompts re
     }
     // A document written before locators, whose last page chunk lands only once the wake has listed the others.
     await db.prepare(`UPDATE session_prompts SET page=NULL WHERE session_id='session'`).run();
-    await db.prepare(`UPDATE session_documents SET locate_after=NULL WHERE session_id='session'`).run();
+    await queueLocatorRepair(db);
     const last = (await db.prepare(`SELECT * FROM session_chunks WHERE session_id='session' AND kind='page' ORDER BY chunk_no DESC LIMIT 1`).first<Record<string, string | number>>())!;
     await db.prepare(`DELETE FROM session_chunks WHERE session_id='session' AND chunk_no=?`).bind(last.chunk_no).run();
     const columns = Object.keys(last);
@@ -32,7 +33,7 @@ test('a page chunk that appears while a locator wake reads leaves its prompts re
       }
       return get(...args);
     };
-    for (let wake = 0; wake < 5; wake += 1) if (!(await locatePrompts(env, limits())).more) break;
+    for (let wake = 0, now = Date.now(); wake < 5; wake += 1, now += LOCATOR_RETRY_MS + 1) await locatePrompts(env, { calls: 500, deadline: now + 60_000, clock: () => now });
     const located = Object.fromEntries((await db.prepare(`SELECT prompt_id,page FROM session_prompts WHERE session_id='session'`)
       .all<{ prompt_id: string; page: number }>()).results.map(row => [row.prompt_id, row.page]));
     expect({ appended, located }, name).toEqual({ appended: true, located: expected });

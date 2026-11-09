@@ -756,6 +756,11 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0737_v737.sql': 'bd807ed2cd0f92749547b8422ecd2eaa59e509fd750957c0d145170bb17b4e80',
   '0738_v738.sql': '3ce3cecae96eece7b7ce39fa555e9942ea5ef02dba1a88b073b780ccf6e608f1',
   '0739_v739.sql': '35029a4417fb1a4391a955a908da385d851643e4685b5910b2c9c95d39a85ada',
+  '0740_v740.sql': '168047162db0136aaa50971fb4d10438ee9a700053cc7c981a624ff23eebf212',
+  '0741_v741.sql': '567402f4a176112719954797ad84335f700712746dd4cf5d7b02e83c993f0609',
+  '0742_v742.sql': '464832fc7e270f06fe9c175c5de1f003b1725d856c66f7412a4868573eb7a729',
+  '0743_v743.sql': 'f3d7bebf713f8c53d927929fb91e19e1a6dc88297fadcdd05161daf51ffef308',
+  '0744_v744.sql': '8b5bdb19d4be883de44bd0b4ae2a4943cc7d74cca854ac2ea65a2f1239da4be6',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1478,7 +1483,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
-      'publication_dependencies','session_lifecycle_facts','session_user_prompt_firsts',
+      'publication_dependencies','session_lifecycle_facts','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',
       'document_publication_contributions','document_publication_totals','document_publication_ready',

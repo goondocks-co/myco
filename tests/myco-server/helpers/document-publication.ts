@@ -1,6 +1,8 @@
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { DocumentBatch } from '@myco-server-worker/ingest/document-batch.js';
+import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
+import { LOCATOR_PHASE } from '@myco-server-worker/db/documents/locators.js';
 
 export const MIN = 60_000;
 export const tx = 'tx_0123456789abcdef0123456789abcdef';
@@ -12,6 +14,12 @@ export const call = item('response_item', { type: 'function_call', call_id: 'c1'
 export const output = item('response_item', { type: 'function_call_output', call_id: 'c1', output: 'ok' });
 export const limits = () => ({ calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
 export const one = async (db: RelationalStore, sql: string, ...params: unknown[]) => db.prepare(sql).bind(...params).first<Record<string, unknown>>();
+/** Queues a locator repair for every live document with a prompt whose page is unknown or held by none, as the catch-up does. */
+export async function queueLocatorRepair(db: RelationalStore) {
+  await db.prepare("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE projection='document_locators'").run();
+  while (await catchUpPhase(db, LOCATOR_PHASE as never) > 0);
+}
+
 export const counters = (db: RelationalStore, session: string) =>
   one(db, `SELECT prompts,user_prompts,replies,tool_calls,failed_tools,plans,open_turn_key,due_at FROM session_documents WHERE session_id=?`, session);
 

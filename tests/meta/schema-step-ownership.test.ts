@@ -5,6 +5,7 @@ import { NEXT_S6, VNEXT_S6_INDEX_STEPS, VNEXT_S6_STATEMENTS } from '@myco-server
 import { lineageHeadSchemaStatements } from '@myco-server-worker/db/identity/lineage-heads.js';
 import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usage.js';
 import { SESSION_LIFECYCLE_STEPS, V730 } from '@myco-server-worker/db/schema-v728.js';
+import { CARD_SETTLE_AND_LOCATOR_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2b2.js';
 import { SESSION_LIFECYCLE_EVENTS_INDEX, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -82,6 +83,12 @@ const LISTED: readonly Exception[] = [
       reason: sql.startsWith('CREATE TRIGGER') ? 'A registered blob moves the storage usage counters of its Project and the Deployment for every key the build has reached.'
         : 'The object-release drain reads its next page of each release queue from this order.' }];
   }),
+  ...CARD_SETTLE_AND_LOCATOR_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE INDEX(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || match[2] === 'document_locator_repair' ? [] : [{step,object:match[1]!,table:match[2]!,
+      reason: match[2] === 'turn_cards' ? 'Card settlement reads its deadlines and its ready order from partial indexes instead of scanning every pending card.'
+        : 'Locator repair reads the prompts whose page is unknown or held by none without scanning a document\'s prompts.'}];
+  })),
   ...SESSION_LIFECYCLE_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{step,object:match[1]!,table:match[2]!,
@@ -372,6 +379,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
     step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'
   })),
+  ...CARD_SETTLE_AND_LOCATOR_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|DROP INDEX)/.test(sql)).map(sql => ({
+    step, sql, reason: 'A pending card records the deadline it was promoted at, the two scan indexes go with their reader, and the locator repair catch-up is registered.'
+  }))),
   ...V727_STATEMENTS.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|UPDATE object_releases|DROP INDEX)/.test(sql)).map(sql => ({
     step: V727, sql, reason: 'Each release key carries when it is next due, and storage usage stays building until the catch-up has counted every registered blob.'
   })),

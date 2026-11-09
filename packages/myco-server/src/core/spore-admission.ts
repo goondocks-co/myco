@@ -6,7 +6,7 @@ import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store
 import { consolidateSpores, getSpore, insertSpore, repairImportedSporeSource, resolveSpore, SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus, type SporeExpectation } from './spores.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from './spore-writes.js';
 import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from '../db/runs/served.js';
-import { extractionSourceSession } from '../read/prompts.js';
+import { extractionSourceSession } from '../db/documents/prompt-locator.js';
 import { promptInSession } from '../read/turns.js';
 import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
@@ -57,8 +57,8 @@ async function sourceOf(input: SporeWriteInput, ctx: SporeWriteContext, scope: R
       return { ok: true, sessionId, db };
     }
     if (promptId === undefined) return failure('prompt_id is required for extraction spore writes');
-    const sessionId = await extractionSourceSession(ctx.env.db, scope, promptId);
-    if (sessionId === null) return failure('prompt_id not found');
+    const sessionId = await extractionSourceSession(ctx.env.db, scope.projectId, promptId);
+    if (sessionId === null) return failure('prompt_id not found in exactly one live session; call again without prompt_id, with the session_id served with its material');
     const named = str(input.session_id);
     if ((named !== undefined && named !== sessionId) || (ctx.principal.sessionId !== null && ctx.principal.sessionId !== sessionId)) return failure(SESSION_NOT_FOUND);
     return { ok: true, sessionId, db: ctx.env.db };

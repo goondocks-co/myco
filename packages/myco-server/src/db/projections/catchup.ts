@@ -8,6 +8,7 @@ import { PUBLICATION_OWNERSHIP_CATCHUP } from '../documents/metadata-catchup.js'
 import { PUBLICATION_FAILURE_CATCHUP } from '../documents/failure-head.js';
 import { LIFECYCLE_CATCHUP } from '../documents/lifecycle.js';
 import { DEPENDENCY_CATCHUP } from '../documents/dependencies.js';
+import { LOCATOR_CATCHUP } from '../documents/locators.js';
 import { PUBLICATION_CATCHUP } from '../documents/contributions.js';
 import { RUN_ADMISSION_CATCHUP } from '../runs/live.js';
 import { BUDGET_CATCHUP } from '../runs/admission.js';
@@ -29,7 +30,7 @@ export const PROJECTION_CATCHUP_BUDGET: Readonly<JobBudget> = { calls: 120, wall
 const FAMILIES = [
   KPI_CATCHUP, PUBLICATION_VERSION_CATCHUP, PUBLICATION_PIN_CATCHUP, PUBLICATION_OWNERSHIP_CATCHUP, PUBLICATION_FAILURE_CATCHUP,
   LIFECYCLE_CATCHUP, DEPENDENCY_CATCHUP, PUBLICATION_CATCHUP, RUN_ADMISSION_CATCHUP, BUDGET_CATCHUP, WORK_HISTORY_CATCHUP, RUN_EVIDENCE_CATCHUP,
-  CALIBRATION_CATCHUP, PASSED_OVER_CATCHUP, SOURCE_STATE_CATCHUP, EMBEDDING_RESET_CATCHUP, SPORE_COUNT_CATCHUP, PLAN_COUNT_CATCHUP, STORAGE_USAGE_CATCHUP, LINEAGE_HEAD_CATCHUP,
+  CALIBRATION_CATCHUP, PASSED_OVER_CATCHUP, SOURCE_STATE_CATCHUP, EMBEDDING_RESET_CATCHUP, SPORE_COUNT_CATCHUP, PLAN_COUNT_CATCHUP, STORAGE_USAGE_CATCHUP, LINEAGE_HEAD_CATCHUP, LOCATOR_CATCHUP,
 ] as const satisfies readonly CatchupFamily[];
 
 type PhaseNames<Family> = Family extends { phases: infer Phases } ? keyof Phases & string : never;
