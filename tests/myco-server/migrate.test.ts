@@ -763,6 +763,11 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0744_v744.sql': '8b5bdb19d4be883de44bd0b4ae2a4943cc7d74cca854ac2ea65a2f1239da4be6',
   '0745_v745.sql': '584b0dca99b5132d0fd4e9afcc6605f8f29853ff84158eeb2efc335a398d7ba9',
   '0746_v746.sql': 'ff99d95d9f96154ce7977d56233022faedd29b4124dd21293e25bbfebf3bcf5a',
+  '0747_v747.sql': '7c6b6f68e73a5d90a001341ecfa5d4907b779ae1f10277a0bb19de5872f13472',
+  '0748_v748.sql': '967f80b41a61a34a34141d71d2c01f7725b15e1206e66708c35269daee9fdbcc',
+  '0749_v749.sql': '6a53de274598ada0db0ee12ec2b7c7ac267b08d0309cfcde2793a2f78e6303cf',
+  '0750_v750.sql': '3e421dea52d543196594f4886e760062c39a817850e3cf63108efa7e90487c91',
+  '0751_v751.sql': 'a245686d0a68646d4e1625c822f8de1191287eb7219d1d1b32a788350e24bca9',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1223,6 +1228,8 @@ describe('versioned schema steps', () => {
   });
 
   it('keeps earlier tables and columns except declared retirements', () => {
+    // Title work's own indexes take the place of these four.
+    const TITLE_WORK_REPLACED_INDEXES = new Set(['idx_sessions_pending_title', 'idx_sessions_untitled_ended', 'idx_sessions_untitled_open', 'idx_sessions_titled_recent']);
     const retiredColumnsAt709 = new Set(['agent_runs.repository_files', 'spore_curation_candidates.currency']);
     const retiredTriggersAt709 = new Set(['curation_inventory_map_move', 'curation_inventory_map_delete', 'curation_inventory_run_end']);
     const retiredTablesAtS5b = new Set(['embedding_hubness_population', 'embedding_hubness_work']);
@@ -1282,7 +1289,7 @@ describe('versioned schema steps', () => {
           const table = indexesBefore().get(droppedIndex) ?? null;
           const replaced = table !== null && SCHEMA_STEPS[n].statements.some((x) =>
             new RegExp(`^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?\\w+ ON ${table}\\b`, 'i').test(x));
-          const allowed = replaced || (dropping && table !== null && DROPPED_CONTENT.has(table));
+          const allowed = replaced || TITLE_WORK_REPLACED_INDEXES.has(droppedIndex) || (dropping && table !== null && DROPPED_CONTENT.has(table));
           expect({ step: n + 1, droppedIndex, table, allowed }).toEqual({ step: n + 1, droppedIndex, table, allowed: true });
           continue;
         }
@@ -1405,6 +1412,7 @@ describe('versioned schema steps', () => {
     const promptId = crypto.randomUUID();
     const writerRows = new Map<string, Record<string, unknown>>();
     writerRows.set('object_settlement_intents', { physical: 'fixture', kind: 'upload', key: 'key', generation: 'generation', expires_at: 0 });
+    writerRows.set('session_title_work', { session_id: 'grammar-session', mode: 'claim' });
     writerRows.set('task_runtime', { task: 'title-summary', origin: 'manual' });
     writerRows.set('task_due', { run_id: 'grammar-run', task: 'title-summary', origin: 'manual', claimable: 1 });
     writerRows.set('run_live', { run_id: 'grammar-run', task: 'title-summary', status: 'pending', origin: 'manual', claimable: 1 });
@@ -1485,7 +1493,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
-      'publication_dependencies','session_lifecycle_facts','session_user_prompt_firsts','document_locator_repair',
+      'publication_dependencies','session_lifecycle_facts','session_title_work','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',
       'document_publication_contributions','document_publication_totals','document_publication_ready',

@@ -98,7 +98,7 @@ export const UNRELATED_PROCESSED_LINES = {
     "core/jobs.ts": [
       "{ name: 'raw-provenance-backfill', runsThrough: 'sleep', converges: 'every historical raw reference and processed field has immutable provenance, through bounded checkpointed pages' },"
     ],
-    "read/material-readiness.ts": [
+    "db/sessions/material.ts": [
       "constructor() { super('Session capture is incomplete or has errors; retry after its transcripts are fully processed.'); }"
     ]
   }

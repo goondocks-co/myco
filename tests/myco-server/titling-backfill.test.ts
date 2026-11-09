@@ -26,11 +26,7 @@ import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { overwriteTitle, writeTitle } from '@myco-server-worker/db/session-titles.js';
-import {
-  children_listTitleCandidates as listTitleCandidates,
-  children_untitledReason as untitledReason,
-  type children_TitleCandidateWindow as TitleCandidateWindow,
-} from '@myco-server-worker/read/catalog/children.js';
+import { takeTitleCandidates as listTitleCandidates, untitledReason, type TitleWindow } from '@myco-server-worker/db/sessions/title-work.js';
 import { count, withHarness } from './helpers/fixtures.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 
@@ -40,9 +36,7 @@ const ORIGIN = 'https://s';
 const HOUR = 3_600_000;
 
 /** The instants a wake at `now` reads candidates by, under the default idle bound and every imported session admitted. */
-const windowAt = (now: number): TitleCandidateWindow => ({
-  retryBefore: now - 600_000, idleBefore: now - 2 * HOUR, freshAfter: now - DAY, refreshBefore: now - 4 * HOUR, refreshPrompts: 10, imported: true,
-});
+const windowAt = (now: number): TitleWindow => ({ now, idleBefore: now - 2 * HOUR, freshAfter: now - DAY, imported: true });
 
 function rig() {
   const e = sqliteEnv();
@@ -277,22 +271,6 @@ describe('the imported-session backfill', () => {
     expect(r.runs().map((run) => [run.sessionId, run.actor])).toEqual([['a', TITLING_BACKFILL_ACTOR]]);
   });
 
-  it('reads every candidate kind through its own partial index, and counts a refresh\'s new prompts from the catalog', async () => {
-    const r = rig();
-    const plan = (sql: string, binds: unknown[]) => (r.sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(binds as never[])) as { detail: string }[]).map((row) => row.detail).join('\n');
-    const statements: Array<{ sql: string; binds: unknown[] }> = [];
-    const store = { prepare: (sql: string) => ({ bind: (...binds: unknown[]) => { statements.push({ sql, binds }); return { all: async () => ({ results: [] }) }; } }) } as unknown as RelationalStore;
-    await listTitleCandidates(store, windowAt(NOW), 5);
-    const plans = statements.map((st) => plan(st.sql, st.binds));
-    const using = (index: string) => plans.filter((p) => p.includes(`SEARCH s USING INDEX ${index}`) || p.includes(`SCAN s USING INDEX ${index}`));
-    expect(statements).toHaveLength(5);
-    expect(using('idx_sessions_untitled_ended')).toHaveLength(2);
-    expect(using('idx_sessions_untitled_open')).toHaveLength(2);
-    expect(using('idx_sessions_titled_recent')).toHaveLength(1);
-    for (const p of plans) expect(p).not.toMatch(/prompt_batches/);
-    for (const p of plans) expect(p).not.toMatch(/USE TEMP B-TREE FOR ORDER BY/);
-  });
-
   it('names why each ended session is untitled, and nothing for a titled or open one', async () => {
     const r = rig();
     const reason = (id: string) => untitledReason(r.env.db, 'proj_1', id);
@@ -361,7 +339,6 @@ describe('the imported-session backfill', () => {
   }
 
   const isCeilingCount = (sql: string) => sql.includes('MIN(at) AS pivot') && sql.includes("status != 'skipped'");
-  const isCandidateList = (sql: string) => sql.includes('ORDER BY s.ended_at DESC');
   const isRunInsert = (sql: string) => sql.startsWith('INSERT INTO agent_runs');
 
   it.each([2, 3])('holds a ceiling of one under %i staggered wakes that each read free capacity and each select an unclaimed session', async (wakes) => {
@@ -381,7 +358,7 @@ describe('the imported-session backfill', () => {
     const afterInsert = (n: number) => new Promise<void>((resolve) => { if (inserts >= n) resolve(); else (insertLanded[n] ??= []).push(resolve); });
     const env: ServerEnv = { ...r.env, db: staged(r.env.db, (sql, kind, n) => {
       if (kind === 'first' && isCeilingCount(sql)) { counted += 1; if (counted === wakes) releaseCounts(); return allCounted; }
-      if (kind === 'all' && isCandidateList(sql) && n > 1) return afterInsert(n - 1);
+      if (kind === 'run' && sql.startsWith('INSERT INTO session_title_work(project_id,session_id,mode,ready') && n > 1) return afterInsert(n - 1);
       if (kind === 'run' && isRunInsert(sql)) return Promise.resolve().then(() => { inserts += 1; for (const release of insertLanded[inserts] ?? []) release(); });
       return undefined;
     }) };
@@ -404,6 +381,7 @@ describe('the imported-session backfill', () => {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), { ...r.bindings, ...OWNER_ENV });
     const read = async () => (await request('GET')).json() as Promise<{ enabled: boolean; backfillEnabled: boolean; remaining: number }>;
+    await titleReadySessions(r.env, NOW);
     expect(await read()).toMatchObject({ enabled: false, backfillEnabled: false, remaining: 1 });
     expect((await request('PUT', { enabled: 'yes' })).status).toBe(400);
     const stored = () => (r.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf = 'agent.tasks'`).get() as { value: string } | null)?.value ?? null;
@@ -557,6 +535,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { intervalSeconds: 0, maxRunsPerDay: 0 } } });
     expect(await backfillTitles(r.env, NOW + 60, 'idle')).toBe(0);
     expect(events.slice(3)).toEqual([{ kind: 'titling_backfill_waiting', wait: 'ceiling', until: null, runsPerDay: 0 }]);
+    await titleReadySessions(r.env, NOW + 61);
     expect(await titlingBackfillProgress(r.env, NOW + 61)).toMatchObject({ runsPerDay: 0, waiting: { reason: 'ceiling', until: null } });
   });
 
@@ -583,6 +562,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     r.setting('agent.scheduled_tasks_enabled', true);
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { maxRunsPerDay: 0 } } });
     r.session('imported');
+    await titleReadySessions(r.env, NOW);
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1, enabled: false, waiting: null });
     r.setting('agent.tasks', { [TITLING_TASK]: { schedule: { enabled: true, maxRunsPerDay: 0 } } });
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1, enabled: true, waiting: { reason: 'ceiling', until: null } });
@@ -672,6 +652,7 @@ describe('why a wake of the titling convergence dispatched nothing', () => {
     // Every session has its attempt: the ceiling holds, but nothing waits on it.
     expect(await titlingBackfillProgress(r.env, NOW + 50)).toMatchObject({ owed: 0, usedToday: 5, waiting: null });
     r.session('late', { imported: false, endedAt: NOW + 40 });
+    await titleReadySessions(r.env, NOW + 50);
     expect(await titlingBackfillProgress(r.env, NOW + 50)).toMatchObject({ owed: 1, waiting: { reason: 'ceiling', until: NOW + 20 + DAY + 1 } });
   });
 });
@@ -722,6 +703,7 @@ describe('sessions that never end', () => {
     r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id)
                   VALUES ('proj_1', 'tx_unread', 'unread', 'm1', 100, 40, ?, ?, 'tok_1')`, [NOW, NOW]);
     r.published();
+    await titleReadySessions(r.env, NOW);
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 1, remaining: 0 });
     expect(await backfillTitles(r.env, NOW, 'idle')).toBe(1);
     expect(r.runs().map((run) => run.sessionId)).toEqual(['quiet']);
@@ -843,6 +825,7 @@ describe('sessions that never end', () => {
     r.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
                   VALUES ('proj_1', 'tx_qi', 'quiet-import', 'm1', 100, 100, ?, ?, 'tok_1', ?)`, [NOW, NOW, NOW]);
     r.published();
+    await titleReadySessions(r.env, NOW);
     expect(await titlingBackfillProgress(r.env, NOW)).toMatchObject({ owed: 0, remaining: 1 });
   });
 

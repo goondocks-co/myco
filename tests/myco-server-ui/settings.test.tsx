@@ -109,7 +109,7 @@ const secrets = (anthropicConfigured: boolean) => ({ secrets: [
   { name: 'openrouter', retired: RETIRED_SECRET_SLOTS.has('openrouter'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
   { name: 'github', retired: RETIRED_SECRET_SLOTS.has('github'), configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null },
 ] });
-const TITLING = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: true, remaining: 12, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
+const TITLING = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue', enabled: true, building: false, remaining: 12, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
 
 interface Sent { method: string; path: string; body: unknown; headers: Record<string, string> }
 const originalFetch = globalThis.fetch;
@@ -963,6 +963,11 @@ describe('provider keys', () => {
 });
 
 describe('Title imported sessions', () => {
+  it('says once that it is still counting while titling totals build', () => {
+    const words = progressWords({ ...TITLING, building: true, owed: null, remaining: null } as never);
+    expect(words.match(/Still counting which sessions wait for a title\./g)).toHaveLength(1);
+  });
+
   it('reads the switch from the titling route, says where titling stands, and writes the switch back', async () => {
     let progress = { ...TITLING, backfillEnabled: false, enabled: false };
     const { sent } = server(base({
@@ -1025,7 +1030,7 @@ describe('Title imported sessions', () => {
   });
 
   it('words titling in every state, and its schedule', () => {
-    const base = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: true, remaining: 0, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
+    const base = { scheduledTasksEnabled: true, backfillEnabled: true, runsPerDay: 24, intervalSeconds: 900, runIn: ['active', 'idle'], overlap: 'queue' as const, enabled: true, building: false, remaining: 0, owed: 0, usedToday: 3, inFlight: 1, completedToday: 2, failedToday: 0, waiting: null };
     expect(progressWords(base)).toBe('No session that ended here is waiting for a title. No imported session is waiting for a title. Titles start while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in progress, 2 titled, 0 failed.');
     expect(progressWords({ ...base, owed: 4, remaining: 1, runsPerDay: null, runIn: ['idle'], intervalSeconds: 60 })).toBe('4 sessions that ended here are waiting for a title; they are titled on their own within the daily limit. 1 imported session is waiting for a title. Titles start while the server is idle, at most once every 1 min. Today: 3 started, 1 in progress, 2 titled, 0 failed.');
     expect(progressWords({ ...base, scheduledTasksEnabled: false, enabled: false, owed: 1 })).toBe('1 session that ended here is waiting for a title; they are titled on their own within the daily limit. No imported session is waiting for a title. Titling them is on, but runs only while Work on a schedule is on. Titles start while the server is in use or idle, at most once every 15 min. Today: 3 of 24 started, 1 in progress, 2 titled, 0 failed.');

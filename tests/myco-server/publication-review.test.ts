@@ -10,7 +10,7 @@ import { inspectPublicationCycles } from '@myco-server-worker/db/documents/depen
 import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { documentPromptTools } from '@myco-server-worker/content/session-turns.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
-import { assertSessionMaterialReady } from '@myco-server-worker/read/material-readiness.js';
+import { assertSessionMaterialReady } from '@myco-server-worker/db/sessions/material.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { envelope, memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';

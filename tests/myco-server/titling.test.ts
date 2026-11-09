@@ -9,11 +9,10 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
   cleanSummary,
   cleanTitle,
-  OWNER_TITLING_WINDOW_MS,
   titleSession,
   titleReadySessions,
-  TITLING_RUN_TIMEOUT_SECONDS,
 } from '@myco-server-worker/core/titling.js';
+import { OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/db/sessions/title-work.js';
 import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/run-deadline.js';
 import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { titlingParamsOf } from '@myco-server-worker/core/titling-params.js';

@@ -74,8 +74,10 @@ export interface TitlingBackfillProgress {
   runIn: readonly string[];
   overlap: 'skip' | 'queue';
   enabled: boolean;
-  remaining: number;
-  owed: number;
+  /** True while the title work is first being built from existing sessions; `remaining` and `owed` read null until then. */
+  building: boolean;
+  remaining: number | null;
+  owed: number | null;
   usedToday: number;
   inFlight: number;
   completedToday: number;

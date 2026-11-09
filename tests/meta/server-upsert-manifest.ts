@@ -307,6 +307,10 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/spores/counts.ts#bump': [
     { tables: ['spore_counts'], order: 'unverified' }, { tables: ['spore_daily'], order: 'unverified' }, { tables: ['spore_session_counts'], order: 'unverified' },
   ],
+  'db/schema-vNEXT-s2c.ts#claimUpsert': [{ tables: ['session_title_work'], order: 'unverified' }],
+  'db/schema-vNEXT-s2c.ts#refreshReconcile': [{ tables: ['session_title_work'], order: 'unverified' }],
+  'db/schema-vNEXT-s2c.ts#cohortBump': [{ tables: ['session_title_work_counts'], order: 'unverified' }],
+  'db/sessions/title-work.ts#upsertSql': [{ tables: ['session_title_work'], order: 'unverified' }],
   'db/plans/counts.ts#reconcilePlanFacts': [{ tables: ['plan_count_facts'], order: 'unverified' }],
   'db/plans/counts.ts#bump': [{ tables: ['plan_counts'], order: 'unverified' }],
   'db/schema-v721.ts#<module>': [

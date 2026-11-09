@@ -29,7 +29,7 @@ import { answerBytes } from '../../core/material-pages.js';
 import { preview } from '../../core/run-material.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { emit } from '../../telemetry.js';
-import { assertSessionMaterialReady } from '../../read/material-readiness.js';
+import { assertSessionMaterialReady } from '../../db/sessions/material.js';
 import { noteRunReads, runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
