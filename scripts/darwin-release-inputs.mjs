@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 /** @param {string} eventName @param {string[]} paths */
 export function requiresDarwinRecipe(eventName, paths) {
-  if (eventName === 'push') return true;
+  if (['push', 'schedule', 'workflow_dispatch'].includes(eventName)) return true;
   if (eventName !== 'pull_request') throw new Error(`Unexpected CI event: ${eventName}`);
   return paths.some((name) => /^(?:\.github\/(?:workflows|actions)\/|scripts\/|packages\/myco\/scripts\/|\.bun-version$)/.test(name)
     || /(?:^|\/)package(?:-lock)?\.json$/.test(name));

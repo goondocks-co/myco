@@ -1,0 +1,36 @@
+name: Download artifact with retries
+description: Download one artifact, retrying twice because the artifact service can time out with no fault in the job.
+inputs:
+  name:
+    description: Artifact name
+    required: true
+  path:
+    description: Destination directory
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: first
+      continue-on-error: true
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+    - if: steps.first.outcome == 'failure'
+      run: sleep 15
+      shell: bash
+    - id: second
+      if: steps.first.outcome == 'failure'
+      continue-on-error: true
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+    - if: steps.second.outcome == 'failure'
+      run: sleep 30
+      shell: bash
+    - if: steps.second.outcome == 'failure'
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}

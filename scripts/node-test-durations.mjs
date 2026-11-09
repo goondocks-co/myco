@@ -66,15 +66,19 @@ export function mergeNodeDurationWeights(weights, workload) {
   return merged;
 }
 
-/** Bound measured shard work and reserve one job share for runner and setup variance. */
-export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
-  const groupBudget = nodeGroupBudget(timeoutMs);
-  const shardBudget = Math.min(timeoutMs - timeoutMs / plans.length, MAX_NODE_MEASURED_MS);
+/** Every node file carries a positive weight no lower than its recorded time. */
+export function assertNodeShardWeights(plans, weights, workload) {
   const recorded = recordedNodeDurations(workload);
   for (const file of plans.flatMap(plan => plan.flatMap(group => group.files))) {
     assert.ok(Number.isFinite(weights[file]) && weights[file] > 0, `Node file needs an explicit duration weight: ${file}; add "${file}": <ms> to scripts/test-durations.json, using its measured npm test time.`);
     if (recorded[file] !== undefined) assert.ok(weights[file] >= recorded[file], `Stale node duration: ${file}; recorded ${recorded[file]}ms, configured ${weights[file]}ms`);
   }
+}
+
+/** Bound measured shard work and reserve one job share for runner and setup variance. */
+export function assertNodeShardBudgets(plans, timeoutMs, weights, workload) {
+  const groupBudget = nodeGroupBudget(timeoutMs);
+  const shardBudget = Math.min(timeoutMs - timeoutMs / plans.length, MAX_NODE_MEASURED_MS);
   for (const [index, plan] of plans.entries()) {
     for (const group of plan) {
       const milliseconds = group.files.reduce((total, file) => total + weights[file], 0);
@@ -94,17 +98,31 @@ export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
   }
 }
 
+export function assertNodeShardHeadroom(plans, timeoutMs, weights, workload) {
+  assertNodeShardWeights(plans, weights, workload);
+  assertNodeShardBudgets(plans, timeoutMs, weights, workload);
+}
+
 const MAX_TEST_TIMEOUT_SHARE = 0.8;
 
-export function assertTestCaseHeadroom(samples, timeoutFor) {
+/** Each recorded case past its share of its declared timeout, as one message per case. */
+export function testCaseHeadroomBreaches(samples, timeoutFor) {
   assert.ok(samples.some(run => run.tests.length > 0), 'Per-test headroom needs measured cases');
+  const breaches = [];
   for (const { source, tests } of samples) for (const test of tests) {
     const timeoutMs = timeoutFor(test);
     assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, `${test.file}: missing declared test timeout: ${test.name}`);
     assert.ok(Number.isFinite(test.milliseconds) && test.milliseconds >= 0, `${source}: missing measured test duration: ${test.name}`);
-    assert.ok(test.milliseconds <= timeoutMs * MAX_TEST_TIMEOUT_SHARE,
-      `${source}: ${test.file}: ${test.name}: ${test.milliseconds}ms exceeds ${MAX_TEST_TIMEOUT_SHARE * 100}% of its ${timeoutMs}ms test timeout`);
+    if (test.milliseconds > timeoutMs * MAX_TEST_TIMEOUT_SHARE) {
+      breaches.push(`${source}: ${test.file}: ${test.name}: ${test.milliseconds}ms exceeds ${MAX_TEST_TIMEOUT_SHARE * 100}% of its ${timeoutMs}ms test timeout`);
+    }
   }
+  return breaches;
+}
+
+export function assertTestCaseHeadroom(samples, timeoutFor) {
+  const breaches = testCaseHeadroomBreaches(samples, timeoutFor);
+  assert.equal(breaches.length, 0, breaches[0]);
 }
 
 const timeoutSources = new Map();

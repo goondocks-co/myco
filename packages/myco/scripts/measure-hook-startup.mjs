@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { reportTimingBreach, timingGateReports } from '../../../scripts/timing-gate.mjs';
 
 const args = process.argv.slice(2);
 const binary = args[0];
@@ -60,6 +61,11 @@ const p95 = pick(0.95);
 fs.rmSync(scratch, { recursive: true, force: true });
 process.stdout.write(`[hook-startup] ${binary}${prefix.length ? ` via ${prefix.join(' ')}` : ''} on ${process.platform}-${process.arch}: p50 ${p50.toFixed(1)} ms, p95 ${p95.toFixed(1)} ms over ${runs} runs (ceiling ${maxP95} ms)\n`);
 if (p95 > maxP95) {
-  process.stderr.write(`[hook-startup] p95 ${p95.toFixed(1)} ms is over the ${maxP95} ms ceiling\n`);
-  process.exit(1);
+  const breach = `[hook-startup] p95 ${p95.toFixed(1)} ms is over the ${maxP95} ms ceiling`;
+  if (timingGateReports()) {
+    reportTimingBreach(breach);
+  } else {
+    process.stderr.write(`${breach}\n`);
+    process.exit(1);
+  }
 }

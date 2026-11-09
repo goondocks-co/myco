@@ -11,6 +11,7 @@ import { requiresDarwinRecipe } from '../../scripts/darwin-release-inputs.mjs';
 
 const ci = YAML.parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
 const release = YAML.parse(readFileSync('.github/workflows/publish.yml', 'utf8'));
+const nightly = YAML.parse(readFileSync('.github/workflows/nightly.yml', 'utf8'));
 const SIGN_DARWIN = 'bash scripts/sign-darwin-binary.sh binary/myco';
 
 function assertFailureIsTerminal(job: typeof release.jobs.build): void {
@@ -164,7 +165,7 @@ function assertCrossCompiledDarwin(workflow: typeof ci): void {
   expect(verify.needs).toEqual(['build', 'darwin-release-build']);
   expect(verify.if).toBe(build.if);
   expect(verify.steps.some((step: { uses?: string; with?: { name?: string } }) =>
-    step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'ci-myco-cross-darwin-arm64')).toBe(true);
+    step.uses === './.github/actions/download-artifact' && step.with?.name === 'ci-myco-cross-darwin-arm64')).toBe(true);
   const sign = verify.steps.findIndex((step: { run?: string }) => step.run === SIGN_DARWIN);
   const gate = verify.steps.findIndex((step: { run?: string }) => step.run?.includes('scripts/verify-darwin-distribution.sh'));
   expect(sign).toBeGreaterThanOrEqual(0);
@@ -195,6 +196,8 @@ test('release recipe runs on every main push and build or release changes; unrel
     'packages/myco-darwin-arm64/package.json', 'packages/myco-server/ui/package-lock.json', '.bun-version']) {
     expect(requiresDarwinRecipe('pull_request', [path])).toBe(true);
   }
+  expect(requiresDarwinRecipe('schedule', [])).toBe(true);
+  expect(requiresDarwinRecipe('workflow_dispatch', [])).toBe(true);
   expect(() => requiresDarwinRecipe('pull_request_target', [])).toThrow();
 });
 
@@ -203,7 +206,7 @@ function assertAggregate(workflow: typeof ci): void {
   expect(new Set(workflow.jobs.check.needs)).toEqual(new Set(jobs));
   expect(workflow.jobs.check.if).toBe('always()');
   expect(workflow.jobs.check.steps[0].run).toContain('.result == "success"');
-  for (const job of ['lint', 'build', 'tests', 'parity', 'self-hosted-container', 'windows-native', 'ui-screens', 'hook-startup', 'hook-startup-windows']) {
+  for (const job of ['lint', 'build', 'tests', 'parity', 'parity-smoke', 'self-hosted-container', 'windows-native', 'ui-screens', 'hook-startup', 'hook-startup-windows']) {
     expect(workflow.jobs[job]).toBeDefined();
     expect(workflow.jobs.check.needs).toContain(job);
   }
@@ -219,12 +222,40 @@ function assertPublication(workflow: typeof release): void {
   for (const job of ['create-release']) {
     expect(workflow.jobs[job].needs).toContain('require-ci');
     expect(workflow.jobs[job].if).toContain("needs.require-ci.result == 'success'");
+    expect(workflow.jobs[job].needs).toContain('full-ci');
+    expect(workflow.jobs[job].if).toContain("needs.full-ci.result == 'success'");
   }
+  expect(workflow.jobs['full-ci']).toMatchObject({ uses: './.github/workflows/ci.yml', with: { full: true } });
 }
 
 test('the canonical CI aggregate requires every verification job, including parity and shipped runtimes', () => {
   assertAggregate(ci);
   expect(ci.jobs.parity.steps.some((step: { run?: string }) => step.run === 'npm run test:parity')).toBe(true);
+});
+
+function assertFullRunWiring(nightlyWorkflow: typeof nightly, ciWorkflow: typeof ci): void {
+  expect(nightlyWorkflow.jobs.full).toMatchObject({ uses: './.github/workflows/ci.yml', with: { full: true } });
+  const report = nightlyWorkflow.jobs['report-failure'];
+  expect(report.needs).toBe('full');
+  expect(report.if).toContain('always()');
+  expect(report.permissions).toMatchObject({ issues: 'write' });
+  expect(ciWorkflow.env.MYCO_TEST_SCOPE).toContain('inputs.full');
+  expect(ciWorkflow.env.MYCO_TEST_SCOPE).toContain("'full'");
+  expect(ciWorkflow.env.MYCO_TIMING_GATES).toBe("${{ inputs.full && 'enforce' || 'report' }}");
+}
+
+test('the nightly is a full, enforcing run and reports its own failure', () => {
+  assertFullRunWiring(nightly, ci);
+  for (const mutation of ['partial', 'unreported', 'silent', 'unforced', 'pr-scope']) {
+    const changedNightly = structuredClone(nightly);
+    const changedCi = structuredClone(ci);
+    if (mutation === 'partial') changedNightly.jobs.full.with.full = false;
+    if (mutation === 'unreported') changedNightly.jobs['report-failure'].if = "needs.full.result == 'failure'";
+    if (mutation === 'silent') delete changedNightly.jobs['report-failure'].permissions.issues;
+    if (mutation === 'unforced') changedCi.env.MYCO_TIMING_GATES = 'report';
+    if (mutation === 'pr-scope') changedCi.env.MYCO_TEST_SCOPE = 'pr';
+    expect(() => assertFullRunWiring(changedNightly, changedCi)).toThrow();
+  }
 });
 
 function assertRoutingSmoke(workflow: typeof ci): void {
@@ -233,61 +264,59 @@ function assertRoutingSmoke(workflow: typeof ci): void {
   const compile = build.findIndex((step: { run?: string }) => step.run?.includes('npm run build'));
   expect(smoke).toBeGreaterThan(compile);
   expect(compile).toBeGreaterThanOrEqual(0);
-  expect(build.some((step: { uses?: string; with?: { name?: string; 'if-no-files-found'?: string } }) =>
-    step.uses?.startsWith('actions/upload-artifact@') && step.with?.name === 'rbac-routing-linux-x64' && step.with['if-no-files-found'] === 'error')).toBe(true);
-  expect(workflow.jobs.tests.needs).toBe('build');
-  expect(workflow.jobs.tests.steps.some((step: { uses?: string; with?: { name?: string } }) =>
-    step.uses?.startsWith('actions/download-artifact@') && step.with?.name === 'rbac-routing-linux-x64')).toBe(true);
-  const library = 'ci-libsqlite3-linux-x64';
-  // The library and the amalgamation it was built from: budget-meter tests compile against the source.
-  const directory = 'packages/myco/vendor-src/libsqlite3';
-  expect(build).toContainEqual(expect.objectContaining({
-    uses: 'actions/upload-artifact@v7',
-    with: expect.objectContaining({ name: library, path: `${directory}/`, 'if-no-files-found': 'error' }),
-  }));
-  expect(workflow.jobs.tests.steps).toContainEqual(expect.objectContaining({
-    if: "matrix.kind == 'node'", uses: 'actions/download-artifact@v8',
-    with: { name: library, path: directory },
-  }));
+  // The shards must start without waiting on the build, so the library has to come from somewhere else.
+  expect(workflow.jobs.tests.needs).toBeUndefined();
+  const directory = 'packages/myco/vendor-src/libsqlite3/';
+  const restore = workflow.jobs.tests.steps.findIndex((step: { id?: string }) => step.id === 'libsqlite');
+  expect(workflow.jobs.tests.steps[restore]).toMatchObject({ uses: 'actions/cache@v6', with: { path: directory } });
+  const compileOnMiss = workflow.jobs.tests.steps.findIndex((step: { run?: string }) => step.run === 'bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64');
+  expect(compileOnMiss).toBeGreaterThan(restore);
+  expect(workflow.jobs.tests.steps[compileOnMiss].if).toContain("steps.libsqlite.outputs.cache-hit != 'true'");
 }
 
-test('routing runs with the built binary, and full node shards receive that binary', () => {
+test('the build job runs the routing smoke, and node shards need no build artifact', () => {
   assertRoutingSmoke(ci);
   const omitted = structuredClone(ci);
   omitted.jobs.build.steps = omitted.jobs.build.steps.filter((step: { run?: string }) => step.run !== 'npm test -- tests/member/rbac-routing-smoke.test.ts');
   expect(() => assertRoutingSmoke(omitted)).toThrow();
-  const missing = structuredClone(ci);
-  missing.jobs.tests.steps = missing.jobs.tests.steps.filter((step: { uses?: string }) => !step.uses?.startsWith('actions/download-artifact@'));
-  expect(() => assertRoutingSmoke(missing)).toThrow();
-  const missingLibrary = structuredClone(ci);
-  missingLibrary.jobs.build.steps = missingLibrary.jobs.build.steps.filter((step: { with?: { name?: string } }) =>
-    step.with?.name !== 'ci-libsqlite3-linux-x64');
-  expect(() => assertRoutingSmoke(missingLibrary)).toThrow();
+  const waiting = structuredClone(ci);
+  waiting.jobs.tests.needs = 'build';
+  expect(() => assertRoutingSmoke(waiting)).toThrow();
+  const noLibrary = structuredClone(ci);
+  noLibrary.jobs.tests.steps = noLibrary.jobs.tests.steps.filter((step: { id?: string }) => step.id !== 'libsqlite');
+  expect(() => assertRoutingSmoke(noLibrary)).toThrow();
 });
 
 test.skipIf(process.platform === 'win32')('the actual aggregate command refuses every unsuccessful dependency', () => {
-  const execute = (results: Record<string, { result: string }>, required = 'true') => {
+  const execute = (results: Record<string, { result: string }>, scope: string, required = 'true') => {
     const child = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', ci.jobs.check.steps[0].run], {
-      env: { ...process.env, RESULTS: JSON.stringify(results), DARWIN_DISTRIBUTION_REQUIRED: required }, encoding: 'utf8',
+      env: { ...process.env, RESULTS: JSON.stringify(results), DARWIN_DISTRIBUTION_REQUIRED: required, MYCO_TEST_SCOPE: scope }, encoding: 'utf8',
     });
     if (child.error) throw child.error;
     return child;
   };
   const green = Object.fromEntries(ci.jobs.check.needs.map((job: string) => [job, { result: 'success' }]));
-  expect(execute(green).status).toBe(0);
-  for (const job of ci.jobs.check.needs) {
-    for (const result of ['failure', 'cancelled', 'skipped']) {
-      expect(execute({ ...green, [job]: { result } }).status).toBe(1);
+  for (const [scope, leftOut] of [['pr', 'parity'], ['full', 'parity-smoke']] as const) {
+    const scoped = { ...green, [leftOut]: { result: 'skipped' } };
+    expect(execute(scoped, scope).status).toBe(0);
+    for (const job of ci.jobs.check.needs) {
+      for (const result of ['failure', 'cancelled', 'skipped']) {
+        if (job === leftOut && result === 'skipped') continue;
+        expect(execute({ ...scoped, [job]: { result } }, scope).status).toBe(1);
+      }
     }
+    const notRequired = { ...scoped, 'darwin-release-build': { result: 'skipped' }, 'darwin-release-verify': { result: 'skipped' } };
+    expect(execute(notRequired, scope, 'false').status).toBe(0);
+    expect(execute(notRequired, scope, 'true').status).toBe(1);
+    expect(execute(notRequired, scope, '').status).toBe(1);
+    for (const result of ['failure', 'cancelled']) {
+      expect(execute({ ...notRequired, 'darwin-release-verify': { result } }, scope, 'false').status).toBe(1);
+    }
+    expect(execute({ ...notRequired, build: { result: 'skipped' } }, scope, 'false').status).toBe(1);
   }
-  const notRequired = { ...green, 'darwin-release-build': { result: 'skipped' }, 'darwin-release-verify': { result: 'skipped' } };
-  expect(execute(notRequired, 'false').status).toBe(0);
-  expect(execute(notRequired, 'true').status).toBe(1);
-  expect(execute(notRequired, '').status).toBe(1);
-  for (const result of ['failure', 'cancelled']) {
-    expect(execute({ ...notRequired, 'darwin-release-verify': { result } }, 'false').status).toBe(1);
-  }
-  expect(execute({ ...notRequired, build: { result: 'skipped' } }, 'false').status).toBe(1);
+  // A pull request can never go green with its parity jobs missing, and the full run cannot skip the full matrix.
+  expect(execute({ ...green, parity: { result: 'skipped' } }, 'full').status).toBe(1);
+  expect(execute({ ...green, 'parity-smoke': { result: 'skipped' } }, 'pr').status).toBe(1);
 });
 
 test('every publication path requires a successful exact-SHA CI gate', () => {
@@ -312,6 +341,12 @@ test('workflow mutations that bypass parity or the publication dependency fail t
   delete browserOmitted.jobs['ui-screens'];
   browserOmitted.jobs.check.needs = browserOmitted.jobs.check.needs.filter((job: string) => job !== 'ui-screens');
   expect(() => assertAggregate(browserOmitted)).toThrow();
+  const fullOmitted = structuredClone(release);
+  fullOmitted.jobs['create-release'].needs = fullOmitted.jobs['create-release'].needs.filter((job: string) => job !== 'full-ci');
+  expect(() => assertPublication(fullOmitted)).toThrow();
+  const fullConditionOmitted = structuredClone(release);
+  fullConditionOmitted.jobs['create-release'].if = fullConditionOmitted.jobs['create-release'].if.replace("needs.full-ci.result == 'success' &&", '');
+  expect(() => assertPublication(fullConditionOmitted)).toThrow();
   const dependencyOmitted = structuredClone(release);
   dependencyOmitted.jobs['create-release'].needs = dependencyOmitted.jobs['create-release'].needs.filter((job: string) => job !== 'require-ci');
   expect(() => assertPublication(dependencyOmitted)).toThrow();

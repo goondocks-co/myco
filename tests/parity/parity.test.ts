@@ -91,6 +91,7 @@ import { rawClaimsParity } from './scenarios/raw-claims.ts';
 import { storageCleanupParity } from './scenarios/storage-cleanup.ts';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
+import { PARITY_SMOKE_SCENARIOS } from '../../scripts/ci-scopes.mjs';
 import durations from '../../scripts/test-durations.json';
 
 const scenarios = [runHeads, hookPlacementTick, harnessDeploymentActivity, budgetMigrationParity, budgetGovernor, pulledClaim, learningFlow, budgetRestore, learningPause, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, identityProjectWrites, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, sessionDocuments, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
@@ -101,7 +102,9 @@ if (!process.env.MYCO_PARITY) {
 } else {
   const weights: Record<string, number> = durations.parity;
   const plan = (shard: string | undefined) => selectShard(scenarios, parseShard(shard), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
-  const selected = plan(process.env.MYCO_PARITY_SHARD);
+  const smoke = scenarios.filter((scenario) => PARITY_SMOKE_SCENARIOS.includes(scenario.name));
+  if (smoke.length !== PARITY_SMOKE_SCENARIOS.length) throw new Error(`Parity smoke names ${PARITY_SMOKE_SCENARIOS.length} scenarios but ${smoke.length} exist`);
+  const selected = process.env.MYCO_PARITY_SCOPE === 'smoke' ? smoke : plan(process.env.MYCO_PARITY_SHARD);
   if (process.env.MYCO_PARITY_PLAN === '1') {
     const selectors: string[] | undefined = process.env.MYCO_PARITY_PLAN_MATRIX === undefined ? undefined : JSON.parse(process.env.MYCO_PARITY_PLAN_MATRIX);
     if (selectors !== undefined && (!Array.isArray(selectors) || !selectors.every(value => typeof value === 'string'))) throw new Error('Invalid parity matrix selectors');
