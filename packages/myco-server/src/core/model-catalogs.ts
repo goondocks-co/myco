@@ -9,9 +9,10 @@
  * worker's own listing of its machine, made with the machine's own login, never evidence that a provider accepts a request.
  */
 import { isReportOrder } from '@goondocks/myco-shared/report-order';
-import type { PreparedStatement, RelationalStore } from './adapters.js';
+import type { RelationalStore } from './adapters.js';
 import { MODEL_CATALOG_FRESH_MS, parseModelCatalog, type ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { readMachineOffers } from './worker-contacts.js';
+import { availableCatalogBodies, catalogObservedOrder, pruneCatalogs, putModelCatalog, type AvailableCatalogRow } from '../db/runners/catalogs.js';
 
 /** Whose listing a catalog is: a legacy worker's machine, or a runner by its stable id. */
 export type CatalogOwner = { kind: 'machine'; machineId: string } | { kind: 'runner'; runnerId: string };
@@ -19,11 +20,6 @@ export type CatalogOwner = { kind: 'machine'; machineId: string } | { kind: 'run
 /** A stored catalog, with when the Deployment received it. */
 export interface StoredModelCatalog extends ModelCatalog {
   receivedAt: number;
-}
-
-/** Replacement credentials establish their own model observations. */
-export function invalidateRunnerCatalogs(db: RelationalStore, runnerId: string): PreparedStatement {
-  return db.prepare('DELETE FROM runner_model_catalogs WHERE runner_id = ?').bind(runnerId);
 }
 
 /** The oldest instant a catalog may have been received at and still count, at `now`. */
@@ -38,22 +34,14 @@ export async function recordModelCatalog(
   db: RelationalStore, report: { owner: CatalogOwner; catalog: ModelCatalog; now: number },
 ): Promise<{ recorded: boolean; observedOrder: number | null }> {
   const { catalog, owner } = report;
-  const [table, key] = owner.kind === 'machine' ? ['worker_model_catalogs', 'machine_id'] : ['runner_model_catalogs', 'runner_id'];
-  const recorded = isReportOrder(catalog.observedOrder) ? await db.prepare(
-    `INSERT INTO ${table} (${key}, harness, catalog, resolutions, fetched_at, received_at, observed_order)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (${key}, harness) DO UPDATE SET
-       catalog = excluded.catalog, resolutions = excluded.resolutions, fetched_at = excluded.fetched_at, received_at = excluded.received_at,
-       observed_order = excluded.observed_order
-       WHERE excluded.observed_order IS NOT NULL AND (${table}.observed_order IS NULL OR excluded.observed_order > ${table}.observed_order)`,
-  ).bind(owner.kind === 'machine' ? owner.machineId : owner.runnerId, catalog.harness, JSON.stringify(catalog), JSON.stringify(resolutionsOf(catalog)), catalog.fetchedAt, report.now, catalog.observedOrder).run() : null;
-  const held = await db.prepare(`SELECT observed_order FROM ${table} WHERE ${key} = ? AND harness = ?`)
-    .bind(owner.kind === 'machine' ? owner.machineId : owner.runnerId, catalog.harness).first<{ observed_order: number | null }>();
-  return { recorded: recorded?.meta.changes === 1, observedOrder: held?.observed_order ?? null };
+  const key = owner.kind === 'machine' ? { kind: 'machine' as const, id: owner.machineId } : { kind: 'runner' as const, id: owner.runnerId };
+  const recorded = isReportOrder(catalog.observedOrder) ? await putModelCatalog(db, key, { harness: catalog.harness, catalog: JSON.stringify(catalog),
+    resolutions: JSON.stringify(resolutionsOf(catalog)), fetchedAt: catalog.fetchedAt, now: report.now, observedOrder: catalog.observedOrder, source: catalog.source.command }) : false;
+  return { recorded, observedOrder: await catalogObservedOrder(db, key, catalog.harness) };
 }
 
 /** A stored row as a catalog, or null where it no longer reads as one; a reader states that it does not know rather than guess. */
-function catalogOf(row: Record<string, unknown>): StoredModelCatalog | null {
+function catalogOf(row: AvailableCatalogRow): StoredModelCatalog | null {
   let parsed: unknown;
   try { parsed = JSON.parse(String(row.catalog)); } catch { return null; }
   const catalog = parseModelCatalog(parsed);
@@ -65,31 +53,22 @@ function catalogOf(row: Record<string, unknown>): StoredModelCatalog | null {
  * Catalogs count only where their owner's latest known offers keep the harness authenticated: a machine's across its
  * legacy workers, a runner's from its own contact. A removed runner's catalog never counts.
  */
-async function availableCatalogRows(db: RelationalStore, now: number, scope?: { owner: CatalogOwner; harness: string }): Promise<Record<string, unknown>[]> {
+async function availableCatalogRows(db: RelationalStore, now: number, scope?: { owner: CatalogOwner; harness: string }): Promise<AvailableCatalogRow[]> {
+  const bodies = await availableCatalogBodies(db, freshSince(now), scope === undefined ? undefined : {
+    owner: scope.owner.kind === 'machine' ? { kind: 'machine', id: scope.owner.machineId } : { kind: 'runner', id: scope.owner.runnerId }, harness: scope.harness,
+  });
   const machines = scope === undefined || scope.owner.kind === 'machine';
-  const runners = scope === undefined || scope.owner.kind === 'runner';
-  const scoped = (column: string) => (scope === undefined ? '' : ` AND ${column} = ? AND harness = ?`);
-  const values = scope === undefined ? [] : [scope.owner.kind === 'machine' ? scope.owner.machineId : scope.owner.runnerId, scope.harness];
-  const parts = [
-    ...(machines ? [{ sql: `SELECT 'machine' AS owner_kind, machine_id AS owner_id, harness, catalog, resolutions, received_at, NULL AS runner_offers
-      FROM worker_model_catalogs WHERE received_at >= ?${scoped('machine_id')}`, params: [freshSince(now), ...values] }] : []),
-    ...(runners ? [{ sql: `SELECT 'runner' AS owner_kind, m.runner_id AS owner_id, m.harness, m.catalog, m.resolutions, m.received_at, w.offers AS runner_offers
-      FROM runner_model_catalogs m JOIN runners r ON r.id = m.runner_id LEFT JOIN runner_contacts w ON w.runner_id = m.runner_id
-      WHERE m.received_at >= ? AND r.state <> 'removed'${scoped('m.runner_id')}`, params: [freshSince(now), ...values] }] : []),
-  ];
-  const { results } = await db.prepare(`${parts.map((part) => part.sql).join(' UNION ALL ')} ORDER BY received_at DESC, harness`)
-    .bind(...parts.flatMap((part) => part.params)).all<Record<string, unknown>>();
   const reports = machines ? await readMachineOffers(db) : new Map<string, null>();
-  return (results ?? []).filter((row) => {
-    const harness = String(row.harness);
+  return bodies.filter((row) => {
+    const harness = row.harness;
     if (row.owner_kind === 'runner') {
-      if (typeof row.runner_offers !== 'string') return true;
+      if (row.runner_offers === null) return true;
       try {
         const offers: unknown = JSON.parse(row.runner_offers);
         return Array.isArray(offers) && offers.some((offer) => (offer as { id?: unknown }).id === harness && (offer as { authenticated?: unknown }).authenticated === true);
       } catch { return false; }
     }
-    const machineId = String(row.owner_id);
+    const machineId = row.owner_id;
     return !reports.has(machineId) || reports.get(machineId)?.some((offer) => offer.id === harness && offer.authenticated) === true;
   });
 }
@@ -107,21 +86,11 @@ export async function catalogResolution(db: RelationalStore, owner: CatalogOwner
   const [row] = await availableCatalogRows(db, now, { owner, harness });
   if (row == null) return undefined;
   let resolutions: unknown;
-  try { resolutions = JSON.parse(String(row.resolutions)); } catch { return undefined; }
+  try { resolutions = JSON.parse(row.resolutions); } catch { return undefined; }
   if (resolutions === null || typeof resolutions !== 'object' || !Object.hasOwn(resolutions, model)) return undefined;
   const resolved: unknown = (resolutions as Record<string, unknown>)[model];
   return typeof resolved === 'string' && resolved !== '' ? resolved : undefined;
 }
 
 /** Forget catalogs received before the freshness window at `now`, at most `batch` rows per call. */
-export async function pruneModelCatalogs(db: RelationalStore, now: number, batch: number): Promise<number> {
-  const result = await db.prepare(
-    `DELETE FROM worker_model_catalogs
-      WHERE rowid IN (SELECT rowid FROM worker_model_catalogs WHERE received_at < ? ORDER BY received_at LIMIT ?)`,
-  ).bind(freshSince(now), batch).run();
-  const runners = await db.prepare(
-    `DELETE FROM runner_model_catalogs
-      WHERE rowid IN (SELECT rowid FROM runner_model_catalogs WHERE received_at < ? ORDER BY received_at LIMIT ?)`,
-  ).bind(freshSince(now), batch).run();
-  return (result.meta.changes ?? 0) + (runners.meta.changes ?? 0);
-}
+export const pruneModelCatalogs = (db: RelationalStore, now: number, batch: number): Promise<number> => pruneCatalogs(db, freshSince(now), batch);

@@ -11,12 +11,13 @@ import type { OwnerContext, RunnerContext } from '../context.js';
 import { WORKER_HEARTBEAT_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { deploymentIdentity } from '../auth/authorization.js';
 import { controlRunner, renameRunner, registerRunner, RUNNER_NAME_PATTERN, readRunner, rotateRunnerCredential, runnerWindowOpensAt, type RunnerControl } from '../auth/runners.js';
-import { runnerContactStatement, runnerObservationStatement, readWorkerFleet } from '../core/worker-contacts.js';
+import { commit } from '../db/index.js';
+import { readRemovedRunners, readWorkerFleet, runnerContactWrite, runnerObservation } from '../core/worker-contacts.js';
 import { readFleetProjection } from '../db/runs/fleet.js';
+import { fleetTotals, pageRunners, parseFleetPage } from '../core/fleet-page.js';
 import { requestByUserCode } from '../auth/device.js';
 import { sha256Hex } from '../hash.js';
 import type { RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
-import { forgetLegacyWorker } from '../core/legacy-workers.js';
 import { parseRunnerUpdateReport, readRunnerUpdateReceipt, readRunnerUpdateRequest, requestRunnerUpdate, runnerUpdateReportStatements } from '../core/runner-updates.js';
 import { emit } from '../telemetry.js';
 import { ok, parseJsonObject, readJsonObject, withRunnerSignInRefusal } from './scope.js';
@@ -42,14 +43,14 @@ export async function handleRunnerContact(env: ServerEnv, ctx: RunnerContext): P
   if (body === null) return ok({ persisted: false, code: 'parse', reason: 'body must be a JSON object' });
   const update = body.update === undefined ? null : parseRunnerUpdateReport(body.update, ({ field, disposition }) =>
     emit({ kind: 'runner_update_metadata', reason: 'invalid_field', runnerId: ctx.auth.runnerId, field, disposition }));
-  const contactStatements = [runnerContactStatement(env.db, {
+  const contactStatements = [runnerContactWrite(env.db, {
     runnerId: ctx.auth.runnerId, machineId: reported(body.machineId, 'id'), os: reported(body.os, 'text'), version: reported(body.version, 'id'), now: ctx.now,
-  }), ...(body.availability === undefined && body.arch === undefined ? [] : [runnerObservationStatement(env.db, ctx.auth.runnerId, {
+  }), ...(body.availability === undefined && body.arch === undefined ? [] : [runnerObservation(ctx.auth.runnerId, {
     arch: reported(body.arch, 'text'),
     state: (['ready', 'settling', 'user_active', 'incompatible', 'unknown'] as const).includes(body.availability as RunnerAvailability) ? body.availability as RunnerAvailability : 'unknown',
     reason: reported(body.readinessReason, 'text') ?? 'Readiness reason unavailable.',
   }, ctx.now)])];
-  await env.db.batch([...contactStatements, ...(update === null ? [] : await runnerUpdateReportStatements(env.db, ctx.auth.runnerId, update))]);
+  await commit(env.db, ...contactStatements, ...(update === null ? [] : await runnerUpdateReportStatements(ctx.auth.runnerId, update)));
   const runner = await readRunner(env.db, ctx.auth.runnerId);
   if (runner === null) throw new Error('an authenticated runner has no row');
   const receipt = update === null ? null : await readRunnerUpdateReceipt(env.db, ctx.auth.runnerId, update);
@@ -74,24 +75,44 @@ export async function handleRunnerRotate(env: ServerEnv, ctx: RunnerContext): Pr
   return ok({ persisted: false, code: 'parse', reason: rotation.reason });
 }
 
-/** Every runner with its state, last contact and live lease, for any member: read-only. */
+/** The active runners page with exact availability totals, for any member: read-only. Removed runners have their own view. */
 export async function handleListRunners(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const page = parseFleetPage(new URL(ctx.request.url));
+  if (page === 'invalid_limit' || page === 'invalid_cursor') return Response.json({ error: page }, { status: 400 });
   const projection = await readFleetProjection(env, ctx.now, isAdmin(ctx.member.role));
-  if (isAdmin(ctx.member.role)) return ok(projection);
-  const own = await machinesOf(env.db, ctx.member.id);
-  return ok({ ...projection, fleet: projection.fleet.filter(row => row.runner !== null || (row.machineId !== null && own.has(row.machineId))),
-    legacyWorkers: projection.legacyWorkers.filter(row => row.machineId !== null && own.has(row.machineId)) });
+  const window = pageRunners(projection.runners, page.limit, page.cursor);
+  const legacyWorkers = isAdmin(ctx.member.role) ? projection.legacyWorkers : await ownLegacyWorkers(env, ctx.member.id, projection.legacyWorkers);
+  return ok({ observedAt: projection.observedAt, queue: projection.queue, ...('storedCredentials' in projection ? { storedCredentials: projection.storedCredentials } : {}),
+    runners: window.rows, cursor: window.cursor, totals: fleetTotals(projection.runners), legacyWorkers });
+}
+
+const ownLegacyWorkers = async <Row extends { machineId: string | null }>(env: ServerEnv, memberId: string, workers: readonly Row[]): Promise<Row[]> => {
+  const own = await machinesOf(env.db, memberId);
+  return workers.filter(row => row.machineId !== null && own.has(row.machineId));
+};
+
+/** One keyset page of removed runners: the view the active fleet leaves out. */
+export async function handleRemovedRunners(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const url = new URL(ctx.request.url);
+  const limit = Number(url.searchParams.get('limit') ?? 50);
+  const raw = url.searchParams.get('cursor');
+  const after = raw === null ? null : parseRemovedCursor(raw);
+  if (!Number.isSafeInteger(limit) || limit < 1) return Response.json({ error: 'invalid_limit' }, { status: 400 });
+  if (raw !== null && after === null) return Response.json({ error: 'invalid_cursor' }, { status: 400 });
+  const page = await readRemovedRunners(env.db, ctx.now, limit, after);
+  return ok({ runners: page.runners, cursor: page.cursor === null ? null : `${page.cursor.removedAt}:${page.cursor.id}` });
+}
+
+function parseRemovedCursor(raw: string): { removedAt: number; id: string } | null {
+  const split = raw.indexOf(':');
+  const removedAt = Number(raw.slice(0, split));
+  return split > 0 && Number.isSafeInteger(removedAt) ? { removedAt, id: raw.slice(split + 1) } : null;
 }
 
 /** Member-credential executors and their valid leases, from the shared fleet projection. */
 export async function handleLegacyWorkers(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const fleet = await readWorkerFleet(env.db, ctx.now);
   return ok({ workers: fleet.filter((worker) => worker.runner === null) });
-}
-
-export async function handleForgetLegacyWorker(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const forgotten = await forgetLegacyWorker(env.db, ctx.member.id, ctx.params.credentialId ?? '', ctx.now);
-  return forgotten ? ok({ forgotten: true }) : Response.json({ error: 'worker_not_offline' }, { status: 409 });
 }
 
 /** An owner or administrator's pause, resume or removal of one runner. */

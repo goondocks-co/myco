@@ -1,22 +1,27 @@
 import { write } from '../index.js';
-import { renewingLeaseAuthority } from '../../core/worker-lease.js';
+import { MACHINE_HEADS_READY_SQL } from '../runners/heads.js';
+import { renewingLeaseAuthority } from '../runners/lease-authority.js';
 
 const contactAuthorities = [null,
   {worker:{kind:'member',tokenId:''},attempt:undefined}, {worker:{kind:'member',tokenId:''},attempt:''},
   {worker:{kind:'runner',runnerId:'',credentialId:''},attempt:undefined}, {worker:{kind:'runner',runnerId:'',credentialId:''},attempt:''},
 ] as const;
 export const contactAuthorityIndex = (kind: 'member' | 'runner', attempt: string | undefined) => (kind === 'member' ? 1 : 3) + Number(attempt !== undefined);
-export const workerContactUpsert = contactAuthorities.map((authority,i) => write<readonly unknown[]>({name:`claim.workerContactUpsert${['Open','Member','MemberAttempt','Runner','RunnerAttempt'][i]}`,sql:`WITH observation AS (
+/** One credential's report; a machine's revision comes from its stable head, so a credential rotation cannot rewind it. */
+const contactMachineSql = `(SELECT COALESCE(o.machine_id,(SELECT machine_id FROM member_credentials WHERE id=o.credential_id)) FROM observation o)`;
+export const workerContactUpsert = contactAuthorities.map((authority,i) => write<readonly unknown[], {written:number}>({name:`claim.workerContactUpsert${['Open','Member','MemberAttempt','Runner','RunnerAttempt'][i]}`,sql:`WITH observation AS (
        SELECT ? AS credential_id, ? AS machine_id, ? AS offers, ? AS capabilities, ? AS reason, ? AS seen_at,
               ? AS explicit_offers, ? AS explicit_capabilities, ? AS explicit_reason, ? AS skip_revision
      ), machine_revision AS (
-       SELECT COALESCE(MAX(w.updated_at), 0) AS revision
-         FROM worker_contacts w CROSS JOIN member_credentials c ON c.id = w.credential_id CROSS JOIN observation o
-        WHERE COALESCE(w.machine_id, c.machine_id) IS COALESCE(o.machine_id, (SELECT machine_id FROM member_credentials WHERE id = o.credential_id))
+       SELECT COALESCE((SELECT NULLIF(h.revision,0) FROM machine_head h WHERE h.machine_id=${contactMachineSql}),
+         CASE WHEN ${MACHINE_HEADS_READY_SQL} THEN 0 ELSE (SELECT COALESCE(MAX(w.updated_at),0)
+           FROM worker_contacts w CROSS JOIN member_credentials c ON c.id=w.credential_id
+          WHERE ${contactMachineSql} IS NOT NULL AND COALESCE(w.machine_id,c.machine_id)=${contactMachineSql}) END) AS revision
      )
-     INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at)
+     INSERT INTO worker_contacts (credential_id, machine_id, offers, capabilities, last_reason, last_seen_at, updated_at, last_claim_at)
      SELECT credential_id, machine_id, offers, capabilities, reason, seen_at,
-            CASE WHEN explicit_offers = 1 THEN MAX(seen_at, revision + 1) ELSE seen_at END
+            CASE WHEN explicit_offers = 1 THEN MAX(seen_at, revision + 1) ELSE seen_at END,
+            CASE WHEN explicit_reason = 1 AND reason = 'claimed' THEN seen_at END
        FROM observation CROSS JOIN machine_revision
       WHERE (skip_revision IS NULL OR revision != skip_revision)${authority === null ? '' : ` AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND ${renewingLeaseAuthority(authority.worker,0,authority.attempt).sql})`}
      ON CONFLICT (credential_id) DO UPDATE SET
@@ -25,7 +30,9 @@ export const workerContactUpsert = contactAuthorities.map((authority,i) => write
        capabilities = CASE WHEN (SELECT explicit_capabilities FROM observation) = 1 THEN excluded.capabilities ELSE worker_contacts.capabilities END,
        last_reason = CASE WHEN (SELECT explicit_reason FROM observation) = 1 THEN excluded.last_reason ELSE worker_contacts.last_reason END,
        last_seen_at = MAX(worker_contacts.last_seen_at, excluded.last_seen_at),
-       updated_at = CASE WHEN (SELECT explicit_offers FROM observation) = 1 THEN excluded.updated_at ELSE worker_contacts.updated_at END`}));
+       updated_at = CASE WHEN (SELECT explicit_offers FROM observation) = 1 THEN excluded.updated_at ELSE worker_contacts.updated_at END,
+       last_claim_at = COALESCE(excluded.last_claim_at, worker_contacts.last_claim_at)
+     RETURNING 1 AS written`}));
 export const runnerContactUpsert = contactAuthorities.map((authority,i) => write<readonly unknown[]>({name:`claim.runnerContactUpsert${['Open','Member','MemberAttempt','Runner','RunnerAttempt'][i]}`,sql:`INSERT INTO runner_contacts (runner_id, machine_id, os, version, offers, capabilities, last_reason, last_seen_at, updated_at)
      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE 1${authority === null ? '' : ` AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND ${renewingLeaseAuthority(authority.worker,0,authority.attempt).sql})`}
      ON CONFLICT (runner_id) DO UPDATE SET

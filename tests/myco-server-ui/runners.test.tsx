@@ -36,7 +36,6 @@ function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
       runner = { ...runner, updateRequest: { id: 'request_1', requestedAt: NOW, clearBlock: true } };
       return Response.json({ requested: true, updateRequest: runner.updateRequest });
     }
-    if (path.endsWith('/forget')) { writes.push(`${init?.method} ${path}`); legacy = []; return Response.json({ forgotten: true }); }
     if (path === '/api/runners/rn_mini/sign-in') {
       const body = JSON.parse(String(init?.body));
       writes.push(`${init?.method} ${path} ${JSON.stringify(body)}`);
@@ -215,22 +214,6 @@ describe('Runners page', () => {
     expect(screen.queryByText(/No runners are registered/)).toBeNull();
     expect(screen.queryByText(/No legacy workers are remembered/)).toBeNull();
     expect(screen.queryByText(/0 runs waiting/)).toBeNull();
-  });
-
-  it('forgets an offline legacy contact from either page while explaining preserved membership and capture', async () => {
-    const legacy: WorkerRow = { credentialId: 'legacy_1', machineId: 'retired-laptop', runner: null, lastSeenAt: NOW - 1800000, recent: false, eligible: true, busy: null, offers: [], capabilities: [], lastReason: 'no_work' };
-    for (const route of ['/runners', '/status/health']) {
-      const writes = mount('admin', RUNNER, { legacy: [legacy], route });
-      fireEvent.click(await screen.findByRole('button', { name: 'Forget this worker' }));
-      const dialog = await screen.findByRole('dialog');
-      expect(dialog.textContent).toContain('never revokes the member credential');
-      expect(dialog.textContent).toContain('membership or capture');
-      expect(dialog.textContent).toContain('it reappears');
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Forget worker' }));
-      await waitFor(() => expect(writes).toContain('POST /api/workers/legacy/legacy_1/forget'));
-      await waitFor(() => expect(screen.queryByRole('button', { name: 'Forget this worker' })).toBeNull());
-      cleanup(); clients.splice(0).forEach(client => client.clear());
-    }
   });
 
   it('uses the shared distinct queue reasons and preserves the oldest waiting age', async () => {

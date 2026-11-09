@@ -1,6 +1,7 @@
 let updateOrder = 0;
 import { describe, expect, it } from 'bun:test';
-import { readWorkerFleet, recentWorkerReports, runnerContactStatement, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
+import { commit } from '@myco-server-worker/db/index.js';
+import { readWorkerFleet, recentWorkerReports, runnerContactWrite, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
 import { seededSqlite, sqliteD1 } from './helpers/d1.js';
 
 const NOW = 1_800_000_000_000;
@@ -20,12 +21,12 @@ describe('fleet corrections', () => {
       const db = sqliteD1(sqlite);
       runner(sqlite, 'rn_history');
       const old = NOW - WORKER_CONTACT_RETENTION_MS - 1;
-      await runnerContactStatement(db, { runnerId: 'rn_history', offers: OFFER, now: old }).run();
+      await commit(db, runnerContactWrite(db, { runnerId: 'rn_history', offers: OFFER, now: old }));
       sqlite.query(`DELETE FROM runner_contacts WHERE runner_id = 'rn_history'`).run();
       expect((await readWorkerFleet(db, NOW))[0]?.runnerDetails).toMatchObject({ display: 'Offline', lastSeenAt: old, awaitingReplacement: false });
       sqlite.query(`UPDATE runners SET registration_id = 'replacement_request' WHERE id = 'rn_history'`).run();
       expect((await readWorkerFleet(db, NOW))[0]?.runnerDetails).toMatchObject({ display: 'Offline', lastSeenAt: old, awaitingReplacement: true });
-      await runnerContactStatement(db, { runnerId: 'rn_history', offers: OFFER, now: NOW }).run();
+      await commit(db, runnerContactWrite(db, { runnerId: 'rn_history', offers: OFFER, now: NOW }));
       expect((await readWorkerFleet(db, NOW))[0]?.runnerDetails).toMatchObject({ display: 'Online', lastSeenAt: NOW, awaitingReplacement: false });
     } finally { sqlite.close(); }
   });
@@ -54,7 +55,7 @@ describe('fleet corrections', () => {
       const db = sqliteD1(sqlite, { onSql: text => sql.push(text) });
       runner(sqlite, 'rn_bad');
       runner(sqlite, 'rn_good');
-      for (const id of ['rn_bad', 'rn_good']) await runnerContactStatement(db, { runnerId: id, offers: OFFER, now: NOW }).run();
+      for (const id of ['rn_bad', 'rn_good']) await commit(db, runnerContactWrite(db, { runnerId: id, offers: OFFER, now: NOW }));
       sqlite.query(`INSERT INTO runner_update_reports(runner_id,channel,current_version,last_result) VALUES ('rn_bad','alpha','2.0','[1]')`).run();
       const fleet = await readWorkerFleet(db, NOW);
       expect(fleet.find(row => row.runner?.id === 'rn_bad')?.runnerDetails).toMatchObject({ updateState: null, updateMetadataUnavailable: true });

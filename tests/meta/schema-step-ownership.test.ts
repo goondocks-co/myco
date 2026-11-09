@@ -2,6 +2,8 @@ import { REVISION_KINDS } from '@myco-server-worker/db/search/ranking.js';
 import { V723, V723_STATEMENTS } from '@myco-server-worker/db/schema-v723.js';
 import { V727, V727_STATEMENTS } from '@myco-server-worker/db/schema-v727.js';
 import { NEXT_S6, VNEXT_S6_INDEX_STEPS, VNEXT_S6_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s6.js';
+import { NEXT_S1C, VNEXT_S1C_STEPS } from '@myco-server-worker/db/schema-vNEXT-s1c.js';
+import { headSchemaStatements } from '@myco-server-worker/db/runners/heads.js';
 import { lineageHeadSchemaStatements } from '@myco-server-worker/db/identity/lineage-heads.js';
 import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usage.js';
 import { SESSION_LIFECYCLE_STEPS, V730 } from '@myco-server-worker/db/schema-v728.js';
@@ -73,6 +75,7 @@ interface Exception {
   table: string;
   reason: string;
 }
+const S1C_STATEMENTS = VNEXT_S1C_STEPS[0]!.statements;
 const LISTED: readonly Exception[] = [
   ...['idx_learning_card_deadline', 'idx_learning_stage_deadline', 'idx_learning_card_ready', 'idx_learning_stage_ready', 'idx_learning_aging'].map((object, i) => ({
     step: NEXT_S4B2 + i + 1, object, table: 'learning_sessions', reason: 'Each learning relation is one bounded partial index, built alone in its own step.' })),
@@ -95,6 +98,12 @@ const LISTED: readonly Exception[] = [
   ...VNEXT_S2D_STEPS.slice(0, 3).flatMap(({ version, statements: [sql] }) => {
     const match = /^CREATE INDEX(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql!);
     return match === null ? [] : [{ step: version, object: match[1]!, table: match[2]!, reason: 'A deletion job pages these rows by the session they belong to, and a page must not walk the whole table.' }];
+  }),
+  ...S1C_STATEMENTS.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step: NEXT_S1C, object: match[1]!, table: match[2]!,
+      reason: sql.startsWith('CREATE TRIGGER') ? 'A contact, capture or runner attempt moves its one head row, so reads no longer walk contacts or attempt history.'
+        : 'A member\'s machine page and a runner name lookup seek by key.' }];
   }),
   ...VNEXT_S6_INDEX_STEPS.flatMap(({ version, statements: [sql] }) => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql!);
@@ -416,6 +425,8 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...VNEXT_S4B2_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO change_marks|INSERT INTO projection_catchup|DROP TRIGGER|DROP INDEX)/.test(sql)).map(sql => ({
     step, sql, reason: 'A learning session records its counted contributions and deadlines, the old pending trigger is replaced by the keyed contribution triggers, the counting catch-up is registered, and the scheduling indexes with no reader left go.'
   }))),
+  ...S1C_STATEMENTS.filter(sql => !/^CREATE (INDEX|TABLE|TRIGGER)/.test(sql)).map(sql => ({ step: NEXT_S1C, sql,
+    reason: 'Fleet tables: catalog metadata, the harness report split into per-harness rows, and the head seed phases; no history-sized table is rewritten.' })),
   ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
     step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'
   })),
@@ -958,6 +969,7 @@ const triggerSql = (triggers: readonly { sql: string }[]) => triggers.map(trigge
 const GENERATOR_PINS: readonly (readonly [step: number, generated: () => readonly string[]])[] = [
   [NEXT_S6, lineageHeadSchemaStatements],
   [NEXT_S6B + 4, authorityRetentionSchemaStatements],
+  [NEXT_S1C, headSchemaStatements],
   [V711, () => triggerSql(kpiTriggers())],
   [V712, () => triggerSql(passedOverTriggers())],
   [V714, spendSchemaStatements],

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { catalogResolution, readModelCatalogs, recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
-import { CONTACT_THROTTLE_MS, recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
+import { CONTACT_THROTTLE_MS } from '@myco-server-worker/constants.js';
+import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -56,26 +57,16 @@ describe('catalog availability from current machine offers', () => {
     let resume!: () => void;
     const paused = new Promise<void>((resolve) => { announce = resolve; });
     const continued = new Promise<void>((resolve) => { resume = resolve; });
-    const prepare = r.db.prepare.bind(r.db);
+    const batch = r.db.batch.bind(r.db);
     let intercept = true;
-    r.db.prepare = (sql) => {
-      const statement = prepare(sql);
-      if (intercept && sql.startsWith('SELECT credential_id, machine_id, offers')) {
+    r.db.batch = async (statements) => {
+      const results = await batch(statements);
+      if (intercept) {
         intercept = false;
-        const bind = statement.bind.bind(statement);
-        statement.bind = (...values: unknown[]) => {
-          const bound = bind(...values);
-          const first = bound.first.bind(bound);
-          bound.first = async <T>() => {
-            const row = await first<T>();
-            announce();
-            await continued;
-            return row;
-          };
-          return bound;
-        };
+        announce();
+        await continued;
       }
-      return statement;
+      return results;
     };
     const renewal = recordWorkerContact(r.db, { credentialId: r.token.tokenId, machineId: 'machine-1', now: r.now + 60_000 });
     await paused;
@@ -99,7 +90,7 @@ describe('catalog availability from current machine offers', () => {
     const observed = statementRecorder(r.db, {
       accounting: 'native',
       after: async (entry) => {
-        if (intercept && entry.method === 'all' && entry.sql.includes('w.updated_at AS offer_revision')) {
+        if (intercept && entry.sql.includes('FROM machine_head WHERE machine_id')) {
           intercept = false;
           announce();
           await continued;
@@ -234,7 +225,7 @@ describe('catalog availability from current machine offers', () => {
     await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
     const original = r.db.prepare.bind(r.db);
     r.db.prepare = (sql) => {
-      if (sql.includes('FROM worker_contacts')) throw new Error('worker availability unavailable');
+      if (sql.includes('FROM machine_head')) throw new Error('worker availability unavailable');
       return original(sql);
     };
     await expect(readModelCatalogs(r.db, r.now)).rejects.toThrow('worker availability unavailable');

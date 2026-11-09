@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import { V710_STATEMENTS } from '@myco-server-worker/db/schema-v710.js';
 import { planKind } from '@myco-server-worker/ingest/projections.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
@@ -186,7 +187,7 @@ const reconciliationRuns: Record<ReconciliationCase, (db: RelationalStore) => Pr
       const report: RunnerUpdateReport = { observedOrder, channel: 'alpha', currentVersion: version, latestVersion: '2.0.2', lastCheckAt: at,
         lastResult: { fromVersion: '2.0.0', toVersion: version, result: held ? 'failed' : 'updated', at, attemptId: version },
         ...(held ? { blockedVersion: { version, until: 1000, reason: 'held' }, updateState: { phase: 'cleanup_pending' as const, since: at } } : {}) };
-      await db.batch(await runnerUpdateReportStatements(db, 'r', report));
+      await commit(db, ...await runnerUpdateReportStatements('r', report));
     };
     await send(2, '2.0.1', 100);
     const before = await rows(db, 'SELECT * FROM runner_update_reports');
@@ -239,7 +240,7 @@ export const RECONCILIATION_FIXTURE = [
   ...V710_STATEMENTS,
   'CREATE TABLE embedding_receipts(project_id TEXT,model_key TEXT,id TEXT,ready INTEGER,PRIMARY KEY(project_id,model_key,id))',
   'CREATE TABLE embedding_switches(slot TEXT,id TEXT,provider TEXT,model TEXT,endpoint TEXT,model_key TEXT,from_model_key TEXT,estimated_tokens INTEGER,estimated_sources INTEGER,state TEXT,reason TEXT,retry_at INTEGER,failures INTEGER,progressed_at INTEGER,started_at INTEGER,started_by TEXT)',
-  ...['worker_model_catalogs', 'runner_model_catalogs'].map((table, i) => `CREATE TABLE ${table}(${i === 0 ? 'machine_id' : 'runner_id'} TEXT,harness TEXT,catalog TEXT,resolutions TEXT,fetched_at INTEGER,received_at INTEGER,observed_order INTEGER,PRIMARY KEY(${i === 0 ? 'machine_id' : 'runner_id'},harness))`),
+  ...['worker_model_catalogs', 'runner_model_catalogs'].map((table, i) => `CREATE TABLE ${table}(${i === 0 ? 'machine_id' : 'runner_id'} TEXT,harness TEXT,catalog TEXT${i === 0 ? '' : ',source TEXT,available INTEGER NOT NULL DEFAULT 0'},resolutions TEXT,fetched_at INTEGER,received_at INTEGER,observed_order INTEGER,PRIMARY KEY(${i === 0 ? 'machine_id' : 'runner_id'},harness))`),
   'CREATE TABLE runner_update_reports(runner_id TEXT PRIMARY KEY,channel TEXT,current_version TEXT,latest_version TEXT,last_check_at INTEGER,last_result TEXT,observed_order INTEGER)',
   'CREATE TABLE runner_update_requests(runner_id TEXT,id TEXT)',
   'CREATE TABLE runner_update_audit(id TEXT PRIMARY KEY,runner_id TEXT,actor_member TEXT,action TEXT,request_id TEXT,detail TEXT,at INTEGER)',
