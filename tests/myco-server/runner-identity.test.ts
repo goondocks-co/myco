@@ -27,7 +27,7 @@ import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID, PROJECT_HEADER, WORKER_LEAS
 import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
 import { RUNNER_TOKEN_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/runners.js';
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
-import { workerLiveness } from '@myco-server-worker/core/runs.js';
+import { workerLiveness } from '@myco-server-worker/db/runs/status.js';
 import { runnerObservationStatement, readWorkerFleet, pruneWorkerContacts, recordWorkerContact, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
@@ -356,7 +356,7 @@ describe('capacity, pause and removal', () => {
       const remove = () => r.e.sqlite.run(`UPDATE runners SET state = 'removed', removed_at = ?, credential_epoch = credential_epoch + 1, revision = revision + 1 WHERE id = ?`, [r.now(), runnerId]);
       // The read: the pipeline admits the run, then the tool's own admission reads the run again.
       let reads = 0;
-      r.arm((sql) => { if (/FROM agent_runs WHERE dispatched_by = \? AND status = 'running'/.test(sql) && ++reads === 2) remove(); });
+      r.arm((sql) => { if (/FROM agent_runs WHERE dispatched_by = \?1 AND status = 'running'/.test(sql) && ++reads === 2) remove(); });
       expect((await r.asRun(run.runToken, 'myco_run_sessions', { op: 'material', project: 'proj_1' })).result?.content?.[0]?.text).toBeUndefined();
       r.arm(undefined);
       // The write: the guarded batch's assertion reads the parent at the commit.

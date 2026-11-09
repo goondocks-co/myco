@@ -1,3 +1,4 @@
+import { servedRecords } from '../db/runs/served.js';
 import { learningCompleted } from '../db/runs/attributed-writes.js';
 import type { Bound } from '../db/index.js';
 import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
@@ -17,7 +18,7 @@ import { learningRetryWrite, learningBackoffWrite } from '../db/runs/claim-compa
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { LEARNING_SLICE_CHARS } from './read-window.js';
 import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
-import { commitAttributedWrite } from './runs.js';
+import { commitAttributedWrite } from '../db/runs/attribution.js';
 import { prepareRecordAcknowledgement } from '../read/catalog/learning-sessions.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
 import { learningEnabledSql, learningHistoryEnabled } from './settings.js';
@@ -201,11 +202,9 @@ export function learningMaterialPages(sessionId: string, opening: Record<string,
 export async function completeLearning(
   db: RelationalStore, projectId: string, sessionId: string, runId: string, assignment: LearningAssignment, handoff: string, now: number,
 ): Promise<{ completed: boolean; covered: number }> {
-  const served = await db.prepare(`SELECT record_id AS promptId, MIN(served_id) AS servedId FROM run_served_material
-    WHERE project_id = ? AND run_id = ? AND session_id = ? GROUP BY record_id`).bind(projectId, runId, sessionId).all<{ promptId: string; servedId: string }>();
-  const servedIds = new Map(served.results.map((row) => [row.promptId, row.servedId]));
   const cards = await assignedCards(db, projectId, sessionId, assignment);
   const prompts = cards.flatMap((card) => card.promptIds);
+  const servedIds = await servedRecords(db, { projectId }, runId, sessionId, prompts);
   if (prompts.some((id) => !servedIds.has(id))) return { completed: false, covered: 0 };
   const hashes = new Map(assignment.turns.map(turn => [turn.turnKey, turn.inputHash]));
   const assigned = JSON.stringify(cards.map(card => ({ turnKey: card.turnKey, inputHash: hashes.get(card.turnKey) })));

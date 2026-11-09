@@ -16,11 +16,10 @@ import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { seedCredential, seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import {
-  applyRunUpdate, claimRun, getRun, getRunningRunForTask, getState, mutateState, MUTATE_ATTEMPTS, recordDispatch, recordQueued, launchQueued, workerClaimPredicate, NO_LIMITS,
-  RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS,
-  type RunInsert,
-} from '@myco-server-worker/core/runs.js';
+import { type RunInsert } from '@myco-server-worker/core/runs.js';
+import { applyRunUpdate, getRun, RUN_IMMUTABLE_COLUMNS, RUN_UPDATE_COLUMNS } from '@myco-server-worker/db/runs/lifecycle.js';
+import { claimRun, getRunningRunForTask, recordDispatch, recordQueued, launchQueued, workerClaimPredicate, NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
+import { getState, mutateState, MUTATE_ATTEMPTS } from '@myco-server-worker/db/runs/state.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
@@ -406,11 +405,17 @@ describe('mutateState', () => {
     const { db } = store();
     await mutateState(db, SCOPE, AGENT, 'k', () => 'v0', NOW);
     // A store whose update never matches: every attempt is refused.
+    const refused = new Set<PreparedStatement>();
     const contended: RelationalStore = {
-      prepare: (sql) => /^UPDATE agent_state/.test(sql)
-        ? { bind: () => contended.prepare(sql), run: async () => ({ results: [], meta: { changes: 0 } }), all: async () => ({ results: [] }), first: async () => null }
-        : db.prepare(sql),
-      batch: (s) => db.batch(s),
+      prepare: (sql) => {
+        if (!/^UPDATE agent_state/.test(sql)) return db.prepare(sql);
+        const statement: PreparedStatement = { bind: () => statement, run: async () => ({ results: [], meta: { changes: 0 } }), all: async () => ({ results: [] }), first: async () => null };
+        refused.add(statement);
+        return statement;
+      },
+      batch: (statements) => statements.some((statement) => refused.has(statement))
+        ? Promise.resolve(statements.map(() => ({ results: [], meta: { changes: 0 } })))
+        : db.batch(statements),
     };
     let attempts = 0;
     expect(await mutateState(contended, SCOPE, AGENT, 'k', (c) => { attempts += 1; return `${c}!`; }, NOW)).toBe(false);

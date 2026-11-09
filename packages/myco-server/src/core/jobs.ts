@@ -92,6 +92,11 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     converges: 'no terminal, non-resumable agent run outlives the retention window, and its turns and reports go with it; a live or resumable run is never pruned; prompt answer diagnostics are kept for 30 days',
   },
   {
+    name: 'run-body-move',
+    runsThrough: 'sleep',
+    converges: 'every settled large run instruction and report body lives in a verified immutable blob with its inline copy cleared by a fenced commit; a body with no verified copy stays on its row, is retried with backoff without holding the bodies behind it, and is shown to an administrator once it has failed for a day',
+  },
+  {
     name: 'run-stale-sweep',
     runsThrough: 'sleep',
     converges: 'no run whose runtime went away stays live past its bound: each is failed by name and released as a finished run is',

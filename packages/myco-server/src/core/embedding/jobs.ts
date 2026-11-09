@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../adapters.js';
 import { AlreadyRunning, dispatchPrepared, prepareDispatch, hasTaskRuntime } from '../harness.js';
-import { hasLiveTaskRunAnywhere, lastTaskEntryAt } from '../runs.js';
+import { hasLiveTaskRunAnywhere, lastTaskEntryAt } from '../../db/runs/claim.js';
 import { settingTexts } from '../settings.js';
 import {
   advanceWorkAudit, clearWorkAttention, markWorkAttention, providerRetryAt, readyProviders, rotateWorkAttention, workCandidates, workOwed, type CheckedWork,

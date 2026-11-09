@@ -1,5 +1,6 @@
 import type { ServerEnv } from './adapters.js';
-import { getRun, renewRunLease, workerRunLeaseExpiry, type RunRow } from './runs.js';
+import { getRun, type RunRow } from '../db/runs/lifecycle.js';
+import { renewRunLease, workerRunLeaseExpiry } from '../db/runs/leases.js';
 import { WORKER_LEASE_MS } from '../constants.js';
 import type { WorkerPrincipal } from './worker-lease.js';
 

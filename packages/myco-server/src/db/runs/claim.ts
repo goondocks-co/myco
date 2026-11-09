@@ -46,7 +46,9 @@ import { runParentLive, runnerCredentialAuthority, RUNNER_WRITE_REFUSED, runnerW
 import type { WorkerPrincipal } from '../../core/worker-lease.js';
 import { REPOSITORY_PREPARATION_TIMEOUT_MS } from '@goondocks/myco-shared/repository';
 import { INPUT_UNCHANGED, SCHEDULE_ACTOR_SQL, SCHEDULE_ENTRY_SQL } from '../schedule-entry.js';
-import { UNATTRIBUTED_DISPATCH_ACTOR, skipContext, type RunInsert, type RunningRunRef, type RunAdmissionGate, type ClaimOutcome, type ActorCeiling, type WriteAdmission, type DispatchRecord, type RunCaller, type AgentIdentity, type QueuedRecord, type QueuedRunEnd, type ClaimCandidate, type ClaimedRunRow, type PulledCandidate, type ClaimedInput } from '../../core/runs.js';
+import { UNATTRIBUTED_DISPATCH_ACTOR, skipContext, type RunInsert, type RunningRunRef, type RunAdmissionGate, type ClaimOutcome, type ActorCeiling, type WriteAdmission, type DispatchRecord, type QueuedRecord, type QueuedRunEnd, type ClaimCandidate, type ClaimedRunRow, type PulledCandidate, type ClaimedInput } from '../../core/runs.js';
+import { type RunCaller } from './lifecycle.js';
+import { type AgentIdentity } from './state.js';
 export const CLAIM_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, harness, provider, model, status, dry_run, started_at, run_context, dispatched_by,origin)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?,'manual'

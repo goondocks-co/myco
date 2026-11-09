@@ -43,7 +43,8 @@ import { agentProse, strictName, parseRunError, LATE_HARNESS_ERROR_NOTE, parseHa
 import { HARNESS_STOP_KEY, ENDED_NOTE_KEY } from '../db/run-context.js';
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { listReports, runRecordedWrite, sessionNamedByRun, type RunRow, getRun, insertReport, type ReportInsert, type RunCaller } from './runs.js';
+import { listReports, runRecordedWrite, insertReport, type ReportInsert } from '../db/runs/evidence.js';
+import { sessionNamedByRun, type RunRow, getRun, type RunCaller } from '../db/runs/lifecycle.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessionCarriesTitle } from '../read/sessions.js';
@@ -54,7 +55,7 @@ import { CURATION_TASK, CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK }
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 import { titlingParamsOf } from './titling-params.js';
 import { parseRunAudit } from './run-audit.js';
-import { runHasAttempt } from './run-steps.js';
+import { runHasAttempt } from '../db/runs/steps.js';
 import { RUN_CLOSE_AUDIT_ERROR } from './reader-codes.js';
 
 export { RUN_CLOSE_AUDIT_ERROR } from './reader-codes.js';
@@ -199,9 +200,9 @@ export async function owesAudit(db: RelationalStore, scope: ReadScope, run: RunR
 export async function readRunCloseEvidence(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<RunCloseEvidence | null> {
   const rule = closeRuleFor(run.task);
   if (rule === undefined) return null;
-  const evidence = (await listReports(db, scope, run.id)).filter((report) => rule.reports.includes(report.action));
+  const evidence = (await listReports(db, scope, run.id)).reports.filter((report) => rule.reports.includes(report.action));
   const result: RunCloseEvidence = {
-    hasReport: evidence.length > 0, hasAudit: await owesAudit(db, scope, run) ? evidence.some((report) => report.audit !== null) : null,
+    hasReport: evidence.length > 0, hasAudit: await owesAudit(db, scope, run) ? evidence.some((report) => report.audit !== null || report.auditMoved) : null,
     artifactPresent: null, skipSupported: null, targetSessionId: sessionNamedByRun(run),
   };
   if (!result.hasReport || rule.artifact === undefined || run.dryRun === 1) return result;

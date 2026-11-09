@@ -202,8 +202,10 @@ export interface RunReadSession {
 export interface RunDetailAnswer {
   run: RunDetailFields;
   reports: readonly RunReport[];
+  /** The run holds more reports than the latest ones listed. */
+  reportsHasMore: boolean;
   toolCalls: readonly RunCall[];
-  toolCallCoverage: { total: number; failed: number; cursor: string | null };
+  toolCallCoverage: { total: number | null; failed: number | null; cursor: string | null };
   source: { branch: string; commit: string } | null;
   map: { revision: string; branch: string; commit: string; generatedAt: number; sourceRunId: string | null; replaced: boolean } | null;
   read: {
@@ -213,9 +215,9 @@ export interface RunDetailAnswer {
     recorded: boolean;
   };
   produced: { spores: { total: number; items: readonly RunSpore[] } };
-  /** The run's latest claims, oldest first; `attemptCount` counts them all, and 0 is a run no worker's claim recorded. */
+  /** The run's latest claims, oldest first; `attemptCount` counts them all, 0 is a run no worker's claim recorded, and null means the count is still being built. */
   attempts: readonly RunAttempt[];
-  attemptCount: number;
+  attemptCount: number | null;
   /** The first page of the latest attempt's step log; null for a run with no recorded attempt. */
   steps: RunStepPage | null;
   projectId: string;

@@ -292,6 +292,15 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
         detail: `${inProject(item.projectId)} Whatever uses it stops working then.`,
         action: { label: 'Open access keys', to: `${projectPath(item.projectId, PROJECT_SETTINGS_SUFFIX)}#${PROJECT_SETTINGS_ANCHORS.accessKeys}` },
       };
+    case 'run_body_stuck': {
+      const [oldest] = item.bodies;
+      const one = item.bodies.length === 1 && !item.hasMore;
+      return {
+        title: one ? 'Text from a past run can’t be moved to storage' : `${item.hasMore ? 'More than ' : ''}${item.bodies.length} pieces of text from past runs can’t be moved to storage`,
+        detail: `Failing since ${ago(oldest!.since, now)}, starting with run ${oldest!.runId}. The text is safe where it is, and Myco keeps trying.`,
+        action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
+      };
+    }
     case 'member_naming_failed': {
       const [latest] = item.members;
       const one = item.members.length === 1 && !item.hasMore;
@@ -390,6 +399,7 @@ export const ATTENTION_CHECKS: Readonly<Record<AttentionKind, string>> = {
   no_worker: 'machines',
   access_key_expiring: 'access keys',
   member_naming_failed: 'member names',
+  run_body_stuck: 'saved run text',
   schema_mismatch: 'the database',
   harness_needs_repair: 'installed agents',
   harness_capture_silent: 'agent capture',

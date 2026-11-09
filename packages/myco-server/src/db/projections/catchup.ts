@@ -17,6 +17,7 @@ import type { BlobStore, JobBudget, RelationalStore } from '../../core/adapters.
 import { commit, read, readSet, refused, write, type Bound } from '../index.js';
 import { BUDGET_PROJECTION, SPEND_CATCHUP } from '../runs/admission.js';
 import { WORK_CATCHUP, WORK_HISTORY_PROJECTION, WORK_RUN_ELIGIBLE } from '../runs/history-schema.js';
+import { RUN_EVIDENCE_CATCHUP, RUN_EVIDENCE_PROJECTION } from '../runs/evidence-schema.js';
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { SPORE_COUNT_PROJECTION, SPORE_COUNT_RECONCILE } from '../spores/counts.js';
 import { PLAN_COUNT_PROJECTION, PLAN_COUNT_RECONCILE } from '../plans/counts.js';
@@ -86,6 +87,8 @@ const PHASE_SOURCES = {
   spores: { table: 'spores', columns: ['project_id', 'id'] },
   plans: { table: 'plans', columns: ['project_id', 'plan_key'] },
   workRuns: { table: 'agent_runs', columns: ['project_id', 'id'], where: WORK_RUN_ELIGIBLE },
+  evidenceRuns: { table: 'agent_runs', columns: ['project_id', 'id'] },
+  evidenceAttempts: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] },
   ...RESET_PHASE_SOURCES,
   ...CALIBRATION_PHASE_SOURCES,
   [STORAGE_USAGE_PHASE]: STORAGE_USAGE_SOURCE,
@@ -95,7 +98,7 @@ const projectionOf = (phase: ProjectionPhase) => phase === STORAGE_USAGE_PHASE ?
   : phase in VERSION_PHASE_SOURCES ? 'publication_version'
   : (phase === 'publicationPinGroups' || phase === 'publicationPinsReady') ? 'publication_pins'
   : (phase === 'publicationMetadata' || phase === 'publicationOwnershipReady') ? 'publication_ownership'
-  : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'workRuns' ? WORK_HISTORY_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION : (phase === 'publicationFailures' || phase === 'publicationFailureRecord') ? 'publication_failures' : phase === 'sessionLifecycle' ? LIFECYCLE_PROJECTION : phase === 'publicationDependencies' ? DEPENDENCY_PROJECTION : phase.startsWith('publication') ? 'publication'
+  : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'workRuns' ? WORK_HISTORY_PROJECTION : (phase === 'evidenceRuns' || phase === 'evidenceAttempts') ? RUN_EVIDENCE_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION : (phase === 'publicationFailures' || phase === 'publicationFailureRecord') ? 'publication_failures' : phase === 'sessionLifecycle' ? LIFECYCLE_PROJECTION : phase === 'publicationDependencies' ? DEPENDENCY_PROJECTION : phase.startsWith('publication') ? 'publication'
   : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : phase in CALIBRATION_PHASE_SOURCES ? 'embedding_calibration' : 'kpi';
 const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : phase === 'publicationOwnershipReady' ? [OWNERSHIP_INPUTS_READY.bind()] : phase === 'publicationPinsReady' ? [PIN_GROUPS_READY.bind()] : [];
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
@@ -137,7 +140,7 @@ const reconciles = {
   publicationFailureRecord: FAILURE_RECORD_RECONCILE,
   sessionLifecycle: LIFECYCLE_RECONCILE, publicationDependencies: DEPENDENCY_RECONCILE,
   publicationInputs: PUBLICATION_SOURCE_RECONCILE, publicationSessions: PUBLICATION_DOCUMENT_RECONCILE,
-  runs: LIVE_CATCHUP, workRuns: WORK_CATCHUP,
+  runs: LIVE_CATCHUP, workRuns: WORK_CATCHUP, ...RUN_EVIDENCE_CATCHUP,
   failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, calibrationReceipts: CALIBRATION_RECONCILE, calibrationMembers: CALIBRATION_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
   [STORAGE_USAGE_PHASE]: STORAGE_USAGE_RECONCILE,

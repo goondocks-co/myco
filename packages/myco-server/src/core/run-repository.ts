@@ -2,7 +2,9 @@ import { REPOSITORY_COMMIT_PATTERN, RepositoryInputError, type RepositoryIdentit
 import type { ServerEnv } from './adapters.js';
 import { projectRepositories } from './repositories.js';
 import { deploymentSecretStore } from './secrets.js';
-import { pinRepositoryForRun, repositoryPinOfRun, type RunRow, type RunLease } from './runs.js';
+import { pinRepositoryForRun, repositoryPinOfRun } from '../db/runs/preparation.js';
+import { type RunRow } from '../db/runs/lifecycle.js';
+import { type RunLease } from '../db/runs/leases.js';
 
 /** Prepare or pin the connected source for an admitted run. */
 export async function prepareRunRepository(

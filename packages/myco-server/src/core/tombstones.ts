@@ -34,16 +34,20 @@ const SEGMENTS_OF_SESSION = `SELECT transcript_id FROM transcripts WHERE project
 /** The SQL naming a session's rows in a reference table, after `project_id = ?`, with the parameters it binds. */
 interface SessionRoute { where: string; params(projectId: string, sessionId: string): string[] }
 
+/** Reference tables owned by a run: a session deletion leaves them, and run retirement releases them. */
+const RUN_OWNED_REFERENCE_TABLES = new Set(['run_bodies']);
+
 /** How a reference table names the session holding a row: by its own `session_id`, or through the transcripts of one. A catalogue table reached neither way has no route from a deletion and is refused at load. */
-function sessionRoute(table: string): SessionRoute {
+function sessionRoute(table: string): SessionRoute | null {
   if ((DERIVED_TABLES as readonly string[]).includes(table)) return { where: 'session_id = ?', params: (projectId, sessionId) => [projectId, sessionId] };
   if (table === 'transcript_segments') return { where: `transcript_id IN (${SEGMENTS_OF_SESSION})`, params: (projectId, sessionId) => [projectId, projectId, sessionId] };
+  if (RUN_OWNED_REFERENCE_TABLES.has(table)) return null;
   throw new Error(`no route from a session to blob references in ${table}`);
 }
 
 /** Every catalogue reference with the route from a session to its rows, resolved once at load. */
 const SESSION_REFERENCES: readonly { ref: BlobReference; route: SessionRoute }[] =
-  BLOB_REFERENCES.map((ref) => ({ ref, route: sessionRoute(ref.table) }));
+  BLOB_REFERENCES.flatMap((ref) => { const route = sessionRoute(ref.table); return route === null ? [] : [{ ref, route }]; });
 
 export { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
 

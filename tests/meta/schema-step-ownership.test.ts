@@ -20,6 +20,8 @@ import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
 import { V726, V726_STATEMENTS } from '@myco-server-worker/db/schema-v726.js';
+import { V731, V731_INDEX_STEPS, V731_STATEMENTS } from '@myco-server-worker/db/schema-v731.js';
+const S1B2_STEPS = [{ version: V731, statements: V731_STATEMENTS }, ...V731_INDEX_STEPS];
 import { V712, V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { V714, V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
 import { V716, V716_STATEMENTS } from '@myco-server-worker/db/schema-v716.js';
@@ -100,6 +102,14 @@ const LISTED: readonly Exception[] = [
       : match[1] === 'embedding_hubness_members_work_update' ? 'A membership change dirties calibration work; moment updates, which commit with the cursor, do not.'
       : 'Receipt, source version and membership changes maintain per-vector calibration state and its population.' }];
     }),
+  ...S1B2_STEPS.flatMap(({ version, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || !['agent_runs', 'agent_reports', 'agent_run_events', 'agent_run_attempts', 'run_served_material'].includes(match[2]!) ? [] : [{ step: version, object: match[1]!, table: match[2]!,
+      reason: match[1]!.endsWith('_body_due') ? 'The body move seeks settled large bodies without reading the rest of the table.'
+        : match[1] === 'idx_agent_run_events_write' ? 'Whether a run landed a write through a tool is one seek of its landed writes.'
+        : match[1] === 'idx_run_served_material_session_record' ? 'A prompt\'s serving identity in a session is one keyed probe, and citation checks use the same path.'
+        : 'An attempt or admitted call changes that run\'s kept counters by one.' }];
+  })),
   ...V724_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null || !['agent_runs', 'spores', 'agent_run_events'].includes(match[2]!) ? [] : [{ step: V724, object: match[1]!, table: match[2]!,
@@ -377,6 +387,8 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V717_STATEMENTS.filter(sql => /^(ALTER TABLE|DROP TRIGGER|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
     step: V717, sql, reason: 'Add the input revision, replace recount triggers and seed bounded contribution catch-up without rewriting source history.'
   })),
+  ...V731_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V731, sql, reason: 'Run evidence counts remain building until the bounded catch-up has counted every run and attempt.' })),
+  ...S1B2_STEPS.flatMap(({ version, statements }) => statements.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({ step: version, sql, reason: 'The session and record covering index, built in its own earlier step, serves every statement this prefix served.' }))),
   ...V724_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V724, sql, reason: 'Work history remains building until the bounded catch-up has read every terminal run.' })),
   ...V726_STATEMENTS.filter(sql => sql.startsWith('INSERT OR IGNORE INTO change_marks')).map(sql => ({ step: V726, sql, reason: 'The Attention revision exists before its first transition, so an open page has a value to compare.' })),
   ...V719_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V719, sql, reason: 'Run admission counts remain building until the bounded run catch-up completes.' })),

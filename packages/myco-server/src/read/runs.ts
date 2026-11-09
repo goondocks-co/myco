@@ -6,12 +6,15 @@ import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, keyset, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
-import { runDetailRow, runListRows } from '../db/runs/history.js';
+import { runDetailRow, runIsVisible, runListRows } from '../db/runs/history.js';
+import { readSet } from '../db/index.js';
 import { queuedWaits, type QueuedWait } from '../db/runs/queue.js';
-import { getRun, isTerminalRunStatus, RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure } from '../core/runs.js';
+import { getRun, isTerminalRunStatus } from '../db/runs/lifecycle.js';
+import { RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure } from '../db/runs/evidence.js';
 import { ownMachineNames } from './capture.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
-import { runOutcomeCounts, type RunOutcomeCounts } from './run-reads.js';
+import { runOutcomeCounts, type RunOutcomeCounts } from '../db/runs/reads.js';
+import { attemptsReceived, runEvidenceHead } from '../db/runs/evidence.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
@@ -190,14 +193,15 @@ export interface RunDetail {
   phases: PhaseRow[] | null;
   /** One page of admitted calls, oldest first. */
   toolCalls: RunToolCallRow[];
-  toolCallCoverage: { total: number; failed: number; cursor: string | null };
+  toolCallCoverage: { total: number | null; failed: number | null; cursor: string | null };
   source: { branch: string; commit: string } | null;
   map: { revision: string; branch: string; commit: string; generatedAt: number; sourceRunId: string; replaced: boolean } | null;
   /** Current artifact and no-op checks, evaluated under the same rule used at completion. */
   outcomeEvidence: RunCloseEvidence | null;
   /** The run's latest claims, oldest first, each with what its step log holds; `attemptCount` counts them all. */
   attempts: RunAttemptRow[];
-  attemptCount: number;
+  /** Every attempt the run holds; null while the counts are still being built. */
+  attemptCount: number | null;
   /** The first page of the latest attempt's step log; null for a run no worker claimed. */
   steps: RunStepPage | null;
 }
@@ -360,8 +364,8 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: num
   const ids = listed.rows.map((r) => r.id as string);
   const queued = listed.rows.filter((r) => r.status === 'queued').map((r) => r.id as string);
   const waits = queued.length === 0 ? new Map<string, QueuedWait>() : await queuedWaits(db, scope, queued);
-  const outcome = runOutcomeCounts(db, scope, ids);
-  const [counts, ownNames] = await Promise.all([db.batch(outcome.statements), ownMachineNames(db, viewerId, nowMs)]);
+  const outcome = runOutcomeCounts(scope, ids);
+  const [counts, ownNames] = await Promise.all([readSet(db, ...outcome.statements), ownMachineNames(db, viewerId, nowMs)]);
   const outcomes = outcome.read(counts);
   return {
     cursor: listed.cursor,
@@ -409,25 +413,22 @@ function toToolCall(row: Record<string, unknown>): RunToolCallRow {
 }
 
 /** Calls admitted by the Deployment, oldest first, with totals covering the whole run. */
-export async function runToolCallPage(db: RelationalStore, scope: ReadScope, runId: string, opts: { limit?: number; cursor?: string } = {}): Promise<{ rows: RunToolCallRow[]; total: number; failed: number; cursor: string | null }> {
+export async function runToolCallPage(db: RelationalStore, scope: ReadScope, runId: string, opts: { limit?: number; cursor?: string } = {}): Promise<{ rows: RunToolCallRow[]; total: number | null; failed: number | null; cursor: string | null }> {
   const k = keyset({ ...opts, limit: opts.limit ?? MAX_TOOL_CALLS }, { order: 'recorded_at', id: 'id', direction: 'ASC' });
   if (k === null) throw new Error('Malformed call cursor.');
-  const [calls, totals] = await db.batch([
+  const [calls, head] = await Promise.all([
     db.prepare(`SELECT id, tool_name AS tool, duration_ms AS durationMs, outcome, payload, recorded_at AS recordedAt
       FROM agent_run_events WHERE project_id = ? AND run_id = ? AND event_type = ? ${k.where === '' ? '' : `AND ${k.where}`}
-      ORDER BY recorded_at ASC, id ASC LIMIT ?`).bind(scope.projectId, runId, RUN_TOOL_EVENT, ...k.params, k.limit + 1),
-    db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(outcome = ?), 0) AS failed FROM agent_run_events
-      WHERE project_id = ? AND run_id = ? AND event_type = ?`).bind(RUN_CALL_FAILED, scope.projectId, runId, RUN_TOOL_EVENT),
+      ORDER BY recorded_at ASC, id ASC LIMIT ?`).bind(scope.projectId, runId, RUN_TOOL_EVENT, ...k.params, k.limit + 1).all<Record<string, unknown>>(),
+    runEvidenceHead(db, scope, runId),
   ]);
-  const paged = page(calls.results as Record<string, unknown>[], k.limit, (r) => ({ createdAt: Number(r.recordedAt), id: String(r.id) }));
-  const counts = totals.results[0] as { total: number; failed: number };
-  return { rows: paged.rows.map(toToolCall), cursor: paged.cursor, total: Number(counts.total), failed: Number(counts.failed) };
+  const paged = page(calls.results, k.limit, (r) => ({ createdAt: Number(r.recordedAt), id: String(r.id) }));
+  return { rows: paged.rows.map(toToolCall), cursor: paged.cursor, total: head?.calls ?? null, failed: head?.failed ?? null };
 }
 
 /** A scoped run's admitted calls, or null when the Project holds no such run. */
 export async function getRunCalls(db: RelationalStore, scope: ReadScope, runId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Awaited<ReturnType<typeof runToolCallPage>> | null> {
-  const found = await db.prepare('SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?').bind(scope.projectId, runId).first();
-  return found === null ? null : runToolCallPage(db, scope, runId, opts);
+  return await runIsVisible(db, scope, runId) ? runToolCallPage(db, scope, runId, opts) : null;
 }
 
 /** One page of a run's calls for callers that only need the rows. */
@@ -450,41 +451,36 @@ function unrecognizedOf(raw: string | null): UnrecognizedCount | null {
 
 const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
   a.owner_kind AS ownerKind, a.runner_id AS runnerId, (SELECT r.name FROM runners r WHERE r.id = a.runner_id) AS runnerName,
-  CASE WHEN a.owner_kind = 'member' THEN (SELECT c.member_id FROM member_credentials c WHERE c.id = a.leased_by) END AS memberId,
-  (SELECT COUNT(*) FROM agent_run_steps s WHERE s.project_id = a.project_id AND s.run_id = a.run_id AND s.attempt_id = a.attempt_id) AS received`;
+  CASE WHEN a.owner_kind = 'member' THEN (SELECT c.member_id FROM member_credentials c WHERE c.id = a.leased_by) END AS memberId`;
 
 type AttemptRecord = {
-  attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null; received: number;
+  attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null;
   ownerKind: 'member' | 'runner'; runnerId: string | null; runnerName: string | null; memberId: string | null;
 };
 
-const attemptOf = (row: AttemptRecord): RunAttemptRow => ({
+/** A step count while its history is still being counted is null, so the attempt answers no coverage rather than zero received. */
+const attemptOf = (received: ReadonlyMap<string, number> | null) => (row: AttemptRecord): RunAttemptRow => ({
   attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
   executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'legacy-worker', memberId: row.memberId },
-  steps: row.total === null ? null : { total: Number(row.total), received: Number(row.received), overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
+  steps: row.total === null || received === null ? null : { total: Number(row.total), received: received.get(row.attemptId) ?? 0, overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
 });
 
 /**
  * A run's latest `MAX_ATTEMPTS` attempts, oldest first, each with its step log's totals and how many of its steps the
  * Deployment holds, and how many attempts the run has in all.
  */
-export async function runAttempts(db: RelationalStore, scope: ReadScope, runId: string): Promise<{ rows: RunAttemptRow[]; total: number }> {
-  const [latest, counted] = await db.batch([
-    db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM agent_run_attempts a WHERE a.project_id = ? AND a.run_id = ?
-      ORDER BY a.claimed_at DESC, a.attempt_id DESC LIMIT ?`).bind(scope.projectId, runId, MAX_ATTEMPTS),
-    db.prepare(`SELECT COUNT(*) AS total FROM agent_run_attempts WHERE project_id = ? AND run_id = ?`).bind(scope.projectId, runId),
-  ]);
-  return {
-    rows: (latest!.results as AttemptRecord[]).map(attemptOf).reverse(),
-    total: Number((counted!.results[0] as { total: number }).total),
-  };
+export async function runAttempts(db: RelationalStore, scope: ReadScope, runId: string): Promise<{ rows: RunAttemptRow[]; total: number | null }> {
+  const latest = (await db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM agent_run_attempts a WHERE a.project_id = ? AND a.run_id = ?
+      ORDER BY a.claimed_at DESC, a.attempt_id DESC LIMIT ?`).bind(scope.projectId, runId, MAX_ATTEMPTS).all<AttemptRecord>()).results;
+  const [received, head] = await Promise.all([attemptsReceived(db, scope, runId, latest.map((row) => row.attemptId)), runEvidenceHead(db, scope, runId)]);
+  return { rows: latest.map(attemptOf(received)).reverse(), total: head === null ? null : head.attempts };
 }
 
 /** One attempt of a run by its id, or null where the run has no such attempt. */
 async function runAttempt(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string): Promise<RunAttemptRow | null> {
   const row = await db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM agent_run_attempts a WHERE a.project_id = ? AND a.run_id = ? AND a.attempt_id = ?`)
     .bind(scope.projectId, runId, attemptId).first<AttemptRecord>();
-  return row === null ? null : attemptOf(row);
+  return row === null ? null : attemptOf(await attemptsReceived(db, scope, runId, [attemptId]))(row);
 }
 
 /** One page of an attempt's step log, in step order. */
@@ -502,6 +498,7 @@ export async function runStepPage(db: RelationalStore, scope: ReadScope, runId: 
 
 /** A scoped run's step log for one attempt, or the latest when none is named; null when the Project holds no such run or attempt. */
 export async function getRunSteps(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string | undefined, opts: { limit?: number; cursor?: string } = {}): Promise<RunStepPage | null> {
+  if (!await runIsVisible(db, scope, runId)) return null;
   const chosen = attemptId === undefined ? (await runAttempts(db, scope, runId)).rows.at(-1) ?? null : await runAttempt(db, scope, runId, attemptId);
   return chosen === null ? null : runStepPage(db, scope, runId, chosen.attemptId, opts);
 }

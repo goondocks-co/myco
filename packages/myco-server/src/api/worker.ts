@@ -31,7 +31,7 @@ import { parseModelCatalog, parseProfileRefusal, type ProfileCapability } from '
 import { recordModelCatalog } from '../core/model-catalogs.js';
 import { parseStepPage, WorkerStepsError } from '@goondocks/myco-shared/worker-steps';
 import { MYCO_TOOL_OPS } from '../mcp/run-surface.js';
-import { storeStepPage } from '../core/run-steps.js';
+import { storeStepPage } from '../db/runs/steps.js';
 
 const PROJECT_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
 const RUN_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/;

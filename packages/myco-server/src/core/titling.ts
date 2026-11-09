@@ -17,7 +17,7 @@ import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { countConvergenceTitleSessions, listTitleCandidates, listReadyTitleSessions, type TitleCandidate, type TitleCandidateWindow } from '../read/children.js';
 import { sessionHasUserPrompt } from '../read/document-catalog.js';
-import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally } from './runs.js';
+import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally } from '../db/runs/claim.js';
 import { TITLING_BACKFILL_SCHEDULE, type ScheduleState } from './jobs.js';
 import type { PowerState } from './power.js';
 import { scheduleFor, scheduleLeaves } from './scheduled-tasks.js';

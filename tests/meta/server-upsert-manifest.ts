@@ -5,6 +5,26 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/documents/dependencies.ts#<module>': [{tables:['publication_dependencies'],order:'unverified'}],
   'db/documents/lifecycle.ts#sessionLifecycleSchema': [{tables:['session_user_prompt_firsts'],order:'unverified'}],
   'db/documents/lifecycle.ts#<module>': [{tables:['session_user_prompt_firsts'],order:'unverified'}],
+  "db/schema-v731.ts#<module>": [
+    { tables: ["run_head"], order: 'unverified' },
+    { tables: ["run_head"], order: 'unverified' },
+  ],
+  "db/runs/evidence-schema.ts#<module>": [
+    { tables: ["run_head"], order: 'unverified' },
+    { tables: ["attempt_head"], order: 'unverified' },
+  ],
+  "db/runs/body-failures.ts#failureInsert": [
+    { tables: ["run_body_failures"], order: 'unverified' },
+  ],
+  "db/runs/retention.ts#<module>": [
+    { tables: ["blob_release_candidates"], order: 'unverified' },
+  ],
+  "db/runs/state.ts#<module>": [
+    { tables: ["agents"], order: 'unverified' },
+  ],
+  "db/runs/steps.ts#<module>": [
+    { tables: ["attempt_head"], order: 'unverified' },
+  ],
   'db/documents/metadata-catchup.ts#<module>': [
     {tables:['document_metadata_progress'],order:'unverified'},
     {tables:['document_metadata_ready'],order:'unverified'},
@@ -368,7 +388,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['schema_meta'], order: 'arrival-order' },
     { tables: ['schema_meta'], order: 'unverified' },
   ],
-  'core/runs.ts#guardedStateStatement': [
+  'db/runs/state.ts#guardedStateStatement': [
     { tables: ['agent_state'], order: 'unverified' },
   ],
   'db/identity/member-naming.ts#<module>': [
@@ -400,9 +420,6 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
   'core/runner-updates.ts#runnerUpdateReportStatements': [
     { tables: ['runner_update_reports'], order: 'reporter-stamp' },
-  ],
-  'core/runs.ts#upsertAgent': [
-    { tables: ['agents'], order: 'unverified' },
   ],
   'db/settings/secret-writes.ts#<module>': [
     { tables: ['deployment_secrets'], order: 'unverified' },

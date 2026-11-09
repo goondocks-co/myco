@@ -1,7 +1,8 @@
 import { expect, it } from 'bun:test';
 import { writeCanopyMap, canopyMapWrittenBy } from '@myco-server-worker/core/canopy.js';
 import { readCanopyMap } from '@myco-server-worker/read/canopy.js';
-import { getRun, pinMapSourceForRun, pinRepositoryForRun } from '@myco-server-worker/core/runs.js';
+import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
+import { pinMapSourceForRun, pinRepositoryForRun } from '@myco-server-worker/db/runs/preparation.js';
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { sqliteEnv } from './helpers/fixtures.js';

@@ -159,7 +159,7 @@ export const runDetail = (
   over: Partial<Omit<RunDetailAnswer, 'run' | 'reports'>> & { run?: Record<string, unknown>; reports?: ReadonlyArray<Omit<RunDetailAnswer['reports'][number], 'audit'> & { audit?: RunDetailAnswer['reports'][number]['audit'] }> } = {},
 ): RunDetailAnswer & Record<string, unknown> => ({
   source: null, map: null, toolCallCoverage: { total: over.toolCalls?.length ?? 0, failed: over.toolCalls?.filter((call) => call.failure !== undefined).length ?? 0, cursor: null },
-  toolCalls: [], phases: [], outcomeEvidence: null, projectId: P,
+  toolCalls: [], phases: [], outcomeEvidence: null, projectId: P, reportsHasMore: false,
   read: { sessions: [], total: 0, recorded: false },
   produced: { spores: { total: 0, items: [] } },
   attempts: [], attemptCount: over.attempts?.length ?? 0, steps: null,

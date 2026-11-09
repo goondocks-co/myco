@@ -26,7 +26,11 @@ import { endQueuedRun, expireLeases, HARNESS_MEMBER_ID } from './harness.js';
 import { staleAfter } from './run-deadline.js';
 export { staleAfter, timeoutSecondsOf } from './run-deadline.js';
 import { classify, emit } from '../telemetry.js';
-import { failStaleRun, listLiveRunsAcrossProjects, listQueuedAcrossProjects, pruneRevokedCredentials, pruneTerminalRuns } from './runs.js';
+import { moveRunBodies } from '../db/runs/bodies.js';
+import { failStaleRun, listLiveRunsAcrossProjects } from '../db/runs/lifecycle.js';
+import { listQueuedAcrossProjects } from '../db/runs/queue.js';
+import { pruneRevokedCredentials } from '../db/credential-retention.js';
+import { pruneTerminalRuns } from '../db/runs/retention.js';
 import { storedSettings } from './settings.js';
 import { releaseRun } from './release.js';
 import { pendingSearchBlobs, reconcileSearchIndex } from './search-index.js';
@@ -262,6 +266,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
     return { changed, more: changed > 0 && (await pendingSearchBlobs(env.db)) > 0 };
   },
   'agent-run-retention': agentRunRetention,
+  'run-body-move': (env, now) => moveRunBodies(env, now),
   'run-stale-sweep': runStaleSweep,
   // #1158 join UX
   'invite-expiry': inviteExpiry,

@@ -7,7 +7,7 @@
  */
 import { sha256HexOf, utf8 } from '../hash.js';
 import { RUN_ANSWER_BYTES } from './read-window.js';
-import { RUN_MATERIAL_READ_KEY } from './runs.js';
+import { RUN_MATERIAL_READ_KEY } from '../db/runs/lifecycle.js';
 
 /** The characters of a material revision. */
 const REVISION_CHARS = 16;

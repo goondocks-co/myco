@@ -2,7 +2,7 @@ import { taskHoldSql } from './queue.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { NOW_WATCHED_TASKS, unresolvedFailureRows } from './outcomes.js';
-import { RUN_TOOL_EVENT } from '../../core/runs.js';
+import { RUN_TOOL_EVENT } from './evidence.js';
 import { read, readSet } from '../index.js';
 
 export const NOW_PROJECTS_MAX = 25;

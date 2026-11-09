@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/sessions/wire.ts';
 import type { SessionAcrossRow, listSessionSummariesAcross } from '../../packages/myco-server/src/read/sessions.ts';
-import type { OutcomeSpore, SessionOutcome, SessionRun, sessionOutcome } from '../../packages/myco-server/src/read/run-reads.ts';
+import type { OutcomeSpore, SessionOutcome, SessionRun, sessionOutcome } from '../../packages/myco-server/src/db/runs/reads.ts';
 import type { ResumeCommand } from '../../packages/myco-server/src/core/resume-command.ts';
 
 /** True only when each type is assignable to the other. */

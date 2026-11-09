@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta.url));
-const ALLOWED: readonly string[] = ['core/runs.ts', 'core/run-postconditions.ts'];
+const ALLOWED: readonly string[] = ['db/runs/evidence.ts', 'core/run-postconditions.ts'];
 
 function files(dir: string): string[] {
   const out: string[] = [];

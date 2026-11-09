@@ -26,6 +26,7 @@ const REFERENCES = [
   'raw_archive_refs.archive_key',
   'raw_archive_refs.receipt_key',
   'registered_content_proofs.key',
+  'run_bodies.key',
 ];
 
 const DDL = SCHEMA_STEPS.flatMap((s) => s.statements);

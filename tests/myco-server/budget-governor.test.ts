@@ -4,7 +4,9 @@ import { expect,it } from 'bun:test';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
 import { budgetHeld,automaticFits } from '@myco-server-worker/core/run-budget.js';
 import { queueHeads } from '@myco-server-worker/core/queue-heads.js';
-import { settleLapsedLease,guardedStateStatement,claimQueuedRun } from '@myco-server-worker/core/runs.js';
+import { settleLapsedLease } from '@myco-server-worker/db/runs/leases.js';
+import { guardedStateStatement } from '@myco-server-worker/db/runs/state.js';
+import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
 import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { endLeasedRun } from '@myco-server-worker/core/harness.js';
@@ -17,12 +19,12 @@ import { selectWorkerExecution } from '@myco-server-worker/core/harness.js';
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { runStaleSweep,QUEUE_MAX_AGE_MS } from '@myco-server-worker/core/jobs-run.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
-import { recordQueueHolder } from '@myco-server-worker/core/runs.js';
+import { recordQueueHolder } from '@myco-server-worker/db/runs/queue.js';
 import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
 import { installPulledStages, queuedAdmissible, type PulledItem } from '@myco-server-worker/core/pulled-stages.js';
 import { withDocumentStores } from './helpers/document-stores.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
-import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
+import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
 import type { WorkerPrincipal } from '@myco-server-worker/core/worker-lease.js';
@@ -244,12 +246,17 @@ it('manual claims ignore an unaffordable forecast and changing estimator state',
     await refreshEstimates(f.db,f.now);
     const manual=f.queue('manual-expensive','manual');
     const batch=f.db.batch.bind(f.db);
-    let raced=false;
+    const prepare=f.db.prepare.bind(f.db);
+    let reading=false,estimateRead=false,raced=false;
+    f.db.prepare=sql=>{if(sql.includes('FROM agent_state'))reading=true;return prepare(sql);};
     f.db.batch=async statements=>{
-      if(!raced){raced=true;f.sqlite.run("UPDATE agent_state SET value=? WHERE key=?",[JSON.stringify({estimate:10}),estimateKey('title-summary','codex',PROFILE)]);}
-      return batch(statements);
+      if(estimateRead&&!raced){raced=true;f.sqlite.run("UPDATE agent_state SET value=? WHERE key=?",[JSON.stringify({estimate:10}),estimateKey('title-summary','codex',PROFILE)]);}
+      const answers=await batch(statements);
+      estimateRead||=reading;
+      return answers;
     };
     expect(await f.claim(manual)).not.toBeNull();
+    expect(raced).toBe(true);
     expect((await readSpendRows(f.db,f.now)).reduce((sum,row)=>sum+row.value,0)).toBe(10);
   }finally{f.sqlite.close();}
 });

@@ -7,7 +7,7 @@ import { assignmentOf } from '../../db/run-context.js';
 import { type RunPrincipal, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 import { MATERIAL_CHANGED, MATERIAL_UNREAD, materialRead, materialRevision } from '../../core/material-pages.js';
-import { recordMaterialRead } from '../../core/runs.js';
+import { recordMaterialRead } from '../../db/runs/lifecycle.js';
 
 /** The refusal that names the next page this attempt must read. */
 const materialTool = (run: RunPrincipal) => (assignmentOf(run.runContext, 'cards') === null ? 'myco_run_learning' : 'myco_run_cards');

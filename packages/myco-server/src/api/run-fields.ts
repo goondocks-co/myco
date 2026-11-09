@@ -1,4 +1,4 @@
-import { isTerminalRunStatus, type RunUpdate } from '../core/runs.js';
+import { isTerminalRunStatus, type RunUpdate } from '../db/runs/lifecycle.js';
 import { recordShape, shapeRunError, strictId, strictName, strictRunId } from '@goondocks/myco-shared/run-text';
 import { MAX_REPORT_DETAILS_CHARS, MAX_REPORT_SUMMARY_CHARS } from '../core/run-postconditions.js';
 import { refusal, type Refusal } from '../telemetry.js';

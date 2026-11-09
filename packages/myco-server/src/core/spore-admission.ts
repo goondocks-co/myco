@@ -5,7 +5,7 @@ import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
 import { consolidateSpores, getSpore, insertSpore, repairImportedSporeSource, resolveSpore, SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus, type SporeExpectation } from './spores.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from './spore-writes.js';
-import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from './served-material.js';
+import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from '../db/runs/served.js';
 import { extractionSourceSession } from '../read/prompts.js';
 import { promptInSession } from '../read/turns.js';
 import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
@@ -14,7 +14,7 @@ import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from './injection.js';
 import { nearSpores } from './spore-near-matches.js';
 import { USER_AGENT_ID } from '../constants.js';
 import { importPolicy } from './import-policy.js';
-import { ensureAgent } from './runs.js';
+import { ensureAgent } from '../db/runs/state.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 

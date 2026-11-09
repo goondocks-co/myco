@@ -1,10 +1,10 @@
 import { prepareLearningSlice } from './helpers/extraction.js';
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
+import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 import { expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';

@@ -2,7 +2,7 @@ import type { WorkerPrincipal } from './core/worker-lease.js';
 import type { RunnerAuth } from './auth/runners.js';
 import type { OutboundFetch } from './core/adapters.js';
 import type { RuntimeClaims } from './auth/tokens.js';
-import type { HeldRun } from './core/runs.js';
+import type { HeldRun } from './db/runs/lifecycle.js';
 import type { OwnerConfig } from './auth/owner/config.js';
 import type { OwnerSession } from './auth/owner/cookie.js';
 import type { DashboardMember } from './auth/identity-link.js';

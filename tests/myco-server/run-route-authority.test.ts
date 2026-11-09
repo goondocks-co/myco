@@ -7,7 +7,7 @@ import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js'
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { runControlResult, RunControlError } from '@goondocks/myco-shared/run-control';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';

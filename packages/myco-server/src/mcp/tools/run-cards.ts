@@ -9,7 +9,7 @@ import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
  */
 import { runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
-import { commitAttributedWrite } from '../../core/runs.js';
+import { commitAttributedWrite } from '../../db/runs/attribution.js';
 import {
   cardMaterialPages,
   cardsWrittenStatement,
