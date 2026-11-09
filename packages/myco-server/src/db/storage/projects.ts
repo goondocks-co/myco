@@ -1,4 +1,4 @@
-import { commit, assertion, read, readSet, write } from '../index.js';
+import { commit, assertion, read, readSet, refusalCode, refusalDetail, write } from '../index.js';
 import { leafOffChecks, settingTexts } from '../../core/settings.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { MAX_PROJECTS } from '../../constants.js';
@@ -40,11 +40,13 @@ const held = read<[string, string | null], { projectId: string; name: string; ar
   SELECT project_id AS projectId,name,archived_at AS archivedAt FROM projects
   WHERE project_id=CASE WHEN ?2 IS NULL THEN ?1 ELSE (SELECT project_id FROM project_remotes WHERE remote=?2) END`,
 });
+export const PROJECT_LIMIT = refusalCode('project_limit');
 const restoreCapacity = assertion<[string]>({
   name: 'storage.projectRestoreCapacity',
-  sql: `
-  SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NOT NULL)
-    OR ${CAPACITY} THEN 1 ELSE json_extract('[]','$[project_limit:' || ${ACTIVE_PROJECTS} || ']') END`,
+  refusal: PROJECT_LIMIT,
+  detail: ACTIVE_PROJECTS,
+  when: `NOT EXISTS(SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NOT NULL)
+    OR ${CAPACITY}`,
 });
 const restore = write<[string], { project_id: string }>({
   name: 'storage.unarchiveProject',
@@ -68,9 +70,8 @@ export async function unarchiveProject(db: RelationalStore, projectId: string): 
   }
 }
 function capacityFailure(error: unknown): number | null {
-  if (!(error instanceof Error)) return null;
-  const match = /project_limit:(\d+)/.exec(error.message);
-  return match === null ? capacityFailure(error.cause) : Number(match[1]);
+  const active = refusalDetail(error, PROJECT_LIMIT);
+  return active === null ? null : Number(active);
 }
 
 export async function autoCreateProjects(db: RelationalStore): Promise<boolean> {

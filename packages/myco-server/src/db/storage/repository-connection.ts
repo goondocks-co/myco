@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { assertion, read, readSet, write, type Bound } from '../index.js';
+import { assertion, read, readSet, refusalCode, refused, write, type Bound } from '../index.js';
 import { commitSecretChange } from '../settings/secret-writes.js';
 export interface ConnectionRow {
   revision: string;
@@ -17,11 +17,10 @@ const row = read<[string], ConnectionRow>({
   SELECT revision,url,branch,username,secret_slot AS secretSlot,updated_at AS updatedAt,updated_by AS updatedBy
     FROM project_repositories WHERE project_id=?`,
 });
+export const REPOSITORY_REVISION_CONFLICT = refusalCode('repository_revision_conflict');
 const unchanged = assertion<[string, string | null]>({
   name: 'storage.repositoryUnchanged',
-  sql: `
-  SELECT CASE WHEN (SELECT revision FROM project_repositories WHERE project_id=?1) IS ?2
-    THEN 1 ELSE json_extract('[]','$[repository_revision_conflict]') END`,
+  refusal: REPOSITORY_REVISION_CONFLICT, when: `(SELECT revision FROM project_repositories WHERE project_id=?1) IS ?2`,
 });
 const put = write<[string, string, string, string, string | null, string | null, number, string], { revision: string }>({
   name: 'storage.putRepository',
@@ -81,10 +80,7 @@ async function persist(
     await commitSecretChange(db, guard, writes, retirement);
     return true;
   } catch (error) {
-    if (conflict(error)) return false;
+    if (refused(error, REPOSITORY_REVISION_CONFLICT)) return false;
     throw error;
   }
-}
-function conflict(error: unknown): boolean {
-  return error instanceof Error && (error.message.includes('repository_revision_conflict') || conflict(error.cause));
 }

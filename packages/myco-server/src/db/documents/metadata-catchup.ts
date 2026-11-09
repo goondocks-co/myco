@@ -1,8 +1,8 @@
 import type { BlobStore, RelationalStore } from '../../core/adapters.js';
 import { readPageChunk, type ChunkRow } from '../../content/document-reader.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
-import { assertion, commit, read, readSet, write, type Bound } from '../index.js';
-import { PublicationOwnership } from './ownership.js';
+import { assertion, commit, read, readSet, refused, write, type Bound } from '../index.js';
+import { DOCUMENT_OWNERSHIP_CONFLICT, PublicationOwnership } from './ownership.js';
 import { documentPassFailure } from './failure-head.js';
 import type { DecodedChunk } from '../../content/document.js';
 
@@ -158,8 +158,8 @@ export async function repairPublicationMetadata(db:RelationalStore,blobs:BlobSto
       :[resumeFrom.bind(project,session,generation,next)];
     try { await commit(db,hold,...work.statements,...settle); }
     catch(error) {
-      if(!(error instanceof Error)||!error.message.includes('document_ownership_conflict'))throw error;
-      await commit(db,hold,...metadataFailure([key],phase,now,'document_ownership_conflict'));
+      if(!refused(error,DOCUMENT_OWNERSHIP_CONFLICT))throw error;
+      await commit(db,hold,...metadataFailure([key],phase,now,DOCUMENT_OWNERSHIP_CONFLICT));
       return false;
     }
     if(!work.complete||next===undefined)return true;
