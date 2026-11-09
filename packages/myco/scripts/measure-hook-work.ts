@@ -22,6 +22,7 @@ import { writeRegistryEntry, REGISTRY_VERSION } from '../src/member/registry.ts'
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '../src/member/credential.ts';
 import { LifecycleLock } from '../src/utils/lifecycle-lock.ts';
 import { helperPaths } from '../src/member/helper.ts';
+import { reportTimingBreach, timingGateReports } from '../../../scripts/timing-gate.mjs';
 
 const args = process.argv.slice(2);
 const binary = args[0];
@@ -157,6 +158,11 @@ try {
   fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }
 if (failed) {
-  process.stderr.write('[hook-work] a hook is over its budget\n');
-  process.exit(1);
+  const breach = '[hook-work] a hook is over its budget';
+  if (timingGateReports()) {
+    reportTimingBreach(breach);
+  } else {
+    process.stderr.write(`${breach}\n`);
+    process.exit(1);
+  }
 }

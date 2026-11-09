@@ -148,6 +148,22 @@ it('--measure rejects work above the live timeout share', () => {
   } finally { fs.rmSync(reports, { recursive: true, force: true }); }
 });
 
+it('--measure reports an overrun instead of failing when the run reports timing, and still fails the child', () => {
+  const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'measure-report-'));
+  try {
+    const preload = path.join(reports, 'clock.mjs');
+    fs.writeFileSync(preload, "import { performance } from 'node:perf_hooks'; let calls = 0; Object.defineProperty(performance, 'now', { value: () => calls++ ? 900 * 60_000 : 0 });");
+    const env = { ...process.env, MYCO_RUNNER_REPORT_DIR: reports, MYCO_TIMING_GATES: 'report', GITHUB_STEP_SUMMARY: path.join(reports, 'summary.md') };
+    const overrun = spawnSync('node', ['--import', preload, 'scripts/check-test-shards.mjs', '--measure', 'ui-screens', '--', 'node', '-e', ''], { env, encoding: 'utf8' });
+    expect(overrun.status).toBe(0);
+    expect(overrun.stdout).toContain('::warning');
+    expect(overrun.stdout).toContain('50%');
+    expect(fs.readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8')).toContain('Timing limit exceeded');
+    const failedChild = spawnSync('node', ['scripts/check-test-shards.mjs', '--measure', 'ui-screens', '--', 'node', '-e', 'process.exit(7)'], { env, encoding: 'utf8' });
+    expect(failedChild.status).toBe(7);
+  } finally { fs.rmSync(reports, { recursive: true, force: true }); }
+});
+
 it.skipIf(!process.env.MYCO_APT_CACHE_TEST_IMAGE)('installs cached dependency upgrades with real Ubuntu apt and no network', () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'apt-offline-real-'));
   try {

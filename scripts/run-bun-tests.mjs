@@ -12,6 +12,7 @@ import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { parse as parseYaml } from 'yaml';
 import { DEFAULT_TEST_TIMEOUT_MS, groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
+import { BUILD_JOB_FILES, NIGHTLY_ONLY_FILES } from './ci-scopes.mjs';
 import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
@@ -376,6 +377,17 @@ function relativeUnique(files) {
   return [...new Set(files.map((f) => path.relative(REPO, f)))].sort();
 }
 
+const testScope = process.env.MYCO_TEST_SCOPE ?? '';
+if (!['', 'pr', 'full'].includes(testScope)) throw new Error(`Unknown test scope: ${testScope}; expected pr or full`);
+delete process.env.MYCO_TEST_SCOPE;
+delete process.env.MYCO_TIMING_GATES;
+
+// A file a shard does not run in this CI scope: the build job owns it, or the full run does.
+function leftToAnotherCiJob(file) {
+  if (testScope === '') return false;
+  return BUILD_JOB_FILES.includes(file) || (testScope === 'pr' && NIGHTLY_ONLY_FILES.includes(file));
+}
+
 function isFastExcluded(file) {
   return FAST_EXCLUDES.some((excluded) => {
     if (file === excluded) return true;
@@ -690,7 +702,8 @@ function buildArgs() {
     const allTests = relativeUnique(findTests(path.join(REPO, 'tests')));
     const nodeFiles = allTests
       .filter((file) => !file.endsWith('.test.tsx'))
-      .filter((file) => profile !== 'fast' || !isFastExcluded(file));
+      .filter((file) => profile !== 'fast' || !isFastExcluded(file))
+      .filter((file) => !leftToAnotherCiJob(file));
     const nonDomFiles = nodeFiles;
     const soloFiles = relativeUnique([
       ...SOLO_NODE_FILES,
