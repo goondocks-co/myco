@@ -1,6 +1,7 @@
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
 import { isSelectStatement } from '../../core/sql-statements.js';
 import { checkLikePattern, checkStatement } from './limits.js';
+import { abortSql, type RefusalCode } from './refusal.js';
 
 export type BindValue = string | number | null | Uint8Array;
 export type StatementKind = 'read' | 'write' | 'assertion';
@@ -65,8 +66,25 @@ function define<Params extends readonly unknown[], Row, Kind extends StatementKi
 export const read = <Params extends readonly unknown[], Row>(options: StatementOptions): Statement<Params, Row, 'read'> => define('read', options);
 export const write = <Params extends readonly unknown[], Row = never>(options: StatementOptions): Statement<Params, Row, 'write'> => define('write', options);
 
-/** Families define aborting SQL once; callers compose only its validated Bound values. */
-export const assertion = <Params extends readonly unknown[]>(options: StatementOptions): Statement<Params, unknown, 'assertion'> => define('assertion', options);
+export interface RefusalOptions {
+  readonly name: string;
+  /** SQL that is true while the batch may proceed. */
+  readonly when: string;
+  readonly refusal: RefusalCode;
+  /** SQL reported with the refusal and read back through `refusalDetail`. */
+  readonly detail?: string;
+  /** A leading `WITH` clause and the row source it feeds, for a predicate over shared inputs. A source with no rows refuses. Use numbered slots: `from` is read twice. */
+  readonly with?: string;
+  readonly from?: string;
+}
+
+const refusalSql = ({ when, refusal, detail, with: inputs, from }: RefusalOptions): string =>
+  `${inputs === undefined ? '' : `${inputs} `}SELECT CASE WHEN ${when} THEN 1 ELSE ${abortSql(refusal, detail)} END AS admitted${from === undefined ? ''
+    : ` FROM ${from} UNION ALL SELECT ${abortSql(refusal)} WHERE NOT EXISTS(SELECT 1 FROM ${from})`}`;
+
+/** Stops the whole batch with a named refusal unless `when` holds; callers identify it with `refused`. */
+export const assertion = <Params extends readonly unknown[]>(options: StatementOptions | RefusalOptions): Statement<Params, unknown, 'assertion'> =>
+  define('assertion', 'sql' in options ? options : { name: options.name, sql: refusalSql(options) });
 
 /** Internal compilation keeps prepared-statement identity within the supplied store's decorators. */
 export function prepareBound(db: RelationalStore, bound: Bound): PreparedStatement {

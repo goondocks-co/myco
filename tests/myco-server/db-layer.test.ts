@@ -2,7 +2,7 @@ import { write } from '@myco-server-worker/db/index.js';
 import { expect, it } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript-v6';
-import { boundaryInventory, boundarySites, boundaryViolations } from './helpers/db-boundary.js';
+import { boundaryInventory, boundarySites, boundaryViolations, changeCountInventory, changeCountSites, changeCountViolations } from './helpers/db-boundary.js';
 
 const PENDING: ReadonlyMap<string, number> = new Map([
   ['api/runners.ts', 1],
@@ -148,12 +148,81 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['routes.ts', 4],
 ]);
 
+/** Reads of a statement's change count awaiting their slice: decide from RETURNING or an in-batch assertion, then lower the count. */
+const PENDING_CHANGE_COUNTS: ReadonlyMap<string, number> = new Map([
+  ['api/member-projects.ts', 3],
+  ['auth/device.ts', 2],
+  ['auth/enrollment.ts', 7],
+  ['auth/grants.ts', 4],
+  ['auth/identity-link.ts', 2],
+  ['auth/runners.ts', 3],
+  ['core/archive-bundle.ts', 2],
+  ['core/backup.ts', 1],
+  ['core/event-content.ts', 1],
+  ['core/first-owner.ts', 2],
+  ['core/machine-settings.ts', 4],
+  ['core/model-catalogs.ts', 3],
+  ['core/object-release.ts', 3],
+  ['core/ownership.ts', 3],
+  ['core/raw-archive.ts', 2],
+  ['core/raw-claims.ts', 1],
+  ['core/recovery-forget.ts', 1],
+  ['core/registered-content.ts', 1],
+  ['core/release-provenance.ts', 3],
+  ['core/remotes.ts', 1],
+  ['core/run-steps.ts', 1],
+  ['core/runs.ts', 4],
+  ['core/spore-curation.ts', 3],
+  ['core/worker-contacts.ts', 3],
+  ['ingest/retention.ts', 1],
+  ['ingest/uncaptured.ts', 1],
+]);
+
 const source = (text: string) => ts.createSourceFile('core/example.ts', text, ts.ScriptTarget.Latest, true);
 const inventory = (text: string) => new Map([['core/example.ts', boundarySites(source(text))]]);
 
 it('keeps SQL producers and store execution inside db, with exact temporary exceptions', () => {
   const root = fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url));
   expect(boundaryViolations(boundaryInventory(root), PENDING)).toEqual([]);
+});
+
+it('keeps change-count reads to the store adapters, with exact temporary exceptions', () => {
+  const root = fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url));
+  expect(changeCountViolations(changeCountInventory(root), PENDING_CHANGE_COUNTS)).toEqual([]);
+});
+
+it('catches the ordinary spellings of a change-count read, and leaves unrelated changes and written results alone', () => {
+  const sites = changeCountSites(source(`
+    // result.meta.changes
+    if (result.meta.changes === 1) done();
+    const n = other?.meta?.changes;
+    const m = result.meta['changes'];
+    const { changes } = result.meta;
+    const { meta: { changes: renamed } } = result;
+    const { changes: elsewhere } = diff;
+    git.changes.push(pending);
+    return { results: [], meta: { changes: 0 } };
+  `));
+  expect(sites.map(site => site.line)).toEqual([3, 4, 5, 6, 7]);
+  const grown = new Map([['core/example.ts', sites]]);
+  expect(changeCountViolations(grown, new Map())).toEqual(['core/example.ts: 5 new .meta.changes reads; decide the outcome from a RETURNING row or an in-batch assertion']);
+  expect(changeCountViolations(grown, new Map([['core/example.ts', 4]]))[0]).toContain('5 .meta.changes reads, expected exactly 4');
+});
+
+it('catches a change-count read through an alias of the metadata by its type', () => {
+  const text = `
+    interface Run { results: unknown[]; meta: { changes: number } }
+    declare const run: Run;
+    const stats = run.meta;
+    stats.changes;
+    declare const diff: { changes: number };
+    diff.changes;
+  `;
+  const file = source(text);
+  const host = ts.createCompilerHost({ noLib: true });
+  host.getSourceFile = name => name === file.fileName ? file : undefined;
+  const program = ts.createProgram([file.fileName], { noLib: true }, host);
+  expect(changeCountSites(file, program.getTypeChecker()).map(site => site.line)).toEqual([5]);
 });
 
 it('catches a new prepare call, growth, stale counts and exported SQL fragments', () => {

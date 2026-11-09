@@ -1,6 +1,7 @@
-import { assertion } from '../index.js';
+import { assertion, refusalCode } from '../index.js';
+
+export const SETTINGS_REVISION_CONFLICT = refusalCode('settings_revision_conflict');
 
 export function observedSettingsAssertion(predicate: string) {
-  return assertion<[revisions: string]>({ name: 'meta.settingsRevisionUnchanged', sql:
-    `SELECT CASE WHEN ${predicate} THEN 1 ELSE json_extract('[]','$[settings_revision_conflict]') END` });
+  return assertion<[revisions: string]>({ name: 'meta.settingsRevisionUnchanged', refusal: SETTINGS_REVISION_CONFLICT, when: predicate });
 }

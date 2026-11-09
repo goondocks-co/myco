@@ -411,6 +411,7 @@
     "tests/myco-server/cost.test.ts": 15,
     "tests/myco-server/credential-revoke.test.ts": 8165,
     "tests/myco-server/dashboard-status-honesty.test.ts": 1000,
+    "tests/myco-server/db-kernel-stores.test.ts": 1500,
     "tests/myco-server/db-kernel.test.ts": 500,
     "tests/myco-server/db-layer.test.ts": 1500,
     "tests/myco-server/deployment-audience.test.ts": 65,

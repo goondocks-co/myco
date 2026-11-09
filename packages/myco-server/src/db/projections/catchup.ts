@@ -2,7 +2,7 @@ import { VERSION_PHASE_SOURCES, VERSION_RECONCILE, rebuildForVersion, type Versi
 import { PIN_SOURCE, PIN_ADMISSION_SOURCE, PIN_RECONCILE, PIN_ADMISSION_RECONCILE, PIN_GROUPS_READY } from '../documents/pin-schema.js';
 import { metadataCursorHeld, metadataFailure, metadataPage } from '../documents/metadata-catchup.js';
 import { emit } from '../../telemetry.js';
-import { METADATA_PHASE_SOURCE, OWNERSHIP_READY_SOURCE, OWNERSHIP_INPUTS_READY, OWNERSHIP_READY_RECONCILE } from '../documents/ownership.js';
+import { DOCUMENT_OWNERSHIP_CONFLICT, METADATA_PHASE_SOURCE, OWNERSHIP_READY_SOURCE, OWNERSHIP_INPUTS_READY, OWNERSHIP_READY_RECONCILE } from '../documents/ownership.js';
 import { FAILURE_PHASE_SOURCE, FAILURE_RECONCILE, FAILURE_RECORD_SOURCE, FAILURE_RECORD_RECONCILE } from '../documents/failure-head.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { RUN_ADMISSION_PROJECTION, LIVE_CATCHUP } from '../runs/live.js';
@@ -12,7 +12,7 @@ import { SOURCE_STATE_RECONCILE } from '../embeddings/state.js';
 import { RESET_PHASE_SOURCES, RESET_RECONCILE } from '../embeddings/work.js';
 import { PUBLICATION_DOCUMENT_RECONCILE, PUBLICATION_INPUTS_READY, PUBLICATION_SOURCE_RECONCILE } from '../documents/contributions.js';
 import type { BlobStore, JobBudget, RelationalStore } from '../../core/adapters.js';
-import { commit, read, readSet, write, type Bound } from '../index.js';
+import { commit, read, readSet, refused, write, type Bound } from '../index.js';
 import { BUDGET_PROJECTION, SPEND_CATCHUP } from '../runs/admission.js';
 import { WORK_CATCHUP, WORK_HISTORY_PROJECTION, WORK_RUN_ELIGIBLE } from '../runs/history-schema.js';
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
@@ -162,8 +162,8 @@ export async function catchUpPhase(db: RelationalStore, phase: ProjectionPhase, 
     await commit(db, ...statements,
       advance.bind(metadata.complete ? selected.results.at(-1)?.key ?? held.after_key : held.after_key, metadata.complete && keys.length < pageSize(phase) ? 1 : 0, projectionOf(phase), phase, held.after_key, held.generation));
   } catch(error) {
-    if(phase!=='publicationMetadata'||!(error instanceof Error)||!error.message.includes('document_ownership_conflict'))throw error;
-    const failure=metadataFailure(keys,held.generation,now,'document_ownership_conflict');
+    if(phase!=='publicationMetadata'||!refused(error,DOCUMENT_OWNERSHIP_CONFLICT))throw error;
+    const failure=metadataFailure(keys,held.generation,now,DOCUMENT_OWNERSHIP_CONFLICT);
     charge(guards.length+metadata.guards.length+failure.length+1);
     await commit(db,...guards,...metadata.guards,...failure,advance.bind(selected.results.at(-1)?.key??held.after_key,0,projectionOf(phase),phase,held.after_key,held.generation));
   }

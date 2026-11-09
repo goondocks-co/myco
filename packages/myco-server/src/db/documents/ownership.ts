@@ -1,7 +1,7 @@
 import { prepareBound } from '../kernel/statement.js';
 import type { RelationalStore, PreparedStatement } from '../../core/adapters.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
-import { assertion, read, readSet, write, type Bound } from '../index.js';
+import { assertion, read, readSet, refusalCode, write, type Bound } from '../index.js';
 import { jsonPages } from '../json-pages.js';
 
 export class PublicationOwnershipBuilding extends Error {
@@ -19,9 +19,10 @@ const plans=read<[...Scope,string],{plan_key:string}>({name:'publication.planKey
   ON (p.project_id,p.session_id,p.generation,p.plan_key)=(?1,?2,?3,j.value)`});
 const ownerWrite=write<[...Scope,string]>({name:'publication.claimOwners',sql:`INSERT INTO document_owners(project_id,session_id,generation,source_key,source_thread,source_record)
   SELECT ?1,?2,?3,json_extract(value,'$[0]'),json_extract(value,'$[1].thread'),json_extract(value,'$[1].record') FROM json_each(?4) WHERE true ON CONFLICT DO NOTHING`});
-const ownerGuard=assertion<[...Scope,string]>({name:'publication.ownersUnchanged',sql:`SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM json_each(?4) j CROSS JOIN document_owners o
+export const DOCUMENT_OWNERSHIP_CONFLICT=refusalCode('document_ownership_conflict');
+const ownerGuard=assertion<[...Scope,string]>({name:'publication.ownersUnchanged',refusal:DOCUMENT_OWNERSHIP_CONFLICT,when:`NOT EXISTS(SELECT 1 FROM json_each(?4) j CROSS JOIN document_owners o
   ON (o.project_id,o.session_id,o.generation,o.source_key)=(?1,?2,?3,json_extract(j.value,'$[0]'))
-  WHERE (o.source_thread,o.source_record) IS NOT (json_extract(j.value,'$[1].thread'),json_extract(j.value,'$[1].record'))) THEN 1 ELSE json_extract('[]','$[document_ownership_conflict]') END`});
+  WHERE (o.source_thread,o.source_record) IS NOT (json_extract(j.value,'$[1].thread'),json_extract(j.value,'$[1].record')))`});
 const stateWrite=write<[...Scope,number,string]>({name:'publication.saveContinuations',sql:`INSERT INTO document_continuations(project_id,session_id,generation,transcript_id,chunk_no)
   SELECT ?1,?2,?3,value,?4 FROM json_each(?5) WHERE true ON CONFLICT(project_id,session_id,generation,transcript_id) DO UPDATE SET chunk_no=excluded.chunk_no WHERE excluded.chunk_no>=document_continuations.chunk_no`});
 const planWrite=write<[...Scope,string]>({name:'publication.savePlanKeys',sql:`INSERT INTO document_plan_keys(project_id,session_id,generation,plan_key)

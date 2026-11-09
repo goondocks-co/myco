@@ -1,11 +1,11 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
 import type { ChunkRow } from '../../content/document-reader.js';
-import { assertion, commit, read, readSet, write } from '../index.js';
+import { assertion, commit, read, readSet, refusalCode, refused, write } from '../index.js';
 
 export interface UnlocatedDocument { project_id: string; session_id: string; generation: number; publication_input_revision: number; locate_after: number | null }
 
-const CHUNKS_CHANGED = 'locator_chunks_changed';
+export const CHUNKS_CHANGED = refusalCode('locator_chunks_changed');
 
 const unlocated = read<[due: number], UnlocatedDocument>({ name: 'documentLocator.unlocated', sql: `
   SELECT p.project_id,p.session_id,p.generation,d.publication_input_revision,d.locate_after
@@ -21,13 +21,11 @@ const pageChunks = read<[project: string, session: string, generation: number, a
  * version read, no page chunk added among them and, when the wake saw the last one, none after it.
  */
 const chunksUnchanged = assertion<[project: string, session: string, generation: number, after: number | null, observed: string, through: number]>({
-  name: 'documentLocator.chunksUnchanged', sql: `
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM session_documents WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND state='live' AND locate_after IS ?4)
+  name: 'documentLocator.chunksUnchanged', refusal: CHUNKS_CHANGED, when: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND state='live' AND locate_after IS ?4)
     AND NOT EXISTS (SELECT 1 FROM json_each(?5) j LEFT JOIN session_chunks c ON c.project_id=?1 AND c.session_id=?2 AND c.generation=?3
       AND c.chunk_no=json_extract(j.value,'$[0]') AND c.kind='page' WHERE c.source_id IS NOT json_extract(j.value,'$[1]'))
     AND (SELECT COUNT(*) FROM session_chunks WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND kind='page'
-      AND chunk_no>COALESCE(?4,-1) AND chunk_no<=?6)=json_array_length(?5)
-  THEN 1 ELSE json_extract('[]','$[${CHUNKS_CHANGED}]') END` });
+      AND chunk_no>COALESCE(?4,-1) AND chunk_no<=?6)=json_array_length(?5)` });
 const place = write<[placed: string, project: string, session: string, generation: number]>({ name: 'documentLocator.place', sql: `
   UPDATE session_prompts SET page=(SELECT json_extract(j.value,'$.page') FROM json_each(?1) j WHERE json_extract(j.value,'$.id')=session_prompts.prompt_id)
   WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1)) AND page IS NULL` });
@@ -48,11 +46,6 @@ export async function locatorPageChunks(db: RelationalStore, doc: UnlocatedDocum
   return rows;
 }
 
-function changed(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.message.includes(CHUNKS_CHANGED) || changed(error.cause);
-}
-
 /**
  * Records the pages of the prompts held by the chunks read and moves the frontier past them; once `finished`, a prompt no
  * page holds is recorded as page -1. All of it lands only while those chunks are still the document's; false when a
@@ -70,7 +63,7 @@ export async function commitLocated(db: RelationalStore, doc: UnlocatedDocument,
       advance.bind(read.at(-1)?.chunk_no ?? doc.locate_after, ...key));
     return true;
   } catch (error) {
-    if (changed(error)) return false;
+    if (refused(error, CHUNKS_CHANGED)) return false;
     throw error;
   }
 }
