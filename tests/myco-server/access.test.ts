@@ -150,7 +150,7 @@ describe('members and invitations', () => {
     for (const member of members) {
       expect(Object.keys(member).sort()).toEqual([
         'awaitingAdmission', 'createdAt', 'effectiveRole', 'id', 'label', 'linked', 'liveCredentials',
-        'revokedAt', 'revokedBy', 'role', 'roleRevision', 'system',
+        'revokedAt', 'revokedBy', 'role', 'roleRevision', 'runtimeFreshness', 'system',
       ]);
       for (const [field, value] of Object.entries(member)) {
         if (field !== 'createdAt' && field !== 'revokedAt') expect(String(value)).not.toContain(LINKED_SUB);

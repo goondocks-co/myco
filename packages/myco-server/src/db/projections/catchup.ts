@@ -22,6 +22,7 @@ import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { SPORE_COUNT_PROJECTION, SPORE_COUNT_RECONCILE } from '../spores/counts.js';
 import { PLAN_COUNT_PROJECTION, PLAN_COUNT_RECONCILE } from '../plans/counts.js';
 import { STORAGE_USAGE_PHASE, STORAGE_USAGE_PROJECTION, STORAGE_USAGE_RECONCILE, STORAGE_USAGE_SOURCE, clearStorageUsage, storageUsageCursorHeld } from '../storage/usage.js';
+import { LINEAGE_HEAD_PHASE, LINEAGE_HEAD_PROJECTION, LINEAGE_HEAD_RECONCILE, LINEAGE_HEAD_SOURCE, clearLineageHeads } from '../identity/lineage-heads.js';
 import { KPI_DOCUMENT_RECONCILE, KPI_JSON_KEYS, KPI_LINEAGE_RECONCILE, KPI_RECONCILE, reconcileKpi } from '../insights/kpi-reconcile.js';
 
 export const PROJECTION_PAGE_SIZE = 50;
@@ -92,9 +93,10 @@ const PHASE_SOURCES = {
   ...RESET_PHASE_SOURCES,
   ...CALIBRATION_PHASE_SOURCES,
   [STORAGE_USAGE_PHASE]: STORAGE_USAGE_SOURCE,
+  [LINEAGE_HEAD_PHASE]: LINEAGE_HEAD_SOURCE,
 } satisfies Record<string, Source>;
 type ProjectionPhase = keyof typeof PHASE_SOURCES;
-const projectionOf = (phase: ProjectionPhase) => phase === STORAGE_USAGE_PHASE ? STORAGE_USAGE_PROJECTION : phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
+const projectionOf = (phase: ProjectionPhase) => phase === LINEAGE_HEAD_PHASE ? LINEAGE_HEAD_PROJECTION : phase === STORAGE_USAGE_PHASE ? STORAGE_USAGE_PROJECTION : phase === 'runs' ? RUN_ADMISSION_PROJECTION : phase === 'failures' ? 'passed_over' : phase === 'versions' ? 'embedding_state'
   : phase in VERSION_PHASE_SOURCES ? 'publication_version'
   : (phase === 'publicationPinGroups' || phase === 'publicationPinsReady') ? 'publication_pins'
   : (phase === 'publicationMetadata' || phase === 'publicationOwnershipReady') ? 'publication_ownership'
@@ -144,6 +146,7 @@ const reconciles = {
   failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, calibrationReceipts: CALIBRATION_RECONCILE, calibrationMembers: CALIBRATION_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
   conflicts: conflictReconcile, answers: KPI_RECONCILE.a, transcripts: transcriptReconcile, lineages: KPI_LINEAGE_RECONCILE,
   [STORAGE_USAGE_PHASE]: STORAGE_USAGE_RECONCILE,
+  [LINEAGE_HEAD_PHASE]: LINEAGE_HEAD_RECONCILE,
 };
 
 /** Replaying keys reads current source values inside the caller's commit; spend facts settle against the page's own window floor. */
@@ -204,7 +207,7 @@ export async function projectionReadiness(db: RelationalStore, projection: 'kpi'
 }
 
 export async function resetProjectionCatchup(db: RelationalStore): Promise<void> {
-  await commit(db, reset.bind(), clearStorageUsage.bind());
+  await commit(db, reset.bind(), clearStorageUsage.bind(), clearLineageHeads.bind());
 }
 
 /** Drains atomic pages within a statement and elapsed-time allowance; unfinished phases request another wake. */

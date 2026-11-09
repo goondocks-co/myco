@@ -202,7 +202,7 @@ describe('who administers membership', () => {
     expect((await r.call(await asOwnerPost(r.e.db, '/api/enrollment', { projectId: 'no_such_project' }))).status).toBe(404);
     expect(await json(await r.call(await asOwnerPost(r.e.db, '/api/enrollment', { projectId: 'proj_1', role: 'admin' })))).toMatchObject({ role: 'admin', projectId: 'proj_1' });
 
-    const live = await listInvitations(r.e.db, NOW);
+    const live = (await listInvitations(r.e.db, NOW)).rows;
     expect(live.map((i) => ({ role: i.role, projectId: i.projectId }))).toEqual([{ role: 'admin', projectId: 'proj_1' }]);
   });
 });

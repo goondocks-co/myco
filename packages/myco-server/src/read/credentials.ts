@@ -1,9 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { HARNESS_MEMBER_ID } from '../constants.js';
-import { credentialLive, runCredential } from '../db/liveness.js';
 import { credentialEvents } from '../db/credentials/activity.js';
+import { credentialPage } from '../db/identity/credential-pages.js';
 import { decodeProjectCursor, projectPage } from './project-cursor.js';
-import { clampLimit, keyset, page, type Page } from './scope.js';
+import { clampLimit, decodeCursor, page, type Page } from './scope.js';
 
 /** Whether the credential belongs to an agent run or a member runtime. */
 export type CredentialPurpose = 'run' | 'member';
@@ -38,53 +37,31 @@ export interface ActivityRow {
   receivedAt: number;
 }
 
-/** The Deployment's credentials, newest lineage first, one page at a time over `idx_member_credentials_started`. The token hash is never selected — nothing outside authentication reads it. */
+/** The Deployment's credentials, newest lineage first, one page at a time. The token hash is never selected — nothing outside authentication reads it. */
 export async function listCredentials(
   db: RelationalStore,
   nowMs: number,
   opts: { limit?: number; cursor?: string; purpose?: CredentialPurpose; memberId?: string; excludedMemberId?: string } = {},
 ): Promise<Page<CredentialRow>> {
-  const k = keyset(opts, { order: 'lineage_started_at', id: 'id', direction: 'DESC' });
-  if (k === null) return { rows: [], cursor: null };
-  const limit = k.limit;
-  // Each purpose is paged on its own.
-  const conditions: string[] = [];
-  const params: (string | number)[] = [];
-  if (opts.purpose !== undefined) {
-    conditions.push(opts.purpose === 'run' ? runCredential() : `NOT (${runCredential()})`);
-    params.push(HARNESS_MEMBER_ID);
-  }
-  if (opts.memberId !== undefined) {
-    conditions.push('member_id = ?');
-    params.push(opts.memberId);
-  }
-  if (opts.excludedMemberId !== undefined) {
-    conditions.push('member_id <> ?');
-    params.push(opts.excludedMemberId);
-  }
-  if (k.where !== '') conditions.push(k.where);
-  const { results } = await db
-    .prepare(`SELECT id, member_id, machine_id,
-                     COALESCE((SELECT mc.label FROM machine_claims mc WHERE mc.machine_id = member_credentials.machine_id), runtime_label) AS runtime_label, expires_at, revoked_at, revoked_by, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at,
-                     (${credentialLive()}) AS live, (${runCredential()}) AS run_credential
-                FROM member_credentials ${conditions.length === 0 ? '' : `WHERE ${conditions.join(' AND ')}`} ORDER BY lineage_started_at DESC, id DESC LIMIT ?`)
-    .bind(nowMs, HARNESS_MEMBER_ID, ...params, ...k.params, limit + 1)
-    .all<Record<string, unknown>>();
+  const limit = clampLimit(opts.limit);
+  const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
+  const results = await credentialPage(db, { now: nowMs, fetch: limit + 1, after, purpose: opts.purpose, memberId: opts.memberId, excludedMemberId: opts.excludedMemberId });
   const rows = results.map((r): CredentialRow => ({
-    id: r.id as string,
-    memberId: r.member_id as string,
-    machineId: (r.machine_id as string | null) ?? null,
-    runtimeLabel: (r.runtime_label as string | null) ?? null,
-    expiresAt: r.expires_at as number,
-    revokedAt: (r.revoked_at as number | null) ?? null,
-    revokedBy: (r.revoked_by as string | null) ?? null,
-    bytesWritten: r.bytes_written as number,
-    predecessorId: (r.predecessor_id as string | null) ?? null,
-    lineageRoot: r.lineage_root as string,
-    lineageStartedAt: r.lineage_started_at as number,
-    firstUsedAt: (r.first_used_at as number | null) ?? null,
-    live: Number(r.live) === 1,
-    purpose: Number(r.run_credential) === 1 ? 'run' : 'member',
+    id: r.id,
+    memberId: r.member_id,
+    machineId: r.machine_id,
+    runtimeLabel: r.runtime_label,
+    expiresAt: r.expires_at,
+    revokedAt: r.revoked_at,
+    revokedBy: r.revoked_by,
+    bytesWritten: r.bytes_written,
+    predecessorId: r.predecessor_id,
+    lineageRoot: r.lineage_root,
+    lineageStartedAt: r.lineage_started_at,
+    firstUsedAt: r.first_used_at,
+    live: r.live === 1,
+    purpose: r.run_credential === 1 ? 'run' : 'member',
   }));
   return page(rows, limit, (r) => ({ createdAt: r.lineageStartedAt, id: r.id }));
 }

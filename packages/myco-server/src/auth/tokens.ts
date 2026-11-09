@@ -11,7 +11,8 @@ import { carriedBytes, TOKEN_LIVE } from '../ingest/live-credential.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import type { DashboardMember } from './identity-link.js';
-import { authorize, credentialResource, machineResource, memberSubject, memberWritePredicate, OWNER_CONTROL_CREDENTIAL_WRITE } from './authorization.js';
+import { authorize, credentialResourceOf, machineResourcesOf, memberSubjectOf, memberWritePredicate, OWNER_CONTROL_CREDENTIAL_WRITE } from './authorization.js';
+import { readAuthorization } from '../db/auth/authorization.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
 export { MEMBER_TOKEN_TTL_MS };
@@ -177,7 +178,8 @@ export async function revokeCredentialAsMember(
   db: RelationalStore, actor: DashboardMember, tokenId: string, nowMs: number,
 ): Promise<{ revoked: boolean; revokedBy: string }> {
   const revokedBy = actor.id;
-  if (!authorize(await memberSubject(db, actor.id, 'http'), 'edit', await credentialResource(db, tokenId))) return { revoked: false, revokedBy };
+  const snapshot = await readAuthorization(db, { subjectMember: actor.id, credential: tokenId });
+  if (!authorize(memberSubjectOf(snapshot, actor.id, 'http'), 'edit', credentialResourceOf(snapshot, tokenId))) return { revoked: false, revokedBy };
   const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs, null, actor.id).run();
   const revoked = result.results.length > 0;
   emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: result.results.length });
@@ -188,7 +190,8 @@ export async function revokeCredentialAsMember(
 export async function revokeMachineCredentialsAsMember(
   db: RelationalStore, actor: DashboardMember, machineId: string, nowMs: number,
 ): Promise<{ revoked: number; revokedBy: string }> {
-  if (!authorize(await memberSubject(db, actor.id, 'http'), 'edit', await machineResource(db, 'credential', machineId))) return { revoked: 0, revokedBy: actor.id };
+  const snapshot = await readAuthorization(db, { subjectMember: actor.id, machines: [machineId] });
+  if (!authorize(memberSubjectOf(snapshot, actor.id, 'http'), 'edit', machineResourcesOf(snapshot, 'credential', [machineId])[0]!)) return { revoked: 0, revokedBy: actor.id };
   const result = await db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
       WHERE machine_id = ? AND revoked_at IS NULL
         AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE}

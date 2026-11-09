@@ -154,7 +154,7 @@ describe('a credential says what it was minted for', () => {
     // runtime count must not move when they do.
     for (let i = 0; i < 3; i++) await issueMemberToken(r.db, { memberId: 'mem_harness', machineId: 'harness' }, NOW + 1_000 + i);
 
-    const byId = new Map((await listMembers(r.db, NOW)).map((m) => [m.id, m.liveCredentials]));
+    const byId = new Map((await listMembers(r.db, NOW)).rows.map((m) => [m.id, m.liveCredentials]));
     expect(byId.get('mem_worker')).toBe(1);
     expect(byId.get('mem_harness')).toBe(0);
   });

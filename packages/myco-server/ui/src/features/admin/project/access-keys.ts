@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, fetchJson, postJson } from '../../../lib/api';
+import { ApiError, fetchEveryPage, postJson } from '../../../lib/api';
 import { formatUntil } from '../../../lib/format';
 import { ago } from '../../today/words';
 import type { GrantRow, GrantsAnswer } from '../wire';
@@ -13,7 +13,7 @@ const grantsKey = (projectId: string) => ['grants', projectId] as const;
 
 /** A project's access keys, live and ended. */
 export function useGrants(projectId: string) {
-  return useQuery({ queryKey: [...grantsKey(projectId)], queryFn: ({ signal }) => fetchJson<GrantsAnswer>(grantsPath(projectId), signal), ...live('still') });
+  return useQuery({ queryKey: [...grantsKey(projectId)], queryFn: ({ signal }) => fetchEveryPage<GrantsAnswer>(grantsPath(projectId), 'grants', signal), ...live('still') });
 }
 
 /** A key the server answers once. */

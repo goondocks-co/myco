@@ -44,7 +44,9 @@ import { answerBytes } from '../core/material-pages.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
 import { authorizeDeclaration, type AuthorizationResource } from '../auth/authorization.js';
-import { authorizeTool, toolResource, toolSubject } from '../auth/mcp-authorization.js';
+import { GrantEndedError } from '../auth/write-authority-store.js';
+import { TokenRevokedError } from '../telemetry.js';
+import { authorizeTool, readToolAuthorization } from '../auth/mcp-authorization.js';
 
 export const SERVER_NAME = 'myco';
 
@@ -261,7 +263,7 @@ function filterDefinitions(surface: Surface, allowed: (name: string, op: string)
 /** Tool discovery applies the dispatch declarations to the current stored identity. */
 export async function authorizedDefinitionsFor(ctx: ProtocolContext): Promise<readonly ToolDefinition[]> {
   const surface = surfaceFor(ctx);
-  const subject = await toolSubject(ctx);
+  const { subject, resourceFor } = await readToolAuthorization(ctx);
   if (!subject.live) throw unknownTool('tools/list');
   const admits = await surface.admits?.(ctx);
   const decisions = new Map<string, boolean>();
@@ -277,7 +279,7 @@ export async function authorizedDefinitionsFor(ctx: ProtocolContext): Promise<re
       if (resource === undefined) {
         resource = ctx.projectId === null
           ? { kind: declaration.resource, deploymentId: subject.deploymentId, exists: true }
-          : await toolResource(ctx, declaration, subject);
+          : resourceFor(declaration);
         resources.set(key, resource);
       }
       const actions = typeof declaration.action === 'string' ? [declaration.action] : declaration.action.actions;
@@ -287,6 +289,9 @@ export async function authorizedDefinitionsFor(ctx: ProtocolContext): Promise<re
   }
   return filterDefinitions(surface, (name, op) => decisions.get(`${name}:${op}`) === true);
 }
+
+const MEMBER_WRITE_ENDED = 'Nothing was saved: the credential behind this call is no longer live (rotated, revoked or expired), or its member was removed. Repeat this call; if it is refused again, run `myco member join` with a new invitation and repeat it.';
+const GRANT_WRITE_ENDED = 'Nothing was saved: the access key behind this call was revoked or expired, or no longer belongs to this Project. Ask a Project admin for a new access key, then repeat this call.';
 
 /**
  * Run one tool call for this context: the principal's surface, validation, op
@@ -332,6 +337,8 @@ export async function callTool(ctx: ProtocolContext, name: string, args: unknown
   try { return { tool: name as AnyTool, op, result: externalFilter(scoped.principal.kind, input) ? { ok: false, error: 'identity filters are not available' } : projectExternal(scoped.principal.kind, await entry.handler(input, scoped)) }; }
   catch (error) {
     if (error instanceof RunWriteExpired) throw new ToolError('tool_call_failed', error.message);
+    if (error instanceof TokenRevokedError) throw new ToolError('tool_call_failed', MEMBER_WRITE_ENDED);
+    if (error instanceof GrantEndedError) throw new ToolError('tool_call_failed', GRANT_WRITE_ENDED);
     if (error instanceof SessionMaterialPendingError) throw new ToolError('tool_call_failed', error.message);
     throw error;
   }

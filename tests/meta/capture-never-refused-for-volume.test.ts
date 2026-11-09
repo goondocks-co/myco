@@ -43,6 +43,7 @@ const COUNTER_READERS: Record<string, string> = {
   'ingest/events.ts': 'the charge for a stored event body',
   'ingest/blobs.ts': 'the charge for a stored blob',
   'read/credentials.ts': 'the dashboard\'s credential list',
+  'db/identity/credential-pages.ts': 'the query behind the dashboard\'s credential list',
   'read/machines.ts': 'the dashboard\'s machine lineage totals',
   'platform/bun/blobs.ts': 'FileHandle.write reports physical write progress; no credential counter is read',
 };

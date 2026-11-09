@@ -5,7 +5,8 @@ import type { MaterialRead } from '../../core/material-pages.js';
 import type { RunErrorCode } from '../../core/reader-codes.js';
 import type { ReadScope } from '../../read/scope.js';
 import { renewingLeaseAuthority, workerLeaseAuthority, type WorkerPrincipal } from '../../core/worker-lease.js';
-import { runParentLive } from '../../auth/runners.js';
+import { runParentLive } from './run-parent.js';
+import { RUN_COLUMNS } from './run-columns.js';
 import { runDeadlineSql, SQL_NOW_MS } from '../../core/run-deadline.js';
 import { contextValue, DISPATCH_ACTOR_SQL } from '../run-context.js';
 import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
@@ -88,10 +89,6 @@ export interface RunRow {
   leaseExpiresAt: number | null;
 }
 
-const RUN_COLUMNS = `id, harness, agent_id AS agentId, task, status, run_context AS runContext, started_at AS startedAt,
-    resumed_at AS resumedAt, completed_at AS completedAt, error, checkpoints,
-    resumable, resume_status AS resumeStatus, resume_attempts AS resumeAttempts,
-    dry_run AS dryRun, model, dispatched_by AS dispatchedBy, lease_expires_at AS leaseExpiresAt`;
 
 const RUN_SELECT = `SELECT ${RUN_COLUMNS} FROM agent_runs WHERE project_id = ?1 AND id = ?2 AND ${runNotRetiring('?1', '?2')}`;
 

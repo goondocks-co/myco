@@ -42,7 +42,8 @@ import { admissionForTask } from '../../core/task-catalogue.js';
 import { PROJECT_WORK_SQL, CAPABILITY_ON_SQL, settingsWriter } from '../../core/settings.js';
 import { budgetClaimPredicate } from '../../core/run-budget.js';
 import { runDeadlineSql, preparationAllowanceSql, SQL_NOW_MS } from '../../core/run-deadline.js';
-import { runParentLive, runnerCredentialAuthority, RUNNER_WRITE_REFUSED, runnerWriteRefusal } from '../../auth/runners.js';
+import { runnerCredentialAuthority, RUNNER_WRITE_REFUSED, runnerWriteRefusal } from '../../auth/runners.js';
+import { runParentLive } from './run-parent.js';
 import type { WorkerPrincipal } from '../../core/worker-lease.js';
 import { REPOSITORY_PREPARATION_TIMEOUT_MS } from '@goondocks/myco-shared/repository';
 import { INPUT_UNCHANGED, SCHEDULE_ACTOR_SQL, SCHEDULE_ENTRY_SQL } from '../schedule-entry.js';
@@ -519,11 +520,16 @@ const claimRunnerAuthority = assertion<[string, string]>({ name: 'runs.claimRunn
   `SELECT CASE WHEN EXISTS(SELECT 1 FROM runner_credentials c WHERE c.id=? AND c.runner_id=?
     AND ${runnerCredentialAuthority('c', SQL_NOW_MS)}) THEN 1 ELSE json_extract('[]','${RUNNER_WRITE_REFUSED}') END` });
 
+/** A member's worker claims only while its own credential and member hold: a claim has no lease yet for a first-use rotation to carry. */
+const claimMemberAuthority = assertion<[token: string, now: number]>({ name: 'runs.claimMemberAuthority', refusal: CLAIM_SELECTION_REFUSED,
+  when: `EXISTS (SELECT 1 FROM member_credentials c JOIN members m ON m.id=c.member_id
+    WHERE c.id=?1 AND c.revoked_at IS NULL AND c.expires_at>?2 AND m.revoked_at IS NULL)` });
+
 /** Authority and admission are asserted before any claim companion can commit. */
 export function workerClaimAssertions(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmission): Bound[] {
   const { definition, authority } = claimBinding(form, claim, admission);
   return [
-    ...(claim.worker.kind === 'runner' ? [claimRunnerAuthority.bind(claim.worker.credentialId, claim.worker.runnerId)] : []),
+    claim.worker.kind === 'runner' ? claimRunnerAuthority.bind(claim.worker.credentialId, claim.worker.runnerId) : claimMemberAuthority.bind(claim.worker.tokenId, claim.now),
     definition.guard.bind(...authority),
   ];
 }

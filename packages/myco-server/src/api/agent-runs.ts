@@ -15,7 +15,6 @@ import { RunBodyUnavailable, RunNotFound, listReportsWithBodies, runInstructionB
 import { getRunCalls, getRunDetail, getRunSteps, listRuns } from '../read/runs.js';
 import { runReads } from '../db/runs/reads.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
-import { memberSubject } from '../auth/authorization.js';
 import { RUN_CANCEL_POLICY, authorizeHttp } from '../auth/http-authorization.js';
 import type { RunDetail } from '../read/runs.js';
 import { paging } from './sessions.js';
@@ -85,8 +84,7 @@ export async function handleProjectRun(env: ServerEnv, ctx: OwnerContext): Promi
   if (calls instanceof Response) return calls;
   const detail = await getRunDetail(env.db, scope, runId, ctx.now, ctx.member.id, { ...calls, includeSignIn: isAdmin(ctx.member.role) });
   if (detail === null) return notFound();
-  const subject = await memberSubject(env.db, ctx.member.id, 'http');
-  const canCancel = await authorizeHttp(env, RUN_CANCEL_POLICY, subject, { params: { projectId: scope.projectId, runId } });
+  const canCancel = await authorizeHttp(env, RUN_CANCEL_POLICY, { memberId: ctx.member.id }, { params: { projectId: scope.projectId, runId } });
   const waits = await fleetWaits(env, detail.run.status === 'queued' ? [detail.run.task] : [], ctx.now, isAdmin(ctx.member.role));
   const answer: DashboardRunDetail = { ...detail, run: { ...detail.run, ...(detail.run.status === 'queued' ? { fleetWait: waits.get(detail.run.task) } : {}), canCancel,
     cancelReason: canCancel ? null : 'Only the member who requested this run or an administrator can cancel it.' } };

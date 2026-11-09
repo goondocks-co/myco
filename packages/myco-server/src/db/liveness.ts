@@ -16,10 +16,10 @@ export const memberRevokedByParams = (memberId: string, nowMs: number, revokedBy
   [memberId, nowMs, revokedBy];
 
 /** True for a credential minted under the identity every dispatched runtime authenticates as: the run purpose. `alias` qualifies the credential's columns; binds `HARNESS_MEMBER_ID`. */
-export const runCredential = (alias = ''): string => `${alias === '' ? '' : `${alias}.`}member_id = ?`;
+export const runCredential = (alias = '', harness = '?'): string => `${alias === '' ? '' : `${alias}.`}member_id = ${harness}`;
 
 /** True for a credential that authenticates: unrevoked, unexpired (binds the clock), and its member live. `alias` qualifies the credential's columns. */
-export const credentialLive = (alias = ''): string => {
+export const credentialLive = (alias = '', now = '?'): string => {
   const q = alias === '' ? '' : `${alias}.`;
-  return `${q}revoked_at IS NULL AND ${q}expires_at > ? AND ${memberLive(`${q}member_id`)}`;
+  return `${q}revoked_at IS NULL AND ${q}expires_at > ${now} AND ${memberLive(`${q}member_id`)}`;
 };

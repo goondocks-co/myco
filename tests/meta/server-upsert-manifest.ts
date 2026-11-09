@@ -444,6 +444,12 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
   'db/storage/usage.ts#storageUsageSchemaStatements': [{ tables: ['storage_usage'], order: 'unverified' }],
   'db/schema-v727.ts#<module>': [{ tables: ['storage_usage'], order: 'unverified' }],
+  'db/identity/lineage-heads.ts#reconcileHead': [{ tables: ['credential_lineages'], order: 'unverified' }],
+  'db/schema-vNEXT-s6.ts#<module>': [
+    { tables: ['credential_lineages'], order: 'unverified' },
+    { tables: ['credential_lineages'], order: 'unverified' },
+    { tables: ['credential_lineages'], order: 'unverified' },
+  ],
   'core/worker-contacts.ts#runnerObservationStatement': [
     { tables: ['runner_observations'], order: 'unverified' },
   ],

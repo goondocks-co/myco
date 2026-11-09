@@ -287,7 +287,7 @@ describe('migrateOnly across step 48 (#1416)', () => {
     expect(sqlite.query('PRAGMA foreign_key_check').all()).toEqual([]);
     expect((sqlite.query(`SELECT sql FROM sqlite_master WHERE name = 'member_credentials'`).get() as { sql: string }).sql).not.toMatch(/CHECK/);
     expect((sqlite.query(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'member_credentials' ORDER BY name`).all() as { name: string }[]).map((r) => r.name))
-      .toEqual(['idx_member_credentials_hash', 'idx_member_credentials_lineage', 'idx_member_credentials_live_successor', 'idx_member_credentials_machine', 'idx_member_credentials_member', 'idx_member_credentials_started', 'sqlite_autoindex_member_credentials_1']);
+      .toEqual(['idx_member_credentials_hash', 'idx_member_credentials_lineage', 'idx_member_credentials_live_lineage', 'idx_member_credentials_live_successor', 'idx_member_credentials_machine', 'idx_member_credentials_member', 'idx_member_credentials_member_started', 'idx_member_credentials_person_lineage', 'idx_member_credentials_started', 'sqlite_autoindex_member_credentials_1']);
     expect(sqlite.query(`SELECT name FROM sqlite_master WHERE name LIKE '_v48_%'`).all()).toEqual([]);
     sqlite.exec(`UPDATE member_credentials SET bytes_written = 5000000000 WHERE id = 'mt_next'`);
     expect(sqlite.query(`SELECT bytes_written FROM member_credentials WHERE id = 'mt_next'`).get()).toEqual({ bytes_written: 5_000_000_000 });
@@ -309,7 +309,8 @@ describe('migrateOnly across step 48 (#1416)', () => {
     const current = credentialShape(after, false);
     const machineIndex = current.indexes.find((index) => index.name === 'idx_member_credentials_machine');
     expect(machineIndex?.columns.filter((column) => (column as { key: number }).key === 1).map((column) => (column as { name: string }).name)).toEqual(['machine_id', 'issued_at', 'id']);
-    expect({ ...current, indexes: current.indexes.filter((index) => index.name !== 'idx_member_credentials_machine') }).toEqual(before);
+    const rebuiltOrLater = new Set(['idx_member_credentials_machine', 'idx_member_credentials_live_lineage', 'idx_member_credentials_member_started', 'idx_member_credentials_person_lineage']);
+    expect({ ...current, indexes: current.indexes.filter((index) => !rebuiltOrLater.has(index.name)) }).toEqual(before);
     after.close();
   });
 

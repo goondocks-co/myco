@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ApiError, fetchJson, patchJson, postJson } from '../lib/api';
+import { ApiError, fetchEveryPage, patchJson, postJson } from '../lib/api';
 import type { InvitationsAnswer, MembersAnswer, MintedInvitation } from '../features/admin/wire';
 import { useIdentityMutation } from './use-me';
 import { MACHINE_LIST_KEY } from '../features/admin/machines';
@@ -9,12 +9,12 @@ export { usePaged } from './use-paged';
 export type { ActivityRow, CredentialRow, InvitationRow, MemberRow } from '../features/admin/wire';
 
 export function useMembers() {
-  return useQuery({ queryKey: ['members'], queryFn: ({ signal }) => fetchJson<MembersAnswer>('/api/members', signal), ...live('still') });
+  return useQuery({ queryKey: ['members'], queryFn: ({ signal }) => fetchEveryPage<MembersAnswer>('/api/members', 'members', signal), ...live('still') });
 }
 
 /** Open invitations; asked only where `enabled`, which a page sets for an admin, the only member the server answers them to. */
 export function useInvitations(options: { enabled?: boolean } = {}) {
-  return useQuery({ queryKey: ['invitations'], queryFn: ({ signal }) => fetchJson<InvitationsAnswer>('/api/enrollment', signal), enabled: options.enabled ?? true, ...live('still') });
+  return useQuery({ queryKey: ['invitations'], queryFn: ({ signal }) => fetchEveryPage<InvitationsAnswer>('/api/enrollment', 'invitations', signal), enabled: options.enabled ?? true, ...live('still') });
 }
 
 const REFUSALS: Record<string, string> = {
