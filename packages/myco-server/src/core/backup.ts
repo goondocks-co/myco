@@ -119,7 +119,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'document_rebuild_receipts', 'document_rebuild_totals',
   'document_transcript_pins', 'document_group_pins', 'document_pin_totals',
   'document_owners', 'document_continuations', 'document_plan_keys', 'document_metadata_ready','document_metadata_progress',
-  'document_failure_contributions', 'document_failure_totals', 'document_failure_head', 'publication_dependency_totals',
+  'document_failure_contributions', 'document_failure_totals', 'document_failure_head', 'publication_dependency_totals', 'document_locator_repair',
   'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
   'setting_revisions', 'embedding_passed_over', 'change_marks', 'member_naming_failures', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
   'credential_lineages', 'storage_usage', 'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'run_head', 'attempt_head', 'run_body_failures', 'run_retirements', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due',

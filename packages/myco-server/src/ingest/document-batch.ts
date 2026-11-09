@@ -15,7 +15,8 @@ import { learningSessionStatement, pendingCardsStatement, sessionProgressStateme
 import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tables.js';
-import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocRecord, type Page } from '../content/document.js';
+import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, type DocRecord, type Page } from '../content/document.js';
+import { SESSION_OWNER } from '../db/document-tables.js';
 import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';

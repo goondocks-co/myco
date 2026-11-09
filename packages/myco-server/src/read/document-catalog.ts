@@ -7,6 +7,7 @@ import type { ToolRollup } from '../content/tool-rollup.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
+import { promptLocator } from '../db/documents/prompt-locator.js';
 
 /** The live generation of a session's document, as a scalar subquery over `project` and `session` expressions. */
 export const liveGenerationSql = (project: string, session: string): string =>
@@ -61,8 +62,9 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
   const id = key ? 'c.turn_key' : 'p.prompt_id';
   const cursor = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && cursor === null) return { rows: [], cursor: null };
-  const exactTurn = opts.promptId === undefined ? undefined : await promptTurn(db, scope, sessionId, opts.promptId);
-  if (opts.promptId !== undefined && exactTurn == null) return { rows: [], cursor: null };
+  const exact = opts.promptId === undefined ? undefined : await promptLocator(db, scope.projectId, sessionId, opts.promptId);
+  if (exact === null || (exact !== undefined && exact.turn === null)) return { rows: [], cursor: null };
+  const exactTurn = exact?.turn ?? undefined;
   const read = async (take: number, order: 'ASC' | 'DESC', boundary: { createdAt: number; id: string } | null, inclusive = false, exact = false) => {
     const conditions = [`p.project_id = ?1`, `p.session_id = ?2`, `p.generation = ${liveGenerationSql('?1', '?2')}`, `p.turn_key = p.prompt_id`];
     const params: unknown[] = [scope.projectId, sessionId];
@@ -107,7 +109,7 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
   };
   let rows;
   if (opts.around !== undefined) {
-    const target = await promptTurn(db, scope, sessionId, opts.around);
+    const target = (await promptLocator(db, scope.projectId, sessionId, opts.around))?.turn;
     if (target == null) return { rows: [], cursor: null };
     const anchor = await db.prepare(`SELECT p.ord,c.created_at,p.prompt_id FROM session_prompts p
       LEFT JOIN turn_cards c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.turn_key=p.turn_key
@@ -122,26 +124,6 @@ export async function listCatalogTurns(db: RelationalStore, scope: ReadScope, se
   } else rows = await read(limit, direction, cursor);
   const paged = page(rows, limit, r => ({ createdAt: r.position, id: r.promptId }));
   return { cursor: paged.cursor, rows: paged.rows.map(({ position: _position, ...row }) => row) };
-}
-
-/**
- * Where a prompt of the session's live document sits: its turn key (null for a prompt no turn holds) and the page of
- * that owner holding its record (null when not yet recorded, -1 when no page holds it); undefined when the prompt is absent.
- */
-export async function promptPlace(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<{ turn: string | null; page: number | null } | undefined> {
-  const row = await db.prepare(`SELECT turn_key, page FROM session_prompts WHERE project_id = ?1 AND session_id = ?2
-    AND generation = ${liveGenerationSql('?1', '?2')} AND prompt_id = ?3`).bind(scope.projectId, sessionId, promptId).first<{ turn_key: string | null; page: number | null }>();
-  return row === null ? undefined : { turn: row.turn_key, page: row.page };
-}
-
-/** The turn a prompt of the session's live document belongs to: its turn key, null for a prompt no turn holds, or undefined when absent. */
-export async function promptTurn(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<string | null | undefined> {
-  return (await promptPlace(db, scope, sessionId, promptId))?.turn;
-}
-
-/** True when a prompt of that id sits in the session's live document. */
-export async function promptInDocument(db: RelationalStore, scope: ReadScope, sessionId: string, promptId: string): Promise<boolean> {
-  return (await promptTurn(db, scope, sessionId, promptId)) !== undefined;
 }
 
 export interface DocumentCounters {

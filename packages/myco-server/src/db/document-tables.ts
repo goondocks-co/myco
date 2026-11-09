@@ -1,3 +1,5 @@
+/** The owner of records no turn resolves. */
+export const SESSION_OWNER = '';
 /** Characters a catalog preview of a prompt keeps. */
 export const DOCUMENT_PREVIEW_CHARS = 160;
 /** Distinct named paths retained in one session generation. */
@@ -10,7 +12,7 @@ export const DOCUMENT_SESSION_TABLES = [
   'document_owners', 'document_continuations', 'document_plan_keys', 'document_metadata_ready','document_metadata_progress',
   'document_transcript_pins', 'document_group_pins', 'document_pin_totals', 'document_failure_contributions',
   'document_rebuild_receipts',
-  'publication_dependencies', 'session_lifecycle_facts', 'session_user_prompt_firsts',
+  'publication_dependencies', 'session_lifecycle_facts', 'session_user_prompt_firsts', 'document_locator_repair',
 ] as const;
 
 /** Immutable document directories and publisher frontiers carried by portable backups. */

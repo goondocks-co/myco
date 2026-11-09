@@ -170,14 +170,6 @@ export async function reusableCard(db: RelationalStore, projectId: string, sessi
   return row === null ? null : { ...row, fields: storedCardFields(row.fields) };
 }
 
-/** A settled turn a model must card: due now, with the material its card is built from. */
-export function modelDueStatement(db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn,
-  material: ReturnType<typeof turnMaterial>, now: number): PreparedStatement {
-  return db.prepare(`UPDATE turn_cards SET due_at = ?, settle_at = NULL, records = ?, input_chars = ?, raw_chars = ?
-    WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ? AND settle_at IS NOT NULL`)
-    .bind(now, material.records, material.inputChars, material.rawChars, projectId, sessionId, turn.turnKey, turn.changes);
-}
-
 /** A pending turn whose prompt the live document no longer holds. */
 export function forgetTurnStatement(db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn): PreparedStatement {
   return db.prepare(`DELETE FROM turn_cards WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?
@@ -185,7 +177,7 @@ export function forgetTurnStatement(db: RelationalStore, projectId: string, sess
       AND NOT EXISTS (SELECT 1 FROM session_prompts sp JOIN session_documents d ON d.project_id=sp.project_id
         AND d.session_id=sp.session_id AND d.generation=sp.generation AND d.state='live'
         WHERE sp.project_id=turn_cards.project_id AND sp.session_id=turn_cards.session_id
-          AND sp.prompt_id=turn_cards.turn_key AND sp.turn_key=sp.prompt_id)`)
+          AND sp.prompt_id=turn_cards.turn_key AND sp.turn_key=sp.prompt_id) RETURNING turn_key`)
     .bind(projectId, sessionId, turn.turnKey, turn.changes);
 }
 

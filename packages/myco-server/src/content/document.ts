@@ -16,8 +16,6 @@ export const DOCUMENT_PAGE_BYTES = 262_144;
 export const DOCUMENT_CHUNK_BYTES = 1_048_576;
 /** Bytes a record keeps of a body that moved to a body chunk, and of a tool's output. */
 export const DOCUMENT_PREVIEW_BYTES = 4_096;
-/** The owner of records no turn resolves. */
-export const SESSION_OWNER = '';
 
 export const PAGE_ENCODING = 'gzip-ndjson';
 export const BODY_ENCODING = 'identity';
