@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { sandboxPath } from './test-tool-path.mjs';
 export { sandboxPath, resolveTestTool } from './test-tool-path.mjs';
+
+/** Per-test limit for a nested `bun test`, in place of Bun's 5 s default, below the 30 s a parent gives its child process. */
+export const NESTED_BUN_TEST_TIMEOUT_ARGS = ['--timeout', '25000'];
 import { serviceGuardEnvironment, guardedServicePath } from './test-service-exec.mjs';
 
 export function sandboxTestHome(root) {

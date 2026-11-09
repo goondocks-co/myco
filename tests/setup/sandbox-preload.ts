@@ -11,8 +11,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { removeRegisteredTestPaths } from '../support/remove-when-tests-end.js';
+import { installStaleConnectionResend } from './miniflare-stale-connection.js';
 
 configureSqliteLibrary();
+installStaleConnectionResend();
 
 // The per-user lock root tests use (tests/helpers/per-user-lock-namespace.ts).
 // The runner hands every test process one; a run outside the runner gets one

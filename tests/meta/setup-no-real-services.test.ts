@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { NESTED_BUN_TEST_TIMEOUT_ARGS, sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { assertNoServiceExecutions, consumeServiceExecDenials } from '../../scripts/test-service-exec.mjs';
 
 const roots: string[] = [];
@@ -19,7 +19,7 @@ for (const stub of [true, false]) {
     roots.push(root);
     const env = sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root, MYCO_SETUP_FIXTURE_ROOT: root,
       ...(stub ? { MYCO_NATIVE_SERVICE_STUB: '1' } : {}) });
-    const child = spawnSync(process.execPath, ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
+    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
       '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/legacy_service_boundary_test.ts')],
     { env, cwd: root, encoding: 'utf8', timeout: 30_000 });
     if (stub) {
@@ -38,7 +38,7 @@ for (const operation of ['inspect', 'prepare', 'recover', 'setup-status', 'setup
     roots.push(root);
     const env = sandboxChildEnv(root, { MYCO_TEST_RUN_ROOT: root, MYCO_NATIVE_LIFECYCLE_OPERATION: operation,
       ...(stub ? { MYCO_NATIVE_SERVICE_STUB: '1' } : {}) });
-    const child = spawnSync(process.execPath, ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
+    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
       '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/native_lifecycle_boundary_test.ts')],
     { env, cwd: root, encoding: 'utf8', timeout: 30_000 });
     if (stub) {

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { NESTED_BUN_TEST_TIMEOUT_ARGS, sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { peekDeploymentRecord } from '@myco/server/cloudflare.js';
 import { peekLocalPaths, readLocalSecrets } from '@myco/server/local.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
@@ -30,7 +30,7 @@ describe('create journeys across SIGKILL', () => {
       const childRoot = path.join(root, 'child');
       fs.mkdirSync(childRoot);
       fs.renameSync(project, path.join(childRoot, 'repo'));
-      const args = ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/create_journey_interruption_test.ts')];
+      const args = ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'), '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/create_journey_interruption_test.ts')];
       const env = sandboxChildEnv(childRoot, { MYCO_SETUP_FIXTURE_ROOT: childRoot, MYCO_SETUP_TARGET: target });
       const child = spawn(process.execPath, args, { env: { ...env, MYCO_SETUP_STOP_AFTER: boundary }, cwd: childRoot, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';

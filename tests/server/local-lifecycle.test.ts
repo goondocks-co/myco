@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { NESTED_BUN_TEST_TIMEOUT_ARGS, sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -144,7 +144,7 @@ describe('sentinel-last resumable create', () => {
     fs.mkdirSync(childRoot);
     const env = sandboxChildEnv(childRoot, { MYCO_TEST_RUN_ROOT: process.env.MYCO_TEST_RUN_ROOT,
       MYCO_CREATE_STOP_AFTER: step });
-    const child = spawn(process.execPath, ['test', '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
+    const child = spawn(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
       '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/native_create_interruption_test.ts')],
     { env, cwd: childRoot, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
