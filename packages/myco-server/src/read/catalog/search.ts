@@ -1,5 +1,5 @@
 import { displayPrompt as search_import_displayPrompt } from "@goondocks/myco-shared/prompt-text";
-import { processedResourceProofSql as search_import_processedResourceProofSql } from "../../core/processed-resources.js";
+import { processedResourceProofSql as search_import_processedResourceProofSql } from "../../db/processed-resources.js";
 import type { RelationalStore as search_import_RelationalStore } from "../../core/adapters.js";
 import { occurredAt as search_import_occurredAt } from "../../db/session-dates.js";
 import { presentedStatus as search_import_presentedStatus } from "../../db/session-dates.js";

@@ -1,7 +1,9 @@
 import { cardsWritten } from '../db/runs/attributed-writes.js';
 import type { AttributedMutation } from '../db/runs/attribution.js';
-import type { Bound } from '../db/index.js';
+import { refused, type Bound } from '../db/index.js';
 import { cardBackoffWrite, cardDueWrite } from '../db/runs/claim-companions.js';
+import { CARD_DOCUMENT_PENDING, cardsRemaining, claimableCardTurns, commitCardWrites, forgetTurnStatement, reusableCardRow, writeCardStatement, type DueTurn } from '../db/learning/cards.js';
+import { sessionProgressStatement } from '../db/learning/progress.js';
 import { encodeCard, cardFieldsError, readCard, renderCard, storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-card';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
 /**
@@ -13,15 +15,13 @@ import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
  * model. A claim takes a session's due turns from the catalog alone, up to the per-run input budget, and that run writes
  * one card per turn. Every statement here reads catalog rows; none reads a document.
  */
-import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
+import type { RelationalStore, ServerEnv } from './adapters.js';
 import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
 import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
-import { claimLearningRetryWrite, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
-import { FRESH_LEARNING_MS, learningRangeSql } from '../db/runs/learning-policy.js';
-import { learningHistoryEnabledSql } from './settings.js';
-import { writeGuardBatch } from './write-guard-store.js';
+import { claimLearningRetryWrite, LEARNING_BACKOFF_MS } from './learning-sessions.js';
+import { FRESH_LEARNING_MS } from '../db/runs/learning-policy.js';
 import { SessionMaterialPendingError } from '../db/sessions/material.js';
 
 /** Due turns one claim reads at most. */
@@ -30,28 +30,10 @@ export const CARD_CLAIM_TURNS = 64;
 const CARD_RETRY_MS = 3_600_000;
 
 /** A card claim advances the session backoff and holds its assigned turns until the claim is presumed lost. */
-export function claimCardsWrites(db: RelationalStore, projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
+export function claimCardsWrites(projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
   run: { runId: string; dispatchedBy: string }): Bound[] {
-  return [claimLearningRetryWrite(db, projectId, sessionId, run), cardBackoffWrite.bind(now - FRESH_LEARNING_MS, now, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy),
+  return [claimLearningRetryWrite(projectId, sessionId, run), cardBackoffWrite.bind(now - FRESH_LEARNING_MS, now, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy),
     cardDueWrite.bind(now + CARD_RETRY_MS, projectId, sessionId, JSON.stringify(turnKeys), run.runId, run.dispatchedBy)];
-}
-
-/** The input hash the publisher stored for a card's turn in its session's live document. */
-const LIVE_HASH = `(SELECT sp.input_hash FROM session_prompts sp JOIN session_documents d ON d.project_id = sp.project_id
-  AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
-  WHERE sp.project_id = turn_cards.project_id AND sp.session_id = turn_cards.session_id AND sp.prompt_id = turn_cards.turn_key)`;
-
-const liveDocumentSql = (project: string, session: string) => `EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id = ${project} AND d.session_id = ${session} AND d.state = 'live' AND d.generation IS NOT NULL)`;
-const DOCUMENT_PENDING_PATH = '$[myco_card_document_pending]';
-
-/** Card mutations require a live document in the same transaction. */
-function cardMutationBatch(db: RelationalStore, projectId: string, sessionId: string, statements: PreparedStatement[]) {
-  return writeGuardBatch(db, () => db.prepare(`SELECT CASE WHEN ${liveDocumentSql('?', '?')} THEN 1
-      ELSE json_extract('[]', ?) END AS ready`).bind(projectId, sessionId, DOCUMENT_PENDING_PATH), error => {
-    if (error instanceof Error && error.message.includes(DOCUMENT_PENDING_PATH.slice(1))) throw new SessionMaterialPendingError();
-    throw error;
-  }, statements);
 }
 
 interface CardWrite { turns: string[]; signal: CardSignal; card: CardFields }
@@ -120,9 +102,6 @@ export function cardMaterialPages(sessionId: string, turns: readonly CardMateria
   return materialPages(turns, CARD_ENTRY, { first: room, rest: room });
 }
 
-/** A pending turn as a claim or settlement found it: its key and the change count its write is guarded by. */
-export interface DueTurn { turnKey: string; changes: number }
-
 /** The material settlement records on a turn: what its card is built from. */
 export function turnMaterial(trimmed: TrimmedTurn): { records: string; inputChars: number; rawChars: number } {
   return { records: JSON.stringify(trimmed.records), inputChars: trimmed.text.length, rawChars: trimmed.rawChars };
@@ -130,52 +109,28 @@ export function turnMaterial(trimmed: TrimmedTurn): { records: string; inputChar
 
 /**
  * Write one turn's card, guarded on the change count the turn had at settlement. The card takes the input hash the
- * publisher stored for the turn, and an unchanged input keeps its coverage.
+ * publisher stored for the turn, and an unchanged input keeps its coverage. The contribution counts follow by trigger.
  */
-export function cardStatements(
-  db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn,
+export function cardWriteStatement(
+  projectId: string, sessionId: string, turn: DueTurn,
   card: { value: CardFields | string; signal: CardSignal; reason: string; sharedWith: string | null; covered: boolean | null; runId: string | null; model: string | null;
     outline?: ReturnType<typeof cardOutline> },
   now: number, material?: ReturnType<typeof turnMaterial>,
-): PreparedStatement[] {
+) {
   const fields = typeof card.value === 'string' ? null : card.value;
   const text = typeof card.value === 'string' ? card.value : renderCard(card.value);
   const outline = card.outline ?? cardOutline(card.value);
-  return [
-    db.prepare(`UPDATE turn_cards SET state = 'carded', due_at = NULL, settle_at = NULL,
-        records = COALESCE(?, records), input_chars = COALESCE(?, input_chars), raw_chars = COALESCE(?, raw_chars),
-        headline = ?, marks = ?, card = ?, fields = ?, signal = ?, signal_reason = ?, shared_with = ?,
-        covered = CASE WHEN ? = 'none' THEN 1 WHEN ? IS NOT NULL THEN ? WHEN input_hash IS ${LIVE_HASH} THEN covered ELSE 0 END,
-        input_hash = ${LIVE_HASH}, run_id = ?, model = ?, carded_at = ?
-      WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ? AND ${LIVE_HASH} IS NOT NULL RETURNING turn_key`)
-      .bind(material?.records ?? null, material?.inputChars ?? null, material?.rawChars ?? null,
-        outline.headline, JSON.stringify(outline.marks), text, fields === null ? null : encodeCard(fields), card.signal, card.reason, card.sharedWith,
-        card.signal, card.covered === null ? null : 1, card.covered ? 1 : 0,
-        card.runId, card.model, now, projectId, sessionId, turn.turnKey, turn.changes),
-  ];
+  return writeCardStatement(projectId, sessionId, turn, {
+    headline: outline.headline, marks: JSON.stringify(outline.marks), card: text, fields: fields === null ? null : encodeCard(fields),
+    signal: card.signal, reason: card.reason, sharedWith: card.sharedWith, covered: card.covered, runId: card.runId, model: card.model,
+  }, now, material);
 }
 
 /** The carded turn of the session whose input hash equals the one stored for `turnKey`, coverage first, or null. */
 export async function reusableCard(db: RelationalStore, projectId: string, sessionId: string, turnKey: string):
   Promise<{ turnKey: string; card: string; fields: CardFields | null; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null } | null> {
-  const row = await db.prepare(`SELECT c.turn_key AS turnKey, c.card,c.fields, c.signal, c.signal_reason AS reason, c.covered,c.headline,c.marks FROM turn_cards c INDEXED BY idx_turn_cards_reuse
-    WHERE c.project_id = ?1 AND c.session_id = ?2 AND c.card IS NOT NULL AND c.input_hash = (SELECT sp.input_hash FROM session_prompts sp
-      JOIN session_documents d ON d.project_id = sp.project_id AND d.session_id = sp.session_id AND d.generation = sp.generation AND d.state = 'live'
-      WHERE sp.project_id = ?1 AND sp.session_id = ?2 AND sp.prompt_id = ?3)
-    ORDER BY c.covered DESC LIMIT 1`).bind(projectId, sessionId, turnKey)
-    .first<{ turnKey: string; card: string; fields: string | null; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null }>();
-  return row === null ? null : { ...row, fields: storedCardFields(row.fields) };
-}
-
-/** A pending turn whose prompt the live document no longer holds. */
-export function forgetTurnStatement(db: RelationalStore, projectId: string, sessionId: string, turn: DueTurn): PreparedStatement {
-  return db.prepare(`DELETE FROM turn_cards WHERE project_id = ? AND session_id = ? AND turn_key = ? AND state = 'pending' AND changes = ?
-      AND ${liveDocumentSql('turn_cards.project_id', 'turn_cards.session_id')}
-      AND NOT EXISTS (SELECT 1 FROM session_prompts sp JOIN session_documents d ON d.project_id=sp.project_id
-        AND d.session_id=sp.session_id AND d.generation=sp.generation AND d.state='live'
-        WHERE sp.project_id=turn_cards.project_id AND sp.session_id=turn_cards.session_id
-          AND sp.prompt_id=turn_cards.turn_key AND sp.turn_key=sp.prompt_id) RETURNING turn_key`)
-    .bind(projectId, sessionId, turn.turnKey, turn.changes);
+  const row = await reusableCardRow(db, projectId, sessionId, turnKey);
+  return row === null ? null : { ...row, signal: row.signal as CardSignal, fields: storedCardFields(row.fields) };
 }
 
 /**
@@ -184,14 +139,10 @@ export function forgetTurnStatement(db: RelationalStore, projectId: string, sess
  * stops at its limit whatever the session holds: turns due at one instant, or turns postponed past now.
  */
 export async function dueCardTurns(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<DueTurn[]> {
-  const { results } = await db.prepare(`SELECT turn_key AS turnKey, changes, input_chars AS chars FROM turn_cards INDEXED BY idx_turn_cards_model_due
-    WHERE project_id = ? AND session_id = ? AND state = 'pending' AND due_at IS NOT NULL AND due_at <= ?
-      AND EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id = ?1 AND l.session_id = ?2 AND l.card_ready_at <= ${Math.floor(now)}
-        AND (${learningRangeSql('cards', true, now)} OR ${learningHistoryEnabledSql()})) ORDER BY due_at, turn_key LIMIT ?`)
-    .bind(projectId, sessionId, now, CARD_CLAIM_TURNS).all<DueTurn & { chars: number | null }>();
+  const rows = await claimableCardTurns(db, projectId, sessionId, now, CARD_CLAIM_TURNS, now - FRESH_LEARNING_MS);
   const turns: DueTurn[] = [];
   let room = CARD_RUN_INPUT_CHARS;
-  for (const row of results) {
+  for (const row of rows) {
     const chars = row.chars ?? 0;
     if (chars > room && turns.length > 0) continue;
     room -= chars;
@@ -200,14 +151,18 @@ export async function dueCardTurns(db: RelationalStore, projectId: string, sessi
   return turns;
 }
 
-/** Assigned turns whose current material still needs this run's card. */
-const remainingCardsSql = `FROM json_each(?) j
-  LEFT JOIN turn_cards c ON c.project_id = ? AND c.session_id = ? AND c.turn_key = json_extract(j.value,'$.turnKey')
-  WHERE c.changes = json_extract(j.value,'$.changes') AND (c.run_id IS NOT ? OR c.state <> 'carded')`;
-
 /** The run's card completion lands once every assigned turn has a card or newer material. */
 export function cardsWrittenStatement(_db: RelationalStore, projectId: string, sessionId: string, runId: string, turns: readonly DueTurn[]): AttributedMutation {
   return cardsWritten.bind(projectId,sessionId,JSON.stringify(turns),projectId,sessionId,runId);
+}
+
+/** Commit card writes while the session's document is live; a batch whose document left live refuses retryably. */
+async function commitWhileLive<const Statements extends readonly Bound[]>(db: RelationalStore, projectId: string, sessionId: string, ...statements: Statements) {
+  try { return await commitCardWrites(db, projectId, sessionId, ...statements); }
+  catch (error) {
+    if (refused(error, CARD_DOCUMENT_PENDING)) throw new SessionMaterialPendingError();
+    throw error;
+  }
 }
 
 /** Write a card run's cards for its served turns; a turn that changed after serving stays due. */
@@ -216,25 +171,22 @@ export async function writeRunCards(
   run: { runId: string; model: string | null }, now: number, unavailable: readonly DueTurn[] = [],
 ): Promise<{ written: number; changed: string[] }> {
   const { db } = env;
-  await cardMutationBatch(db, projectId, sessionId, unavailable.length > 0 ? [
-    ...unavailable.map(turn => forgetTurnStatement(db, projectId, sessionId, turn)),
-    pendingCardsStatement(db, projectId, sessionId), ...sessionProgressStatements(db, projectId, sessionId, now),
-  ] : []);
+  await commitWhileLive(db, projectId, sessionId, ...unavailable.map(turn => forgetTurnStatement(projectId, sessionId, turn)),
+    ...(unavailable.length > 0 ? [sessionProgressStatement(projectId, sessionId, now)] : []));
   const byKey = new Map(assigned.map((turn) => [turn.turnKey, turn]));
   const changed: string[] = [];
   let written = 0;
   for (const write of writes) {
     const [first, ...rest] = write.turns;
     for (const turnKey of write.turns) {
-      const results = await cardMutationBatch(db, projectId, sessionId, [
-        ...cardStatements(db, projectId, sessionId, byKey.get(turnKey)!, {
+      const [card] = await commitWhileLive(db, projectId, sessionId,
+        cardWriteStatement(projectId, sessionId, byKey.get(turnKey)!, {
           value: write.card, signal: write.signal, reason: 'model', sharedWith: turnKey === first || rest.length === 0 ? null : first!,
           covered: null, runId: run.runId, model: run.model,
         }, now),
-        ...sessionProgressStatements(db, projectId, sessionId, now),
-      ]);
+        sessionProgressStatement(projectId, sessionId, now));
       // The card landed when its guarded update returned its turn; a trigger's own writes never count for it.
-      if (results[0]!.results.length > 0) written += 1; else changed.push(turnKey);
+      if (card.results.length > 0) written += 1; else changed.push(turnKey);
     }
   }
   return { written, changed };
@@ -242,15 +194,10 @@ export async function writeRunCards(
 
 /** Whether this run has written every assigned turn that still holds its assigned material. */
 export async function runCardsFinished(db: RelationalStore, projectId: string, sessionId: string, runId: string, turns: readonly DueTurn[]): Promise<boolean> {
-  const row = await db.prepare(`SELECT COUNT(*) AS remaining ${remainingCardsSql}`)
-    .bind(JSON.stringify(turns), projectId, sessionId, runId).first<{ remaining: number }>();
-  return row?.remaining === 0;
+  return (await cardsRemaining(db, projectId, sessionId, runId, turns)).count === 0;
 }
 
 /** Assigned unchanged turns still awaiting this run's cards. */
 export async function runCardsRemaining(db: RelationalStore, projectId: string, sessionId: string, runId: string, turns: readonly DueTurn[]): Promise<string[]> {
-  const rows = await db.prepare(`SELECT c.turn_key AS turnKey ${remainingCardsSql}`)
-    .bind(JSON.stringify(turns),projectId,sessionId,runId).all<{turnKey:string}>();
-  return rows.results.map(row => row.turnKey);
+  return (await cardsRemaining(db, projectId, sessionId, runId, turns)).keys;
 }
-

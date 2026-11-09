@@ -201,16 +201,20 @@ it('seeks fresh card and learning work without visiting active, backed-off or di
     session.run('future-learning', now, now);
     progress.run('future-learning', now + 2 * DAY, 0, 1, now, 0);
     const stages = LEARNING_STAGES.slice(0, 2);
+    const { advanceLearningDeadlines } = await import('@myco-server-worker/db/learning/ready.js');
+    const drain = async () => { while ((await advanceLearningDeadlines(f.db, now, { page: 500, age: true })).more); };
+    await drain();
     const reads = async (expected = 1) => Promise.all(stages.map(async stage => {
       const due = stage.due("'proj_1'", now);
       expect(await f.db.prepare(`SELECT ${due.sql} AS due`).bind(...due.params).first()).toEqual({ due: expected });
       return meter.reads(f.sqlite, { sql: `SELECT ${due.sql}`, params: due.params });
     }));
     const before = await reads();
-    const contact = () => f.sqlite.exec("UPDATE sessions SET ended_at=NULL,last_received_at=" + now + " WHERE project_id='proj_1' AND session_id IN ('previous-day-card','future-learning')");
-    contact();
+    const contact = async () => { f.sqlite.exec("UPDATE sessions SET ended_at=NULL,last_received_at=" + now + " WHERE project_id='proj_1' AND session_id IN ('previous-day-card','future-learning')"); await drain(); };
+    await contact();
     const idleBefore = await reads(0);
     f.sqlite.prepare("UPDATE sessions SET ended_at=? WHERE project_id='proj_1' AND session_id IN ('previous-day-card','future-learning')").run(now);
+    await drain();
     f.sqlite.transaction(() => {
       for (let n = 0; n < 1900; n++) {
         for (const kind of ['active', 'backoff', 'history']) {
@@ -224,10 +228,11 @@ it('seeks fresh card and learning work without visiting active, backed-off or di
         }
       }
     })();
+    await drain();
     expect(await reads()).toEqual(before);
     expect((await stages[0]!.head(f.db, 'proj_1', now))?.key).toBe('previous-day-card');
     expect((await stages[1]!.head(f.db, 'proj_1', now))?.key).toBe('future-learning');
-    contact();
+    await contact();
     expect(await reads(0)).toEqual(idleBefore);
   } finally { meter.close(); f.sqlite.close(); }
 });
@@ -245,16 +250,21 @@ it('stops card and learning heads at the first source-ordered ready row as the r
       VALUES('proj_1',?,'ready',?,1,1,?)`);
     const card = f.sqlite.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at) VALUES('proj_1',?,'turn',1,?)`);
     let measured = 0;
-    const measuredDb: RelationalStore = { ...f.db, prepare(sql) {
+    const statements = new WeakMap<object, { real: ReturnType<RelationalStore['prepare']>; sql: string; params: unknown[] }>();
+    const measuredDb = { ...f.db, prepare(sql: string) {
       const statement = f.db.prepare(sql);
-      return { ...statement, bind(...params) {
-        const bound = statement.bind(...params);
-        return { ...bound, async first<T>() {
-          measured = meter.reads(f.sqlite, { sql, params });
-          return bound.first<T>();
-        } };
-      } };
-    } };
+      return { ...statement, bind(...params: unknown[]) {
+        const bound = statement.bind(...params as never[]);
+        const wrapped = { ...bound };
+        statements.set(wrapped, { real: bound, sql, params });
+        return wrapped;
+      } } as ReturnType<RelationalStore['prepare']>;
+    }, async batch(batched: ReturnType<RelationalStore['prepare']>[]) {
+      const held = batched.map(statement => statements.get(statement)!);
+      measured = held.reduce((total, { sql, params }) => total + meter.reads(f.sqlite, { sql, params }), 0);
+      return f.db.batch(held.map(({ real }) => real));
+    } } as unknown as RelationalStore;
+    const { advanceLearningDeadlines } = await import('@myco-server-worker/db/learning/ready.js');
     const samples: unknown[] = [];
     for (const fresh of [true, false]) {
       f.sqlite.exec('DELETE FROM learning_sessions; DELETE FROM turn_cards; DELETE FROM sessions');
@@ -265,9 +275,10 @@ it('stops card and learning heads at the first source-ordered ready row as the r
           for (let n = previous; n < size; n++) {
             const id = `ready-${String(n).padStart(4, '0')}`;
             const source = f.now - (fresh ? 0 : 30 * 86_400_000) - n;
-            session.run(id, source, source); progress.run(id, source, f.now); card.run(id, f.now);
+            session.run(id, source, source); card.run(id, f.now); progress.run(id, source, f.now);
           }
         })();
+        while ((await advanceLearningDeadlines(f.db, f.now, { page: 500, age: true })).more);
         const reads: number[] = [];
         for (const stage of LEARNING_STAGES.slice(fresh ? 0 : 2, fresh ? 2 : 4)) {
           expect((await stage.head(measuredDb, 'proj_1', f.now))?.key).toBe('ready-0000');

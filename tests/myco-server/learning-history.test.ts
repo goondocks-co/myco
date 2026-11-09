@@ -21,7 +21,8 @@ import { envelope, memoryBlobStore, recordingLimiter, uuid } from './helpers/fix
 import { writeRunCards, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
 import { type CardAssignment } from '@myco-server-worker/core/learning-stages.js';
 import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
-import { LEARNING_SOURCE_REPAIR_PAGE, readLearningStatus, learningStatusLine, completeLearning, type LearningAssignment } from '@myco-server-worker/core/learning-sessions.js';
+import { readLearningStatus, learningStatusLine, completeLearning, type LearningAssignment } from '@myco-server-worker/core/learning-sessions.js'
+import { LEARNING_SOURCE_REPAIR_PAGE } from '@myco-server-worker/db/learning/source-repair.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { switchedOnStages } from '@myco-server-worker/core/pulled-stages.js';
@@ -32,7 +33,8 @@ const DAY = 24 * HOUR;
 const OLD = NOW - 30 * DAY;
 const HISTORY = 'agent.learning_history_enabled';
 const IDLE_CLAIM_ROW_LIMIT = 120;
-const POPULATED_RANGE_END_ROWS = 2;
+/** A populated poll over an empty one: the range end of its reads, and the deadline pass promoting one page of two sessions. */
+const POPULATED_POLL_ROWS = 2 + 10;
 const HISTORY_STATUS_ROW_LIMIT = 100;
 const DUE_CLAIM_ROW_LIMIT = 4000;
 
@@ -152,18 +154,37 @@ it('skips a history backlog before probing it and reports why history waits', as
     env.db = first.db;
     expect(await poll()).toMatchObject({ claimed: false });
     expect(first.rows(), JSON.stringify(first.queries)).toBeLessThan(IDLE_CLAIM_ROW_LIMIT);
-    expect(first.rows() - empty.rows()).toBeLessThanOrEqual(POPULATED_RANGE_END_ROWS);
+    expect(first.rows() - empty.rows()).toBeLessThanOrEqual(POPULATED_POLL_ROWS);
     await add(2000, 4000);
     const second = countReads(db);
     env.db = second.db;
     expect(await poll()).toMatchObject({ claimed: false });
-    expect(second.rows()).toBeLessThanOrEqual(first.rows());
+    expect(second.rows(), JSON.stringify(second.queries)).toBeLessThanOrEqual(first.rows());
     console.info('history claim row bound', { target, empty: empty.rows(), first: first.rows(), second: second.rows() });
     if (target === 'D1') expect(first.rows()).toBeGreaterThan(0);
     env.db = db;
+    while ((await JOB_IMPLEMENTATIONS['learning-deadlines']!(env, NOW, 'active') as { more: boolean }).more);
     const status = await readLearningStatus(db, NOW);
-    expect(status).toMatchObject({ historyWaiting: status.cap + 1, turnsAwaitingCards: 0, dueSessions: 0, dueCards: 0 });
-    expect(learningStatusLine(status, null, NOW)).toContain('at least 1000 older sessions waiting for history learning to be enabled');
+    expect(status).toMatchObject({ state: 'ready', historyWaiting: 4000, turnsAwaitingCards: 0, dueSessions: 0, dueCards: 0 });
+    expect(learningStatusLine(status, null, NOW)).toContain('4000 older sessions waiting for history learning to be enabled');
+  });
+});
+
+it('takes no history session through the fresh stage on the first claim after migration with history off', async () => {
+  await withDocumentStores(async db => {
+    const { poll } = await workerHarness(db);
+    const ids = JSON.stringify(Array.from({ length: 12 }, (_, n) => n));
+    await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,due_cards,eligible_at)
+      SELECT 'project','aged-' || value,'ready',?,1,? FROM json_each(?)`).bind(OLD, OLD, ids).run();
+    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at,source_activity_at)
+      SELECT 'project','aged-card-' || value,'t',?,?,? FROM json_each(?)`).bind(OLD, OLD, OLD, ids).run();
+    await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at)
+      SELECT 'project','aged-card-' || value,'ready',? FROM json_each(?)`).bind(OLD, ids).run();
+    await db.prepare('UPDATE learning_sessions SET aged=0').run();
+    for (let round = 0; round < 3; round += 1) expect(await poll()).toMatchObject({ claimed: false });
+    expect(await db.prepare('SELECT COUNT(*) AS n FROM agent_runs').first()).toEqual({ n: 0 });
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM learning_sessions WHERE learning_stage='learningFresh' OR card_stage='cardsFresh'").first())).toEqual({ n: 0 });
+    expect((await db.prepare("SELECT COUNT(*) AS n FROM learning_sessions WHERE learning_stage='learningHistory' OR card_stage='cardsHistory'").first<{ n: number }>())!.n).toBeGreaterThan(0);
   });
 });
 
@@ -209,6 +230,7 @@ it('keeps idle claims and history status bounded across finished history and fre
     };
     const status = async () => {
       await settingsWriter(db).setLeaf(HISTORY, false, 'owner', NOW);
+      while ((await JOB_IMPLEMENTATIONS['learning-deadlines']!(env, NOW, 'active') as { more: boolean }).more);
       const counted = countReads(db);
       expect(await readLearningStatus(counted.db, NOW)).toMatchObject({ historyWaiting: 1, turnsAwaitingCards: 0, dueCards: 0, dueSessions: 0 });
       expect(counted.rows(), JSON.stringify(counted.queries)).toBeLessThan(HISTORY_STATUS_ROW_LIMIT);
@@ -220,7 +242,9 @@ it('keeps idle claims and history status bounded across finished history and fre
       for (const project of ['project', 'other']) await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at)
         SELECT ?,? || value,'ready',? FROM json_each(?)`).bind(project, kind, activity, ids).run();
     };
+    await idle();
     const emptyIdle = await idle();
+    await status();
     const emptyStatus = await status();
     await add('finished-', 0, 2000, OLD);
     await add('idle-', 0, 100, NOW - HOUR);

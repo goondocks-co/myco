@@ -1,4 +1,4 @@
-import { claimableRawIdentitySql, effectiveRawOwnerSql, rawClaimCutoffSql } from './raw-claims.js';
+import { claimableRawIdentitySql, effectiveRawOwnerSql, rawClaimCutoffSql } from '../core/raw-claims.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 
 /** The projected fields whose complete bodies are Deployment-shared. */

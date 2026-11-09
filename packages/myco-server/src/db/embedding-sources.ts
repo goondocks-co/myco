@@ -1,5 +1,5 @@
 import { occurredAt, presentedStatus } from './session-dates.js';
-import { processedResourceProofSql } from '../core/processed-resources.js';
+import { processedResourceProofSql } from './processed-resources.js';
 
 /** Every embeddable table: its vector type, key, the columns its revision follows, and each clause of its `embedding_sources` SELECT. */
 export const EMBEDDING_SOURCES = [
