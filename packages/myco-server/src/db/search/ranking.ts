@@ -28,6 +28,7 @@ export const REVISION_KINDS: Readonly<Record<string, readonly Watched[]>> = {
     { table: 'plans', columns: ['plan_key', 'created_at', 'status', 'project_id', 'session_id', 'blob_key'] },
     { table: 'processed_resources', columns: ['project_id', 'kind', 'resource_id', 'blob_key', 'classification'], rows: true, when: (row) => `${row}.kind = 'plan'` },
     { table: 'search_blob_chunks', columns: ['project_id', 'blob_key'] },
+    { table: 'session_tombstones', columns: ['project_id', 'session_id'], rows: true },
   ],
   session: [
     { table: 'sessions', columns: ['session_id', 'occurred_started_at', 'started_at', 'first_received_at', 'occurred_ended_at', 'ended_at', 'agent', 'branch', 'project_id'], rows: true,
@@ -35,7 +36,10 @@ export const REVISION_KINDS: Readonly<Record<string, readonly Watched[]>> = {
       narrow: { columns: ['occurred_started_at', 'started_at', 'first_received_at', 'occurred_ended_at', 'ended_at'], when: sessionMatches } },
     { table: 'session_tombstones', columns: ['project_id', 'session_id'], rows: true },
   ],
-  turn: [{ table: 'turn_cards', columns: ['turn_key', 'created_at', 'project_id', 'session_id'] }],
+  turn: [
+    { table: 'turn_cards', columns: ['turn_key', 'created_at', 'project_id', 'session_id'] },
+    { table: 'session_tombstones', columns: ['project_id', 'session_id'], rows: true },
+  ],
   release: [{ table: 'knowledge_release_state', columns: ['id', 'project_id', 'namespace', 'record_id', 'state', 'confidence', 'checked_at'], rows: true }],
   projects: [{ table: 'projects', columns: ['project_id', 'archived_at'], rows: true }],
 };

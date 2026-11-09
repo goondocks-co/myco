@@ -64,7 +64,8 @@ export const receiptSnapshots: ParityScenario = {
     const sourceRemoved = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/snapshot-source/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',
     });
-    expect(sourceRemoved.status).toBe(200);
+    expect(sourceRemoved.status).toBe(202);
+    await sourceRemoved.body?.cancel();
     expect(await target.sql(`SELECT item_id,title,session_id,content_hash,unavailable FROM injection_served_items WHERE project_id=${project} ORDER BY item_id`))
       .toEqual(planIds.map(id => ({ item_id: id, title: null, session_id: null, content_hash: null, unavailable: 1 })));
     const redacted = (await read()).injection;
@@ -73,7 +74,11 @@ export const receiptSnapshots: ParityScenario = {
     const removed = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/snapshot-receiver/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',
     });
-    expect(removed.status).toBe(200);
+    expect(removed.status).toBe(202);
+    await removed.body?.cancel();
+    for (let wake = 0; wake < 40 && (await target.sql(`SELECT 1 FROM injection_served_items WHERE project_id=${project} LIMIT 1`)).length > 0; wake += 1) {
+      await (await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } })).body?.cancel();
+    }
     expect(await target.sql(`SELECT * FROM injection_served_items WHERE project_id=${project}`)).toEqual([]);
   },
 };

@@ -1,7 +1,8 @@
 import { writeGuardStore } from './write-guard-store.js';
 import { inheritStoreContext } from './adapters.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { DERIVED_TABLES, tombstonedAmong } from './tombstones.js';
+import { DERIVED_TABLES } from '../db/sessions/deletion-phases.js';
+import { tombstonedAmong } from '../db/sessions/tombstones.js';
 import { referencedBlobsOf } from './object-release.js';
 import { unregisteredAmong } from '../db/storage/release-queue.js';
 import { runsPresentAmong, runsWithoutInstruction } from '../db/runs/body-restore.js';
@@ -44,17 +45,8 @@ export async function excludeRetiredRuns(db: RelationalStore, tables: Map<string
   return { excluded: retired.size, unrecoverable };
 }
 
-/** Excludes deleted session content before object closure and document planning. */
-export async function excludeDeletedRestoreRows(db: RelationalStore, tables: Map<string, Row[]>): Promise<RelationalStore> {
-  const guarded = await restoreDeletionGuard(db);
-  const sessions = new Map<string, Set<string>>();
-  for (const rows of tables.values()) for (const row of rows) {
-    if (typeof row.project_id === 'string' && typeof row.session_id === 'string') {
-      sessions.set(row.project_id, (sessions.get(row.project_id) ?? new Set()).add(row.session_id));
-    }
-  }
-  const deleted = new Set((tables.get('session_tombstones') ?? []).map(row => identity(row.project_id, row.session_id)));
-  for (const [project, ids] of sessions) for (const id of await tombstonedAmong(db, project, [...ids])) deleted.add(identity(project, id));
+/** Removes every row of the `deleted` sessions from a table map, keeping their sessions and tombstones as the deletion itself does. */
+function dropDeletedSessionRows(tables: Map<string, Row[]>, deleted: ReadonlySet<string>): void {
   const deletedTranscripts = new Set((tables.get('transcripts') ?? []).filter(row => deleted.has(identity(row.project_id, row.session_id)))
     .map(row => identity(row.project_id, row.transcript_id)));
   const deletedEvents = new Set((tables.get('events') ?? []).filter(row => deleted.has(identity(row.project_id, row.session_id)))
@@ -94,6 +86,42 @@ export async function excludeDeletedRestoreRows(db: RelationalStore, tables: Map
       return true;
     }));
   }
+}
+
+/** Every blob the rows of `tables` name. */
+function blobsNamed(tables: Map<string, Row[]>): Set<string> {
+  return new Set([...tables].flatMap(([table, rows]) => table === 'blobs' ? [] : rows.flatMap(row =>
+    [...referencedBlobsOf(table, row), ...restoreBlobReferences(table, row)])).map(pair => identity(pair.projectId, pair.key)));
+}
+
+/**
+ * Removes a deletion still in progress from a backup's snapshot: the rows of every session the snapshot's own tombstones
+ * name, and the blobs only they named. An artifact then carries none of a deleted session's rows, whichever phase its job
+ * stands in, and closure judges what remains.
+ */
+export function excludeDeletedSnapshotRows(snapshot: ReadonlyMap<string, readonly Row[]>): ReadonlyMap<string, readonly Row[]> {
+  const deleted = new Set((snapshot.get('session_tombstones') ?? []).map(row => identity(row.project_id, row.session_id)));
+  if (deleted.size === 0) return snapshot;
+  const tables = new Map<string, Row[]>([...snapshot].map(([table, rows]) => [table, [...rows]]));
+  const before = blobsNamed(tables);
+  dropDeletedSessionRows(tables, deleted);
+  const after = blobsNamed(tables);
+  tables.set('blobs', (tables.get('blobs') ?? []).filter(row => { const held = identity(row.project_id, row.key); return !before.has(held) || after.has(held); }));
+  return tables;
+}
+
+/** Excludes deleted session content before object closure and document planning. */
+export async function excludeDeletedRestoreRows(db: RelationalStore, tables: Map<string, Row[]>): Promise<RelationalStore> {
+  const guarded = await restoreDeletionGuard(db);
+  const sessions = new Map<string, Set<string>>();
+  for (const rows of tables.values()) for (const row of rows) {
+    if (typeof row.project_id === 'string' && typeof row.session_id === 'string') {
+      sessions.set(row.project_id, (sessions.get(row.project_id) ?? new Set()).add(row.session_id));
+    }
+  }
+  const deleted = new Set((tables.get('session_tombstones') ?? []).map(row => identity(row.project_id, row.session_id)));
+  for (const [project, ids] of sessions) for (const id of await tombstonedAmong(db, project, [...ids])) deleted.add(identity(project, id));
+  dropDeletedSessionRows(tables, deleted);
   const required = new Set([...tables].flatMap(([table, rows]) => table === 'blobs' ? [] : rows.flatMap(row => restoreBlobReferences(table, row)))
     .map(pair => identity(pair.projectId, pair.key)));
   for (const table of ['prompt_batches','responses','tool_calls']) for (const row of tables.get(table) ?? []) {

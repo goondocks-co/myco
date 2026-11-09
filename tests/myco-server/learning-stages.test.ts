@@ -9,7 +9,7 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 import {
   forgetTurnStatement,
   cardStatements,

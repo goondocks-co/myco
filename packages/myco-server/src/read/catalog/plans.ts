@@ -1,5 +1,6 @@
 import type { RelationalStore as plans_import_RelationalStore } from "../../core/adapters.js";
 import { PLAN_STATUSES as plans_import_PLAN_STATUSES } from "../../ingest/kinds.js";
+import { notTombstonedSql } from "../../db/session-read-model.js";
 import { clampLimit as plans_import_clampLimit } from "../scope.js";
 import { encodeCursor as plans_import_encodeCursor } from "../scope.js";
 import { inListChunks as plans_import_inListChunks } from "../scope.js";
@@ -187,7 +188,7 @@ function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_Rea
 
  async function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<plans_ProjectPlanSummary | plans_ProjectPlanRow | null> {
   const columns = options.summary ? 'plan_key, title, status, session_id, content_hash' : plans_COLUMNS;
-  const row = (await queryRows<Record<string, unknown>>(db,`SELECT ${columns} FROM plans WHERE project_id = ? AND plan_key = ?`,[scope.projectId, planKey],'first'))[0] ?? null;
+  const row = (await queryRows<Record<string, unknown>>(db,`SELECT ${columns} FROM plans WHERE project_id = ? AND plan_key = ? AND ${notTombstonedSql('plans')}`,[scope.projectId, planKey],'first'))[0] ?? null;
   if (row === null) return null;
   if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string,
     sessionId: row.session_id as string, contentHash: row.content_hash as string | null };
@@ -197,7 +198,7 @@ function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_Rea
 
 /** True when the plan sits in the session inside the scope. */
  async function plans_planInSession(db: plans_import_RelationalStore, scope: plans_import_ReadScope, sessionId: string, planKey: string): Promise<boolean> {
-  const row = (await queryRows<{ present: number }>(db,`SELECT 1 AS present FROM plans WHERE project_id = ? AND session_id = ? AND plan_key = ?`,[scope.projectId, sessionId, planKey],'first'))[0] ?? null;
+  const row = (await queryRows<{ present: number }>(db,`SELECT 1 AS present FROM plans WHERE project_id = ? AND session_id = ? AND plan_key = ? AND ${notTombstonedSql('plans')}`,[scope.projectId, sessionId, planKey],'first'))[0] ?? null;
   return row !== null;
 }
 

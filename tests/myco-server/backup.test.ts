@@ -37,7 +37,7 @@ import { renderMigrationFile } from '@myco-server-worker/db/migrate.js';
 import { journaled, sqliteEnv } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 
 const seeded = () => {
   const fixture = sqliteEnv();

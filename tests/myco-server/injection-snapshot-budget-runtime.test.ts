@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 import { measuredStore } from './helpers/read-budget.js';
 
 it('D1 source tombstones read only their snapshots among 10000 served plans', async () => {

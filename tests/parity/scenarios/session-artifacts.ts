@@ -47,8 +47,10 @@ export const sessionArtifactsParity: ParityScenario = {
     const gone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'parity' }),
     });
-    expect(gone.status).toBe(200);
+    expect(gone.status).toBe(202);
     expect(await call({ ...report, artifact_id: '1932' })).toEqual({ ok: false, error: 'session_id not found' });
+    const held = async () => Number((await target.sql(`SELECT COUNT(*) AS n FROM session_artifacts WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))[0]!.n);
+    for (let wake = 0; wake < 40 && await held() > 0; wake += 1) await target.clockWake();
     expect(await target.sql(`SELECT COUNT(*) AS n FROM session_artifacts WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`)).toEqual([{ n: 0 }]);
     expect((await page()).status).toBe(404);
   },

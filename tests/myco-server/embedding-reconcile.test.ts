@@ -12,7 +12,7 @@ import {
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/work.js';
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import { modelReadiness } from '../../packages/myco-server/src/db/embeddings/status.js';
-import { tombstoneSession } from '../../packages/myco-server/src/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 import { setPlanStatus } from '../../packages/myco-server/src/read/plans.js';
 
 configureSqliteLibrary();
@@ -47,6 +47,15 @@ test('deleted sessions are hidden by both searches while saved knowledge remains
   for (let i = 0; i < 4; i++) await f.step();
   expect(f.sqlite.query("SELECT metadata_json FROM local_vectors WHERE project_id='p'").all()).toHaveLength(1);
   expect((await f.search('architecture')).results.map((r) => r.id)).toEqual(['kept']);
+});
+
+test('a plan hit of a tombstoned session leaves the semantic results at once', async () => {
+  const f = fixture();
+  f.insert('plans', { project_id: 'p', plan_key: 'plan-1', session_id: 's', event_id: 'e-plan', machine_id: 'm', token_id: 't', title: 'architecture plan', content: 'architecture plan body', content_hash: 'h', status: 'active', updated_by: 'm', created_at: 1, updated_at: 1, received_at: 1 });
+  for (let i = 0; i < 6; i++) await f.step();
+  expect((await f.search('architecture')).results.map((r) => r.id)).toContain('plan-1');
+  f.insert('session_tombstones', { project_id: 'p', session_id: 's', created_at: 2, created_by: 'operator' });
+  expect((await f.search('architecture')).results.map((r) => r.id)).not.toContain('plan-1');
 });
 
 test('rebuilds a recovered empty index without changing source knowledge or another project', async () => {

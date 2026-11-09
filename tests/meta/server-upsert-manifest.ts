@@ -68,9 +68,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   "db/documents/rebuild.ts#publicationRebuildSchema": [
     { tables: ["document_rebuild_totals"], order: 'unverified' },
   ],
-  "db/documents/rebuild.ts#rereadOperations": [
-    { tables: ["transcript_publication"], order: 'unverified' },
-  ],
+
   "db/documents/pin-schema.ts#reconcilePublicationPins": [
     { tables: ["document_transcript_pins"], order: 'unverified' },
   ],
@@ -440,6 +438,8 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
   'db/schema-v710.ts#<module>': [{ tables: ['setting_revisions'], order: 'unverified' }],
   'db/storage/release-queue.ts#<module>': [{ tables: ['blob_release_candidates'], order: 'unverified' }],
+  'db/sessions/deletion-phases.ts#phase': [{ tables: ['blob_release_candidates'], order: 'unverified' }],
+  'db/documents/reread.ts#<module>': [{ tables: ['transcript_publication'], order: 'unverified' }],
   'db/storage/cleanup.ts#<module>': [
     { tables: ['storage_cleanup_omissions'], order: 'unverified' },
   ],

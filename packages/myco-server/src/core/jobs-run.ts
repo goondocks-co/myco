@@ -41,6 +41,8 @@ import { jobDispatchesAt, SCHEDULE_JOB, STAGING_RETENTION_JOB } from './jobs.js'
 import { runEmbeddingJob } from './embedding/jobs.js';
 import { reclaimFinishedAuthorities } from '../db/identity/authority-retention.js';
 import { transcriptRetention } from '../ingest/retention.js';
+import { advanceSessionDeletions } from '../db/sessions/deletion.js';
+import { advanceRereads } from '../db/documents/reread.js';
 import { drainObjectReleases, objectReleaseBacklogged } from './object-release.js';
 import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
@@ -279,6 +281,12 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'session-titling': titleReadySessions,
   'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,
+  'session-deletion': async (env, now) => {
+    const result = await advanceSessionDeletions(env.db, now, undefined, env.platform?.classifyError);
+    if (result.failed > 0 && !result.more) throw new Error('session_deletion_failed');
+    return result;
+  },
+  'transcript-reread': (env, now) => advanceRereads(env.db, now),
   'storage-content-cleanup': (env,now)=>storageCleanup(env,now),
   [SCHEDULE_JOB]: scheduledRecoveryExport,
   [STAGING_RETENTION_JOB]: pruneRecoveryStagings,

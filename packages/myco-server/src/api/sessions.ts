@@ -45,6 +45,7 @@ import {
   plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
 } from '../read/catalog/plans.js';
 import { tombstoneSession } from '../core/tombstones.js';
+import { deletionProgress } from '../db/sessions/deletion.js';
 import { endSession } from '../core/session-end.js';
 import { sessionOutcome } from '../db/runs/reads.js';
 import { sessionCommits } from '../read/session-commits.js';
@@ -398,13 +399,13 @@ export async function handleTranscript(env: ServerEnv, ctx: OwnerContext): Promi
 }
 
 /**
- * Deletes a session: the tombstone is recorded, every row derived from it is
- * removed, and blobs nothing else references go with them. 404 unless the
- * Project holds the session.
+ * Accepts a session's deletion: the tombstone hides it from every read at once
+ * and answers 202 with the job that removes the rest in bounded pages. 404 unless
+ * the Project holds the session.
  *
  * The tombstone outlives the rows deliberately. It is what a re-import reads in
  * order to refuse, and what tells a deleted session from one that never
- * arrived. Repeating the call is a no-op.
+ * arrived. Repeating the call changes nothing and answers the job as it stands.
  */
 export async function handleTombstoneSession(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const sessionId = sessionIdParam(ctx.params.sessionId);
@@ -417,6 +418,18 @@ export async function handleTombstoneSession(env: ServerEnv, ctx: OwnerContext):
     const named = typeof body === 'object' && body !== null ? (body as { reason?: unknown }).reason : undefined;
     if (typeof named === 'string' && named.trim() !== '') reason = named.trim().slice(0, MAX_TOMBSTONE_REASON_CHARS);
   } catch { /* a reason is optional */ }
-  const outcome = await tombstoneSession(env, scope, sessionId, ctx.member.id, ctx.now, reason);
-  return outcome.applied ? ok(outcome) : notFound();
+  const progress = await tombstoneSession(env, scope, sessionId, ctx.member.id, ctx.now, reason);
+  if (progress === null) return notFound();
+  try { await env.wake?.(); } catch { /* the clock's floor still wakes the Deployment */ }
+  return Response.json({ persisted: true, deletion: progress }, { status: 202 });
+}
+
+/** A deletion job's progress: 404 unless the Project has deleted this session. */
+export async function handleSessionDeletion(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const sessionId = sessionIdParam(ctx.params.sessionId);
+  if (sessionId === null) return notFound();
+  const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
+  if (scope === null) return notFound();
+  const progress = await deletionProgress(env.db, scope.projectId, sessionId, ctx.now);
+  return progress === null ? notFound() : ok({ deletion: progress });
 }

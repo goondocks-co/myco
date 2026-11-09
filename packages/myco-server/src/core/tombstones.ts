@@ -1,192 +1,22 @@
 /**
- * Session deletion retains its identity and tombstone, clears its title and
- * summary, and removes captured projections, the context served to it and the
- * record of which runs read or were served it. A spore kept from it names no prompt of it. Saved knowledge, the runs themselves and other sessions remain. Reads
- * exclude tombstones; ingestion refuses subsequent capture and import for the
- * same session ID. Unreferenced blobs are freed in bounded pages.
+ * Session deletion retains its identity and tombstone, clears its title and summary, and removes captured projections, the
+ * context served to it and the record of which runs read or were served it. A spore kept from it names no prompt of it.
+ * Saved knowledge, the runs themselves and other sessions remain. Reads exclude tombstones; ingestion refuses subsequent
+ * capture and import for the same session ID.
+ *
+ * Deletion is one accepted job: acceptance commits the tombstone at once, and a durable job removes the rest in bounded
+ * pages, each page recording its blob release candidates in the commit that removes its rows.
  */
-import { DOCUMENT_SESSION_TABLES } from '../db/document-tables.js';
-import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import { releaseBlobs } from './object-release.js';
-import { recordObservedCandidates } from '../db/storage/release-queue.js';
-import { BLOB_REFERENCES, blobReferenceColumn, kindFilter, type BlobReference } from './blob-references.js';
-import { inListChunks, type ReadScope } from '../read/scope.js';
+import type { ServerEnv } from './adapters.js';
+import { acceptSessionDeletion, type DeletionProgress } from '../db/sessions/deletion.js';
+import type { ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
 
-/** The tables a session's derived rows live in, each carrying `session_id` itself. */
-export const DERIVED_TABLES = [
-  'learning_sessions', 'event_refs',
-  ...DOCUMENT_SESSION_TABLES,
-  'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
-  'transcripts', 'attachments', 'plans', 'spore_injections', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts',
-  'extraction_acks', 'turn_cards', 'session_artifacts', 'events',
-] as const;
-
-/**
- * A segment belongs to a session through its transcript, not directly.
- *
- * `transcript_segments` is keyed `(project_id, transcript_id, base_offset)` and
- * carries no `session_id`, so it is reached by naming the transcripts the
- * session held — and it must be swept BEFORE `transcripts`, whose rows are the
- * only route to it.
- */
-const SEGMENTS_OF_SESSION = `SELECT transcript_id FROM transcripts WHERE project_id = ? AND session_id = ?`;
-
-/** The SQL naming a session's rows in a reference table, after `project_id = ?`, with the parameters it binds. */
-interface SessionRoute { where: string; params(projectId: string, sessionId: string): string[] }
-
-/** Reference tables owned by a run: a session deletion leaves them, and run retirement releases them. */
-const RUN_OWNED_REFERENCE_TABLES = new Set(['run_bodies']);
-
-/** How a reference table names the session holding a row: by its own `session_id`, or through the transcripts of one. A catalogue table reached neither way has no route from a deletion and is refused at load. */
-function sessionRoute(table: string): SessionRoute | null {
-  if ((DERIVED_TABLES as readonly string[]).includes(table)) return { where: 'session_id = ?', params: (projectId, sessionId) => [projectId, sessionId] };
-  if (table === 'transcript_segments') return { where: `transcript_id IN (${SEGMENTS_OF_SESSION})`, params: (projectId, sessionId) => [projectId, projectId, sessionId] };
-  if (RUN_OWNED_REFERENCE_TABLES.has(table)) return null;
-  throw new Error(`no route from a session to blob references in ${table}`);
-}
-
-/** Every catalogue reference with the route from a session to its rows, resolved once at load. */
-const SESSION_REFERENCES: readonly { ref: BlobReference; route: SessionRoute }[] =
-  BLOB_REFERENCES.flatMap((ref) => { const route = sessionRoute(ref.table); return route === null ? [] : [{ ref, route }]; });
-
-/** Which of these sessions this Project has deleted. The set an import checks before it offers anything: a tombstoned session is never held again. */
-export async function tombstonedAmong(db: RelationalStore, projectId: string, sessionIds: readonly string[]): Promise<Set<string>> {
-  const out = new Set<string>();
-  for (const run of inListChunks(sessionIds)) {
-    const { results } = await db
-      .prepare(`SELECT session_id FROM session_tombstones WHERE project_id = ? AND session_id IN (${run.map(() => '?').join(', ')})`)
-      .bind(projectId, ...run)
-      .all<{ session_id: string }>();
-    for (const r of results) out.add(r.session_id);
-  }
-  return out;
-}
-
-interface TombstoneOutcome {
-  /** False when the Project holds no such session; the caller answers not-found rather than inventing a tombstone. */
-  applied: boolean;
-  /** Rows removed across every derived table. */
-  removed: number;
-  /** Blobs no surviving row referenced, journaled for deletion with their rows removed. */
-  blobsFreed: number;
-  /** Blobs this call left recorded as release candidates while a recovery hold is open; the drain decides them after it. */
-  blobsLeft: number;
-}
-
-/** True when the Project holds this session at all, tombstoned or not: what separates "already deleted" from "never here". */
-export async function sessionPresent(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ present: number }>();
-  return row !== null;
-}
-
-/** Every blob the session's rows name, before any of them are removed, with the generation registered in that same read: one select per catalogue reference, sent as one batch. The hosted store caps a compound select at five terms. */
-async function blobsOf(db: RelationalStore, projectId: string, sessionId: string): Promise<Array<{ key: string; generation: string | null }>> {
-  const rows = await db.batch(SESSION_REFERENCES.map(({ ref, route }) => {
-    const column = blobReferenceColumn(ref, 'r');
-    return db.prepare(`SELECT DISTINCT ${column} AS k, (SELECT b.generation FROM blobs b WHERE b.project_id = r.project_id AND b.key = ${column}) AS g
-      FROM ${ref.table} r WHERE project_id = ? AND ${route.where} AND ${column} IS NOT NULL${kindFilter(ref)}`).bind(...route.params(projectId, sessionId));
-  }));
-  const found = new Map(rows.flatMap((r) => (r.results as Array<{ k: string; g: string | null }>).map((row) => [row.k, row.g] as const)));
-  return [...found].map(([key, generation]) => ({ key, generation }));
-}
-
-/** A deleted session's own lineage facts, cleared: a session leaves the parent indexes when it is deleted, so they hold live sessions alone. */
-const CLEAR_DELETED_PARENTS = `parent_session_id = NULL, parent_reason = NULL, launch_parent_session_id = NULL`;
-
-/**
- * The statements that mark a session deleted: its tombstone, then what the session says of itself cleared, its title
- * and summary and its own parents. A surviving session that names it as a parent keeps that reference.
- */
-export function tombstoneMarkStatements(db: RelationalStore, projectId: string, sessionId: string, by: string, nowMs: number, reason?: string): PreparedStatement[] {
-  return [
-    db.prepare(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
-        VALUES (?, ?, ?, ?, ?) ON CONFLICT (project_id, session_id) DO NOTHING`)
-      .bind(projectId, sessionId, reason ?? null, nowMs, by),
-    db.prepare(`UPDATE sessions SET title = NULL, summary = NULL, titled_at = NULL, titled_by = NULL
-      WHERE project_id = ? AND session_id = ? AND (title IS NOT NULL OR summary IS NOT NULL OR titled_at IS NOT NULL OR titled_by IS NOT NULL)`).bind(projectId, sessionId),
-    clearDeletedParentsStatement(db, projectId, [sessionId]),
-  ];
-}
-
-/**
- * The one clear of deleted sessions' own parents, for every session among `sessionIds` that carries a tombstone. Each
- * writer of deleted-session state (deletion, and restore of `sessions` or `session_tombstones` rows) runs it in the batch
- * that writes that state, so a deleted session never stays in the parent indexes.
- */
-export function clearDeletedParentsStatement(db: RelationalStore, projectId: string, sessionIds: readonly string[]): PreparedStatement {
-  return db.prepare(`UPDATE sessions SET ${CLEAR_DELETED_PARENTS}
-      WHERE project_id = ? AND session_id IN (${sessionIds.map(() => '?').join(', ')})
-        AND (parent_session_id IS NOT NULL OR parent_reason IS NOT NULL OR launch_parent_session_id IS NOT NULL)
-        AND EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = sessions.project_id AND t.session_id = sessions.session_id)`)
-    .bind(projectId, ...sessionIds);
-}
-
-/**
- * Suppress a session: record the tombstone, drop every derived row, and free
- * the blobs nothing else holds through the release owner, which journals their stored objects for deletion.
- *
- * The tombstone is written FIRST and in the same batch as the deletions. A
- * capture event arriving mid-delete is then refused by the shared check rather
- * than landing rows behind the sweep, which is what makes one pass enough.
- *
- * Idempotent: a second call finds the rows gone, writes the same tombstone
- * under `ON CONFLICT DO NOTHING`, and frees nothing.
- */
+/** Accepts a session's deletion and hands back its job's progress; null when the Project holds no such session. Accepting it again changes nothing. */
 export async function tombstoneSession(
   env: Pick<ServerEnv, 'db'>, scope: ReadScope, sessionId: string, by: string, nowMs: number, reason?: string,
-): Promise<TombstoneOutcome> {
-  const { projectId } = scope;
-  if (!(await sessionPresent(env.db, projectId, sessionId))) return { applied: false, removed: 0, blobsFreed: 0, blobsLeft: 0 };
-
-  const held = await blobsOf(env.db, projectId, sessionId);
-
-  const metadata = [
-    ...tombstoneMarkStatements(env.db, projectId, sessionId, by, nowMs, reason),
-    // A spore outlives its session and stops naming a prompt the deletion removes; it runs before the prompts go.
-    env.db.prepare(`UPDATE spores SET prompt_id = NULL
-      WHERE project_id = ? AND prompt_id IN (SELECT prompt_id FROM session_prompts WHERE project_id = ? AND session_id = ?
-        UNION SELECT record_id FROM event_refs WHERE project_id=? AND session_id=? AND kind='prompt')`)
-      .bind(projectId,projectId,sessionId,projectId,sessionId),
-    env.db.prepare(`UPDATE injection_served_items
-      SET title = NULL, content_hash = NULL, session_id = NULL, unavailable = 1
-      WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId),
-  ];
-  const statements = [
-    ...metadata,
-    // Segments first: `transcripts` is the only route to them.
-    env.db.prepare(`DELETE FROM transcript_segments WHERE project_id = ? AND transcript_id IN (${SEGMENTS_OF_SESSION}) RETURNING 1 AS removed`).bind(projectId, projectId, sessionId),
-    ...(['event'] as const).map(kind=>{
-      const table='events';const id='event_id';
-      return env.db.prepare(`DELETE FROM storage_cleanup_omissions WHERE rowid IN
-        (SELECT o.rowid FROM ${table} r CROSS JOIN storage_cleanup_omissions o
-          WHERE r.project_id=? AND r.session_id=? AND o.project_id=r.project_id
-            AND o.resource_kind=? AND o.resource_id=r.${id}) RETURNING 1 AS removed`).bind(projectId,sessionId,kind);
-    }),
-    // Served snapshots belong to the receiving session's receipt, not the source plan's session.
-    env.db.prepare(`DELETE FROM injection_served_items WHERE project_id = ? AND receipt_id IN
-      (SELECT id FROM spore_injections WHERE project_id = ? AND session_id = ?) RETURNING 1 AS removed`).bind(projectId, projectId, sessionId),
-    ...DERIVED_TABLES.map((table) => env.db.prepare(`DELETE FROM ${table} WHERE project_id = ? AND session_id = ? RETURNING 1 AS removed`).bind(projectId, sessionId)),
-    // The runs that read the session keep their own rows; only their record of reading this one goes.
-    env.db.prepare(`DELETE FROM run_reads WHERE project_id = ? AND session_id = ? RETURNING 1 AS removed`).bind(projectId, sessionId),
-    env.db.prepare(`DELETE FROM run_served_material WHERE project_id = ? AND session_id = ? RETURNING 1 AS removed`).bind(projectId, sessionId),
-    env.db.prepare(`DELETE FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id NOT IN (SELECT plan_key FROM plans WHERE project_id = ?) RETURNING 1 AS removed`).bind(projectId, projectId),
-  ];
-  // Every blob the session's rows named is recorded as a release candidate in the transaction that removes the rows, while
-  // the generation those rows held is still registered, so an interruption before the decision below leaves the candidates
-  // for the drain and a pass that lost to another records nothing.
-  const pairs = held.map(({ key }) => ({ projectId, key }));
-  const results = await env.db.batch([...statements, ...recordObservedCandidates(env.db, held.map(({ key, generation }) => ({ projectId, key, generation })), nowMs)]);
-  const removed = results.slice(metadata.length, statements.length).reduce((n, r) => n + r.results.length, 0);
-
-  const released = await releaseBlobs(env.db, pairs, nowMs);
-  const blobsFreed = released.released;
-  emit({ kind: 'session_tombstoned', projectId, sessionId, removed, blobsFreed, blobsLeft: released.deferred });
-  return { applied: true, removed, blobsFreed, blobsLeft: released.deferred };
-}
-
-/** Whether this session carries a tombstone. */
-export async function isTombstoned(db: RelationalStore, projectId: string, sessionId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM session_tombstones WHERE project_id = ? AND session_id = ?`).bind(projectId, sessionId).first<{ present: number }>();
-  return row !== null;
+): Promise<DeletionProgress | null> {
+  const progress = await acceptSessionDeletion(env.db, { projectId: scope.projectId, sessionId, by, ...(reason === undefined ? {} : { reason }), now: nowMs });
+  if (progress !== null) emit({ kind: 'session_tombstoned', projectId: scope.projectId, sessionId, phase: progress.phase, state: progress.state });
+  return progress;
 }

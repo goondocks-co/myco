@@ -3,6 +3,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
+import { ORPHAN_AUDIT_REST_MS } from '@myco-server-worker/db/storage/blob-orphan-audit.js';
 
 const key = (n: number) => n.toString(16).padStart(64, '0');
 const generation = '00000000-0000-4000-8000-000000000001';
@@ -34,9 +35,7 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
     const db = await mf.getD1Database('DB');
     const bucket = await mf.getR2Bucket('BUCKET');
     for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
-    const admissionPlan = await db.prepare(`EXPLAIN QUERY PLAN SELECT 1 AS present FROM session_tombstones WHERE created_at > ? LIMIT 1`)
-      .bind(now - 1).all<{ detail: string }>();
-    expect(admissionPlan.results.some((step) => /SEARCH session_tombstones USING COVERING INDEX idx_session_tombstones_created/.test(step.detail))).toBe(true);
+    await db.prepare('UPDATE orphan_sweep_state SET armed_at=-1').run();
     await db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','a',0)`).run();
     const held = 24;
     const seed = async (n: number, heldByCall: boolean) => {
@@ -48,10 +47,8 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
     };
     for (let n=1;n<=held;n+=1) await seed(n,true);
     await seed(held+1,false);
-    await db.prepare(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
-      VALUES('proj_1','gone',1,'fixture')`).run();
-    const sweep = async () => {
-      const response = await mf.dispatchFetch(`http://orphan/?now=${now}`);
+    const sweep = async (at = now) => {
+      const response = await mf.dispatchFetch(`http://orphan/?now=${at}`);
       const result = await response.json() as {freed?:number};
       expect(response.status,JSON.stringify(result)).toBe(200);
       return result.freed;
@@ -60,12 +57,12 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
     expect(await sweep()).toBe(0);
     expect(await sweep()).toBe(0);
     expect(await sweep()).toBe(1);
-    expect(await bucket.head(blobObjectKey('proj_1',key(held+1),generation))).toBeNull();
-    expect(await bucket.head(blobObjectKey('proj_1',key(1),generation))).not.toBeNull();
+    expect((await db.prepare('SELECT key FROM blobs WHERE key=?').bind(key(held+1)).first())).toBeNull();
+    expect((await db.prepare('SELECT key FROM blobs WHERE key=?').bind(key(1)).first())).not.toBeNull();
     await seed(0,false);
     expect(await sweep()).toBe(0);
-    expect(await sweep()).toBe(1);
-    expect(await bucket.head(blobObjectKey('proj_1',key(0),generation))).toBeNull();
+    expect(await sweep(now + ORPHAN_AUDIT_REST_MS)).toBe(1);
+    expect((await db.prepare('SELECT key FROM blobs WHERE key=?').bind(key(0)).first())).toBeNull();
     expect((await db.prepare(`SELECT cursor_project,cursor_key FROM orphan_sweep_state WHERE id=1`).first())?.cursor_key).toBe(key(7));
   } finally { await mf.dispose(); }
 }, 120_000);

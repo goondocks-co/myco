@@ -777,6 +777,10 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0757_v757.sql': '9c0a95908e026537ac71f04e08f60547485fb52497592949c3206486663d25a6',
   '0758_v758.sql': 'c55fa666daa092b7a4e97583b52a78fed1b05a846bfa7838537b9119d3f8aff5',
   '0759_v759.sql': '8ae9e0f2233eeff1e55100797b8f53693a32990666354ca6d75abd832162c103',
+  '0760_v760.sql': '1218498dde7f8a1c8a07f9f0638a37c627ffe343dd2eb55415bfa76372037d20',
+  '0761_v761.sql': '44a828c70c37c3cb389dadd30e5e65b32eac9970d37a74254eefa76a670e62c5',
+  '0762_v762.sql': 'bfa180f143393bf56523b3f0a133388f246ecb51133f3e0558e14643a0c4b4fb',
+  '0763_v763.sql': 'b937ffa355fbe0956c84c8ff676320bfda8bd5c8b82169eede814275fa3517e6',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1299,7 +1303,7 @@ describe('versioned schema steps', () => {
           const table = indexesBefore().get(droppedIndex) ?? null;
           const replaced = table !== null && SCHEMA_STEPS[n].statements.some((x) =>
             new RegExp(`^CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?\\w+ ON ${table}\\b`, 'i').test(x));
-          const allowed = replaced || TITLE_WORK_REPLACED_INDEXES.has(droppedIndex) || (dropping && table !== null && DROPPED_CONTENT.has(table));
+          const allowed = replaced || TITLE_WORK_REPLACED_INDEXES.has(droppedIndex) || droppedIndex === 'idx_session_tombstones_created' || (dropping && table !== null && DROPPED_CONTENT.has(table));
           expect({ step: n + 1, droppedIndex, table, allowed }).toEqual({ step: n + 1, droppedIndex, table, allowed: true });
           continue;
         }
@@ -1479,6 +1483,8 @@ describe('versioned schema steps', () => {
           : t === 'agent_run_attempts' && (c.name === 'estimate_usd' || c.name === 'cost_usd') ? '0'
           : t === 'agent_run_attempts' && c.name === 'owner_kind' ? `'member'` : t === 'agent_run_attempts' && c.name === 'runner_id' ? 'NULL'
           : t === 'agent_run_steps' && c.name === 'kind' ? `'read'` : t === 'agent_run_steps' && c.name === 'outcome' ? `'ok'` : t === 'registered_content_proofs' && c.name === 'durable' ? '1'
+          : (t === 'session_deletion_jobs' || t === 'transcript_reread_jobs') && c.name === 'state' ? "'running'"
+          : t === 'transcript_reread_jobs' && c.name === 'agent' ? 'NULL'
           : t === 'content_scan_checkpoints' && c.name === 'source_kind' ? "'event'"
           : t === 'raw_archive_refs' && c.name === 'source_kind' ? "'transcript'"
           : t === 'raw_archive_refs' && c.name === 'disposition' ? "'hot'"
@@ -1513,7 +1519,7 @@ describe('versioned schema steps', () => {
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'projects',
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'spore_resolution_edges',
-      'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'storage_usage', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
+      'session_deletion_jobs', 'transcript_reread_jobs', 'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'storage_usage', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',
     ].sort());
   });

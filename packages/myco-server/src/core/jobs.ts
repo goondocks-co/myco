@@ -179,6 +179,18 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     converges: 'a Deployment whose owner turned automatic integrity checking on at an interval has had its store checked by its own target\'s integrity and foreign key checks at least once per interval since the last run started, and the findings or the named failure of the latest run are recorded under its run id; a check this target does not support, one that is not configured, and one still running runs nothing',
   },
   {
+    name: 'session-deletion',
+    runsThrough: 'sleep',
+    onWorkWake: true,
+    converges: 'every accepted session deletion removes every row of its deleted session in bounded pages, each page recording its release candidates in the commit that removes it, and stands paused while a recovery hold or a restore of that session is open',
+  },
+  {
+    name: 'transcript-reread',
+    runsThrough: 'idle',
+    onWorkWake: true,
+    converges: 'every accepted reread sends each selected transcript back to its first retained byte, in pages, so the publisher reads it again under its pinned identities',
+  },
+  {
     name: 'transcript-retention',
     runsThrough: 'idle',
     converges: 'no raw transcript segment behind the parse cursor outlives the Deployment window, and no blob any row still references is removed while no blob nothing references is kept; a segment inside the window or ahead of the cursor, and every derived row, is never pruned',

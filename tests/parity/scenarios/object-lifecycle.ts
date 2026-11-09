@@ -1,3 +1,4 @@
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -45,9 +46,23 @@ export const objectLifecycle: ParityScenario = {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${sessionId}/tombstone`, {
         method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',
       });
-      expect(res.status).toBe(200);
-      return res.json() as Promise<{ blobsFreed: number; blobsLeft: number }>;
+      expect(res.status).toBe(202);
+      await res.body?.cancel();
     };
+    /** Runs the deletion job through owner wakes until its progress reports it complete. */
+    const deleted_ = async (sessionId: string) => {
+      for (let wake = 0; wake < 60; wake += 1) {
+        const progress = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${sessionId}/deletion`, { headers: target.ownerHeaders() });
+        expect(progress.status).toBe(200);
+        if (((await progress.json()) as { deletion: { state: string } }).deletion.state === 'complete') return;
+        const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
+        expect(res.status).toBe(200);
+        await res.body?.cancel();
+      }
+      throw new Error(`deletion of ${sessionId} did not finish`);
+    };
+    /** Past the upload grace, so a deletion's candidate can decide at once instead of waiting it out. */
+    const age = (key: string) => target.sql(`UPDATE blobs SET received_at = received_at - ${BLOB_RESERVATION_TTL_MS + 1000} WHERE project_id = ${lit(target.projectId)} AND key = ${lit(key)}`);
     const attached = async (label: string, key: string) => {
       const session = `parity-lifecycle-${label}-${stamp}`;
       await post(session, 'session.start', { agent: 'claude-code', startedAt: stamp });
@@ -71,7 +86,9 @@ export const objectLifecycle: ParityScenario = {
 
     // A deletion journals the exact object; an owner's wake leaves it; the clock deletes it.
     const deleted = await attached('deleted', key);
-    expect(await tombstone(deleted)).toMatchObject({ blobsFreed: 1, blobsLeft: 0 });
+    await age(key);
+    await tombstone(deleted);
+    await deleted_(deleted);
     const physical = `${target.projectId}/${key}~${String(row!.generation)}`;
     expect(await journal(key)).toEqual([physical]);
     expect((await read(key)).status).toBe(404);
@@ -89,19 +106,25 @@ export const objectLifecycle: ParityScenario = {
     expect(await target.sql(`SELECT reservation_id FROM blob_reservations WHERE reservation_id = ${lit(abandoned)}`)).toEqual([]);
     expect(await journal(abandoned)).toEqual([]);
 
-    // An open hold keeps what a deletion released recorded; the clock releases it once the hold is released.
+    // An open hold pauses a deletion's job, so what its session holds stays; the job finishes once the hold is released.
+    let heldName = '';
+    const heldSessionName = () => heldName;
     const heldKey = await upload(`held body ${stamp}`);
     await target.sql(`INSERT INTO recovery_holds (token, acquired_at) VALUES ('parity-hold-${stamp}', ${stamp})`);
     try {
       const heldSession = await attached('held', heldKey);
-      expect(await tombstone(heldSession)).toMatchObject({ blobsFreed: 0, blobsLeft: 1 });
+      heldName = heldSession;
+      await age(heldKey);
+      await tombstone(heldSession);
+      expect(((await (await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${heldSession}/deletion`, { headers: target.ownerHeaders() })).json()) as { deletion: { pausedBy: string | null } }).deletion.pausedBy).toBe('recovery_hold');
       // The clock is not woken while this hold is open: a hold no attempt carries is retired by the release job on a
       // target whose producer can answer, which is that job's own behaviour and not what this part holds.
       expect(await target.sql(`SELECT key FROM blobs WHERE key = ${lit(heldKey)}`)).toEqual([{ key: heldKey }]);
-      expect(await target.sql(`SELECT key FROM blob_release_candidates WHERE key = ${lit(heldKey)}`)).toEqual([{ key: heldKey }]);
+      expect(await target.sql(`SELECT key FROM blob_release_candidates WHERE key = ${lit(heldKey)}`)).toEqual([]);
     } finally {
       await target.sql(`UPDATE recovery_holds SET released_at = ${Date.now()}, release_reason = 'parity' WHERE token = 'parity-hold-${stamp}'`);
     }
+    await deleted_(heldSessionName());
     await target.clockWake();
     await target.clockWake();
     expect(await target.sql(`SELECT key FROM blobs WHERE key = ${lit(heldKey)}`)).toEqual([]);

@@ -10,7 +10,7 @@ import {
   lineage_sessionLineage as sessionLineage,
 } from '@myco-server-worker/read/catalog/lineage.js';
 import { inListChunks } from '@myco-server-worker/read/scope.js';
-import { clearDeletedParentsStatement, tombstoneMarkStatements } from '@myco-server-worker/core/tombstones.js';
+import { clearDeletedParentsStatement } from '@myco-server-worker/db/sessions/tombstones.js';
 
 let mf: Miniflare;
 
@@ -127,7 +127,8 @@ it.each(['launch_parent_session_id', 'parent_session_id'] as const)('reads the s
     const remainingIds = Array.from({ length: target - firstNew }, (_, i) =>
       `${root}-deleted-${String(firstNew + 1 + i).padStart(5, '0')}`);
     await d1.batch([
-      ...tombstoneMarkStatements(asStore(d1), projectId, `${root}-deleted-${String(firstNew).padStart(5, '0')}`, 'owner', 1),
+      d1.prepare(`INSERT OR IGNORE INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, 1, 'owner')`).bind(projectId, `${root}-deleted-${String(firstNew).padStart(5, '0')}`),
+      clearDeletedParentsStatement(asStore(d1), projectId, [`${root}-deleted-${String(firstNew).padStart(5, '0')}`]),
       ...(remainingIds.length === 0 ? [] : [
         d1.prepare(`WITH RECURSIVE n(i) AS (SELECT ${firstNew + 1} UNION ALL SELECT i+1 FROM n WHERE i<${target})
           INSERT OR IGNORE INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
@@ -150,5 +151,5 @@ it.each(['launch_parent_session_id', 'parent_session_id'] as const)('reads the s
 
 /** The D1 binding as the server's store: its prepared statements batch as they are. */
 function asStore(d1: Awaited<ReturnType<Miniflare['getD1Database']>>) {
-  return d1 as unknown as Parameters<typeof tombstoneMarkStatements>[0];
+  return d1 as unknown as Parameters<typeof clearDeletedParentsStatement>[0];
 }

@@ -1,6 +1,7 @@
-import { transcriptRoleSql } from '../db/transcript-order.js';
 import type { RelationalStore } from '../core/adapters.js';
-import { binaryOrder,clampLimit,decodeCursor,inListChunks,page,type Page,type ReadScope } from './scope.js';
+import { readSet, rows } from '../db/index.js';
+import { archivedSegmentsPage, heldByIdentity, heldBySessionPage, hotSegmentsPage, sessionsHoldingTranscript, transcriptsOfRole, type TranscriptPageRow } from '../db/transcripts/reads.js';
+import { binaryOrder,clampLimit,decodeCursor,encodeCursor,page,type Page,type ReadScope } from './scope.js';
 
 export interface TranscriptRow {
   transcriptId: string;
@@ -32,38 +33,40 @@ export interface HeldTranscript {
   role: string;
 }
 
+/** Transcripts one discovery read holds in a page; a session's rotations are read to the end, never capped. */
+const HELD_PAGE = 200;
+
 /**
- * The held transcripts of any of these sessions, or under any of these
- * identities.
+ * The held transcripts of any of these sessions, or under any of these identities.
  *
- * Both halves are needed and answer different questions. The identity match
- * says where to resume a transcript the Deployment already has; the session
- * match says whether a DIFFERENT identity for the same session is the same file
- * renamed — which must not be re-derived — or a rotation, which is history
- * worth importing. Only the head digest tells those two apart.
+ * Both halves are needed and answer different questions. The identity match says where to resume a transcript the
+ * Deployment already has; the session match says whether a DIFFERENT identity for the same session is the same file
+ * renamed, which must not be re-derived, or a rotation, which is history worth importing. Only the head digest tells those
+ * two apart. Sessions are paged to their end, so a rename is never mistaken for a rotation.
  */
-export async function heldTranscriptsFor(
-  db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], transcriptIds: readonly string[], machineId?: string,
-): Promise<HeldTranscript[]> {
-  // One statement per key, not one with an OR across two. An OR leaves the
-  // planner a single equality to work with and it falls back to scanning the
-  // table; separately, each half is an index lookup. It also removes the
-  // `IN ()` an empty list would produce, which is a syntax error rather than an
-  // empty answer.
-  const rows = new Map<string, HeldTranscript>();
-  for (const [column, keys] of [['session_id', sessionIds], ['transcript_id', transcriptIds]] as const) {
-    for (const run of inListChunks(keys)) {
-      const { results } = await db
-        .prepare(`SELECT transcript_id, session_id, size, head_hash, role FROM transcripts
-                   WHERE project_id = ? AND ${column} IN (${run.map(() => '?').join(', ')}) ${machineId === undefined ? '' : 'AND machine_id = ?'}`)
-        .bind(scope.projectId, ...run, ...(machineId === undefined ? [] : [machineId]))
-        .all<{ transcript_id: string; session_id: string; size: number; head_hash: string | null; role: string }>();
-      for (const r of results) {
-        rows.set(r.transcript_id, { transcriptId: r.transcript_id, sessionId: r.session_id, size: r.size, headHash: r.head_hash, role: r.role });
-      }
-    }
+export async function heldTranscriptsFor(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], transcriptIds: readonly string[]): Promise<HeldTranscript[]> {
+  const held = new Map<string, HeldTranscript>();
+  const keep = (row: { transcript_id: string; session_id: string; size: number; head_hash: string | null; role: string }) =>
+    held.set(row.transcript_id, { transcriptId: row.transcript_id, sessionId: row.session_id, size: row.size, headHash: row.head_hash, role: row.role });
+  if (transcriptIds.length > 0) (await rows(db, heldByIdentity.bind(scope.projectId, JSON.stringify(transcriptIds)))).forEach(keep);
+  if (sessionIds.length === 0) return [...held.values()];
+  const sessions = JSON.stringify(sessionIds);
+  let afterSession = '', afterTranscript = '';
+  for (;;) {
+    const page = await rows(db, heldBySessionPage.bind(scope.projectId, sessions, afterSession, afterTranscript, HELD_PAGE));
+    page.forEach(keep);
+    const last = page.at(-1);
+    if (last === undefined || page.length < HELD_PAGE) return [...held.values()];
+    afterSession = last.session_id;
+    afterTranscript = last.transcript_id;
   }
-  return [...rows.values()];
+}
+
+/** Which of these sessions hold a transcript: an existence answer, so it costs one index probe per session whatever each session holds. */
+export async function sessionsWithTranscript(db: RelationalStore, scope: ReadScope, sessionIds: readonly string[], options: { machineId?: string; nonEmpty?: true } = {}): Promise<Set<string>> {
+  if (sessionIds.length === 0) return new Set();
+  const held = await rows(db, sessionsHoldingTranscript.bind(scope.projectId, JSON.stringify(sessionIds), options.machineId ?? null, options.nonEmpty === true ? 1 : 0));
+  return new Set(held.map(row => row.session_id));
 }
 
 export interface SegmentRow {
@@ -74,153 +77,66 @@ export interface SegmentRow {
   availability: 'hot' | 'archived';
 }
 
-const TRANSCRIPT_COLUMNS = `t.transcript_id,t.session_id,t.machine_id,t.agent,t.origin_path,t.size,t.segment_count,
-  t.first_received_at,t.last_received_at,t.role,COALESCE(p.published_offset,0) AS parsed_offset,p.updated_at AS parsed_at,t.fidelity,
-  CASE WHEN p.state='awaiting' THEN 'awaiting_bytes' WHEN p.state='failed' THEN p.failure END AS parse_error,
-  CASE WHEN p.state='failed' THEN p.updated_at END AS parse_failed_at`;
-
-function toTranscript(row: Record<string, unknown>): TranscriptRow {
+function toTranscript(row: TranscriptPageRow): TranscriptRow {
   return {
-    transcriptId: row.transcript_id as string,
-    sessionId: row.session_id as string,
-    machineId: row.machine_id as string,
-    agent: (row.agent as string | null) ?? null,
-    originPath: (row.origin_path as string | null) ?? null,
-    size: row.size as number,
-    segmentCount: row.segment_count as number,
-    firstReceivedAt: row.first_received_at as number,
-    lastReceivedAt: row.last_received_at as number,
-    role: (row.role as string | null) ?? 'primary',
-    parsedOffset: (row.parsed_offset as number | null) ?? 0,
-    parsedAt: (row.parsed_at as number | null) ?? null,
-    fidelity: (row.fidelity as string | null) ?? null,
-    parseError: (row.parse_error as string | null) ?? null,
-    parseFailedAt: (row.parse_failed_at as number | null) ?? null,
+    transcriptId: row.transcript_id,
+    sessionId: row.session_id,
+    machineId: row.machine_id,
+    agent: row.agent,
+    originPath: row.origin_path,
+    size: row.size,
+    segmentCount: row.segment_count,
+    firstReceivedAt: row.first_received_at,
+    lastReceivedAt: row.last_received_at,
+    role: row.role ?? 'primary',
+    parsedOffset: row.parsed_offset ?? 0,
+    parsedAt: row.parsed_at,
+    fidelity: row.fidelity,
+    parseError: row.parse_error,
+    parseFailedAt: row.parse_failed_at,
   };
 }
 
+/** A transcript's place in the ordered listing, primaries before subagent siblings. */
+export const transcriptCursor = (row: TranscriptRow): string => encodeCursor(row.role === 'subagent' ? 1 : 0, row.transcriptId);
+
 /**
- * Every transcript a session holds, the primary first.
- *
- * A session holds more than one as soon as a subagent sibling is shipped beside
- * the primary, so a reader that takes the first row of an unordered result
- * shows one of several chosen by the store. Ordering by role then id makes the
- * answer the same on every target and on every call.
+ * A page of a session's transcripts, the primary first and each role ordered by id, so a reader sees the same order on
+ * every target and every call. Reads `limit + 1` rows so the caller knows whether another page follows.
  */
-export async function listTranscripts(
-  db: RelationalStore,
-  scope: ReadScope,
-  sessionId: string,
-  paging?: { after?: string; limit: number; transcriptId?: string },
-): Promise<TranscriptRow[]> {
-  const after = paging?.after === undefined ? null : decodeCursor(paging.after);
-  if (paging?.after !== undefined && (after === null || (after.createdAt !== 0 && after.createdAt !== 1))) return [];
-  const joins = `LEFT JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id AND d.state='live'
-    LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=d.generation`;
-  let sql: string, binds: unknown[];
-  if (paging === undefined) {
-    sql = `SELECT ${TRANSCRIPT_COLUMNS} FROM transcripts t ${joins}
-      WHERE t.project_id=? AND t.session_id=? ORDER BY ${transcriptRoleSql('t')},t.transcript_id`;
-    binds = [scope.projectId, sessionId];
-  } else {
-    const arms = [0, 1]
-      .filter((role) => after === null || role >= after.createdAt)
-      .map((role) => {
-        const seek = after !== null && role === after.createdAt;
-        return {
-          sql: `SELECT * FROM (SELECT project_id,transcript_id,${role} AS role_order FROM transcripts
-        INDEXED BY idx_transcripts_session_page WHERE project_id=? AND session_id=? AND ${transcriptRoleSql()}=${role}
-          ${seek ? 'AND transcript_id>?' : ''} ${paging.transcriptId === undefined ? '' : 'AND transcript_id=?'}
-        ORDER BY transcript_id LIMIT ?)`,
-          binds: [
-            scope.projectId,
-            sessionId,
-            ...(seek ? [after!.id] : []),
-            ...(paging.transcriptId === undefined ? [] : [paging.transcriptId]),
-            paging.limit + 1,
-          ],
-        };
-      });
-    sql = `WITH candidates AS MATERIALIZED (${arms.map((arm) => arm.sql).join(' UNION ALL ')}),
-      selected AS MATERIALIZED (SELECT * FROM candidates ORDER BY role_order,transcript_id LIMIT ?)
-      SELECT ${TRANSCRIPT_COLUMNS} FROM selected k CROSS JOIN transcripts t
-        ON t.project_id=k.project_id AND t.transcript_id=k.transcript_id ${joins}
-      ORDER BY k.role_order,k.transcript_id`;
-    binds = [...arms.flatMap((arm) => arm.binds), paging.limit + 1];
-  }
-  const { results } = await db
-    .prepare(sql)
-    .bind(...binds)
-    .all<Record<string, unknown>>();
-  return results.map(toTranscript);
+export async function listTranscripts(db: RelationalStore, scope: ReadScope, sessionId: string, paging: { after?: string; limit: number; transcriptId?: string }): Promise<TranscriptRow[]> {
+  const after = paging.after === undefined ? null : decodeCursor(paging.after);
+  if (paging.after !== undefined && (after === null || (after.createdAt !== 0 && after.createdAt !== 1))) return [];
+  const startRole = after?.createdAt ?? 0;
+  const only = paging.transcriptId ?? null;
+  const rowsWanted = paging.limit + 1;
+  const first = await rows(db, transcriptsOfRole.bind(scope.projectId, sessionId, startRole, after?.id ?? '', only, rowsWanted));
+  if (first.length >= rowsWanted || startRole === 1) return first.map(toTranscript);
+  const rest = await rows(db, transcriptsOfRole.bind(scope.projectId, sessionId, 1, '', only, rowsWanted - first.length));
+  return [...first, ...rest].map(toTranscript);
 }
-
-/** A transcript's segments in offset order. */
-export async function listSegments(db: RelationalStore, scope: ReadScope, transcriptId: string): Promise<SegmentRow[]> {
-  const { results } = await db
-    .prepare(
-      `SELECT base_offset, length, blob_key, created_at, 'hot' AS availability FROM transcript_segments
-        WHERE project_id = ? AND transcript_id = ?
-       UNION ALL SELECT base_offset,length,archive_key AS blob_key,created_at,'archived' AS availability FROM raw_archive_refs
-        WHERE project_id=? AND transcript_id=? AND source_kind='transcript' AND disposition='archived'
-       ORDER BY base_offset ASC`
-    )
-    .bind(scope.projectId, transcriptId, scope.projectId, transcriptId)
-    .all<Record<string, unknown>>();
-  return results.map((r) => ({
-    baseOffset: r.base_offset as number,
-    length: r.length as number,
-    blobKey: r.blob_key as string,
-    createdAt: r.created_at as number,
-    availability: r.availability as 'hot' | 'archived',
-  }));
-}
-
 
 /** Hot and archived segment sources each seek and bound their complete order before merging. */
-export async function pageSegments(
-  db: RelationalStore,
-  scope: ReadScope,
-  transcriptId: string,
-  opts: { limit?: number; cursor?: string } = {},
-): Promise<Page<SegmentRow>> {
-  const limit = clampLimit(opts.limit),
-    after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
-  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
-  const rows: SegmentRow[] = [];
-  for (const [table, key, availability, extra] of [
-    ['transcript_segments', 'blob_key', 'hot', ''],
-    [
-      'raw_archive_refs INDEXED BY idx_raw_archive_transcript_page',
-      'archive_key',
-      'archived',
-      "AND source_kind='transcript' AND disposition='archived'",
-    ],
-  ] as const) {
-    const result = await db
-      .prepare(
-        `SELECT base_offset,length,${key} AS blobKey,created_at FROM ${table}
-      WHERE project_id=? AND transcript_id=? ${extra}
-      ${after === null ? '' : `AND base_offset>=? AND (base_offset>? OR (base_offset=? AND ?||':'||${key}>?))`}
-      ORDER BY base_offset,${key} LIMIT ?`,
-      )
-      .bind(
-        scope.projectId,
-        transcriptId,
-        ...(after === null ? [] : [after.createdAt, after.createdAt, after.createdAt, availability, after.id]),
-        limit + 1,
-      )
-      .all<{ base_offset: number; length: number; blobKey: string; created_at: number }>();
-    rows.push(
-      ...result.results.map((row) => ({
-        baseOffset: row.base_offset,
-        length: row.length,
-        blobKey: row.blobKey,
-        createdAt: row.created_at,
-        availability,
-      })),
-    );
-  }
-  rows.sort((a, b) => a.baseOffset - b.baseOffset || binaryOrder(a.availability, b.availability) || binaryOrder(a.blobKey, b.blobKey));
-  return page(rows, limit, (row) => ({ createdAt: row.baseOffset, id: row.availability + ':' + row.blobKey }));
+export async function pageSegments(db: RelationalStore, scope: ReadScope, transcriptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<Page<SegmentRow>> {
+  return (await pageSegmentsAcross(db, scope, [transcriptId], opts))[0]!;
+}
+
+/** The same page for several transcripts, read in one store round trip. */
+export async function pageSegmentsAcross(db: RelationalStore, scope: ReadScope, transcriptIds: readonly string[], opts: { limit?: number; cursor?: string } = {}): Promise<Page<SegmentRow>[]> {
+  const limit = clampLimit(opts.limit), after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return transcriptIds.map(() => ({ rows: [], cursor: null }));
+  const fromOffset = after?.createdAt ?? -1, afterId = after?.id ?? '';
+  const statements = transcriptIds.flatMap(transcript => [
+    hotSegmentsPage.bind(scope.projectId, transcript, fromOffset, afterId, limit + 1),
+    archivedSegmentsPage.bind(scope.projectId, transcript, fromOffset, afterId, limit + 1),
+  ]);
+  const pages = await readSet(db, ...statements);
+  return transcriptIds.map((_, index) => {
+    const merged: SegmentRow[] = [
+      ...pages[index * 2]!.map(row => ({ baseOffset: row.base_offset, length: row.length, blobKey: row.blob_key, createdAt: row.created_at, availability: 'hot' as const })),
+      ...pages[index * 2 + 1]!.map(row => ({ baseOffset: row.base_offset, length: row.length, blobKey: row.blob_key, createdAt: row.created_at, availability: 'archived' as const })),
+    ];
+    merged.sort((a, b) => a.baseOffset - b.baseOffset || binaryOrder(a.availability, b.availability) || binaryOrder(a.blobKey, b.blobKey));
+    return page(merged, limit, row => ({ createdAt: row.baseOffset, id: `${row.availability}:${row.blobKey}` }));
+  });
 }

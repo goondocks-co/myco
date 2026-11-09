@@ -70,7 +70,7 @@ function embedding_hitHydrationSql(ids: readonly string[], preview: boolean): st
     CROSS JOIN embedding_versions v
     WHERE r.type = '${source.type}' AND s.project_id = r.project_id AND s.record_id = r.record_id
       AND v.project_id = r.project_id AND v.type = r.type AND v.record_id = r.record_id AND v.revision = r.revision
-      ${source.type === 'session' ? `AND ${embedding_import_notTombstonedSql('s')}` : ''}`);
+      ${source.type === 'session' || source.type === 'plan' ? `AND ${embedding_import_notTombstonedSql('s')}` : ''}`);
   return `WITH hits AS MATERIALIZED (SELECT * FROM embedding_receipts
     WHERE project_id = ? AND model_key = ? AND ready = 1 AND id IN (${ids.map(() => '?').join(',')}))
     ${branches.join(' UNION ALL ')}`;

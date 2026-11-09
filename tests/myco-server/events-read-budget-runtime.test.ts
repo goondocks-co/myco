@@ -9,7 +9,7 @@ import { applySchemaSteps } from './helpers/migrate.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { handleBlob, type BlobResult } from '@myco-server-worker/ingest/blobs.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js';
+import { rawMemberResourceSql } from '@myco-server-worker/db/raw/resources.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { LAST_ACTIVITY_SQL, LAST_REQUEST_KEY, lastActivityAt } from '@myco-server-worker/core/activity.js';
@@ -76,10 +76,12 @@ const PUBLICATION_LIFECYCLE_REVISION_WRITES = 1;
 /** A registered transcript contributes its pin, group admission and scheme total. */
 const PUBLICATION_PIN_WRITES = 3;
 /** A session's title work row, written or moved when its state changes. */
+/** A transcript's pin row gains an entry in the session-keyed index the deletion job pages. */
+const DELETION_PIN_INDEX_WRITES = 1;
 const TITLE_WORK_WRITES = 1;
 const CAPTURE_WRITE_LIMITS = {
   'session.start': TITLE_WORK_WRITES + LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_FACT_INSERT_WRITES + 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + TITLE_WORK_WRITES + LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_PROMPT_WRITES + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': LIFECYCLE_TRANSCRIPT_WRITES + PUBLICATION_PIN_WRITES + PUBLICATION_DIRECTORY_INDEX_WRITES + 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': DELETION_PIN_INDEX_WRITES + LIFECYCLE_TRANSCRIPT_WRITES + PUBLICATION_PIN_WRITES + PUBLICATION_DIRECTORY_INDEX_WRITES + 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
   'transcript grows after full publish': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES,
   'transcript grows during directory pass': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES + PUBLICATION_DIRECTORY_RESTART_WRITES,
   'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': 26 + TITLE_WORK_WRITES + 2 * PUBLICATION_LIFECYCLE_REVISION_WRITES + LIFECYCLE_END_WRITES + LIFECYCLE_EVENT_INDEX_WRITES, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,

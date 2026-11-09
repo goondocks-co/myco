@@ -50,7 +50,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/raw-backfill.ts', 19],
   ['core/raw-claims.ts', 23],
   ['core/raw-provenance.ts', 5],
-  ['core/raw-resources.ts', 6],
   ['core/recall.ts', 2],
   ['core/recovered-tenant.ts', 18],
   ['core/recovery-forget.ts', 4],
@@ -70,7 +69,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/settings.ts', 29],
   ['core/sql-statements.ts', 2],
   ['core/task-catalogue.ts', 1],
-  ['core/tombstones.ts', 35],
   ['core/turn-card-prompt.ts', 1],
   ['core/turn-cards.ts', 17],
   ['core/worker-contacts.ts', 28],
@@ -89,7 +87,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['ingest/projections.ts', 48],
   ['ingest/projects.ts', 2],
   ['ingest/publish.ts', 5],
-  ['ingest/retention.ts', 8],
   ['ingest/session-edits.ts', 2],
   ['ingest/turns.ts', 6],
   ['ingest/uncaptured.ts', 8],
@@ -127,7 +124,6 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/session-commits.ts', 2],
   ['read/session-files.ts', 4],
   ['read/task-descriptions.ts', 1],
-  ['read/transcript.ts', 10],
   ['read/uncaptured.ts', 5],
   ['routes.ts', 4],
   // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
@@ -153,7 +149,6 @@ const PENDING_CHANGE_COUNTS: ReadonlyMap<string, number> = new Map([
   ['core/release-provenance.ts', 3],
   ['core/remotes.ts', 1],
   ['core/worker-contacts.ts', 3],
-  ['ingest/retention.ts', 1],
   ['ingest/uncaptured.ts', 1],
 ]);
 

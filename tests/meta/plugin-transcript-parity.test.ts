@@ -1,4 +1,4 @@
-import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { rereadTranscripts } from '../myco-server/helpers/reread.js';
 /**
  * One row per fact for the agents whose transcript Myco's own plugin writes.
  *

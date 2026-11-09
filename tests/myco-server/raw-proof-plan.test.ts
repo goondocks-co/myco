@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js';
+import { rawMemberResourceSql } from '@myco-server-worker/db/raw/resources.js';
 
 const OWNED = 'a'.repeat(64);
 const GENERATION = '00000000-0000-4000-8000-000000000001';

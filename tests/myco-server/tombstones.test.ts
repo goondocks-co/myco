@@ -10,17 +10,15 @@
  * spot test and let the next kind through.
  */
 import { registerBlob } from './helpers/d1.js';
-import {
-  acquireRecoveryHold,
-  drainObjectReleases,
-  releaseRecoveryHold,
-} from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { RELEASE_PAGE } from '@myco-server-worker/db/storage/release-queue.js';
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { isTombstoned, tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { isTombstoned } from '@myco-server-worker/db/sessions/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
 import { writeTitle, overwriteTitle } from '@myco-server-worker/db/session-titles.js';
 import {
@@ -43,7 +41,8 @@ import {
 import { count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from './helpers/member-token.js';
 
-const NOW = 1_000_000;
+const NOW = BLOB_RESERVATION_TTL_MS + 1_000_000;
+const AGED = NOW - BLOB_RESERVATION_TTL_MS - 1;
 const SCOPE = { projectId: 'proj_1' };
 const SESSION = 's1';
 const MACHINE = 'machine_1';
@@ -113,9 +112,11 @@ describe('tombstoning a session', () => {
   it('is idempotent: a second deletion changes nothing', async () => {
     const { sqlite, env, send } = await rig();
     await populate(send);
-    await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
+    const first = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
+    const before = count(sqlite, 'events') + count(sqlite, 'session_prompts');
     const second = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW + 1);
-    expect(second.removed).toBe(0);
+    expect(second.removed).toBe(first.removed);
+    expect(count(sqlite, 'events') + count(sqlite, 'session_prompts')).toBe(before);
     expect(count(sqlite, 'session_tombstones')).toBe(1);
   });
 });
@@ -124,7 +125,7 @@ describe('the blobs a deletion leaves', () => {
   const attach = (sqlite: Database, count: number, seed: string) => {
     for (let i = 0; i < count; i += 1) {
       const key = String(i).padStart(64, seed);
-      registerBlob(sqlite, { projectId: SCOPE.projectId, key, size: 1, mediaType: 'image/png', receivedAt: NOW });
+      registerBlob(sqlite, { projectId: SCOPE.projectId, key, size: 1, mediaType: 'image/png', receivedAt: AGED });
       sqlite.run(`INSERT INTO attachments (project_id, attachment_id, session_id, event_id, blob_key, media_type, byte_size, created_at, token_id, received_at)
                   VALUES (?, ?, ?, 'e', ?, 'image/png', 1, ?, 't', ?)`, [SCOPE.projectId, `att-${i}`, SESSION, key, NOW, NOW]);
     }
@@ -139,38 +140,6 @@ describe('the blobs a deletion leaves', () => {
     expect([count(sqlite, 'blobs'), count(sqlite, 'blob_release_candidates'), count(sqlite, 'object_releases')]).toEqual([0, 0, RELEASE_PAGE * 2 + 5]);
   });
 
-  it('records every blob in the transaction that removes its rows, so an interruption before the release leaves them for the drain', async () => {
-    const { sqlite, env, send } = await rig();
-    await populate(send);
-    attach(sqlite, RELEASE_PAGE + 3, 'b');
-    let batches = 0;
-    const interrupted = { ...env, db: { ...env.db, batch: async (statements: Parameters<typeof env.db.batch>[0]) => {
-      batches += 1;
-      // The key read and the deletion commit; the instance goes away before any release decision.
-      if (batches > 2) throw new Error('the instance went away');
-      return env.db.batch(statements);
-    } } };
-    await expect(tombstoneSession(interrupted as never, SCOPE, SESSION, 'mem_machine_1', NOW)).rejects.toThrow('went away');
-    expect(count(sqlite, 'attachments')).toBe(0);
-    expect(count(sqlite, 'blob_release_candidates')).toBe(RELEASE_PAGE + 3);
-    // The tombstone window has closed, so the orphan sweep never runs again: the recorded candidates are what remains.
-    while (count(sqlite, 'blob_release_candidates') > 0 || count(sqlite, 'object_releases') > 0) await drainObjectReleases(env, NOW + 7 * 86_400_000);
-    expect([count(sqlite, 'blobs'), count(sqlite, 'object_releases')]).toEqual([0, 0]);
-  });
-
-  it('keeps every candidate recorded through a recovery hold that outlasts the tombstone window, and releases them all after it', async () => {
-    const { sqlite, env, send } = await rig();
-    await populate(send);
-    attach(sqlite, RELEASE_PAGE + 3, 'c');
-    expect(await acquireRecoveryHold(env.db, 'hold-1', NOW)).toBe(true);
-    const outcome = await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
-    expect([outcome.blobsFreed, outcome.blobsLeft]).toEqual([0, RELEASE_PAGE + 3]);
-    await drainObjectReleases(env, NOW + 7 * 86_400_000);
-    expect([count(sqlite, 'blobs'), count(sqlite, 'blob_release_candidates')]).toEqual([RELEASE_PAGE + 3, RELEASE_PAGE + 3]);
-    expect(await releaseRecoveryHold(env.db, 'hold-1', NOW + 7 * 86_400_000, 'closed')).toBe(true);
-    while (count(sqlite, 'blob_release_candidates') > 0 || count(sqlite, 'object_releases') > 0) await drainObjectReleases(env, NOW + 7 * 86_400_000);
-    expect(count(sqlite, 'blobs')).toBe(0);
-  });
 });
 
 describe('the blobs a deleted session\'s tool calls and raw events name', () => {
@@ -181,7 +150,7 @@ describe('the blobs a deleted session\'s tool calls and raw events name', () => 
     return object === null ? null : new Response(object.body).text();
   };
   const stored = async (sqlite: Database, blobs: { put(key: string, body: ReadableStream): Promise<unknown> }, key: string, text: string) => {
-    const objectKey = registerBlob(sqlite, { projectId: SCOPE.projectId, key, size: text.length, receivedAt: NOW });
+    const objectKey = registerBlob(sqlite, { projectId: SCOPE.projectId, key, size: text.length, receivedAt: AGED });
     placed.set(key, objectKey);
     await blobs.put(objectKey, new Blob([text]).stream());
   };

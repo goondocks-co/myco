@@ -1,4 +1,4 @@
-import { heldTranscriptsFor } from '../read/transcript.js';
+import { sessionsWithTranscript } from '../read/transcript.js';
 import {
   sessions_sessionsWithImportedPrompts as sessionsWithImportedPrompts,
 } from '../read/catalog/sessions.js';
@@ -35,7 +35,7 @@ export async function handleLegacyHistory(env: ServerEnv, ctx: RouteContext): Pr
   const confirmed = groups.every(group => group.some(id => held.has(id)))
     && recordIds.every(id => records.has(id)) && sporeIds.every(id => rows.sporeIds.has(id)) && lineageIds.every(id => rows.lineageIds.has(id));
   const sources = object.sessions === undefined ? {} : { sources: {
-    withTranscript: [...new Set((await heldTranscriptsFor(env.db, { projectId: ctx.projectId }, sessions, [], ctx.machineId)).filter(t => t.size > 0).map(t => t.sessionId))].sort(),
+    withTranscript: [...await sessionsWithTranscript(env.db, { projectId: ctx.projectId }, sessions, { machineId: ctx.machineId, nonEmpty: true })].sort(),
     vaultSourced: [...await sessionsWithImportedPrompts(env.db, { projectId: ctx.projectId }, sessions, LEGACY_IMPORT_ADAPTER)].sort(),
   } };
   return Response.json({ persisted: true, confirmed, ...sources,

@@ -3,6 +3,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { machineContactsOf, machineContactsStatement, type ReportedHarness } from '../core/worker-contacts.js';
 import { captureRecencyStatement } from './capture.js';
 import { credentialLive } from '../db/liveness.js';
+import { notTombstonedSql } from '../db/session-read-model.js';
 import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
 import type { ActivityRow } from './credentials.js';
 
@@ -110,10 +111,11 @@ export async function machineActivity(
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
+  const live = `AND ${notTombstonedSql('e')}`;
   const window =
     after === null
-      ? ''
-      : `AND e.created_at<=(SELECT at FROM args)
+      ? live
+      : `${live} AND e.created_at<=(SELECT at FROM args)
     AND (e.created_at,e.project_id,e.event_id)<(SELECT at,pid,eid FROM args)`;
   const columns = 'event_id,project_id,session_id,kind,created_at,received_at';
   const head = `SELECT id FROM heads WHERE at IS NOT NULL ORDER BY at DESC,id LIMIT 1`;
