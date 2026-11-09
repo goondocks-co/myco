@@ -10,18 +10,22 @@
  * material and writes its answer over the run routes.
  */
 import {
-  SESSION_END_SETTLE_MS, TITLING_FRESH_RESERVE_DIVISOR, TITLING_FRESH_WINDOW_MS,
-  TITLING_IDLE_CLOSE_MINUTES_DEFAULT, TITLING_REFRESH_MIN_INTERVAL_MS, TITLING_REFRESH_MIN_PROMPTS,
+  TITLING_FRESH_RESERVE_DIVISOR, TITLING_FRESH_WINDOW_MS,
+  TITLING_IDLE_CLOSE_MINUTES_DEFAULT, TITLING_REFRESH_MIN_INTERVAL_MS,
 } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import {
-  children_countConvergenceTitleSessions as countConvergenceTitleSessions,
-  children_listTitleCandidates as listTitleCandidates,
-  children_listReadyTitleSessions as listReadyTitleSessions,
-  type children_TitleCandidate as TitleCandidate,
-  type children_TitleCandidateWindow as TitleCandidateWindow,
-} from '../read/catalog/children.js';
+  deferTitleWork,
+  freshTitleOwed,
+  OWNER_TITLING_WINDOW_MS,
+  takeTitleCandidates,
+  takeTitleRequests,
+  titleWorkOwed,
+  TITLING_RUN_TIMEOUT_SECONDS,
+  type TitleCandidate,
+  type TitleWindow,
+} from '../db/sessions/title-work.js';
 import { sessionHasUserPrompt } from '../read/document-catalog.js';
 import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally } from '../db/runs/claim.js';
 import { TITLING_BACKFILL_SCHEDULE, type ScheduleState } from './jobs.js';
@@ -42,16 +46,10 @@ import {
   type DispatchRefusal,
 } from './harness.js';
 import { type ActorCeiling } from './runs.js';
-import { RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';
 import { TITLING_TASK } from './task-catalogue.js';
-import { assertSessionMaterialReady, SessionMaterialPendingError } from '../read/material-readiness.js';
+import { assertSessionMaterialReady, SessionMaterialPendingError } from '../db/sessions/material.js';
 
 import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, type TitlingMode, type TitlingParams } from './titling-params.js';
-/** How long a titling run may take. The task definition says the same (`title-summary.yaml`); this is the bound the claim's in-flight window is computed from. */
-export const TITLING_RUN_TIMEOUT_SECONDS = 300;
-/** How long after an owner's ask a second ask is refused: the run's own bound plus the overrun margin, so a run still writing is never raced by a second one. */
-export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_OVERRUN_MARGIN_MS;
-
 /**
  * How an ask ended. `dispatched` is the one that started a run; `already` is
  * a claim another attempt holds. Other outcomes describe pending capture, missing
@@ -177,16 +175,21 @@ const SESSION_TITLE_BATCH = 20;
  * arriving (`SESSION_END_SETTLE_MS`).
  */
 export async function titleReadySessions(env: ServerEnv, now: number): Promise<number> {
-  const requests = await listReadyTitleSessions(env.db, SESSION_TITLE_BATCH, now - SESSION_END_SETTLE_MS);
+  const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
+  const requests = await takeTitleRequests(env.db, { now, idleBefore }, SESSION_TITLE_BATCH);
   if (requests.length === 0) return 0;
   if (env.origin === undefined) throw new Error('Deferred titling requires the Deployment origin to be configured.');
   let dispatched = 0;
   for (const target of requests) {
     const result = await titleSession(env, { ...target, now, origin: env.origin });
     if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
+    else if (NO_LONGER_TAKEABLE.has(result.outcome)) await deferTitleWork(env.db, { ...target, mode: 'claim' }, now);
   }
   return dispatched;
 }
+
+/** Outcomes that say a ready row no longer meets its conditions, so it sleeps instead of holding the head of the ready order. */
+const NO_LONGER_TAKEABLE: ReadonlySet<TitlingOutcome> = new Set(['already', 'capture_pending', 'no_material']);
 
 /** Who the titling convergence is attributed to; the actor its runs carry, and the one its ceiling and interval count. */
 export const TITLING_BACKFILL_ACTOR = 'backfill';
@@ -341,7 +344,7 @@ export async function backfillTitles(env: ServerEnv, now: number, state: PowerSt
     backlogCeiling = ceilingOf(backlogShare(policy.runsPerDay)!);
   }
   const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
-  const candidates = await listTitleCandidates(env.db, titleWindow(now, idleBefore, policy.enabled), page);
+  const candidates = await takeTitleCandidates(env.db, titleWindow(now, idleBefore, policy.enabled), page);
   const share = backlogShare(policy.runsPerDay);
   const sharedRows = [...candidates.freshRefreshes, ...candidates.backlogClaims];
   if (env.origin === undefined && candidates.freshClaims.length + sharedRows.length > 0) throw new Error('The titling backfill requires the Deployment origin to be configured.');
@@ -355,6 +358,7 @@ export async function backfillTitles(env: ServerEnv, now: number, state: PowerSt
     const result = await titleSession(env, { projectId, sessionId, now, origin: env.origin! }, { mode, actor: TITLING_BACKFILL_ACTOR, retry: true, idleBefore, ...(ceiling === undefined ? {} : { ceiling }) });
     outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
     if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
+    else if (NO_LONGER_TAKEABLE.has(result.outcome)) await deferTitleWork(env.db, target, now);
     return result.outcome !== 'ceiling';
   };
   // First titles of fresh sessions may use the whole ceiling; refreshes and older backlog stop at the share that leaves the reserve unspent.
@@ -381,25 +385,20 @@ export async function backfillTitles(env: ServerEnv, now: number, state: PowerSt
 }
 
 /** The instants a wake reads candidates by, from its clock and the idle bound. */
-function titleWindow(now: number, idleBefore: number, imported: boolean): TitleCandidateWindow {
-  return {
-    retryBefore: now - OWNER_TITLING_WINDOW_MS,
-    idleBefore,
-    freshAfter: now - TITLING_FRESH_WINDOW_MS,
-    refreshBefore: now - TITLING_REFRESH_MIN_INTERVAL_MS,
-    refreshPrompts: TITLING_REFRESH_MIN_PROMPTS,
-    imported,
-  };
+function titleWindow(now: number, idleBefore: number, imported: boolean): TitleWindow {
+  return { now, idleBefore, freshAfter: now - TITLING_FRESH_WINDOW_MS, imported };
 }
 
 /** What an owner reads of the convergence's wait: the holds a clock decides. The power state and a skipped candidate are known only to a wake, and are reported by it. */
 type TitlingBackfillWait = BackfillWait & { reason: 'interval' | 'overlap' | 'ceiling' | 'reserved' };
 
 export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
-  /** Wholly imported sessions still untitled and ready for the backfill. */
-  remaining: number;
-  /** Sessions their own capture owes a title, still untitled and ready; converged whether or not the backfill is on. */
-  owed: number;
+  /** True while the title work is still being built from existing sessions: `remaining` and `owed` are not yet known and read null, never zero. */
+  building: boolean;
+  /** Wholly imported sessions still untitled and ready for the backfill; null while `building`. */
+  remaining: number | null;
+  /** Sessions their own capture owes a title, still untitled and ready; converged whether or not the backfill is on; null while `building`. */
+  owed: number | null;
   /** Runs this actor dispatched in the trailing day; what the ceiling is measured against. */
   usedToday: number;
   /** Runs of the trailing day still queued or running. */
@@ -416,20 +415,19 @@ export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
 export async function titlingBackfillProgress(env: ServerEnv, now: number): Promise<TitlingBackfillProgress> {
   const policy = await titlingBackfillPolicy(env);
   const since = now - DAY_MS;
-  const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
   const share = backlogShare(policy.runsPerDay);
   const [left, usedToday, tally, window, last, backlogWindow, freshOwed] = await Promise.all([
-    countConvergenceTitleSessions(env.db, now - OWNER_TITLING_WINDOW_MS, idleBefore),
+    titleWorkOwed(env.db),
     deploymentTaskEntriesSince(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
     deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
     policy.runsPerDay === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, policy.runsPerDay),
     deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR),
     share === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, share),
-    listTitleCandidates(env.db, titleWindow(now, idleBefore, policy.enabled), 1).then((c) => c.freshClaims.length > 0),
+    freshTitleOwed(env.db, now - TITLING_FRESH_WINDOW_MS, policy.enabled),
   ]);
-  const waits = left.live > 0 || (policy.enabled && left.imported > 0);
+  const waits = (left.live ?? 0) > 0 || (policy.enabled && (left.imported ?? 0) > 0);
   const overlap: BackfillWait | null = policy.overlap === 'skip' && tally.inFlight > 0 ? { reason: 'overlap', until: null } : null;
   const reserved = backlogWindow === null || share === null || freshOwed ? null : ceilingWait({ runsPerDay: share }, backlogWindow, 'reserved');
   const waiting = !waits ? null : ((window === null ? null : ceilingWait(policy, window)) ?? reserved ?? overlap ?? intervalWait(policy, last, now)) as TitlingBackfillWait | null;
-  return { ...policy, remaining: left.imported, owed: left.live, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed, waiting };
+  return { ...policy, building: left.building, remaining: left.imported, owed: left.live, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed, waiting };
 }

@@ -1,9 +1,4 @@
 import type { RelationalStore as children_import_RelationalStore } from "../../core/adapters.js";
-import { sessionMaterialReadySql as children_import_sessionMaterialReadySql } from "../material-readiness.js";
-import { titlingClaimAvailableSql as children_import_titlingClaimAvailableSql } from "../material-readiness.js";
-import { notTombstonedSql as children_import_notTombstonedSql } from "../../db/session-read-model.js";
-import { titleRunInFlightSql as children_import_titleRunInFlightSql } from "../../db/session-read-model.js";
-import { TITLING_MAX_ATTEMPTS as children_import_TITLING_MAX_ATTEMPTS } from "../../constants.js";
 import { keyset as children_import_keyset } from "../scope.js";
 import { page as children_import_page } from "../scope.js";
 import type { Page as children_import_Page } from "../scope.js";
@@ -116,138 +111,6 @@ function children_listPlans(db: children_import_RelationalStore, scope: children
 
 const children_listAttachments = (db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts?: children_ChildOptions) => children_listChildren(db, children_ATTACHMENT_QUERY, scope, sessionId, opts);
 
-/** The session's live document holds a user prompt for the titling material. */
-const children_sessionHasMaterialSql = (alias: string): string => `EXISTS (SELECT 1 FROM session_documents d
-  WHERE d.project_id = ${alias}.project_id AND d.session_id = ${alias}.session_id AND d.state = 'live' AND d.user_prompts > 0)`;
-
-/**
- * Live end requests not yet attempted, with ready inline material, from
- * sessions whose member last sent anything at or before `settledBefore`;
- * oldest request first.
- */
-async function children_listReadyTitleSessions(db: children_import_RelationalStore, limit: number, settledBefore: number): Promise<{ projectId: string; sessionId: string }[]> {
-  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId FROM sessions s
-    WHERE s.titling_requested_at IS NOT NULL AND s.ended_at IS NOT NULL AND s.titled_at IS NULL AND s.title IS NULL
-      AND s.last_received_at <= ?
-      AND ${children_import_notTombstonedSql('s')} AND ${children_import_sessionMaterialReadySql('s')} AND ${children_sessionHasMaterialSql('s')}
-    ORDER BY s.titling_requested_at, s.project_id, s.session_id LIMIT ?`).bind(settledBefore, limit).all<{ projectId: string; sessionId: string }>();
-  return results;
-}
-
-/** A session every transcript of which arrived through the import channel; a session with no transcript, or with a live one, is not imported. */
-const children_importedSessionSql = (alias: string): string => `EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id)
-  AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.project_id = ${alias}.project_id AND t.session_id = ${alias}.session_id AND t.imported_at IS NULL)`;
-
-/** A session the titling convergence may take next: a first title (`claim`) or a refresh of the one standing (`refresh`), with the instant its recency is ranked by. */
-interface children_TitleCandidate { projectId: string; sessionId: string; mode: 'claim' | 'refresh'; at: number }
-
-/** The instants that decide which sessions the convergence may take, and how ready each must be. */
-interface children_TitleCandidateWindow {
-  /** The latest stamp an earlier attempt may carry for a retry. */
-  retryBefore: number;
-  /** A session still open whose last receipt is at or before this counts as ended. */
-  idleBefore: number;
-  /** A session whose latest activity or end is at or after this is fresh work; an earlier one is backlog, and takes no refresh. */
-  freshAfter: number;
-  /** A titled session is due a refresh only when its last titling stamp is at or before this. */
-  refreshBefore: number;
-  /** The user prompts a titled session takes after the material of its standing title before it is due a refresh. */
-  refreshPrompts: number;
-  /** Whether wholly imported sessions are admitted. */
-  imported: boolean;
-}
-
-const children_claimableSql = `${children_import_titlingClaimAvailableSql('s')} AND ${children_import_notTombstonedSql('s')} AND ${children_import_sessionMaterialReadySql('s')} AND ${children_sessionHasMaterialSql('s')}`;
-
-const children_importedAdmittedSql = `(? = 1 OR s.titling_requested_at IS NOT NULL OR NOT (${children_importedSessionSql('s')}))`;
-
-/**
- * The ended, untitled sessions the titling convergence may claim: every
- * transcript parsed, inline material, and an available claim. A live end
- * request's first attempt is `session-titling`'s and is left out.
- */
-const children_ENDED_UNTITLED_SQL = `FROM sessions s
-    WHERE s.ended_at IS NOT NULL AND s.title IS NULL AND NOT (s.titled_at IS NULL AND s.titling_requested_at IS NOT NULL)
-      AND ${children_claimableSql} AND ${children_importedAdmittedSql}`;
-
-/** The open, untitled sessions whose last receipt is at or before `idleBefore`: ended for titling, not for the session. */
-const children_IDLE_UNTITLED_SQL = `FROM sessions s
-    WHERE s.ended_at IS NULL AND s.title IS NULL AND s.last_received_at <= ?
-      AND ${children_claimableSql} AND ${children_importedAdmittedSql}`;
-
-/**
- * Titled sessions, open or ended, with activity after the material of their standing title, due a refresh: stamped at or before the
- * bound, no title run of the session in flight, and its document holding at least a number of user prompts beyond those
- * the standing title recorded. A refresh that closed without a write leaves that record where it was, so its session stays due.
- * Binds: the recency bound, the stamp bound, then the prompt number.
- */
-const children_REFRESH_DUE_SQL = `FROM sessions s
-    WHERE s.title IS NOT NULL AND s.last_received_at >= ? AND s.last_received_at > COALESCE(s.title_material_at, s.titled_at) AND s.titled_at <= ?
-      AND ${children_import_notTombstonedSql('s')} AND ${children_import_sessionMaterialReadySql('s')} AND NOT ${children_import_titleRunInFlightSql('s')}
-      AND (SELECT d.user_prompts - COALESCE(d.titled_user_prompts, 0) FROM session_documents d
-        WHERE d.project_id = s.project_id AND d.session_id = s.session_id AND d.state = 'live') >= ?`;
-
-/** Candidates in the order the convergence takes them: first titles before refreshes, and fresh work before backlog within each. */
-interface children_TitleCandidates { freshClaims: children_TitleCandidate[]; freshRefreshes: children_TitleCandidate[]; backlogClaims: children_TitleCandidate[] }
-
-/** The page of one kind of candidate, ordered by the column its partial index holds. */
-async function children_candidatePage(db: children_import_RelationalStore, mode: children_TitleCandidate['mode'], sql: string, at: string, order: string, binds: readonly unknown[], limit: number): Promise<children_TitleCandidate[]> {
-  const { results } = await db.prepare(`SELECT s.project_id AS projectId, s.session_id AS sessionId, ${at} AS at ${sql} ORDER BY ${order} LIMIT ?`)
-    .bind(...binds, limit).all<{ projectId: string; sessionId: string; at: number }>();
-  return results.map((r) => ({ ...r, mode }));
-}
-
-/**
- * Up to `limit` candidates of each kind, newest first: first titles of sessions ended or gone quiet within the freshness
- * window and outside it, and refreshes of sessions active within it. Each read is bounded by its own partial index and by
- * the cohort's recency bound before its limit, so older work never hides newer work and no page sorts a backlog.
- */
-async function children_listTitleCandidates(db: children_import_RelationalStore, window: children_TitleCandidateWindow, limit: number): Promise<children_TitleCandidates> {
-  const imported = window.imported ? 1 : 0;
-  const ended = (side: 'fresh' | 'backlog') => children_candidatePage(db, 'claim', `${children_ENDED_UNTITLED_SQL} AND s.ended_at ${side === 'fresh' ? '>=' : '<'} ?`, 's.ended_at',
-    's.ended_at DESC, s.project_id, s.session_id', [window.retryBefore, imported, window.freshAfter], limit);
-  const idle = (side: 'fresh' | 'backlog') => children_candidatePage(db, 'claim', `${children_IDLE_UNTITLED_SQL} AND s.last_received_at ${side === 'fresh' ? '>=' : '<'} ?`, 's.last_received_at',
-    's.last_received_at DESC, s.project_id, s.session_id', [window.idleBefore, window.retryBefore, imported, window.freshAfter], limit);
-  const refresh = () => children_candidatePage(db, 'refresh', children_REFRESH_DUE_SQL, 's.last_received_at', 's.last_received_at DESC, s.project_id, s.session_id',
-    [window.freshAfter, window.refreshBefore, window.refreshPrompts], limit);
-  const [endedFresh, idleFresh, endedBacklog, idleBacklog, freshRefreshes] = await Promise.all([ended('fresh'), idle('fresh'), ended('backlog'), idle('backlog'), refresh()]);
-  const newest = (rows: children_TitleCandidate[]) => rows.sort((a, b) => b.at - a.at || a.projectId.localeCompare(b.projectId) || a.sessionId.localeCompare(b.sessionId)).slice(0, limit);
-  return { freshClaims: newest([...endedFresh, ...idleFresh]), freshRefreshes, backlogClaims: newest([...endedBacklog, ...idleBacklog]) };
-}
-
-/** The ended or quiet, untitled sessions a statement selects, split by whether their own capture owes the title or the backfill switch admits it. */
-async function children_countOwed(db: children_import_RelationalStore, selection: string, binds: readonly unknown[]): Promise<{ live: number; imported: number }> {
-  const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(s.titling_requested_at IS NULL AND ${children_importedSessionSql('s')}), 0) AS imported ${selection}`)
-    .bind(...binds).first<{ total: number; imported: number }>();
-  const imported = row?.imported ?? 0;
-  return { live: (row?.total ?? 0) - imported, imported };
-}
-
-/** What the titling convergence has left: sessions whose own capture owes them a title (ended, or gone quiet), and wholly imported sessions the backfill switch admits. */
-async function children_countConvergenceTitleSessions(db: children_import_RelationalStore, retryBefore: number, idleBefore: number): Promise<{ live: number; imported: number }> {
-  const [ended, quiet] = await Promise.all([
-    children_countOwed(db, children_ENDED_UNTITLED_SQL, [retryBefore, 1]),
-    children_countOwed(db, children_IDLE_UNTITLED_SQL, [idleBefore, retryBefore, 1]),
-  ]);
-  return { live: ended.live + quiet.live, imported: ended.imported + quiet.imported };
-}
-
-/** Why an ended session carries no title yet, in the order a reader can act on it. */
-type children_UntitledReason = 'capture_pending' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
-
-/** Why an ended session is untitled; null for a titled or open session, or one the project does not hold. */
-async function children_untitledReason(db: children_import_RelationalStore, projectId: string, sessionId: string): Promise<children_UntitledReason | null> {
-  const row = await db.prepare(`SELECT CASE WHEN s.title IS NOT NULL OR s.ended_at IS NULL THEN NULL
-      WHEN NOT ${children_import_sessionMaterialReadySql('s')} THEN 'capture_pending'
-      WHEN NOT ${children_sessionHasMaterialSql('s')} THEN 'no_material'
-      WHEN ${children_import_titleRunInFlightSql('s')} THEN 'in_progress'
-      WHEN s.titling_attempts >= ${children_import_TITLING_MAX_ATTEMPTS} THEN 'stopped'
-      WHEN s.titling_requested_at IS NULL AND ${children_importedSessionSql('s')} THEN 'imported'
-      ELSE 'waiting' END AS reason FROM sessions s WHERE s.project_id = ? AND s.session_id = ?`)
-    .bind(projectId, sessionId).first<{ reason: children_UntitledReason | null }>();
-  return row?.reason ?? null;
-}
-
  async function children_listChildren<T>(
   db: children_import_RelationalStore,
   query: children_ChildQuery<T>,
@@ -277,4 +140,4 @@ async function children_untitledReason(db: children_import_RelationalStore, proj
   return { rows: paged.rows.map(({ __id, ...rest }) => rest as T & { orderedAt: number }), cursor: paged.cursor };
 }
 
-export { children_listContextInjections, children_listPlans, children_listAttachments, children_listReadyTitleSessions, type children_TitleCandidate, type children_TitleCandidateWindow, children_listTitleCandidates, children_countConvergenceTitleSessions, children_untitledReason };
+export { children_listContextInjections, children_listPlans, children_listAttachments };

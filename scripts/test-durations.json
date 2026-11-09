@@ -896,7 +896,8 @@
     "tests/utils/lock-file-identity.test.ts": 4872,
     "tests/utils/order-stamp.test.ts": 13,
     "tests/utils/repository-name.test.ts": 482,
-    "tests/utils/windows-atomic-replace.test.ts": 7
+    "tests/utils/windows-atomic-replace.test.ts": 7,
+    "tests/myco-server/title-work.test.ts": 7000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -991,7 +992,7 @@
     "the wake: retention and the stale-run sweep, identical on both targets, idempotent": 44000,
     "the worker wire: a claim, a lease and the outcome the Deployment judges, from the shipped worker against a booted Deployment": 31000,
     "titling backfill: imported sessions off by default, started and stopped by the operator, one claim per imported session after its parse, idempotent; what live capture owes converges regardless, bounded by worker-claimed attempts; at the ceiling the owner reads the wait and when it lifts": 74000,
-    "titling of sessions that never end: an idle open session is titled and stays open, a long open session is refreshed once per interval, and each candidate read uses its index": 37000,
+    "titling of sessions that never end: an idle open session is titled and stays open, a long open session is refreshed once per interval": 37000,
     "today: the lists across Projects, Myco's work, capture recency and Needs you, read by a member and an admin": 36000,
     "token refresh: a token lapsed offline rotates once within its lineage, a superseded one asking to rotate revokes it, a lineage never ends for age, and one silent past the inactivity bound is refused by name": 33000,
     "tool-call blobs: kept by the orphan sweep while referenced, read back whole; the deleted session's and the unreferenced freed": 9000,

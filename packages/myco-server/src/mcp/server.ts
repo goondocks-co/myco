@@ -43,7 +43,7 @@ import { REQUIRED_REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
 import { RUN_ANSWER_BYTES } from '../core/read-window.js';
 import { answerBytes } from '../core/material-pages.js';
 import { normalizeInput, ToolError, unknownTool, validateInput, type ToolInput } from './validate.js';
-import { SessionMaterialPendingError } from '../read/material-readiness.js';
+import { SessionMaterialPendingError } from '../db/sessions/material.js';
 import { authorizeDeclaration, type AuthorizationResource } from '../auth/authorization.js';
 import { GrantEndedError } from '../auth/write-authority-store.js';
 import { TokenRevokedError } from '../telemetry.js';
