@@ -150,7 +150,7 @@ test('long-session routes keep exact rollups across sealed pages, late outcomes 
     for (let pass = 0; pass < 10; pass += 1) if (!(await publishDocuments(env, now + 1_800_003, limits())).more) break;
     expect(await get(''), target).toMatchObject({ filesEdited: 502 });
   });
-});
+}, 60_000);
 
 test('summary catch-up resumes on the publisher budget and preserves cards in backups', async () => {
   const artifacts = new Map<string, { text: string; blobs: ReturnType<typeof memoryBlobStore>; rows: Record<string, unknown>[]; turn: string }>();

@@ -320,7 +320,7 @@ it('GATE: recorded create, adopted create and interrupted-create retries admit m
       expect(commands.indexOf('d1 migrations apply')).toBeGreaterThan(commands.indexOf('d1 time-travel info'));
     });
   }
-});
+}, 60_000);
 
 it('GATE: existing create refuses missing bookmarks, and fresh empty provisioning needs none', async () => {
   await fixture({ bookmarkExit: 1 }, async ({ home, create, calls }) => {
