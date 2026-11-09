@@ -4,7 +4,8 @@
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { authorize, machineResources, memberSubject } from '../auth/authorization.js';
+import { authorize, machineResourcesOf, memberSubjectOf } from '../auth/authorization.js';
+import { readAuthorization } from '../db/auth/authorization.js';
 import { isAdmin } from '../auth/roles.js';
 import { renameMachine } from '../auth/enrollment.js';
 import { listMachines, machineActivity, machineInScope, type MachineRow, type MachineScope } from '../read/machines.js';
@@ -38,8 +39,10 @@ export async function handleMachines(env: ServerEnv, ctx: OwnerContext): Promise
   const page = paging(ctx.url);
   if (page instanceof Response) return page;
   const result = await listMachines(env.db, ctx.now, machineScope(ctx), page);
-  const subject = await memberSubject(env.db, ctx.member.id, 'http');
-  const resources = await machineResources(env.db, 'credential', result.machines.map((machine) => machine.machineId));
+  const machineIds = result.machines.map((machine) => machine.machineId);
+  const snapshot = await readAuthorization(env.db, { subjectMember: ctx.member.id, machines: machineIds });
+  const subject = memberSubjectOf(snapshot, ctx.member.id, 'http');
+  const resources = machineResourcesOf(snapshot, 'credential', machineIds);
   const machines: DashboardMachineRow[] = result.machines.map((machine, index) => {
     const canStop = authorize(subject, 'edit', resources[index]!);
     return { ...machine, canStop, stopReason: canStop ? null : "Only the owner can stop the owner's machines. You can stop your own." };

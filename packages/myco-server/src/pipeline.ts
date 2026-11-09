@@ -4,8 +4,9 @@ import { projectExists } from './read/sessions.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
-import { authorizeDeclaration, deploymentIdentity, memberSubject, type AuthorizationSubject } from './auth/authorization.js';
-import { authorizeHttp, httpAuthorizationDecision } from './auth/http-authorization.js';
+import { credentialWriteStore } from './auth/write-authority-store.js';
+import { authorizeDeclaration, deploymentIdentity, type AuthorizationSubject } from './auth/authorization.js';
+import { authorizeHttp, httpAuthorizationDecision, type HttpPrincipal } from './auth/http-authorization.js';
 import { emptyBodyRefusal, LINK_REQUIRES_ADMIN } from './auth/members.js';
 import { parseJsonObject, badRequest } from './api/scope.js';
 import { RAW_CACHE_HEADERS } from './core/raw-resources.js';
@@ -402,16 +403,16 @@ export function createServer(deps: ServerDeps) {
         const bounded = await boundedRequest(request, bodyBound);
         if (bounded === null) return refuseOversized(bodyBound);
         const context = { request: bounded, session, config, params: matched.params, url, now, source };
-        const subject: AuthorizationSubject = member === null ? { kind: 'account', deploymentId: await deploymentIdentity(env.db), transport: 'http', live: true } : await memberSubject(env.db, member.id, 'http');
+        const principal: HttpPrincipal = member === null ? { kind: 'account', deploymentId, transport: 'http', live: true } : { memberId: member.id };
         const body = await bounded.clone().text();
         freshDispatch = matched.route.path === '/api/harness/dispatch' && parseJsonObject(body)?.fresh === true;
-        const authorization = await httpAuthorizationDecision(env, matched.route.authorization, subject, { params: matched.params, body, rawKind: 'raw' in matched.route ? matched.route.raw?.resource : undefined });
+        const authorization = await httpAuthorizationDecision(env, matched.route.authorization, principal, { params: matched.params, body, rawKind: 'raw' in matched.route ? matched.route.raw?.resource : undefined });
         if (!authorization.allowed) {
-          if (matched.route.authority === 'admin' && subject.role === 'member') return forbiddenToMember();
+          if (matched.route.authority === 'admin' && authorization.subject?.role === 'member') return forbiddenToMember();
           if (matched.route.path === '/api/enrollment' && authorization.action === null) return badRequest('role must be admin or member');
           if (authorization.resource?.kind === 'enrollment' && authorization.resource.targetRevoked === true) return Response.json({ error: 'member_revoked' }, { status: 409 });
           if (matched.route.path === '/api/harness/dispatch') {
-            if (authorization.action === 'admin' && subject.role === 'member') return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
+            if (authorization.action === 'admin' && authorization.subject?.role === 'member') return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
             const projectId = parseJsonObject(body)?.projectId;
             return isDispatchProjectId(projectId)
               ? dispatchRefusal('unknown_project')
@@ -428,10 +429,12 @@ export function createServer(deps: ServerDeps) {
         }
         if (matched.route.authority === 'account') return await matched.route.handler(env, { ...context, member });
         if (!automaticRequest(bounded)) await stampRequest(env.db, now);
-        const writeAuthority = matched.route.authority === 'admin' && authorization.action !== 'owner';
+        // A device decision asserts live authority in its own SQL and answers a lost race as 409.
+        const writeAuthority = matched.route.authority === 'admin' && authorization.action !== 'owner' ? 'admin'
+          : matched.route.authority === 'member' && !matched.route.path.startsWith('/api/device/') ? 'member' : null;
         let writeRefused = false;
-        const guarded = writeAuthority
-          ? { ...env, db: memberWriteStore(env.db, member!.id, 'admin', () => { writeRefused = true; }) }
+        const guarded = writeAuthority !== null
+          ? { ...env, db: memberWriteStore(env.db, member!.id, writeAuthority, () => { writeRefused = true; }) }
           : env;
         const response = await matched.route.handler(guarded, { ...context, member: member! });
         if (writeRefused && response.status < 400) throw new MemberWriteRefused();
@@ -557,6 +560,9 @@ export function createServer(deps: ServerDeps) {
     }
   }
 
+  /** A member request's store: each write commits only while the credential and member behind it still hold. A refusal raises `TokenRevokedError`, which answers retryable, and the retry meets the revocation at authentication. */
+  const credentialWrites = (env: ServerEnv, auth: MemberAuth): ServerEnv => ({ ...env, db: credentialWriteStore(env.db, { tokenId: auth.tokenId, memberId: auth.memberId, clock: deps.now }) });
+
   /** Every failure after authentication answers in the route's shape once the route is known, and carries the protocol number; only what `admitted` returns leaves here. */
   async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number, contextTimings?: ContextTimings): Promise<Response> {
     try {
@@ -617,7 +623,7 @@ export function createServer(deps: ServerDeps) {
     if (!request.headers.has(PROJECT_HEADER) && route.bodyMode === 'json' && route.unbound !== undefined) {
       const body = await readBoundedBody(request, MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
-      if (!await authorizeHttp(env, route.authorization, await memberSubject(env.db, auth.memberId, 'http'), { body: body.text })) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
+      if (!await authorizeHttp(env, route.authorization, { memberId: auth.memberId }, { body: body.text })) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       return route.unbound(env, { memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId, body: body.text, now });
     }
     if (projectId === null) return refuse(auth, shapeOf(route), NO_PROJECT, 'no_project');
@@ -636,7 +642,7 @@ export function createServer(deps: ServerDeps) {
      */
     const resolved = async (): Promise<Response | null> => {
       if ('createProject' in route && route.createProject === false) return null;
-      const resolution = await resolveProject(env.db, projectId, now, { kind: 'member', memberId: auth.memberId });
+      const resolution = await resolveProject(credentialWrites(env, auth).db, projectId, now, { kind: 'member', memberId: auth.memberId });
       if (resolution.resolved) {
         if (captureRoute(route) && resolution.archived) return refuse(auth, shapeOf(route), PROJECT_ARCHIVED, 'project_archived');
         return null;
@@ -658,7 +664,7 @@ export function createServer(deps: ServerDeps) {
       const contentLength = Number(declared);
       if (contentLength > route.maxBodyBytes) return refuse(auth, shapeOf(route), `blob exceeds ${route.maxBodyBytes} bytes`, 'blob_cap');
       try {
-        if (!await authorizeHttp(env, route.authorization, await memberSubject(env.db, auth.memberId, 'http'), { projectId, machineId: auth.machineId, tokenId: auth.tokenId, params })) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
+        if (!await authorizeHttp(env, route.authorization, { memberId: auth.memberId }, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, params })) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
         const limit = await resolved();
         if (limit !== null) return limit;
         return await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
@@ -675,10 +681,11 @@ export function createServer(deps: ServerDeps) {
         if (malformed !== null) return refuse(auth, shapeOf(route), malformed.reason, malformed.classifier);
       }
       if ('createProject' in route && route.createProject === false && !await projectExists(env.db, projectId)) return refuse(auth, shapeOf(route), 'Project is no longer on this Deployment', 'no_project');
-      if (!await authorizeHttp(env, route.authorization, await memberSubject(env.db, auth.memberId, 'http'), { projectId, machineId: auth.machineId, tokenId: auth.tokenId, body: body.text, params })) return route.authorization.action === 'bootstrap' ? refuse(auth, shapeOf(route), LINK_REQUIRES_ADMIN, 'link_requires_admin') : refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
+      if (!await authorizeHttp(env, route.authorization, { memberId: auth.memberId }, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, body: body.text, params })) return route.authorization.action === 'bootstrap' ? refuse(auth, shapeOf(route), LINK_REQUIRES_ADMIN, 'link_requires_admin') : refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       const limit = await resolved();
       if (limit !== null) return limit;
-      const answered = await route.handler(env, {
+      // Capture carries `TOKEN_LIVE` in its own writes, and the tool surface guards at `toolContext` and `grantToolContext`.
+      const answered = await route.handler(captureRoute(route) || admitsGrant(route) ? env : credentialWrites(env, auth), {
         contextTimings,
         projectId, memberId: auth.memberId, machineId: auth.machineId, tokenId: auth.tokenId,
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
@@ -699,7 +706,7 @@ export function createServer(deps: ServerDeps) {
         const malformed = emptyBodyRefusal(body.text);
         if (malformed !== null) return refuse(auth, shapeOf(route), malformed.reason, malformed.classifier);
       }
-      const authorization = await httpAuthorizationDecision(env, route.authorization, await memberSubject(env.db, auth.memberId, 'http'), { machineId, tokenId: auth.tokenId, body: body.text });
+      const authorization = await httpAuthorizationDecision(env, route.authorization, { memberId: auth.memberId }, { machineId, tokenId: auth.tokenId, body: body.text });
       if (!authorization.allowed) {
         if (route.authorization.action === 'bootstrap') return refuse(auth, shapeOf(route), LINK_REQUIRES_ADMIN, 'link_requires_admin');
         if (route.authorization.action === 'owner') {
@@ -708,7 +715,8 @@ export function createServer(deps: ServerDeps) {
         }
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
-      return await route.credential(env, {
+      // The two routes that admit a lapsed credential act on it directly: a refresh is fenced by `TOKEN_LIVE`, and a self-revocation is the ending itself.
+      return await route.credential(route.admitsLapsed === true ? env : credentialWrites(env, auth), {
         memberId: auth.memberId, machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
         lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, ...machineContractHeaders(request), body: body.text, now,
       });
@@ -727,12 +735,13 @@ export function createServer(deps: ServerDeps) {
     try {
       const body = await readBoundedBody(request, route.maxBodyBytes ?? MAX_BODY_BYTES);
       if (!body.ok) return refuse(auth, shapeOf(route), body.reason, 'body_cap');
-      const subject = await memberSubject(env.db, auth.memberId, 'http');
-      if (!await authorizeHttp(env, route.authorization, subject, { machineId, tokenId: auth.tokenId, body: body.text })) {
-        if (!subject.live && route.path.startsWith('/worker/')) return workerLivenessAnswer(route.path);
+      const decision = await httpAuthorizationDecision(env, route.authorization, { memberId: auth.memberId }, { machineId, tokenId: auth.tokenId, body: body.text });
+      if (!decision.allowed) {
+        if (!decision.subject?.live && route.path.startsWith('/worker/')) return workerLivenessAnswer(route.path);
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
       const worker: WorkerPrincipal = { kind: 'member', tokenId: auth.tokenId, machineId };
+      // A worker's lease writes answer to its lease identity, which a first-use rotation carries to the successor, and a claim asserts its own credential in its commit. Step and model reports confer no authority.
       return await route.deployment({ ...env, db: memberWriteStore(env.db, auth.memberId, 'admin') }, { worker, body: body.text, now, clock: deps.now });
     } catch (err) {
       if (err instanceof MemberWriteRefused) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');

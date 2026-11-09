@@ -1,6 +1,7 @@
 import { isSystemMember, personMemberSql } from './member-kind.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { MEMBER_ROLES_SQL } from './roles.js';
+import { readAuthorization, type AuthorizationSnapshot, type MemberAuthorityRow } from '../db/auth/authorization.js';
 
 export const SUBJECT_KINDS = ['public', 'account', 'enrollment', 'member', 'run', 'grant', 'runner', 'runner-registration', 'internal'] as const;
 export type SubjectKind = typeof SUBJECT_KINDS[number];
@@ -155,22 +156,28 @@ export function authorizeDeclaration(subject: AuthorizationSubject, declaration:
 }
 
 export async function deploymentIdentity(db: RelationalStore): Promise<string> {
-  const row = await db.prepare("SELECT value FROM schema_meta WHERE key = 'deployment_id'").first<{ value: string }>();
-  if (!row?.value) throw new Error('Deployment identity is missing');
-  return row.value;
+  return (await readAuthorization(db, {})).deploymentId;
+}
+
+const effectiveRole = (row: MemberAuthorityRow | null, memberId: string): 'owner' | 'admin' | 'member' | undefined =>
+  row?.owner === memberId ? 'owner' : row?.role === 'admin' ? 'admin' : row?.role === 'member' ? 'member' : undefined;
+
+/** The live subject a member row is at the instant of its snapshot. */
+export function memberSubjectOf(snapshot: Pick<AuthorizationSnapshot, 'deploymentId' | 'subjectMember'>, memberId: string, transport: Transport): AuthorizationSubject {
+  const row = snapshot.subjectMember;
+  const role = effectiveRole(row, memberId);
+  return { kind: 'member', deploymentId: snapshot.deploymentId, transport, memberId, live: row !== null && row.revoked_at === null && role !== undefined, role };
 }
 
 /** An existing recipient keeps its role; the ownership singleton determines owner authority. */
-export async function enrollmentResource(db: RelationalStore, memberId: string | null, role: 'admin' | 'member'): Promise<AuthorizationResource> {
-  const resource: AuthorizationResource = { kind: 'enrollment', deploymentId: await deploymentIdentity(db), exists: true, grantedRole: role };
+export function enrollmentResourceOf(snapshot: Pick<AuthorizationSnapshot, 'deploymentId' | 'targetMember'>, memberId: string | null, role: 'admin' | 'member'): AuthorizationResource {
+  const resource: AuthorizationResource = { kind: 'enrollment', deploymentId: snapshot.deploymentId, exists: true, grantedRole: role };
   if (memberId === null) return resource;
-  const row = await db.prepare(`SELECT m.role, m.revoked_at, o.member_id AS owner FROM members m
-    LEFT JOIN deployment_ownership o ON o.id = 1 WHERE m.id = ?`).bind(memberId)
-    .first<{ role: string; revoked_at: number | null; owner: string | null }>();
+  const row = snapshot.targetMember;
   resource.exists = !isSystemMember(memberId) && row !== null && row.revoked_at === null && (row.role === 'admin' || row.role === 'member');
   resource.targetRevoked = row !== null && row.revoked_at !== null;
   resource.ownerMemberId = memberId;
-  resource.grantedRole = row?.owner === memberId ? 'owner' : row?.role === 'admin' ? 'admin' : row?.role === 'member' ? 'member' : undefined;
+  resource.grantedRole = effectiveRole(row, memberId);
   return resource;
 }
 
@@ -193,35 +200,22 @@ export function enrollmentAuthorityPredicate(alias: string): string {
 }
 
 /** Machine claims and owner protection share one resource resolver across single and paged reads. */
-export async function machineResources(db: RelationalStore, kind: 'machine' | 'machine-settings' | 'credential', machineIds: string[]): Promise<AuthorizationResource[]> {
-  const deploymentId = await deploymentIdentity(db);
-  const { results } = await db.prepare('SELECT mc.machine_id, mc.member_id, o.member_id AS owner FROM machine_claims mc LEFT JOIN deployment_ownership o ON o.id = 1 WHERE mc.machine_id IN (SELECT value FROM json_each(?))')
-    .bind(JSON.stringify(machineIds)).all<{ machine_id: string; member_id: string; owner: string | null }>();
-  const claims = new Map(results.map((row) => [row.machine_id, row]));
+export function machineResourcesOf(snapshot: Pick<AuthorizationSnapshot, 'deploymentId' | 'machineClaims'>, kind: 'machine' | 'machine-settings' | 'credential', machineIds: readonly string[]): AuthorizationResource[] {
+  const claims = new Map(snapshot.machineClaims.map((row) => [row.machine_id, row]));
   return machineIds.map((id) => {
     const row = claims.get(id);
-    return { kind, deploymentId, exists: row !== undefined, id, ownerMemberId: row?.member_id, claimantMemberId: row?.member_id,
+    return { kind, deploymentId: snapshot.deploymentId, exists: row !== undefined, id, ownerMemberId: row?.member_id, claimantMemberId: row?.member_id,
       protectedOwner: row !== undefined && row.member_id === row.owner };
   });
 }
 
-export async function machineResource(db: RelationalStore, kind: 'machine' | 'machine-settings' | 'credential', machineId: string): Promise<AuthorizationResource> {
-  return (await machineResources(db, kind, [machineId]))[0]!;
-}
-
 /** A credential's recorded member and current owner protection. */
-export async function credentialResource(db: RelationalStore, tokenId: string): Promise<AuthorizationResource> {
-  const row = await db.prepare('SELECT c.member_id, o.member_id AS owner FROM member_credentials c LEFT JOIN deployment_ownership o ON o.id = 1 WHERE c.id = ?')
-    .bind(tokenId).first<{ member_id: string; owner: string | null }>();
-  return { kind: 'credential', deploymentId: await deploymentIdentity(db), exists: row !== null, id: tokenId,
+export function credentialResourceOf(snapshot: Pick<AuthorizationSnapshot, 'deploymentId' | 'credential'>, tokenId: string): AuthorizationResource {
+  const row = snapshot.credential;
+  return { kind: 'credential', deploymentId: snapshot.deploymentId, exists: row !== null, id: tokenId,
     ownerMemberId: row?.member_id, protectedOwner: row !== null && row.member_id === row.owner };
 }
 
 export async function memberSubject(db: RelationalStore, memberId: string, transport: Transport): Promise<AuthorizationSubject> {
-  const deploymentId = await deploymentIdentity(db);
-  const row = await db.prepare(`SELECT m.role, m.revoked_at, o.member_id AS owner FROM members m
-    LEFT JOIN deployment_ownership o ON o.id = 1 WHERE m.id = ?`).bind(memberId)
-    .first<{ role: string; revoked_at: number | null; owner: string | null }>();
-  const role = row?.owner === memberId ? 'owner' : row?.role === 'admin' ? 'admin' : row?.role === 'member' ? 'member' : undefined;
-  return { kind: 'member', deploymentId, transport, memberId, live: row !== null && row.revoked_at === null && role !== undefined, role };
+  return memberSubjectOf(await readAuthorization(db, { subjectMember: memberId }), memberId, transport);
 }

@@ -23,7 +23,8 @@
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
-import type { ReadScope } from '../read/scope.js';
+import type { Page, ReadScope } from '../read/scope.js';
+import { grantPage } from '../db/identity/access-pages.js';
 import { emit } from '../telemetry.js';
 
 /** The bearer's prefix: a log line names the class, and the member-token pattern never matches it. */
@@ -111,25 +112,24 @@ export async function issueExternalGrant(
   return { key, id, expiresAt };
 }
 
-/** Every grant of the scope's Project, live and ended, newest first. Never a key or its digest. */
-export async function listExternalGrants(db: RelationalStore, scope: ReadScope): Promise<GrantRow[]> {
-  const { results } = await db
-    .prepare(`SELECT id, project_id, label, created_by, created_at, expires_at, last_used_at, revoked_at, revoked_by, rotated_to
-                FROM external_grants WHERE project_id = ? ORDER BY created_at DESC, id DESC`)
-    .bind(scope.projectId)
-    .all<Record<string, unknown>>();
-  return results.map((r) => ({
-    id: r.id as string,
-    projectId: r.project_id as string,
-    label: (r.label as string | null) ?? null,
-    createdBy: r.created_by as string,
-    createdAt: r.created_at as number,
-    expiresAt: (r.expires_at as number | null) ?? null,
-    lastUsedAt: (r.last_used_at as number | null) ?? null,
-    revokedAt: (r.revoked_at as number | null) ?? null,
-    revokedBy: (r.revoked_by as string | null) ?? null,
-    rotatedTo: (r.rotated_to as string | null) ?? null,
-  }));
+/** One page of the scope's Project's grants, live and ended, newest first. Never a key or its digest. */
+export async function listExternalGrants(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<Page<GrantRow>> {
+  const { rows, cursor } = await grantPage(db, scope.projectId, opts);
+  return {
+    cursor,
+    rows: rows.map((r) => ({
+      id: r.id,
+      projectId: r.project_id,
+      label: r.label,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+      expiresAt: r.expires_at,
+      lastUsedAt: r.last_used_at,
+      revokedAt: r.revoked_at,
+      revokedBy: r.revoked_by,
+      rotatedTo: r.rotated_to,
+    })),
+  };
 }
 
 /** Live grants whose expiry falls after `nowMs` and at or before `byMs`, soonest first, across every Project; read on the expiry index. */

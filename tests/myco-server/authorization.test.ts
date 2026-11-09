@@ -6,7 +6,7 @@ import {
 } from '@myco-server-worker/auth/authorization.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
-import { authorizeHttp, credentialListScope, resolveHttpResource } from '@myco-server-worker/auth/http-authorization.js';
+import { authorizeHttp, credentialListScope, httpAuthorizationDecision } from '@myco-server-worker/auth/http-authorization.js';
 import { listCredentials } from '@myco-server-worker/read/credentials.js';
 import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -160,7 +160,7 @@ describe('Deployment authorization policy', () => {
       const declaration = ROUTES.find(route => route.path === '/api/device/approve')!.authorization;
       for (const [memberId, role] of [['mem_machine_1', 'owner'], ['mem_machine_3', 'admin'], ['mem_machine_2', 'member']] as const) {
         const subject = await memberSubject(e.db, memberId, 'http');
-        const resolved = await resolveHttpResource(e.serverEnv, declaration, subject, { body: JSON.stringify({ memberId: 'someone-else', role: 'owner' }) });
+        const resolved = (await httpAuthorizationDecision(e.serverEnv, declaration, subject, { body: JSON.stringify({ memberId: 'someone-else', role: 'owner' }) })).resource!;
         expect(resolved).toMatchObject({ ownerMemberId: memberId, grantedRole: role });
         expect(authorizeDeclaration(subject, declaration, {}, resolved)).toBe(true);
         e.sqlite.query('UPDATE members SET revoked_at = ? WHERE id = ?').run(100, memberId);
@@ -179,7 +179,7 @@ describe('Deployment authorization policy', () => {
       for (const [memberId, grantedRole] of [[undefined, 'member'], ['mem_machine_2', 'member'], ['mem_machine_3', 'admin'], ['mem_machine_1', 'owner']] as const) {
         for (const role of [undefined, 'member', 'admin'] as const) {
           const input = { ...(memberId === undefined ? {} : { memberId }), ...(role === undefined ? {} : { role }) };
-          const resolved = await resolveHttpResource(e.serverEnv, declaration, subject, { body: JSON.stringify(input) });
+          const resolved = (await httpAuthorizationDecision(e.serverEnv, declaration, subject, { body: JSON.stringify(input) })).resource!;
           const effectiveRole = memberId === undefined && role === 'admin' ? 'admin' : grantedRole;
           const action = effectiveRole === 'member' && role !== 'admin' ? 'admin' : 'owner';
           expect({ grantedRole: resolved.grantedRole, action: declaredAction(declaration, input, resolved) }).toEqual({ grantedRole: effectiveRole, action });
@@ -324,8 +324,8 @@ describe('Deployment authorization policy', () => {
       const credentialDeclaration: AuthorizationDeclaration = { subjects: ['member'], transport: 'http', resource: 'credential', resolver: 'credential', action: 'edit' };
       const memberInput = { params: { memberId: 'mem_machine_1' } };
       const credentialInput = { params: { id: credential.tokenId } };
-      expect(await resolveHttpResource(e.serverEnv, memberDeclaration, admin, memberInput)).toMatchObject({ exists: true, protectedOwner: true });
-      expect(await resolveHttpResource(e.serverEnv, credentialDeclaration, admin, credentialInput)).toMatchObject({ exists: true, protectedOwner: true, ownerMemberId: 'mem_machine_1' });
+      expect((await httpAuthorizationDecision(e.serverEnv, memberDeclaration, admin, memberInput)).resource).toMatchObject({ exists: true, protectedOwner: true });
+      expect((await httpAuthorizationDecision(e.serverEnv, credentialDeclaration, admin, credentialInput)).resource).toMatchObject({ exists: true, protectedOwner: true, ownerMemberId: 'mem_machine_1' });
       expect(await authorizeHttp(e.serverEnv, memberDeclaration, admin, memberInput)).toBe(false);
       expect(await authorizeHttp(e.serverEnv, credentialDeclaration, admin, credentialInput)).toBe(false);
       expect(await authorizeHttp(e.serverEnv, { ...credentialDeclaration, action: 'read' }, admin, credentialInput)).toBe(false);

@@ -143,7 +143,7 @@ describe('the measures route', () => {
       expect(Object.keys(body).sort()).toEqual(['asOf', 'metricVersion', 'progress', 'since', 'state', 'windowDays', 'windowEnd', 'windowStart']);
       expect(body.state).toBe('building');
       expect(body.progress).toEqual({ completed: 1, total: 7 });
-      await catchUpProjections(db);
+      while ((await catchUpProjections(db)).more);
       const ready = await get('/api/kpis?window=7');
       expect(ready.body.state).toBe('ready');
       expect(ready.body.promptsServed).toBe(0);

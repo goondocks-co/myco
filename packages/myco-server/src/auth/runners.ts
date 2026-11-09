@@ -34,6 +34,7 @@ import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { SchemaMismatchError } from '../telemetry.js';
 import { deploymentIdentity, type AuthorizationSubject } from './authorization.js';
+import { runParentLive } from '../db/runs/run-parent.js';
 import { MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_BYTES, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from './tokens.js';
 
 export const RUNNER_TOKEN_PREFIX = 'mycorun_';
@@ -86,18 +87,6 @@ export function runnerCredentialAuthority(alias: string, instant: string, expiry
       WHERE authority_successor.predecessor_id = ${alias}.id AND authority_successor.first_used_at IS NOT NULL
         AND authority_successor.revoked_at IS NULL AND authority_successor.runner_id = ${alias}.runner_id
         AND authority_successor.epoch = ${alias}.epoch)))`;
-}
-
-/**
- * The run row named by `alias` keeps its runner parent's authority: a member worker's run has none to lose, and a
- * runner's run holds only while its runner is not removed and the credential that leased it is of the runner's
- * current epoch. Run tokens, run reads and run writes all answer to this one predicate.
- */
-export function runParentLive(alias = 'agent_runs'): string {
-  return `(${alias}.leased_runner_id IS NULL OR EXISTS (SELECT 1 FROM runners parent_runner
-    JOIN runner_credentials parent_credential ON parent_credential.runner_id = parent_runner.id
-    WHERE parent_runner.id = ${alias}.leased_runner_id AND parent_credential.id = ${alias}.leased_runner_credential_id
-      AND parent_runner.state <> 'removed' AND parent_credential.epoch = parent_runner.credential_epoch))`;
 }
 
 interface RunnerAuthRow {
