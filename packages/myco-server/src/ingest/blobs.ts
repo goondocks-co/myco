@@ -121,7 +121,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
     await db.batch([
       journalUnpublishedUpload(db,physical,at,reservationId,ctx.projectId,key),
       registerContentStatement(db,{projectId:ctx.projectId,key,size:storedSize,mediaType,tokenId:ctx.tokenId,
-        receivedAt:ctx.now,generation:reservationId,authority:{sql:live,params:[reservationId,at]}}),
+        receivedAt:at,generation:reservationId,authority:{sql:live,params:[reservationId,at]}}),
       db.prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`).bind(storedSize, ctx.tokenId),
       verifiedBlobReference(db, { projectId: ctx.projectId, key, tokenId: ctx.tokenId, reservationId, at }),
       db.prepare(`DELETE FROM blob_reservations WHERE reservation_id = ?`).bind(reservationId),

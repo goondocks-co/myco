@@ -25,11 +25,10 @@ export interface PreparationGuard {
 }
 
 /**
- * What must still stand when a candidate is recorded, so a caller holding an earlier read cannot observe a registration
- * made after its reference went: the preparation or the bundle whose rows named the blob. `callerHoldsReference` is for a
- * caller whose own transaction proves it. A caller that read the references itself records through `recordObservedCandidates`.
+ * What a bundle's candidates are recorded against: the preparation or the bundle, still standing. A caller that read the
+ * references itself records through `recordObservedCandidates`.
  */
-export type CandidateGuard = PreparationGuard | { bundle: { projectId: string; bundleId: number } } | { callerHoldsReference: true };
+export type CandidateGuard = PreparationGuard | { bundle: { projectId: string; bundleId: number; archiveKey: string } };
 
 /** A registration an aged orphan sweep read: the generation it saw, and nothing newer. */
 export interface ObservedOrphan extends BlobRef { generation: string | null }
@@ -37,19 +36,19 @@ export interface ObservedOrphan extends BlobRef { generation: string | null }
 const pageOf = (pairs: readonly BlobRef[]): string => JSON.stringify(pairs.map(b => ({ p: b.projectId, k: b.key })));
 const PAGE = `(SELECT json_extract(j.value,'$.p') AS p,json_extract(j.value,'$.k') AS k FROM json_each(?1) j)`;
 const physical = (alias: string) => blobObjectKeySql(`${alias}.project_id`, `${alias}.key`, `${alias}.generation`);
-/** The candidate authorizes only the registration it observed; a `'*'` candidate observed none until its blob has aged past the orphan grace. */
+/** The candidate authorizes only the registration it observed; a `'*'` candidate waits for its blob to age past the orphan grace. */
 const candidate = (alias: string) => `EXISTS(SELECT 1 FROM blob_release_candidates rc WHERE rc.project_id=${alias}.project_id AND rc.key=${alias}.key
   AND ${alias}.generation IS rc.generation)`;
-const OBSERVED = `(SELECT b.generation FROM blobs b WHERE b.project_id=c.p AND b.key=c.k)`;
 const REOBSERVE = 'ON CONFLICT(project_id,key) DO UPDATE SET generation=excluded.generation';
 
-const record = write<[page: string, now: number]>({ name: 'storage.recordBlobCandidates', sql:
-  `INSERT INTO blob_release_candidates(project_id,key,created_at,generation) SELECT c.p,c.k,?2,${OBSERVED} FROM ${PAGE} c WHERE c.k IS NOT NULL
-    ${REOBSERVE}` });
+/** A key's registration as a bundle's proof names it: the generation that bundle or receipt holds, and only while it is still registered. */
+const BUNDLE_PROOF = (archive: string) => `JOIN registered_content_proofs p ON p.project_id=c.p AND p.key=c.k
+      AND ((p.source_kind='bundle' AND p.source_id=${archive}) OR (p.source_kind='receipt' AND p.source_id='bundle:'||${archive}))
+    JOIN blobs b ON b.project_id=c.p AND b.key=c.k AND b.generation IS p.generation`;
 const recordForPreparation = write<[page: string, now: number, preparation: string, project: string, archive: string, receipt: string | null, expires: number, aged: number | null]>({
   name: 'storage.recordPreparationBlobCandidates', sql:
-  `INSERT INTO blob_release_candidates(project_id,key,created_at,generation) SELECT c.p,c.k,?2,${OBSERVED} FROM ${PAGE} c WHERE c.k IS NOT NULL
-    AND EXISTS(SELECT 1 FROM prepared_archive_bundles pb WHERE pb.preparation_id=?3 AND pb.project_id=?4 AND pb.archive_key=?5
+  `INSERT INTO blob_release_candidates(project_id,key,created_at,generation) SELECT c.p,c.k,?2,b.generation FROM ${PAGE} c ${BUNDLE_PROOF('?5')}
+    WHERE EXISTS(SELECT 1 FROM prepared_archive_bundles pb WHERE pb.preparation_id=?3 AND pb.project_id=?4 AND pb.archive_key=?5
       AND pb.receipt_key IS ?6 AND pb.expires_at=?7 AND (?8 IS NULL OR pb.expires_at<=?8))
     ${REOBSERVE}` });
 const recordObserved = write<[page: string, now: number]>({ name: 'storage.recordObservedBlobCandidates', sql:
@@ -57,16 +56,22 @@ const recordObserved = write<[page: string, now: number]>({ name: 'storage.recor
     SELECT b.project_id,b.key,?2,b.generation FROM (SELECT json_extract(j.value,'$.p') AS p,json_extract(j.value,'$.k') AS k,json_extract(j.value,'$.g') AS g FROM json_each(?1) j) c
     JOIN blobs b ON b.project_id=c.p AND b.key=c.k WHERE b.generation IS c.g
     ${REOBSERVE}` });
-const recordForBundle = write<[page: string, now: number, project: string, bundle: number]>({ name: 'storage.recordBundleBlobCandidates', sql:
-  `INSERT INTO blob_release_candidates(project_id,key,created_at,generation) SELECT c.p,c.k,?2,${OBSERVED} FROM ${PAGE} c WHERE c.k IS NOT NULL
-    AND EXISTS(SELECT 1 FROM archive_bundles a WHERE a.project_id=?3 AND a.id=?4)
+const recordForBundle = write<[page: string, now: number, project: string, bundle: number, archive: string]>({ name: 'storage.recordBundleBlobCandidates', sql:
+  `INSERT INTO blob_release_candidates(project_id,key,created_at,generation) SELECT c.p,c.k,?2,b.generation FROM ${PAGE} c ${BUNDLE_PROOF('?5')}
+    WHERE EXISTS(SELECT 1 FROM archive_bundles a WHERE a.project_id=?3 AND a.id=?4 AND a.archive_key=?5)
     ${REOBSERVE}` });
-const recordForHolders = write<[page: string, now: number]>({ name: 'storage.recordHolderBlobCandidates', sql:
+/**
+ * A holder records the generation its own proof names, so a holder with no proof records nothing. A blob still inside the
+ * upload grace may be a member's upload whose event has not arrived, whoever registered it: its candidate waits out the
+ * grace as `'*'` and is then judged like any other.
+ */
+const recordForHolders = write<[page: string, now: number, cutoff: number]>({ name: 'storage.recordHolderBlobCandidates', sql:
   `INSERT INTO blob_release_candidates(project_id,key,created_at,generation)
-    SELECT r.project_id,r.blob_key,?2,b.generation FROM json_each(?1) j
+    SELECT r.project_id,r.blob_key,?2,CASE WHEN b.received_at<=?3 THEN b.generation ELSE '*' END FROM json_each(?1) j
       JOIN retired_objects r ON r.project_id=json_extract(j.value,'$.p') AND r.session_id=json_extract(j.value,'$.s')
         AND r.blob_key=json_extract(j.value,'$.k') AND r.source_id=json_extract(j.value,'$.i')
-      JOIN blobs b ON b.project_id=r.project_id AND b.key=r.blob_key WHERE true
+      JOIN registered_content_proofs p ON p.project_id=r.project_id AND p.key=r.blob_key AND p.source_kind='document' AND p.source_id=r.source_id
+      JOIN blobs b ON b.project_id=r.project_id AND b.key=r.blob_key AND b.generation IS p.generation WHERE true
     ${REOBSERVE}` });
 const recordAgedOrphans = write<[page: string, now: number, cutoff: number]>({ name: 'storage.recordAgedOrphans', sql:
   `INSERT INTO blob_release_candidates(project_id,key,created_at,generation)
@@ -93,18 +98,17 @@ const heldCandidates = read<[page: string], { held: number }>({ name: 'storage.h
 const decision = (page: string, now: number) => [observeAgedLegacy.bind(page, now - BLOB_RESERVATION_TTL_MS), journalUnreferenced.bind(page, now), removeJournaled.bind(page), clearDecided.bind(page), heldCandidates.bind(page)] as const;
 
 /**
- * Statements that record `pairs` as blob release candidates, one per page, placed ahead of the statements that remove the
- * rows naming them. Each candidate holds the generation registered as that batch commits, and is recorded only while
- * `guard` stands, so a stale caller records nothing. Recorded in that same transaction, a candidate outlives any
- * interruption before it is decided: the drain decides what a caller did not.
+ * Statements that record a bundle's `pairs` as blob release candidates, one per page, placed ahead of the statements that
+ * remove the rows naming them. Each candidate holds the generation the bundle's own proof names, and is recorded only
+ * while `guard` stands. Recorded in that same transaction, a candidate outlives any interruption before it is decided:
+ * the drain decides what a caller did not.
  */
 export function recordBlobCandidates(db: RelationalStore, pairs: readonly BlobRef[], now: number, guard: CandidateGuard): PreparedStatement[] {
   const statements: PreparedStatement[] = [];
   for (let at = 0; at < pairs.length; at += RELEASE_PAGE) {
     const page = pageOf(pairs.slice(at, at + RELEASE_PAGE));
     statements.push(prepareBound(db, 'preparationId' in guard ? recordForPreparation.bind(page, now, guard.preparationId, guard.projectId, guard.archiveKey, guard.receiptKey, guard.expiresAt, guard.agedAt)
-      : 'bundle' in guard ? recordForBundle.bind(page, now, guard.bundle.projectId, guard.bundle.bundleId)
-        : record.bind(page, now)));
+      : recordForBundle.bind(page, now, guard.bundle.projectId, guard.bundle.bundleId, guard.bundle.archiveKey)));
   }
   return statements;
 }
@@ -124,7 +128,7 @@ export interface HolderRef { p: string; s: string; k: string; i: string }
 /** Statements that record the blobs of those holders that still stand, ahead of the statement removing them. */
 export function recordHolderCandidates(db: RelationalStore, holders: readonly HolderRef[], now: number): PreparedStatement[] {
   const statements: PreparedStatement[] = [];
-  for (let at = 0; at < holders.length; at += RELEASE_PAGE) statements.push(prepareBound(db, recordForHolders.bind(JSON.stringify(holders.slice(at, at + RELEASE_PAGE)), now)));
+  for (let at = 0; at < holders.length; at += RELEASE_PAGE) statements.push(prepareBound(db, recordForHolders.bind(JSON.stringify(holders.slice(at, at + RELEASE_PAGE)), now, now - BLOB_RESERVATION_TTL_MS)));
   return statements;
 }
 
