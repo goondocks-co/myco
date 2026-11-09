@@ -61,8 +61,8 @@ const LIFECYCLE_TRANSCRIPT_WRITES = 1;
 const KPI_PROMPT_PROJECTION_WRITES = 2;
 /** An unpinned transcript contributes one scheme-conflict fact and one daily row. */
 const KPI_TRANSCRIPT_PROJECTION_WRITES = 2;
-/** One-card learning completion writes coverage, attribution, session progress, one idx_learning_source_waiting entry and the landed write's one idx_agent_run_events_write entry. */
-const LEARNING_SLICE_COMPLETION_WRITES = 21;
+/** One-card learning completion writes coverage, attribution, session progress, the session's Project rollup and learning mark, and the landed write's one idx_agent_run_events_write entry. */
+const LEARNING_SLICE_COMPLETION_WRITES = 19;
 /** A transcript or frontier mutation writes its contribution, session total and input revision. */
 const PUBLICATION_CONTRIBUTION_WRITES = 3;
 /** Growth past a complete frontier changes its pending contribution and generation total too. */

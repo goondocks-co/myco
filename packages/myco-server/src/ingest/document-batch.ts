@@ -13,7 +13,7 @@ import { releaseBlobs } from '../core/object-release.js';
 import { registeredBlobsGuard, recordHolderCandidates } from '../db/storage/release-queue.js';
 import { trimTurn } from '../core/turn-card-rules.js';
 import { TURN_QUIET_MS } from '../db/schema-v110.js';
-import { learningSessionStatement, pendingCardsStatement, sessionProgressStatements } from '../core/learning-sessions.js';
+import { publicationProgressStatements } from '../db/learning/progress.js';
 import { turnInput } from '../content/turn-material.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { DOCUMENT_PREVIEW_CHARS, SESSION_PATHS_LIMIT } from '../db/document-tables.js';
@@ -744,9 +744,7 @@ export class DocumentBatch {
           AND (source_activity_at IS NULL OR source_activity_at<json_extract(j.value,'$.activity'))`).bind(p, s, turns),
       ...(this.openTurn === this.doc.open_turn_key ? [] : [db.prepare(`UPDATE turn_cards SET settle_at=MIN(settle_at,?) WHERE project_id=? AND session_id=?
         AND state='pending' AND settle_at IS NOT NULL AND turn_key IS NOT ?`).bind(now, p, s, this.openTurn)]),
-      learningSessionStatement(db, p, s),
-      pendingCardsStatement(db, p, s),
-      ...sessionProgressStatements(db, p, s, now),
+      ...publicationProgressStatements(db, p, s, now),
     ];
   }
 

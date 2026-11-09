@@ -1,7 +1,7 @@
 import type { ServerEnv as processed_import_ServerEnv } from "../../core/adapters.js";
 import { registeredObjectKeySql as processed_import_registeredObjectKeySql } from "../../core/blob-objects.js";
-import { PROCESSED_FIELDS as processed_import_PROCESSED_FIELDS } from "../../core/processed-resources.js";
-import { processedResourceProofSql as processed_import_processedResourceProofSql } from "../../core/processed-resources.js";
+import { PROCESSED_FIELDS as processed_import_PROCESSED_FIELDS } from "../../db/processed-resources.js";
+import { processedResourceProofSql as processed_import_processedResourceProofSql } from "../../db/processed-resources.js";
 import type { ReadScope as processed_import_ReadScope } from "../scope.js";
 
 type processed_ProcessedBodyKind = keyof typeof processed_import_PROCESSED_FIELDS;

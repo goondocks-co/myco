@@ -4,7 +4,7 @@ import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
-import { LIVE_PROCESSED_FIELDS } from '@myco-server-worker/core/processed-resources.js';
+import { LIVE_PROCESSED_FIELDS } from '@myco-server-worker/db/processed-resources.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { historicalBackfillSql } from './helpers/raw-backfill-fixture.js';

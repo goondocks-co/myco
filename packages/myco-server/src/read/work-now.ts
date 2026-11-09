@@ -334,7 +334,7 @@ export async function readWorkNow(env: ServerEnv, scope: WorkNowScope, now: numb
     marks: {
       runs: [marks[0], ...running.map((r) => r.runId), ...waiting.map((w) => `${w.key}=${w.count ?? ''}`), ...needsYou.map((n) => n.key)].join('|'),
       sessions: marks[1]!,
-      knowledge: `${marks[2]}|${marks[3]}`,
+      knowledge: `${marks[2]}|${marks[3]}|${marks[5]}`,
       attention: marks[4]!,
       recovery: recovery === null ? '' : `${recovery.attempt ?? ''}:${recovery.stage}:${recovery.staged?.parts ?? ''}:${recovery.staged?.downloadedBytes ?? ''}`,
       fleet: fleet.map((row) => `${row.runner?.id ?? row.credentialId}:${row.runnerDetails?.display ?? (row.recent ? 'recent' : 'quiet')}:${row.busy?.runId ?? ''}`).join('|'),

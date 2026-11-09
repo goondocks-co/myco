@@ -6,10 +6,10 @@ import { spentUsdSql, projectSpendSql, spendReadySql } from './admission.js';
 import { queueHeadSeek } from './queue.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { capabilityOnSql, projectAcceptsWorkSql, effectiveBudgetSql, learningEnabledSql, curationDailyLimitSql, CURATION_DAILY_LIMIT_MAX } from '../../core/settings.js';
-import { FRESH_LEARNING_MS, freshRetrySql as retry, learningRecencySql as recency, learningRangeSql as range } from './learning-policy.js';
 import { BUDGET_WINDOW_MS, seedForStage, reserveForStage } from '../../core/budget-policy.js';
 import { admissionForTask, CURATION_TASK, EXTRACTION_TASK } from '../../core/task-catalogue.js';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
+import { learningDue, learningEligible, learningReadyProjects } from '../learning/ready.js';
 import { resolvedConcurrency, type DispatchLimits } from '../../core/limits.js';
 import type { PulledItem, ServedQueue } from '../../core/pulled-stages.js';
 
@@ -20,30 +20,6 @@ const accepts = (project: string, task: string) => {
   const gate = admissionForTask(task);
   return gate?.kind === 'capability' ? capabilityOnSql(project,literal(gate.capability)) : projectAcceptsWorkSql(project);
 };
-function learningWorkFrom(project:string,now:number|string,kind:'cards'|'learning',fresh:boolean):string {
-  const ready=kind==='cards'?'card_ready_at':'learning_ready_at', pending=kind==='cards'?'pending_cards > 0':'eligible_at IS NOT NULL';
-  if(!fresh)return `learning_sessions l INDEXED BY ${kind==='cards'?'idx_learning_cards_ready':'idx_learning_ready'}`;
-  const day=typeof now==='number'?String(Math.floor(now/FRESH_LEARNING_MS)):`CAST(${now}/${FRESH_LEARNING_MS} AS INTEGER)`;
-  const columns='project_id,session_id,source_activity_at,eligible_at,pending_cards,card_ready_at,learning_ready_at,fresh_admitted,card_failures,failures';
-  return `(SELECT ${columns} FROM learning_sessions INDEXED BY ${kind==='cards'?'idx_learning_cards_fresh':'idx_learning_fresh'}
-    WHERE project_id=${project} AND source_day IN ((${day})-1,${day}) AND ${pending} AND ${ready}<=${instant(now)}
-    UNION ALL SELECT ${columns} FROM learning_sessions INDEXED BY ${kind==='cards'?'idx_learning_source_pending':'idx_learning_source_eligible'}
-    WHERE project_id=${project} AND source_activity_at>=((${day})+1)*${FRESH_LEARNING_MS} AND ${pending} AND ${ready}<=${instant(now)}
-    UNION ALL SELECT ${columns} FROM learning_sessions INDEXED BY ${kind==='cards'?'idx_learning_cards_retry':'idx_learning_retry'}
-    WHERE project_id=${project} AND ${pending} AND ${retry(kind)} AND ${recency(false,now)} AND ${ready}<=${instant(now)}) l`;
-}
-export function learningEligible(kind:'cards'|'learning',fresh:boolean,now:number|string):string {
-  const timing=kind==='cards'?`pending_cards>0 AND card_ready_at<=${instant(now)}`:`eligible_at IS NOT NULL AND learning_ready_at<=${instant(now)}`;
-  return `${timing} AND ${range(kind,fresh,now)} AND ${learningEnabledSql(!fresh)}${kind==='cards'?`
-    AND EXISTS(SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due WHERE c.project_id=l.project_id
-      AND c.session_id=l.session_id AND c.state='pending' AND c.due_at<=${instant(now)})`:''}`;
-}
-const freeLearning = (kind:'cards'|'learning') => `NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live
-  WHERE r.task=${literal(kind==='cards'?CARD_TASK:EXTRACTION_TASK)} AND r.${IN_FLIGHT_RUN_STATUSES} AND r.subject=${literal(kind==='cards'?'cards:':'session:')}||l.session_id)`;
-export function learningDue(kind:'cards'|'learning',fresh:boolean,project:string,now:number|string):string {
-  return `EXISTS(SELECT 1 FROM ${learningWorkFrom(project,now,kind,fresh)} WHERE l.project_id=${project}
-    AND ${learningEligible(kind,fresh,now)} AND ${freeLearning(kind)})`;
-}
 export const CURATION_MAX_FAILURES=3;
 export function curationDueWorkSql(project:string,now:number|string):string {
   return `w.project_id=${project} AND w.due_at IS NOT NULL AND w.due_at<=${instant(now)} AND w.failures<${CURATION_MAX_FAILURES}
@@ -76,12 +52,12 @@ export interface PullPolicy {
   fair(item:PulledItem,limits:DispatchLimits,now:number,estimateKey?:string):Bound;
 }
 /** Define each stage's fixed head, priority and fairness assertions at registration. */
-export function definePullPolicy(name:string,task:string,due:string,head:string):PullPolicy {
+export function definePullPolicy(name:string,task:string,due:string,head:string,from='projects p'):PullPolicy {
   const valid=`${accepts('p.project_id',task)} AND ${due} AND ${limitSql(literal(task))}`;
   const definitions={
     head:assertion<[string]>({name:`pull.${name}Head`,...refusedUnless(head)}),
-    higher:assertion<[string]>({name:`pull.${name}Priority`,...refusedUnless(`NOT EXISTS(SELECT 1 FROM projects p WHERE ${valid})`)}),
-    fair:assertion<[string]>({name:`pull.${name}Fair`,...refusedUnless(`NOT EXISTS(SELECT 1 FROM projects p
+    higher:assertion<[string]>({name:`pull.${name}Priority`,...refusedUnless(`NOT EXISTS(SELECT 1 FROM ${from} WHERE ${valid})`)}),
+    fair:assertion<[string]>({name:`pull.${name}Fair`,...refusedUnless(`NOT EXISTS(SELECT 1 FROM ${from}
       CROSS JOIN (SELECT ROUND(COALESCE((SELECT spent FROM (${projectSpendSql(`i.now-${BUDGET_WINDOW_MS}`)}) WHERE projectId=i.projectId),0),6) AS spent) mine
       LEFT JOIN (SELECT projectId,ROUND(spent,6) AS spent FROM (${projectSpendSql(`i.now-${BUDGET_WINDOW_MS}`)})) other ON other.projectId=p.project_id
       WHERE p.project_id!=i.projectId AND ${valid}
@@ -91,8 +67,8 @@ export function definePullPolicy(name:string,task:string,due:string,head:string)
 }
 export const learningPolicies = (['cards','learning'] as const).map(kind => [false,true].map(fresh => definePullPolicy(
   `${kind}${fresh?'Fresh':'History'}`,kind==='cards'?CARD_TASK:EXTRACTION_TASK,learningDue(kind,fresh,'p.project_id','i.now'),
-  `EXISTS(SELECT 1 FROM learning_sessions l WHERE project_id=i.projectId AND session_id=i.key
-    AND ${kind==='cards'?'source_activity_at':'eligible_at'}=i.observed AND ${learningEligible(kind,fresh,'i.now')})`)));
+  `EXISTS(SELECT 1 FROM learning_sessions l WHERE l.project_id=i.projectId AND l.session_id=i.key
+    AND l.${kind==='cards'?'source_activity_at':'eligible_at'}=i.observed AND ${learningEligible(kind,fresh,'i.now')})`,learningReadyProjects(kind,fresh))));
 export const curationPolicy=definePullPolicy('curation',CURATION_TASK,curationAdmissionSql('p.project_id','i.now',undefined,'i.estimateKey'),
   `${curationAdmissionSql('i.projectId','i.now',undefined,'i.estimateKey')} AND EXISTS(SELECT 1 FROM spore_curation_work w
     WHERE ${curationDueWorkSql('i.projectId','i.now')} AND cluster_key=i.key AND due_at=i.observed AND decision IS NULL)`);

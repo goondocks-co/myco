@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
+import { learningHolds } from '@myco-server-worker/db/learning/hold.js';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
@@ -39,7 +39,6 @@ it('holds unpublished sessions and archives live unlearned source without losing
 
 it('retires pause state and keeps pending counts exact through the final card transition on both stores', async () => {
   await withDocumentStores(async db => {
-    const { pendingCardsStatement } = await import('@myco-server-worker/core/learning-sessions.js');
     const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
     await db.prepare("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('learning_paused_at','1'),('learning_resumed_at','2')").run();
     for (const step of SCHEMA_STEPS.filter(step => step.version > BEFORE_PAUSE_RETIREMENT))
@@ -50,7 +49,6 @@ it('retires pause state and keeps pending counts exact through the final card tr
     await db.prepare(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < ?)
       INSERT INTO turn_cards(project_id,session_id,turn_key,created_at) SELECT 'project','many',CAST(i AS TEXT),1 FROM n`)
       .bind(turns).run();
-    await pendingCardsStatement(db, 'project', 'many').run();
     expect(await db.prepare("SELECT pending_cards FROM learning_sessions WHERE session_id='many'").first()).toEqual({ pending_cards: turns });
     await db.prepare("UPDATE turn_cards SET state='carded' WHERE session_id='many' AND turn_key <> '1'").run();
     expect(await db.prepare("SELECT pending_cards FROM learning_sessions WHERE session_id='many'").first()).toEqual({ pending_cards: 1 });

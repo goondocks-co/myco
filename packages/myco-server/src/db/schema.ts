@@ -16,6 +16,7 @@ import { VNEXT_S4B_STEPS } from './schema-vNEXT-s4b.js';
 import { VNEXT_S2C_STEPS } from './schema-vNEXT-s2c.js';
 import { VNEXT_S6B_STEPS } from './schema-vNEXT-s6b.js';
 import { VNEXT_S2D_STEPS } from './schema-vNEXT-s2d.js';
+import { VNEXT_S4B2_STEPS } from './schema-vNEXT-s4b2.js';
 import { V717, V717_STATEMENTS } from './schema-v717.js';
 import { V719, V719_STATEMENTS } from './schema-v719.js';
 import { V710_STATEMENTS } from './schema-v710.js';
@@ -57,7 +58,7 @@ import { PUBLICATION_FACT_STEPS } from './schema-v467.js';
 import { V466_STATEMENTS } from './schema-v466.js';
 import { MAX_PAYLOAD_BYTES } from '../ingest/envelope.js';
 import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from '../core/raw-provenance.js';
-import { PROCESSED_FIELDS, processedReferenceSql } from '../core/processed-resources.js';
+import { PROCESSED_FIELDS, processedReferenceSql } from './processed-resources.js';
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
 import { MEMBER_TOKEN_TTL_MS } from '../constants.js';
@@ -2251,6 +2252,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...VNEXT_S2C_STEPS.map(step => withStamp(step.version, step.statements)),
   ...VNEXT_S6B_STEPS.map(step => withStamp(step.version, step.statements)),
   ...VNEXT_S2D_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...VNEXT_S4B2_STEPS.map(step => withStamp(step.version, step.statements)),
 ];
 
 /** Every statement of every step, in application order. */

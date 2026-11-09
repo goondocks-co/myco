@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
-import { processedResourceProofSql } from '../../core/processed-resources.js';
+import { processedResourceProofSql } from '../processed-resources.js';
 import { notTombstonedSql } from '../session-read-model.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';

@@ -184,18 +184,20 @@ it('a card claim reads the same catalog rows whatever the session holds', async 
         .bind(session, NOW + 60_000, NOW, JSON.stringify(Array.from({ length: 2 * turns }, (_, i) => i))).run();
       let rowsRead = 0;
       let statements = 0;
-      const count = (statement: PreparedStatement): PreparedStatement => ({
-        bind: (...values: unknown[]) => count(statement.bind(...values)),
-        first: async <T,>() => { statements += 1; return statement.first<T>(); },
-        all: async <T,>() => {
-          statements += 1;
-          const result = await statement.all<T>();
-          rowsRead += (result as { meta?: { rows_read?: number } }).meta?.rows_read ?? 0;
-          return result;
-        },
-        run: () => { statements += 1; return statement.run(); },
-      }) as PreparedStatement;
-      const counted = { ...db, prepare: (sql: string) => count(db.prepare(sql)) } as RelationalStore;
+      const originals = new WeakMap<PreparedStatement, PreparedStatement>();
+      const record = (value: unknown) => { rowsRead += (value as { meta?: { rows_read?: number } }).meta?.rows_read ?? 0; };
+      const count = (statement: PreparedStatement): PreparedStatement => {
+        const wrapped = {
+          bind: (...values: unknown[]) => count(statement.bind(...values)),
+          first: async <T,>() => { statements += 1; return statement.first<T>(); },
+          all: async <T,>() => { statements += 1; const result = await statement.all<T>(); record(result); return result; },
+          run: () => { statements += 1; return statement.run(); },
+        } as PreparedStatement;
+        originals.set(wrapped, statement);
+        return wrapped;
+      };
+      const counted = { ...db, prepare: (sql: string) => count(db.prepare(sql)),
+        batch: async (batched: PreparedStatement[]) => { statements += batched.length; const results = await db.batch(batched.map(raw => originals.get(raw)!)); results.forEach(record); return results; } } as RelationalStore;
       const input = await buildCardInput({ db: counted }, 'project', session, NOW);
       return { rowsRead, statements, turns: (input?.counts as { turns: number }).turns };
     };

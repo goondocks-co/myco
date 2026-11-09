@@ -8,7 +8,7 @@ import { V102_STATEMENTS } from '@myco-server-worker/db/schema-v102.js';
 import { settingsWriter as oldSettingsWriter } from '../fixtures/vault-evolution/pre-pause-settings.js';
 import { scheduledTasks as oldScheduledTasks } from '../fixtures/vault-evolution/pre-pause-schedule.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
-import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
+import { learningHolds } from '@myco-server-worker/db/learning/hold.js';
 import { runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { dispatchTask } from '@myco-server-worker/core/harness.js';
 

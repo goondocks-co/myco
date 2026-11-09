@@ -57,7 +57,7 @@ const NON_PARSER_ENTRIES: Readonly<Record<string, readonly string[]>> = {
 };
 const KIND_DATA = new Set([
   'myco-server/src/ingest/kinds.ts#kindSpec',
-  'myco-server/src/core/processed-resources.ts#processedResourceProofSql',
+  'myco-server/src/db/processed-resources.ts#processedResourceProofSql',
   'myco/src/member/envelope.ts#envelope',
   'myco/src/member/legacy-import.ts#kinds',
   'myco/src/member/legacy-import.ts#withId',
