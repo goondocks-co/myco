@@ -17,7 +17,7 @@ import { Database } from 'bun:sqlite';
 const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 50;
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
-import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
+import { presentedDatesAfterPublication } from '@myco-server-worker/db/documents/lifecycle.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
@@ -313,7 +313,8 @@ describe('the vector a presented date is filtered by', () => {
     expect(moved).not.toBe(before);
 
     // A pass over a transcript already read resolves the same minimum.
-    await r.serverEnv.db.batch([resolvePresentedDates(r.serverEnv.db, PROJECT, SESSION)]);
+    const { generation } = r.sqlite.query('SELECT generation FROM session_documents WHERE project_id = ? AND session_id = ?').get(PROJECT, SESSION) as { generation: number };
+    await r.serverEnv.db.batch([presentedDatesAfterPublication(r.serverEnv.db, PROJECT, SESSION, generation, null)]);
     expect(revision(r.sqlite)).toBe(moved);
   });
 

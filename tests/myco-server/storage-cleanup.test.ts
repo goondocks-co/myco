@@ -8,7 +8,8 @@ import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { eventOrderingTimeSql,resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
+import { LIFECYCLE_PHASE,presentedDatesAfterPublication } from '@myco-server-worker/db/documents/lifecycle.js';
+import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
 import { measuredContentEnv,remainingContentBudget } from '@myco-server-worker/core/content-budget.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteEnv,envelope,uuid } from './helpers/fixtures.js';
@@ -235,16 +236,22 @@ describe('archive-before-clear storage cleanup',()=>{
             rig.sqlite.query('UPDATE events SET payload=? WHERE event_id=?').run(JSON.stringify(item.payload),item.eventId);
           }else expect(admitted.persisted).toBe(true);
         }
-        await resolvePresentedDates(rig.db,'proj_1','sess_1').run();
+        const presented=async()=>{
+          for(const table of ['session_lifecycle_facts','session_user_prompt_firsts'])rig.sqlite.run(`DELETE FROM ${table}`);
+          rig.sqlite.run("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE projection='session_lifecycle'");
+          while(await catchUpPhase(rig.db,LIFECYCLE_PHASE as never)>0);
+          await rig.db.batch([presentedDatesAfterPublication(rig.db,'proj_1','sess_1',1,null)]);
+        };
+        await presented();
         const before=rig.sqlite.query('SELECT occurred_started_at,occurred_ended_at,ended_at,title FROM sessions').get();
-        const ordering=()=>rig.sqlite.query(`SELECT ${eventOrderingTimeSql('e','endedAt')} AS at FROM events e WHERE event_id=?`).get(uuid(171));
+        const ordering=()=>rig.sqlite.query(`SELECT COALESCE(CASE WHEN payload_format='archived' THEN archived_ended_at END,json_extract(payload,'$.endedAt')) AS at FROM events WHERE event_id=?`).get(uuid(171));
         expect(ordering()).toEqual({at:900});
         const rows=rig.sqlite.query('SELECT event_id FROM events').all() as {event_id:string}[];
         for(const {event_id} of rows){
           const row=await cleanupCandidate(rig.db,{project_id:'proj_1',resource_kind:'event',resource_id:event_id},true);
           await rig.db.batch(eventArchiveStatements(rig.db,row!,await prepareArchive(rig.serverEnv,'event',row!,now)));
         }
-        await resolvePresentedDates(rig.db,'proj_1','sess_1').run();
+        await presented();
         expect(rig.sqlite.query('SELECT occurred_started_at,occurred_ended_at,ended_at,title FROM sessions').get()).toEqual(before);
         expect(ordering()).toEqual({at:900});
         expect(rig.sqlite.query('SELECT archived_title_only_end AS title_only_end,archived_ended_at AS ended_at FROM events WHERE event_id=?').get(uuid(170))).toEqual({title_only_end:1,ended_at:500});

@@ -84,6 +84,7 @@ it('preserves source identities and bytes through additive migration and interru
   for (let i = 0; i < 20 && await projectionReadiness(r.db, 'publication') === 'building'; i++) await catchUpProjections(r.db);
   expect(await projectionReadiness(r.db, 'publication')).toBe('ready');
   expect(r.facts()).toEqual({ transcripts: 56, bytes: 3310, imported: 1 });
+  for (const step of SCHEMA_STEPS.filter(step => step.version > V717)) for (const sql of step.statements) r.sqlite.exec(sql);
   expect((await readDocumentStatus(r.db))).toMatchObject({ lagBytes: 3310 });
   const caught = r.facts();
   r.sqlite.exec("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE projection='publication'");
