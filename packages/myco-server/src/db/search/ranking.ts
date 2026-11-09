@@ -1,5 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet } from '../index.js';
+import { changed } from '../ddl.js';
 
 /**
  * Each search dependency's revision. A kind's revision moves whenever a row changes, or a row is written or removed,
@@ -49,8 +50,8 @@ export function searchRevisionStatements(): string[] {
     `INSERT OR IGNORE INTO search_revisions(kind, revision) VALUES ${Object.keys(REVISION_KINDS).map(kind => `('${kind}', 0)`).join(', ')}`,
     ...Object.entries(REVISION_KINDS).flatMap(([kind, watched]) => watched.flatMap(({ table, columns, rows, when, narrow }) => {
       const scoped = (watching: readonly string[], test: Watched['when']) => {
-        const changed = `(${watching.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ')})`;
-        return test === undefined ? changed : `(${changed} AND (${test('OLD')} OR ${test('NEW')}))`;
+        const changedRow = `(${changed(watching)})`;
+        return test === undefined ? changedRow : `(${changedRow} AND (${test('OLD')} OR ${test('NEW')}))`;
       };
       const moved = narrow === undefined ? scoped(columns, when)
         : `${scoped(columns.filter(c => !narrow.columns.includes(c)), when)} OR ${scoped(narrow.columns, narrow.when)}`;

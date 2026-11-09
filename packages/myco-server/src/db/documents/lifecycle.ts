@@ -3,6 +3,7 @@ import { TRANSCRIPT_PARSE_ADAPTER } from '../../constants.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { read, readSet, write } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * A session's lifecycle facts, kept as one keyed row beside its session.
@@ -38,11 +39,6 @@ const importEndBeats = (createdAt: string, event: string, row = '') => `(${row}i
 
 /** The index on `events`, the largest table: built alone, in a step that does nothing else. */
 export const SESSION_LIFECYCLE_EVENTS_INDEX = `CREATE INDEX IF NOT EXISTS idx_events_lifecycle ON events(project_id,session_id,created_at,event_id) WHERE ${LIFECYCLE_KINDS}`;
-/** The indexes on the other history-sized tables, built before the tables and triggers that use them. */
-export const SESSION_LIFECYCLE_HISTORY_INDEXES = [
-  'CREATE INDEX IF NOT EXISTS idx_transcripts_live ON transcripts(project_id,session_id) WHERE imported_at IS NULL',
-  "CREATE INDEX IF NOT EXISTS idx_session_prompts_user_instant ON session_prompts(project_id,session_id,generation,created_at DESC) WHERE origin='user'",
-];
 
 export function sessionLifecycleSchema(): string[] {
   /** A session's first lifecycle event has seen its whole history, so the row is built from the start. */
@@ -146,7 +142,7 @@ const pageWinner = (source: string) => `w AS (SELECT * FROM (${source}) WHERE n=
 const inWinners = `session_lifecycle_facts.project_id=w.project_id AND session_lifecycle_facts.session_id=w.session_id
     AND (session_lifecycle_facts.project_id,session_lifecycle_facts.session_id) IN (SELECT project_id,session_id FROM w)`;
 
-export const LIFECYCLE_RECONCILE = [
+const LIFECYCLE_RECONCILE = [
   // An end from before events recorded their actor takes it from the session that still shows it, before the winner is read below.
   write<[string]>({ name: 'lifecycle.pageActors', sql: `UPDATE events SET actor=s.ended_by FROM ${PAGE} p CROSS JOIN sessions s ON s.project_id=p.project_id AND s.session_id=p.session_id
     WHERE events.project_id=p.project_id AND events.event_id=p.event_id AND events.actor IS NULL AND p.kind='session.end' AND NOT ${importTitleOnly('p')}
@@ -173,7 +169,7 @@ export const LIFECYCLE_RECONCILE = [
     ${presentedColumns(MIN_DERIVED, MAX_DERIVED)}
     FROM session_lifecycle_facts f WHERE (sessions.project_id,sessions.session_id) IN ${COMPLETED} AND f.project_id=sessions.project_id AND f.session_id=sessions.session_id AND f.built=1` }),
 ];
-export const LIFECYCLE_PHASE_SOURCE = { table: 'events INDEXED BY idx_events_lifecycle', columns: ['project_id', 'session_id', 'created_at', 'event_id'], where: LIFECYCLE_KINDS, startKey: ['', '', -1, ''], unique: true } as const;
+const LIFECYCLE_PHASE_SOURCE = { table: 'events INDEXED BY idx_events_lifecycle', columns: ['project_id', 'session_id', 'created_at', 'event_id'], where: LIFECYCLE_KINDS, startKey: ['', '', -1, ''], unique: true } as const;
 
 const sessionState = read<[string, string], { state: 'ready' | 'building' }>({ name: 'lifecycle.sessionState', sql: `SELECT CASE WHEN
     EXISTS(SELECT 1 FROM projection_catchup WHERE projection='${LIFECYCLE_PROJECTION}' AND phase='${LIFECYCLE_PHASE}' AND done=1)
@@ -212,3 +208,8 @@ export const presentedDatesAfterSegment = (db: RelationalStore, { project, sessi
 
 export const presentedDatesAfterPublication = (db: RelationalStore, project: string, session: string, generation: number, lastRecordAt: number | null): PreparedStatement =>
   prepareBound(db, presentedPublished.bind(project, session, generation, lastRecordAt));
+
+export const LIFECYCLE_CATCHUP = {
+  projection: LIFECYCLE_PROJECTION,
+  phases: { [LIFECYCLE_PHASE]: { source: LIFECYCLE_PHASE_SOURCE, reconcile: LIFECYCLE_RECONCILE } },
+} as const satisfies CatchupFamily;

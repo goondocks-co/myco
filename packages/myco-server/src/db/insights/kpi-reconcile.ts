@@ -1,4 +1,5 @@
 import { write } from '../index.js';
+import { jsonKeys } from '../ddl.js';
 
 export const KPI_DAY_MS = 86_400_000;
 export const KPI_MEASURES = [
@@ -169,11 +170,11 @@ export function kpiTriggers(): KpiTrigger[] {
   return triggers;
 }
 
-export const KPI_JSON_KEYS = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS session_id,json_extract(value,'$[2]') AS k FROM json_each(?1)`;
+export const KPI_JSON_KEYS = jsonKeys(['project_id', 'session_id', 'k']);
 export const KPI_RECONCILE = Object.fromEntries((Object.keys(sources) as KpiGrain[]).map(grain => [grain,
   reconcileKpi(grain, KPI_JSON_KEYS).map((sql, i) => write<[string]>({ name: `kpi.${grain}Reconcile${i}`, sql })),
 ])) as Record<KpiGrain, ReturnType<typeof write<[string]>>[]>;
 export const KPI_DOCUMENT_RECONCILE = (['p', 'c'] as const).flatMap(grain => reconcileKpi(grain, sessionKeys(grain, KPI_JSON_KEYS))
   .map((sql, i) => write<[string]>({ name: `kpi.${grain}SessionReconcile${i}`, sql })));
-export const KPI_LINEAGE_RECONCILE = reconcileLineages(`SELECT json_extract(value,'$[0]') AS lineage_root FROM json_each(?1)`)
+export const KPI_LINEAGE_RECONCILE = reconcileLineages(jsonKeys(['lineage_root']))
   .map((sql, i) => write<[string]>({ name: `kpi.lineageReconcile${i}`, sql }));

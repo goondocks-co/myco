@@ -3,7 +3,7 @@ import { readSetupProgress } from '@myco-server-worker/db/identity/setup.js';
 import { describe, expect, it } from 'bun:test';
 import { passedOverHealth } from '@myco-server-worker/db/embeddings/health.js';
 import { passedOverTriggers } from '@myco-server-worker/db/embeddings/passed-over.js';
-import { todayMarks, changeMarkTriggers } from '@myco-server-worker/db/meta/marks.js';
+import { todayMarks } from '@myco-server-worker/db/meta/marks.js';
 import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { todayQueued, todayRunning, todayProjects } from '@myco-server-worker/db/runs/now.js';
 import { recentMachineCapture } from '@myco-server-worker/db/runners/harness-health.js';
@@ -32,7 +32,7 @@ describe('maintained Health and Today contracts', () => {
   it('generated triggers maintain the same Health counts and Today marks after replay', async () => {
     const f = fixture();
     try {
-      for (const trigger of [...passedOverTriggers(), ...changeMarkTriggers()]) {
+      for (const trigger of passedOverTriggers()) {
         f.sqlite.run(`DROP TRIGGER ${trigger.name}`);
         f.sqlite.run(trigger.sql);
       }
@@ -185,7 +185,8 @@ describe('maintained Health and Today contracts', () => {
       const tables = ['sessions','embedding_versions','embedding_source_failures','plans','agent_runs','spore_curation_changes'];
       const snapshot = () => tables.map(table => f.sqlite.query(`SELECT * FROM ${table}`).all());
       const before = snapshot();
-      for (const trigger of [...passedOverTriggers(), ...changeMarkTriggers()]) f.sqlite.run(`DROP TRIGGER ${trigger.name}`);
+      const changeMarks = f.sqlite.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'change_mark_%'").all();
+      for (const { name } of [...passedOverTriggers(), ...changeMarks]) f.sqlite.run(`DROP TRIGGER ${name}`);
       f.sqlite.run('DROP TABLE embedding_passed_over');
       f.sqlite.run('DROP TABLE change_marks');
       f.sqlite.run("DELETE FROM projection_catchup WHERE projection='passed_over'");

@@ -1,8 +1,9 @@
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
 import { emit } from '../../telemetry.js';
-import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
+import { jsonKeys } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * What a queued event is waiting for, as rows the publisher can look up, wake and inspect.
@@ -24,34 +25,6 @@ const INSPECTION_HOPS = 64;
 /** The most hops inspection follows from one edge before it settles for checking back later: a graph this long is reported as pending. */
 const INSPECTION_MAX_HOPS = 4_096;
 const INSPECTION_PENDING_DELAY_MS = 30 * 60_000;
-
-/** Created in one schema step; the wake trigger reads the queue's full key from the row. */
-export function publicationDependencySchema(): string[] {
-  const totalsDelta = (row: 'NEW' | 'OLD', sign: 1 | -1) => `UPDATE publication_dependency_totals SET
-    waiting=waiting+(${sign})*(${row}.outcome='waiting'),inspecting=inspecting+(${sign})*(${row}.inspect_due IS NOT NULL),cycles=cycles+(${sign})*(${row}.outcome='cycle') WHERE slot=1;`;
-  return [
-    'ALTER TABLE session_documents ADD COLUMN publication_wake TEXT',
-    `CREATE TABLE IF NOT EXISTS publication_dependencies(
-      project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),session_id TEXT NOT NULL,child_event_id TEXT NOT NULL,child_rank INTEGER NOT NULL,child_created_at INTEGER NOT NULL,
-      prerequisite_kind TEXT NOT NULL CHECK (prerequisite_kind IN ('prompt','event','read')),prerequisite_id TEXT NOT NULL,holder_event_id TEXT,
-      outcome TEXT NOT NULL DEFAULT 'waiting' CHECK (outcome IN ('waiting','cycle')),inspect_due INTEGER,inspect_after TEXT,inspect_hops INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY(project_id,child_event_id,prerequisite_kind,prerequisite_id)) WITHOUT ROWID`,
-    'CREATE INDEX IF NOT EXISTS idx_publication_dependencies_holder ON publication_dependencies(project_id,session_id,holder_event_id,child_created_at,child_event_id) WHERE holder_event_id IS NOT NULL',
-    "CREATE INDEX IF NOT EXISTS idx_publication_dependencies_read_roots ON publication_dependencies(project_id,session_id,child_created_at,child_event_id) WHERE prerequisite_kind='read'",
-    'CREATE INDEX IF NOT EXISTS idx_publication_dependencies_inspect ON publication_dependencies(inspect_due,project_id,child_event_id) WHERE inspect_due IS NOT NULL',
-    `CREATE TABLE IF NOT EXISTS publication_dependency_totals(slot INTEGER PRIMARY KEY CHECK(slot=1),waiting INTEGER NOT NULL DEFAULT 0,inspecting INTEGER NOT NULL DEFAULT 0,cycles INTEGER NOT NULL DEFAULT 0)`,
-    'INSERT INTO publication_dependency_totals(slot) VALUES(1) ON CONFLICT DO NOTHING',
-    `CREATE TRIGGER IF NOT EXISTS publication_dependency_insert AFTER INSERT ON publication_dependencies BEGIN ${totalsDelta('NEW', 1)} END`,
-    `CREATE TRIGGER IF NOT EXISTS publication_dependency_update AFTER UPDATE OF outcome,inspect_due ON publication_dependencies
-      WHEN OLD.outcome IS NOT NEW.outcome OR OLD.inspect_due IS NOT NEW.inspect_due BEGIN ${totalsDelta('OLD', -1)} ${totalsDelta('NEW', 1)} END`,
-    `CREATE TRIGGER IF NOT EXISTS publication_dependency_delete AFTER DELETE ON publication_dependencies BEGIN ${totalsDelta('OLD', -1)}
-      UPDATE publish_queue SET retry_at=0 WHERE project_id=OLD.project_id AND session_id=OLD.session_id AND rank=OLD.child_rank AND created_at=OLD.child_created_at AND event_id=OLD.child_event_id
-        AND OLD.holder_event_id IS NOT NULL AND failure IS NULL AND retry_cause IS NOT NULL AND retry_at>0
-        AND NOT EXISTS(SELECT 1 FROM publication_dependencies d WHERE d.project_id=OLD.project_id AND d.child_event_id=OLD.child_event_id AND d.holder_event_id IS NOT NULL); END`,
-    `INSERT INTO projection_catchup(projection,phase,done) SELECT '${DEPENDENCY_PROJECTION}','${DEPENDENCY_PHASE}',
-      NOT EXISTS(SELECT 1 FROM publish_queue WHERE retry_cause IS NOT NULL AND failure IS NULL) ON CONFLICT DO NOTHING`,
-  ];
-}
 
 /** A queued row still held by a retry cause: what the translation walks and what holds a session's publication. */
 const heldWait = (alias: string) => `${alias}retry_cause IS NOT NULL AND ${alias}failure IS NULL`;
@@ -205,9 +178,9 @@ export async function inspectPublicationCycles(db: RelationalStore, now: number)
 interface DependencyTotals { waiting: number; inspecting: number; cycles: number }
 export const DEPENDENCY_STATUS = read<[], DependencyTotals>({ name: 'publication.dependencyStatus', sql: 'SELECT waiting,inspecting,cycles FROM publication_dependency_totals WHERE slot=1' });
 
-export const DEPENDENCY_PHASE_SOURCE = { table: 'publish_queue', columns: ['project_id', 'session_id', 'rank', 'created_at', 'event_id'], where: heldWait(''), startKey: ['', '', -1, -1, ''], unique: true } as const;
+const DEPENDENCY_PHASE_SOURCE = { table: 'publish_queue', columns: ['project_id', 'session_id', 'rank', 'created_at', 'event_id'], where: heldWait(''), startKey: ['', '', -1, -1, ''], unique: true } as const;
 /** A held retry cause becomes its typed row. A prompt wait names its canonical prompt from the waiting record; when that is unreadable the holder event id is kept instead, so no source id is lost. */
-export const DEPENDENCY_RECONCILE = [
+const DEPENDENCY_RECONCILE = [
   write<[string]>({ name: 'publication.reconcileDependencies', sql: `INSERT INTO publication_dependencies
     (project_id,session_id,child_event_id,child_rank,child_created_at,prerequisite_kind,prerequisite_id,holder_event_id,inspect_due)
   SELECT q.project_id,q.session_id,q.event_id,q.rank,q.created_at,
@@ -217,7 +190,7 @@ export const DEPENDENCY_RECONCILE = [
       ELSE '' END,
     CASE WHEN json_extract(q.retry_cause,'$.kind') IN ('prompt','order') THEN json_extract(q.retry_cause,'$.eventId') END,
     CASE json_extract(q.retry_cause,'$.kind') WHEN 'prompt' THEN 0 END
-  FROM (SELECT json_extract(value,'$[0]') project_id,json_extract(value,'$[1]') session_id,json_extract(value,'$[2]') rank,json_extract(value,'$[3]') created_at,json_extract(value,'$[4]') event_id FROM json_each(?1)) k
+  FROM (${jsonKeys(['project_id', 'session_id', 'rank', 'created_at', 'event_id'])}) k
   CROSS JOIN publish_queue q ON q.project_id=k.project_id AND q.session_id=k.session_id AND q.rank=k.rank AND q.created_at=k.created_at AND q.event_id=k.event_id
   CROSS JOIN events e ON e.project_id=q.project_id AND e.event_id=q.event_id
   WHERE q.failure IS NULL AND (json_extract(q.retry_cause,'$.kind') IN ('prompt','order')
@@ -227,3 +200,8 @@ export const DEPENDENCY_RECONCILE = [
   write<[string]>({ name: 'publication.rearmTranslated', sql: `UPDATE session_documents SET due_at=0 WHERE state='live' AND due_at IS NOT 0 AND (project_id,session_id) IN
     (SELECT DISTINCT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?1))` }),
 ];
+
+export const DEPENDENCY_CATCHUP = {
+  projection: DEPENDENCY_PROJECTION,
+  phases: { [DEPENDENCY_PHASE]: { source: DEPENDENCY_PHASE_SOURCE, reconcile: DEPENDENCY_RECONCILE } },
+} as const satisfies CatchupFamily;

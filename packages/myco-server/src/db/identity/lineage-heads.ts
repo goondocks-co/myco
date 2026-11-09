@@ -1,5 +1,6 @@
 import { HARNESS_MEMBER_ID } from '../../constants.js';
 import { read, write } from '../index.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 export const LINEAGE_HEAD_PROJECTION = 'credential_lineages';
 export const LINEAGE_HEAD_PHASE = 'credentialLineages';
@@ -53,6 +54,13 @@ export const lineageHeadsReady = read<[], { done: number }>({
 
 /** A restore replaces the credentials wholesale, and the rebuild starts from no heads. */
 export const clearLineageHeads = write<[]>({ name: 'lineageHeads.clear', sql: 'DELETE FROM credential_lineages' });
+
+/** Replaying every lineage rebuilds its head, so heads a copy brought with it cannot survive a restart. */
+export const LINEAGE_HEAD_CATCHUP = {
+  projection: LINEAGE_HEAD_PROJECTION,
+  reset: () => [clearLineageHeads.bind()],
+  phases: { [LINEAGE_HEAD_PHASE]: { source: LINEAGE_HEAD_SOURCE, reconcile: LINEAGE_HEAD_RECONCILE } },
+} as const satisfies CatchupFamily;
 
 /** The step's frozen text: the heads, their triggers and the catch-up phase. Pinned to the step so the triggers keep the reconcile the catch-up runs. */
 export function lineageHeadSchemaStatements(): string[] {
