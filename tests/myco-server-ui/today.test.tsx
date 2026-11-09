@@ -1009,6 +1009,10 @@ it('names code work without claiming a code map for a non-map repository require
 
 it('tells an administrator which sign-ins could not save a name without inventing a total', () => {
   const failed = (failures: number) => ({ memberId: `mem_${failures}`, errorClass: 'db', failures, lastFailedAt: NOW - HOUR });
+  const stuck = { projectId: 'p', runId: 'run_9', kind: 'instruction', item: 0, failures: 3, error: 'run_body_not_text', since: NOW - 3_600_000 };
+  expect(attentionWords({ kind: 'run_body_stuck', tone: 'warn', bodies: [stuck], hasMore: false }, NOW, () => null).title).toBe('Text from a past run can’t be moved to storage');
+  expect(attentionWords({ kind: 'run_body_stuck', tone: 'warn', bodies: [stuck], hasMore: false }, NOW, () => null).detail).toContain('run_9');
+  expect(attentionWords({ kind: 'run_body_stuck', tone: 'warn', bodies: [stuck, stuck], hasMore: true }, NOW, () => null).title).toBe('More than 2 pieces of text from past runs can’t be moved to storage');
   const one = attentionWords({ kind: 'member_naming_failed', tone: 'warn', members: [failed(3)], hasMore: false }, NOW, () => null);
   expect(one.title).toBe('A member’s name couldn’t be saved');
   expect(one.detail).toContain('3 times');

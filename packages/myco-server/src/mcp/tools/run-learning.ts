@@ -10,7 +10,7 @@ import { assignmentOf } from '../../db/run-context.js';
  */
 import { runOf, type RunPrincipal, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
-import { recordServedPrompts } from '../../core/served-material.js';
+import { recordServedPrompts } from '../../db/runs/served.js';
 import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
 import { answerBytes, headThatFits } from '../../core/material-pages.js';
 import type { TurnInput } from '../../core/turn-card-rules.js';

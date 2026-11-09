@@ -1,7 +1,7 @@
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 /**
  * The Deployment Settings surface (#915 L4), through the deployed entry.
  *

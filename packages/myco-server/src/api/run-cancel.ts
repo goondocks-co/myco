@@ -1,7 +1,7 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { isAdmin } from '../auth/roles.js';
-import { cancelRun } from '../core/runs.js';
+import { cancelRun } from '../db/runs/lifecycle.js';
 import { releaseRun } from '../core/release.js';
 import { notFound, ok, resolveProjectScope } from './scope.js';
 

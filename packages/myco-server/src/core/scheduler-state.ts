@@ -1,5 +1,5 @@
 import type { RelationalStore } from './adapters.js';
-import { ensureAgent, getState, mutateState } from './runs.js';
+import { ensureAgent, getState, mutateState } from '../db/runs/state.js';
 import { HARNESS_AGENT_ID } from './harness.js';
 import { emit } from '../telemetry.js';
 import { SERVER_STATE_PREFIX, SPORE_READ_STATE_PREFIX } from '../constants.js';

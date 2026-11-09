@@ -4,7 +4,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { runWriteStore, RunWriteExpired } from '@myco-server-worker/core/run-write-store.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';

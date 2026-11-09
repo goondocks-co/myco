@@ -1,6 +1,7 @@
 import { buildLearningAssignment, completeLearning, type LearningAssignment } from '@myco-server-worker/core/learning-sessions.js';
-import { recordServedPrompts } from '@myco-server-worker/core/served-material.js';
-import { recordDispatch, ensureAgent } from '@myco-server-worker/core/runs.js';
+import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
+import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 

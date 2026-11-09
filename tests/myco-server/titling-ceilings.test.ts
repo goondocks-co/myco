@@ -1,6 +1,7 @@
 import { expect, it } from 'bun:test';
 import { extractionSqlEnv as sqliteEnv } from './helpers/extraction-sql.js';
-import { ensureAgent, recordQueued } from '@myco-server-worker/core/runs.js';
+import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
+import { recordQueued } from '@myco-server-worker/db/runs/claim.js';
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
 import { CLOCK_ACTOR, runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';

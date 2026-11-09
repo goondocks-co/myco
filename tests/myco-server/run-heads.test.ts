@@ -8,7 +8,7 @@ import { V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { heldBy } from '@myco-server-worker/core/limits.js';
-import { NO_LIMITS } from '@myco-server-worker/core/runs.js';
+import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 
 it('keeps exact queue counts and oldest identities through claim, requeue, deletion and cross-Project keys', async () => {
   const f = await budgetFixture();

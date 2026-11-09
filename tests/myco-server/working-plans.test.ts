@@ -11,7 +11,7 @@ import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { endTurnStatement, startTurnStatement } from '@myco-server-worker/ingest/turns.js';
 import { listSessions, listSessionsAcross } from '@myco-server-worker/read/sessions.js';
-import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally, recordQueued } from '@myco-server-worker/core/runs.js';
+import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally, recordQueued } from '@myco-server-worker/db/runs/claim.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 
 type Statement = { sql: string; params: unknown[] };

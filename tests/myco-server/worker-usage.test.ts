@@ -8,7 +8,7 @@ import { describe, expect, it } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { applyRunUpdate, getRun } from '@myco-server-worker/core/runs.js';
+import { applyRunUpdate, getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { claimNextRun, endLeasedRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { SERVER_FEATURES, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';

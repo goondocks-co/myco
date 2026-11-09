@@ -62,10 +62,10 @@ export function useAttemptEvidence(projectId: string, answer: RunDetailAnswer, c
 }
 
 /** The panel's summary line for the run's latest attempt, or null until its evidence is read. */
-export function summaryOf(evidence: AttemptEvidence, attemptCount: number): string | null {
+export function summaryOf(evidence: AttemptEvidence, attemptCount: number | null): string | null {
   if (evidence.loading) return null;
   const words = summaryWords(evidence.rows, stepsKnown(evidence.coverage), evidence.files);
-  if (words === null || attemptCount <= 1) return words;
+  if (words === null || attemptCount === null || attemptCount <= 1) return words;
   return `In its last of ${attemptCount.toLocaleString()} attempts: ${words.charAt(0).toLowerCase()}${words.slice(1)}`;
 }
 
@@ -176,17 +176,18 @@ export function ActivitySection({ projectId, answer, calls, latest, live }: { pr
   const unplaced = useMemo(() => attemptActivity(callsByAttempt(calls.rows, attempts).unplaced, [], answer.run.harness), [calls.rows, attempts, answer.run.harness]);
   return (
     <section aria-label="What it did" className="flex flex-col gap-s3" data-run-calls="">
-      <PartLabel end={attempts.length > 1 ? count(answer.attemptCount, 'attempt') : end}>What it did</PartLabel>
-      {!calls.complete && !calls.pending && <p className="t-small text-muted">Only the first {calls.rows.length.toLocaleString()} of the {count(answer.toolCallCoverage.total, 'call')} Myco recorded are loaded.</p>}
+      <PartLabel end={attempts.length > 1 && answer.attemptCount !== null ? count(answer.attemptCount, 'attempt') : end}>What it did</PartLabel>
+      {!calls.complete && !calls.pending && <p className="t-small text-muted">Only the first {calls.rows.length.toLocaleString()}{answer.toolCallCoverage.total === null ? ' calls' : ` of the ${count(answer.toolCallCoverage.total, 'call')}`} Myco recorded are loaded.</p>}
       {calls.error != null && <ErrorState error={calls.error} />}
       {unplaced.length > 0 && <UnplacedCalls rows={unplaced} />}
       {attempts.length <= 1 ? <AttemptList evidence={latest} live={live} /> : (
         <ol className="flex flex-col gap-s4" aria-label="Attempts">
-          {answer.attemptCount > attempts.length && <li className="t-small text-muted">Showing the latest {attempts.length.toLocaleString()} of {count(answer.attemptCount, 'attempt')}.</li>}
+          {answer.attemptCount !== null && answer.attemptCount > attempts.length && <li className="t-small text-muted">Showing the latest {attempts.length.toLocaleString()} of {count(answer.attemptCount, 'attempt')}.</li>}
           {attempts.map((attempt, index) => {
             const last = index === attempts.length - 1;
             const runner = attempt.executor.kind === 'runner' ? ` · runner ${attempt.executor.name ?? attempt.executor.runnerId}` : ` · ${LEGACY_WORKER_LABEL}`;
-            const heading = `Attempt ${(answer.attemptCount - attempts.length + index + 1).toLocaleString()} of ${answer.attemptCount.toLocaleString()} · started ${timeWords(attempt.claimedAt)}${runner}`;
+            const position = answer.attemptCount === null ? '' : ` ${(answer.attemptCount - attempts.length + index + 1).toLocaleString()} of ${answer.attemptCount.toLocaleString()}`;
+            const heading = `Attempt${position} · started ${timeWords(attempt.claimedAt)}${runner}`;
             return (
               <li key={attempt.attemptId} className="flex flex-col gap-s2" data-attempt={last ? 'latest' : 'replaced'}>
                 {last ? <>
@@ -338,10 +339,11 @@ function PlacedChecks({ projectId, answer, calls, index, audit }: { projectId: s
 export function AgentAccount({ projectId, answer, calls, failed }: { projectId: string; answer: RunDetailAnswer; calls: Loaded<RunCall>; failed: boolean }) {
   const { reports } = answer;
   if (reports.length === 0) return null;
-  const owed = answer.attemptCount > 0;
+  const owed = (answer.attemptCount ?? answer.attempts.length) > 0;
   return (
     <section aria-label="The agent’s report" className="flex flex-col gap-s3">
       <PartLabel>The agent’s report</PartLabel>
+      {answer.reportsHasMore && <p className="t-small text-muted">Showing the latest {reports.length.toLocaleString()} reports.</p>}
       {reports.map((report, index) => (
         <div key={index} className="flex flex-col gap-s2 t-small text-ink-2">
           {failed && <span className="font-medium">The agent said:</span>}

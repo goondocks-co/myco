@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { cancelRun, RUN_CANCELLED } from '@myco-server-worker/core/runs.js';
+import { cancelRun, RUN_CANCELLED } from '@myco-server-worker/db/runs/lifecycle.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/index.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';

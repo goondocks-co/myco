@@ -13,7 +13,7 @@ import { listPlans } from '@myco-server-worker/read/children.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
 import { searchProject } from '@myco-server-worker/read/search.js';
 import { retiringReceipt } from '@myco-server-worker/core/embedding/selection.js';
-import { taskRunFacts } from '@myco-server-worker/core/runs.js';
+import { taskRunFacts } from '@myco-server-worker/db/runs/task-facts.js';
 import { pageSegments } from '@myco-server-worker/read/transcript.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { handleTranscript } from '@myco-server-worker/api/sessions.js';

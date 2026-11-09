@@ -4,7 +4,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { runEmbeddingJob, embeddingKeepsAwake, hasEmbeddingWork, WORK_AUDIT_INTERVAL_MS } from '@myco-server-worker/core/embedding/jobs.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { runTick, tickPacer } from '@myco-server-worker/core/tick.js';
-import { lastTaskEntryAt } from '@myco-server-worker/core/runs.js';
+import { lastTaskEntryAt } from '@myco-server-worker/db/runs/claim.js';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
 import { calibrationPopulation } from '@myco-server-worker/db/embeddings/calibration.js';
 import { WORK_SWEEP_CONTINUE_MS } from '@myco-server-worker/core/embedding/work-state.js';

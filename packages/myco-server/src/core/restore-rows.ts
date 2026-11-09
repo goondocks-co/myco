@@ -2,11 +2,46 @@ import { writeGuardStore } from './write-guard-store.js';
 import { inheritStoreContext } from './adapters.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { DERIVED_TABLES, tombstonedAmong } from './tombstones.js';
-import { referencedBlobsOf } from './object-release.js';
+import { referencedBlobsOf, unregisteredAmong } from './object-release.js';
+import { runsPresentAmong, runsWithoutInstruction } from '../db/runs/body-restore.js';
+import { RUN_CHILD_TABLES } from '../db/runs/retention.js';
 import type { BlobRef } from './blob-references.js';
 
 type Row = Record<string, unknown>;
 const identity = (project: unknown, id: unknown) => JSON.stringify([project, id]);
+
+export interface RetiredRunExclusion { excluded: number; unrecoverable: number }
+
+/**
+ * Excludes what retention removed from this Deployment's own backup. A moved body whose bytes are no longer registered
+ * cannot be restored: a run absent here leaves the artifact with all its evidence; a run still here loses the reference
+ * and any report that needs it. A run here left with no instruction body at all is `unrecoverable`, so the caller refuses
+ * rather than restoring an empty body. Another Deployment's backup proves nothing about retention and is left to refuse.
+ */
+export async function excludeRetiredRuns(db: RelationalStore, tables: Map<string, Row[]>, foreign: boolean): Promise<RetiredRunExclusion> {
+  if (foreign) return { excluded: 0, unrecoverable: 0 };
+  const bodies = (tables.get('run_bodies') ?? []).filter(row => typeof row.project_id === 'string' && typeof row.key === 'string' && typeof row.run_id === 'string');
+  const gone = new Set((await unregisteredAmong(db, bodies.map(row => ({ projectId: row.project_id as string, key: row.key as string })))).map(ref => identity(ref.projectId, ref.key)));
+  const lost = bodies.filter(row => gone.has(identity(row.project_id, row.key)));
+  if (lost.length === 0) return { excluded: 0, unrecoverable: 0 };
+  const runsByProject = new Map<string, Set<string>>();
+  for (const row of lost) runsByProject.set(row.project_id as string, (runsByProject.get(row.project_id as string) ?? new Set()).add(row.run_id as string));
+  const retired = new Set<string>();
+  let unrecoverable = 0;
+  for (const [project, runs] of runsByProject) {
+    const held = await runsPresentAmong(db, project, [...runs]);
+    for (const run of runs) if (!held.has(run)) retired.add(identity(project, run));
+    unrecoverable += await runsWithoutInstruction(db, project, lost
+      .filter(row => row.project_id === project && row.body_kind === 'instruction' && held.has(row.run_id as string)).map(row => row.run_id as string));
+  }
+  const lostRefs = new Set(lost);
+  const lostReports = new Set(lost.filter(row => row.body_kind !== 'instruction').map(row => JSON.stringify([row.project_id, row.run_id, row.item_id])));
+  tables.set('run_bodies', (tables.get('run_bodies') ?? []).filter(row => !lostRefs.has(row) && !retired.has(identity(row.project_id, row.run_id))));
+  tables.set('agent_runs', (tables.get('agent_runs') ?? []).filter(row => !retired.has(identity(row.project_id, row.id))));
+  for (const table of RUN_CHILD_TABLES) if (tables.has(table)) tables.set(table, tables.get(table)!.filter(row => !retired.has(identity(row.project_id, row.run_id))));
+  if (tables.has('agent_reports')) tables.set('agent_reports', tables.get('agent_reports')!.filter(row => !lostReports.has(JSON.stringify([row.project_id, row.run_id, row.id]))));
+  return { excluded: retired.size, unrecoverable };
+}
 
 /** Excludes deleted session content before object closure and document planning. */
 export async function excludeDeletedRestoreRows(db: RelationalStore, tables: Map<string, Row[]>): Promise<RelationalStore> {

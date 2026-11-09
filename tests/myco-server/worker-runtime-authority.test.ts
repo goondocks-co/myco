@@ -2,7 +2,7 @@ import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { applyRunUpdate } from '@myco-server-worker/core/runs.js';
+import { applyRunUpdate } from '@myco-server-worker/db/runs/lifecycle.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 

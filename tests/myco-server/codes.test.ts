@@ -8,7 +8,7 @@ import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { CLASSIFIERS, UNAVAILABLE, type Classifier } from '@myco-server-worker/telemetry.js';
 import { ENROLLMENT_TTL_MS, ensureMember, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { recordDispatch } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { blobPost, envelope, memberHeaders, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;

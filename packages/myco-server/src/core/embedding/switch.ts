@@ -18,7 +18,7 @@ import type { ServerEnv } from '../adapters.js';
 import { EMBEDDING_CATALOGUE, embeddingDimensions, embeddingPrice, type EmbeddingSwitchEstimate, type EmbeddingSwitchStatus, type PassedOverList, type HealthPassedOverList } from '@goondocks/myco-shared/settings-contract';
 import { heldPartitions, judgeEmbeddingChoice, storedEmbedding, writeSwitchedEmbedding, type EmbeddingChoice } from '../settings.js';
 import { resolveSemanticSearch } from '../search.js';
-import { deploymentLatestTaskRun } from '../runs.js';
+import { deploymentLatestTaskRun } from '../../db/runs/claim.js';
 import { listProjects } from '../../read/sessions.js';
 import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable, embeddingDiagnostic, inputRefusal, type EmbeddingProvider } from './provider.js';
 import { ANY_MODEL, type PassedOverSource } from './reconcile.js';

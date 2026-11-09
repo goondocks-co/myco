@@ -2,7 +2,10 @@
 import { legacyWorker } from './helpers/worker-principal.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { applyRunUpdate, claimQueuedRun, lapsedLeases, NO_LIMITS, settleLapsedLease } from '@myco-server-worker/core/runs.js';
+import { applyRunUpdate } from '@myco-server-worker/db/runs/lifecycle.js';
+import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
+import { lapsedLeases, settleLapsedLease } from '@myco-server-worker/db/runs/leases.js';
+import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
 import { listCredentials } from '@myco-server-worker/read/credentials.js';
 import { listMembers } from '@myco-server-worker/auth/members-admin.js';

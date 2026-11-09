@@ -19,7 +19,8 @@ import { isOwnedPath, matchRoute, methodsServing, UNSERVED_PATHS, type Route, ty
 import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { admitRunControl, inProcessCredential, IN_PROCESS_SCOPE, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
 import { runWriteStore, RunWriteExpired } from './core/run-write-store.js';
-import { recordRunCall, recordRunControlRefusal, type HeldRun } from './core/runs.js';
+import { recordRunCall } from './db/runs/evidence.js';
+import { recordRunControlRefusal, type HeldRun } from './db/runs/lifecycle.js';
 import { dispatchRefusal, isDispatchProjectId } from './api/harness.js';
 import { HARNESS_MEMBER_ID } from './core/harness.js';
 import { forbiddenToMember } from './auth/roles.js';

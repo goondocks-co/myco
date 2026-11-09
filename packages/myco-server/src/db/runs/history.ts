@@ -17,6 +17,7 @@ import { RUN_ADMISSION_READY_SQL } from './live.js';
 import { LIVE_RUN_STATUSES } from '../run-statuses.js';
 import { WORK_HISTORY_READY_SQL, WORK_TASKS, WORK_WINDOW_SPANS } from './history-schema.js';
 import { failureThreshold, unresolvedFailure } from './outcomes.js';
+import { runNotRetiring } from './evidence-schema.js';
 
 export const OUTCOME_TASKS: readonly string[] = WORK_TASKS;
 /** A window read by supported UTC days, its end excluded. */
@@ -192,7 +193,7 @@ const DETAIL_COLUMNS = `${COLUMNS},
 
 const FILTERS = [['status', 'status = ?'], ['task', 'task = ?'], ['agentId', 'agent_id = ?'], ['since', 'WINDOW >= ?'], ['until', 'WINDOW < ?']] as const;
 const pageStatement = (mask: number, order: string, keyed: boolean) => read<BindValue[], Row>({ name: `runs.listPage${order === WINDOW_ORDER ? 'Window' : 'Entry'}${mask}${keyed ? 'After' : ''}`,
-  sql: `SELECT ${COLUMNS} FROM agent_runs WHERE project_id = ?${FILTERS.filter((_, bit) => mask & (1 << bit)).map(([, condition]) => ` AND ${condition.replace('WINDOW', WINDOW_ORDER)}`).join('')}
+  sql: `SELECT ${COLUMNS} FROM agent_runs WHERE NOT EXISTS (SELECT 1 FROM run_retirements x WHERE x.project_id = agent_runs.project_id AND x.run_id = agent_runs.id) AND project_id = ?${FILTERS.filter((_, bit) => mask & (1 << bit)).map(([, condition]) => ` AND ${condition.replace('WINDOW', WINDOW_ORDER)}`).join('')}
     ${keyed ? `AND ${order} <= ? AND (${order} < ? OR (${order} = ? AND id < ?))` : ''} ORDER BY ${order} DESC, id DESC LIMIT ?` });
 const pageStatements = Array.from({ length: 1 << FILTERS.length }, (_, mask) => ({
   windowed: [false, true].map(keyed => pageStatement(mask, WINDOW_ORDER, keyed)),
@@ -208,7 +209,13 @@ export async function runListRows(db: RelationalStore, scope: ReadScope, filters
   return rows;
 }
 
-const detail = read<[string, string], Row>({ name: 'runs.detailRow', sql: `SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ?1 AND id = ?2` });
+const detail = read<[string, string], Row>({ name: 'runs.detailRow', sql: `SELECT ${DETAIL_COLUMNS} FROM agent_runs WHERE project_id = ?1 AND id = ?2 AND ${runNotRetiring('?1', '?2')}` });
+const visible = read<[string, string], { one: number }>({ name: 'runs.visible', sql: `SELECT 1 AS one FROM agent_runs WHERE project_id = ?1 AND id = ?2 AND ${runNotRetiring('?1', '?2')}` });
+/** Whether a reader may reach this run: it exists in the Project and is not being retired. */
+export async function runIsVisible(db: RelationalStore, scope: ReadScope, runId: string): Promise<boolean> {
+  const [rows] = await readSet(db, visible.bind(scope.projectId, runId));
+  return rows.length === 1;
+}
 export async function runDetailRow(db: RelationalStore, scope: ReadScope, runId: string): Promise<Row | null> {
   const [rows] = await readSet(db, detail.bind(scope.projectId, runId));
   return rows[0] ?? null;

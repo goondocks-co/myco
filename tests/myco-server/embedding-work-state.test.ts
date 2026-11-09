@@ -16,7 +16,7 @@ import { indexFixture } from './helpers/vector-index.js';
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '@myco-server-worker/platform/cloudflare/embedding.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
-import { lastTaskEntryAt, hasLiveTaskRunAnywhere } from '@myco-server-worker/core/runs.js';
+import { lastTaskEntryAt, hasLiveTaskRunAnywhere } from '@myco-server-worker/db/runs/claim.js';
 import { runTick, tickPacer } from '@myco-server-worker/core/tick.js';
 
 const NOW = 10 ** 12;

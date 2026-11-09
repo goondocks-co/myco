@@ -4,7 +4,8 @@ import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import type { ServerEnv } from './adapters.js';
 import { pinMapRepositoryAtCommit } from './canopy.js';
 import { prepareRunRepository } from './run-repository.js';
-import { recordKnowledgeRepositoryUnavailable, repositoryCheckoutOfRun, repositoryPinOfRun, type RunRow } from './runs.js';
+import { recordKnowledgeRepositoryUnavailable, repositoryCheckoutOfRun, repositoryPinOfRun } from '../db/runs/preparation.js';
+import { type RunRow } from '../db/runs/lifecycle.js';
 import { withLeasedRunCommit, withLeasedRunSecret, type WorkerLeaseOwner, type WorkerRunIdentity } from './worker-run.js';
 
 /**

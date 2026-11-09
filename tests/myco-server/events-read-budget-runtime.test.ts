@@ -13,7 +13,7 @@ import { rawMemberResourceSql } from '@myco-server-worker/core/raw-resources.js'
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { LAST_ACTIVITY_SQL, LAST_REQUEST_KEY, lastActivityAt } from '@myco-server-worker/core/activity.js';
-import { RETENTION_CANDIDATES_SQL, pruneTerminalRuns } from '@myco-server-worker/core/runs.js';
+import { RETENTION_CANDIDATES_SQL, pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
 import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
 import { measuredStore } from './helpers/read-budget.js';
@@ -58,8 +58,8 @@ const LIFECYCLE_TRANSCRIPT_WRITES = 1;
 const KPI_PROMPT_PROJECTION_WRITES = 2;
 /** An unpinned transcript contributes one scheme-conflict fact and one daily row. */
 const KPI_TRANSCRIPT_PROJECTION_WRITES = 2;
-/** One-card learning completion writes coverage, attribution, session progress and one idx_learning_source_waiting entry. */
-const LEARNING_SLICE_COMPLETION_WRITES = 20;
+/** One-card learning completion writes coverage, attribution, session progress, one idx_learning_source_waiting entry and the landed write's one idx_agent_run_events_write entry. */
+const LEARNING_SLICE_COMPLETION_WRITES = 21;
 /** A transcript or frontier mutation writes its contribution, session total and input revision. */
 const PUBLICATION_CONTRIBUTION_WRITES = 3;
 /** Growth past a complete frontier changes its pending contribution and generation total too. */

@@ -4,7 +4,9 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { legacyWorker } from './worker-principal.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
-import { claimQueuedRun, NO_LIMITS, type ClaimCandidate } from '@myco-server-worker/core/runs.js';
+import { type ClaimCandidate } from '@myco-server-worker/core/runs.js';
+import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
+import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 
 export const PROFILE:ExecutionProfile={tier:'low',model:'gpt-fixture',effort:'low',sources:{tier:'task',model:'configured'}};

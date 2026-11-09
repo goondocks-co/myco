@@ -37,12 +37,16 @@ const holderInserts = [
     VALUES(?,'transcript','receipt','session',?,1,1,'credential','archived',1)`,
   `INSERT INTO registered_content_proofs(project_id,source_kind,source_id,key,event_id,envelope_hash,session_id,digest,size,verified_at,durable,generation)
     VALUES(?,'tool-input','proof',?,'event','hash','session','digest',1,1,1,'${GENERATION}')`,
+  `INSERT INTO run_bodies(project_id,run_id,body_kind,item_id,key,size,moved_at)
+    VALUES(?,'run','instruction',0,?,1,1)`,
 ] as const;
 
 async function seed(db: RelationalStore): Promise<string[]> {
   for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await db.batch([
     db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES(?,'release',1),(?,'other',1)`).bind(P, OTHER),
+    db.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','agent','built-in',1,1)`),
+    db.prepare(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at) VALUES(?,'run','agent','task','completed',1)`).bind(P),
     db.prepare(`INSERT INTO members(id,label,created_at) VALUES('member','member',1)`),
     db.prepare(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
       VALUES('credential','member','machine','hash',1,99999999,'credential',1)`),

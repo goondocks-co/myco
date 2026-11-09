@@ -17,7 +17,7 @@ import { CLOCK_MANUAL, clockStub, type DeploymentClock } from './deployment-cloc
 import { PRODUCER_NAME, type RecoveryProducer } from './recovery-producer-object.js';
 import { boundRecoveryConfiguration, recoveryAdmissionWire, type StagingBucket } from './recovery-export.js';
 import { classifyR2BlobFailure } from './r2-digest.js';
-import { markRecordedLaunch } from '../../core/runs.js';
+import { markRecordedLaunch } from '../../db/runs/claim.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
 import { cloudflareVectorStore, type VectorIndex } from './vectors.js';
 import { cloudflareEmbeddingProvider, type EmbeddingBinding } from './embedding.js';

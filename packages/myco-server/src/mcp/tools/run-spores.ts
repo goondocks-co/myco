@@ -24,7 +24,7 @@ import {
   SPORE_STATUSES,
   type SporeRow,
 } from '../../core/spores.js';
-import { mutateState } from '../../core/runs.js';
+import { mutateState } from '../../db/runs/state.js';
 import { RUN_ANSWER_BYTES, type ReadWindow } from '../../core/read-window.js';
 import { answerBytes } from '../../core/material-pages.js';
 import { runOf, type ToolContext } from '../context.js';

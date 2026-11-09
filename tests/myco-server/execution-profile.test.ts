@@ -8,7 +8,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
-import { recordTaskHolder } from '@myco-server-worker/core/runs.js';
+import { recordTaskHolder } from '@myco-server-worker/db/runs/queue.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { recordModelCatalog } from '@myco-server-worker/core/model-catalogs.js';
 import { PROFILE_HOLD_PREFIXES, sourceReadUnavailable, credentialUnavailable, holdSentence, invalidTaskTier, noModelForTier, profileUnsupported } from '@goondocks/myco-shared/run-holds';

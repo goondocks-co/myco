@@ -10,7 +10,8 @@ import {completeBudgetMigration} from '@myco-server-worker/db/meta/budget-activa
 import {readBudgetStatus} from '@myco-server-worker/read/budget.js';
 import {BUDGET_WINDOW_MS} from '@myco-server-worker/core/budget-policy.js';
 import {expireSpend,SPEND_DUE_READ_LIMIT} from '@myco-server-worker/db/runs/admission.js';
-import {claimQueuedRun,workerClaimAdmission,NO_LIMITS} from '@myco-server-worker/core/runs.js';
+import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
+import { workerClaimAdmission, NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import {mintInsert,NO_RUNTIME_CLAIMS} from '@myco-server-worker/auth/tokens.js';
 import type {RelationalStore,PreparedStatement} from '@myco-server-worker/core/adapters.js';
 

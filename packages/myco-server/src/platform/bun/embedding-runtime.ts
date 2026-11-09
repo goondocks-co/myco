@@ -2,7 +2,7 @@ import type { ServerEnv } from '../../core/adapters.js';
 import { RuntimeAlreadyHolding, RuntimeDraining } from '../../core/harness.js';
 import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
 import { executeEmbeddingRun } from '../../core/embedding/run.js';
-import { failStaleRun, getRun } from '../../core/runs.js';
+import { failStaleRun, getRun } from '../../db/runs/lifecycle.js';
 import { releaseRun } from '../../core/release.js';
 import { runControlClient } from '@goondocks/myco-shared/run-control';
 

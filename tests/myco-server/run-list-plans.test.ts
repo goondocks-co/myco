@@ -12,7 +12,7 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
-import { runReads } from '@myco-server-worker/read/run-reads.js';
+import { runReads } from '@myco-server-worker/db/runs/reads.js';
 import { listSporePage } from '@myco-server-worker/core/spores.js';
 import { MAX_PAGE } from '@myco-server-worker/read/scope.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
@@ -99,7 +99,7 @@ describe('the run list, a run\'s detail and a run\'s spores, under the statistic
   });
 
   it('lists and counts one run\'s spores by the author index', async () => {
-    const byAuthor = (await statements()).filter((s) => /FROM spores WHERE project_id = \? AND author = \?/.test(s.sql));
+    const byAuthor = (await statements()).filter((s) => /FROM spores WHERE project_id = \?1 AND author = \?2/.test(s.sql));
     expect(byAuthor.length).toBeGreaterThanOrEqual(2);
     for (const [store, db] of Object.entries(STORES)) {
       for (const statement of byAuthor) {

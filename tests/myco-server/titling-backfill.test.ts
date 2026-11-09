@@ -11,7 +11,7 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server
 import {
   backfillTitles, freshReserve, titleReadySessions, titleSession, titlingBackfillPolicy, titlingBackfillProgress, titlingIdleCloseMinutes, TITLING_BACKFILL_ACTOR, TITLING_BACKFILL_BATCH, TITLING_TASK,
 } from '@myco-server-worker/core/titling.js';
-import { deploymentTaskCeilingWindow } from '@myco-server-worker/core/runs.js';
+import { deploymentTaskCeilingWindow } from '@myco-server-worker/db/runs/claim.js';
 import { TITLING_BACKFILL_SCHEDULE, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import worker from '@myco-server-worker/index.js';

@@ -8,7 +8,9 @@ import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/project
 import { todayQueued, todayRunning, todayProjects } from '@myco-server-worker/db/runs/now.js';
 import { recentMachineCapture } from '@myco-server-worker/db/runners/harness-health.js';
 import { V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
-import { recordDispatch, recordQueueHolder, failQueuedRun, commitRunChange } from '@myco-server-worker/core/runs.js';
+import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
+import { recordQueueHolder, failQueuedRun } from '@myco-server-worker/db/runs/queue.js';
+import { commitRunChange } from '@myco-server-worker/db/runs/change.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
