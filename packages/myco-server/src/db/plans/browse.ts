@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
 import { processedResourceProofSql } from '../../core/processed-resources.js';
+import { notTombstonedSql } from '../session-read-model.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
 
@@ -44,6 +45,7 @@ function variantSql({ scope, status, session, since, after }: Shape): string {
       : "instr({projects}, ',' || plans.project_id || ',') > 0",
     status ? 'status = {status}' : across ? '({status} IS NULL OR status = {status})' : '1',
     session ? 'session_id = {session}' : '1',
+    notTombstonedSql('plans'),
   ];
   if (since) conditions.push('updated_at >= {since}');
   if (after) conditions.push(across

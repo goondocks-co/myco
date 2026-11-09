@@ -32,8 +32,8 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { IMPORT_PLAN_MAX_CANDIDATES } from '../constants.js';
 import { importPolicy, IMPORT_DISABLED } from '../core/import-policy.js';
-import { tombstonedAmong } from '../core/tombstones.js';
-import { heldTranscriptsFor, type HeldTranscript } from '../read/transcript.js';
+import { tombstonedAmong } from '../db/sessions/tombstones.js';
+import { heldTranscriptsFor, sessionsWithTranscript, type HeldTranscript } from '../read/transcript.js';
 import {
   sessions_heldSessionIds as heldSessionIds,
   sessions_sessionsOwnedByImporter as sessionsOwnedByImporter,
@@ -215,13 +215,13 @@ async function sessionsHeld(env: ServerEnv, projectId: string, sessionIds: reado
   const scope = { projectId };
   const [held, transcripts, tombstoned, vaultSourced, legacyOwned] = await Promise.all([
     heldSessionIds(env.db, scope, sessionIds),
-    heldTranscriptsFor(env.db, scope, sessionIds, []),
+    sessionsWithTranscript(env.db, scope, sessionIds),
     tombstonedAmong(env.db, projectId, sessionIds),
     sessionsWithImportedPrompts(env.db, scope, sessionIds, LEGACY_IMPORT_ADAPTER),
     includeLegacyOwnership ? sessionsOwnedByImporter(env.db, scope, sessionIds, LEGACY_IMPORT_ADAPTER) : undefined,
   ]);
   return {
-    held: [...held].sort(), withTranscript: [...new Set(transcripts.map((t) => t.sessionId))].sort(),
+    held: [...held].sort(), withTranscript: [...transcripts].sort(),
     tombstoned: [...tombstoned].sort(), vaultSourced: [...vaultSourced].sort(),
     ...(legacyOwned === undefined ? {} : { legacyOwned: [...legacyOwned].sort() }),
   };

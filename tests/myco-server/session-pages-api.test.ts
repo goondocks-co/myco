@@ -13,7 +13,7 @@ import { reportSessionArtifact } from '@myco-server-worker/core/session-artifact
 import { asOwner, asOwnerPatch, OWNER_ENV } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { activity_MAX_FEED as MAX_FEED } from '@myco-server-worker/read/catalog/activity.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 
 const NOW = 1_700_000_000_000;
 

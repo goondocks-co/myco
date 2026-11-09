@@ -8,7 +8,7 @@ import {
   clearArchivedTranscriptRanges,
   restoreTranscriptSegmentStatement,
 } from '../db/documents/ranges.js';
-import { excludeDeletedRestoreRows, excludeRetiredRuns, restoreBlobReferences } from './restore-rows.js';
+import { excludeDeletedRestoreRows, excludeDeletedSnapshotRows, excludeRetiredRuns, restoreBlobReferences } from './restore-rows.js';
 import { contentAssertion } from './registered-content.js';
 import { eventReferenceStatement } from '../db/event-references.js';
 import { restoreLegacyEventReferences } from '../ingest/document-restore.js';
@@ -55,7 +55,7 @@ import { bundleHeld } from '../db/storage/blob-held.js';
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content-restore.js';
-import { clearDeletedParentsStatement } from './tombstones.js';
+import { clearDeletedParentsStatement } from '../db/sessions/tombstones.js';
 import { prepareRestoredSessionUnread } from '../read/catalog/sessions.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
@@ -146,7 +146,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities', 'identity_link_redemptions', 'active_project_count',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
-  'backup_restore_progress', 'backup_publications', 'recovery_forget_commands',
+  'backup_restore_progress', 'backup_publications', 'recovery_forget_commands', 'session_deletion_jobs', 'transcript_reread_jobs',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_settlement_intents', 'object_reconciliation_cursor', 'object_store_reconciliation', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots',
@@ -272,10 +272,11 @@ export async function backupSnapshot(
   const held = await db.prepare(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (SELECT value FROM json_each(?))`)
     .bind(JSON.stringify(BACKUP_TABLES)).all<{ name: string }>();
   const present = new Set(held.results.map((row) => row.name));
-  const snapshot = await relationalSnapshot(db, ['schema_meta', ...BACKUP_TABLES.filter((table) => present.has(table))], MAX_BACKUP_BYTES).catch((error: unknown) => {
+  const captured = await relationalSnapshot(db, ['schema_meta', ...BACKUP_TABLES.filter((table) => present.has(table))], MAX_BACKUP_BYTES).catch((error: unknown) => {
     if (error instanceof RelationalSnapshotTooLargeError) throw new BackupTooLargeError(error.bytes);
     throw error;
   });
+  const snapshot = excludeDeletedSnapshotRows(captured);
   assertCaptureClosure(snapshot);
   await assertBundleObjectClosure({db,blobs},snapshot);
   const meta = new Map(snapshot.get('schema_meta')!.map((row) => [row.key, row.value]));

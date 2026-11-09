@@ -2,14 +2,12 @@ import { archiveRawSources } from '../core/raw-archive.js';
 import { measuredContentEnv, remainingContentBudget } from '../core/content-budget.js';
 /**
  * Raw retention archives eligible event bodies and parsed transcript segments
- * before clearing hot rows. The orphan sweep releases aged objects only after
+ * before clearing hot rows. The orphan audit releases aged objects only after
  * the shared reference catalogue proves that no surviving row names them.
  */
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
-import { unreferencedAmong } from '../db/storage/blob-held.js';
-import { releaseAgedOrphans } from '../db/storage/release-queue.js';
+import { auditBlobOrphans } from '../db/storage/blob-orphan-audit.js';
 import { storedSettings } from '../core/settings.js';
-import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
 
 /** The legacy raw age leaf. */
@@ -42,12 +40,6 @@ export async function transcriptRetentionFact(db: RelationalStore): Promise<Rete
     : { state:'days',days:legacy.value as number,configured:true,compatibility:'legacy-finite' };
 }
 
-/** Maximum blob identities examined in one orphan sweep page. */
-export const TRANSCRIPT_RETENTION_BLOBS_PER_PASS = 8;
-
-/** A session deletion admits orphan pages throughout this settlement window. */
-const TOMBSTONE_SWEEP_GRACE_MS = 6 * 60 * 60 * 1000;
-
 /**
  * Runs one bounded orphan page and one bounded raw archive page under the
  * effective age policy. Derived rows and unread transcript bytes remain held.
@@ -61,38 +53,9 @@ export async function transcriptRetention(env: ServerEnv, now: number): Promise<
   return orphans + await archiveRawSources(measured.env,now,fact.days);
 }
 
-/**
- * Blobs no row anywhere references, examined a bounded identity page at a time through the release owner.
- *
- * A session's deletion releases what it can and leaves the rest, and the rows that named those blobs are gone with it
- * — so nothing but this walks them. The committed cursor wraps after the tail, including when every row in a page is
- * held. Newly registered bytes remain available through the upload reservation window.
- */
+/** Examines one page of registered blobs for what nothing references, and reports what the audit released. */
 export async function freeOrphanedBlobs(env: Pick<ServerEnv, 'db'>, now: number): Promise<number> {
-  const admitted = await env.db.prepare('SELECT 1 AS present FROM session_tombstones WHERE created_at > ? LIMIT 1')
-    .bind(now - TOMBSTONE_SWEEP_GRACE_MS).first();
-  if (admitted === null) return 0;
-  const state = await env.db.prepare(`SELECT cursor_project, cursor_key, revision FROM orphan_sweep_state WHERE id = 1`)
-    .first<{ cursor_project: string; cursor_key: string; revision: number }>();
-  if (state === null) throw new Error('orphan sweep cursor is missing');
-  const { results } = await env.db
-    .prepare(`SELECT project_id, key, received_at, generation FROM blobs
-               WHERE (project_id, key) > (?, ?)
-               ORDER BY project_id, key LIMIT ?`)
-    .bind(state.cursor_project, state.cursor_key, TRANSCRIPT_RETENTION_BLOBS_PER_PASS)
-    .all<{ project_id: string; key: string; received_at: number; generation: string | null }>();
-  const cutoff = now - BLOB_RESERVATION_TTL_MS;
-  const aged = results.filter((row) => row.received_at <= cutoff);
-  const unreferenced = await unreferencedAmong(env.db, aged.map((row) => ({ projectId: row.project_id, key: row.key })));
-  const generations = new Map(aged.map((row) => [JSON.stringify([row.project_id, row.key]), row.generation]));
-  const outcome = await releaseAgedOrphans(env.db, unreferenced.map((ref) => ({ ...ref, generation: generations.get(JSON.stringify([ref.projectId, ref.key])) ?? null })), now, cutoff);
-  const last = results.at(-1);
-  if (last !== undefined || state.cursor_project !== '' || state.cursor_key !== '') {
-    const committed = await env.db.prepare(`UPDATE orphan_sweep_state SET cursor_project = ?, cursor_key = ?, revision = revision + 1
-      WHERE id = 1 AND cursor_project = ? AND cursor_key = ? AND revision = ?`)
-      .bind(last?.project_id ?? '', last?.key ?? '', state.cursor_project, state.cursor_key, state.revision).run();
-    if (committed.meta.changes !== 1) throw new Error('orphan sweep cursor changed during pass');
-  }
-  emit({ kind: 'orphaned_blobs_freed', blobs: outcome.released, deferred: outcome.deferred });
-  return outcome.released;
+  const { released, deferred } = await auditBlobOrphans(env.db, now);
+  if (released + deferred > 0) emit({ kind: 'orphaned_blobs_freed', blobs: released, deferred });
+  return released;
 }

@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
-import { TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
+import { ORPHAN_AUDIT_PAGE } from '@myco-server-worker/db/storage/blob-orphan-audit.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -56,19 +56,23 @@ export const toolBlobRetention: ParityScenario = {
     await post(deleted, 'session.start', { agent: 'claude-code', startedAt: stamp });
     await post(deleted, 'attachment', { attachmentId: crypto.randomUUID(), blob: doomed, description: 'goes with its session' });
     // A row no object and no row names: what a deletion that hit its bound leaves for the sweep.
+    await target.sql('UPDATE orphan_sweep_state SET armed_at=-1');
     const orphan = '5'.repeat(64);
     await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
       SELECT ${lit(target.projectId)}, ${lit(orphan)}, 1, 'text/plain', id, ${stamp - BLOB_RESERVATION_TTL_MS - 1}, ${lit(crypto.randomUUID())} FROM member_credentials ORDER BY issued_at LIMIT 1`);
 
+    await target.sql(`UPDATE blobs SET received_at = received_at - ${BLOB_RESERVATION_TTL_MS + 1000} WHERE project_id = ${lit(target.projectId)} AND key IN (${lit(doomed)})`);
     const tombstone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${deleted}/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',
     });
-    expect(tombstone.status).toBe(200);
-    expect(await tombstone.json()).toMatchObject({ applied: true, blobsFreed: 1, blobsLeft: 0 });
+    expect(tombstone.status).toBe(202);
+    await tombstone.body?.cancel();
 
     expect(SERVER_JOBS.some((job) => job.name === 'transcript-retention')).toBe(true);
+    // A restore in an earlier scenario moves the audit's floor past this fixture's old registration.
+    await target.sql("UPDATE orphan_sweep_state SET armed_at=1,next_pass_at=0,cursor_project='',cursor_key='' WHERE id=1");
     const identities = Number((await target.sql('SELECT COUNT(*) AS n FROM blobs'))[0].n);
-    const passes = Math.ceil(identities / TRANSCRIPT_RETENTION_BLOBS_PER_PASS) + 2;
+    const passes = Math.ceil(identities / ORPHAN_AUDIT_PAGE) + 12;
     let swept = 0;
     for (let pass = 0; pass < passes; pass++) {
       const wake = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
@@ -77,7 +81,7 @@ export const toolBlobRetention: ParityScenario = {
       const retention = jobs.find((job) => job.name === 'transcript-retention');
       expect(retention?.failed).toBeNull();
       swept += retention?.changed ?? 0;
-      if ((await target.sql(`SELECT key FROM blobs WHERE key=${lit(orphan)}`)).length === 0) break;
+      if ((await target.sql(`SELECT key FROM blobs WHERE key IN (${lit(orphan)}, ${lit(doomed)})`)).length === 0) break;
     }
     expect(swept).toBeGreaterThanOrEqual(1);
 

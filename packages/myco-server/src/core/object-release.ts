@@ -27,6 +27,7 @@ import { retentionDecision } from './backup-retention.js';
 import { commitBackupRelease, type RetentionObservation } from '../db/storage/backup-retention.js';
 import { drainAuthorities, dueObjectReleases, acknowledgeRelease, retryRelease, reconcileObjectIntents, releaseWorkDue,
   resetObjectLifecycle, settleObjectIntent } from '../db/storage/object-lifecycle.js';
+import { resetOrphanAudit } from '../db/storage/blob-orphan-audit.js';
 import { reconcileStoredObjects } from '../db/storage/object-reconciliation.js';
 import { RELEASE_PAGE, decideRecordedBlobs, releaseCandidatesDue, type ReleaseOutcome } from '../db/storage/release-queue.js';
 import { classify, emit } from '../telemetry.js';
@@ -365,4 +366,5 @@ export async function objectReleaseBacklogged(db: RelationalStore, now: number, 
  */
 export async function resetRecoveryLedger(db: RelationalStore): Promise<void> {
   await resetObjectLifecycle(db);
+  await resetOrphanAudit(db, Date.now());
 }

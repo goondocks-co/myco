@@ -233,7 +233,7 @@ async function search_searchType(
   // Each candidate is already a row of the reach. The outer read walks the candidates and joins each one's row back by
   // rowid: `CROSS JOIN` holds that order, so no statistics can turn it into a walk of the table.
   const where: string[] = [];
-  if (type === 'session') where.push(search_import_notTombstonedSql('d'));
+  if (type === 'session' || type === 'plan' || s.turn === true) where.push(search_import_notTombstonedSql('d'));
   for (const term of terms.slice(1)) {
     let exists = `EXISTS (SELECT 1 FROM ${fts} WHERE ${fts}.rowid = d.rowid AND ${fts} MATCH ?)`;
     params.push(term);

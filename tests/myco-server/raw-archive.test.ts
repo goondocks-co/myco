@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { expect, it } from 'bun:test';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
-import { listSegments } from '@myco-server-worker/read/transcript.js';
+import { pageSegments } from '@myco-server-worker/read/transcript.js';
 import { PARSER_VERSION } from '@myco-server-worker/constants.js';
 import { registerBlob } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -261,7 +261,7 @@ it('retains exact published transcript bytes and their offset after removing the
     expect(f.sqlite.query(`SELECT disposition,archive_key FROM raw_archive_refs
       WHERE source_kind='transcript' AND transcript_id='tx_segment'`).get())
       .toEqual({disposition:'archived',archive_key:key});
-    expect(await listSegments(f.db,{projectId:'proj_1'},'tx_segment'))
+    expect((await pageSegments(f.db,{projectId:'proj_1'},'tx_segment')).rows)
       .toEqual([{baseOffset:0,length:Buffer.byteLength(text),blobKey:key,createdAt:1,availability:'archived'}]);
     const held=await f.serverEnv.blobs.get(physical);
     expect(held===null?null:await new Response(held.body).text()).toBe(text);
@@ -491,6 +491,6 @@ it('advances and wraps past learning-held transcript pages before revisiting rel
     f.sqlite.run("UPDATE session_documents SET state='live',last_record_at=1 WHERE session_id LIKE 's-copy-%'");
     for(let pass=0;pass<30;pass++) await archiveRawSources(f.serverEnv,NOW,90);
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments").get()).toEqual({n:0});
-    expect((await listSegments(f.db,{projectId:'proj_1'},'tx-held')).length).toBe(1);
+    expect((await pageSegments(f.db,{projectId:'proj_1'},'tx-held')).rows.length).toBe(1);
   } finally {f.sqlite.close();}
 });

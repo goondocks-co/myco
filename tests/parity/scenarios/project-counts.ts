@@ -49,7 +49,7 @@ export const projectCounts: ParityScenario = {
     expect(added.lastActivityAt).toBe(Number(receipt!.at));
 
     const gone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/tombstone`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'parity' }) });
-    expect(gone.status).toBe(200);
+    expect(gone.status).toBe(202);
     const after = await project();
     expect(after.sessionCount).toBe(before.sessionCount);
     expect(after.sessionCount).toBe(await liveCount());

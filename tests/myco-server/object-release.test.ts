@@ -12,7 +12,9 @@ import {
 } from '@myco-server-worker/core/object-release.js';
 import { assignRestoreGeneration } from '@myco-server-worker/db/storage/release-queue.js';
 import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
-import { freeOrphanedBlobs, TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
+import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
+import { ORPHAN_AUDIT_PAGE } from '@myco-server-worker/db/storage/blob-orphan-audit.js';
+import { OBJECT_WALK_QUARANTINE_MS } from '@myco-server-worker/db/storage/object-reconciliation.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { blobPost, count, journaled, memberHeaders, registeredObject, sqliteEnv } from './helpers/fixtures.js';
 import { legacyBlob, registerBlob } from './helpers/d1.js';
@@ -29,8 +31,7 @@ type Env = ReturnType<typeof sqliteEnv>;
 const P = 'proj_1';
 const bytes = utf8('lifecycle bytes');
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
-const recentTombstone = (e: Env, now: number) => e.sqlite.query(`INSERT INTO session_tombstones(project_id,session_id,created_at,created_by)
-  VALUES(?,'deleted',?,'fixture')`).run(P, now);
+const auditEverything = (e: Env) => e.sqlite.run('UPDATE orphan_sweep_state SET armed_at=-9000000000000000');
 
 /** Deletes the drain issues whose answers are lost: each throws to its caller, and lands only when `land` runs. */
 function losingDeletes(e: Env) {
@@ -361,18 +362,20 @@ describe('a recovery hold keeps what a release would take, and a decision after 
     }
   };
 
-  it('advances the orphan sweep past every page a hold keeps, and releases all of them after the hold', async () => {
+  it('leaves the orphan audit waiting while a hold is open, and audits and releases every page after it', async () => {
     const e = sqliteEnv();
-    recentTombstone(e, 2);
-    const total = TRANSCRIPT_RETENTION_BLOBS_PER_PASS * 3;
+    auditEverything(e);
+    const total = ORPHAN_AUDIT_PAGE * 3;
     for (let seed = 0; seed < total; seed += 1) orphan(e, seed);
     expect(await acquireRecoveryHold(e.db, 'hold-1', 1)).toBe(true);
-    for (let pass = 0; pass < 10; pass += 1) await freeOrphanedBlobs(e.serverEnv, 2);
-    expect(count(e.sqlite, 'blob_release_candidates')).toBe(total);
+    for (let pass = 0; pass < 10; pass += 1) expect(await freeOrphanedBlobs(e.serverEnv, 2)).toBe(0);
+    expect(count(e.sqlite, 'blob_release_candidates')).toBe(0);
     await drainObjectReleases(e.serverEnv, 3);
     expect(count(e.sqlite, 'blobs')).toBe(total);
     expect(await releaseRecoveryHold(e.db, 'hold-1', 4, 'closed')).toBe(true);
-    await drainAll(e, 5);
+    for (let pass = 0; pass < 10 && count(e.sqlite, 'blobs') > 0; pass += 1) await freeOrphanedBlobs(e.serverEnv, 5);
+    expect(count(e.sqlite, 'blobs')).toBe(0);
+    await drainAll(e, 5 + 2 * 24 * 60 * 60 * 1000);
     expect([count(e.sqlite, 'blobs'), count(e.sqlite, 'blob_release_candidates'), count(e.sqlite, 'object_releases')]).toEqual([0, 0, 0]);
   });
 
@@ -489,10 +492,10 @@ describe('the schema fence and rows from before it', () => {
     e.bucket.seed(`${P}/${legacyKey}`, { size: 6, bytes: utf8('legacy') });
     expect(registeredObject(e.sqlite, P, legacyKey)).toBe(`${P}/${legacyKey}`);
     const now = Date.now();
-    recentTombstone(e, now);
+    auditEverything(e);
     expect(await freeOrphanedBlobs(e.serverEnv, now)).toBe(1);
     expect(journaled(e.sqlite)).toEqual([`${P}/${legacyKey}`]);
-    await drain(e);
+    await drainObjectReleases(e.serverEnv, now + OBJECT_WALK_QUARANTINE_MS);
     expect([count(e.sqlite, 'blobs'), e.bucket.objects.has(`${P}/${legacyKey}`)]).toEqual([0, false]);
   });
 });

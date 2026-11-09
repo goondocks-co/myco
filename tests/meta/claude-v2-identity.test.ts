@@ -13,7 +13,7 @@ import { resetMachineIdCache } from '@myco/machine-id.js';
 import { parserFor } from '@myco-server-worker/ingest/parsers/registry.js';
 import { claudeCodeParser } from '@myco-server-worker/ingest/parsers/claude-code.js';
 import { claudeRecordIdFor, promptOwners, type DerivedEvent, type ParsedLine, type ParserInput } from '@myco-server-worker/ingest/parsers/index.js';
-import {  rereadTranscripts  } from '@myco-server-worker/ingest/parse.js';
+import { rereadTranscripts } from '../myco-server/helpers/reread.js';
 import {
   turns_sessionTurnContexts as sessionTurnContexts,
 } from '@myco-server-worker/read/catalog/turns.js';

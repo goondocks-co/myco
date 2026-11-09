@@ -7,7 +7,7 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { publishDocuments, PUBLISH_BACKOFF_MIN_MS, PUBLISH_BACKOFF_MAX_MS } from '@myco-server-worker/ingest/publish.js';
 import { inspectPublicationCycles } from '@myco-server-worker/db/documents/dependencies.js';
-import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
+import { rereadTranscripts } from './helpers/reread.js';
 import { documentPromptTools } from '@myco-server-worker/content/session-turns.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
 import { assertSessionMaterialReady } from '@myco-server-worker/db/sessions/material.js';

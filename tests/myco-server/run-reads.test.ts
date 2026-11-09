@@ -18,7 +18,7 @@ import { pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { LEARNING_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { OUTCOME_RUN_LIMIT, OUTCOME_SPORE_LIMIT } from '@myco-server-worker/db/runs/reads.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
+import { tombstoneSession } from './helpers/session-deletion.js';
 import { createBackup, restoreBackup } from '@myco-server-worker/core/backup.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { noteRunReads, type ToolContext } from '@myco-server-worker/mcp/context.js';

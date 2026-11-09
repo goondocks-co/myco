@@ -26,7 +26,6 @@ import {
   sessions_listSessions as listSessions,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { children_listPlans as listPlans } from '@myco-server-worker/read/catalog/children.js';
-import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 import { listSessionArtifacts } from '@myco-server-worker/read/session-artifacts.js';
@@ -80,12 +79,6 @@ async function sessionPage(opts: Parameters<typeof listSessions>[2]): Promise<{ 
   return page!;
 }
 
-/** The statements one import plan issues, in the shape `heldTranscriptsFor` builds them. */
-async function heldReads(sessionIds: string[], transcriptIds: string[]): Promise<Array<{ sql: string; params: unknown[] }>> {
-  const { db, statements } = recordingStore();
-  await heldTranscriptsFor(db, { projectId: 'proj_1' }, sessionIds, transcriptIds);
-  return statements.filter((s) => /FROM transcripts/i.test(s.sql));
-}
 
 describe('the reads a person waits on', () => {
   it('pages a project\'s sessions over an index, with no sort step and no table scan', async () => {
@@ -97,32 +90,7 @@ describe('the reads a person waits on', () => {
     expect(plan).toEqual({ sort: false, scan: false, plan: plan.plan });
   });
 
-  it('looks a transcript up by each key on its own, so both halves are index lookups', async () => {
-    // One statement with `session_id IN (…) OR transcript_id IN (…)` leaves the
-    // planner a single equality and it falls back to scanning the table. Two
-    // statements each get their own lookup. The shape is what the plan is
-    // asserted over, so a revert to the single OR fails here.
-    const reads = await heldReads(['s1', 's2'], ['tx_a']);
-    expect(reads).toHaveLength(2);
 
-    const db = migrated();
-    try {
-      for (const read of reads) {
-        const plan = await planOf(db, read.sql, read.params);
-        expect({ sql: read.sql.slice(0, 40), scan: /SCAN transcripts/.test(plan), plan }).toEqual({ sql: read.sql.slice(0, 40), scan: false, plan });
-      }
-    } finally {
-      db.close();
-    }
-  });
-
-  it('asks nothing when it is given nothing to look up', async () => {
-    // An empty list builds `IN ()`, which is a syntax error rather than an
-    // empty answer, so each half is skipped rather than emitted empty.
-    expect(await heldReads([], [])).toEqual([]);
-    expect(await heldReads(['s1'], [])).toHaveLength(1);
-    expect(await heldReads([], ['tx_a'])).toHaveLength(1);
-  });
 
   it('pages a session\'s plans narrowed by status through every match once, oldest edit first, and none from elsewhere', async () => {
     const sqlite = migrated();

@@ -2,7 +2,7 @@ import { eventReferenceStatement } from '../db/event-references.js';
 import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
 import { PublicationRestoreBuilding } from '../db/documents/readiness.js';
 import { materialRecord } from '../content/document-records.js';
-import { isTombstoned, sessionPresent } from '../core/tombstones.js';
+import { isTombstoned, sessionPresent } from '../db/sessions/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { readStoredObject } from '../core/stored-object.js';

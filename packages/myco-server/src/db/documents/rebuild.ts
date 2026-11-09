@@ -1,17 +1,18 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, commit, read, readSet, write } from '../index.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
-import { publicationPolicy } from '../../ingest/publication-policy.js';
 import type { CatchupFamily } from '../projections/family.js';
 
 const GENERATION_TABLES = ['session_chunks','session_pages','session_sealed_records','session_prompts','session_paths',
   'session_edit_paths','session_turn_entries','session_turn_totals','session_path_build','myco_tool_calls',
   'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress'] as const;
-const retainedStart = (t:string) => `COALESCE((SELECT MIN(base_offset) FROM (
+/** The earliest byte a transcript still holds, hot or archived: where a reread starts. */
+export const retainedStart = (t:string) => `COALESCE((SELECT MIN(base_offset) FROM (
   SELECT MIN(base_offset) AS base_offset FROM transcript_segments WHERE project_id=${t}.project_id AND transcript_id=${t}.transcript_id
   UNION ALL SELECT MIN(base_offset) AS base_offset FROM raw_archive_refs WHERE project_id=${t}.project_id AND transcript_id=${t}.transcript_id
     AND source_kind='transcript' AND disposition='archived')),0)`;
-const reset = (t:string,offset=retainedStart(t)) => `published_offset=${offset},segment_lines=0,open_prompt_id=NULL,unfinished=0,reply_unfinished=0,
+/** A publication frontier back at its start, keeping its pinned schemes. */
+export const reset = (t:string,offset=retainedStart(t)) => `published_offset=${offset},segment_lines=0,open_prompt_id=NULL,unfinished=0,reply_unfinished=0,
   reply_latest_at=NULL,state='active',failure=NULL,diagnostic=NULL,awaited_size=NULL,placed_records=NULL,placed_digest=NULL,parser_version=0`;
 const publicKeys = `SELECT json_extract(value,'$[1]') project_id,json_extract(value,'$[2]') transcript_id,json_extract(value,'$[3]') generation FROM json_each(?1)`;
 const active = (version:number) => `SELECT DISTINCT d.project_id,d.session_id,d.generation FROM (${publicKeys}) k
@@ -112,31 +113,4 @@ const phases=read<[],{done:number}>({name:'publication.rebuildReadiness',sql:"SE
 export async function publicationRebuildProgress(db:RelationalStore) {
   const [state,rows]=await readSet(db,phases.bind(),progress.bind());
   return {state:state.length===2&&state.every(row=>row.done===1)&&rows.every(row=>row.rebuilt===row.total)?'ready' as const:'building' as const,versions:rows};
-}
-
-export type RereadSelector={agent:string}|{projectId:string;sessionId:string};
-const policy=publicationPolicy('t.prompt_identity_scheme');
-function rereadOperations(name:string,predicate:string) {
-  return {
-    replay:write<string[],{transcript_id:string}>({name:'publication.reread'+name,sql:`INSERT INTO transcript_publication
-  (project_id,transcript_id,generation,session_id,published_offset,prompt_scheme,record_scheme,parser_version,updated_at)
-  SELECT t.project_id,t.transcript_id,d.generation,t.session_id,${retainedStart('t')},${policy.prompt},${policy.record},0,0
-  FROM transcripts t JOIN session_documents d ON (d.project_id,d.session_id)=(t.project_id,t.session_id)
-  WHERE d.state='live' AND ${predicate}
-    AND NOT EXISTS(SELECT 1 FROM session_tombstones z WHERE (z.project_id,z.session_id)=(t.project_id,t.session_id))
-  ON CONFLICT(project_id,transcript_id,generation) DO UPDATE SET ${reset('transcript_publication','excluded.published_offset')},
-    prompt_scheme=COALESCE(transcript_publication.prompt_scheme,excluded.prompt_scheme) RETURNING transcript_id`}),
-    arm:write<string[]>({name:'publication.armReread'+name,sql:`UPDATE session_documents AS d SET due_at=0
-      WHERE (d.project_id,d.session_id) IN (SELECT t.project_id,t.session_id FROM transcripts t WHERE ${predicate})
-        AND d.state='live' AND NOT EXISTS(SELECT 1 FROM session_tombstones z WHERE (z.project_id,z.session_id)=(d.project_id,d.session_id))`}),
-  };
-}
-const rereadSession=rereadOperations('Session','t.project_id=?1 AND t.session_id=?2');
-const rereadAgent=rereadOperations('Agent','t.agent=?1');
-/** Owner-requested rereads retain the current document and replay the same pinned canonical identities. */
-export async function rereadTranscripts(db:RelationalStore,selector:RereadSelector):Promise<number> {
-  const operations='agent'in selector?rereadAgent:rereadSession;
-  const params='agent'in selector?[selector.agent]:[selector.projectId,selector.sessionId];
-  const [result]=await commit(db,operations.replay.bind(...params),operations.arm.bind(...params));
-  return result.results.length;
 }

@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { backupArtifact, createBackup, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
-import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
-import { acquireRecoveryHold, drainObjectReleases } from '@myco-server-worker/core/object-release.js';
+import { drainSessionDeletions, tombstoneSession } from './helpers/session-deletion.js';
+import { acquireRecoveryHold, drainObjectReleases, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
 import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 
@@ -26,10 +26,13 @@ test('restore cannot bring back the raw events or transcripts of an unpublished 
     const text = await saved(db, blobs);
     await acquireRecoveryHold(db, 'retained', Date.now());
     await tombstoneSession({ db }, { projectId: 'project' }, 'deleted', 'member', Date.now());
+    const held = async (table: string) => (await db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE project_id='project' AND session_id='deleted'`).first<{ n: number }>())!.n;
+    const before = await held('events');
     await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
-    for (const table of ['events','transcripts','session_documents','publish_queue']) {
-      expect(await db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE project_id='project' AND session_id='deleted'`).first(), target + table).toEqual({ n: 0 });
-    }
+    expect(await held('events'), target).toBe(before);
+    await releaseRecoveryHold(db, 'retained', Date.now(), 'closed');
+    await drainSessionDeletions({ db }, Date.now());
+    for (const table of ['events','transcripts','session_documents','publish_queue']) expect(await held(table), target + table).toBe(0);
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
   });
 });
@@ -96,7 +99,7 @@ test('a backup whose index write fails retains durable release ownership for the
 
 test('restoring a hot transcript range after archival keeps one selected range', async () => {
   const { archiveRawSources } = await import('@myco-server-worker/core/raw-archive.js');
-  const { listSegments } = await import('@myco-server-worker/read/transcript.js');
+  const { pageSegments } = await import('@myco-server-worker/read/transcript.js');
   await withDocumentStores(async (db, target) => {
     const blobs = memoryBlobStore(), now = Date.now();
     const text = 'retained source bytes';
@@ -130,7 +133,7 @@ test('restoring a hot transcript range after archival keeps one selected range',
     await db.prepare(`INSERT INTO transcript_segments(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).bind(...columns.map(column=>hot[column])).run();
     await restoreArtifact(db,{text:cold,blobs,authorization:{kind:'recovery'}});
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
-    expect((await listSegments(db, { projectId: 'project' }, transcript)).length, target).toBe(1);
+    expect((await pageSegments(db, { projectId: 'project' }, transcript)).rows.length, target).toBe(1);
   });
 });
 
