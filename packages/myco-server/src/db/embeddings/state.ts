@@ -1,5 +1,7 @@
 import { eligibleEmbeddingSource } from '../embedding-sources.js';
 import { write } from '../index.js';
+import { changed, jsonKeys, trigger, type Trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * Where one current source stands under one active model, read from its receipt for the source's current revision:
@@ -58,21 +60,21 @@ const rowKey = (row: string, type = `${row}.type`, id = `${row}.record_id`) =>
   `SELECT ${row}.project_id AS project_id,${type} AS type,${id} AS record_id`;
 
 /** The source keys carried as one JSON array of `[project_id, type, record_id]`. */
-export const SOURCE_STATE_KEYS = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS type,json_extract(value,'$[2]') AS record_id FROM json_each(?1)`;
+const SOURCE_STATE_KEYS = jsonKeys(['project_id', 'type', 'record_id']);
 
 /** One catch-up page: the keys' current state under every active model, read inside the caller's commit. */
 export const SOURCE_STATE_RECONCILE = reconcileSource(SOURCE_STATE_KEYS)
   .map((sql, i) => write<[string]>({ name: `embedding.sourceStatePage${i}`, sql }));
+export const SOURCE_STATE_CATCHUP = {
+  projection: 'embedding_state',
+  phases: { versions: { source: { table: 'embedding_versions', columns: ['project_id', 'type', 'record_id'] }, reconcile: SOURCE_STATE_RECONCILE } },
+} as const satisfies CatchupFamily;
 
 /**
  * The triggers that keep `embedding_source_state` and `embedding_model_totals` current: version, receipt and plan proof
  * mutations reconcile only the one source key they name, and each state row moves its model total by `-old +new`.
  */
-export function sourceStateTriggers(): Array<{ name: string; table: string; sql: string }> {
-  const trigger = (name: string, table: string, event: string, when: string | null, body: string[]) => ({
-    name, table, sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when === null ? '' : ` WHEN ${when}`} BEGIN ${body.join('; ')}; END`,
-  });
-  const changed = (columns: readonly string[]) => columns.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ');
+export function sourceStateTriggers(): Trigger[] {
   const versionKey = ['project_id', 'type', 'record_id'];
   const receiptColumns = ['project_id', 'model_key', 'type', 'record_id', 'revision', 'ready', 'rewrites'];
   const proofColumns = ['project_id', 'kind', 'resource_id', 'blob_key', 'classification'];
@@ -80,47 +82,18 @@ export function sourceStateTriggers(): Array<{ name: string; table: string; sql:
   const total = (row: string, delta: '+1' | '-1') => `INSERT INTO embedding_model_totals(project_id,model_key,state,n) VALUES(${row}.project_id,${row}.model_key,${row}.state,${delta === '+1' ? 1 : -1})
       ON CONFLICT(project_id,model_key,state) DO UPDATE SET n=n${delta}`;
   return [
-    trigger('embedding_state_version_insert', 'embedding_versions', 'INSERT', null, reconcileSource(rowKey('NEW'))),
-    trigger('embedding_state_version_update', 'embedding_versions', `UPDATE OF ${[...versionKey, 'revision'].join(',')}`, changed([...versionKey, 'revision']),
-      [...reconcileSource(rowKey('OLD')), ...reconcileSource(rowKey('NEW'))]),
-    trigger('embedding_state_version_delete', 'embedding_versions', 'DELETE', null, reconcileSource(rowKey('OLD'))),
-    trigger('embedding_state_receipt_insert', 'embedding_receipts', 'INSERT', null, reconcileSourceState(rowKey('NEW'))),
-    trigger('embedding_state_receipt_update', 'embedding_receipts', `UPDATE OF ${receiptColumns.join(',')}`, changed(receiptColumns),
-      [...reconcileSourceState(rowKey('OLD')), ...reconcileSourceState(rowKey('NEW'))]),
-    trigger('embedding_state_receipt_delete', 'embedding_receipts', 'DELETE', null, reconcileSourceState(rowKey('OLD'))),
-    trigger('embedding_state_proof_insert', 'processed_resources', 'INSERT', "NEW.kind='plan'", reconcileSource(proof('NEW'))),
-    trigger('embedding_state_proof_update', 'processed_resources', `UPDATE OF ${proofColumns.join(',')}`, `(OLD.kind='plan' OR NEW.kind='plan') AND (${changed(proofColumns)})`,
-      [...reconcileSource(proof('OLD')), ...reconcileSource(proof('NEW'))]),
-    trigger('embedding_state_proof_delete', 'processed_resources', 'DELETE', "OLD.kind='plan'", reconcileSource(proof('OLD'))),
-    trigger('embedding_model_totals_insert', 'embedding_source_state', 'INSERT', null, [total('NEW', '+1')]),
-    trigger('embedding_model_totals_update', 'embedding_source_state', 'UPDATE OF state', 'OLD.state IS NOT NEW.state', [total('OLD', '-1'), total('NEW', '+1')]),
-    trigger('embedding_model_totals_delete', 'embedding_source_state', 'DELETE', null, [total('OLD', '-1')]),
+    trigger('embedding_state_version_insert', 'embedding_versions', 'INSERT', reconcileSource(rowKey('NEW'))),
+    trigger('embedding_state_version_update', 'embedding_versions', `UPDATE OF ${[...versionKey, 'revision'].join(',')}`, [...reconcileSource(rowKey('OLD')), ...reconcileSource(rowKey('NEW'))], changed([...versionKey, 'revision'])),
+    trigger('embedding_state_version_delete', 'embedding_versions', 'DELETE', reconcileSource(rowKey('OLD'))),
+    trigger('embedding_state_receipt_insert', 'embedding_receipts', 'INSERT', reconcileSourceState(rowKey('NEW'))),
+    trigger('embedding_state_receipt_update', 'embedding_receipts', `UPDATE OF ${receiptColumns.join(',')}`, [...reconcileSourceState(rowKey('OLD')), ...reconcileSourceState(rowKey('NEW'))], changed(receiptColumns)),
+    trigger('embedding_state_receipt_delete', 'embedding_receipts', 'DELETE', reconcileSourceState(rowKey('OLD'))),
+    trigger('embedding_state_proof_insert', 'processed_resources', 'INSERT', reconcileSource(proof('NEW')), "NEW.kind='plan'"),
+    trigger('embedding_state_proof_update', 'processed_resources', `UPDATE OF ${proofColumns.join(',')}`, [...reconcileSource(proof('OLD')), ...reconcileSource(proof('NEW'))], `(OLD.kind='plan' OR NEW.kind='plan') AND (${changed(proofColumns)})`),
+    trigger('embedding_state_proof_delete', 'processed_resources', 'DELETE', reconcileSource(proof('OLD')), "OLD.kind='plan'"),
+    trigger('embedding_model_totals_insert', 'embedding_source_state', 'INSERT', [total('NEW', '+1')]),
+    trigger('embedding_model_totals_update', 'embedding_source_state', 'UPDATE OF state', [total('OLD', '-1'), total('NEW', '+1')], 'OLD.state IS NOT NEW.state'),
+    trigger('embedding_model_totals_delete', 'embedding_source_state', 'DELETE', [total('OLD', '-1')]),
   ];
 }
 
-/**
- * The schema the source state lives in: a derived per-source row and its per-model totals; the model epoch a reset
- * advances; the Deployment's attempt clock and the attempt each receipt, failure and provider hold records; and the
- * Projects whose reset is still retiring rows recorded before it, with the generation every catch-up restart advances
- * so a page selected before a restart never settles it.
- */
-export function sourceStateSchema(projectIdCheck: string): string[] {
-  return [
-    `CREATE TABLE IF NOT EXISTS embedding_source_state(project_id TEXT NOT NULL CHECK (${projectIdCheck}),model_key TEXT NOT NULL,type TEXT NOT NULL,record_id TEXT NOT NULL,
-      revision TEXT NOT NULL,state TEXT NOT NULL CHECK (state IN (${SOURCE_STATES.map(s => `'${s}'`).join(',')})),
-      PRIMARY KEY(project_id,model_key,type,record_id)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS embedding_model_totals(project_id TEXT NOT NULL CHECK (${projectIdCheck}),model_key TEXT NOT NULL,
-      state TEXT NOT NULL CHECK (state IN (${SOURCE_STATES.map(s => `'${s}'`).join(',')})),n INTEGER NOT NULL,
-      PRIMARY KEY(project_id,model_key,state)) WITHOUT ROWID`,
-    'ALTER TABLE embedding_models ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE embedding_provider_holds ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE embedding_receipts ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE embedding_source_failures ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0',
-    'ALTER TABLE projection_catchup ADD COLUMN generation INTEGER NOT NULL DEFAULT 0',
-    'CREATE TABLE IF NOT EXISTS embedding_attempt_clock(slot INTEGER PRIMARY KEY CHECK (slot=1),seq INTEGER NOT NULL)',
-    'INSERT INTO embedding_attempt_clock(slot,seq) VALUES(1,0)',
-    `CREATE TABLE IF NOT EXISTS embedding_eligible_sources(project_id TEXT NOT NULL CHECK (${projectIdCheck}),type TEXT NOT NULL,record_id TEXT NOT NULL,
-      PRIMARY KEY(project_id,type,record_id)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS embedding_resets(project_id TEXT PRIMARY KEY CHECK (${projectIdCheck}),seq INTEGER NOT NULL) WITHOUT ROWID`,
-  ];
-}

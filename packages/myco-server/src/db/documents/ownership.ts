@@ -1,6 +1,5 @@
 import { prepareBound } from '../kernel/statement.js';
 import type { RelationalStore, PreparedStatement } from '../../core/adapters.js';
-import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { assertion, read, readSet, refusalCode, write, type Bound } from '../index.js';
 import { jsonPages } from '../json-pages.js';
 
@@ -60,24 +59,6 @@ export class PublicationOwnership {
     return this.bindings(shards,initialize).map(bound=>prepareBound(this.db,bound));
   }
 }
-
-export function publicationOwnershipSchema():string[] {
-  const scope=`project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),session_id TEXT NOT NULL,generation INTEGER NOT NULL`;
-  return [
-    'ALTER TABLE session_chunks ADD COLUMN metadata INTEGER NOT NULL DEFAULT 0',
-    'CREATE INDEX IF NOT EXISTS idx_document_page_tail ON session_chunks(project_id,session_id,generation,chunk_no DESC) WHERE kind=\'page\' AND metadata=0',
-    `CREATE TABLE IF NOT EXISTS document_owners(${scope},source_key TEXT NOT NULL,source_thread TEXT NOT NULL,source_record TEXT NOT NULL,PRIMARY KEY(project_id,session_id,generation,source_key)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS document_continuations(${scope},transcript_id TEXT NOT NULL,chunk_no INTEGER NOT NULL,PRIMARY KEY(project_id,session_id,generation,transcript_id)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS document_plan_keys(${scope},plan_key TEXT NOT NULL,PRIMARY KEY(project_id,session_id,generation,plan_key)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS document_metadata_progress(${scope},chunk_no INTEGER NOT NULL,blob_key TEXT NOT NULL,position INTEGER NOT NULL,PRIMARY KEY(project_id,session_id,generation,chunk_no)) WITHOUT ROWID`,
-    `CREATE TABLE IF NOT EXISTS document_metadata_ready(${scope},tail_separated INTEGER NOT NULL DEFAULT 0,failure TEXT,failure_chunk INTEGER,phase_generation INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(project_id,session_id,generation)) WITHOUT ROWID`,
-    `INSERT INTO projection_catchup(projection,phase,done) SELECT 'publication_ownership','publicationMetadata',
-      NOT EXISTS(SELECT 1 FROM session_chunks WHERE kind='page') ON CONFLICT DO NOTHING`,
-    `INSERT INTO projection_catchup(projection,phase,done) SELECT 'publication_ownership','publicationOwnershipReady',
-      NOT EXISTS(SELECT 1 FROM session_documents) ON CONFLICT DO NOTHING`,
-  ];
-}
-
 
 export const METADATA_PHASE_SOURCE = {table:'session_chunks',columns:['project_id','session_id','generation','chunk_no'],where:"(kind='page' OR metadata=1)",pageSize:1};
 export const OWNERSHIP_READY_SOURCE = {table:'session_documents',columns:['project_id','session_id']};

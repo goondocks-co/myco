@@ -3,6 +3,8 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet, write } from '../index.js';
 import { runOriginSql } from '../run-context.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
+import { changed, jsonKeys, trigger, type Trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 export const RUN_ADMISSION_PROJECTION = 'run_admission';
 export const RUN_ADMISSION_READY_SQL = `EXISTS (SELECT 1 FROM projection_catchup WHERE projection='${RUN_ADMISSION_PROJECTION}' AND phase='runs' AND done=1)`;
@@ -10,7 +12,6 @@ const fields = ['task', 'status', 'origin', 'queued_at', 'claimable', 'source_ho
 const live = (row: string) => `CASE WHEN ${row}.${LIVE_RUN_STATUSES} THEN 1 ELSE 0 END`;
 const queued = (row: string) => `CASE WHEN ${row}.status='queued' THEN 1 ELSE 0 END`;
 const key = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.id AS run_id`;
-const jsonKeys = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS run_id FROM json_each(?1)`;
 
 /** Reconcile only the supplied run identities against the current source, including during catch-up replay. */
 export function reconcileLive(keys: string): string[] {
@@ -43,15 +44,13 @@ const refreshHead = (row: string) => `UPDATE task_runtime SET
   WHERE project_id=${row}.project_id AND task=${row}.task AND origin=${row}.origin
     AND (oldest_run_id,oldest_queued_at) IS NOT ((${head(row, 'run_id')}),(${head(row, 'queued_at')}))`;
 
-export function liveTriggers(): Array<{ name: string; table: string; sql: string }> {
-  const trigger = (name: string, table: string, event: string, body: string[], when = '') => ({ name, table,
-    sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when ? ` WHEN ${when}` : ''} BEGIN ${body.join('; ')}; END` });
-  const changed = ['project_id', 'id', 'status', 'task', 'origin', 'queued_at', 'dispatched_by', 'held_by'];
+export function liveTriggers(): Trigger[] {
+  const watched = ['project_id', 'id', 'status', 'task', 'origin', 'queued_at', 'dispatched_by', 'held_by'];
   return [
     trigger('run_admission_ready_mark', 'projection_catchup', 'UPDATE OF done', ["UPDATE change_marks SET revision=revision+1 WHERE kind='runs'"],
       `NEW.projection='${RUN_ADMISSION_PROJECTION}' AND OLD.done IS NOT NEW.done`),
     trigger('run_live_insert', 'agent_runs', 'INSERT', reconcileLive(key('NEW'))),
-    trigger('run_live_update', 'agent_runs', `UPDATE OF ${changed.join(',')}`, reconcileLive(`${key('OLD')} UNION ${key('NEW')}`), changed.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ')),
+    trigger('run_live_update', 'agent_runs', `UPDATE OF ${watched.join(',')}`, reconcileLive(`${key('OLD')} UNION ${key('NEW')}`), changed(watched)),
     trigger('run_live_delete', 'agent_runs', 'DELETE', ['DELETE FROM run_live WHERE project_id=OLD.project_id AND run_id=OLD.id']),
     trigger('run_live_add', 'run_live', 'INSERT', [...counter('NEW', 1), due('NEW')]),
     trigger('run_live_remove', 'run_live', 'DELETE', [...counter('OLD', -1), 'DELETE FROM task_due WHERE project_id=OLD.project_id AND run_id=OLD.run_id']),
@@ -65,7 +64,7 @@ export function liveTriggers(): Array<{ name: string; table: string; sql: string
         WHERE project_id=NEW.project_id AND task=NEW.task AND origin=NEW.origin AND oldest_run_id=NEW.run_id AND OLD.source_hold IS NOT NEW.source_hold AND hold_reason IS NOT NEW.source_hold`]),
     ...['INSERT', 'UPDATE', 'DELETE'].map(action => trigger(`task_runtime_mark_${action.toLowerCase()}`, 'task_runtime', action,
       ["UPDATE change_marks SET revision=revision+1 WHERE kind='runs'"], action === 'UPDATE'
-        ? ['queued_count', 'oldest_run_id', 'oldest_queued_at', 'hold_reason', 'hold_since'].map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ') : '')),
+        ? changed(['queued_count', 'oldest_run_id', 'oldest_queued_at', 'hold_reason', 'hold_since']) : '')),
   ];
 }
 
@@ -91,7 +90,11 @@ export function liveSchemaStatements(): string[] {
   ];
 }
 
-export const LIVE_CATCHUP = reconcileLive(jsonKeys).map((sql, i) => write<[string]>({ name: `runs.livePage${i}`, sql }));
+const LIVE_RECONCILE = reconcileLive(jsonKeys(['project_id', 'run_id'])).map((sql, i) => write<[string]>({ name: `runs.livePage${i}`, sql }));
+export const RUN_ADMISSION_CATCHUP = {
+  projection: RUN_ADMISSION_PROJECTION,
+  phases: { runs: { source: { table: 'agent_runs INDEXED BY idx_agent_runs_admission_catchup', columns: ['project_id', 'id'], where: IN_FLIGHT_RUN_STATUSES }, reconcile: LIVE_RECONCILE } },
+} as const satisfies CatchupFamily;
 const readiness = read<[], { ready: number }>({ name: 'runs.admissionReady', sql: `SELECT ${RUN_ADMISSION_READY_SQL} AS ready` });
 export async function admissionReady(db: RelationalStore): Promise<boolean> {
   const [rows] = await readSet(db, readiness.bind());

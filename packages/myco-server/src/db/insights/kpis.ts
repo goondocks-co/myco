@@ -2,7 +2,8 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { recallQuality, caseCount } from '../../evals/recall-baseline.js';
 import { read, readSet } from '../index.js';
-import { projectionPhases, kpiReadiness } from '../projections/catchup.js';
+import { projectionPhases } from '../projections/catchup.js';
+import { kpiReadiness } from './kpi-catchup.js';
 import { V711 as KPI_METRIC_VERSION } from '../schema-v711.js';
 import { KPI_DAY_MS, KPI_MEASURES, type KpiMeasure } from './kpi-reconcile.js';
 

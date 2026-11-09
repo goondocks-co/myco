@@ -1,5 +1,6 @@
 import { write } from '../index.js';
-import { PROJECT_ID_GRAMMAR } from '../project-id.js';
+import { jsonKeys } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * Run evidence as keyed rows: how many attempts and admitted calls a run holds and how many steps each attempt received,
@@ -15,19 +16,22 @@ const seedHead = `INSERT INTO run_head(project_id,run_id,attempts,calls,calls_fa
     (SELECT COUNT(*) FROM agent_run_attempts a WHERE a.project_id=k.project_id AND a.run_id=k.run_id),
     (SELECT COUNT(*) FROM agent_run_events e WHERE e.project_id=k.project_id AND e.run_id=k.run_id AND e.event_type='run_tool'),
     (SELECT COUNT(*) FROM agent_run_events e WHERE e.project_id=k.project_id AND e.run_id=k.run_id AND e.event_type='run_tool' AND e.outcome='failed')
-  FROM (SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS run_id FROM json_each(?1)) k
+  FROM (${jsonKeys(['project_id', 'run_id'])}) k
   WHERE EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=k.project_id AND r.id=k.run_id)
   ON CONFLICT(project_id,run_id) DO UPDATE SET attempts=excluded.attempts,calls=excluded.calls,calls_failed=excluded.calls_failed`;
 const seedAttempt = `INSERT INTO attempt_head(project_id,run_id,attempt_id,received)
   SELECT k.project_id,k.run_id,k.attempt_id,
     (SELECT COUNT(*) FROM agent_run_steps s WHERE s.project_id=k.project_id AND s.run_id=k.run_id AND s.attempt_id=k.attempt_id)
-  FROM (SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS run_id,json_extract(value,'$[2]') AS attempt_id FROM json_each(?1)) k
+  FROM (${jsonKeys(['project_id', 'run_id', 'attempt_id'])}) k
   WHERE EXISTS(SELECT 1 FROM agent_run_attempts a WHERE a.project_id=k.project_id AND a.run_id=k.run_id AND a.attempt_id=k.attempt_id)
   ON CONFLICT(project_id,run_id,attempt_id) DO UPDATE SET received=excluded.received`;
 export const RUN_EVIDENCE_CATCHUP = {
-  evidenceRuns: [write<[string]>({ name: 'runs.evidenceRunPage', sql: seedHead })],
-  evidenceAttempts: [write<[string]>({ name: 'runs.evidenceAttemptPage', sql: seedAttempt })],
-};
+  projection: RUN_EVIDENCE_PROJECTION,
+  phases: {
+    evidenceRuns: { source: { table: 'agent_runs', columns: ['project_id', 'id'] }, reconcile: [write<[string]>({ name: 'runs.evidenceRunPage', sql: seedHead })] },
+    evidenceAttempts: { source: { table: 'agent_run_attempts', columns: ['project_id', 'run_id', 'attempt_id'] }, reconcile: [write<[string]>({ name: 'runs.evidenceAttemptPage', sql: seedAttempt })] },
+  },
+} as const satisfies CatchupFamily;
 
 /** Bytes at which a body stops being inline; a shorter one is a bounded preview-sized value and stays on its row. */
 export const RUN_BODY_INLINE_BYTES = 4096;

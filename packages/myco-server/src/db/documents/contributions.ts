@@ -1,5 +1,7 @@
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { assertion, write } from '../index.js';
+import { changed, jsonKeys } from '../ddl.js';
+import { everyPhaseDone, type CatchupFamily } from '../projections/family.js';
 
 const measures = ['bytes', 'pending', 'sources', 'imported'] as const;
 const columns = ['project_id', 'transcript_id', 'kind', 'generation', 'session_id', ...measures];
@@ -65,7 +67,6 @@ function delta(row: string, sign: number, when = '1'): string {
     ON CONFLICT(project_id,session_id,kind,generation) DO UPDATE SET ${measures.map(c => `${c}=${c}+excluded.${c}`).join(',')};`;
 }
 
-const changed = (fields: readonly string[]) => fields.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ');
 const bump = (row: string) => `UPDATE session_documents SET publication_input_revision=publication_input_revision+1
   WHERE (project_id,session_id)=(${row}.project_id,${row}.session_id);`;
 
@@ -146,18 +147,28 @@ export function publicationContributionSchema(): string[] {
   return statements.map(sql => sql.replace(/[ \t]+$/gm, ''));
 }
 
-export const PUBLICATION_SOURCE_RECONCILE = [...reconcilePublicationContributions(
-  "SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS transcript_id FROM json_each(?1)",
+const PUBLICATION_SOURCE_RECONCILE = [...reconcilePublicationContributions(
+  jsonKeys(['project_id', 'transcript_id']),
 ), ...reconcilePublicationFacts(
   "SELECT DISTINCT t.project_id,t.session_id FROM json_each(?1) j CROSS JOIN transcripts t ON (t.project_id,t.transcript_id)=(json_extract(j.value,'$[0]'),json_extract(j.value,'$[1]'))",
 )].map((sql, i) => write<[string]>({ name: `publication.sourcePage${i}`, sql }));
-export const PUBLICATION_INPUTS_READY = assertion<[string]>({ name: 'publication.sourcesReady', sql: `SELECT CASE WHEN json_valid(?1)
+const PUBLICATION_INPUTS_READY = assertion<[string]>({ name: 'publication.sourcesReady', sql: `SELECT CASE WHEN json_valid(?1)
   AND EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication' AND phase='publicationInputs' AND done=1)
   THEN 1 ELSE json_extract('[]','$[publication_inputs_building]') END` });
-export const PUBLICATION_DOCUMENT_RECONCILE = [PUBLICATION_INPUTS_READY, ...[
+const PUBLICATION_DOCUMENT_RECONCILE = [PUBLICATION_INPUTS_READY, ...[
   `INSERT INTO document_publication_ready(project_id,session_id) SELECT d.project_id,d.session_id
     FROM json_each(?1) j JOIN session_documents d ON (d.project_id,d.session_id)=(json_extract(j.value,'$[0]'),json_extract(j.value,'$[1]'))
     WHERE true ON CONFLICT DO NOTHING`,
   ...reconcilePublicationFacts(
-  "SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS session_id FROM json_each(?1)",
+  jsonKeys(['project_id', 'session_id']),
 )].map((sql, i) => write<[string]>({ name: `publication.documentPage${i}`, sql }))];
+
+export const PUBLICATION_CATCHUP = {
+  projection: 'publication',
+  phases: {
+    publicationInputs: { source: { table: 'transcripts', columns: ['project_id', 'transcript_id'] }, reconcile: PUBLICATION_SOURCE_RECONCILE },
+    publicationSessions: { source: { table: 'session_documents', columns: ['project_id', 'session_id'] }, reconcile: PUBLICATION_DOCUMENT_RECONCILE, frontier: () => [PUBLICATION_INPUTS_READY.bind('[]')] },
+  },
+} as const satisfies CatchupFamily;
+
+export const publicationReady = (phases: readonly { phase: string; done: number }[]): boolean => everyPhaseDone(PUBLICATION_CATCHUP, phases);

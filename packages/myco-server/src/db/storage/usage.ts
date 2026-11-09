@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { assertion, read, readSet, write } from '../index.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * Registered logical bytes and blob count, per Project and for the Deployment (`project_id=''`), maintained by the
@@ -39,7 +40,7 @@ export function storageUsageSchemaStatements(): string[] {
   ];
 }
 
-export const STORAGE_USAGE_SOURCE = { table: 'blobs', columns: ['project_id', 'key'], pageSize: STORAGE_USAGE_PAGE };
+const STORAGE_USAGE_SOURCE = { table: 'blobs', columns: ['project_id', 'key'], pageSize: STORAGE_USAGE_PAGE };
 
 const BUILD_STATE = `(SELECT after_key,frontier FROM projection_catchup WHERE ${buildRow()})`;
 /** The keys this page moves the cursor past. The page closes at the frontier when it is the last, so a key registered inside the remaining range during the page is counted here. */
@@ -47,7 +48,7 @@ const PAGE_ROWS = `FROM blobs b,${BUILD_STATE} s
   WHERE s.frontier IS NOT NULL AND (b.project_id,b.key)>(${tuple('s.after_key')})
     AND (b.project_id,b.key)<=(${tuple(`CASE WHEN json_array_length(?1)<${STORAGE_USAGE_PAGE} THEN s.frontier ELSE json_extract(?1,'$[#-1]') END`)})`;
 
-export const STORAGE_USAGE_RECONCILE = [
+const STORAGE_USAGE_RECONCILE = [
   write<[keys: string]>({ name: 'storageUsage.pageProjects', sql: `INSERT INTO storage_usage(project_id,blobs,registered_logical_bytes)
     SELECT b.project_id,COUNT(*),SUM(b.size) ${PAGE_ROWS} GROUP BY b.project_id
     ON CONFLICT(project_id) DO UPDATE SET blobs=blobs+excluded.blobs,registered_logical_bytes=registered_logical_bytes+excluded.registered_logical_bytes` }),
@@ -57,10 +58,16 @@ export const STORAGE_USAGE_RECONCILE = [
 ];
 
 /** A page counts only the cursor it read: a concurrent or restarted build aborts the batch before it counts a key twice. */
-export const storageUsageCursorHeld = assertion<[after: string, generation: number]>({ name: 'storageUsage.cursorHeld', sql:
+const storageUsageCursorHeld = assertion<[after: string, generation: number]>({ name: 'storageUsage.cursorHeld', sql:
   `SELECT CASE WHEN EXISTS(SELECT 1 FROM projection_catchup WHERE ${buildRow()} AND after_key=?1 AND generation=?2 AND done=0) THEN 1 ELSE json_extract('[]','$[storage_usage_cursor_moved]') END` });
 
 export const clearStorageUsage = write<[]>({ name: 'storageUsage.clear', sql: 'DELETE FROM storage_usage' });
+/** A restarted build recounts every key, so counters a copy brought with it cannot survive the restart. */
+export const STORAGE_USAGE_CATCHUP = {
+  projection: STORAGE_USAGE_PROJECTION,
+  reset: () => [clearStorageUsage.bind()],
+  phases: { [STORAGE_USAGE_PHASE]: { source: STORAGE_USAGE_SOURCE, reconcile: STORAGE_USAGE_RECONCILE, guards: held => [storageUsageCursorHeld.bind(held.after_key, held.generation)] } },
+} as const satisfies CatchupFamily;
 /** Restarts the build over a copy whose counters may not describe its rows; the caller commits it with `clearStorageUsage`. */
 export const restartStorageUsage = write<[]>({ name: 'storageUsage.restart', sql:
   `UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL,generation=generation+1 WHERE ${buildRow()}` });

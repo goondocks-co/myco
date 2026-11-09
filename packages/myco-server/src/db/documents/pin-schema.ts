@@ -2,6 +2,8 @@ import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { assertion, write } from '../index.js';
 import { pinDecision } from './pins.js';
 import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { jsonKeys } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 const columns=['session_id','agent','prompt_identity_scheme','record_identity_scheme','role','read_before'];
 export function reconcilePublicationPins(keys:string):string[] {
@@ -52,15 +54,15 @@ export function publicationPinSchema():string[] {
     SELECT 'publication_pins','${phase}',NOT EXISTS(SELECT 1 FROM transcripts) ON CONFLICT DO NOTHING`);
   return statements;
 }
-const keys=`SELECT json_extract(value,'$[0]') project_id,json_extract(value,'$[1]') transcript_id FROM json_each(?1)`;
-export const PIN_SOURCE={table:'transcripts',columns:['project_id','transcript_id']};
-export const PIN_ADMISSION_SOURCE={...PIN_SOURCE,where:'prompt_identity_scheme IS NULL'};
-export const PIN_RECONCILE=reconcilePublicationPins(keys).map((sql,i)=>write<[string]>({name:`publication.pinPage${i}`,sql}));
-export const PIN_GROUPS_READY=assertion<[]>({name:'publication.pinGroupsInitialized',sql:`SELECT CASE WHEN EXISTS(
+const keys=jsonKeys(['project_id','transcript_id']);
+const PIN_SOURCE={table:'transcripts',columns:['project_id','transcript_id']};
+const PIN_ADMISSION_SOURCE={...PIN_SOURCE,where:'prompt_identity_scheme IS NULL'};
+const PIN_RECONCILE=reconcilePublicationPins(keys).map((sql,i)=>write<[string]>({name:`publication.pinPage${i}`,sql}));
+const PIN_GROUPS_READY=assertion<[]>({name:'publication.pinGroupsInitialized',sql:`SELECT CASE WHEN EXISTS(
   SELECT 1 FROM projection_catchup WHERE projection='publication_pins' AND phase='publicationPinGroups' AND done=1)
   THEN 1 ELSE json_extract('[]','$[publication_pins_building]') END`});
 const policy=publicationPolicy('t.prompt_identity_scheme');
-export const PIN_ADMISSION_RECONCILE=[
+const PIN_ADMISSION_RECONCILE=[
   write<[string]>({name:'publication.admitPendingPins',sql:`UPDATE transcripts AS t SET prompt_identity_scheme=(SELECT ${pinDecision('t.agent')}
     FROM (SELECT 1) LEFT JOIN document_group_pins g ON (g.project_id,g.session_id,g.agent)=(t.project_id,t.session_id,COALESCE(t.agent,'')))
     WHERE (project_id,transcript_id) IN (${keys}) AND prompt_identity_scheme IS NULL
@@ -77,3 +79,10 @@ export const PIN_ADMISSION_RECONCILE=[
       WHERE t.prompt_identity_scheme IS NOT NULL) AND state='live'
       AND NOT EXISTS(SELECT 1 FROM session_tombstones z WHERE (z.project_id,z.session_id)=(session_documents.project_id,session_documents.session_id))`}),
 ];
+export const PUBLICATION_PIN_CATCHUP={
+  projection:'publication_pins',
+  phases:{
+    publicationPinGroups:{source:PIN_SOURCE,reconcile:PIN_RECONCILE},
+    publicationPinsReady:{source:PIN_ADMISSION_SOURCE,reconcile:PIN_ADMISSION_RECONCILE,frontier:()=>[PIN_GROUPS_READY.bind()]},
+  },
+} as const satisfies CatchupFamily;

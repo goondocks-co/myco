@@ -7,6 +7,8 @@ import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { runOriginSql } from '../run-context.js';
 import { write } from '../index.js';
+import { changed, jsonKeys, trigger, type Trigger } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 /**
  * Work history: one fact per terminal run of an outcome task, each day's rollup of those facts, and the distinct output
@@ -27,7 +29,7 @@ const quoted = (values: readonly string[]) => `(${values.map(value => `'${value}
 const TASKS = quoted(WORK_TASKS);
 const SPORE_TASK_SET = quoted(SPORE_TASKS);
 const OUTPUT_TOOLS = quoted([TITLE_WRITE_TOOL, MAP_WRITE_TOOL]);
-export const WORK_RUN_ELIGIBLE = `task IN ${TASKS} AND NOT ${IN_FLIGHT_RUN_STATUSES}`;
+const WORK_RUN_ELIGIBLE = `task IN ${TASKS} AND NOT ${IN_FLIGHT_RUN_STATUSES}`;
 
 const at = (row: string) => `COALESCE(${row}.completed_at,${row}.queued_at,${row}.started_at)`;
 const day = (row: string) => `CAST(${at(row)}/${DAY_MS} AS INTEGER)`;
@@ -82,8 +84,12 @@ export function reconcileWork(keys: string): string[] {
   ];
 }
 
-const jsonKeys = `SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS run_id FROM json_each(?1)`;
-export const WORK_CATCHUP = reconcileWork(jsonKeys).map((sql, i) => write<[string]>({ name: `runs.workPage${i}`, sql }));
+const PAGE_KEYS = jsonKeys(['project_id', 'run_id']);
+const WORK_RECONCILE = reconcileWork(PAGE_KEYS).map((sql, i) => write<[string]>({ name: `runs.workPage${i}`, sql }));
+export const WORK_HISTORY_CATCHUP = {
+  projection: WORK_HISTORY_PROJECTION,
+  phases: { workRuns: { source: { table: 'agent_runs', columns: ['project_id', 'id'], where: WORK_RUN_ELIGIBLE }, reconcile: WORK_RECONCILE } },
+} as const satisfies CatchupFamily;
 
 const key = (row: string, run = 'id') => `SELECT ${row}.project_id AS project_id,${row}.${run} AS run_id`;
 const hasFact = (row: string, run: string) => `EXISTS(SELECT 1 FROM work_run_contribution c WHERE c.project_id=${row}.project_id AND c.run_id=${row}.${run})`;
@@ -129,10 +135,7 @@ const windowKey = (r: string) => `project_id=${r}.project_id AND task=${r}.task 
 const RUN_COLUMNS = ['project_id', 'id', 'task', 'status', 'origin', 'dispatch_spec', 'queued_at', 'started_at', 'completed_at', 'tokens_used', 'cost_usd', 'dry_run'];
 const taskIn = (row: string) => `${row}.task IN ${TASKS}`;
 
-export function workTriggers(): Array<{ name: string; table: string; sql: string }> {
-  const trigger = (name: string, table: string, event: string, body: string[], when = '') => ({ name, table,
-    sql: `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when ? ` WHEN ${when}` : ''} BEGIN ${body.join('; ')}; END` });
-  const changed = (columns: readonly string[]) => columns.map(c => `OLD.${c} IS NOT NEW.${c}`).join(' OR ');
+export function workTriggers(): Trigger[] {
   return [
     trigger('work_run_insert', 'agent_runs', 'INSERT', reconcileWork(key('NEW')), `${taskIn('NEW')} AND NOT NEW.${IN_FLIGHT_RUN_STATUSES}`),
     trigger('work_run_update', 'agent_runs', `UPDATE OF ${RUN_COLUMNS.join(',')}`, reconcileWork(`${key('OLD')} UNION ${key('NEW')}`),

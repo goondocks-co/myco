@@ -1,6 +1,8 @@
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { read, readSet, write } from '../index.js';
 import type { RelationalStore } from '../../core/adapters.js';
+import { jsonKeys } from '../ddl.js';
+import type { CatchupFamily } from '../projections/family.js';
 
 const fields = ['session_id', 'failure', 'updated_at', 'diagnostic'] as const;
 const key = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.transcript_id AS transcript_id,${row}.generation AS generation`;
@@ -83,9 +85,8 @@ export function publicationFailureSchema(): string[] {
   return statements;
 }
 
-export const FAILURE_PHASE_SOURCE = { table: 'transcript_publication', columns: ['project_id','transcript_id','generation'] };
-export const FAILURE_RECONCILE = reconcilePublicationFailures(`SELECT json_extract(value,'$[0]') project_id,
-  json_extract(value,'$[1]') transcript_id,json_extract(value,'$[2]') generation FROM json_each(?1)`)
+const FAILURE_PHASE_SOURCE = { table: 'transcript_publication', columns: ['project_id','transcript_id','generation'] };
+const FAILURE_RECONCILE = reconcilePublicationFailures(jsonKeys(['project_id', 'transcript_id', 'generation']))
   .map((sql,i)=>write<[string]>({name:`publication.failurePage${i}`,sql}));
 
 export interface FailureTotal { project_id:string; failure:string; transcripts:number; latest_at:number; diagnostic:string|null }
@@ -107,8 +108,8 @@ const recordPass = write<[string, number]>({name:'publication.recordPassFailure'
   SELECT 1,json_set(?1,'$.count',CASE WHEN json_extract(${previousPass},'$.last_failed_at')>=?2
     THEN json_extract(${previousPass},'$.count')+1 ELSE 1 END)
   ON CONFLICT(slot) DO UPDATE SET pass_failure=excluded.pass_failure`});
-export const FAILURE_RECORD_SOURCE = {table:'schema_meta',columns:['key'],where:"key='attention.document_publish_failure'"};
-export const FAILURE_RECORD_RECONCILE = [
+const FAILURE_RECORD_SOURCE = {table:'schema_meta',columns:['key'],where:"key='attention.document_publish_failure'"};
+const FAILURE_RECORD_RECONCILE = [
   write<[string]>({name:'publication.importFailureRecord',sql:`INSERT INTO document_failure_head(slot,pass_failure)
     SELECT 1,m.value FROM json_each(?1) j JOIN schema_meta m ON m.key=json_extract(j.value,'$[0]')
     WHERE m.key='attention.document_publish_failure' ON CONFLICT(slot) DO UPDATE SET pass_failure=excluded.pass_failure
@@ -128,3 +129,11 @@ export async function statusMetadata(db:RelationalStore):Promise<StatusMetadata>
   const row=rows[0];
   return {version:row===undefined?null:Number(row.value),documentPublishFailure:row?.pass_failure??null};
 }
+
+export const PUBLICATION_FAILURE_CATCHUP = {
+  projection: 'publication_failures',
+  phases: {
+    publicationFailures: { source: FAILURE_PHASE_SOURCE, reconcile: FAILURE_RECONCILE },
+    publicationFailureRecord: { source: FAILURE_RECORD_SOURCE, reconcile: FAILURE_RECORD_RECONCILE },
+  },
+} as const satisfies CatchupFamily;

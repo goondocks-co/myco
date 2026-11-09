@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet } from '../index.js';
-import { projectionPhases, publicationReady } from '../projections/catchup.js';
+import { projectionPhases } from '../projections/catchup.js';
+import { publicationReady } from './contributions.js';
 import { DEPENDENCY_PROJECTION, DEPENDENCY_STATUS } from './dependencies.js';
 import { LIFECYCLE_PROJECTION } from './lifecycle.js';
 

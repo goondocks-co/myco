@@ -9,7 +9,6 @@ const PREFIX = 'packages/myco-server/src/';
 /** Modules loaded by operator tools, migrations or fixtures rather than serving entries. */
 const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
 
-  'db/documents/schema.ts': 'schema-step generator pinned by tests/meta/schema-step-ownership.test.ts',
   'context.ts': 'type declarations consumed by route handlers',
   'core/cost/types.ts': 'type declarations consumed by cost resolution',
   'platform/bun/native.ts': 'type declarations consumed by native storage bootstrap',

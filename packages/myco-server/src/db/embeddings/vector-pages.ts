@@ -11,37 +11,6 @@ const RECLAIM_PAGE = 16;
 /** A page whose object is still being written and verified, and one members may name. */
 export const VECTOR_PAGE = { writing: 0, sealed: 1 } as const;
 
-/**
- * Stored pages of calibration member vectors. A member names its page and where its frame lies; `live` counts the members
- * naming a page, kept by triggers, so an unreferenced page is one index seek. A page with no live member is released,
- * and a page still being written is released once its write can no longer be in flight. A page id is never taken again,
- * so a member's locator, a live count or a late write naming an id can only ever mean the one page that holds that id.
- */
-export function vectorPageSchema(projectIdCheck: string): string[] {
-  return [
-    `CREATE TABLE IF NOT EXISTS embedding_vector_pages(page_id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL CHECK (${projectIdCheck}),model_key TEXT NOT NULL,
-      object_key TEXT NOT NULL UNIQUE,size INTEGER NOT NULL,state INTEGER NOT NULL DEFAULT ${VECTOR_PAGE.writing} CHECK (state IN (${VECTOR_PAGE.writing},${VECTOR_PAGE.sealed})),
-      live INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,missing_at INTEGER)`,
-    'CREATE INDEX IF NOT EXISTS idx_embedding_vector_pages_unreferenced ON embedding_vector_pages(project_id,page_id) WHERE live=0',
-    'ALTER TABLE embedding_hubness_members ADD COLUMN page_id INTEGER',
-    'ALTER TABLE embedding_hubness_members ADD COLUMN page_offset INTEGER',
-    'ALTER TABLE embedding_hubness_members ADD COLUMN page_length INTEGER',
-    `CREATE INDEX IF NOT EXISTS idx_embedding_hubness_members_inline ON embedding_hubness_members(project_id,model_key,id) WHERE state=${MEMBER.settled} AND page_id IS NULL`,
-  ];
-}
-
-/** Each member moving onto or off a page moves that page's live count. */
-export function vectorPageTriggers(): Array<{ name: string; table: string; sql: string }> {
-  return [
-    { name: 'embedding_vector_page_member_update', table: 'embedding_hubness_members',
-      sql: `CREATE TRIGGER IF NOT EXISTS embedding_vector_page_member_update AFTER UPDATE OF page_id ON embedding_hubness_members WHEN OLD.page_id IS NOT NEW.page_id BEGIN
-        UPDATE embedding_vector_pages SET live=live-1 WHERE page_id=OLD.page_id; UPDATE embedding_vector_pages SET live=live+1 WHERE page_id=NEW.page_id; END` },
-    { name: 'embedding_vector_page_member_delete', table: 'embedding_hubness_members',
-      sql: `CREATE TRIGGER IF NOT EXISTS embedding_vector_page_member_delete AFTER DELETE ON embedding_hubness_members WHEN OLD.page_id IS NOT NULL BEGIN
-        UPDATE embedding_vector_pages SET live=live-1 WHERE page_id=OLD.page_id; END` },
-  ];
-}
-
 /** A settled member still holding its vector in the database. */
 export interface InlineVector { id: string; vector: string }
 const inlinePage = read<[string, string, number], InlineVector>({ name: 'vectorPages.inlineMembers',
