@@ -1,5 +1,6 @@
 import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
 import { completeCuration, curationAssignment, curationMaterial, curationOwned } from '../../core/spore-curation.js';
+import { curationChangedReason, curationOwnedRefused } from '../../db/spores/curation-run.js';
 import { runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
@@ -37,12 +38,13 @@ export async function handleRunCuration(input: ToolInput, ctx: ToolContext): Pro
       });
     return result === true ? { completed: true } : result;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('[myco_curation_owned]')) return curationOwned(input.id);
-    if (error instanceof Error && error.message.includes('[myco_curation_changed]'))
+    if (curationOwnedRefused(error)) return curationOwned(input.id);
+    const changed = curationChangedReason(error);
+    if (changed !== null)
       return {
         ...runRefusal({
           what: 'curation decision',
-          actual: 'assigned spores changed; do not retry with newer revisions',
+          actual: `assigned spores changed: ${changed}; nothing was saved; do not retry with newer revisions`,
           next: REPORT_NEXT,
         }),
         code: 'material_changed',

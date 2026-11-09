@@ -35,7 +35,8 @@ import { projectLine, sessionInjectionKind } from '@goondocks/myco-shared/recall
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { CURATE_LINE } from '@myco-server-worker/core/injection.js';
-import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
+import { type SporeInsert } from '@myco-server-worker/core/spores.js';
+import { insertSpore } from '@myco-server-worker/db/spores/records.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { memberHeaders, noOutboundFetch, sqliteEnv } from './helpers/fixtures.js';
@@ -495,14 +496,17 @@ describe('prompt selection diagnostics', () => {
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const calibrationStarted = new Promise<void>((resolve) => { started = resolve; });
     semantic.vectors.get = async () => { started(); await gate; throw new Error('calibration unavailable'); };
-    const broken: RelationalStore = { ...db, prepare: (sql) => {
-      const wrap = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
-        bind: (...params) => wrap(statement.bind(...params)),
-        all: async () => { throw new Error('hydration unavailable'); },
-      });
-      const statement = db.prepare(sql);
-      return sql.includes('FROM spores WHERE project_id = ? AND id IN') ? wrap(statement) : statement;
-    } };
+    const hydrations = new WeakSet<PreparedStatement>();
+    const broken: RelationalStore = { ...db,
+      batch: (statements) => statements.some((statement) => hydrations.has(statement)) ? Promise.reject(new Error('hydration unavailable')) : db.batch(statements),
+      prepare: (sql) => {
+        const wrap = (statement: PreparedStatement): PreparedStatement => {
+          const wrapped: PreparedStatement = { ...statement, bind: (...params) => wrap(statement.bind(...params)) };
+          if (sql.includes('FROM spores WHERE (project_id,id) IN')) hydrations.add(wrapped);
+          return wrapped;
+        };
+        return wrap(db.prepare(sql));
+      } };
     const timings = new ContextTimings();
     const record = spyOn(timings, 'record');
     const log = spyOn(console, 'log').mockImplementation(() => {});

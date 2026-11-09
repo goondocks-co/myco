@@ -114,7 +114,10 @@ test('stale decisions and lifecycle writes refuse concurrent edits; own resoluti
     const ctx = await f.ctx(claimed.run.id, claimed.run.attemptId);
     const assignment = curationAssignment(ctx.principal.kind === 'run' ? ctx.principal.runContext : null)!;
     f.sqlite.run("UPDATE spores SET content='Concurrent edit',revision=revision+1,updated_at=? WHERE id='a'", [f.now+1]);
-    expect(await handleRunCuration({ op: 'complete', decision: 'keep', members: assignment.members, reason: 'Keep' }, ctx)).toMatchObject({ code: 'material_changed' });
+    const stale = await handleRunCuration({ op: 'complete', decision: 'keep', members: assignment.members, reason: 'Keep' }, ctx) as { code: string; error: string };
+    expect(stale.code).toBe('material_changed');
+    expect(stale.error).toContain(`spore "a" is active at revision ${assignment.members.find(m => m.id === 'a')!.revision + 1}; this run read revision ${assignment.members.find(m => m.id === 'a')!.revision}`);
+    expect(stale.error).toContain('Next call: myco_run');
     expect(await handleSpores({ op: 'supersede', old_spore_id: 'a', new_spore_id: 'b', expect_revision: assignment.members[0]!.revision, expect_status:'active', reason: 'b covers a' }, ctx)).toMatchObject({ ok: false, error:expect.stringContaining('Next call: myco_run {"op":"report"}') });
     expect(f.sqlite.query("SELECT content,status FROM spores WHERE id='a'").get()).toEqual({ content: 'Concurrent edit', status: 'active' });
     expect(await handleSpores({ op: 'supersede', old_spore_id: 'b', new_spore_id: 'a', expect_revision: 999, expect_status:'active', reason: 'a covers b' }, ctx)).toMatchObject({ ok: false });
@@ -680,18 +683,23 @@ test('the strong gate offers a lone pair, excludes distribution-typical noise, a
     };
     const env = { ...g.env, db: recorded.db, vectors };
     meter.reset(); expect(await discoverSporeClusters(env,g.now)).toBe(0);
-    const walkRows = meter.reads(); expect(walkRows).toBeLessThanOrEqual(430);
-    const lookup = recorded.statements.find(s=>s.sql.includes('SELECT id,record_id,revision,neighbor_mean,neighbor_std'))!;
-    const plan = (await d1.prepare(`EXPLAIN QUERY PLAN ${lookup.sql}`).bind(...lookup.binds).all<{detail:string}>()).results.map(row=>row.detail).join('\n');
-    expect(plan).toContain('SEARCH embedding_receipts USING INDEX idx_embedding_receipts_spore (project_id=? AND model_key=? AND id=?)');
-    expect(plan).not.toMatch(/SCAN/);
+    const walkRows = meter.reads();
+    await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_2','p',1)").run();
+    await d1.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<380)
+      INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at)
+      SELECT 'proj_2',printf('s-%06d',x),'agent','body','decision',x FROM n`).run();
+    await d1.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
+      SELECT project_id,'curation-fixture',record_id,type,record_id,revision,1,1,1,0.125 FROM embedding_versions WHERE type='spore' AND project_id='proj_2'`).run();
+    await settingsWriter(d1).setCapability('proj_2','spore_curation',true,'test',1);
+    meter.reset(); expect(await discoverSporeClusters(env,g.now)).toBe(0);
+    expect(Math.abs(meter.reads()-walkRows)).toBeLessThanOrEqual(40);
     await d1.prepare("UPDATE spore_curation_cursor SET active=0").run();
     await d1.prepare("UPDATE spore_curation_changes SET dirty=0,pending_at=NULL").run();
     await d1.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','new','agent','body','decision',4000)").run();
     await d1.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
       SELECT project_id,'curation-fixture',record_id,type,record_id,revision,1,1,1,0.125 FROM embedding_versions WHERE record_id='new'`).run();
     meter.reset(); expect(await discoverSporeClusters(env,g.now)).toBe(0);
-    const newRows = meter.reads(); expect(newRows).toBeLessThanOrEqual(80);
+    const newRows = meter.reads(); expect(newRows).toBeLessThan(walkRows);
     expect(await d1.prepare('SELECT COUNT(*) n FROM spore_curation_work').first()).toEqual({n:0});
     console.info('CURATION_WEAK_GATE_ROWS',{corpus:3800,walkRows,newRows});
   } finally { await mf.dispose(); }

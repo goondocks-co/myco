@@ -159,7 +159,8 @@ describe('spores named by id at the size a page of recall reaches', () => {
   it('hydrates more spores than one statement may bind on the hosted store', async () => {
     const { db, sqlite } = sqliteEnv();
     sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, ?)`).run(NOW);
-    const { insertSpore, listSporesByIds, MAX_SPORE_LIMIT } = await import('@myco-server-worker/core/spores.js');
+    const { MAX_SPORE_LIMIT } = await import('@myco-server-worker/core/spores.js');
+    const { insertSpore, listSporesByIds } = await import('@myco-server-worker/db/spores/records.js');
     const scope = { projectId: 'proj_1' };
     const ids = Array.from({ length: MAX_SPORE_LIMIT }, (_, i) => `sp_${i}`);
     for (const id of ids) {

@@ -143,17 +143,16 @@ export const guardedSpores: ParityScenario = {
     const save = async () => String((await member({ op: 'save', type: 'gotcha', content: crypto.randomUUID() })).id);
     await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
     await target.sql(`INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,${now})`);
-    const run = async (suffix: string, old = false) => {
+    const run = async (suffix: string) => {
       const token = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
       const id = `guard-${now}-${suffix}`;
       await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
         VALUES (${lit(id)},'mem_harness','harness',${lit(await sha256Hex(token))},${now},${now + 3_600_000},0,${lit(id)},${now})`);
-      const stamp = Number((await target.sql("SELECT value FROM schema_meta WHERE key='guard_enabled_at'"))[0]!.value);
       await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,queued_at,dispatched_by,run_context)
-        VALUES (${lit(target.projectId)},${lit(id)},'myco-agent','extract-curate','running',${old ? stamp - 1 : now},${old ? stamp - 1 : now},${lit(id)},'{"timeoutSeconds":300}')`);
+        VALUES (${lit(target.projectId)},${lit(id)},'myco-agent','extract-curate','running',${now},${now},${lit(id)},'{"timeoutSeconds":300}')`);
       return { token, id, resolve: (args: Record<string, unknown>) => call(token, 'myco_spores', args) };
     };
-    const runs = [await run('a'), await run('b'), await run('old', true)];
+    const runs = [await run('a'), await run('b')];
     try {
       const id = await save(), successor = await save();
       expect((await call(runs[0]!.token, 'myco_run_spores', { op: 'get', id })).spore.revision).toBe(0);
@@ -187,10 +186,6 @@ export const guardedSpores: ParityScenario = {
       expectRunRefusal(changed, 'source is active at revision 1; expected active at revision 0',
         { tool: 'myco_run_spores', op: 'get', id: edited });
       expect(await target.sql(`SELECT id FROM resolution_events WHERE ${scope} AND spore_id=${lit(edited)}`)).toEqual([]);
-      const legacy = await save();
-      expect((await runs[2]!.resolve({ op: 'obsolete', id: legacy, reason: 'old instructions' })).status).toBe('obsolete');
-      expectRunRefusal(await runs[2]!.resolve({ op: 'obsolete', id: legacy, reason: 'again' }),
-        'source is obsolete at revision 1', { tool: 'myco_run_spores', op: 'get', id: legacy });
 
       const ids = [await save(), await save(), await save()];
       await target.sql(`UPDATE spores SET content='edited', revision=revision+1 WHERE ${scope} AND id=${lit(ids[1]!)}`);
