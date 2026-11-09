@@ -525,7 +525,7 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "new_spore_id": {
           "type": "string",
-          "description": "ID of the replacement spore for op: \"supersede\""
+          "description": "ID of the replacement spore for op: \"supersede\": an existing active spore other than the source."
         },
         "expect_status": {
           "type": "string",
@@ -534,7 +534,7 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "expect_revision": {
           "type": "integer",
-          "description": "Expected source revision for supersede or obsolete. Required for new runs; optional for members and old runs."
+          "description": "Expected source revision for supersede or obsolete. Required for every run; optional for members."
         },
         "source_spore_ids": {
           "type": "array",

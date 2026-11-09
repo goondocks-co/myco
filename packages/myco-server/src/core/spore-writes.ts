@@ -1,7 +1,6 @@
 /** Admission for spore content, citations and lifecycle expectations across callers. */
-import type { RelationalStore } from './adapters.js';
-import type { ReadScope } from '../read/scope.js';
-import { getSpore, sporeRevisionRequired, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeStatus, type SporeExpectation, type SporeSource, SPORE_STATUSES } from './spores.js';
+import { MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeStatus, SPORE_STATUSES } from './spores.js';
+import type { SporeExpectation, SporeSource } from '../db/spores/lifecycle.js';
 
 export const SPORE_CAP_REASON = `content exceeds ${MAX_SPORE_CONTENT_BYTES} bytes`;
 
@@ -43,16 +42,10 @@ type SporeResolutionOutcome = { ok: true; plan: SporeResolutionPlan } | { ok: fa
 /**
  * The resolution this request describes, or the one thing wrong with it.
  *
- * Every action moves one named spore: a supersede and a consolidate name the
- * spore that replaces it and the store holds both ends; an obsolete says what
- * changed instead. A spore the store does not hold is left to the write for
- * `obsolete`, which reports it moved nothing.
+ * Every action moves one named spore: a supersede and a consolidate name the spore that replaces it; an obsolete says what changed instead. Whether the
+ * store holds either end is the write's own commit to decide.
  */
-export async function planSporeResolution(
-  db: RelationalStore,
-  scope: ReadScope,
-  request: SporeResolutionRequest,
-): Promise<SporeResolutionOutcome> {
+export function planSporeResolution(request: SporeResolutionRequest): SporeResolutionOutcome {
   if (request.action === 'obsolete') {
     const sporeId = request.sporeId;
     if (sporeId === undefined) return { ok: false, reason: 'id is required for op: obsolete' };
@@ -66,8 +59,6 @@ export async function planSporeResolution(
   const newSporeId = request.newSporeId;
   if (sporeId === undefined) return { ok: false, reason: `${names.spore} is required for op: ${request.action}` };
   if (newSporeId === undefined) return { ok: false, reason: `${names.successor} is required for op: ${request.action}` };
-  if ((await getSpore(db, scope, sporeId)) === null) return { ok: false, reason: 'spore_id not found' };
-  if ((await getSpore(db, scope, newSporeId)) === null) return { ok: false, reason: `${names.successor} not found` };
   return {
     ok: true,
     plan: { action: request.action, status: supersede ? 'superseded' : 'consolidated', sporeId, newSporeId, reason: request.reason ?? null },
@@ -99,11 +90,7 @@ type SporeConsolidationOutcome = { ok: true; plan: SporeConsolidationPlan } | { 
  * instead, which is `planSporeResolution` above; the checks a body must pass
  * are these.
  */
-export async function planSporeConsolidation(
-  db: RelationalStore,
-  scope: ReadScope,
-  request: SporeConsolidationRequest,
-): Promise<SporeConsolidationOutcome> {
+export function planSporeConsolidation(request: SporeConsolidationRequest): SporeConsolidationOutcome {
   const sources = request.sources ?? [];
   const content = request.content;
   const observationType = request.observationType;
@@ -111,26 +98,18 @@ export async function planSporeConsolidation(
   if (content === undefined) return { ok: false, reason: 'consolidated_content is required for op: consolidate' };
   if (observationType === undefined) return { ok: false, reason: 'observation_type is required for op: consolidate' };
   if (overSporeCap(content)) return { ok: false, reason: `${SPORE_CAP_REASON}; consolidated_content is ${new TextEncoder().encode(content).byteLength} UTF-8 bytes` };
-  for (const { id } of sources) {
-    if ((await getSpore(db, scope, id)) === null) return { ok: false, reason: `source_spore_id not found: ${id}` };
-  }
   return { ok: true, plan: { sources, content, observationType, reason: request.reason ?? null } };
 }
 
 /** Admit one lifecycle call's expectations for its editorial or run authority. */
-export async function sporeExpectations(
-  db: RelationalStore, scope: ReadScope, input: Record<string, unknown>, runId?: string,
-): Promise<{ ok: true; expect: SporeExpectation; sources?: SporeSource[] } | { ok: false; reason: string }> {
+export function sporeExpectations(input: Record<string, unknown>, runId?: string): { ok: true; expect: SporeExpectation; sources?: SporeSource[] } | { ok: false; reason: string } {
   const status = input.expect_status;
   const revision = input.expect_revision;
   if (status !== undefined && !(SPORE_STATUSES as readonly unknown[]).includes(status)) return { ok: false, reason: `expect_status is ${JSON.stringify(status)}; expected ${SPORE_STATUSES.join(', ')}` };
   const validRevision = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
   if (revision !== undefined && !validRevision(revision)) return { ok: false, reason: `expect_revision is ${JSON.stringify(revision)}; expected an integer from 0 to ${Number.MAX_SAFE_INTEGER}` };
-  let required = false;
-  if (runId !== undefined) {
-    if (status !== undefined && status !== 'active') return { ok: false, reason: `expect_status is ${JSON.stringify(status)}; runs require active` };
-    required = await sporeRevisionRequired(db, scope, runId);
-  }
+  const required = runId !== undefined;
+  if (required && status !== undefined && status !== 'active') return { ok: false, reason: `expect_status is ${JSON.stringify(status)}; runs require active` };
   let sources: SporeSource[] | undefined;
   if (input.op === 'consolidate') {
     if (!Array.isArray(input.source_spore_ids)) return { ok: false, reason: 'source_spore_ids must be an array' };

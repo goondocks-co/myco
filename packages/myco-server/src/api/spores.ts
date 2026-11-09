@@ -1,13 +1,8 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
-import {
-  getSpore,
-  listSporePage,
-  listSupersedingSporeIds,
-  sporeListWindow,
-  MAX_SPORE_LIMIT,
-  RESOLUTION_ACTIONS,
-} from '../core/spores.js';
+import { listSporePage, sporeListWindow, MAX_SPORE_LIMIT, RESOLUTION_ACTIONS } from '../core/spores.js';
+import { getSpore } from '../db/spores/records.js';
+import { listSupersedingSporeIds } from '../db/spores/edges.js';
 import { writeSpore } from '../core/spore-admission.js';
 import { refused } from '../ingest/events.js';
 import { refusal } from '../telemetry.js';

@@ -153,6 +153,14 @@ describe('tool parity', () => {
         const LIST_NOW = 'op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\".';
         expect(frozen.description).toContain(LIST_BEFORE);
         frozen.description = frozen.description.replace(LIST_BEFORE, LIST_NOW);
+        // Runs now always name a revision, and a successor must be an active spore other than the source.
+        for (const [property, before, now] of [
+          ['new_spore_id', 'ID of the replacement spore for op: "supersede"', 'ID of the replacement spore for op: "supersede": an existing active spore other than the source.'],
+          ['expect_revision', 'Expected source revision for supersede or obsolete. Required for new runs; optional for members and old runs.', 'Expected source revision for supersede or obsolete. Required for every run; optional for members.'],
+        ] as const) {
+          expect(frozen.inputSchema.properties[property]!.description).toBe(before);
+          frozen.inputSchema.properties[property]!.description = now;
+        }
         expect(Object.keys(current.retiredArguments ?? {}).sort()).toEqual(['offset', 'search']);
         delete current.retiredArguments;
         expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string' });

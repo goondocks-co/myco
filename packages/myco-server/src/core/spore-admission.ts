@@ -1,9 +1,12 @@
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, MAX_FILE_PATH_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from './spore-input-contract.js';
 import { runRefusal, type RefuseRunWrite } from './run-tool-contract.js';
 import { withCurationWrite } from './spore-curation.js';
+import { curationChangedReason } from '../db/spores/curation-run.js';
 import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
-import { consolidateSpores, getSpore, insertSpore, repairImportedSporeSource, resolveSpore, SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus, type SporeExpectation } from './spores.js';
+import { SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus } from './spores.js';
+import { consolidateSpores, resolveSpore, type SporeExpectation } from '../db/spores/lifecycle.js';
+import { getSpore, insertSpore, repairImportedSporeSource } from '../db/spores/records.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from './spore-writes.js';
 import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from '../db/runs/served.js';
 import { extractionSourceSession } from '../db/documents/prompt-locator.js';
@@ -25,7 +28,7 @@ type SporePrincipal = { kind: 'member'; memberId: string; machineId: string } | 
   | { kind: 'run'; runId: string; task: string | null; agentId: string; sessionId: string | null };
 interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
 type SporeWriteInput = Record<string, unknown>;
-type SporeWriteFailure = { ok: false; error: string; repairCall?: {tool:string;op:string;page?:number;id?:string} };
+type SporeWriteFailure = { ok: false; error: string; spore_id?: string; repair?: string; repairCall?: {tool:string;op:string;page?:number;id?:string} };
 const failure = (error: string, repairCall?: SporeWriteFailure['repairCall']): SporeWriteFailure => ({ ok: false, error, ...(repairCall === undefined ? {} : {repairCall}) });
 const SESSION_NOT_FOUND = 'session_id not found';
 
@@ -98,16 +101,32 @@ function provenanceOf(input: SporeWriteInput): { ok: true; provenance: SporeProv
   return { ok: true, provenance: { kind: kind as SporeProvenance['kind'], ref } };
 }
 
-async function resolve(
-  ctx: SporeWriteContext, scope: ReadScope, sporeId: string, status: SporeStatus, action: ResolutionAction,
-  newSporeId: string | null, reason: string | null, sessionId: string | null, provenance: SporeProvenance | null, expect: SporeExpectation, eventId?: string,
-): Promise<true | 'duplicate' | SporeWriteFailure | (SporeWriteFailure & { status: string; revision: number; reason: string })> {
+/** What a successor problem reads as: a grant sees only its own spores, so another writer's spore reads as absent. */
+function successorFailure(ctx: SporeWriteContext, state: string, newSporeId: string | null): SporeWriteFailure {
+  if (ctx.principal.kind === 'grant') return failure('spore_id not found');
+  if (state === 'missing') return failure('new_spore_id not found');
+  if (state === 'self') return failure('new_spore_id names the same spore as the source; a spore cannot replace itself. Name a different active spore.');
+  const id = newSporeId === null ? {} : { id: newSporeId };
+  const next = ctx.principal.kind !== 'run' ? { tool: 'myco_spores', op: 'get', ...id }
+    : ctx.principal.task === CURATION_TASK ? { tool: 'myco_run', op: 'report' } : { tool: 'myco_run_spores', op: 'get', ...id };
+  return failure(`new_spore_id ${JSON.stringify(newSporeId)} is ${state}, not active; it cannot take the source's place. Nothing was saved. Reread it and name its active successor.`, next);
+}
+
+type ResolveInput = { sporeId: string; status: SporeStatus; action: ResolutionAction; newSporeId: string | null; reason: string | null; sessionId: string | null; provenance: SporeProvenance | null; expect: SporeExpectation; eventId?: string };
+
+async function resolve(ctx: SporeWriteContext, scope: ReadScope, input: ResolveInput): Promise<true | 'duplicate' | SporeWriteFailure | (SporeWriteFailure & { status: string; revision: number; reason: string })> {
   const by = writerOf(ctx);
-  const outcome = await resolveSpore(ctx.env.db, scope, status, {
-    id: eventId ?? crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId, action, newSporeId, reason, sessionId, provenance, createdAt: ctx.now,
-  }, ctx.now, expect, ctx.principal);
-  if (typeof outcome === 'object') return { ...failure(outcome.error), status: outcome.status, revision: outcome.revision, reason: outcome.reason };
-  if (outcome === false) return failure('spore_id not found');
+  const { sporeId, status, action, newSporeId, reason, sessionId, provenance, expect, eventId } = input;
+  const outcome = await resolveSpore(ctx.env.db, scope, {
+    status, now: ctx.now, expect, authority: ctx.principal,
+    event: { id: eventId ?? crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId, action, newSporeId, reason, sessionId, provenance, createdAt: ctx.now },
+  });
+  if (typeof outcome === 'object') {
+    if (outcome.error === 'successor') return successorFailure(ctx, outcome.state, newSporeId);
+    const repair = ctx.principal.kind === 'run' ? {} : { repair: 'Nothing was saved. Reread it, then decide again.' };
+    return { ...failure(outcome.error, { tool: 'myco_spores', op: 'get', id: sporeId }), status: outcome.status, revision: outcome.revision, reason: outcome.reason, spore_id: sporeId, ...repair };
+  }
+  if (outcome === false || outcome === 'import_disabled') return failure('spore_id not found');
   return outcome === 'duplicate' ? 'duplicate' : true;
 }
 
@@ -176,7 +195,8 @@ async function admittedSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext
   if (invalid !== null) return failure(invalid);
   try { return await admitSporeWrite(input, ctx); }
   catch (error) {
-    if (error instanceof Error && error.message.includes('[myco_curation_changed]')) return failure('assigned spores changed or the curation decision is closed',{tool:'myco_run',op:'report'});
+    const changed = curationChangedReason(error);
+    if (changed !== null) return failure(`assigned spores changed: ${changed}; nothing was saved`, { tool: 'myco_run', op: 'report' });
     if (error instanceof MemberWriteRefused) return failure('import authority required');
     if (error instanceof ServedSessionRefused) return failure(SESSION_NOT_SERVED,{tool:'myco_run_learning',op:'material',page:1});
     throw error;
@@ -189,14 +209,6 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
   const op = input.op;
   if (input.status !== undefined && !(SPORE_STATUSES as readonly unknown[]).includes(input.status)) return failure(`status is ${JSON.stringify(input.status)}; expected ${SPORE_STATUSES.join(', ')}`);
   if (input.channel === 'import') return importSporeWrite(input, ctx);
-  if (ctx.principal.kind === 'grant' && ['supersede', 'obsolete', 'consolidate'].includes(String(op))) {
-    const ids = op === 'supersede' || (op === 'consolidate' && input.new_spore_id !== undefined) ? [input.old_spore_id ?? input.id, input.new_spore_id] : op === 'obsolete' ? [input.id]
-      : Array.isArray(input.source_spore_ids) ? input.source_spore_ids.map(value => typeof value === 'string' ? value : value?.id) : [];
-    for (const id of ids) {
-      const row = typeof id === 'string' ? await getSpore(db, scope, id) : null;
-      if (row === null || row.author !== ctx.principal.grantId) return failure('spore_id not found');
-    }
-  }
   if (op === 'save') {
     const content = str(input.content);
     const type = str(input.type);
@@ -223,12 +235,12 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
   }
 
   const expectations = ['supersede', 'obsolete', 'consolidate'].includes(String(op))
-    ? await sporeExpectations(db, scope, input.op === 'consolidate' && input.new_spore_id !== undefined ? { ...input, op: 'resolve' } : input, ctx.principal.kind === 'run' ? ctx.principal.runId : undefined)
+    ? sporeExpectations(input.op === 'consolidate' && input.new_spore_id !== undefined ? { ...input, op: 'resolve' } : input, ctx.principal.kind === 'run' ? ctx.principal.runId : undefined)
     : { ok: true as const, expect: {} };
   if (!expectations.ok) return failure(expectations.reason);
 
   if (op === 'supersede' || (op === 'consolidate' && input.new_spore_id !== undefined)) {
-    const planned = await planSporeResolution(db, scope, {
+    const planned = planSporeResolution({
       action: op === 'supersede' ? 'supersede' : 'consolidate', sporeId: str(input.old_spore_id) ?? str(input.id), newSporeId: str(input.new_spore_id), reason: str(input.reason),
     });
     if (!planned.ok) return failure(planned.reason);
@@ -237,26 +249,26 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     if (!cited.ok) return cited;
     const session = await sessionOf(ctx, scope, input);
     if (!session.ok) return session;
-    const outcome = await resolve(ctx, scope, plan.sporeId, plan.status, plan.action, plan.newSporeId, plan.reason, session.sessionId, cited.provenance, expectations.expect, str(input.event_id));
+    const outcome = await resolve(ctx, scope, { sporeId: plan.sporeId, status: plan.status, action: plan.action, newSporeId: plan.newSporeId, reason: plan.reason, sessionId: session.sessionId, provenance: cited.provenance, expect: expectations.expect, eventId: str(input.event_id) });
     if (outcome !== true && outcome !== 'duplicate') return outcome;
     return { old_spore: plan.sporeId, new_spore: plan.newSporeId, status: plan.status, ...(outcome === 'duplicate' ? { duplicate: true } : {}) };
   }
 
   if (op === 'obsolete') {
-    const planned = await planSporeResolution(db, scope, { action: 'obsolete', sporeId: str(input.id), reason: str(input.reason) });
+    const planned = planSporeResolution({ action: 'obsolete', sporeId: str(input.id), reason: str(input.reason) });
     if (!planned.ok) return failure(planned.reason);
     const plan = planned.plan;
     const cited = provenanceOf(input);
     if (!cited.ok) return cited;
     const session = await sessionOf(ctx, scope, input);
     if (!session.ok) return session;
-    const outcome = await resolve(ctx, scope, plan.sporeId, plan.status, 'obsolete', null, plan.reason, session.sessionId, cited.provenance, expectations.expect, str(input.event_id));
+    const outcome = await resolve(ctx, scope, { sporeId: plan.sporeId, status: plan.status, action: 'obsolete', newSporeId: null, reason: plan.reason, sessionId: session.sessionId, provenance: cited.provenance, expect: expectations.expect, eventId: str(input.event_id) });
     if (outcome !== true && outcome !== 'duplicate') return outcome;
     return { spore: plan.sporeId, status: plan.status, ...(outcome === 'duplicate' ? { duplicate: true } : {}) };
   }
 
   if (op === 'consolidate') {
-    const planned = await planSporeConsolidation(db, scope, {
+    const planned = planSporeConsolidation({
       sources: 'sources' in expectations ? expectations.sources : [],
       content: str(input.consolidated_content),
       observationType: str(input.observation_type),
@@ -272,18 +284,22 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
     const session = await sourceOf(input, ctx, scope);
     if (!session.ok) return session;
     const { wisdom, consolidated, stale } = await consolidateSpores(session.db, scope, {
-      id: mintSporeId(plan.observationType), agentId: by.agentId, sessionId: session.sessionId, observationType: plan.observationType,
-      content: plan.content, context: null, filePath: null, tags: sporeTags(input.tags), contentHash: null, properties: null,
-      author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
-    }, plan.sources, { agentId: by.agentId, author: by.author, reason: plan.reason, sessionId: session.sessionId, provenance: cited.provenance, createdAt: ctx.now }, ctx.now, ctx.principal);
+      wisdom: {
+        id: mintSporeId(plan.observationType), agentId: by.agentId, sessionId: session.sessionId, observationType: plan.observationType,
+        content: plan.content, context: null, filePath: null, tags: sporeTags(input.tags), contentHash: null, properties: null,
+        author: by.author, provenance: cited.provenance, agentLine: lined.agentLine, createdAt: ctx.now,
+      },
+      sources: plan.sources,
+      event: { agentId: by.agentId, author: by.author, reason: plan.reason, sessionId: session.sessionId, provenance: cited.provenance, createdAt: ctx.now },
+      now: ctx.now, authority: ctx.principal,
+    });
     if (stale !== undefined) {
-      const held = stale.status === null ? 'not found' : `${stale.status} at revision ${stale.revision}`;
+      if (stale.status === null) return failure(ctx.principal.kind === 'grant' ? 'spore_id not found' : `source_spore_id not found: ${stale.id}`);
       const wanted = `active${stale.expected === null ? '' : ` at revision ${stale.expected}`}`;
       return { ...failure('stale', { tool: 'myco_spores', op: 'get', id: stale.id }), spore_id: stale.id, status: stale.status, revision: stale.revision,
-        reason: `source ${stale.id} is ${held}; expected ${wanted}. Nothing was saved: no wisdom spore was stored and no source moved. `
+        reason: `source ${stale.id} is ${stale.status} at revision ${stale.revision}; expected ${wanted}. Nothing was saved: no wisdom spore was stored and no source moved. `
           + `Reread ${stale.id}, then consolidate again with the sources that are still active at their current revisions.` };
     }
-    if (wisdom === null) return failure(ctx.principal.kind === 'grant' ? 'spore_id not found' : 'Consolidated spore was not recorded');
     return { new_spore_id: wisdom.id, sources_consolidated: consolidated, status: 'consolidated', created_at: wisdom.createdAt };
   }
 
@@ -330,10 +346,12 @@ async function importSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext):
   if (!(SPORE_STATUSES as readonly unknown[]).includes(status)) return failure('import resolution requires a known final status');
   const newSporeId = str(input.new_spore_id) ?? null;
   if (action === 'supersede' && newSporeId === null) return failure('supersede requires new_spore_id');
-  const expect = await sporeExpectations(ctx.env.db, scope, { ...input, op: 'resolve' });
+  const expect = sporeExpectations({ ...input, op: 'resolve' });
   if (!expect.ok) return failure(expect.reason);
-  const outcome = await resolveSpore(ctx.env.db, scope, status as SporeStatus, { id: eventId, agentId, author: p.memberId, sporeId: id,
-    action, newSporeId, reason: str(input.reason) ?? null, sessionId: session.sessionId, provenance: cited.provenance, channel: 'import', createdAt: at }, at, expect.expect);
+  const outcome = await resolveSpore(ctx.env.db, scope, { status: status as SporeStatus, now: at, expect: expect.expect, event: { id: eventId, agentId, author: p.memberId, sporeId: id,
+    action, newSporeId, reason: str(input.reason) ?? null, sessionId: session.sessionId, provenance: cited.provenance, channel: 'import', createdAt: at } });
+  if (outcome === 'import_disabled') return failure('import authority required');
+  if (typeof outcome === 'object' && outcome.error === 'successor') return failure(`new_spore_id cannot take the source's place: ${outcome.state}`);
   if (typeof outcome === 'object') return { ...failure(outcome.error), status: outcome.status, revision: outcome.revision, reason: outcome.reason };
   return { resolved: outcome !== false, ...(outcome === 'duplicate' ? { duplicate: true } : {}) };
 }

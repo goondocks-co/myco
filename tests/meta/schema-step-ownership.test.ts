@@ -27,6 +27,7 @@ import { V722, V722_STATEMENTS } from '@myco-server-worker/db/schema-v722.js';
 import { V725, V725_STATEMENTS } from '@myco-server-worker/db/schema-v725.js';
 import { V715 as STORAGE_NEXT, V715_STATEMENTS as STORAGE_STATEMENTS } from '@myco-server-worker/db/schema-v715.js';
 import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from '@myco-server-worker/db/schema-vNEXT-s8a2.js';
+import { NEXT_S4B } from '@myco-server-worker/db/schema-vNEXT-s4b.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
@@ -68,6 +69,7 @@ interface Exception {
   reason: string;
 }
 const LISTED: readonly Exception[] = [
+  { step: NEXT_S4B, object: 'spore_resolution_edge_insert', table: 'resolution_events', reason: 'Each new resolution event writes the lineage edge browsing reads.' },
   ...VNEXT_S6_INDEX_STEPS.flatMap(({ version, statements: [sql] }) => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql!);
     return match === null ? [] : [{ step: version, object: match[1]!, table: match[2]!, reason: 'Lineage heads re-derive from a lineage\'s unrevoked credentials, and a member\'s credential page reads newest lineage first.' }];
@@ -410,6 +412,7 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V721_STATEMENTS.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({ step: V721, sql, reason: 'The Deployment-wide spore index is replaced under its own name with the Project after the id.' })),
   ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V721, sql, reason: 'Spore and plan totals record whether existing rows need counting by the catch-up.' })),
   ...NEXT_S8A2_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({ step: NEXT_S8A2, sql, reason: 'The walk over the object store seeds its one position row.' })),
+  { step: NEXT_S4B, sql: "INSERT INTO projection_catchup(projection,phase,done) SELECT 'spore_resolution_edges','sporeResolutionEdges',NOT EXISTS(SELECT 1 FROM resolution_events) ON CONFLICT DO NOTHING", reason: 'Lineage edges record whether existing resolution events need replaying by the catch-up.' },
   ...STORAGE_STATEMENTS.filter(sql => sql.startsWith('ALTER') || sql.startsWith('INSERT')).map(sql => ({ step: STORAGE_NEXT, sql, reason: 'The release owner persists retry deadlines and the settlement reconciliation cursor.' })),
   ...V716_STATEMENTS.filter(sql => sql.startsWith('ALTER TABLE')).map(sql => ({ step: V716, sql,
     reason: sql.includes('epoch') ? 'Each Project model carries the epoch a reset advances.'

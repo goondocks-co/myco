@@ -16,7 +16,9 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './scope.js';
-import { getSpore, listSporePage, listSupersededSporeIds, listSupersedingSporeIds, sporeListWindow } from '../core/spores.js';
+import { listSporePage, sporeListWindow } from '../core/spores.js';
+import { getSpore } from '../db/spores/records.js';
+import { listSupersededSporeIds, listSupersedingSporeIds } from '../db/spores/edges.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
 import { canonicalNamespace, listReleaseStates } from '../core/provenance.js';
 import { decodeCursor } from '../read/scope.js';

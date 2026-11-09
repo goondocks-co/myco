@@ -1,4 +1,4 @@
-import { curationCompletedBy, curationOutcomeCounts } from './spore-curation.js';
+import { curationCompletedBy, curationOutcomeCounts } from '../db/spores/curation-run.js';
 import { runCardsFinished } from './turn-cards.js';
 import { assignmentOf } from '../db/run-context.js';
 import type { CardAssignment } from './learning-stages.js';
@@ -48,7 +48,7 @@ import { sessionNamedByRun, type RunRow, getRun, type RunCaller } from '../db/ru
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
 import { sessions_sessionCarriesTitle as sessionCarriesTitle } from '../read/catalog/sessions.js';
-import { sporeAuthoredBy } from './spores.js';
+import { sporeAuthoredBy } from '../db/spores/records.js';
 import { activeSporesAtLeast } from '../db/spores/counts.js';
 import { CARD_TOOL, LEARNING_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
 import { CURATION_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';

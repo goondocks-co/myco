@@ -1,4 +1,6 @@
-import { getSpore, listSporePage, listSupersededSporeIds, listSupersedingSporeIds, type SporeRow } from '../../core/spores.js';
+import { listSporePage, type SporeRow } from '../../core/spores.js';
+import { getSpore } from '../../db/spores/records.js';
+import { listSupersededSporeIds, listSupersedingSporeIds } from '../../db/spores/edges.js';
 import { writeSpore } from '../../core/spore-admission.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';

@@ -13,7 +13,8 @@ import {
   type InjectionItem, type InjectionLeaves,
 } from '@myco-server-worker/core/injection.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
-import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
+import { type SporeInsert } from '@myco-server-worker/core/spores.js';
+import { insertSpore } from '@myco-server-worker/db/spores/records.js';
 
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
