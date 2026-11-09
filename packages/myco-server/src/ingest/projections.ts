@@ -19,7 +19,6 @@ import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
 
 import { IMPORT_DISABLED, importEnabledChecks } from '../core/import-policy.js';
 
-import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 
 
 import { admittedScheme } from './prompt-scheme.js';
@@ -27,6 +26,8 @@ import { admittedScheme } from './prompt-scheme.js';
 import { admittedRecordScheme } from './record-scheme.js';
 
 import { materialFields, materialMerge, type MaterialAssignment } from './material-mutation.js';
+
+import { presentedDatesAfterEvent, presentedDatesAfterSegment, settleSessionEnd, settleSessionTurn } from '../db/documents/lifecycle.js';
 
 
 /** The identity of the write in flight: project, token, machine, the server clock, and the nonce that names this request's raw row. */
@@ -450,9 +451,7 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
       ...nameProject,
       ...sessionCommit(db, ctx, e, p, 'session_start', startedAt),
     ],
-    incidental: [
-      resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) }),
-    ],
+    incidental: [presentedDatesAfterEvent(db, ctx.projectId, e.sessionId, lifecycleGate(ctx, e))],
     reads: [],
     refusal: () => NOT_STORED,
   };
@@ -460,120 +459,14 @@ const sessionStart = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
 
 
 /**
- * A session's lifecycle, decided at two projections and by the publisher, from
- * projected and catalog rows alone: the raw event log is not consulted.
- *
- * `LATEST_USER_TURN_SQL` is the instant of the session's newest human prompt a
- * member's capture projected, on any channel. An end, on any channel, applies
- * only when it is newer than the standing end and not older than that turn nor
- * the open turn the session's live document published, so an end delivered
- * after a newer prompt leaves a resumed session open whatever order the two
- * arrive in. A human prompt's admission reopens the session when the newest
- * stored human turn is newer than the standing end: the stored row decides,
- * never the envelope of the event that named it, so a replayed prompt under a
- * fresh event id and a later instant changes nothing. The publisher reopens a
- * session for a published human prompt newer than its end. An applied end
- * records the acting member, or NULL for an agent's or an import's; a reopen
+ * A session's lifecycle is decided from its keyed facts (`db/documents/lifecycle.ts`), which every lifecycle event
+ * maintains in its own commit, so no decision reads the session's history. An end, on any channel, applies when it is the
+ * winning end the facts hold and is not older than the newest human turn they name or the open turn the live document
+ * published; a human prompt newer than the standing end reopens the session, by the stored turn, never the envelope of
+ * the event that named it. An applied end records the acting member, or NULL for an agent's or an import's; a reopen
  * clears it.
- *
- * Bound as: end, end (for `endApplies`); none for `reopens` beyond the row and its gate.
  */
-const LATEST_USER_TURN_SQL = `MAX(COALESCE((SELECT MAX(first_at) FROM (
-  SELECT MIN(p.created_at) first_at FROM events p LEFT JOIN event_refs r ON r.project_id=p.project_id AND r.event_id=p.event_id
-  WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND p.kind='prompt'
-    AND CASE WHEN p.payload_format='archived' THEN p.archived_prompt_origin ELSE json_extract(p.payload,'$.origin') END='user'
-  GROUP BY COALESCE(r.record_id,p.event_id))),0),COALESCE((SELECT MAX(p.created_at) FROM session_prompts p
-    JOIN session_documents d ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
-    WHERE p.project_id=sessions.project_id AND p.session_id=sessions.session_id AND p.origin='user'),0))`;
-
-const END_APPLIES_SQL = `((ended_at IS NULL OR ? > ended_at) AND ? >= ${LATEST_USER_TURN_SQL})`;
-
-const endAppliesParams = (endedAt: number): number[] => [endedAt, endedAt];
-
-
-/** The instant an ordering is decided by, read back from a stored event: the same rule `orderingTime` applies to an arriving one. */
-export const eventOrderingTimeSql = (alias: string, field: string): string =>
-  `CASE WHEN ${alias}.payload_format='archived' THEN ${alias}.archived_ended_at ELSE COALESCE(CASE WHEN json_valid(${alias}.payload) THEN json_extract(${alias}.payload, '$.${field}') END, ${alias}.created_at) END`;
-
-
-/** The first import end that names an instant, ordered by creation time and event id; a title-only end is none. */
-const IMPORT_END_SQL = `(SELECT ${eventOrderingTimeSql('ie', 'endedAt')} FROM events ie
-   WHERE ie.project_id = sessions.project_id AND ie.session_id = sessions.session_id
-     AND ie.kind = 'session.end' AND ie.channel = 'import'
-     AND NOT (CASE WHEN ie.payload_format='archived' THEN ie.archived_title_only_end ELSE (json_valid(ie.payload) AND json_type(ie.payload, '$.endedAt') IS NULL AND json_type(ie.payload, '$.title') IS NOT NULL) END)
-   ORDER BY ie.created_at, ie.event_id LIMIT 1)`;
-
-
-/**
- * True while an import alone accounts for a session's lifecycle: the facts are
- * an import's, no start or end from elsewhere has reached the session, no
- * human turn a member shipped stands after the import's end, and every
- * transcript it holds arrived by import.
- *
- * Every term reads a stored event, so the answer does not depend on the order
- * they arrived in. The last term is the same evidence `reopensSession` acts on,
- * a person who picked the session up by hand.
- */
-const IMPORT_OWNS_LIFECYCLE_SQL = `(
-  EXISTS (SELECT 1 FROM events fe
-           WHERE fe.project_id = sessions.project_id AND fe.event_id = sessions.facts_event_id AND fe.channel = 'import')
-  AND NOT EXISTS (SELECT 1 FROM events le
-           WHERE le.project_id = sessions.project_id AND le.session_id = sessions.session_id
-             AND le.kind IN ('session.start', 'session.end', 'transcript.segment') AND le.channel <> 'import')
-  AND NOT EXISTS (SELECT 1 FROM events lt
-           WHERE lt.project_id = sessions.project_id AND lt.session_id = sessions.session_id
-             AND lt.kind = 'prompt' AND lt.producer_adapter <> '${TRANSCRIPT_PARSE_ADAPTER}'
-             AND (CASE WHEN lt.payload_format='archived' THEN lt.archived_prompt_origin ELSE json_extract(lt.payload, '$.origin') END) = 'user'
-             AND lt.created_at > COALESCE(${IMPORT_END_SQL}, 0))
-  AND NOT EXISTS (SELECT 1 FROM transcripts lb
-           WHERE lb.project_id = sessions.project_id AND lb.session_id = sessions.session_id
-             AND lb.imported_at IS NULL))`;
-
-
-const derivedBound = (bound: 'MIN' | 'MAX'): string => bound === 'MIN'
-  ? `(SELECT MIN(p.created_at) FROM session_prompts p JOIN session_documents d
-      ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
-      WHERE p.project_id=? AND p.session_id=?)`
-  : `(SELECT last_record_at FROM session_documents WHERE project_id=? AND session_id=? AND state='live')`;
-const derivedBoundParams = (projectId: string, sessionId: string): string[] => [projectId, sessionId];
-
-/**
- * The instants a session is presented and ordered by.
- *
- * While an import alone accounts for the lifecycle, the session is presented at
- * its conversation: the earliest record, and the latest where the import shipped
- * an end. The publisher passes the bounds its document holds, and runs after the
- * import's own events; a projection reads the derived rows. Any other session
- * holds neither and reads through to its raw instants.
- *
- * The only writer of the two columns, and no projection reads them: admission,
- * reopen and titling decide against the raw lifecycle. The answer is a function
- * of stored rows and events, so a repeat changes nothing and the same events in
- * any order settle the same way.
- */
-export const resolvePresentedDates = (
-  db: RelationalStore,
-  projectId: string,
-  sessionId: string,
-  gate?: Fragment,
-  bounds?: { min: Fragment; max: Fragment },
-): PreparedStatement =>
-  db
-    .prepare(
-      `UPDATE sessions
-       SET occurred_started_at = CASE WHEN ${IMPORT_OWNS_LIFECYCLE_SQL} THEN ${bounds?.min.sql ?? derivedBound('MIN')} END,
-           occurred_ended_at = CASE WHEN ${IMPORT_OWNS_LIFECYCLE_SQL} AND ${IMPORT_END_SQL} IS NOT NULL
-             THEN ${bounds?.max.sql ?? derivedBound('MAX')} END
-     WHERE project_id = ? AND session_id = ?${gate === undefined ? '' : ` AND ${gate.sql}`}`,
-    )
-    .bind(
-      ...(bounds?.min.params ?? derivedBoundParams(projectId, sessionId)),
-      ...(bounds?.max.params ?? derivedBoundParams(projectId, sessionId)),
-      projectId,
-      sessionId,
-      ...(gate?.params ?? []),
-    );
-
+const lifecycleGate = (ctx: WriteContext, e: CaptureEnvelope) => ({ eventId: e.eventId, nonce: ctx.nonce });
 
 /**
  * The title and summary an import end carries, stored as the session's one
@@ -622,33 +515,11 @@ const sessionEnd = ({ db, ctx, e, p, spec }: Inputs): KindPlan => {
     identities: [],
     admission: [],
     projections: [
-      db
-        .prepare(
-          `UPDATE sessions SET ended_at = CASE WHEN ${END_APPLIES_SQL} THEN ? ELSE ended_at END,
-          ended_by = CASE WHEN ${END_APPLIES_SQL} THEN ? ELSE ended_by END,
-          titling_requested_at = CASE WHEN ? IS NULL OR NOT ${END_APPLIES_SQL} THEN titling_requested_at
-            ELSE MIN(COALESCE(titling_requested_at, ?), ?) END
-        WHERE project_id = ? AND session_id = ? AND ${RAW_ROW_GATE} RETURNING 1 AS applied`,
-        )
-        .bind(
-          ...endAppliesParams(endedAt),
-          endedAt,
-          ...endAppliesParams(endedAt),
-          ctx.actor,
-          requestedAt,
-          ...endAppliesParams(endedAt),
-          requestedAt,
-          requestedAt,
-          ctx.projectId,
-          e.sessionId,
-          ...rawGateParams(ctx, e),
-        ),
+      settleSessionEnd(db, { project: ctx.projectId, session: e.sessionId, requestedAt, endedAt, actor: ctx.actor, gate: lifecycleGate(ctx, e) }),
       ...importedTitle(db, ctx, e, p),
       ...sessionCommit(db, ctx, e, p, 'session_end', endedAt),
     ],
-    incidental: [
-      resolvePresentedDates(db, ctx.projectId, e.sessionId, { sql: RAW_ROW_GATE, params: rawGateParams(ctx, e) }),
-    ],
+    incidental: [presentedDatesAfterEvent(db, ctx.projectId, e.sessionId, lifecycleGate(ctx, e))],
     reads: [],
     refusal: () => NOT_STORED,
   };
@@ -944,12 +815,7 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
     ],
     // A transcript that arrived on a live channel is no longer a backfill's:
     // the overlay is resolved with the segment's own write.
-    incidental: [
-      resolvePresentedDates(db, ctx.projectId, e.sessionId, {
-        sql: `${RAW_ROW_GATE} AND ${segmentWritten}`,
-        params: [...rawGateParams(ctx, e), ctx.projectId, transcriptId, baseOffset, e.eventId],
-      }),
-    ],
+    incidental: [presentedDatesAfterSegment(db, { project: ctx.projectId, session: e.sessionId, gate: lifecycleGate(ctx, e), transcriptId, baseOffset })],
     reads: [
       db
         .prepare(
@@ -990,15 +856,17 @@ const transcriptSegment = ({ db, ctx, e, p }: Inputs): KindPlan => {
 };
 
 
-const documentOnly = (input: Inputs): KindPlan => ({
-  ...rawOnly(),
-  identities: [{table:DOCUMENT_IDENTITIES_SQL,keyColumn:'record_id',key:String(input.p[DOCUMENT_ID_FIELDS[input.e.kind]!]),owner:'session'}],
-  incidental: input.e.kind !== 'prompt' ? [] : [
-    resolvePresentedDates(input.db,input.ctx.projectId,input.e.sessionId,{sql:RAW_ROW_GATE,params:rawGateParams(input.ctx,input.e)}),
-    ...(input.p.origin !== 'user'?[]:[input.db.prepare(`UPDATE sessions SET ended_at=NULL,ended_by=NULL WHERE project_id=? AND session_id=? AND ended_at IS NOT NULL
-    AND ended_at < COALESCE(${LATEST_USER_TURN_SQL},0) AND ${RAW_ROW_GATE}`)
-    .bind(input.ctx.projectId,input.e.sessionId,...rawGateParams(input.ctx,input.e))])],
-});
+const documentOnly = (input: Inputs): KindPlan => {
+  const { db, ctx, e, p } = input;
+  return {
+    ...rawOnly(),
+    identities: [{table:DOCUMENT_IDENTITIES_SQL,keyColumn:'record_id',key:String(p[DOCUMENT_ID_FIELDS[e.kind]!]),owner:'session'}],
+    incidental: e.kind !== 'prompt' ? [] : [
+      presentedDatesAfterEvent(db, ctx.projectId, e.sessionId, lifecycleGate(ctx, e)),
+      ...(p.origin !== 'user' ? [] : [settleSessionTurn(db, ctx.projectId, e.sessionId, lifecycleGate(ctx, e))]),
+    ],
+  };
+};
 
 const PLANNERS: Record<KindSpec['projection'], (input: Inputs) => KindPlan> = {
   raw: rawOnly,

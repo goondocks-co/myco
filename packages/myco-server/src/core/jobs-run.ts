@@ -6,6 +6,7 @@ import { BUDGET_WINDOW_MS, BUDGET_WORKER_TASKS } from './budget-policy.js';
 import { budgetActivation, budgetQueueOpenedAt } from '../db/meta/budget-activation.js';
 import { dailyBudget } from './settings.js';
 import { runPublishWake } from '../ingest/publish.js';
+import { inspectPublicationCycles } from '../db/documents/dependencies.js';
 import { storageCleanup } from './storage-cleanup.js';
 import { rawBackfill } from './raw-backfill.js';
 import { repairLearningSources } from './learning-sessions.js';
@@ -268,6 +269,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'raw-provenance-backfill': (env, now) => rawBackfill(env.db, now),
   // #1147 — transcript-first ingest
   'transcript-parse': runPublishWake,
+  'publication-dependency-inspection': (env, now) => inspectPublicationCycles(env.db, now),
   'session-titling': titleReadySessions,
   'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,

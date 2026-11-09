@@ -1,6 +1,10 @@
 import type { UpsertDeclaration } from './server-upsert-inventory.js';
 /** Every literal conflict-update occurrence, in source order within its owner. */
 export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
+  'db/schema-v728.ts#<module>': [{tables:['session_user_prompt_firsts','session_lifecycle_facts'],order:'unverified'}],
+  'db/documents/dependencies.ts#<module>': [{tables:['publication_dependencies'],order:'unverified'}],
+  'db/documents/lifecycle.ts#sessionLifecycleSchema': [{tables:['session_user_prompt_firsts'],order:'unverified'}],
+  'db/documents/lifecycle.ts#<module>': [{tables:['session_user_prompt_firsts'],order:'unverified'}],
   'db/documents/metadata-catchup.ts#<module>': [
     {tables:['document_metadata_progress'],order:'unverified'},
     {tables:['document_metadata_ready'],order:'unverified'},

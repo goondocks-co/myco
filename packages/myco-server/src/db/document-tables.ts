@@ -10,6 +10,7 @@ export const DOCUMENT_SESSION_TABLES = [
   'document_owners', 'document_continuations', 'document_plan_keys', 'document_metadata_ready','document_metadata_progress',
   'document_transcript_pins', 'document_group_pins', 'document_pin_totals', 'document_failure_contributions',
   'document_rebuild_receipts',
+  'publication_dependencies', 'session_lifecycle_facts', 'session_user_prompt_firsts',
 ] as const;
 
 /** Immutable document directories and publisher frontiers carried by portable backups. */

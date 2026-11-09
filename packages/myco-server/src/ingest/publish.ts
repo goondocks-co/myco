@@ -41,6 +41,10 @@ import {
   releaseHolders, reserveReached, type ChunkVersion, type Holder,
 } from './document-batch.js';
 import { repairPublicationMetadata } from '../db/documents/metadata-catchup.js';
+import {
+  PublicationDependenciesBuilding, clearDependenciesStatement, consumeQueuedStatement, continueWakeStatement, earliestReadRoot, heldPrerequisites, holdQueuedStatement,
+  recordDependenciesStatement, releasedDependents, wakeDependentsStatement,
+} from '../db/documents/dependencies.js';
 import { dueSessions, deferFailedPublication, settlePublication, publicationGuard, PUBLISH_BACKOFF_MIN_MS, PUBLISH_BACKOFF_MAX_MS, type DueSession } from '../db/documents/publication.js';
 import { recordDocumentPublishFailure } from '../core/attention-state.js';
 import { settleCards } from './card-settle.js';
@@ -133,6 +137,11 @@ export async function publishDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>, now
       more ||= report.more;
       if (report.failure?.propagate) failure ??= report.failure.error;
     } catch (error) {
+      if (error instanceof PublicationDependenciesBuilding) {
+        emit({ kind: 'document_publication_dependencies_building', projectId: ref.project_id, sessionId: ref.session_id });
+        await deferFailedPublication(env.db, ref, now);
+        continue;
+      }
       if (error instanceof PublicationOwnershipBuilding) {
         emit({kind:'document_publication_building',projectId:ref.project_id,sessionId:ref.session_id});
         const repaired=error.failure!==null&&await repairPublicationMetadata(env.db,env.blobs,ref.project_id,ref.session_id,now).catch(()=>{
@@ -220,9 +229,10 @@ async function hydratedPayload(env: ContentStore, projectId: string, row: Queued
 }
 
 interface QueuedRef { r: number; c: number; e: string; t: number; w: string | null }
-type QueuedWaitCause = { kind: 'read'; parentId: string | null } | { kind: 'prompt' | 'order'; eventId: string };
+type QueuedWaitCause = { kind: 'read'; parentId: string | null } | { kind: 'prompt'; eventId: string; promptId: string } | { kind: 'order'; eventId: string };
 interface QueuedFailure extends QueuedRef { failure: string | null; retry: number; code: string; cause: QueuedWaitCause | null; error?: unknown }
 interface QueuedRecord { consumed: QueuedRef; record: DocRecord | null; failure?: QueuedFailure }
+interface DependencyRow { e: string; r: number; c: number; k: string; p: string; h: string | null }
 interface PublicationReport { records: number; more: boolean; failure?: { error: unknown; propagate: boolean } }
 
 /** What a run of records holds, in order. */
@@ -266,9 +276,10 @@ class SessionPublication {
    */
   async run(leads = false): Promise<PublicationReport> {
     const db = this.db;
-    const { docs, queued } = await openPublication(db, this.projectId, this.sessionId, this.now);
+    const { docs, queued, translationPending } = await openPublication(db, this.projectId, this.sessionId, this.now);
     const doc = docs[0];
     if (doc === undefined) return { records: 0, more: false };
+    if (translationPending) throw new PublicationDependenciesBuilding();
     this.doc = doc;
     this.batch = new DocumentBatch(this.env, this.projectId, this.sessionId, doc);
     this.batch.calls += 1;
@@ -536,32 +547,6 @@ class SessionPublication {
     }
   }
 
-  /** Dependency cycles publish as unrooted session content. */
-  private async cyclicQueued(heads: readonly { head: string; start: string }[], outcomes: readonly Pick<QueuedFailure, 'e' | 'failure' | 'retry' | 'cause'>[]): Promise<ReadonlySet<string>> {
-    if (heads.length === 0) return new Set();
-    const cause = 'COALESCE(o.cause,q.retry_cause)';
-    const result = await this.db.prepare(`WITH RECURSIVE
-      staged AS MATERIALIZED (SELECT json_extract(value,'$.e') e,json_extract(value,'$.failure') failure,json_extract(value,'$.cause') cause FROM json_each(?4)),
-      walk(head,id) AS (
-        SELECT json_extract(value,'$.head'),json_extract(value,'$.start') FROM json_each(?3)
-        UNION
-        SELECT w.head,json_extract(${cause},'$.eventId') FROM walk w CROSS JOIN events e CROSS JOIN publish_queue q
-          LEFT JOIN staged o ON o.e=q.event_id
-        WHERE e.project_id=?1 AND e.event_id=w.id AND q.project_id=?1 AND q.session_id=?2 AND q.rank=0
-          AND q.created_at=e.created_at AND q.event_id=w.id AND q.failure IS NULL AND o.failure IS NULL
-          AND json_extract(${cause},'$.kind')='prompt' AND json_extract(${cause},'$.eventId') IS NOT NULL
-      )
-      SELECT w.head,MAX(w.id=w.head) closes,MIN(CASE WHEN q.event_id IS NOT NULL AND q.failure IS NULL AND o.failure IS NULL
-        AND json_extract(${cause},'$.kind')='prompt' THEN 1 ELSE 0 END) cycle
-      FROM walk w LEFT JOIN events e ON e.project_id=?1 AND e.event_id=w.id
-        LEFT JOIN publish_queue q ON q.project_id=?1 AND q.session_id=?2 AND q.rank=0 AND q.created_at=e.created_at AND q.event_id=w.id
-        LEFT JOIN staged o ON o.e=q.event_id GROUP BY w.head`)
-      .bind(this.projectId, this.sessionId, JSON.stringify(heads), JSON.stringify(outcomes))
-      .all<{ head: string; closes: number; cycle: number }>();
-    this.batch.calls += 1;
-    return new Set(result.results.filter(row => row.closes === 1 || row.cycle === 1).map(row => row.head));
-  }
-
   /** Read faults can hold turn order; parent waits retain their own dependency. */
   private async readyQueued(rows: readonly QueuedRecord[]): Promise<QueuedRecord[]> {
     const parentOf = (record: DocRecord): unknown => record.k === 'prompt' ? record.parent_prompt_id : record.prompt_id;
@@ -572,35 +557,19 @@ class SessionPublication {
     }))];
     if (ids.length === 0 && !rows.some(row => independent(row.record))) return [...rows];
     const faults = [...this.failedQueued, ...rows.flatMap(row => row.failure === undefined ? [] : [row.failure])];
-    const outcomes = faults.map(({ e, failure, retry, cause }) => ({ e, failure, retry, cause }));
-    const held = ids.length === 0 ? [] : (await this.db.prepare(`WITH held AS MATERIALIZED (
-      SELECT j.value id,(SELECT json_object('e',q.event_id,'retry',COALESCE(
-        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at))
-      FROM event_refs r CROSS JOIN events e CROSS JOIN publish_queue q
-      WHERE r.project_id=?1 AND r.session_id=?2 AND r.kind='prompt' AND r.record_id=j.value AND r.record_id IS NOT NULL
-        AND e.project_id=r.project_id AND e.event_id=r.event_id
-        AND q.project_id=r.project_id AND q.session_id=r.session_id AND q.rank=0 AND q.created_at=e.created_at AND q.event_id=r.event_id
-        AND q.failure IS NULL AND NOT EXISTS (SELECT 1 FROM json_each(?4)
-          WHERE json_extract(value,'$.e')=q.event_id AND json_extract(value,'$.failure') IS NOT NULL)
-        ORDER BY q.created_at,q.event_id LIMIT 1) wait
-      FROM json_each(?3) j WHERE NOT EXISTS (SELECT 1 FROM session_prompts p
-        WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=?5 AND p.prompt_id=j.value))
-      SELECT id,json_extract(wait,'$.e') event_id,json_extract(wait,'$.retry') retry FROM held`)
-      .bind(this.projectId, this.sessionId, JSON.stringify(ids), JSON.stringify(outcomes), this.doc.generation)
-      .all<{ id: string; event_id: string | null; retry: number | null }>()).results;
+    const retryOf = new Map(faults.map(row => [row.e, row.retry]));
+    const terminal = faults.filter(row => row.failure !== null).map(row => row.e);
+    const held = ids.length === 0 ? [] : await heldPrerequisites(this.db, this.projectId, this.sessionId, this.doc.generation, ids, terminal);
     this.batch.calls += Number(ids.length > 0);
-    const pending = new Map(held.flatMap(row => row.event_id === null || row.retry === null ? [] : [[row.id, { eventId: row.event_id, retry: row.retry }] as const]));
-    const heads = rows.flatMap(row => {
-      const id = row.record === null ? null : parentOf(row.record), parent = typeof id === 'string' ? pending.get(id) : undefined;
-      return parent === undefined ? [] : [{ head: row.consumed.e, start: parent.eventId }];
-    });
-    const cyclic = await this.cyclicQueued(heads, outcomes);
+    const released = await releasedDependents(this.db, this.projectId, rows.flatMap(row => row.consumed.w === null ? [] : [row.consumed.e]));
+    this.batch.calls += Number(rows.some(row => row.consumed.w !== null));
+    const pending = new Map(held.map(row => [row.id, { eventId: row.eventId, retry: retryOf.get(row.eventId) ?? row.retry }] as const));
     const prompts = new Map<string, DocRecord>();
     for (const { record } of rows) if (record?.k === 'prompt' && !prompts.has(record.id)) prompts.set(record.id, record);
-    const waitingFor = (id: string, head: string, seen = new Set<string>()): { eventId: string; retry: number } | null => {
-      if (cyclic.has(head) || this.placedPrompts.has(id) || !pending.has(id) || seen.has(id)) return null;
+    const waitingFor = (id: string, head: string, seen = new Set<string>()): { eventId: string; retry: number; promptId: string } | null => {
+      if (released.has(head) || this.placedPrompts.has(id) || !pending.has(id) || seen.has(id)) return null;
       const prompt = prompts.get(id);
-      if (prompt === undefined) return { ...pending.get(id)!, retry: Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, pending.get(id)!.retry) };
+      if (prompt === undefined) return { ...pending.get(id)!, retry: Math.max(this.now + PUBLISH_BACKOFF_MIN_MS, pending.get(id)!.retry), promptId: id };
       const parent = parentOf(prompt);
       if (typeof parent !== 'string') return null;
       seen.add(id);
@@ -611,22 +580,13 @@ class SessionPublication {
     const dependencies = (row: QueuedRecord): QueuedRecord => {
       const id = row.record === null ? null : parentOf(row.record);
       const wait = typeof id === 'string' ? waitingFor(id, row.consumed.e) : null;
-      return wait === null ? row : defer(row, wait.retry, { kind: 'prompt', eventId: wait.eventId });
+      return wait === null ? row : defer(row, wait.retry, { kind: 'prompt', eventId: wait.eventId, promptId: wait.promptId });
     };
     let ready = rows.map(dependencies);
     if (!ready.some(row => independent(row.record))) return ready;
-    const skipped = [...this.consumed.filter(row => row.r === 0).map(row => row.e),
-      ...rows.flatMap(row => row.record?.k === 'prompt' ? [row.consumed.e] : [])];
-    const outside = await this.db.prepare(`SELECT q.created_at c,q.event_id e,COALESCE(
-        (SELECT json_extract(value,'$.retry') FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id),q.retry_at) retry
-      FROM publish_queue q WHERE q.project_id=?1 AND q.session_id=?2 AND q.rank=0 AND q.failure IS NULL
-        AND json_extract(q.retry_cause,'$.kind')='read' AND json_extract(q.retry_cause,'$.parentId') IS NULL
-        AND NOT EXISTS (SELECT 1 FROM json_each(?3) WHERE value=q.event_id)
-        AND NOT EXISTS (SELECT 1 FROM json_each(?4) WHERE json_extract(value,'$.e')=q.event_id
-          AND (json_extract(value,'$.failure') IS NOT NULL OR json_extract(value,'$.cause.kind') IS NOT 'read' OR json_extract(value,'$.cause.parentId') IS NOT NULL))
-      ORDER BY q.created_at,q.event_id LIMIT 1`)
-      .bind(this.projectId, this.sessionId, JSON.stringify(skipped), JSON.stringify(outcomes))
-      .first<{ c: number; e: string; retry: number }>();
+    const excluded = [...this.consumed.filter(row => row.r === 0).map(row => row.e),
+      ...rows.flatMap(row => row.record?.k === 'prompt' ? [row.consumed.e] : []), ...faults.map(row => row.e)];
+    const outside = await earliestReadRoot(this.db, this.projectId, this.sessionId, excluded);
     this.batch.calls += 1;
     const roots = faults.flatMap(row => row.r === 0 && row.cause?.kind === 'read' && row.cause.parentId === null
       ? [{ c: row.c, e: row.e, retry: row.retry }] : []);
@@ -649,6 +609,16 @@ class SessionPublication {
     return ready;
   }
 
+  /** The typed rows a deferral maintains: what each deferred event now waits on, and the read-faulted root prompts holding turn order. */
+  private dependencyRows(): DependencyRow[] {
+    return this.failedQueued.flatMap(({ e, r, c, failure, cause }): DependencyRow[] => {
+      if (failure !== null || cause === null) return [];
+      if (cause.kind === 'prompt') return [{ e, r, c, k: 'prompt', p: cause.promptId, h: cause.eventId }];
+      if (cause.kind === 'order') return [{ e, r, c, k: 'event', p: cause.eventId, h: cause.eventId }];
+      return r === 0 && cause.parentId === null ? [{ e, r, c, k: 'read', p: '', h: null }] : [];
+    });
+  }
+
   /** The guard and frontier statements a publication commits around the batch's catalog writes. */
   private frontier(versions: readonly ChunkVersion[]): { before: PreparedStatement[]; after: PreparedStatement[] } {
     const db = this.db;
@@ -666,17 +636,15 @@ class SessionPublication {
       a: pub.replyLatestAt, ps: pub.promptScheme, rs: pub.recordScheme, s: pub.state, f: pub.failure, w: pub.awaitedSize,
       n: pub.placedRecords, d: pub.placedDigest, diag: pub.diagnostic===undefined?null:JSON.stringify(pub.diagnostic),
     }))));
-    if (this.consumed.length > 0) {
-      after.push(db.prepare(`DELETE FROM publish_queue WHERE (project_id,session_id,rank,created_at,event_id) IN
-          (SELECT ?,?,json_extract(value,'$.r'),json_extract(value,'$.c'),json_extract(value,'$.e') FROM json_each(?))`)
-        .bind(p, s, consumed));
-    }
-    if (this.failedQueued.length > 0) after.push(db.prepare(`UPDATE publish_queue SET
-        failure=(SELECT json_extract(value,'$.failure') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id),
-        retry_at=(SELECT json_extract(value,'$.retry') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id),
-        retry_cause=(SELECT json_extract(value,'$.cause') FROM json_each(?3) WHERE json_extract(value,'$.e')=publish_queue.event_id)
-      WHERE project_id=?1 AND session_id=?2 AND event_id IN (SELECT json_extract(value,'$.e') FROM json_each(?3))`)
-      .bind(p, s, JSON.stringify(this.failedQueued.map(({ e, failure, retry, cause }) => ({ e, failure, retry, cause })))));
+    if (this.consumed.length > 0) after.push(consumeQueuedStatement(db, p, s, consumed));
+    const heldChildren = [...this.consumed, ...this.failedQueued].map(({ e }) => e);
+    if (heldChildren.length > 0) after.push(clearDependenciesStatement(db, p, JSON.stringify(heldChildren)));
+    if (this.failedQueued.length > 0) after.push(holdQueuedStatement(db, p, s, JSON.stringify(this.failedQueued.map(({ r, c, e, failure, retry, cause }) => ({ r, c, e, failure, retry, cause })))));
+    const dependencies = this.dependencyRows();
+    if (dependencies.length > 0) after.push(recordDependenciesStatement(db, p, s, this.now, JSON.stringify(dependencies)));
+    const holders = [...new Set([...this.consumed.map(({ e }) => e), ...this.failedQueued.filter(row => row.failure !== null).map(({ e }) => e),
+      ...(this.doc.publication_wake === null ? [] : JSON.parse(this.doc.publication_wake) as string[])])];
+    if (holders.length > 0) after.push(wakeDependentsStatement(db, p, s, JSON.stringify(holders)));
     const behind = this.publications.some((pub) => pub.state === 'active' && pub.fault === undefined && pub.offset < pub.transcript.size);
     const laterDue = [
       ...(this.scanDue === null ? [] : [this.scanDue]),
@@ -689,6 +657,7 @@ class SessionPublication {
     const set = this.batch.documentSet(this.now);
     after.push(db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id=? AND session_id=?`).bind(...set.params, p, s));
     after.push(settlePublication(db, p, s, this.after, this.after === null ? null : scanDue, dueAt));
+    if (holders.length > 0) after.push(continueWakeStatement(db, p, s, JSON.stringify(holders)));
     return { before, after };
   }
 }
