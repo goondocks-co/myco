@@ -4,7 +4,8 @@ import type { AdmittedSettingsChange } from '../../core/settings.js';
 import type { EmbeddingSwitch } from '../../core/embedding/switch-store.js';
 import { SWITCH_STANDS_SQL } from '../../core/embedding/switch-store.js';
 import { SWITCH_COMPLETION_SQL, switchCompletionParams } from '../embeddings/switch.js';
-import { assertion, commit, read, readSet, write, type Bound } from '../index.js';
+import { assertion, commit, read, readSet, refusalCode, refused, write, type Bound } from '../index.js';
+import { SETTINGS_REVISION_CONFLICT } from '../meta/settings-observation.js';
 
 export interface SettingState {
   leaf: string;
@@ -28,16 +29,12 @@ const states = read<[scope: string, leaves: string], SettingState>({ name: 'sett
   WHERE ?1<>''` });
 const revisions = read<[scope: string], { leaf: string; revision: number }>({ name: 'settings.revisions', sql:
   'SELECT leaf,revision FROM setting_revisions WHERE scope=?' });
-const unchanged = assertion<[scope: string, expected: string]>({ name: 'settings.unchanged', sql: `
-  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM json_each(?2) expected
-    WHERE COALESCE((SELECT revision FROM setting_revisions WHERE scope=?1 AND leaf=expected.key),0)<>expected.value)
-    THEN 1 ELSE json_extract('[]','$[settings_revision_conflict]') END` });
-const active = assertion<[project: string]>({ name: 'settings.activeProject', sql: `
-  SELECT CASE WHEN EXISTS(SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NULL)
-    THEN 1 ELSE json_extract('[]','$[settings_project_inactive]') END` });
-const embedding = assertion<[empty: number]>({ name: 'settings.embeddingUnchanged', sql: `
-  SELECT CASE WHEN NOT ${SWITCH_STANDS_SQL} AND (?=0 OR NOT EXISTS(SELECT 1 FROM embedding_receipts WHERE ready>=0))
-    THEN 1 ELSE json_extract('[]','$[settings_embedding_conflict]') END` });
+export const SETTINGS_PROJECT_INACTIVE = refusalCode('settings_project_inactive');
+export const SETTINGS_EMBEDDING_CONFLICT = refusalCode('settings_embedding_conflict');
+const unchanged = assertion<[scope: string, expected: string]>({ name: 'settings.unchanged', refusal: SETTINGS_REVISION_CONFLICT, when: `NOT EXISTS (SELECT 1 FROM json_each(?2) expected
+    WHERE COALESCE((SELECT revision FROM setting_revisions WHERE scope=?1 AND leaf=expected.key),0)<>expected.value)` });
+const active = assertion<[project: string]>({ name: 'settings.activeProject', refusal: SETTINGS_PROJECT_INACTIVE, when: `EXISTS(SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NULL)` });
+const embedding = assertion<[empty: number]>({ name: 'settings.embeddingUnchanged', refusal: SETTINGS_EMBEDDING_CONFLICT, when: `NOT ${SWITCH_STANDS_SQL} AND (?=0 OR NOT EXISTS(SELECT 1 FROM embedding_receipts WHERE ready>=0))` });
 const put = write<[leaf: string, value: string, at: number, actor: string, id: string]>({ name: 'settings.put', sql: `
   INSERT INTO deployment_settings(leaf,value,updated_at,updated_by,write_id) VALUES(?,?,?,?,?)
   ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by,write_id=excluded.write_id` });
@@ -51,11 +48,8 @@ const projectPut = write<[project: string, leaf: string, value: string, at: numb
 const capabilityPut = write<[project: string, capability: string, enabled: number, at: number, actor: string]>({ name: 'settings.capabilityPut', sql: `
   INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES(?,?,?,?,?)
   ON CONFLICT(project_id,capability) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at,updated_by=excluded.updated_by` });
-const completion = assertion<Array<string | number>>({ name: 'settings.embeddingComplete', sql:
-  `SELECT CASE WHEN ${SWITCH_COMPLETION_SQL} THEN 1 ELSE json_extract('[]','$[settings_embedding_conflict]') END` });
-const ended = assertion<[id: string]>({ name: 'settings.embeddingEnded', sql:
-  `SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM embedding_switches WHERE slot='deployment' AND id=?)
-    THEN 1 ELSE json_extract('[]','$[settings_embedding_conflict]') END` });
+const completion = assertion<Array<string | number>>({ name: 'settings.embeddingComplete', refusal: SETTINGS_EMBEDDING_CONFLICT, when: SWITCH_COMPLETION_SQL });
+const ended = assertion<[id: string]>({ name: 'settings.embeddingEnded', refusal: SETTINGS_EMBEDDING_CONFLICT, when: `NOT EXISTS(SELECT 1 FROM embedding_switches WHERE slot='deployment' AND id=?)` });
 const endSwitch = write<Array<string | number>>({ name: 'settings.endEmbeddingSwitch', sql:
   `DELETE FROM embedding_switches WHERE slot='deployment' AND ${SWITCH_COMPLETION_SQL}` });
 
@@ -70,10 +64,8 @@ export async function settingRevisions(db: RelationalStore, scope = ''): Promise
 }
 
 function assertionFailure(error: unknown): 'conflict' | 'inactive' | null {
-  if (!(error instanceof Error)) return null;
-  if (error.message.includes('settings_project_inactive')) return 'inactive';
-  if (/settings_(revision|embedding)_conflict/.test(error.message)) return 'conflict';
-  return assertionFailure(error.cause);
+  if (refused(error, SETTINGS_PROJECT_INACTIVE)) return 'inactive';
+  return refused(error, SETTINGS_REVISION_CONFLICT) || refused(error, SETTINGS_EMBEDDING_CONFLICT) ? 'conflict' : null;
 }
 
 /** Only the admitted settings capability supplies a change. Assertions precede every mutation. */

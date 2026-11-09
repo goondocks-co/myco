@@ -30,7 +30,8 @@ export function limitPassesSql(task: string, limits: DispatchLimits, now: number
   return `(${terms.join(' AND ')})`;
 }
 
-import { assertion, commit, read, readSet, write, type Bound } from '../index.js';
+import { assertion, commit, read, readSet, refused, write, type Bound } from '../index.js';
+import { CLAIM_SELECTION_REFUSED } from './claim-refusals.js';
 import { prepareBound } from '../kernel/statement.js';
 import type { RelationalStore, PreparedStatement } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
@@ -450,7 +451,7 @@ export async function commitWorkerClaim(db: RelationalStore, setup: readonly Bou
     const results = await commit(db, ...guards, ...setup, claim, ...companions);
     return (results[setup.length + guards.length]!.results as ClaimedRunRow[])[0];
   } catch (error) {
-    if (error instanceof Error && error.message.includes('claim_selection_refused')) return undefined;
+    if (refused(error, CLAIM_SELECTION_REFUSED)) return undefined;
     return runnerWriteRefusal(error);
   }
 }
@@ -472,7 +473,7 @@ const claimDefinitions = Object.fromEntries(budgetVariants.flatMap(budgetKind =>
     const gate = runnerClaimGate(runner ? {kind:'runner',runnerId:'',credentialId:'',machineId:null} : {kind:'member',tokenId:'',machineId:''},0);
     const authority = `(${selection.sql}) AND (${quiet ? quietSql : '1'}) AND (${gate.sql})`;
     const name = `${pulled ? 'pulled' : 'queued'}${budgetKind}${runner ? 'Runner' : 'Member'}${quiet ? 'Quiet' : 'Any'}${settings ? 'Observed' : 'Current'}`;
-    return [name,{guard:assertion<readonly unknown[]>({name:`runs.${name}Admission`,sql:`SELECT CASE WHEN ${authority} THEN 1 ELSE json_extract('[]','$[claim_selection_refused]') END`}),credential:write<readonly unknown[]>({name:`runs.${name}Credential`,sql:CREDENTIAL_INSERT_SQL+` AND ${authority} RETURNING id`}),run:write<readonly unknown[],ClaimedRunRow>({name:`runs.${name}`,sql: pulled ?
+    return [name,{guard:assertion<readonly unknown[]>({name:`runs.${name}Admission`,refusal:CLAIM_SELECTION_REFUSED,when:authority}),credential:write<readonly unknown[]>({name:`runs.${name}Credential`,sql:CREDENTIAL_INSERT_SQL+` AND ${authority} RETURNING id`}),run:write<readonly unknown[],ClaimedRunRow>({name:`runs.${name}`,sql: pulled ?
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject, dispatch_spec, started_at, dispatched_by,
         leased_by,leased_runner_id,leased_runner_credential_id,lease_expires_at,harness,reasoning_level,model,execution_overrides)
       SELECT ?,?,'myco-agent',?,'running','automatic',?,?,?,?,?,?,?,?,?,?,?,? WHERE ${authority}

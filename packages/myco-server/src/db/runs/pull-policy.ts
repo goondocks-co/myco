@@ -1,5 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, read, readSet, type Bound } from '../index.js';
+import { CLAIM_SELECTION_REFUSED } from './claim-refusals.js';
 import { liveCountSql, RUN_ADMISSION_READY_SQL } from './live.js';
 import { spentUsdSql, projectSpendSql, spendReadySql } from './admission.js';
 import { queueHeadSeek } from './queue.js';
@@ -66,7 +67,7 @@ const limitSql = (task:string) => `${RUN_ADMISSION_READY_SQL}
 const inputs = `WITH i AS (SELECT json_extract(?1,'$.now') AS now,json_extract(?1,'$.projectId') AS projectId,
   json_extract(?1,'$.key') AS key,json_extract(?1,'$.observed') AS observed,json_extract(?1,'$.estimateKey') AS estimateKey,
   json_extract(?1,'$.fleet') AS fleet,json_extract(?1,'$.concurrent') AS concurrent,json_extract(?1,'$.hourly') AS hourly)`;
-const assertSql = (condition:string) => `${inputs} SELECT CASE WHEN ${condition} THEN 1 ELSE json_extract('[]','$[claim_selection_refused]') END FROM i`;
+const refusedUnless = (when:string) => ({with:inputs,from:'i',when,refusal:CLAIM_SELECTION_REFUSED});
 const values = (item:PulledItem,limits:DispatchLimits,now:number,estimateKey?:string) => JSON.stringify({...item,now,estimateKey,
   fleet:resolvedConcurrency(limits).value,concurrent:limits.task_concurrent_runs,hourly:limits.task_runs_per_hour});
 export interface PullPolicy {
@@ -78,9 +79,9 @@ export interface PullPolicy {
 export function definePullPolicy(name:string,task:string,due:string,head:string):PullPolicy {
   const valid=`${accepts('p.project_id',task)} AND ${due} AND ${limitSql(literal(task))}`;
   const definitions={
-    head:assertion<[string]>({name:`pull.${name}Head`,sql:assertSql(head)}),
-    higher:assertion<[string]>({name:`pull.${name}Priority`,sql:assertSql(`NOT EXISTS(SELECT 1 FROM projects p WHERE ${valid})`)}),
-    fair:assertion<[string]>({name:`pull.${name}Fair`,sql:assertSql(`NOT EXISTS(SELECT 1 FROM projects p
+    head:assertion<[string]>({name:`pull.${name}Head`,...refusedUnless(head)}),
+    higher:assertion<[string]>({name:`pull.${name}Priority`,...refusedUnless(`NOT EXISTS(SELECT 1 FROM projects p WHERE ${valid})`)}),
+    fair:assertion<[string]>({name:`pull.${name}Fair`,...refusedUnless(`NOT EXISTS(SELECT 1 FROM projects p
       CROSS JOIN (SELECT ROUND(COALESCE((SELECT spent FROM (${projectSpendSql(`i.now-${BUDGET_WINDOW_MS}`)}) WHERE projectId=i.projectId),0),6) AS spent) mine
       LEFT JOIN (SELECT projectId,ROUND(spent,6) AS spent FROM (${projectSpendSql(`i.now-${BUDGET_WINDOW_MS}`)})) other ON other.projectId=p.project_id
       WHERE p.project_id!=i.projectId AND ${valid}
@@ -103,7 +104,7 @@ const queuedClearSql = `NOT EXISTS(SELECT 1 FROM json_each(?1,'$.queues') q
       AND (origins.value='manual' OR ${spendReadySql(`i.now-${BUDGET_WINDOW_MS}`)} AND ${spentUsdSql(`i.now-${BUDGET_WINDOW_MS}`)}
         + COALESCE((SELECT json_extract(s.value,'$.estimate') FROM agent_state s WHERE s.project_id=head.project_id
           AND s.agent_id='myco-agent' AND s.key=json_extract(q.value,'$.estimateKey')),json_extract(q.value,'$.seed'))<=${effectiveBudgetSql()})))`;
-const queuedClear=assertion<[string]>({name:'pull.queuedPriority',sql:assertSql(queuedClearSql)});
+const queuedClear=assertion<[string]>({name:'pull.queuedPriority',...refusedUnless(queuedClearSql)});
 const queuedRead=read<[string], { admissible: number }>({name:'pull.queuedAdmissible',sql:`${inputs} SELECT NOT (${queuedClearSql}) AS admissible FROM i`});
 const queueValues = (queues:readonly ServedQueue[],limits:DispatchLimits,now:number) => JSON.stringify({
   now,fleet:resolvedConcurrency(limits).value,concurrent:limits.task_concurrent_runs,hourly:limits.task_runs_per_hour,

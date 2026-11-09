@@ -1,9 +1,9 @@
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { assertion, read, readSet } from '../index.js';
+import { assertion, read, readSet, refusalCode, refused } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 
-/** The error text an aborted consolidation carries: it stores no wisdom spore and moves no source. */
-export const CONSOLIDATION_SOURCES_CHANGED = 'spore_consolidation_sources_changed';
+/** The refusal an aborted consolidation carries: it stores no wisdom spore and moves no source. */
+export const CONSOLIDATION_SOURCES_CHANGED = refusalCode('spore_consolidation_sources_changed');
 
 export interface ConsolidationSource { id: string; revision?: number }
 export interface StaleConsolidationSource { id: string; status: string | null; revision: number | null; expected: number | null }
@@ -11,8 +11,7 @@ export interface StaleConsolidationSource { id: string; status: string | null; r
 const STALE = `FROM json_each(?2) j LEFT JOIN spores s ON s.project_id=?1 AND s.id=json_extract(j.value,'$.id')
   WHERE s.id IS NULL OR s.status<>'active' OR (json_extract(j.value,'$.revision') IS NOT NULL AND s.revision<>json_extract(j.value,'$.revision'))`;
 
-const sourcesCurrent = assertion<[project: string, sources: string]>({ name: 'sporeConsolidation.sourcesCurrent', sql:
-  `SELECT CASE WHEN NOT EXISTS (SELECT 1 ${STALE}) THEN 1 ELSE json_extract('[]','$[${CONSOLIDATION_SOURCES_CHANGED}]') END` });
+const sourcesCurrent = assertion<[project: string, sources: string]>({ name: 'sporeConsolidation.sourcesCurrent', refusal: CONSOLIDATION_SOURCES_CHANGED, when: `NOT EXISTS (SELECT 1 ${STALE})` });
 const staleSource = read<[project: string, sources: string], StaleConsolidationSource>({ name: 'sporeConsolidation.staleSource', sql:
   `SELECT json_extract(j.value,'$.id') AS id,s.status,s.revision,json_extract(j.value,'$.revision') AS expected ${STALE} ORDER BY j.key LIMIT 1` });
 
@@ -30,6 +29,5 @@ export async function staleConsolidationSource(db: RelationalStore, projectId: s
 }
 
 export function consolidationSourcesChanged(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return error.message.includes(CONSOLIDATION_SOURCES_CHANGED) || consolidationSourcesChanged(error.cause);
+  return refused(error, CONSOLIDATION_SOURCES_CHANGED);
 }

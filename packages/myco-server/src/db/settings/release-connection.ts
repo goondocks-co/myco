@@ -1,11 +1,10 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { assertion, write, type BindValue, type Bound } from '../index.js';
+import { assertion, refusalCode, refused, write, type BindValue, type Bound } from '../index.js';
 import { commitSecretChange } from './secret-writes.js';
+export const RELEASE_REVISION_CONFLICT = refusalCode('release_revision_conflict');
 const unchanged = assertion<[string, string | null]>({
   name: 'settings.releaseUnchanged',
-  sql: `
-  SELECT CASE WHEN (SELECT revision FROM project_release_provenance WHERE project_id=?1) IS ?2
-    THEN 1 ELSE json_extract('[]','$[release_revision_conflict]') END`,
+  refusal: RELEASE_REVISION_CONFLICT, when: `(SELECT revision FROM project_release_provenance WHERE project_id=?1) IS ?2`,
 });
 const insert = write<BindValue[], { revision: string }>({
   name: 'settings.insertReleaseSettings',
@@ -42,10 +41,7 @@ export async function saveReleaseSettings(
     );
     return true;
   } catch (error) {
-    if (conflict(error)) return false;
+    if (refused(error, RELEASE_REVISION_CONFLICT)) return false;
     throw error;
   }
-}
-function conflict(error: unknown): boolean {
-  return error instanceof Error && (error.message.includes('release_revision_conflict') || conflict(error.cause));
 }

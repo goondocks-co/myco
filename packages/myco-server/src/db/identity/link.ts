@@ -3,14 +3,13 @@ import type { IdentityLinkResult, IdentityLinkRefusal } from '../../auth/identit
 import type { MemberRole } from '../../auth/roles.js';
 import { linkedHumanAdminSql } from '../../core/ownership.js';
 import { linkAdmitted } from './link-policy.js';
-import { assertion, commit, read, write } from '../index.js';
+import { assertion, commit, read, refusalCode, refused, write } from '../index.js';
 
+export const IDENTITY_LINK_DENIED = refusalCode('identity_link_denied');
 const live = assertion<[hash: string, now: number]>({
   name: 'identity.linkLive',
-  sql: `
-  SELECT CASE WHEN EXISTS (SELECT 1 FROM identity_link_authorities
-    WHERE key_hash=?1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at>?2)
-    THEN 1 ELSE json_extract('[]','$[identity_link_denied]') END`,
+  refusal: IDENTITY_LINK_DENIED, when: `EXISTS (SELECT 1 FROM identity_link_authorities
+    WHERE key_hash=?1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at>?2)`,
 });
 const refusal = `CASE
   WHEN EXISTS (SELECT 1 FROM members holder WHERE holder.github_id=?2 AND holder.id<>a.member_id) THEN 'identity_taken'
@@ -71,10 +70,7 @@ export async function spendIdentityLink(db: RelationalStore, hash: string, githu
     if (member === undefined) throw new Error('Identity link binding is missing');
     return { ok: true, member };
   } catch (error) {
-    if (linkDenied(error)) return { ok: false, reason: 'denied' };
+    if (refused(error, IDENTITY_LINK_DENIED)) return { ok: false, reason: 'denied' };
     throw error;
   }
-}
-function linkDenied(error: unknown): boolean {
-  return error instanceof Error && (error.message.includes('identity_link_denied') || linkDenied(error.cause));
 }

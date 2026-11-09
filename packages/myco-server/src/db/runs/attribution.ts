@@ -1,21 +1,20 @@
 import type { PreparedStatement, RelationalStore, RunResult } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
 import type { RunWrite } from '../../core/runs.js';
-import { assertion, write, commit, type Bound } from '../index.js';
+import { assertion, write, commit, refusalCode, refused, type Bound } from '../index.js';
 import { bindSlots } from '../kernel/limits.js';
 import { prepareBound } from '../kernel/statement.js';
 
 /** A mutation carries its admission predicate and the resulting state required before attribution. */
 export interface AttributedMutation { readonly guard: Bound; readonly mutation: Bound; readonly landed: Bound }
 const mutations = new WeakSet<AttributedMutation>();
-const NO_EFFECT = 'run_write_not_admitted';
+export const RUN_WRITE_NOT_ADMITTED = refusalCode('run_write_not_admitted');
 
 /** Fixed definitions assert admission before the write and its resulting state before attribution. */
 export function attributedStatement<Params extends readonly unknown[]>(name: string, sql: string, admitted: string, landed: string) {
   const slots = bindSlots(sql);
-  const check = (suffix: string, predicate: string) => assertion<Params>({ name: `${name}${suffix}`, sql: `SELECT CASE WHEN
-    ${slots > 0 ? `?${slots} IS ?${slots} AND ` : ''}(${predicate})
-    THEN 1 ELSE json_extract('[]','$[${NO_EFFECT}]') END` });
+  const check = (suffix: string, predicate: string) => assertion<Params>({ name: `${name}${suffix}`, refusal: RUN_WRITE_NOT_ADMITTED, when: `
+    ${slots > 0 ? `?${slots} IS ?${slots} AND ` : ''}(${predicate})` });
   const guard = check('Admission', admitted);
   const effect = check('Landed', landed);
   const mutation = write<Params, unknown>({ name, sql });
@@ -47,7 +46,7 @@ export async function commitAttributedWrite(db: RelationalStore, scope: ReadScop
       : await db.batch([...statements.map(statement => prepareBound(db, statement)), ...after]);
     return results[1]!;
   } catch (error) {
-    if (error instanceof Error && error.message.includes(NO_EFFECT)) return { results: [], meta: { changes: 0 } };
+    if (refused(error, RUN_WRITE_NOT_ADMITTED)) return { results: [], meta: { changes: 0 } };
     throw error;
   }
 }
