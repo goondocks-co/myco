@@ -25,7 +25,8 @@ import { type OfferedHarness } from '../core/worker-selection.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
-import { recordWorkerContact, runnerContactStatement, type ContactOutcome } from '../core/worker-contacts.js';
+import { recordWorkerContact, runnerContactWrite, type ContactOutcome } from '../core/worker-contacts.js';
+import { commit } from '../db/index.js';
 import type { WorkerPrincipal } from '../core/worker-lease.js';
 import { RepositoryInputError } from '@goondocks/myco-shared/repository';
 import { parseModelCatalog, parseProfileRefusal, type ProfileCapability } from '@goondocks/myco-shared/execution-profile';
@@ -81,7 +82,7 @@ function named(value: Record<string, unknown>): { projectId: string; runId: stri
 /** Record a claim's contact under the executor that made it: a legacy worker's credential, or the runner itself. */
 async function recordContact(env: ServerEnv, worker: WorkerPrincipal, report: { offers?: OfferedHarness[]; capabilities?: string[]; reason?: ContactOutcome; now: number }): Promise<void> {
   if (worker.kind === 'member') await recordWorkerContact(env.db, { credentialId: worker.tokenId, machineId: worker.machineId, ...report });
-  else await runnerContactStatement(env.db, { runnerId: worker.runnerId, ...report }).run();
+  else await commit(env.db, runnerContactWrite(env.db, { runnerId: worker.runnerId, ...report }));
 }
 
 /**

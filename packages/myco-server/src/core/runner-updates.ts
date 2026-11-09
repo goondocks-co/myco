@@ -1,17 +1,11 @@
 import { isReportOrder } from '@goondocks/myco-shared/report-order';
-import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { LIVE_RUNNER_ADMIN } from '../auth/runners.js';
+import type { RelationalStore } from './adapters.js';
 import { CONTACT_RECENT_MS } from './worker-contacts.js';
-import { writeGuardBatch } from './write-guard-store.js';
-
 import { sha256Hex } from '../hash.js';
+import type { Bound } from '../db/index.js';
+import { commitRunnerUpdateRequest, runnerUpdateAuditWrite, runnerUpdateReceiptRow, runnerUpdateReportWrite, runnerUpdateRequestFinish, runnerUpdateRequestRow, runnerUpdateTarget } from '../db/runners/updates.js';
 
 import { RUNNER_UPDATE_RESULTS, isRunnerUpdateText, sanitizeRunnerUpdateReason, type RunnerUpdateResult, type RunnerUpdateReport, type RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
-
-/** Update commands and machine reports belong to the credential epoch that received them. */
-export function invalidateRunnerUpdates(db: RelationalStore, runnerId: string) {
-  return ['runner_update_reports', 'runner_update_requests'].map(table => db.prepare(`DELETE FROM ${table} WHERE runner_id = ?`).bind(runnerId));
-}
 
 const MAX_VERSION = 64;
 const MAX_ID = 64;
@@ -66,7 +60,7 @@ export function parseRunnerUpdateReport(value: unknown, issue: (issue: RunnerUpd
 /** One metadata envelope carries the result and holds from one observation. */
 const RUNNER_UPDATE_REPORT_FORMAT = 'runner-update-report/1';
 export async function readRunnerUpdateRequest(db: RelationalStore, runnerId: string): Promise<RunnerUpdateRequest | null> {
-  const request = await db.prepare('SELECT id, requested_at AS requestedAt FROM runner_update_requests WHERE runner_id = ?').bind(runnerId).first<Omit<RunnerUpdateRequest, 'clearBlock'>>();
+  const request = await runnerUpdateRequestRow(db, runnerId);
   return request === null ? null : { ...request, clearBlock: true };
 }
 
@@ -76,62 +70,36 @@ const reportMetadata = (report: RunnerUpdateReport): string => JSON.stringify({
 });
 
 /** The contact's metadata, one immutable outcome receipt, and the matching command acknowledgment commit together. */
-export async function runnerUpdateReportStatements(db: RelationalStore, runnerId: string, report: RunnerUpdateReport): Promise<PreparedStatement[]> {
+export async function runnerUpdateReportStatements(runnerId: string, report: RunnerUpdateReport): Promise<Bound[]> {
   const result = report.lastResult;
-  const statements = isReportOrder(report.observedOrder) ? [db.prepare(`INSERT INTO runner_update_reports (runner_id, channel, current_version, latest_version, last_check_at, last_result, observed_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(runner_id) DO UPDATE SET channel = excluded.channel, current_version = excluded.current_version,
-      latest_version = excluded.latest_version, last_check_at = excluded.last_check_at, last_result = excluded.last_result, observed_order = excluded.observed_order
-      WHERE excluded.observed_order IS NOT NULL AND (runner_update_reports.observed_order IS NULL OR excluded.observed_order > runner_update_reports.observed_order)`)
-    .bind(runnerId, report.channel, report.currentVersion, report.latestVersion, report.lastCheckAt,
-      reportMetadata(report), report.observedOrder)] : [];
+  const statements: Bound[] = isReportOrder(report.observedOrder) ? [runnerUpdateReportWrite({ runner: runnerId, channel: report.channel, currentVersion: report.currentVersion,
+    latestVersion: report.latestVersion, lastCheckAt: report.lastCheckAt, metadata: reportMetadata(report), observedOrder: report.observedOrder })] : [];
   if (result !== undefined) {
     const id = await sha256Hex(JSON.stringify(result.attemptId === undefined
       ? [runnerId, result.requestId ?? null, result.at, result.fromVersion, result.toVersion, result.result]
       : [runnerId, result.attemptId, result.fromVersion, result.toVersion, result.result]));
-    statements.push(db.prepare(`INSERT OR IGNORE INTO runner_update_audit (id, runner_id, actor_member, action, request_id, detail, at)
-      VALUES (?, ?, NULL, 'reported', ?, ?, ?)`).bind(id, runnerId, result.requestId ?? null, JSON.stringify(result), result.at));
-    if (result.requestId !== undefined) statements.push(db.prepare('DELETE FROM runner_update_requests WHERE runner_id = ? AND id = ?').bind(runnerId, result.requestId));
+    statements.push(runnerUpdateAuditWrite(id, runnerId, result.requestId ?? null, JSON.stringify(result), result.at));
+    if (result.requestId !== undefined) statements.push(runnerUpdateRequestFinish(runnerId, result.requestId));
   }
   return statements;
 }
 
 /** An unchanged retry is acknowledged from the stored observation without replacing it. */
 export async function readRunnerUpdateReceipt(db: RelationalStore, runnerId: string, report: RunnerUpdateReport): Promise<{ updateRecorded: boolean; observedOrder: number | null }> {
-  const row = await db.prepare(`SELECT observed_order,
-      (observed_order IS ? AND channel IS ? AND current_version IS ? AND latest_version IS ? AND last_check_at IS ? AND last_result IS ?) AS matches
-    FROM runner_update_reports WHERE runner_id = ?`)
-    .bind(report.observedOrder ?? null, report.channel, report.currentVersion, report.latestVersion, report.lastCheckAt, reportMetadata(report), runnerId)
-    .first<{ observed_order: number | null; matches: number }>();
+  const row = await runnerUpdateReceiptRow(db, runnerId, { observedOrder: report.observedOrder ?? null, channel: report.channel, currentVersion: report.currentVersion,
+    latestVersion: report.latestVersion, lastCheckAt: report.lastCheckAt, metadata: reportMetadata(report) });
   return { updateRecorded: isReportOrder(report.observedOrder) && row?.matches === 1, observedOrder: row?.observed_order ?? null };
 }
 
-const UPDATE_REFUSED = '$[myco_runner_update_refused]';
 type RequestRunnerUpdateOutcome = { requested: true; updateRequest: RunnerUpdateRequest } | { requested: false; code: 'not_found' | 'disconnected' | 'unsupported_channel' | 'refused' };
 
 /** Each accepted administrator request records its actor against the runner's one pending command. */
 export async function requestRunnerUpdate(db: RelationalStore, actorId: string, runnerId: string, now: number): Promise<RequestRunnerUpdateOutcome> {
-  const runner = await db.prepare(`SELECT r.state, c.last_seen_at AS lastSeenAt, u.channel FROM runners r LEFT JOIN runner_contacts c ON c.runner_id = r.id
-    LEFT JOIN runner_update_reports u ON u.runner_id = r.id WHERE r.id = ?`)
-    .bind(runnerId).first<{ state: string; lastSeenAt: number | null; channel: string | null }>();
+  const runner = await runnerUpdateTarget(db, runnerId);
   if (runner === null || runner.state === 'removed') return { requested: false, code: 'not_found' };
   if (runner.lastSeenAt === null || runner.lastSeenAt < now - CONTACT_RECENT_MS) return { requested: false, code: 'disconnected' };
   if (runner.channel === null) return { requested: false, code: 'unsupported_channel' };
-  const id = crypto.randomUUID();
-  const assertion = () => db.prepare(`SELECT CASE WHEN ${LIVE_RUNNER_ADMIN} AND EXISTS
-    (SELECT 1 FROM runners r JOIN runner_contacts c ON c.runner_id = r.id
-      JOIN runner_update_reports u ON u.runner_id = r.id AND u.channel IS NOT NULL WHERE r.id = ? AND r.state <> 'removed' AND c.last_seen_at >= ?)
-    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(actorId, runnerId, now - CONTACT_RECENT_MS, UPDATE_REFUSED);
-  try {
-    await writeGuardBatch(db, assertion, (error) => { throw error; }, [
-      db.prepare(`INSERT OR IGNORE INTO runner_update_requests (runner_id, id, requested_at) VALUES (?, ?, ?)`).bind(runnerId, id, now),
-      db.prepare(`INSERT INTO runner_update_audit (id, runner_id, actor_member, action, request_id, detail, at)
-        SELECT ?, runner_id, ?, 'requested', id, '{"target":"check_now"}', ? FROM runner_update_requests WHERE runner_id = ?`)
-        .bind(id, actorId, now, runnerId),
-    ]);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes(UPDATE_REFUSED.slice(1))) return { requested: false, code: 'refused' };
-    throw error;
-  }
+  if (!await commitRunnerUpdateRequest(db, { id: crypto.randomUUID(), actor: actorId, runner: runnerId, now })) return { requested: false, code: 'refused' };
   const request = await readRunnerUpdateRequest(db, runnerId);
   if (request === null) throw new Error('a committed update request has no row');
   return { requested: true, updateRequest: request };

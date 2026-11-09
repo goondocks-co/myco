@@ -1,11 +1,11 @@
 /** Canonical machine summaries and activity, scoped to claims owned by the viewer. */
 import type { RelationalStore } from '../core/adapters.js';
-import { machineContactsOf, machineContactsStatement, type ReportedHarness } from '../core/worker-contacts.js';
+import { parseOffers, type ReportedHarness } from '../core/worker-contacts.js';
 import { captureRecencyStatement } from './capture.js';
-import { credentialLive } from '../db/liveness.js';
-import { notTombstonedSql } from '../db/session-read-model.js';
 import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
 import type { ActivityRow } from './credentials.js';
+import { claimedMachineIds, claimPage, machineClaimed, machineCredentialFacts, machineEvents } from '../db/runners/machines.js';
+import { machineHeadPage } from '../db/runners/heads.js';
 
 interface MachineCapture {
   agent: string | null;
@@ -34,53 +34,40 @@ export interface MachineRow {
   lastRunAt: number | null;
 }
 
+/** `building` while the machine heads are being seeded: an empty contact on such a page means not yet known, never offline. */
+export type MachineFacts = 'ready' | 'building';
+
 export type MachineScope = { all: true } | { all: false; memberId: string };
 
 /** A claim is paged by immutable claim time and id; credential history never drives the page. */
 export async function listMachines(
   db: RelationalStore, nowMs: number, scope: MachineScope, opts: { limit?: number; cursor?: string } = {},
-): Promise<{ machines: MachineRow[]; cursor: string | null }> {
+): Promise<{ machines: MachineRow[]; cursor: string | null; contactFacts: MachineFacts }> {
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
-  if (opts.cursor !== undefined && after === null) return { machines: [], cursor: null };
-  const { results: claims } = await db.prepare(
-    `SELECT mc.machine_id, mc.member_id, mc.claimed_at, mc.label, m.label AS member_label, m.revoked_at AS member_revoked_at
-       FROM machine_claims mc CROSS JOIN members m ON m.id = mc.member_id
-      WHERE ${scope.all ? '1 = 1' : 'mc.member_id = ?'}
-        ${after === null ? '' : 'AND (mc.claimed_at < ? OR (mc.claimed_at = ? AND mc.machine_id > ?))'}
-      ORDER BY mc.claimed_at DESC, mc.machine_id ASC LIMIT ?`,
-  ).bind(...(scope.all ? [] : [scope.memberId]), ...(after === null ? [] : [after.createdAt, after.createdAt, after.id]), limit + 1)
-    .all<Record<string, unknown>>();
+  if (opts.cursor !== undefined && after === null) return { machines: [], cursor: null, contactFacts: 'ready' };
+  const claims = await claimPage(db, scope, limit + 1, after);
   const visible = claims.slice(0, limit);
-  if (visible.length === 0) return { machines: [], cursor: null };
-  const ids = JSON.stringify(visible.map((row) => String(row.machine_id)));
-  const [credentials, recent, contacts] = await db.batch([
-    db.prepare(`SELECT c.machine_id, COUNT(*) AS credential_count,
-          SUM(CASE WHEN ${credentialLive('c')} THEN 1 ELSE 0 END) AS live_count,
-          SUM(CASE WHEN c.lineage_rank = 1 THEN c.bytes_written ELSE 0 END) AS bytes_written,
-          MIN(c.lineage_started_at) AS first_seen_at,
-          (SELECT n.revoked_at FROM member_credentials n WHERE n.machine_id = c.machine_id ORDER BY n.issued_at DESC, n.id DESC LIMIT 1) AS newest_revoked_at,
-          (SELECT n.revoked_by FROM member_credentials n WHERE n.machine_id = c.machine_id ORDER BY n.issued_at DESC, n.id DESC LIMIT 1) AS newest_revoked_by,
-          (SELECT n.runtime_label FROM member_credentials n WHERE n.machine_id = c.machine_id AND ${credentialLive('n')} AND n.runtime_label IS NOT NULL ORDER BY n.issued_at DESC, n.id DESC LIMIT 1) AS live_label
-       FROM (SELECT c.machine_id, c.member_id, c.revoked_at, c.expires_at, c.bytes_written, c.lineage_started_at,
-          ROW_NUMBER() OVER (PARTITION BY c.machine_id, c.lineage_root ORDER BY c.issued_at DESC, c.id DESC) AS lineage_rank
-         FROM member_credentials c INDEXED BY idx_member_credentials_machine
-         WHERE c.machine_id IN (SELECT value FROM json_each(?))) c GROUP BY c.machine_id`).bind(nowMs, nowMs, ids),
-    captureRecencyStatement(db, nowMs, visible.map(row => String(row.machine_id))),
-    machineContactsStatement(db, 'contact', visible.map(row => String(row.machine_id))),
+  if (visible.length === 0) return { machines: [], cursor: null, contactFacts: 'ready' };
+  const ids = visible.map((row) => row.machine_id);
+  const [{ heads, building }, credentials, recent] = await Promise.all([
+    machineHeadPage(db, ids),
+    machineCredentialFacts(db, nowMs, ids),
+    captureRecencyStatement(db, nowMs, ids).all<Record<string, unknown>>(),
   ]);
-  const byId = new Map((credentials!.results as Record<string, unknown>[]).map((row) => [String(row.machine_id), row]));
+  const byId = new Map(credentials.map((row) => [row.machine_id, row]));
+  const headOf = new Map(heads.map((head) => [head.machine_id, head]));
   const capture = new Map<string, MachineCapture[]>();
-  for (const row of recent!.results as Record<string, unknown>[]) {
+  for (const row of recent.results) {
     const machineId = String(row.machine_id);
     const held = capture.get(machineId) ?? [];
     held.push({ agent: row.agent == null ? null : String(row.agent), lastEventAt: Number(row.last_event_at), projectId: String(row.project_id) });
     capture.set(machineId, held);
   }
-  const contact = machineContactsOf(contacts!.results);
   const machines = visible.map((row): MachineRow => {
-    const machineId = String(row.machine_id);
+    const machineId = row.machine_id;
     const cred = byId.get(machineId);
+    const head = headOf.get(machineId);
     const liveCredentialCount = Number(cred?.live_count ?? 0);
     const standing: MachineStanding = liveCredentialCount > 0 ? 'allowed'
       : row.member_revoked_at != null ? 'stopped'
@@ -88,18 +75,18 @@ export async function listMachines(
         : cred.newest_revoked_by === 'lineage-replay' ? 'replayed' : 'stopped';
     const captured = capture.get(machineId) ?? [];
     return {
-      machineId, name: row.label == null ? cred?.live_label == null ? null : String(cred.live_label) : String(row.label),
+      machineId, name: row.label ?? cred?.live_label ?? null,
       live: liveCredentialCount > 0,
-      member: { id: String(row.member_id), label: row.member_label == null ? null : String(row.member_label), revoked: row.member_revoked_at != null },
-      claimedAt: Number(row.claimed_at), credentialCount: Number(cred?.credential_count ?? 0), liveCredentialCount,
+      member: { id: row.member_id, label: row.member_label, revoked: row.member_revoked_at != null },
+      claimedAt: row.claimed_at, credentialCount: Number(cred?.credential_count ?? 0), liveCredentialCount,
       bytesWritten: Number(cred?.bytes_written ?? 0), firstSeenAt: Number(cred?.first_seen_at ?? row.claimed_at), standing,
       stoppedBy: standing === 'stopped' && cred?.newest_revoked_at != null && cred.newest_revoked_by != null ? String(cred.newest_revoked_by) : null,
-      offers: contact.get(machineId)?.offers ?? null, lastContactAt: contact.get(machineId)?.lastSeenAt ?? null,
-      lastRunAt: contact.get(machineId)?.lastRunAt ?? null, capture: captured, lastCaptureAt: captured[0]?.lastEventAt ?? null,
+      offers: head?.offers == null ? null : parseOffers(head.offers), lastContactAt: head?.latest_contact_at ?? null,
+      lastRunAt: head?.latest_run_at ?? null, capture: captured, lastCaptureAt: captured[0]?.lastEventAt ?? head?.latest_capture_at ?? null,
     };
   });
   const last = visible[visible.length - 1]!;
-  return { machines, cursor: claims.length > limit ? encodeCursor(Number(last.claimed_at), String(last.machine_id)) : null };
+  return { machines, cursor: claims.length > limit ? encodeCursor(last.claimed_at, last.machine_id) : null, contactFacts: building ? 'building' : 'ready' };
 }
 
 /** Machine history merges indexed credential pages behind one statement. */
@@ -111,71 +98,19 @@ export async function machineActivity(
   const limit = clampLimit(opts.limit);
   const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
   if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
-  const live = `AND ${notTombstonedSql('e')}`;
-  const window =
-    after === null
-      ? live
-      : `${live} AND e.created_at<=(SELECT at FROM args)
-    AND (e.created_at,e.project_id,e.event_id)<(SELECT at,pid,eid FROM args)`;
-  const columns = 'event_id,project_id,session_id,kind,created_at,received_at';
-  const head = `SELECT id FROM heads WHERE at IS NOT NULL ORDER BY at DESC,id LIMIT 1`;
-  const { results } = await db
-    .prepare(
-      `WITH args(machine,n,at,pid,eid) AS (VALUES(?,?,?,?,?)),
-    heads AS MATERIALIZED (
-      SELECT c.id,(SELECT e.created_at FROM events e INDEXED BY idx_events_token_only
-        WHERE e.token_id=c.id ${window} ORDER BY e.created_at DESC LIMIT 1) AS at
-      FROM member_credentials c WHERE c.machine_id=(SELECT machine FROM args)),
-    anchor AS MATERIALIZED (
-      SELECT ${columns} FROM events e INDEXED BY idx_events_token_only
-      WHERE e.token_id=(${head}) ${window}
-      ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)),
-    bounds AS MATERIALIZED (SELECT MAX(at) AS at FROM (
-      SELECT MIN(created_at) AS at FROM anchor HAVING COUNT(*)=(SELECT n FROM args)
-      UNION ALL SELECT at FROM (SELECT at FROM heads WHERE at IS NOT NULL ORDER BY at DESC LIMIT 1 OFFSET (SELECT n-1 FROM args)))),
-    candidates AS MATERIALIZED (
-      SELECT ${columns} FROM anchor UNION ALL
-      SELECT json_extract(j.value,'$.event_id'),json_extract(j.value,'$.project_id'),json_extract(j.value,'$.session_id'),
-        json_extract(j.value,'$.kind'),json_extract(j.value,'$.created_at'),json_extract(j.value,'$.received_at')
-      FROM heads h CROSS JOIN bounds b CROSS JOIN json_each((
-        SELECT json_group_array(json_object('event_id',event_id,'project_id',project_id,'session_id',session_id,
-          'kind',kind,'created_at',created_at,'received_at',received_at)) FROM (
-          SELECT ${columns} FROM events e INDEXED BY idx_events_token_only WHERE e.token_id=h.id ${window}
-            AND e.created_at>=COALESCE(b.at,${Number.MIN_SAFE_INTEGER})
-          ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)))) j
-      WHERE h.id<>(${head}) AND h.at IS NOT NULL AND (b.at IS NULL OR h.at>=b.at))
-    SELECT * FROM candidates ORDER BY created_at DESC,project_id DESC,event_id DESC LIMIT (SELECT n FROM args)`,
-    )
-    .bind(machineId, limit + 1, after?.createdAt ?? null, ...(after === null ? [null, null] : cursorEvent(after.id)))
-    .all<Record<string, unknown>>();
+  const results = await machineEvents(db, machineId, limit + 1, after === null ? null : { at: after.createdAt, ...cursorEvent(after.id) });
   const rows = results.map(
-    (r): ActivityRow => ({
-      eventId: String(r.event_id),
-      projectId: String(r.project_id),
-      sessionId: String(r.session_id),
-      kind: String(r.kind),
-      createdAt: Number(r.created_at),
-      receivedAt: Number(r.received_at),
-    }),
+    (r): ActivityRow => ({ eventId: r.event_id, projectId: r.project_id, sessionId: r.session_id, kind: r.kind, createdAt: r.created_at, receivedAt: r.received_at }),
   );
   return page(rows, limit, (r) => ({ createdAt: r.createdAt, id: `${r.projectId}:${r.eventId}` }));
 }
 
-function cursorEvent(value: string): [string, string] {
+function cursorEvent(value: string): { project: string; event: string } {
   const split = value.indexOf(':');
-  const project = value.slice(0, split);
-  const event = value.slice(split + 1);
-  return [project, event];
+  return { project: value.slice(0, split), event: value.slice(split + 1) };
 }
 
 /** The same machine claim owns summary, activity, rename, and stop. */
-export async function machineInScope(db: RelationalStore, machineId: string, scope: MachineScope): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS found FROM machine_claims WHERE machine_id = ? ${scope.all ? '' : 'AND member_id = ?'}`)
-    .bind(machineId, ...(scope.all ? [] : [scope.memberId])).first<{ found: number }>();
-  return row !== null;
-}
+export const machineInScope = (db: RelationalStore, machineId: string, scope: MachineScope): Promise<boolean> => machineClaimed(db, machineId, scope);
 
-export async function machinesOf(db: RelationalStore, memberId: string): Promise<Set<string>> {
-  const { results } = await db.prepare(`SELECT machine_id FROM machine_claims WHERE member_id = ?`).bind(memberId).all<{ machine_id: string }>();
-  return new Set((results ?? []).map((row) => row.machine_id));
-}
+export const machinesOf = (db: RelationalStore, memberId: string): Promise<Set<string>> => claimedMachineIds(db, memberId);

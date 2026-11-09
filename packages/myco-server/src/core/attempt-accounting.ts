@@ -3,7 +3,8 @@ import { pricedAttemptInsert } from '../db/runs/claim-companions.js';
 import {isExecutionProfile} from '@goondocks/myco-shared/execution-profile';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { workerLeaseAuthority, type WorkerPrincipal } from './worker-lease.js';
+import { workerLeaseAuthority } from '../db/runners/lease-authority.js';
+import type { WorkerPrincipal } from './worker-lease.js';
 import { seedForStage, BUDGET_ESTIMATE_PREFIX } from './budget-policy.js';
 
 interface AttemptPrice { estimate: number; profileJson: string }

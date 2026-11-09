@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
-import { renewingLeaseAuthority, type WorkerPrincipal } from '../../core/worker-lease.js';
+import { renewingLeaseAuthority } from '../runners/lease-authority.js';
+import type { WorkerPrincipal } from '../../core/worker-lease.js';
 import { runDeadlineSql } from '../../core/run-deadline.js';
 import { commit, first, read, readSet, write, type BindValue, type Bound, type Statement } from '../index.js';
 import { leaseShape, shapedStatements } from './statement-shapes.js';

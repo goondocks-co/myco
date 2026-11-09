@@ -97,12 +97,13 @@ export const runnerIdentity: ParityScenario = {
     await target.sql(`INSERT INTO worker_contacts (credential_id,machine_id,offers,capabilities,last_reason,last_seen_at,updated_at)
       VALUES (${lit(legacyId)},'legacy-parity','[]','[]','no_work',${now - 31 * 24 * 60 * 60 * 1000},${now})`);
     try {
-      await target.clockWake();
-      expect(await target.sql(`SELECT credential_id FROM worker_contacts WHERE credential_id = ${lit(legacyId)}`)).toEqual([{ credential_id: legacyId }]);
       await target.sql(`INSERT OR IGNORE INTO projects(project_id, name, created_at) VALUES (${lit(target.projectId)}, 'Runner parity', ${now})`);
       await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
       await target.sql(`INSERT INTO agent_runs (id, project_id, agent_id, task, status, queued_at, started_at, leased_by, lease_expires_at, dispatched_by)
         VALUES ('run_legacy_inventory_parity', ${lit(target.projectId)}, 'myco-agent', 'title-summary', 'running', ${now}, ${now}, ${lit(legacyId)}, ${now + PARK_MS}, NULL)`);
+      // A contact past its 30 days stays while a live lease still names it.
+      await target.clockWake();
+      expect(await target.sql(`SELECT credential_id FROM worker_contacts WHERE credential_id = ${lit(legacyId)}`)).toEqual([{ credential_id: legacyId }]);
       const response = await fetch(`${target.url}/api/workers/legacy`, { headers: admin });
       expect(response.status).toBe(200);
       const inventory = await response.json() as { workers: Array<{ credentialId: string; runner: unknown; lastSeenAt: number }> };
@@ -201,7 +202,7 @@ export const runnerIdentity: ParityScenario = {
 
 /** The dashboard and compatibility inventory project the same persisted machines through both front doors. */
 export const runnerFleet: ParityScenario = {
-  name: 'runner fleet: display states, device replacement, terminal attribution, queue and safe legacy forget',
+  name: 'runner fleet: display states, device replacement, terminal attribution, and queue',
   dedicated: { timeoutMs: 240000 },
   async run(target) {
     const now = Date.now();
@@ -240,13 +241,15 @@ export const runnerFleet: ParityScenario = {
     expect((await post(target, `/api/runners/${removed.runnerId}/remove`, {}, admin)).status).toBe(200);
     const fleet = await read();
     const by = (id: string) => fleet.runners.find((row: any) => row.id === id);
-    for (const [runner, display] of [[never, 'Never contacted'], [idle, 'Online'], [empty, 'Not ready'], [unknown, 'Not ready'], [settling, 'Not ready'], [stale, 'Offline'], [removed, 'Removed']] as const)
+    for (const [runner, display] of [[never, 'Never contacted'], [idle, 'Online'], [empty, 'Not ready'], [unknown, 'Not ready'], [settling, 'Not ready'], [stale, 'Offline']] as const)
       expect(by(runner.runnerId)?.display).toBe(display);
+    expect(by(removed.runnerId)).toBeUndefined();
+    expect(((await read('/api/runners/removed')).runners as any[]).map(row => row.id)).toEqual([removed.runnerId]);
     expect(by(settling.runnerId)).toMatchObject({ arch: 'arm64', readiness: { state: 'settling' } });
     expect(by(unknown.runnerId).offers).toBeNull();
     // A member reads registered machines and receives no control authority.
     await target.sql(`UPDATE members SET role = 'member' WHERE id = ${lit(ADMIN)}`);
-    expect((await read()).runners).toHaveLength(7);
+    expect((await read()).runners).toHaveLength(6);
     for (const action of ['rename', 'pause', 'resume', 'remove', 'recredential', 'update'])
       expect((await post(target, `/api/runners/${idle.runnerId}/${action}`, { name: 'renamed', user_code: 'BCDF-GHJK' }, admin)).status).toBeGreaterThanOrEqual(400);
     await target.sql(`UPDATE members SET role = 'admin' WHERE id = ${lit(ADMIN)}`);
@@ -260,16 +263,8 @@ export const runnerFleet: ParityScenario = {
       VALUES (${lit(legacyId)},${lit(MEMBER_ID)},'retired-laptop',${lit(await sha256Hex(bearer()))},${now},${now + PARK_MS},${lit(legacyId)},${now})`);
     await target.sql(`INSERT INTO worker_contacts(credential_id,machine_id,offers,capabilities,last_reason,last_seen_at,updated_at)
       VALUES (${lit(legacyId)},'retired-laptop','[]','[]','no_work',${now - PARK_MS},${now - PARK_MS})`);
-    const credential = await target.sql(`SELECT * FROM member_credentials WHERE id = ${lit(legacyId)}`);
-    const member = await target.sql(`SELECT * FROM members WHERE id = ${lit(MEMBER_ID)}`);
     expect((await read()).legacyWorkers.find((row: any) => row.credentialId === legacyId)).toMatchObject({ recent: false, busy: null });
     expect((await read('/api/status')).workers.fleet.find((row: any) => row.credentialId === legacyId)).toMatchObject({ recent: false, busy: null });
-    expect((await post(target, `/api/workers/legacy/${legacyId}/forget`, {}, admin)).status).toBe(200);
-    expect((await read()).legacyWorkers.some((row: any) => row.credentialId === legacyId)).toBe(false);
-    expect((await read('/api/status')).workers.fleet.some((row: any) => row.credentialId === legacyId)).toBe(false);
-    expect(await target.sql(`SELECT * FROM member_credentials WHERE id = ${lit(legacyId)}`)).toEqual(credential);
-    expect(await target.sql(`SELECT * FROM members WHERE id = ${lit(MEMBER_ID)}`)).toEqual(member);
-    expect(await target.sql(`SELECT action,actor_member FROM legacy_worker_audit WHERE credential_id = ${lit(legacyId)}`)).toEqual([{ action: 'forgotten', actor_member: ADMIN }]);
 
     const replacementToken = bearer();
     const replacement = await (await post(target, '/auth/runner/start', { name: 'work-laptop', replace: true, machineId: 'new-machine', machineName: 'New machine', os: 'linux', candidate: replacementToken })).json() as Started;

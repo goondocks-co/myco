@@ -17,7 +17,7 @@ import { QueueWarning } from './QueueWarning';
 import { live } from '../../../lib/live';
 
 const RUNNERS_KEY = ['runners'] as const;
-interface FleetAnswer { observedAt: number; runners: RunnerRow[]; legacyWorkers: WorkerRow[]; queue: FleetQueue; storedCredentials?: Record<string, boolean> }
+interface FleetAnswer { observedAt: number; runners: RunnerRow[]; legacyWorkers: WorkerRow[]; queue: FleetQueue; storedCredentials?: Record<string, boolean>; cursor?: string | null; totals?: { active: number } }
 
 /** Every machine entrusted with Myco's work, with observations separated from server controls and assignments. */
 export function RunnersPage() {
@@ -37,13 +37,34 @@ export function RunnersPage() {
         <div className="flex flex-col gap-s4">
           {runners.data?.runners.map((runner) => <RunnerCard key={runner.id} runner={runner} allowed={permission.allowed && !runners.isError} storedCredentials={runners.data?.storedCredentials ?? {}} />)}
         </div>
+        {runners.data?.cursor != null && runners.data.totals !== undefined && <p className="t-small text-muted">Showing the first {runners.data.runners.length} of {runners.data.totals.active} runners.</p>}
       </AdminSection>
+      <RemovedRunners />
       <AdminSection id="legacy-workers" title={LEGACY_WORKER_LABEL} description="These machines can also run Myco’s work. Register each machine, let its work finish, then uninstall its legacy worker before installing the runner service.">
         {machines.error && <ErrorState error={machines.error} onRetry={machines.retry}><p>Machine names are unavailable.</p></ErrorState>}
         {runners.data?.legacyWorkers?.length === 0 && !runners.isError && <p className="t-small text-muted">{permission.allowed ? 'No legacy workers are remembered.' : 'None of your machines run a legacy worker.'}</p>}
-        <div className="flex flex-col gap-s2">{runners.data?.legacyWorkers?.map(worker => <LegacyWorker key={worker.credentialId} worker={worker} stale={runners.isError} name={machineOfWorker(machines.machines, worker)?.name ?? worker.machineId ?? 'A machine'} />)}</div>
+        <div className="flex flex-col gap-s2">{runners.data?.legacyWorkers?.map(worker => <LegacyWorker key={worker.credentialId} worker={worker} name={machineOfWorker(machines.machines, worker)?.name ?? worker.machineId ?? 'A machine'} />)}</div>
       </AdminSection>
     </AdminPage>
+  );
+}
+
+const REMOVED_KEY = ['runners', 'removed'] as const;
+interface RemovedAnswer { runners: RunnerRow[]; cursor: string | null }
+
+/** Removed runners load on request: the active list and its totals never carry them. */
+function RemovedRunners() {
+  const [open, setOpen] = useState(false);
+  const removed = useQuery({ queryKey: REMOVED_KEY, queryFn: ({ signal }) => fetchJson<RemovedAnswer>('/api/runners/removed', signal), enabled: open, ...live<RemovedAnswer>({ follows: ['fleet'] }) });
+  return (
+    <AdminSection id="removed-runners" title="Removed runners" description="Runners that can no longer run work.">
+      <details onToggle={event => setOpen(event.currentTarget.open)} className="t-small text-ink-2">
+        <summary className="min-h-tap content-center cursor-pointer">Show removed runners</summary>
+        {removed.isError && <ErrorState error={removed.error} onRetry={() => void removed.refetch()} />}
+        {removed.data?.runners.length === 0 && <p className="text-muted">No runners have been removed.</p>}
+        <ul className="mt-s2 flex flex-col gap-s1">{removed.data?.runners.map(runner => <li key={runner.id}>{runner.name}{runner.removedAt === null ? '' : ` — removed ${formatRelative(runner.removedAt)}`}</li>)}</ul>
+      </details>
+    </AdminSection>
   );
 }
 

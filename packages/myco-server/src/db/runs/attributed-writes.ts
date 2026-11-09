@@ -1,5 +1,6 @@
 import { attributedStatement, attributedUpdate } from './attribution.js';
-import { renewingLeaseAuthority, type LeaseHolder } from '../../core/worker-lease.js';
+import { renewingLeaseAuthority } from '../runners/lease-authority.js';
+import type { LeaseHolder } from '../../core/worker-lease.js';
 
 const canopyAdmitted = `EXISTS(SELECT 1 FROM agent_runs WHERE project_id=?10 AND id=?11 AND status='running' AND dispatched_by=?12)
   AND EXISTS(SELECT 1 FROM project_repositories WHERE project_id=?13 AND url=?14 AND branch=?15)

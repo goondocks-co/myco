@@ -28,7 +28,8 @@ import { DEVICE_TTL_MS } from '@myco-server-worker/auth/device.js';
 import { RUNNER_TOKEN_REFRESH_WINDOW_MS } from '@myco-server-worker/auth/runners.js';
 import { claimNextRun, expireLeases } from '@myco-server-worker/core/harness.js';
 import { workerLiveness } from '@myco-server-worker/db/runs/status.js';
-import { runnerObservationStatement, readWorkerFleet, pruneWorkerContacts, recordWorkerContact, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
+import { commit } from '@myco-server-worker/db/index.js';
+import { runnerObservation, readWorkerFleet, pruneWorkerContacts, recordWorkerContact, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { prepareRecoveredTenant } from '@myco-server-worker/core/recovered-tenant.js';
@@ -970,9 +971,15 @@ describe('shared runner fleet projection', () => {
       const run = (await r.claim(busy.token)).run;
       r.e.sqlite.run('DELETE FROM runner_contacts WHERE runner_id = ?', [busy.runnerId]);
       const project = await r.json(r.asSession('/api/runners', {}, MEMBER_SUB, 'GET'));
-      expect(project.runners).toHaveLength(8);
+      expect(project.runners).toHaveLength(7);
+      expect(project.totals).toMatchObject({ active: 7, enabled: 7, paused: 0, busy: 1 });
+      const removedView = await r.json(r.asSession('/api/runners/removed', {}, MEMBER_SUB, 'GET'));
+      expect(removedView.runners.map((row: Json) => row.id)).toEqual([removed.runnerId]);
+      expect(removedView.runners[0]).toMatchObject({ display: 'Removed' });
+      expect((await r.asSession('/api/runners/removed?limit=2.5', {}, MEMBER_SUB, 'GET')).status).toBe(400);
+      expect((await r.asSession('/api/runners?limit=2.5', {}, MEMBER_SUB, 'GET')).status).toBe(400);
       const by = (id: string) => project.runners.find((row: Json) => row.id === id);
-      for (const [runner, display] of [[never, 'Never contacted'], [idle, 'Online'], [empty, 'Not ready'], [unknown, 'Not ready'], [stale, 'Offline'], [settling, 'Not ready'], [removed, 'Removed'], [busy, 'Busy']] as const) expect(by(runner.runnerId).display).toBe(display);
+      for (const [runner, display] of [[never, 'Never contacted'], [idle, 'Online'], [empty, 'Not ready'], [unknown, 'Not ready'], [stale, 'Offline'], [settling, 'Not ready'], [busy, 'Busy']] as const) expect(by(runner.runnerId).display).toBe(display);
       expect(by(busy.runnerId)).toMatchObject({ busy: { runId: run.id, task: 'title-summary', projectId: 'proj_1', leaseExpiresAt: run.leaseExpiresAt ?? r.now() + WORKER_LEASE_MS } });
       expect(by(settling.runnerId)).toMatchObject({ arch: 'arm64', readiness: { state: 'settling', observedAt: r.now() - 10000 } });
       expect(by(unknown.runnerId).offers).toBeNull();
@@ -1001,7 +1008,7 @@ describe('shared runner fleet projection', () => {
       expect(await r.poll(candidate.device_code)).toMatchObject({ registered: true, runnerId: runner.runnerId, name: 'mini' });
       expect((await r.asRunner(runner.token, '/runners/contact')).status).toBe(401);
       r.advance(WORKER_CONTACT_RETENTION_MS + 1);
-      await pruneWorkerContacts(r.e.db, r.now(), WORKER_CONTACT_RETENTION_MS, 100);
+      await pruneWorkerContacts(r.e.serverEnv, r.now(), WORKER_CONTACT_RETENTION_MS, 100);
       const projection = await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'));
       expect(projection.runners).toHaveLength(1);
       expect(projection.runners[0]).toMatchObject({ display: 'Offline', awaitingReplacement: true, lastCompleted: { runId: completed.id }, lastFailed: { runId: failed.id }, lastAttempted: { runId: failed.id } });
@@ -1024,7 +1031,8 @@ describe('shared runner fleet projection', () => {
       await r.asRunner(replacement.candidate, '/runners/contact', { availability: 'ready', arch: 'arm64', update: { observedOrder: ++updateOrder, channel: 'alpha', currentVersion: '2.0.0-alpha.3', latestVersion: null, lastCheckAt: r.now(), updateState: { phase: 'probation', since: r.now() } } });
       expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0]).toMatchObject({ display: 'Not ready', readiness: { state: 'unknown' } });
       await r.asSession(`/api/runners/${runner.runnerId}/remove`, {});
-      expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners[0]).toMatchObject({ display: 'Removed', busy: null, lastAttempted: { runId: run.id } });
+      expect((await r.json(r.asSession('/api/runners', {}, OWNER_SUB, 'GET'))).runners).toEqual([]);
+      expect((await r.json(r.asSession('/api/runners/removed', {}, OWNER_SUB, 'GET'))).runners[0]).toMatchObject({ display: 'Removed', busy: null, lastAttempted: { runId: run.id } });
     } finally { r.e.sqlite.close(); }
   });
 
@@ -1115,8 +1123,8 @@ describe('shared runner fleet projection', () => {
     const r = rig();
     try {
       const runner = await r.register();
-      await r.e.db.batch([runnerObservationStatement(r.e.db, runner.runnerId, { arch: 'arm64', state: 'ready', reason: 'Awake.' }, r.now())]);
-      await r.e.db.batch([runnerObservationStatement(r.e.db, runner.runnerId, { arch: 'arm64', state: 'settling', reason: 'Waiting.' }, r.now() - 1)]);
+      await commit(r.e.db, runnerObservation(runner.runnerId, { arch: 'arm64', state: 'ready', reason: 'Awake.' }, r.now()));
+      await commit(r.e.db, runnerObservation(runner.runnerId, { arch: 'arm64', state: 'settling', reason: 'Waiting.' }, r.now() - 1));
       expect(r.row('SELECT availability,observed_at FROM runner_observations WHERE runner_id = ?', runner.runnerId)).toEqual({ availability: 'ready', observed_at: r.now() });
       await r.queueTitling();
       const id = String(r.row("SELECT id FROM agent_runs WHERE status = 'queued'")!.id);
@@ -1210,46 +1218,6 @@ describe('shared runner fleet projection', () => {
   });
 });
 
-describe('forgetting a retired legacy worker', () => {
-  it('forgets only an offline contact, audits the owner, preserves membership/capture and reappears on contact', async () => {
-    const r = rig();
-    try {
-      const legacy = await issueMemberToken(r.e.db, { memberId: ADMIN, machineId: 'retired-laptop' }, r.now());
-      const contact = () => recordWorkerContact(r.e.db, { credentialId: legacy.tokenId, machineId: 'retired-laptop', offers: OFFERED, capabilities: WORKER_CAPABILITIES, reason: 'no_work', now: r.now() });
-      await contact();
-      const path = `/api/workers/legacy/${legacy.tokenId}/forget`;
-      expect((await r.asSession(path, {})).status).toBe(409);
-      r.advance(WORKER_LEASE_MS + 1);
-      expect((await r.asSession(path, {}, MEMBER_SUB)).status).toBeGreaterThanOrEqual(400);
-      const before = r.row('SELECT * FROM member_credentials WHERE id = ?', legacy.tokenId);
-      const member = r.row('SELECT * FROM members WHERE id = ?', ADMIN);
-      expect(await r.json(r.asSession(path, {}))).toEqual({ forgotten: true });
-      expect(r.row('SELECT * FROM member_credentials WHERE id = ?', legacy.tokenId)).toEqual(before);
-      expect(r.row('SELECT * FROM members WHERE id = ?', ADMIN)).toEqual(member);
-      for (const endpoint of ['/api/status', '/api/runners']) {
-        const data = await r.json(r.asSession(endpoint, {}, OWNER_SUB, 'GET'));
-        expect((endpoint === '/api/status' ? data.workers.fleet : data.legacyWorkers).some((row: Json) => row.credentialId === legacy.tokenId)).toBe(false);
-      }
-      expect(r.row('SELECT credential_id,actor_member,action FROM legacy_worker_audit')).toEqual({ credential_id: legacy.tokenId, actor_member: OWNER, action: 'forgotten' });
-      expect((await r.asRunner(legacy.token, '/members/status', {})).status).toBe(200);
-      await contact();
-      expect((await readWorkerFleet(r.e.db, r.now())).some(row => row.credentialId === legacy.tokenId)).toBe(true);
-    } finally { r.e.sqlite.close(); }
-  });
-
-  it('refuses forget under a live lease even if the contact is stale', async () => {
-    const r = rig();
-    try {
-      const legacy = await issueMemberToken(r.e.db, { memberId: ADMIN, machineId: 'working-laptop' }, r.now());
-      await r.queueTitling();
-      await r.json(r.asRunner(legacy.token, '/worker/claim', { harnesses: OFFERED, capabilities: WORKER_CAPABILITIES }));
-      r.e.sqlite.run('UPDATE worker_contacts SET last_seen_at = ? WHERE credential_id = ?', [r.now() - WORKER_LEASE_MS - 1, legacy.tokenId]);
-      expect((await r.asSession(`/api/workers/legacy/${legacy.tokenId}/forget`, {}, ADMIN_SUB)).status).toBe(409);
-      expect(r.row('SELECT COUNT(*) AS n FROM legacy_worker_audit')).toEqual({ n: 0 });
-    } finally { r.e.sqlite.close(); }
-  });
-});
-
 describe('runner agent sign-in choice', () => {
   it('uses stored credentials for a signed-out agent and keeps an own runner on its machine despite server Settings', async () => {
     const r = rig();
@@ -1333,7 +1301,7 @@ describe('runner agent sign-in choice', () => {
         const member = await r.json(r.asSession(route, {}, MEMBER_SUB, 'GET'));
         const projection = route === '/api/status' ? member.workers : member;
         expect(projection.runners[0]).not.toHaveProperty('credentialChoices');
-        expect(projection.fleet[0].runnerDetails).not.toHaveProperty('credentialChoices');
+        expect(projection.runners[0]).not.toHaveProperty('credentialChoices');
         expect(projection.runners[0].readiness.code).toBe('ready');
         expect(projection.queue.reasons).toEqual([{ reason: 'ready', count: 1 }]);
         expect(JSON.stringify(member)).not.toContain('credential_unavailable');

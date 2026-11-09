@@ -1,7 +1,12 @@
 import { harnessCredentialAvailable } from '../core/secrets.js';
 import type { SecretWrappingKey } from '../core/adapters.js';
-import { invalidateRunnerUpdates } from '../core/runner-updates.js';
-import { invalidateRunnerCatalogs } from '../core/model-catalogs.js';
+import { runnerContactInvalidations } from '../db/runners/contacts.js';
+import { runnerCatalogInvalidation } from '../db/runners/catalogs.js';
+import { runnerUpdateInvalidations } from '../db/runners/updates.js';
+import { boundRunnerCandidate, commitRunnerLineageReplay, commitRunnerRotation, commitSuccessorActivation, replayedRunnerCredential, RUNNER_LINEAGE_IDLE_MS, runnerAuthRow, runnerCredentialHoldsAuthority, runnerWriteAuthority, runnerWriteRefused, type RunnerExpiry } from '../db/runners/credentials.js';
+import { commitRegistration, commitRunnerControl, commitRunnerRename, commitSignInChanges, readRunnerRecord, registeredRunner, requestedCredentialChoices, runnerAcceptsNewWork, runnerEpoch, signInChange, storedChoices, type ControlTransition, type RunnerRecord } from '../db/runners/registration.js';
+import type { Bound } from '../db/index.js';
+import { refused } from '../db/index.js';
 /**
  * Runners: the Deployment's own execution identities, and the one module that issues, rotates, revokes and
  * controls them.
@@ -23,17 +28,14 @@ import { invalidateRunnerCatalogs } from '../core/model-catalogs.js';
  *   every credential and every run token minted under it at once.
  */
 import { toBase64Url } from '../base64.js';
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
-import { writeGuardBatch, writeGuardStore } from '../core/write-guard-store.js';
+import type { RelationalStore } from '../core/adapters.js';
+import { boundWriteGuardStore } from '../core/write-guard-store.js';
 import { storedRunnerCredentialChoices, parseRunnerCredentialChoices, type StoredRunnerCredentialChoices, type RunnerCredentialChoices, type RunnerCredentialChoice } from '@goondocks/myco-shared/runner-fleet';
-import { readWorkerFleet, invalidateRunnerContacts } from '../core/worker-contacts.js';
-import { SQL_NOW_MS } from '../core/run-deadline.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { SchemaMismatchError } from '../telemetry.js';
 import { deploymentIdentity, type AuthorizationSubject } from './authorization.js';
-import { runParentLive } from '../db/runs/run-parent.js';
-import { MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_BYTES, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from './tokens.js';
+import { MEMBER_TOKEN_BYTES, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from './tokens.js';
 
 const RUNNER_TOKEN_PREFIX = 'mycorun_';
 /** Every runner bearer: the prefix and 32 random bytes as unpadded base64url. Disjoint from member tokens and grant keys. */
@@ -45,11 +47,7 @@ const RUNNER_ID_BYTES = 12;
 export const RUNNER_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const RUNNER_TOKEN_TTL_MS = MEMBER_TOKEN_TTL_MS;
 export const RUNNER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_REFRESH_WINDOW_MS;
-export const RUNNER_LINEAGE_IDLE_MS = MEMBER_LINEAGE_IDLE_MS;
-/** The `revoked_by` of every credential a replayed rotation ended. */
-const RUNNER_REPLAY_REVOKER = 'runner-lineage-replay';
-/** The `revoked_by` of every credential a removal ended. */
-const RUNNER_REMOVAL_REVOKER = 'runner-removed';
+export { RUNNER_LINEAGE_IDLE_MS };
 
 type RunnerState = 'enabled' | 'paused' | 'removed';
 
@@ -72,48 +70,12 @@ const newId = (prefix: string): string => `${prefix}${toBase64Url(crypto.getRand
 export const runnerWindowOpensAt = (expiresAt: number): number => expiresAt - RUNNER_TOKEN_REFRESH_WINDOW_MS;
 
 /**
- * The credential named by `alias` carries its runner's authority at `instant`: it is of the current epoch of a runner
- * that is not removed, it has not expired, and it is unrevoked — or its revocation is its own successor's first use,
- * which an already-admitted request on the predecessor completes under. Binds the instant once. Under `lapsed`, the
- * rotation route's admission, a credential past its expiry still holds within the lineage idle bound.
- */
-export function runnerCredentialAuthority(alias: string, instant: string, expiry: 'live' | 'lapsed' = 'live'): string {
-  return `EXISTS (SELECT 1 FROM runners authority_runner WHERE authority_runner.id = ${alias}.runner_id
-      AND authority_runner.state <> 'removed' AND authority_runner.credential_epoch = ${alias}.epoch)
-    AND ${expiry === 'live' ? `${alias}.expires_at` : `${alias}.issued_at + ${RUNNER_LINEAGE_IDLE_MS}`} > ${instant}
-    AND (${alias}.revoked_at IS NULL OR (${alias}.revoked_by IS NULL AND EXISTS (SELECT 1 FROM runner_credentials authority_successor
-      WHERE authority_successor.predecessor_id = ${alias}.id AND authority_successor.first_used_at IS NOT NULL
-        AND authority_successor.revoked_at IS NULL AND authority_successor.runner_id = ${alias}.runner_id
-        AND authority_successor.epoch = ${alias}.epoch)))`;
-}
-
-interface RunnerAuthRow {
-  schema_version: string;
-  id: string | null;
-  runner_id: string | null;
-  epoch: number | null;
-  issued_at: number | null;
-  expires_at: number | null;
-  revoked_at: number | null;
-  predecessor_id: string | null;
-  first_used_at: number | null;
-  state: RunnerState | null;
-  credential_epoch: number | null;
-  name: string | null;
-}
-
-/**
  * One read: the schema version, the credential for the digest and its runner. A revoked credential, one of an older
  * epoch, and one whose runner is removed never authenticate; an expired one authenticates only under `lapsed`, for
  * the rotation route, and only inside the lineage idle bound measured from its issue.
  */
-export async function authenticateRunner(db: RelationalStore, digest: string, now: number, expiry: 'live' | 'lapsed' = 'live'): Promise<RunnerAuth | null> {
-  const row = await db.prepare(`SELECT s.value AS schema_version, c.id, c.runner_id, c.epoch, c.issued_at, c.expires_at, c.revoked_at,
-      c.predecessor_id, c.first_used_at, r.state, r.credential_epoch, r.name
-    FROM schema_meta s
-    LEFT JOIN runner_credentials c ON c.token_hash = ?
-    LEFT JOIN runners r ON r.id = c.runner_id
-    WHERE s.key = 'version'`).bind(digest).first<RunnerAuthRow>();
+export async function authenticateRunner(db: RelationalStore, digest: string, now: number, expiry: RunnerExpiry = 'live'): Promise<RunnerAuth | null> {
+  const row = await runnerAuthRow(db, digest);
   if (!row) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, null);
   if (row.schema_version !== String(SERVER_SCHEMA_VERSION)) throw new SchemaMismatchError(SERVER_SCHEMA_VERSION, row.schema_version);
   if (row.id === null || row.runner_id === null || row.epoch === null || row.expires_at === null || row.issued_at === null) return null;
@@ -126,52 +88,34 @@ export async function authenticateRunner(db: RelationalStore, digest: string, no
 }
 
 /** The runner subject, resolved from the store at authorization time rather than carried from authentication. */
-export async function runnerSubject(db: RelationalStore, auth: Pick<RunnerAuth, 'runnerId' | 'credentialId'>, now: number, expiry: 'live' | 'lapsed' = 'live'): Promise<AuthorizationSubject> {
-  const row = await db.prepare(`SELECT c.id FROM runner_credentials c WHERE c.id = ? AND c.runner_id = ? AND ${runnerCredentialAuthority('c', '?', expiry)}`)
-    .bind(auth.credentialId, auth.runnerId, now).first<{ id: string }>();
-  return { kind: 'runner', deploymentId: await deploymentIdentity(db), transport: 'http', live: row !== null, runnerId: auth.runnerId, tokenId: auth.credentialId };
+export async function runnerSubject(db: RelationalStore, auth: Pick<RunnerAuth, 'runnerId' | 'credentialId'>, now: number, expiry: RunnerExpiry = 'live'): Promise<AuthorizationSubject> {
+  const live = await runnerCredentialHoldsAuthority(db, auth.credentialId, auth.runnerId, now, expiry);
+  return { kind: 'runner', deploymentId: await deploymentIdentity(db), transport: 'http', live, runnerId: auth.runnerId, tokenId: auth.credentialId };
 }
-
-export const RUNNER_WRITE_REFUSED = '$[myco_runner_write_refused]';
 
 export class RunnerWriteRefused extends Error {
   constructor() { super('runner credential holds no authority'); }
 }
 
-/**
- * The assertion every runner-admitted mutation commits with: the presenting credential still carries its runner's
- * authority, under the same expiry its route admitted it with — `lapsed` on the rotation route alone.
- */
-function runnerWriteAssertion(db: RelationalStore, credentialId: string, expiry: 'live' | 'lapsed' = 'live'): () => PreparedStatement {
-  return () => db.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM runner_credentials c WHERE c.id = ? AND ${runnerCredentialAuthority('c', SQL_NOW_MS, expiry)})
-    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(credentialId, RUNNER_WRITE_REFUSED);
-}
-
 export function runnerWriteRefusal(error: unknown): never {
-  if (error instanceof Error && error.message.includes(RUNNER_WRITE_REFUSED.slice(1))) throw new RunnerWriteRefused();
+  if (refused(error, runnerWriteRefused)) throw new RunnerWriteRefused();
   throw error;
 }
 
-/** The request's mutations commit only while its runner credential still carries authority, in the same atomic batch. */
-export function runnerWriteStore(db: RelationalStore, credentialId: string, expiry: 'live' | 'lapsed' = 'live'): RelationalStore {
-  return writeGuardStore(db, runnerWriteAssertion(db, credentialId, expiry), runnerWriteRefusal);
+/**
+ * The request's mutations commit only while its runner credential still carries authority, under the same expiry its
+ * route admitted it with — `lapsed` on the rotation route alone — in the same atomic batch.
+ */
+export function runnerWriteStore(db: RelationalStore, credentialId: string, expiry: RunnerExpiry = 'live'): RelationalStore {
+  return boundWriteGuardStore(db, () => runnerWriteAuthority(credentialId, expiry), runnerWriteRefusal);
 }
 
 /**
  * A successor's first authenticated use, once: the runner's live lease attribution moves to it, its first use is
- * stamped and its predecessor is revoked. The runner, its leases' attempts and their history stay as they are.
+ * stamped and its predecessor is revoked, only while that successor is still live and unused. The runner, its leases' attempts and their history stay as they are.
  */
 export async function activateRunnerSuccessor(db: RelationalStore, auth: RunnerAuth & { predecessorId: string }, now: number): Promise<void> {
-  await db.batch([
-    db.prepare(`UPDATE agent_runs SET leased_runner_credential_id = ?
-      WHERE leased_runner_id = ? AND leased_runner_credential_id = ? AND status = 'running'
-        AND EXISTS (SELECT 1 FROM runner_credentials successor JOIN runner_credentials predecessor ON predecessor.id = successor.predecessor_id
-          WHERE successor.id = ? AND predecessor.id = ? AND successor.first_used_at IS NULL AND successor.revoked_at IS NULL
-            AND successor.runner_id = predecessor.runner_id AND successor.epoch = predecessor.epoch)`)
-      .bind(auth.credentialId, auth.runnerId, auth.predecessorId, auth.credentialId, auth.predecessorId),
-    db.prepare(`UPDATE runner_credentials SET first_used_at = ? WHERE id = ? AND first_used_at IS NULL`).bind(now, auth.credentialId),
-    db.prepare(`UPDATE runner_credentials SET revoked_at = ? WHERE id = ? AND runner_id = ? AND revoked_at IS NULL`).bind(now, auth.predecessorId, auth.runnerId),
-  ]);
+  await commitSuccessorActivation(db, { successor: auth.credentialId, runner: auth.runnerId, predecessor: auth.predecessorId, now });
 }
 
 type RunnerRotation =
@@ -187,8 +131,7 @@ type RunnerRotation =
 export async function rotateRunnerCredential(db: RelationalStore, auth: RunnerAuth, candidate: unknown, now: number): Promise<RunnerRotation> {
   if (typeof candidate !== 'string' || !RUNNER_TOKEN_PATTERN.test(candidate)) return { rotated: false, code: 'parse', reason: 'candidate must be a runner bearer' };
   const digest = await sha256Hex(candidate);
-  const bound = await db.prepare(`SELECT id, runner_id, predecessor_id, expires_at, revoked_at FROM runner_credentials WHERE token_hash = ?`)
-    .bind(digest).first<{ id: string; runner_id: string; predecessor_id: string | null; expires_at: number; revoked_at: number | null }>();
+  const bound = await boundRunnerCandidate(db, digest);
   if (bound !== null) {
     if (bound.runner_id === auth.runnerId && bound.predecessor_id === auth.credentialId && bound.revoked_at === null) {
       return { rotated: true, credentialId: bound.id, expiresAt: bound.expires_at, refreshAfter: runnerWindowOpensAt(bound.expires_at) };
@@ -199,53 +142,17 @@ export async function rotateRunnerCredential(db: RelationalStore, auth: RunnerAu
   if (now < opensAt) return { rotated: false, code: 'refresh_too_early', refreshAfter: opensAt };
   const successorId = newId(RUNNER_CREDENTIAL_ID_PREFIX);
   const expiresAt = now + RUNNER_TOKEN_TTL_MS;
-  const predecessorLive = `EXISTS (SELECT 1 FROM runner_credentials p JOIN runners r ON r.id = p.runner_id
-    WHERE p.id = ? AND p.runner_id = ? AND p.revoked_at IS NULL AND p.epoch = r.credential_epoch AND r.state <> 'removed'
-      AND p.issued_at + ? > ?)`;
-  const live = [auth.credentialId, auth.runnerId, RUNNER_LINEAGE_IDLE_MS, now];
-  const [, inserted] = await db.batch([
-    db.prepare(`UPDATE runner_credentials SET revoked_at = ? WHERE predecessor_id = ? AND revoked_at IS NULL AND first_used_at IS NULL AND ${predecessorLive}`)
-      .bind(now, auth.credentialId, ...live),
-    db.prepare(`INSERT INTO runner_credentials (id, runner_id, token_hash, epoch, issued_at, expires_at, predecessor_id, lineage_root, first_used_at, revoked_at, revoked_by)
-      SELECT ?, p.runner_id, ?, p.epoch, ?, ?, p.id, p.lineage_root, NULL, NULL, NULL FROM runner_credentials p WHERE p.id = ? AND ${predecessorLive}`)
-      .bind(successorId, digest, now, expiresAt, auth.credentialId, ...live),
-  ]);
-  if (inserted!.meta.changes !== 1) return { rotated: false, code: 'revoked', reason: 'the presented runner credential no longer carries authority' };
+  if (!await commitRunnerRotation(db, { successor: successorId, digest, now, expiresAt, credential: auth.credentialId, runner: auth.runnerId })) {
+    return { rotated: false, code: 'revoked', reason: 'the presented runner credential no longer carries authority' };
+  }
   return { rotated: true, credentialId: successorId, expiresAt, refreshAfter: runnerWindowOpensAt(expiresAt) };
 }
 
 /** A presented digest whose credential a used successor already superseded: the evidence that two holders rotated one lineage. */
-export async function detectRunnerReplay(db: RelationalStore, digest: string): Promise<{ credentialId: string; runnerId: string; epoch: number; issuedAt: number } | null> {
-  return db.prepare(`SELECT p.id AS credentialId, p.runner_id AS runnerId, p.epoch, p.issued_at AS issuedAt FROM runner_credentials p
-    JOIN runner_credentials s ON s.predecessor_id = p.id AND s.first_used_at IS NOT NULL AND s.runner_id = p.runner_id
-    WHERE p.token_hash = ? AND p.revoked_at IS NOT NULL AND p.revoked_by IS NULL LIMIT 1`)
-    .bind(digest).first<{ credentialId: string; runnerId: string; epoch: number; issuedAt: number }>();
-}
+export const detectRunnerReplay = (db: RelationalStore, digest: string) => replayedRunnerCredential(db, digest);
 
 /** End every credential of a runner whose lineage a second holder replayed: its epoch moves on and the runner must be registered again. */
-export async function revokeRunnerLineage(db: RelationalStore, replay: { runnerId: string; epoch: number }, now: number): Promise<number> {
-  const results = await db.batch([
-    db.prepare(`UPDATE runners SET credential_epoch = credential_epoch + 1, revision = revision + 1
-      WHERE id = ? AND credential_epoch = ? AND state <> 'removed'`).bind(replay.runnerId, replay.epoch),
-    db.prepare(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = ? WHERE runner_id = ? AND revoked_at IS NULL
-      AND EXISTS (SELECT 1 FROM runners WHERE id = ? AND credential_epoch = ?)`).bind(now, RUNNER_REPLAY_REVOKER, replay.runnerId, replay.runnerId, replay.epoch + 1),
-    db.prepare(`INSERT INTO runner_audit (id, runner_id, actor_member, action, revision, at)
-      SELECT ?, id, NULL, 'lineage_replayed', revision, ? FROM runners WHERE id = ? AND credential_epoch = ?
-        AND NOT EXISTS (SELECT 1 FROM runner_audit WHERE runner_id = runners.id AND action = 'lineage_replayed' AND revision = runners.revision)`)
-      .bind(crypto.randomUUID(), now, replay.runnerId, replay.epoch + 1),
-  ]);
-  return results[0]!.meta.changes;
-}
-
-/** A live owner or administrator, by member id; a held or revoked member is neither. Binds the member id. */
-export const LIVE_RUNNER_ADMIN = `EXISTS (SELECT 1 FROM members approver WHERE approver.id = ? AND approver.revoked_at IS NULL
-  AND (approver.role = 'admin' OR EXISTS (SELECT 1 FROM deployment_ownership o WHERE o.id = 1 AND o.member_id = approver.id)))`;
-
-const REGISTRATION_REFUSED = '$[myco_runner_registration_refused]';
-
-/** The device request a registration consumes: a runner request, undecided, unexpired, with no decision receipt. */
-const PENDING_RUNNER_REQUEST = `EXISTS (SELECT 1 FROM device_requests d WHERE d.id = ? AND d.subject = 'runner'
-  AND d.decision IS NULL AND d.expires_at > ? AND NOT EXISTS (SELECT 1 FROM device_decision_audit a WHERE a.request_id = d.id))`;
+export const revokeRunnerLineage = (db: RelationalStore, replay: { runnerId: string; epoch: number }, now: number): Promise<number> => commitRunnerLineageReplay(db, replay, now);
 
 /**
  * The dashboard approval of a runner request: the runner, its first credential bound to the client's candidate, its
@@ -256,79 +163,30 @@ export async function registerRunner(db: RelationalStore, approverId: string, re
   const runnerId = replacingId ?? newId(RUNNER_ID_PREFIX);
   const replacing = replacingId === undefined ? null : await readRunner(db, replacingId);
   if (replacingId !== undefined && (replacing === null || replacing.state === 'removed')) return null;
-  const epoch = replacing === null ? 1 : (await db.prepare(`SELECT credential_epoch AS epoch FROM runners WHERE id = ?`).bind(runnerId).first<{ epoch: number }>())!.epoch + 1;
-  const credentialId = newId(RUNNER_CREDENTIAL_ID_PREFIX);
-  const request = await db.prepare('SELECT runner_credential_choices FROM device_requests WHERE id = ?').bind(requestId).first<{ runner_credential_choices: string }>();
-  if (request === null) return null;
-  const requestedChoices = parseRunnerCredentialChoices(request.runner_credential_choices);
+  const epoch = replacing === null ? 1 : await runnerEpoch(db, runnerId) + 1;
+  const storedRequest = await requestedCredentialChoices(db, requestId);
+  if (storedRequest === null) return null;
+  const requestedChoices = parseRunnerCredentialChoices(storedRequest);
   const currentChoices = replacing === null ? {} : await runnerCredentialChoices(db, runnerId);
   const choices: RunnerCredentialChoices = { ...Object.fromEntries(Object.keys(currentChoices).map(agent => [agent, 'own' as const])), ...requestedChoices };
   const signIns = await runnerSignInStatements(db, wrappingKey, approverId, runnerId, choices, currentChoices, replacing === null ? 1 : replacing.revision + 1, now, replacing !== null);
-  const assertion = (): PreparedStatement => db.prepare(`SELECT CASE WHEN ${PENDING_RUNNER_REQUEST} AND ${LIVE_RUNNER_ADMIN}${replacing === null ? ` AND EXISTS (SELECT 1 FROM device_requests WHERE id = ? AND replacing_runner_id IS NULL)` : ` AND EXISTS (SELECT 1 FROM runners r JOIN device_requests d ON d.id = ? AND d.runner_name = r.name
-      WHERE r.id = ? AND r.revision = ? AND r.state <> 'removed' AND d.replacing_runner_id = r.id)`}
-    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(requestId, now, approverId, ...(replacing === null ? [requestId] : [requestId, runnerId, replacing.revision]), REGISTRATION_REFUSED);
-  try {
-    await writeGuardBatch(db, assertion, (error) => { throw error; }, [
-      ...(replacing === null ? [db.prepare(`INSERT INTO runners (id, name, state, credential_epoch, revision, labels, created_at, created_by_member, registration_id)
-        SELECT ?, d.runner_name, 'enabled', 1, 1, '[]', ?, ?, d.id FROM device_requests d WHERE d.id = ? AND d.subject = 'runner'`)
-        .bind(runnerId, now, approverId, requestId)] : [
-        db.prepare(`UPDATE runners SET credential_epoch = ?, revision = revision + 1, registration_id = ?, credential_choices = '{}' WHERE id = ?`).bind(epoch, requestId, runnerId),
-        db.prepare(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = 'runner-recredentialed' WHERE runner_id = ? AND revoked_at IS NULL`).bind(now, runnerId),
-        ...invalidateRunnerContacts(db, runnerId), invalidateRunnerCatalogs(db, runnerId), ...invalidateRunnerUpdates(db, runnerId),
-      ]),
-      db.prepare(`INSERT INTO runner_credentials (id, runner_id, token_hash, epoch, issued_at, expires_at, predecessor_id, lineage_root)
-        SELECT ?, ?, d.candidate_hash, ?, ?, ?, NULL, ? FROM device_requests d WHERE d.id = ? AND d.subject = 'runner'`)
-        .bind(credentialId, runnerId, epoch, now, now + RUNNER_TOKEN_TTL_MS, credentialId, requestId),
-      ...(replacing === null ? [db.prepare(`INSERT INTO runner_audit (id, runner_id, actor_member, action, revision, at) VALUES (?, ?, ?, 'registered', 1, ?)`)
-        .bind(crypto.randomUUID(), runnerId, approverId, now)] : [db.prepare(`INSERT INTO runner_metadata_audit(id,runner_id,actor_member,action,revision,detail,at)
-          VALUES (?,?,?,'recredentialed',?,'{}',?)`).bind(crypto.randomUUID(), runnerId, approverId, replacing.revision + 1, now)]),
-      ...signIns,
-      db.prepare(`UPDATE device_requests SET decision = 'approved', decided_by = ?, decided_at = ? WHERE id = ? AND subject = 'runner' AND decision IS NULL`)
-        .bind(approverId, now, requestId),
-      db.prepare(`INSERT INTO device_decision_audit (request_id, member_id, machine_id, machine_name, os, source_hash, decision, decided_at, subject)
-        SELECT id, decided_by, machine_id, machine_name, os, ?, decision, decided_at, subject FROM device_requests WHERE id = ? AND decision = 'approved'`)
-        .bind(sourceHash, requestId),
-    ]);
-  } catch (error) {
-    if (error instanceof Error && /myco_runner_registration_refused|UNIQUE constraint failed/.test(error.message)) return null;
-    throw error;
-  }
-  return { runnerId };
+  const credentialId = newId(RUNNER_CREDENTIAL_ID_PREFIX);
+  const committed = await commitRegistration(db, {
+    approver: approverId, request: requestId, source: sourceHash, now, runner: runnerId, credential: credentialId, epoch, expiresAt: now + RUNNER_TOKEN_TTL_MS, signIns,
+    replacing: replacing === null ? null : { revision: replacing.revision, invalidations: [...runnerContactInvalidations(runnerId), runnerCatalogInvalidation(runnerId), ...runnerUpdateInvalidations(runnerId)] },
+  });
+  return committed ? { runnerId } : null;
 }
 
 /** Whether a runner may take new work now: enabled, neither paused nor removed. */
-export async function runnerAcceptsWork(db: RelationalStore, runnerId: string): Promise<boolean> {
-  return (await db.prepare(`SELECT 1 AS one FROM runners WHERE id = ? AND state = 'enabled'`).bind(runnerId).first<{ one: number }>()) !== null;
-}
+export const runnerAcceptsWork = (db: RelationalStore, runnerId: string): Promise<boolean> => runnerAcceptsNewWork(db, runnerId);
 
 /** The registered runner a decided request created, for the client polling it. */
-export async function runnerOfRegistration(db: RelationalStore, requestId: string): Promise<{ id: string; name: string } | null> {
-  return db.prepare(`SELECT id, name FROM runners WHERE registration_id = ?`).bind(requestId).first<{ id: string; name: string }>();
-}
+export const runnerOfRegistration = (db: RelationalStore, requestId: string): Promise<{ id: string; name: string } | null> => registeredRunner(db, requestId);
 
-export type RunnerControl = 'pause' | 'resume' | 'remove';
+export type RunnerControl = ControlTransition;
 
-const CONTROL_TRANSITIONS: Readonly<Record<RunnerControl, { from: string; to: RunnerState; audit: 'paused' | 'resumed' | 'removed' }>> = {
-  pause: { from: `state = 'enabled'`, to: 'paused', audit: 'paused' },
-  resume: { from: `state = 'paused'`, to: 'enabled', audit: 'resumed' },
-  remove: { from: `state <> 'removed'`, to: 'removed', audit: 'removed' },
-};
-
-interface RunnerRecord {
-  id: string;
-  name: string;
-  state: RunnerState;
-  revision: number;
-  createdAt: number;
-  createdBy: string | null;
-  removedAt: number | null;
-}
-
-const RUNNER_COLUMNS = `id, name, state, revision, created_at AS createdAt, created_by_member AS createdBy, removed_at AS removedAt`;
-
-export async function readRunner(db: RelationalStore, runnerId: string): Promise<RunnerRecord | null> {
-  return db.prepare(`SELECT ${RUNNER_COLUMNS} FROM runners WHERE id = ?`).bind(runnerId).first<RunnerRecord>();
-}
+export const readRunner = (db: RelationalStore, runnerId: string): Promise<RunnerRecord | null> => readRunnerRecord(db, runnerId);
 
 /**
  * An owner or administrator's control of one runner, attributed and audited in one batch. Pause and resume move only
@@ -339,22 +197,8 @@ export async function readRunner(db: RelationalStore, runnerId: string): Promise
 export async function controlRunner(db: RelationalStore, actorId: string, runnerId: string, control: RunnerControl, now: number): Promise<{ changed: boolean; runner: RunnerRecord } | null> {
   const before = await readRunner(db, runnerId);
   if (before === null) return null;
-  const transition = CONTROL_TRANSITIONS[control];
-  const removing = control === 'remove';
-  const results = await db.batch([
-    db.prepare(`UPDATE runners SET state = ?, revision = revision + 1${removing ? ', removed_at = ?, credential_epoch = credential_epoch + 1' : ''}
-      WHERE id = ? AND revision = ? AND ${transition.from} AND ${LIVE_RUNNER_ADMIN}`)
-      .bind(transition.to, ...(removing ? [now] : []), runnerId, before.revision, actorId),
-    ...(removing ? [db.prepare(`UPDATE runner_credentials SET revoked_at = ?, revoked_by = ? WHERE runner_id = ? AND revoked_at IS NULL
-      AND EXISTS (SELECT 1 FROM runners WHERE id = ? AND state = 'removed' AND revision = ?)`)
-      .bind(now, RUNNER_REMOVAL_REVOKER, runnerId, runnerId, before.revision + 1)] : []),
-    db.prepare(`INSERT INTO runner_audit (id, runner_id, actor_member, action, revision, at)
-      SELECT ?, id, ?, ?, revision, ? FROM runners WHERE id = ? AND revision = ? AND state = ?
-        AND NOT EXISTS (SELECT 1 FROM runner_audit receipt WHERE receipt.runner_id = runners.id AND receipt.revision = runners.revision)`)
-      .bind(crypto.randomUUID(), actorId, transition.audit, now, runnerId, before.revision + 1, transition.to),
-  ]);
-  const runner = await readRunner(db, runnerId);
-  return { changed: results[0]!.meta.changes === 1, runner: runner! };
+  const changed = await commitRunnerControl(db, control, before, actorId, now);
+  return { changed, runner: (await readRunner(db, runnerId))! };
 }
 
 /** A name change commits with its live actor guard and immutable receipt. */
@@ -362,22 +206,15 @@ export async function renameRunner(db: RelationalStore, actorId: string, runnerI
   if (!RUNNER_NAME_PATTERN.test(name)) throw new Error('invalid runner name');
   const before = await readRunner(db, runnerId);
   if (before === null || before.state === 'removed') return null;
-  const assertion = () => db.prepare(`SELECT CASE WHEN ${LIVE_RUNNER_ADMIN}
-    AND EXISTS (SELECT 1 FROM runners WHERE id = ? AND revision = ? AND state <> 'removed')
-    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(actorId, runnerId, before.revision, REGISTRATION_REFUSED);
-  await writeGuardBatch(db, assertion, (error) => { throw error; }, before.name === name ? [] : [
-    db.prepare(`UPDATE runners SET name = ?, revision = revision + 1 WHERE id = ?`).bind(name, runnerId),
-    db.prepare(`INSERT INTO runner_metadata_audit(id,runner_id,actor_member,action,revision,detail,at)
-      VALUES (?,?,?,'renamed',?,?,?)`).bind(crypto.randomUUID(), runnerId, actorId, before.revision + 1, JSON.stringify({ name }), now),
-  ]);
+  if (!await commitRunnerRename(db, { actor: actorId, runner: runnerId, revision: before.revision, name, now, changed: before.name !== name })) throw new Error('runner rename refused');
   return readRunner(db, runnerId);
 }
 
 /** Read the server-held sign-in choices of one registered runner. */
 export async function runnerCredentialChoices(db: RelationalStore, runnerId: string): Promise<StoredRunnerCredentialChoices> {
-  const row = await db.prepare('SELECT credential_choices FROM runners WHERE id = ?').bind(runnerId).first<{ credential_choices: string }>();
+  const row = await storedChoices(db, runnerId);
   if (row === null) throw new Error('runner not found');
-  return storedRunnerCredentialChoices(row.credential_choices);
+  return storedRunnerCredentialChoices(row);
 }
 
 export class RunnerSignInUnavailable extends Error {
@@ -386,19 +223,14 @@ export class RunnerSignInUnavailable extends Error {
 
 /** Every sign-in mutation validates the requested sources before constructing its attributed writes. */
 async function runnerSignInStatements(db: RelationalStore, wrappingKey: SecretWrappingKey | undefined, actorId: string, runnerId: string,
-  choices: RunnerCredentialChoices, current: StoredRunnerCredentialChoices, revision: number, now: number, reset = false): Promise<PreparedStatement[]> {
+  choices: RunnerCredentialChoices, current: StoredRunnerCredentialChoices, revision: number, now: number, reset = false): Promise<Bound[]> {
   const admitted = parseRunnerCredentialChoices(JSON.stringify(choices));
-  const statements: PreparedStatement[] = [];
+  const statements: Bound[] = [];
   for (const [agent, choice] of Object.entries(admitted)) {
     if (choice === 'stored' && (wrappingKey === undefined || !await harnessCredentialAvailable(db, wrappingKey, agent))) throw new RunnerSignInUnavailable();
     if ((current[agent] === undefined ? 'own' : current[agent]) === choice && (!reset || choice === 'own')) continue;
     revision += 1;
-    statements.push(
-      db.prepare('UPDATE runners SET credential_choices = json_set(credential_choices, ?, ?), revision = revision + 1 WHERE id = ?')
-        .bind(`$."${agent}"`, choice, runnerId),
-      db.prepare('INSERT INTO runner_signin_audit(id,runner_id,actor_member,agent,choice,revision,at) VALUES (?,?,?,?,?,?,?)')
-        .bind(crypto.randomUUID(), runnerId, actorId, agent, choice, revision, now),
-    );
+    statements.push(...signInChange({ runner: runnerId, actor: actorId, agent, choice, revision, now }));
   }
   return statements;
 }
@@ -410,9 +242,6 @@ export async function setRunnerCredentialChoice(db: RelationalStore, wrappingKey
   if (before === null || before.state === 'removed') return null;
   const choices = await runnerCredentialChoices(db, runnerId);
   const changes = await runnerSignInStatements(db, wrappingKey, actorId, runnerId, { [agent]: choice }, choices, before.revision, now);
-  const assertion = () => db.prepare(`SELECT CASE WHEN ${LIVE_RUNNER_ADMIN}
-    AND EXISTS (SELECT 1 FROM runners WHERE id = ? AND revision = ? AND state <> 'removed')
-    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(actorId, runnerId, before.revision, REGISTRATION_REFUSED);
-  await writeGuardBatch(db, assertion, (error) => { throw error; }, changes);
+  if (!await commitSignInChanges(db, { actor: actorId, runner: runnerId, revision: before.revision }, changes)) throw new Error('runner sign-in change refused');
   return runnerCredentialChoices(db, runnerId);
 }

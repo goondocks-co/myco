@@ -790,7 +790,9 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0769_v769.sql': '8db2c399f5e92c6bf4534b6b5d1464b4767bd2b55855d7c3111cb8301f777018',
   '0770_v770.sql': 'b81f470dc2b3314b234f91015df6e95492bac238078527cbde7073569801eea0',
   '0771_v771.sql': 'bc9286ca4fe608ed843b78b771935d5744d28ba23a92a0d54a215983996cc11a',
+  '0772_v772.sql': 'c55e492ac1fde519f218c3c38612838fb5dfd09924fd2c48d5f344323af902b3',
 };
+import { NEXT_S1C } from '@myco-server-worker/db/schema-vNEXT-s1c.js';
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
 /** The schema of a database as `sqlite_master` rows, ordered; the version row is compared separately. */
@@ -1281,7 +1283,7 @@ describe('versioned schema steps', () => {
         }
         expect(after.has(table)).toBe(true);
         for (const [col, type] of cols) {
-          if ((SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`))) {
+          if ((SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`)) || (SCHEMA_STEPS[n]!.version === NEXT_S1C && `${table}.${col}` === 'machine_harness_reports.harnesses')) {
             expect(after.get(table)!.has(col)).toBe(false);
           } else expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
         }
@@ -1303,7 +1305,7 @@ describe('versioned schema steps', () => {
         const dropped = /^DROP TABLE (?:IF EXISTS )?(\w+)/i.exec(s)?.[1];
         if (dropped !== undefined) {
           const allowedRetirement = ['step_up_authorities', 'idx_step_up_authorities_hash'].includes(dropped) && SCHEMA_STEPS[n]!.version === LATEST_S6B || dropped === '_learning_quiet_margin_range' && n+1 === 692 || dropped === '_learning_quiet_range' && n+1 === 654 || dropped === '_learning_source_ranges' && n+1 === 616 || dropped==='_document_fact_range' && n+1===500 || dropped==='_document_due_range' && n+1===534 || (retiredTablesAtS5b.has(dropped) && SCHEMA_STEPS[n]!.version === V722) || dropped==='_v117_reference_ranges' && retirement || (n === 85 && retiredAt86.has(dropped)) || (dropping && (dropped === DROP_RANGES_TABLE || DROPPED_CONTENT.has(dropped)));
-          expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement })
+          expect({ step: n + 1, dropped, allowed: createdHere.has(dropped) || allowedRetirement || (SCHEMA_STEPS[n]!.version === NEXT_S1C && dropped === 'machine_harness_reports_prior') })
             .toEqual({ step: n + 1, dropped, allowed: true });
           continue;
         }
@@ -1343,10 +1345,11 @@ describe('versioned schema steps', () => {
         const droppedColumn = /^ALTER TABLE (\w+) DROP COLUMN (\w+)$/i.exec(s);
         if (droppedColumn !== null) {
           const target = `${droppedColumn[1]}.${droppedColumn[2]}`;
-          expect({ step: n + 1, target, allowed: SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(target) })
+          expect({ step: n + 1, target, allowed: (SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(target)) || (SCHEMA_STEPS[n]!.version === NEXT_S1C && target === 'machine_harness_reports.harnesses') })
             .toEqual({ step: n + 1, target, allowed: true });
           continue;
         }
+        if (SCHEMA_STEPS[n]!.version === NEXT_S1C && (s === 'ALTER TABLE machine_harness_reports RENAME TO machine_harness_reports_prior' || s === 'DROP TABLE machine_harness_reports_prior')) continue;
         expect(s).not.toMatch(/\b(DROP|RENAME)\b/i);
       }
     }

@@ -13,7 +13,8 @@ import worker from '@myco-server-worker/entry/cloudflare.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
-import { CONTACT_RECENT_MS, CONTACT_THROTTLE_MS, readWorkerFleet, recordWorkerContact, pruneWorkerContacts, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
+import { CONTACT_THROTTLE_MS } from '@myco-server-worker/constants.js';
+import { CONTACT_RECENT_MS, readWorkerFleet, recordWorkerContact, pruneWorkerContacts, WORKER_CONTACT_RETENTION_MS } from '@myco-server-worker/core/worker-contacts.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, asOwner, asOwnerPut } from './helpers/owner.js';
 
@@ -139,17 +140,23 @@ describe('what a worker last said about itself', () => {
     expect(fleet[0]).toMatchObject({ lastReason: 'no_harness', busy: null, offers: OFFER });
   });
 
-  it('bounds revoked-contact cleanup to its batch, taking oldest observations first', async () => {
+  it('retires expired contacts in bounded batches, oldest first, each batch held in a stored export before its rows go', async () => {
     const r = await rig();
     const long = NOW - WORKER_CONTACT_RETENTION_MS - 10_000;
     const ids: string[] = [];
     for (let i = 0; i < 3; i++) {
       const w = await r.admin(`mem_b${i}`, `box-${i}`);
       ids.push(w.tokenId);
-      r.e.sqlite.run('UPDATE member_credentials SET revoked_at = ? WHERE id = ?', [long, w.tokenId]);
       await recordWorkerContact(r.e.db, { credentialId: w.tokenId, machineId: `box-${i}`, offers: OFFER, capabilities: [], reason: 'no_work', now: long + i });
     }
-    expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 2)).toBe(2);
+    expect(await pruneWorkerContacts(r.e.serverEnv, NOW, WORKER_CONTACT_RETENTION_MS, 2)).toBe(2);
+    expect((r.e.sqlite.query('SELECT credential_id AS id FROM worker_contacts').all() as Array<{ id: string }>).map(row => row.id)).toEqual([ids[2]!]);
+    const receipt = r.e.sqlite.query('SELECT object_key, sha256, row_count FROM legacy_contact_exports').all() as Array<{ object_key: string; sha256: string; row_count: number }>;
+    expect(receipt).toHaveLength(1);
+    expect(receipt[0]!.row_count).toBe(2);
+    const stored = await r.e.serverEnv.blobs.get(receipt[0]!.object_key);
+    const exported = JSON.parse(await new Response(stored!.body).text()) as { contacts: Array<{ credential_id: string }> };
+    expect(exported.contacts.map(contact => contact.credential_id)).toEqual([ids[0], ids[1]]);
     expect((await readWorkerFleet(r.e.db, NOW)).map((w) => w.credentialId)).toEqual([ids[2]!]);
   });
 
@@ -211,7 +218,7 @@ describe('what a worker last said about itself', () => {
     expect((await readWorkerFleet(r.e.db, NOW + 2))[0]).toMatchObject({ eligible: false });
   });
 
-  it('retains offline legacy inventory until revocation and keeps valid leases', async () => {
+  it('retires an unrevoked contact past the retention horizon and keeps one holding a valid lease', async () => {
     const r = await rig();
     const gone = await r.admin('mem_gone', 'old-laptop');
     const holding = await r.admin('mem_hold', 'vm-1');
@@ -224,10 +231,7 @@ describe('what a worker last said about itself', () => {
       [long, long, holding.tokenId, NOW + 90_000],
     );
 
-    expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 200)).toBe(0);
-    expect((await readWorkerFleet(r.e.db, NOW)).map((w) => w.credentialId).sort()).toEqual([gone.tokenId, holding.tokenId].sort());
-    r.e.sqlite.run('UPDATE member_credentials SET revoked_at = ? WHERE id = ?', [NOW, gone.tokenId]);
-    expect(await pruneWorkerContacts(r.e.db, NOW, WORKER_CONTACT_RETENTION_MS, 200)).toBe(1);
+    expect(await pruneWorkerContacts(r.e.serverEnv, NOW, WORKER_CONTACT_RETENTION_MS, 200)).toBe(1);
     const left = await readWorkerFleet(r.e.db, NOW);
     expect(left.map((w) => w.credentialId)).toEqual([holding.tokenId]);
   });

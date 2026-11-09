@@ -1,7 +1,7 @@
 import { RUN_CONTROL_REFUSAL_WORDS } from '@goondocks/myco-shared/run-control';
 import type { PreparedStatement, RelationalStore, RunResult } from '../../core/adapters.js';
 import type { RunErrorCode } from '../../core/reader-codes.js';
-import { workerLeaseAuthority } from '../../core/worker-lease.js';
+import { workerLeaseAuthority } from '../runners/lease-authority.js';
 import type { ReadScope } from '../../read/scope.js';
 import { contextValue } from '../run-context.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';

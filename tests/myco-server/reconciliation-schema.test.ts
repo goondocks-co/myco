@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import fs from 'node:fs';
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
@@ -36,7 +37,7 @@ it('fresh and populated v91 upgrades agree on native and workerd D1, including f
     expect(SERVER_SCHEMA_VERSION).toBeGreaterThanOrEqual(92);
     const reconciliation = SCHEMA_STEPS.find(step => step.version === 92)!;
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) {
+    for (const step of SCHEMA_STEPS.filter(step => step.version <= 92)) {
       for (const sql of step.statements) fresh.exec(sql);
       if (step.version >= 92) continue;
       for (const sql of step.statements) native.exec(sql);
@@ -52,12 +53,13 @@ it('fresh and populated v91 upgrades agree on native and workerd D1, including f
         const columns = (await db.prepare(`PRAGMA table_info(${table})`).all()).results;
         expect(columns).toEqual(fresh.query<Record<string, unknown>, []>(`PRAGMA table_info(${table})`).all());
       }
+      expect((await db.prepare('SELECT value FROM schema_meta WHERE key = ?').bind('version').first<{ value: string }>())).toEqual({ value: '92' });
+      for (const step of SCHEMA_STEPS.filter(step => step.version > 92)) await db.batch(step.statements.map(sql => db.prepare(sql)));
       for (const owner of [{ kind: 'machine', machineId: 'machine' }, { kind: 'runner', runnerId: 'rn_upgrade' }] as const) {
         expect((await recordModelCatalog(db, { owner, now: 2, catalog: { observedOrder: 1, harness: 'claude-code', source: { kind: 'command', command: 'list' }, signIn: 'worker-login', fetchedAt: 1, models: [] } })).recorded).toBe(true);
       }
-      await db.batch(await runnerUpdateReportStatements(db, 'rn_upgrade', { observedOrder: 1, channel: 'alpha', currentVersion: '2.0.1', latestVersion: null, lastCheckAt: 1 }));
+      await commit(db, ...await runnerUpdateReportStatements('rn_upgrade', { observedOrder: 1, channel: 'alpha', currentVersion: '2.0.1', latestVersion: null, lastCheckAt: 1 }));
       expect(await db.prepare('SELECT observed_order FROM runner_update_reports').first<{ observed_order: number }>()).toEqual({ observed_order: 1 });
-      expect((await db.prepare('SELECT value FROM schema_meta WHERE key = ?').bind('version').first<{ value: string }>())).toEqual({ value: '92' });
       expect((await db.prepare('PRAGMA foreign_key_check').all()).results).toEqual([]);
     }
     for (const file of renderMigrationFiles()) expect(fs.readFileSync(`${import.meta.dir}/../../packages/myco-server/migrations/${file.name}`, 'utf8')).toBe(file.sql);

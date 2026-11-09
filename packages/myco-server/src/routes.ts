@@ -3,7 +3,7 @@ import { handleSetup } from './api/setup.js';
 import { handleLegacyHistory } from './api/legacy-history.js';
 import { LEGACY_HISTORY_PATH } from '@goondocks/myco-shared/member-protocol';
 import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceApprove, handleDeviceDeny, handleRunnerDeviceStart, handleRunnerDevicePoll, handleRunnerDeviceApprove } from './auth/device.js';
-import { handleRunnerCredentialChoice, handleForgetLegacyWorker, handleRenameRunner, handleRecredentialRunner, handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
+import { handleRunnerCredentialChoice, handleRenameRunner, handleRecredentialRunner, handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleRemovedRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
 import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
@@ -150,10 +150,9 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('protocol', 'protocol', 'protocol', ['runner-registration']), method: 'POST', path: '/auth/runner/poll', auth: 'enroll', subject: 'runner-registration', handler: handleRunnerDevicePoll },
   { authorization: httpPolicy('runner', 'read', 'runner', ['runner']), method: 'POST', path: '/runners/contact', auth: 'runner', bodyMode: 'json', shape: 'persisted', runner: handleRunnerContact },
   { authorization: httpPolicy('runner', 'edit', 'runner', ['runner']), method: 'POST', path: '/runners/rotate', auth: 'runner', bodyMode: 'json', shape: 'persisted', admitsLapsed: true, runner: handleRunnerRotate },
-  { authorization: httpPolicy('legacy-worker', 'admin', 'deployment'), method: 'POST', path: '/api/workers/legacy/{credentialId}/forget',
-    pattern: /^\/api\/workers\/legacy\/(?<credentialId>[A-Za-z0-9._-]{1,64})\/forget$/, auth: 'session', authority: 'admin', handler: handleForgetLegacyWorker },
   { authorization: httpPolicy('legacy-worker', 'read', 'deployment', ['member']), method: 'GET', path: '/api/workers/legacy', auth: 'session', authority: 'member', handler: handleLegacyWorkers },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners', auth: 'session', authority: 'member', handler: handleListRunners },
+  { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners/removed', auth: 'session', authority: 'member', handler: handleRemovedRunners },
   { authorization: httpPolicy('runner', 'admin', 'runner'), method: 'POST', path: '/api/runners/{runnerId}/update',
     pattern: /^\/api\/runners\/(?<runnerId>[A-Za-z0-9._-]{1,64})\/update$/, auth: 'session', authority: 'admin', handler: handleRequestRunnerUpdate },
   ...([['sign-in', handleRunnerCredentialChoice], ['rename', handleRenameRunner], ['recredential', handleRecredentialRunner]] as const).map(([action, handler]): Route => ({

@@ -44,8 +44,8 @@ export const harnessDeploymentActivity: ParityScenario = {
     };
     const marker = Date.now();
     await trust(marker); expect(await repairs()).toHaveLength(1);
-    const rows = await target.sql(`SELECT harnesses FROM machine_harness_reports WHERE machine_id = ${lit(MACHINE_ID)}`);
-    const since = (JSON.parse(String(rows[0].harnesses)) as Array<{ sinceAt: number }>)[0].sinceAt;
+    const rows = await target.sql(`SELECT since_at FROM machine_harness_reports WHERE machine_id = ${lit(MACHINE_ID)}`);
+    const since = Number(rows[0].since_at);
     await target.sql(`UPDATE sessions SET last_received_at = ${since + 1}, last_live_received_at = ${since + 1} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(sessionId)}`);
     await target.sql(`UPDATE events SET received_at = ${since + 1}, created_at = ${since + 1} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(sessionId)} AND kind = 'session.start'`);
     expect(await repairs()).toEqual([]);

@@ -409,25 +409,16 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/runs/attributed-writes.ts#<module>': [
     { tables: ['canopy_maps'], order: 'unverified' },
   ],
-  'core/harness-health.ts#recordProvisionedHarnessReport': [
-    { tables: ['machine_harness_reports'], order: 'unverified' },
-  ],
-  'core/machine-settings.ts#machineBlockFor': [
+    'core/machine-settings.ts#machineBlockFor': [
     { tables: ['machine_settings_snapshots'], order: 'unverified' },
   ],
   'core/machine-settings.ts#setMachineLeaf': [
     { tables: ['machine_settings'], order: 'unverified' },
   ],
-  'core/model-catalogs.ts#recordModelCatalog': [
-    { tables: ['worker_model_catalogs', 'runner_model_catalogs'], order: 'reporter-stamp' },
-  ],
-  'db/release/classification.ts#<module>': [
+    'db/release/classification.ts#<module>': [
     { tables: ['knowledge_release_state'], order: 'unverified' },
   ],
-  'core/runner-updates.ts#runnerUpdateReportStatements': [
-    { tables: ['runner_update_reports'], order: 'reporter-stamp' },
-  ],
-  'db/settings/secret-writes.ts#<module>': [
+    'db/settings/secret-writes.ts#<module>': [
     { tables: ['deployment_secrets'], order: 'unverified' },
   ],
   'db/storage/repository-connection.ts#<module>': [
@@ -452,16 +443,33 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
   'db/storage/usage.ts#storageUsageSchemaStatements': [{ tables: ['storage_usage'], order: 'unverified' }],
   'db/schema-v727.ts#<module>': [{ tables: ['storage_usage'], order: 'unverified' }],
+  'db/schema-vNEXT-s1c.ts#<module>': [
+    { tables: ['machine_head'], order: 'unverified' },
+    { tables: ['machine_head'], order: 'unverified' },
+    { tables: ['machine_head'], order: 'unverified' },
+    { tables: ['machine_head'], order: 'unverified' },
+    { tables: ['runner_head'], order: 'unverified' },
+    { tables: ['runner_head'], order: 'unverified' },
+    { tables: ['runner_head'], order: 'unverified' },
+  ],
+  'db/runners/heads.ts#mergeContact': [{ tables: ['machine_head'], order: 'unverified' }],
+  'db/runners/heads.ts#mergeCapture': [{ tables: ['machine_head'], order: 'unverified' }],
+  'db/runners/heads.ts#mergeRunner': [{ tables: ['runner_head'], order: 'unverified' }],
+  'db/runners/heads.ts#<module>': [{ tables: ['runner_head'], order: 'unverified' }],
+  'db/runners/harness-health.ts#<module>': [
+    { tables: ['machine_head'], order: 'unverified' },
+    { tables: ['machine_harness_reports'], order: 'unverified' },
+  ],
+  'db/runners/catalogs.ts#upsert': [{ tables: ['worker_model_catalogs', 'runner_model_catalogs'], order: 'reporter-stamp' }],
+  'db/runners/updates.ts#<module>': [{ tables: ['runner_update_reports'], order: 'reporter-stamp' }],
+  'db/runners/contacts.ts#<module>': [{ tables: ['runner_observations'], order: 'unverified' }],
   'db/identity/lineage-heads.ts#reconcileHead': [{ tables: ['credential_lineages'], order: 'unverified' }],
   'db/schema-vNEXT-s6.ts#<module>': [
     { tables: ['credential_lineages'], order: 'unverified' },
     { tables: ['credential_lineages'], order: 'unverified' },
     { tables: ['credential_lineages'], order: 'unverified' },
   ],
-  'core/worker-contacts.ts#runnerObservationStatement': [
-    { tables: ['runner_observations'], order: 'unverified' },
-  ],
-  'db/read-budget-session-statements.ts#<module>': [
+    'db/read-budget-session-statements.ts#<module>': [
     { tables: ['session_read_facts'], order: 'unverified' },
     { tables: ['session_read_facts'], order: 'unverified' },
     { tables: ['session_read_facts'], order: 'unverified' },

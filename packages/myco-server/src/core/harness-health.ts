@@ -5,14 +5,18 @@ import {
   HARNESS_SILENT_MS, HARNESS_RUN_CAPTURE_MARGIN_MS,
 } from '@goondocks/myco-shared/harness-health';
 import {
-  machineHarnessCaptureSince,
-  machineHarnessReport,
-  trustConfirmationCapture,
+  commitHarnessReport,
   harnessAttentionRows,
   harnessHealthRows,
+  machineHarnessCaptureSince,
+  machineHarnessState,
+  trustConfirmationCapture,
+  type HarnessReportRow,
+  type HarnessRowWrite,
 } from '../db/runners/harness-health.js';
+import { sha256Hex } from '../hash.js';
 
-type StoredHarnessFact = ProvisionedHarnessFact & { sinceAt: number };
+type StoredHarnessFact = ProvisionedHarnessFact & { sinceAt: number; trustEpoch: number };
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const knownFields = (value: Record<string, unknown>, fields: readonly string[]): boolean => Object.keys(value).every((key) => fields.includes(key));
@@ -43,45 +47,77 @@ export function parseProvisionedHarnessReport(value: unknown): ProvisionedHarnes
   return { harnesses };
 }
 
-function storedFacts(raw: string): StoredHarnessFact[] {
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error('stored harness report is not a list');
-  const report = parseProvisionedHarnessReport({ harnesses: parsed.map((item: unknown) => {
-    if (!isObject(item)) return item;
-    const { sinceAt: _sinceAt, ...fact } = item;
-    return fact;
-  }) });
-  if (report === null || parsed.some((item) => !isObject(item) || !Number.isSafeInteger(item.sinceAt) || (item.sinceAt as number) < 0)) throw new Error('stored harness report is invalid');
-  return report.harnesses.map((fact, i) => ({ ...fact, sinceAt: (parsed[i] as { sinceAt: number }).sinceAt }));
+/** A stored row as a fact. Only rows the report writer admitted reach this table. */
+function storedFact(row: HarnessReportRow): StoredHarnessFact {
+  return {
+    id: row.harness, provisioned: true, state: row.state as ProvisionedHarnessFact['state'], sinceAt: row.since_at, trustEpoch: row.trust_epoch,
+    ...(row.activity_scope === null ? {} : { activityScope: row.activity_scope as ProvisionedHarnessFact['activityScope'] }),
+    ...(row.tools_deployment === null ? {} : { toolsDeployment: row.tools_deployment }),
+    ...(row.ran_at === null ? {} : { ranAt: row.ran_at }),
+    ...(row.hook_repair_at === null ? {} : { hookRepairAt: row.hook_repair_at }),
+    ...(row.action === null ? {} : { action: row.action }),
+  };
+}
+
+/** Rows arrive in machine and report order; a machine's facts stay together. */
+function factsByMachine(rows: readonly HarnessReportRow[]): Array<{ machineId: string; harnesses: StoredHarnessFact[] }> {
+  const machines = new Map<string, StoredHarnessFact[]>();
+  for (const row of rows) machines.set(row.machine_id, [...(machines.get(row.machine_id) ?? []), storedFact(row)]);
+  return Array.from(machines, ([machineId, harnesses]) => ({ machineId, harnesses }));
 }
 
 const captureConfigured = (state: ProvisionedHarnessFact['state']): state is 'ready' | 'held_elsewhere' => state === 'ready' || state === 'held_elsewhere';
 
-/** One writer for current machine harness facts; a repeated state retains the instant it first needed attention. */
+const REPORT_ATTEMPTS = 3;
+
+/** A report that kept losing to concurrent reports for its machine; it changed nothing, and the next report settles the state. */
+export class HarnessReportContended extends Error {
+  constructor() { super(`the harness report lost to ${REPORT_ATTEMPTS} concurrent reports for its machine`); }
+}
+
+/** What the machine says it can do, apart from when it last ran: an unchanged hash with unchanged trust state leaves the row alone. */
+const capabilityHash = (fact: ProvisionedHarnessFact): Promise<string> => sha256Hex(JSON.stringify([fact.id, fact.state, fact.action ?? null, fact.hookRepairAt ?? null, fact.toolsDeployment ?? null, fact.activityScope ?? null]));
+
+/**
+ * The trust transition of one reported harness. A machine that reported trust wanted and now reports capture configured
+ * stays in trust_required until a qualifying session start proves it. A new repair, or a confirmation followed by a new
+ * trust report, starts a new epoch. A replayed report repeats the state and cannot reset an older epoch.
+ */
+function nextFact(fact: ProvisionedHarnessFact, previous: StoredHarnessFact | undefined, lastCapture: number, now: number): StoredHarnessFact {
+  if (fact.state === 'trust_required' && fact.hookRepairAt !== undefined && fact.hookRepairAt !== previous?.hookRepairAt) return { ...fact, sinceAt: now, trustEpoch: (previous?.trustEpoch ?? 0) + 1 };
+  if (previous?.state === 'trust_required' && captureConfigured(fact.state) && lastCapture <= previous.sinceAt) return { ...previous, ranAt: fact.ranAt, activityScope: fact.activityScope };
+  if (previous?.state === 'trust_required' && fact.state === 'trust_required' && fact.hookRepairAt === undefined && lastCapture > previous.sinceAt) return { ...fact, sinceAt: now, trustEpoch: previous.trustEpoch + 1 };
+  const epoch = previous?.trustEpoch ?? 0;
+  return { ...fact, sinceAt: previous?.state === fact.state ? previous.sinceAt : now, trustEpoch: fact.state === 'trust_required' && previous?.state !== 'trust_required' ? epoch + 1 : epoch };
+}
+
+const toWrite = async (fact: StoredHarnessFact): Promise<HarnessRowWrite> => ({
+  harness: fact.id, state: fact.state, action: fact.action ?? null, ranAt: fact.ranAt ?? null, hookRepairAt: fact.hookRepairAt ?? null,
+  toolsDeployment: fact.toolsDeployment ?? null, activityScope: fact.activityScope ?? null, sinceAt: fact.sinceAt, trustEpoch: fact.trustEpoch,
+  capabilityHash: await capabilityHash(fact),
+});
+
+/**
+ * One writer for current machine harness facts. Each pass reads the machine's rows at a report revision and commits only
+ * while that revision stands, so two concurrent reports cannot overwrite each other's trust state. A loser re-reads and re-derives.
+ */
 export async function recordProvisionedHarnessReport(db: RelationalStore, machineId: string, report: ProvisionedHarnessReport, now: number): Promise<void> {
-  const raw = await machineHarnessReport(db, machineId);
-  const prior = new Map((raw === null ? [] : storedFacts(raw)).map((fact) => [fact.id, fact]));
-  const trustSince = report.harnesses.flatMap((fact) => {
-    const previous = prior.get(fact.id);
-    return previous?.state === 'trust_required' && (captureConfigured(fact.state) || fact.state === 'trust_required') ? [previous.sinceAt] : [];
-  });
-  const lastCapture = new Map<string, number>();
-  if (trustSince.length > 0) {
-    const oldestTrust = trustSince.reduce((oldest, at) => Math.min(oldest, at), Infinity);
-    for (const entry of await machineHarnessCaptureSince(db, machineId, oldestTrust)) lastCapture.set(entry.agent, entry.at);
-  }
-  const harnesses = report.harnesses.map((fact): StoredHarnessFact => {
-    const previous = prior.get(fact.id);
-    if (fact.state === 'trust_required' && fact.hookRepairAt !== undefined && fact.hookRepairAt !== previous?.hookRepairAt) return { ...fact, sinceAt: now };
-    if (previous?.state === 'trust_required' && captureConfigured(fact.state) && (lastCapture.get(fact.id) ?? 0) <= previous.sinceAt) {
-      return { ...previous, ranAt: fact.ranAt, activityScope: fact.activityScope };
+  for (let attempt = 0; attempt < REPORT_ATTEMPTS; attempt += 1) {
+    const { revision, rows } = await machineHarnessState(db, machineId);
+    const prior = new Map(rows.map((row) => [row.harness, storedFact(row)]));
+    const trustSince = report.harnesses.flatMap((fact) => {
+      const previous = prior.get(fact.id);
+      return previous?.state === 'trust_required' && (captureConfigured(fact.state) || fact.state === 'trust_required') ? [previous.sinceAt] : [];
+    });
+    const lastCapture = new Map<string, number>();
+    if (trustSince.length > 0) {
+      const oldestTrust = trustSince.reduce((oldest, at) => Math.min(oldest, at), Infinity);
+      for (const entry of await machineHarnessCaptureSince(db, machineId, oldestTrust)) lastCapture.set(entry.agent, entry.at);
     }
-    if (previous?.state === 'trust_required' && fact.state === 'trust_required' && fact.hookRepairAt === undefined && (lastCapture.get(fact.id) ?? 0) > previous.sinceAt) return { ...fact, sinceAt: now };
-    return { ...fact, sinceAt: previous?.state === fact.state ? previous.sinceAt : now };
-  });
-  await db.prepare(`INSERT INTO machine_harness_reports (machine_id, harnesses, reported_at) VALUES (?, ?, ?)
-    ON CONFLICT (machine_id) DO UPDATE SET harnesses = excluded.harnesses, reported_at = excluded.reported_at`)
-    .bind(machineId, JSON.stringify(harnesses), now).run();
+    const harnesses = await Promise.all(report.harnesses.map((fact) => toWrite(nextFact(fact, prior.get(fact.id), lastCapture.get(fact.id) ?? 0, now))));
+    if (await commitHarnessReport(db, machineId, revision, harnesses, now)) return;
+  }
+  throw new HarnessReportContended();
 }
 
 const HOUR_MS = 60 * 60_000;
@@ -95,7 +131,7 @@ export type HarnessAttentionFact =
 /** Combine the member's current provisioned state with Deployment-owned capture and contact times. */
 export async function provisionedHarnessAttention(db: RelationalStore, now: number): Promise<HarnessAttentionFact[]> {
   const [rawReports, rawSessions, machineSessions, contacts, claims] = await harnessAttentionRows(db, now - MACHINE_ACTIVE_MS);
-  const reports = rawReports.map(row => ({ machineId: row.machine_id, harnesses: storedFacts(row.harnesses), reportedAt: row.reported_at }));
+  const reports = factsByMachine(rawReports);
   const sessions = rawSessions.filter((row): row is typeof row & { at: number } => row.at !== null);
   const machineNames = new Map(claims.map((row) => [row.machine_id, row.label]));
   const captured = new Map(sessions.map((row) => [`${row.machine_id}\0${row.agent}`, row.at]));
@@ -135,7 +171,6 @@ export async function provisionedHarnessAttention(db: RelationalStore, now: numb
 /** Current harness wiring, named by its claimed machine, including informational tool destinations. */
 export async function provisionedHarnessHealth(db: RelationalStore): Promise<Array<ProvisionedHarnessFact & { machineId: string; machineName: string | null }>> {
   const [rawReports, claims] = await harnessHealthRows(db);
-  const reports = rawReports.map(row => ({ machineId: row.machine_id, harnesses: storedFacts(row.harnesses) }));
   const names = new Map(claims.map((claim) => [claim.machine_id, claim.label]));
-  return reports.flatMap((report) => report.harnesses.map(({ sinceAt: _sinceAt, ...fact }) => ({ ...fact, machineId: report.machineId, machineName: names.get(report.machineId) ?? null })));
+  return factsByMachine(rawReports).flatMap((report) => report.harnesses.map(({ sinceAt: _sinceAt, trustEpoch: _trustEpoch, ...fact }) => ({ ...fact, machineId: report.machineId, machineName: names.get(report.machineId) ?? null })));
 }
