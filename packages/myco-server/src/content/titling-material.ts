@@ -8,7 +8,7 @@ import type { TitlingMode } from '../core/titling-params.js';
 import { listCatalogTurns } from '../read/document-catalog.js';
 import { SessionDocument } from './session-pages.js';
 
-export interface MaterialLine { prompt: string; response: string | null }
+interface MaterialLine { prompt: string; response: string | null }
 interface MaterialRow extends MaterialLine { promptId: string }
 
 const lineCost = (row: MaterialLine): number => row.prompt.length + (row.response?.length ?? 0);

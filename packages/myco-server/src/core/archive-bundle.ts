@@ -8,11 +8,12 @@ import { sha256HexOf, utf8 } from '../hash.js';
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql,
   type ContentPublicationGuard, type DerivedContentSource, type VerifiedContent } from './registered-content.js';
 import { sourceBytes, measureSource, type ContentRow } from './event-content.js';
-import { recordBlobCandidates,releaseBlobs } from './object-release.js';
+import { releaseBlobs } from './object-release.js';
+import { recordBlobCandidates } from '../db/storage/release-queue.js';
 import { effectiveRawOwnerSql } from './raw-claims.js';
 import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 
-export const ARCHIVE_BUNDLE_VERSION = 1;
+const ARCHIVE_BUNDLE_VERSION = 1;
 export const ARCHIVE_BUNDLE_ENTRIES = 64;
 export const ARCHIVE_BUNDLE_BYTES = 1024 * 1024;
 export const ARCHIVE_PREPARATION_PAGE = 8;
@@ -20,8 +21,8 @@ export const ARCHIVE_PREPARATION_WALL_MS = 500;
 const METADATA_OBJECT_RECORD_ALLOWANCE = 1800;
 const METADATA_IDENTITY_INDEX_COPIES = 6;
 const METADATA_LOCATOR_ALLOWANCE = 40;
-export type BundleKind = 'event' | 'tool-input';
-export interface BundleEntry {
+type BundleKind = 'event' | 'tool-input';
+interface BundleEntry {
   kind: BundleKind; resourceId: string; eventId: string; envelopeHash: string;
   revision: number; rawRevision: number; offset: number; length: number; digest: string;
 }
@@ -130,7 +131,7 @@ export async function prepareArchiveBundle(env: Pick<ContentStore,'db'|'blobs'>,
 }
 
 /** Publication evidence and all source revisions are checked in the adopting transaction. */
-export function bundlePublicationStatements(db:RelationalStore,bundle:PreparedBundle,
+function bundlePublicationStatements(db:RelationalStore,bundle:PreparedBundle,
   adoption?:{sql:string;params:readonly unknown[]}):PreparedStatement[] {
   const body=verifiedContentSql(bundle.source,bundle.body);
   const receipt=verifiedContentSql({...bundle.source,sourceKind:'receipt',resourceId:'bundle:'+bundle.body.key},bundle.receipt);

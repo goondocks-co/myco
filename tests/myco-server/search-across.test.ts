@@ -11,7 +11,8 @@ import { registerBlob } from './helpers/d1.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { MAX_NAMED_PROJECTS } from '@myco-server-worker/read/scope.js';
-import { SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, searchAcross } from '@myco-server-worker/read/search.js';
+import { SEARCH_API_LIMIT, SEARCH_MAX_LIMIT } from '@goondocks/myco-shared/search-types';
+import { search_searchAcross as searchAcross } from '@myco-server-worker/read/catalog/search.js';
 import { reconcileSearchIndex, SEARCH_CHUNK_CHARS } from '@myco-server-worker/core/search-index.js';
 
 const NOW = 1_700_000_000_000;

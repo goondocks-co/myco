@@ -29,18 +29,17 @@ import { enabledCapabilities, type ProjectCapability } from './settings.js';
 import { type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
-import { listProjects } from '../read/sessions.js';
+import { sessions_listProjects as listProjects } from '../read/catalog/sessions.js';
 import { classify, emit } from '../telemetry.js';
 import { schedulerState } from './scheduler-state.js';
 import {
-  ACCELERATORS, ACTIVE_WINDOW_DAYS_DEFAULT, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, effectiveIntervalSeconds, MEMBER_RUNS_PER_DAY_DEFAULT,
-  memberRunsPerDay, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleFor, scheduleLeaves, scheduleOverride, type ScheduleLeaves,
+  ACCELERATORS,
+  effectiveIntervalSeconds,
+  PRE_CONDITIONS,
+  scheduledTasks,
+  scheduleLeaves,
+  type ScheduleLeaves,
 } from './schedule-rules.js';
-
-export {
-  ACCELERATORS, ACTIVE_WINDOW_DAYS_DEFAULT, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, effectiveIntervalSeconds, MEMBER_RUNS_PER_DAY_DEFAULT,
-  memberRunsPerDay, PRE_CONDITIONS, resolveSchedule, scheduledTasks, scheduleFor, scheduleLeaves, scheduleOverride, type ScheduleLeaves,
-};
 
 const DAY_MS = 86_400_000;
 const PERSISTENT_SKIP_INTERVAL_MS = DAY_MS;
@@ -97,7 +96,7 @@ async function recordClockSkip(env: ServerEnv, projectId: string, task: string, 
 /** Who a scheduled run is attributed to: the Deployment's own clock. */
 export const CLOCK_ACTOR = 'clock';
 /** Why the clock left a task alone this wake; a ceiling met is recorded on a run row, the rest are told. */
-export type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable';
+type ScheduleSkip = 'disabled' | 'already_running' | 'not_yet' | 'not_in_state' | 'precondition' | 'max_runs_per_day' | 'reserved_runs_per_day' | 'capability_off' | 'cold' | 'quiet' | 'refused' | 'input_unchanged' | 'uninstructed' | 'repository_missing' | 'repository_unavailable' | 'worker_unavailable';
 
 export interface ScheduleReport {
   /** Dispatches the clock made, launched or queued. */
@@ -112,7 +111,7 @@ export interface ScheduleReport {
  * trip, so the clock's cost does not grow with the Projects it holds. A wake's own dispatches and skips change only
  * the Project and task it decided, which it decides once, so one read serves the whole wake.
  */
-export interface ScheduleFacts {
+interface ScheduleFacts {
   runs: Map<string, TaskRunFacts>;
   /** `taskFactsKey(projectId, capability)` for every capability a Project has turned on. */
   capabilities: Set<string>;

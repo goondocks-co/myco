@@ -19,7 +19,7 @@ import { endStatements, feedStatements, newStatementScan, readStatement, type St
 import { blobArtifactKey, snapshotBlobObject } from './blob-objects.js';
 
 /** The tables whose rows name an object an artifact must carry. */
-export const INVENTORY_TABLES = ['blobs', 'backups'] as const;
+const INVENTORY_TABLES = ['blobs', 'backups'] as const;
 
 /** One object the export names, in the shape a staging manifest lists. */
 /** An object a snapshot row names: `key` is where an artifact holds it, `source` where the source store holds its bytes. */
@@ -79,7 +79,7 @@ export interface InventoryPorts {
   now(): number;
 }
 
-export interface InventoryLimits {
+interface InventoryLimits {
   /** Parts one continuation may verify and decode. */
   maxPartsPerStep: number;
   /**
@@ -110,7 +110,7 @@ export type InventoryRefusal =
   | 'object_changed' | 'export_unparsable' | 'inventory_disagrees' | 'inventory_unreadable' | 'export_stalled'
   | 'inventory_oversize';
 
-export type InventoryStep =
+type InventoryStep =
   | { done: false; progress: InventoryProgress }
   | { done: true; progress: InventoryProgress; database: { sha256: string; bytes: number } }
   | { done: false; refusal: InventoryRefusal; facts: Record<string, number | boolean> };
@@ -119,7 +119,7 @@ export type InventoryStep =
 export interface RecordedPart { part: number; bytes: number; sha256: string }
 
 /** What the pass is given: the staging, its recorded parts, and the columns the captured schema declares. */
-export interface InventoryInput {
+interface InventoryInput {
   prefix: string;
   parts: readonly RecordedPart[];
   sqlBytes: number;

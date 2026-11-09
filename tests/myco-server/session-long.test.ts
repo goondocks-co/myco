@@ -1,4 +1,4 @@
-import { encodeCard } from '@goondocks/myco-shared/turn-card';
+import { encodeCard, renderCard } from '@goondocks/myco-shared/turn-card';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { WAKE_JOB_STATEMENT_LIMIT, WAKE_JOB_BLOB_LIMIT } from '@myco-server-worker/core/tick.js';
 import { readPageChunk } from '@myco-server-worker/content/document-reader.js';
@@ -12,7 +12,7 @@ import worker from '@myco-server-worker/index.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { cardStatements, NONE_CARD, renderCard } from '@myco-server-worker/core/turn-cards.js';
+import { cardStatements, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
 import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { asOwner, OWNER_ENV, LINKED_SUB } from './helpers/owner.js';

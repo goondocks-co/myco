@@ -7,9 +7,9 @@ import { contextValue, FAILURE_REASON_KEY } from '../run-context.js';
 import { FAILED_CALL_INDEX, FAILED_CALL_SQL } from '../schema-v701.js';
 import { read, readSet } from '../index.js';
 
-export const FAILURE_STREAK_SHOWN = 5;
+const FAILURE_STREAK_SHOWN = 5;
 export const NOW_WATCHED_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK, CURATION_TASK, SEEDING_TASK];
-export interface OutcomePair { projectId: string; task: string }
+interface OutcomePair { projectId: string; task: string }
 
 /** When the task's latest completed run started; a failure before it is recovered. */
 export const failureThreshold = (projectId: string, task: string) => `COALESCE((SELECT s.started_at FROM agent_runs s INDEXED BY idx_agent_runs_task

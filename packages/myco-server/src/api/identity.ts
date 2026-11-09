@@ -1,5 +1,5 @@
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
-import { isDeploymentOwner } from '../core/raw-claims.js';
+import { isDeploymentOwner } from '../core/ownership.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { SessionContext } from '../context.js';
 import { accountMembership, hasLinkedAdmin, IDENTITY_LINK_KEY_PATTERN, previewIdentityLinkAuthority, spendIdentityLinkAuthority, type IdentityLinkRefusal } from '../auth/identity-link.js';

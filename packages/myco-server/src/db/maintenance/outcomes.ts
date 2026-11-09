@@ -34,7 +34,7 @@ export async function maintenanceOutcomeText(db: RelationalStore, check: Mainten
   return row?.value ?? null;
 }
 
-export interface MaintenanceClaim {
+interface MaintenanceClaim {
   /** Refuse while a running record's bound has not passed. */
   bounded: boolean;
   claimedAt: number;

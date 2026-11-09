@@ -21,12 +21,12 @@ import type { ChunkRow } from './document-reader.js';
 import type { PublicationDirectory } from '../db/documents/directory.js';
 import { TURN_PAGES } from './session-pages.js';
 
-export interface PageChunkWrite { metadata?: number; chunkNo: number; chunk: DecodedChunk; previous: ChunkRow | undefined }
-export interface BodyChunkWrite { chunkNo: number; text: string; ref: BodyRef }
-export interface PageWrite { owner: string; page: number; chunkNo: number; records: number; bytes: number }
+interface PageChunkWrite { metadata?: number; chunkNo: number; chunk: DecodedChunk; previous: ChunkRow | undefined }
+interface BodyChunkWrite { chunkNo: number; text: string; ref: BodyRef }
+interface PageWrite { owner: string; page: number; chunkNo: number; records: number; bytes: number }
 export interface DocumentLayout { pageChunks: PageChunkWrite[]; bodyChunks: BodyChunkWrite[]; pages: PageWrite[] }
 
-export type Upsert = { outcome: 'inserted'; owner: string; record: DocRecord } | { outcome: 'merged'; owner: string; record: DocRecord; held: DocRecord } | { outcome: 'unchanged' };
+type Upsert = { outcome: 'inserted'; owner: string; record: DocRecord } | { outcome: 'merged'; owner: string; record: DocRecord; held: DocRecord } | { outcome: 'unchanged' };
 
 /** The writer's changes as they stood at a mark, restored by `undo`. */
 export interface WriterMark {
@@ -34,11 +34,11 @@ export interface WriterMark {
 }
 
 /** Chunks an owner's open pages may span before a commit seals the oldest of them. */
-export const OWNER_OPEN_CHUNKS = 6;
+const OWNER_OPEN_CHUNKS = 6;
 /** Chunks at the end of an owner whose pages stay open when it seals. */
-export const OWNER_TAIL_CHUNKS = 2;
+const OWNER_TAIL_CHUNKS = 2;
 /** Leading pages read to settle a turn whose pages are not all held; its last page is read with them. */
-export const TURN_HEAD_PAGES = TURN_PAGES - 1;
+const TURN_HEAD_PAGES = TURN_PAGES - 1;
 
 const pageKey = (owner: string, page: number): string => `${owner}\u0000${page}`;
 const sealedKey = (owner: string, kind: string, id: string): string => `${owner}\u0000${kind}\u0000${id}`;

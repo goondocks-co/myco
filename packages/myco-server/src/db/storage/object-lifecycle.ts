@@ -6,8 +6,8 @@ import { blobObjectKeySql } from '../../core/blob-objects.js';
 import { assertion, commit, read, readSet, write } from '../index.js';
 import { resetObjectStoreWalk } from './object-reconciliation.js';
 
-export const RELEASE_RETRY_BASE_MS = 30_000;
-export const RELEASE_RETRY_MAX_MS = 60 * 60 * 1000;
+const RELEASE_RETRY_BASE_MS = 30_000;
+const RELEASE_RETRY_MAX_MS = 60 * 60 * 1000;
 const MAX_RETRY_EXPONENT = Math.ceil(Math.log2(RELEASE_RETRY_MAX_MS / RELEASE_RETRY_BASE_MS));
 const registered = (alias: string) => `EXISTS(SELECT 1 FROM blobs b WHERE b.project_id=${alias}.project_id AND b.key=${alias}.key AND b.generation=${alias}.generation) OR EXISTS(SELECT 1 FROM backups b INDEXED BY idx_backups_key WHERE b.key=${alias}.physical)`;
 const uploadPhysical = blobObjectKeySql('r.project_id','r.key','r.reservation_id');

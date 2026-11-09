@@ -17,7 +17,7 @@ import type { CatchupFamily } from '../projections/family.js';
  * A fact equals f(its run and that run's output) after every statement, and a rollup row equals the sum of its facts.
  * In-flight runs have no fact: live state answers for them.
  */
-export const WORK_HISTORY_PROJECTION = 'work_history';
+const WORK_HISTORY_PROJECTION = 'work_history';
 export const WORK_HISTORY_READY_SQL = `EXISTS (SELECT 1 FROM projection_catchup WHERE projection='${WORK_HISTORY_PROJECTION}' AND phase='workRuns' AND done=1)`;
 export const WORK_TASKS = [EXTRACTION_TASK, TITLING_TASK, MAP_TASK, SEEDING_TASK] as const;
 /** The tasks whose output is the spores a run wrote. */
@@ -65,7 +65,7 @@ const wantedOutputs = (keys: string) => `SELECT r.project_id,r.task,sp.session_i
     WHERE ${eligible('r')} AND r.task='${TITLING_TASK}' AND json_valid(e.payload) AND json_extract(e.payload,'$.session_id') IS NOT NULL`;
 
 /** Re-derive the supplied runs' facts and output memberships from current sources, including during catch-up replay. */
-export function reconcileWork(keys: string): string[] {
+function reconcileWork(keys: string): string[] {
   const outputs = wantedOutputs(keys);
   return [
     `DELETE FROM work_run_contribution WHERE (project_id,run_id) IN (SELECT project_id,run_id FROM (${keys}))

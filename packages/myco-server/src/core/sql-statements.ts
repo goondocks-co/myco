@@ -93,7 +93,7 @@ export function isSelectStatement(statement: string): boolean {
  * How much of a statement a caller keeps: every statement, the table definitions among them, or the row inserts
  * into a named set of tables.
  */
-export type StatementRetention = 'all' | 'definitions' | { rows: readonly string[] };
+type StatementRetention = 'all' | 'definitions' | { rows: readonly string[] };
 
 /** A split in progress. Every field is plain data, so it survives being stored and read back. */
 export interface StatementScan {
@@ -332,7 +332,7 @@ export function normalizeDefinition(sql: string): string {
 }
 
 /** One value of a row insert, as the export wrote it: text, an integer, a real, a blob, or absent. */
-export type SqlValue =
+type SqlValue =
   | { kind: 'text'; text: string }
   | { kind: 'integer'; integer: number }
   | { kind: 'real'; real: number }
@@ -340,7 +340,7 @@ export type SqlValue =
   | { kind: 'null' };
 
 /** A row insert the export carries: the table it names, the columns it names where it does, and its values. */
-export interface InsertedRow {
+interface InsertedRow {
   table: string;
   columns: string[] | null;
   values: SqlValue[];
@@ -414,7 +414,7 @@ export function sqlValue(text: string): SqlValue | null {
  * caller cares about that it could **not** read, or a statement of no interest. A caller never needs a pattern of
  * its own to tell the second from the third.
  */
-export type StatementReading =
+type StatementReading =
   | { kind: 'row'; row: InsertedRow }
   | { kind: 'unreadable'; table: string }
   | { kind: 'other' };

@@ -1,6 +1,11 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { setStorageCleanupPaused,storageCleanupStatus,storageCleanupRetainedInline,type CleanupOmissionCursor } from '../core/storage-cleanup.js';
+import {
+  setStorageCleanupPaused,
+  storageCleanupStatus,
+  storageCleanupRetainedInline,
+} from '../core/storage-cleanup.js';
+import { type CleanupOmissionCursor } from '../db/storage/cleanup.js';
 import { badRequest,ok,readJsonObject } from './scope.js';
 import { emit } from '../telemetry.js';
 

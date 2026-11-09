@@ -8,7 +8,7 @@ import { applyDocumentRestore } from '@myco-server-worker/ingest/document-restor
 import { handleRestoreBackup, handleRestoreUpload } from '@myco-server-worker/api/backups.js';
 import { BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { statusMetadata } from '@myco-server-worker/read/meta.js';
+import { statusMetadata } from '@myco-server-worker/db/documents/failure-head.js';
 import { repairPublicationMetadata } from '@myco-server-worker/db/documents/metadata-catchup.js';
 import { readDirectory, readPageChunk } from '@myco-server-worker/content/document-reader.js';
 import { encodePageChunk } from '@myco-server-worker/content/document.js';

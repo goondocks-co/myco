@@ -45,23 +45,10 @@ export const RUN_UPDATE_COLUMNS = [
   'actions_taken', 'error', 'run_context', 'dry_run', 'reasoning_level',
   'execution_overrides',
 ] as const;
-export type RunUpdateColumn = (typeof RUN_UPDATE_COLUMNS)[number];
+type RunUpdateColumn = (typeof RUN_UPDATE_COLUMNS)[number];
 
 /** Columns a run update may never set, named so the gate reads the same list the code does. */
 export const RUN_IMMUTABLE_COLUMNS = ['project_id', 'id', 'agent_id', 'dispatched_by'] as const;
-
-/**
- * Columns the DISPATCHER owns on a run it recorded.
- *
- * A local run writes both itself, so they stay settable in general. On a run the
- * server dispatched they are the server's own word about what it decided: the
- * context carries the hash the artifact is filed under and the parameters the
- * task routes read back, and `dry_run` says whether the run may write at all. A
- * runtime that could move either would file its own hash as current, or turn the
- * dispatch's dry run into a real one — and both read as the server's decision
- * afterwards.
- */
-export const DISPATCHER_OWNED_COLUMNS = ['run_context', 'dry_run'] as const;
 
 export type RunUpdate = Partial<Record<RunUpdateColumn, string | number | null>>;
 
@@ -88,7 +75,6 @@ export interface RunRow {
   /** When the worker holding this run stops holding it, or null for a run no worker claimed. */
   leaseExpiresAt: number | null;
 }
-
 
 const RUN_SELECT = `SELECT ${RUN_COLUMNS} FROM agent_runs WHERE project_id = ?1 AND id = ?2 AND ${runNotRetiring('?1', '?2')}`;
 
@@ -244,7 +230,7 @@ export async function applyRunUpdate(
   return statement === null ? 0 : (await commitRunChange(db, statement)).changed;
 }
 
-export interface LiveRunRef {
+interface LiveRunRef {
   projectId: string;
   id: string;
   task: string | null;

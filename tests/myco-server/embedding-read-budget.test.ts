@@ -1,7 +1,12 @@
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { runEmbeddingJob, embeddingKeepsAwake, hasEmbeddingWork, WORK_AUDIT_INTERVAL_MS } from '@myco-server-worker/core/embedding/jobs.js';
+import {
+  runEmbeddingJob,
+  embeddingKeepsAwake,
+  WORK_AUDIT_INTERVAL_MS,
+} from '@myco-server-worker/core/embedding/jobs.js';
+import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { runTick, tickPacer } from '@myco-server-worker/core/tick.js';
 import { lastTaskEntryAt } from '@myco-server-worker/db/runs/claim.js';

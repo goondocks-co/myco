@@ -21,10 +21,10 @@ import { listReports, type ReportRow } from './evidence.js';
 import { storedAudit } from '../../core/run-audit.js';
 import type { ReadScope } from '../../read/scope.js';
 
-export const RUN_BODY_UNAVAILABLE = 'run_body_unavailable';
+const RUN_BODY_UNAVAILABLE = 'run_body_unavailable';
 /** A body settles for a day before it moves, so an attempt that is still being read never pays for a blob fetch. */
 export const RUN_BODY_SETTLE_MS = 24 * 60 * 60 * 1000;
-export const RUN_BODY_PAGE = 8;
+const RUN_BODY_PAGE = 8;
 const MOVE_TOKEN = 'run-body-move';
 const BODY_MEDIA_TYPE = 'text/plain; charset=utf-8';
 

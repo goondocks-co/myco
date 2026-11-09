@@ -15,8 +15,14 @@ import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
  * read from the session's document once its publisher has caught up, and is
  * recorded as the run's read of its session.
  */
-import { listSessions, getSession, overwriteTitle, sessionCounts, writeTitle } from '../../read/sessions.js';
-import { cleanSummary, cleanTitle, normalizeTitle, SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling.js';
+import {
+  sessions_listSessions as listSessions,
+  sessions_getSession as getSession,
+  sessions_sessionCounts as sessionCounts,
+} from '../../read/catalog/sessions.js';
+import { overwriteTitle, writeTitle } from '../../db/session-titles.js';
+import { cleanSummary, cleanTitle, normalizeTitle } from '../../core/titling.js';
+import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, titlingParamsOf } from '../../core/titling-params.js';
 import { documentTitlingMaterial } from '../../content/titling-material.js';
 import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
 import { answerBytes } from '../../core/material-pages.js';

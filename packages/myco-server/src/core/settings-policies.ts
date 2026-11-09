@@ -23,13 +23,18 @@ import {
   DEPLOYMENT_LEAF_SPECS, DEPLOYMENT_LEAVES, RETIRED_LEAVES, executionProfileLeafDefault, heldPartitions, leafRuleViolation,
   settingsRevisions, settingsSnapshot, settingsWriter, storedEmbedding, storedSettings, switchUnderWay, taskOverridesResolution, type LeafRecord,
 } from './settings.js';
-import { scheduleLeaves, scheduleFor, memberRunsPerDay } from './scheduled-tasks.js';
+import {
+  scheduleLeaves,
+  scheduleFor,
+  memberRunsPerDay,
+  ACCELERATORS,
+  PRE_CONDITIONS,
+} from './schedule-rules.js';
 import { TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE } from './jobs.js';
 import { readDispatchLimits, LIMIT_LEAVES } from './limits.js';
-import { workerPreference } from './harness.js';
+import { workerPreference } from './worker-selection.js';
 import { readRecallLeaves } from './recall.js';
 import { readMapSettings } from './canopy.js';
-import { ACCELERATORS, PRE_CONDITIONS } from './schedule-rules.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { reconcileIntervalMinutes } from './release-provenance.js';
 import { titlingIdleCloseMinutes } from './titling.js';
@@ -40,7 +45,7 @@ import { backupRetentionPolicy } from './backup-retention.js';
 import { cadenceOf, MAINTENANCE_CHECKS, MAINTENANCE_SETTINGS } from './store-maintenance.js';
 import { importPolicy } from './import-policy.js';
 import { transcriptRetentionFact } from '../ingest/retention.js';
-import { autoCreateProjects } from './project-creation.js';
+import { autoCreateProjects } from '../db/storage/projects.js';
 import { keepsEmbeddingWhileIdle } from './embedding/jobs.js';
 import { embeddingResolution, type EmbeddingPlatform } from './embedding/configured-provider.js';
 import { SWITCH_REFUSAL, resolveEmbedding, selectionChangeRefusal, tooLargeRefusal, type HeldPartition } from './embedding/policy.js';
@@ -48,7 +53,7 @@ import { embeddingSwitchStatus } from './embedding/switch.js';
 import { VECTOR_DIMENSIONS } from './embedding/vectors.js';
 
 /** What a policy's consumer makes of one leaf now. Unset fields take the leaf's generic answer. */
-export interface LeafAnswer {
+interface LeafAnswer {
   effective: unknown;
   source?: SettingSource;
   state?: SettingState;
@@ -58,7 +63,7 @@ export interface LeafAnswer {
   meanwhile?: string;
 }
 
-export interface SettingPolicy {
+interface SettingPolicy {
   id: string;
   leaves: readonly string[];
   /** The modules, under the server's `src`, that read these leaves from the settings table: the consumers' own resolvers. */
@@ -71,7 +76,7 @@ export interface SettingPolicy {
 const SCHEDULE_OFF = 'Work on a schedule is off, so this waits until it is turned on.';
 
 /** The embedding platform a Deployment resolves against. */
-export const embeddingPlatformOf = (env: ServerEnv): EmbeddingPlatform => env.embeddingPlatform ?? { target: env.platform.name };
+const embeddingPlatformOf = (env: ServerEnv): EmbeddingPlatform => env.embeddingPlatform ?? { target: env.platform.name };
 
 const scheduling: SettingPolicy = {
   id: 'scheduling',

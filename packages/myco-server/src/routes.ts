@@ -84,27 +84,27 @@ export type PublicHandler = (request: Request) => Promise<Response>;
 /** Member handlers on json routes receive the bindings and the consumed request as context; the request stream is spent by the pipeline. */
 export type MemberHandler = (env: ServerEnv, ctx: RouteContext) => Promise<Response>;
 /** Protocol handlers without a default Project; tool dispatch must resolve one before any project operation. */
-export type UnboundMemberHandler = (env: ServerEnv, ctx: UnboundMemberContext) => Promise<Response>;
+type UnboundMemberHandler = (env: ServerEnv, ctx: UnboundMemberContext) => Promise<Response>;
 
-export type CredentialHandler = (env: ServerEnv, ctx: CredentialContext) => Promise<Response>;
+type CredentialHandler = (env: ServerEnv, ctx: CredentialContext) => Promise<Response>;
 /** Grant handlers answer a json route reached over an External Agent grant: the grant's Project and the consumed body, nothing of a member. A route declares one to admit grants at all. */
-export type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
+type GrantHandler = (env: ServerEnv, ctx: GrantContext) => Promise<Response>;
 /** Run handlers answer a json route reached over a run's credential: the run, its Project and the consumed body. A route declares one to serve the run principal at all; the retained runtime channel declares `legacyRunRoute` and resolves its dispatch principal at the pipeline. */
-export type RunHandler = (env: ServerEnv, ctx: RunContext) => Promise<Response>;
+type RunHandler = (env: ServerEnv, ctx: RunContext) => Promise<Response>;
 /** Deployment handlers answer a route scoped to the whole Deployment rather than to one Project: a worker's claim, lease and end. A route declares one to be reached at all, and the pipeline admits the subjects its declaration names: an administrator's legacy worker, and a runner where the declaration names one. */
-export type DeploymentHandler = (env: ServerEnv, ctx: DeploymentContext) => Promise<Response>;
+type DeploymentHandler = (env: ServerEnv, ctx: DeploymentContext) => Promise<Response>;
 /** Member handlers on stream routes receive the unread request; the handler alone consumes the body. */
-export type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContext) => Promise<Response>;
+type StreamHandler = (env: ServerEnv, request: Request, ctx: StreamContext) => Promise<Response>;
 /** Auth handlers require no credential but do need the owner configuration and outbound fetch. They receive a narrowed context and never an `ServerEnv`, so a credential-free route still cannot reach storage or bindings by type. */
 export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Response>;
 /** Owner handlers run only after a valid session of a linked member the route's authority admits; they receive the bindings and the resolved session. */
-export type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
+type OwnerHandler = (env: ServerEnv, ctx: OwnerContext) => Promise<Response>;
 /** Session handlers run after a valid session whether or not its account is a member; exactly the routes that serve a signed-in non-member carry them. */
-export type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Response>;
+type SessionHandler = (env: ServerEnv, ctx: SessionContext) => Promise<Response>;
 /** Runner handlers answer a route only a runner credential reaches: its own contact and rotation. */
-export type RunnerHandler = (env: ServerEnv, ctx: RunnerContext) => Promise<Response>;
+type RunnerHandler = (env: ServerEnv, ctx: RunnerContext) => Promise<Response>;
 /** Enroll handlers present an enrollment authority rather than a credential, so they reach storage without an authenticated member. They receive the unread request and consume its body themselves, within the bound the pipeline enforces. */
-export type EnrollHandler = (env: ServerEnv, request: Request, now: number, source: string) => Promise<Response>;
+type EnrollHandler = (env: ServerEnv, request: Request, now: number, source: string) => Promise<Response>;
 
 /** The key a member route answers under: `{<shape>: true|false, …}` on every outcome after authentication, refusals and 503s included. */
 export type Shape = 'persisted' | 'stored' | 'refreshed' | 'answered';
@@ -134,7 +134,6 @@ export type Route = { authorization: AuthorizationDeclaration } & (
  * The pipeline admits a route declaring anything but `member` or `account` as `admin`.
  */
 export const SESSION_AUTHORITIES = ['admin', 'member', 'account'] as const;
-export type SessionAuthority = (typeof SESSION_AUTHORITIES)[number];
 
 async function health(): Promise<Response> {
   return Response.json({ ok: true });
@@ -362,7 +361,7 @@ export const ROUTES: readonly Route[] = ROUTE_DECLARATIONS.map(route => {
 });
 
 /** A 1.4.x wire route the server does not serve; each names the event kinds (or the blob route) that carry the same capture in 2.0, or says what it carried is gone. A retired path is unmatched and answers 401 like any other absent path. */
-export interface RetiredRoute {
+interface RetiredRoute {
   method: string;
   path: string;
   replacedBy: readonly string[];
@@ -443,7 +442,7 @@ export function methodsServing(pathname: string, admitted: (route: Route) => boo
   return [...out].sort();
 }
 
-export interface RouteMatch {
+interface RouteMatch {
   route: Route;
   params: Record<string, string>;
 }

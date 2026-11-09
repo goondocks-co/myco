@@ -2,7 +2,7 @@ import type { CostProvenance } from '@goondocks/myco-shared/worker-usage';
 /** Run accounting with explicit actual, estimated and unavailable cost provenance. */
 
 /** Whether the figure is an actual charge, an estimate or unavailable. */
-export type CostSource = 'actual' | 'estimated' | 'unavailable';
+type CostSource = 'actual' | 'estimated' | 'unavailable';
 
 /** The token counts a harness reported for one run, every field optional. */
 export interface RunUsage {
@@ -52,7 +52,7 @@ export interface CostResolution {
 }
 
 /** The provider a run's model is reached through, and what pricing it needs. */
-export interface CostProvider {
+interface CostProvider {
   type: string;
   baseUrl?: string;
   /** The Deployment's key for a provider whose price list is read live. */

@@ -56,13 +56,13 @@ import {
 } from './release-classify.js';
 import { emit } from '../telemetry.js';
 import { CLEANLINESS_SQL, sourceOf, type ReleaseSource } from './provenance.js';
-export const RECONCILE_INTERVAL_LEAF = 'release_provenance.reconcile_interval_minutes';
-export const DEFAULT_RECONCILE_INTERVAL_MINUTES = 15;
-export const DEFAULT_MAX_LOOKUPS = 50;
-export const MAX_LOOKUPS_CEILING = 1_000;
-export const SESSIONS_PER_CHECK = 200;
+const RECONCILE_INTERVAL_LEAF = 'release_provenance.reconcile_interval_minutes';
+const DEFAULT_RECONCILE_INTERVAL_MINUTES = 15;
+const DEFAULT_MAX_LOOKUPS = 50;
+const MAX_LOOKUPS_CEILING = 1_000;
+const SESSIONS_PER_CHECK = 200;
 /** How many Projects one pass checks; the rest are due on the next tick. */
-export const PROJECTS_PER_PASS = 3;
+const PROJECTS_PER_PASS = 3;
 const MAX_REFS = 20;
 const MAX_REF_CHARS = 200;
 const MAX_PACKAGE_MAPPINGS = 50;
@@ -75,16 +75,16 @@ export const RELEASE_CREDENTIAL_PURPOSE = 'Reads release tags and pull requests 
 
 export class ReleaseProvenanceInputError extends Error {}
 /** Stored data that no longer parses as what it records. */
-export class StoredValueUnreadable extends Error {
+class StoredValueUnreadable extends Error {
   constructor(readonly field: string) { super(`stored ${field} is unreadable`); }
 }
-export const STORED_SETTINGS_UNREADABLE = 'stored_settings_unreadable';
-export const CHANGED_PATHS_UNREADABLE = 'changed_paths_unreadable';
+const STORED_SETTINGS_UNREADABLE = 'stored_settings_unreadable';
+const CHANGED_PATHS_UNREADABLE = 'changed_paths_unreadable';
 export class ReleaseProvenanceConflictError extends Error {
   constructor() { super('The release provenance settings changed. Refresh before saving again.'); }
 }
 
-export interface ReleaseProvenanceSettings {
+interface ReleaseProvenanceSettings {
   enabled: boolean;
   githubRepo: string | null;
   productionRefs: string[];
@@ -94,7 +94,7 @@ export interface ReleaseProvenanceSettings {
   maxLookups: number;
 }
 
-export interface ReleaseCheckCounts {
+interface ReleaseCheckCounts {
   checked: number;
   changed: number;
   unchanged: number;
@@ -103,7 +103,7 @@ export interface ReleaseCheckCounts {
   deferred: number;
 }
 
-export type ReleaseCheckStatus = 'complete' | 'partial' | 'unavailable';
+type ReleaseCheckStatus = 'complete' | 'partial' | 'unavailable';
 
 export interface ReleaseCheck {
   requestedAt: number | null;
@@ -210,7 +210,7 @@ function checkOf(row: Row): ReleaseCheck | null {
 }
 
 /** `owner/name` from a GitHub HTTPS URL, or null for any other host. */
-export function githubRepoOf(url: string | null | undefined): string | null {
+function githubRepoOf(url: string | null | undefined): string | null {
   if (!url) return null;
   const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(url.trim());
   const repo = match ? `${match[1]}/${match[2]}` : null;
@@ -229,7 +229,7 @@ function refList(value: unknown, label: string): string[] {
 }
 
 /** The validated settings a write carries, or an input error naming the field. */
-export function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSettings {
+function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSettings {
   const githubRepo = input.githubRepo === null || input.githubRepo === '' ? null : input.githubRepo;
   if (githubRepo !== null && !isGithubRepo(githubRepo)) throw new ReleaseProvenanceInputError('The GitHub repository is named owner/name.');
   if (typeof input.enabled !== 'boolean' || typeof input.includeUnknown !== 'boolean') throw new ReleaseProvenanceInputError('Tracking and unknown reporting are on or off.');

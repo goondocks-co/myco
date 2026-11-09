@@ -56,4 +56,4 @@ async function activity_activityFeed(db: activity_import_RelationalStore, scope:
   }));
 }
 
-export { type activity_FeedItem, activity_DEFAULT_FEED, activity_MAX_FEED, activity_activityFeed };
+export { activity_MAX_FEED, activity_activityFeed };

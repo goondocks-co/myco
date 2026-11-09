@@ -34,18 +34,21 @@ import { classify, emit } from '../telemetry.js';
 import { taskTools } from '../core/task-catalogue.js';
 import { readWindowFor, type ReadWindow } from '../core/read-window.js';
 import { PROJECT_PIVOT } from '../core/tool-catalogue.js';
-import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
+import {
+  sessions_projectHoldsSession as projectHoldsSession,
+  sessions_sessionHeldByMachine as sessionHeldByMachine,
+} from '../read/catalog/sessions.js';
 import { runAllowlist, type RunAllowlist } from './run-surface.js';
 import { unknownTool, type ToolInput } from './validate.js';
 
-export interface MemberPrincipal {
+interface MemberPrincipal {
   kind: 'member';
   memberId: string;
   machineId: string;
   tokenId: string;
 }
 
-export interface GrantPrincipal {
+interface GrantPrincipal {
   kind: 'grant';
   grantId: string;
 }
@@ -70,7 +73,7 @@ export interface RunPrincipal {
   window: ReadWindow;
 }
 
-export type Principal = MemberPrincipal | GrantPrincipal | RunPrincipal;
+type Principal = MemberPrincipal | GrantPrincipal | RunPrincipal;
 
 export interface ToolContext {
   env: ServerEnv;
@@ -84,7 +87,7 @@ export interface ToolContext {
 export type ProtocolContext = ToolContext | (Omit<ToolContext, 'projectId' | 'principal'> & { projectId: null; principal: MemberPrincipal });
 
 /** A domain refusal the tool answers as a result rather than an error, the shape the member-side handlers answer. */
-export interface ToolFailure {
+interface ToolFailure {
   ok: false;
   error: string;
 }
@@ -224,7 +227,7 @@ export function runOf(ctx: ToolContext, tool: string): RunPrincipal {
 }
 
 /** What a write carries as its principal: the actor class and the instance. */
-export interface Writer {
+interface Writer {
   agentId: string;
   author: string;
 }

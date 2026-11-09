@@ -12,18 +12,18 @@
 import type { RelationalStore } from './adapters.js';
 import { ingestEvent } from '../ingest/events.js';
 import type { ReadScope } from '../read/scope.js';
-import { sessionLifecycle } from '../read/sessions.js';
+import { sessions_sessionLifecycle as sessionLifecycle } from '../read/catalog/sessions.js';
 import { SERVER_PROTOCOL } from '../constants.js';
 
 /** What a person's end says produced it. */
-export const OWNER_END_PRODUCER = { adapter: 'deployment', version: String(SERVER_PROTOCOL) } as const;
+const OWNER_END_PRODUCER = { adapter: 'deployment', version: String(SERVER_PROTOCOL) } as const;
 
 /**
  * How the ask ended. `ended`: this call ended the session. `already_ended`:
  * ended before the call. `open`: the end did not apply, a human turn newer
  * than it having landed, and the session reads open.
  */
-export type EndSessionOutcome =
+type EndSessionOutcome =
   | { outcome: 'ended'; endedAt: number }
   | { outcome: 'already_ended'; endedAt: number }
   | { outcome: 'open'; endedAt: null };

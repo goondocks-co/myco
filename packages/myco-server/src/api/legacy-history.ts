@@ -1,5 +1,7 @@
 import { heldTranscriptsFor } from '../read/transcript.js';
-import { sessionsWithImportedPrompts } from '../read/sessions.js';
+import {
+  sessions_sessionsWithImportedPrompts as sessionsWithImportedPrompts,
+} from '../read/catalog/sessions.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { LEGACY_HISTORY_MAX_EVENTS, LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';

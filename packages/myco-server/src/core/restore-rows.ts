@@ -2,7 +2,8 @@ import { writeGuardStore } from './write-guard-store.js';
 import { inheritStoreContext } from './adapters.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { DERIVED_TABLES, tombstonedAmong } from './tombstones.js';
-import { referencedBlobsOf, unregisteredAmong } from './object-release.js';
+import { referencedBlobsOf } from './object-release.js';
+import { unregisteredAmong } from '../db/storage/release-queue.js';
 import { runsPresentAmong, runsWithoutInstruction } from '../db/runs/body-restore.js';
 import { RUN_CHILD_TABLES } from '../db/runs/retention.js';
 import type { BlobRef } from './blob-references.js';
@@ -10,7 +11,7 @@ import type { BlobRef } from './blob-references.js';
 type Row = Record<string, unknown>;
 const identity = (project: unknown, id: unknown) => JSON.stringify([project, id]);
 
-export interface RetiredRunExclusion { excluded: number; unrecoverable: number }
+interface RetiredRunExclusion { excluded: number; unrecoverable: number }
 
 /**
  * Excludes what retention removed from this Deployment's own backup. A moved body whose bytes are no longer registered

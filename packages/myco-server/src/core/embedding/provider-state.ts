@@ -5,7 +5,7 @@ import { EmbeddingSwitchFailure, providerFailureAction, PROVIDER_PAUSE_RETRY_MS 
 interface ProviderState { failures: number; retry_at: number | null }
 
 /** A provider hold remains authoritative until its deadline or a configuration change. */
-export async function embeddingProviderState(db: RelationalStore, model: string): Promise<ProviderState | null> {
+async function embeddingProviderState(db: RelationalStore, model: string): Promise<ProviderState | null> {
   const held = await providerHold(db, model);
   return held === null ? null : { failures: held.failures, retry_at: held.retry_at };
 }

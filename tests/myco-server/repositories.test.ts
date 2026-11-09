@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { projectRepositories, RepositoryConflictError } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import type { RouteContext } from '@myco-server-worker/context.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { seedCredential } from './helpers/d1.js';

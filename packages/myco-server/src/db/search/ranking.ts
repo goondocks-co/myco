@@ -1,6 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet } from '../index.js';
-import { changed } from '../ddl.js';
 
 /**
  * Each search dependency's revision. A kind's revision moves whenever a row changes, or a row is written or removed,
@@ -41,29 +40,6 @@ export const REVISION_KINDS: Readonly<Record<string, readonly Watched[]>> = {
   projects: [{ table: 'projects', columns: ['project_id', 'archived_at'], rows: true }],
 };
 export type RevisionKind = 'spore' | 'plan' | 'session' | 'turn' | 'release' | 'projects';
-
-/** The revision table, its seed and the triggers that move it, as one schema step freezes them. */
-export function searchRevisionStatements(): string[] {
-  const bump = (kind: string) => `UPDATE search_revisions SET revision = revision + 1 WHERE kind = '${kind}'`;
-  return [
-    'CREATE TABLE IF NOT EXISTS search_revisions(kind TEXT PRIMARY KEY, revision INTEGER NOT NULL) WITHOUT ROWID',
-    `INSERT OR IGNORE INTO search_revisions(kind, revision) VALUES ${Object.keys(REVISION_KINDS).map(kind => `('${kind}', 0)`).join(', ')}`,
-    ...Object.entries(REVISION_KINDS).flatMap(([kind, watched]) => watched.flatMap(({ table, columns, rows, when, narrow }) => {
-      const scoped = (watching: readonly string[], test: Watched['when']) => {
-        const changedRow = `(${changed(watching)})`;
-        return test === undefined ? changedRow : `(${changedRow} AND (${test('OLD')} OR ${test('NEW')}))`;
-      };
-      const moved = narrow === undefined ? scoped(columns, when)
-        : `${scoped(columns.filter(c => !narrow.columns.includes(c)), when)} OR ${scoped(narrow.columns, narrow.when)}`;
-      return [
-        `CREATE TRIGGER IF NOT EXISTS search_revision_${kind}_${table}_update AFTER UPDATE OF ${columns.join(', ')} ON ${table}
-      WHEN ${moved} BEGIN ${bump(kind)}; END`,
-        ...(rows ? (['INSERT', 'DELETE'] as const).map(event => `CREATE TRIGGER IF NOT EXISTS search_revision_${kind}_${table}_${event.toLowerCase()} AFTER ${event} ON ${table}
-      ${when === undefined ? '' : `WHEN ${when(event === 'INSERT' ? 'NEW' : 'OLD')} `}BEGIN ${bump(kind)}; END`) : []),
-      ];
-    })),
-  ];
-}
 
 /**
  * What a full-text index ranks its matches by, as one opaque mark per index: FTS5's `averages` record (row 1 of its

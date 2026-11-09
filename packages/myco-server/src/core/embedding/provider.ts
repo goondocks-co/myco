@@ -26,7 +26,7 @@ export interface EmbeddingProvider {
  * error (with how long it asked callers to wait, where it said), its daily quota is spent until `resetsAt`, or it
  * refused this text as input. `detail` carries bounded masked diagnostic detail.
  */
-export type EmbeddingFailure =
+type EmbeddingFailure =
   | { kind: 'unreachable'; detail: string | null }
   | { kind: 'timeout' }
   | { kind: 'http'; status: number; retryAfterMs: number | null; detail: string | null }
@@ -38,7 +38,7 @@ export class EmbeddingUnavailable extends Error {
 }
 
 /** The bound on reading provider error words and keeping projected detail. */
-export const FAILURE_DETAIL_CHARS = 200;
+const FAILURE_DETAIL_CHARS = 200;
 
 /** An error's bounded masked detail, or null where it has none. */
 export const failureDetail = (error: unknown): string | null => {
@@ -50,7 +50,7 @@ export const failureDetail = (error: unknown): string | null => {
 const WORKERS_AI_DAILY_QUOTA = /\b4006\b|daily free allocation/i;
 
 /** The next midnight UTC after `now`, when a Workers AI daily allocation is renewed. */
-export const nextUtcMidnight = (now: number): number => {
+const nextUtcMidnight = (now: number): number => {
   const day = new Date(now);
   return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1);
 };
@@ -102,7 +102,7 @@ export function embeddingDiagnostic(failure: EmbeddingFailure): string {
 }
 
 /** The longest wait a provider's `Retry-After` is honoured for. */
-export const RETRY_AFTER_MAX_MS = 6 * 60 * 60_000;
+const RETRY_AFTER_MAX_MS = 6 * 60 * 60_000;
 
 /** The milliseconds a `Retry-After` header asks for, at most `RETRY_AFTER_MAX_MS`, or null where it names none that reads. */
 export function retryAfterMs(header: string | null, now: number): number | null {

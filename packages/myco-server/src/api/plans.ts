@@ -17,7 +17,12 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { notFound, ok, resolveProjectScope } from './scope.js';
-import { getPlan, pageProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import {
+  plans_getPlan as getPlan,
+  plans_pageProjectPlans as pageProjectPlans,
+  plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
+  plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
+} from '../read/catalog/plans.js';
 import { decodeCursor } from '../read/scope.js';
 import { MAX_PAGE } from './intelligence.js';
 

@@ -7,8 +7,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import {
-  cleanSummary, cleanTitle, OWNER_TITLING_WINDOW_MS, RUN_OVERRUN_MARGIN_MS, titleSession, titleReadySessions, TITLING_RUN_TIMEOUT_SECONDS, TITLING_TASK, titlingParamsOf,
+  cleanSummary,
+  cleanTitle,
+  OWNER_TITLING_WINDOW_MS,
+  titleSession,
+  titleReadySessions,
+  TITLING_RUN_TIMEOUT_SECONDS,
 } from '@myco-server-worker/core/titling.js';
+import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/run-deadline.js';
+import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { titlingParamsOf } from '@myco-server-worker/core/titling-params.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';

@@ -30,12 +30,12 @@ import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import { asMemberRole, type MemberRole } from './roles.js';
 
 /** Bytes of entropy in a link key. 32 = 256 bits. */
-export const IDENTITY_LINK_KEY_BYTES = 32;
+const IDENTITY_LINK_KEY_BYTES = 32;
 /** Lifetime of a freshly minted authority: the member is at the keyboard, and a first sign-in with a second factor fits inside it. */
 export { IDENTITY_LINK_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** Lifetime of an authority an admin creates for another member: it is handed over, like an invitation, so it lives as long as one does by default. */
 export const ADMIN_IDENTITY_LINK_TTL_MS = 60 * 60 * 1000;
-export const IDENTITY_LINK_ID_PREFIX = 'il_';
+const IDENTITY_LINK_ID_PREFIX = 'il_';
 const IDENTITY_LINK_ID_BYTES = 12;
 /** How long a finished authority stays before the spend path reclaims it. */
 export const IDENTITY_LINK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -129,7 +129,7 @@ export async function spendIdentityLinkAuthority(
 }
 
 /** Whether a member can be given a link now: absent, removed, already linked, or open to one. */
-export type MemberLinkState = 'absent' | 'revoked' | 'linked' | 'unlinked';
+type MemberLinkState = 'absent' | 'revoked' | 'linked' | 'unlinked';
 
 export async function memberLinkState(db: RelationalStore, memberId: string): Promise<MemberLinkState> {
   const row = await db
@@ -141,7 +141,7 @@ export async function memberLinkState(db: RelationalStore, memberId: string): Pr
   return row.github_id === null ? 'unlinked' : 'linked';
 }
 
-export type IdentityLinkPreview =
+type IdentityLinkPreview =
   | { ok: true; member: DashboardMember }
   | { ok: false; reason: Extract<IdentityLinkRefusal, 'denied' | 'link_requires_admin'> };
 

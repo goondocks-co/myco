@@ -187,7 +187,7 @@ describe('previewing a task started by hand', () => {
 it('preview agrees with fleet admission at the hourly ceiling and ignores old entries when it expires', async () => {
   const { budgetFixture } = await import('./helpers/budget-fixture.js');
   const { readTaskStartPreview } = await import('@myco-server-worker/read/task-start.js');
-  const { readFleetProjection } = await import('@myco-server-worker/read/fleet.js');
+  const { readFleetProjection } = await import('@myco-server-worker/db/runs/fleet.js');
   const f = await budgetFixture();
   try {
     f.queue('waiting');
@@ -213,7 +213,7 @@ it('preview agrees with fleet admission at the hourly ceiling and ignores old en
 
 it('fleet capacity excludes only the queued head in its own Project', async () => {
   const { budgetFixture } = await import('./helpers/budget-fixture.js');
-  const { readFleetProjection } = await import('@myco-server-worker/read/fleet.js');
+  const { readFleetProjection } = await import('@myco-server-worker/db/runs/fleet.js');
   const f = await budgetFixture();
   try {
     f.queue('shared-id', 'manual', 'proj_1');
@@ -228,7 +228,7 @@ it('fleet capacity excludes only the queued head in its own Project', async () =
 
 it('serves a many-Project fleet queue within one request query allowance', async () => {
   const { budgetFixture } = await import('./helpers/budget-fixture.js');
-  const { readFleetProjection } = await import('@myco-server-worker/read/fleet.js');
+  const { readFleetProjection } = await import('@myco-server-worker/db/runs/fleet.js');
   const f = await budgetFixture();
   try {
     for (let i = 0; i < 60; i++) {

@@ -1,4 +1,7 @@
-import { currentSporeVectorIds } from '../../../packages/myco-server/src/db/embeddings/calibration.js';
+import {
+  currentSporeVectorIds,
+  missingSporeVectors,
+} from '../../../packages/myco-server/src/db/embeddings/calibration.js';
 /**
  * Runtime proof for spore calibration (#1429), on a local D1 in real workerd.
  *
@@ -15,8 +18,7 @@ import path from 'node:path';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '../../../packages/myco-server/src/db/schema.js';
 import { reconcileEmbedding, type EmbeddingContext } from '../../../packages/myco-server/src/core/embedding/reconcile.js';
-import { hasEmbeddingWork } from '../../../packages/myco-server/src/core/embedding/jobs.js';
-import { missingSporeVectors } from '../../../packages/myco-server/src/core/embedding/hubness.js';
+import { hasEmbeddingWork } from '../../../packages/myco-server/src/core/embedding/work.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from '../../../packages/myco-server/src/core/embedding/provider.js';
 import { cloudflareVectorStore } from '../../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { cosineSimilarity } from '../../../packages/myco-server/src/core/embedding/vectors.js';

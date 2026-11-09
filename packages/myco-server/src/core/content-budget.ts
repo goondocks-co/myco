@@ -1,6 +1,6 @@
 import type { BlobStore, PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 
-export interface ContentUsage {
+interface ContentUsage {
   statements: number;
   roundTrips: number;
   blobCalls: number;
@@ -8,7 +8,6 @@ export interface ContentUsage {
 export const CONTENT_STATEMENT_LIMIT = 120;
 export const CONTENT_BLOB_LIMIT = 60;
 export const CONTENT_WALL_MS = 2000;
-export const CONTENT_PREPARATION_CALL_RESERVE = 40;
 export const CONTENT_WAKE_JOB_RESERVE = 150;
 interface BudgetScope {
   usage: ContentUsage;

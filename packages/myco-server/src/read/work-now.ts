@@ -1,10 +1,9 @@
 import { queuedWorkExists } from '../db/runs/queue.js';
 import { admissionReady } from '../db/runs/live.js';
-import { todayProjects, todayRunning, todayQueued, NOW_PROJECTS_MAX, NOW_RUNNING_MAX, type ProjectCursor } from '../db/runs/now.js';
-import { failureReasons, unresolvedFailures, FAILURE_STREAK_SHOWN, NOW_WATCHED_TASKS } from '../db/runs/outcomes.js';
-import { todaySchedules, curationDispositions, NOW_FAILING_GROUPS } from '../db/learning/curation-now.js';
+import { todayProjects, todayRunning, todayQueued, type ProjectCursor } from '../db/runs/now.js';
+import { failureReasons, unresolvedFailures, NOW_WATCHED_TASKS } from '../db/runs/outcomes.js';
+import { todaySchedules, curationDispositions } from '../db/learning/curation-now.js';
 import { todayMarks } from '../db/meta/marks.js';
-export { NOW_PROJECTS_MAX, NOW_RUNNING_MAX, NOW_FAILING_GROUPS };
 /** Current work, waits and unresolved failures, with exact live totals and explicit page coverage. */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
@@ -14,9 +13,15 @@ import { callWords } from '@goondocks/myco-shared/call-words';
 import type { StepKind } from '@goondocks/myco-shared/worker-steps';
 import type { Marks } from '@goondocks/myco-shared/live-marks';
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
-import { CURATION_TASK, EXTRACTION_TASK, CARD_TASK, TASK_WORDS } from '../core/task-catalogue.js';
+import { CURATION_TASK, EXTRACTION_TASK, TASK_WORDS } from '../core/task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import type { WorkerFleetRow } from '../core/worker-contacts.js';
-import { fleetAvailability, applyFleetSignInAvailability, fleetSelectionContext, fleetWaits } from './fleet.js';
+import {
+  fleetAvailability,
+  applyFleetSignInAvailability,
+  fleetSelectionContext,
+  fleetWaits,
+} from '../db/runs/fleet.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
 import { readTaskBudgetHolds as readBudgetHolds } from '../db/runs/queue.js';
 import { BUDGET_WINDOW_MS } from '../core/budget-policy.js';
@@ -28,7 +33,6 @@ import { ADVANCING_STAGES, type RecoveryProducerStatus } from '../core/recovery-
 import { within } from '../core/recovery-inventory.js';
 import { OUTCOME_LOOKBACK_MS } from '../core/attention-state.js';
 
-export const NOW_RECENT_RUNS = FAILURE_STREAK_SHOWN;
 /** How long a producer is given to say whether a backup is copying the database. */
 const BACKUP_STATUS_MS = 2_000;
 
@@ -38,13 +42,10 @@ interface FailingGroup { projectId: string; group: Record<string, unknown> }
 /** A curation group's decisions that settle it: a failure of the run that worked on it no longer needs anyone. */
 const SETTLED_DECISIONS: readonly string[] = ['keep', 'resolved', 'changed'];
 
-/** The tasks whose failure needs someone: what Myco learns, maps, seeds and curates. */
-export { NOW_WATCHED_TASKS };
-
-export type WorkNowSection = 'running' | 'waiting' | 'needsYou';
+type WorkNowSection = 'running' | 'waiting' | 'needsYou';
 
 /** A run running now, with the latest thing it did. */
-export interface NowRunning {
+interface NowRunning {
   runId: string;
   projectId: string;
   task: string;
@@ -60,7 +61,7 @@ export interface NowRunning {
 }
 
 /** Work that waits, and the server's reason. */
-export interface NowWaiting {
+interface NowWaiting {
   key: string;
   /** The Project it waits in, or null for what waits Deployment-wide. */
   projectId: string | null;
@@ -75,7 +76,7 @@ export interface NowWaiting {
 }
 
 /** A failure or a stuck item, with the server's own reason and the run to open. */
-export interface NowNeed {
+interface NowNeed {
   key: string;
   projectId: string | null;
   what: string;
@@ -87,7 +88,7 @@ export interface NowNeed {
   retryAt: number | null;
 }
 
-export interface WorkNowAnswer {
+interface WorkNowAnswer {
   observedAt: number;
   scope: 'project' | 'deployment';
   running: NowRunning[];
@@ -113,7 +114,7 @@ export interface WorkNowAnswer {
 }
 
 /** One Project, or every Project the dashboard lists. */
-export type WorkNowScope = { projectId: string } | { all: true };
+type WorkNowScope = { projectId: string } | { all: true };
 
 const taskName = (task: string | null): string => (task !== null && task in TASK_WORDS ? TASK_WORDS[task as keyof typeof TASK_WORDS].name : task ?? 'A task');
 const num = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));

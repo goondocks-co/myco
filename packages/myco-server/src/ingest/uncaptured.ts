@@ -7,12 +7,12 @@
  */
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 
-export { UNCAPTURED_REASONS, isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
+export { isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import type { HeldState, UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 
 /** One report of a repository a machine could not capture. */
-export interface UncapturedReport {
+interface UncapturedReport {
   machineId: string;
   memberId: string;
   rootKey: string;

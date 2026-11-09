@@ -19,7 +19,10 @@ import { isKnownWorkerCapability } from '@goondocks/myco-shared/repository';
 import { HARNESS_CREDENTIALS } from '@goondocks/myco-shared/harness-providers';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { schemaVersion } from '../read/meta.js';
-import { listProjects, type ProjectRow } from '../read/sessions.js';
+import {
+  sessions_listProjects as listProjects,
+  type sessions_ProjectRow as ProjectRow,
+} from '../read/catalog/sessions.js';
 import { listQueuedAcrossProjects } from '../db/runs/queue.js';
 import { workerLiveness } from '../db/runs/status.js';
 import { RETAINED_TASKS } from './task-catalogue.js';
@@ -29,16 +32,16 @@ import { CONTACT_RECENT_MS, isContactOutcome, readWorkerFleet, type ContactOutco
 import { pendingTranscripts } from '../ingest/parse.js';
 import { DEFERRED_JOBS, SERVER_JOBS, WAKE_CONTINUATIONS } from './jobs.js';
 import { CLASSIFIERS } from '../telemetry.js';
-import { missingSporeVectors, type MissingSporeVectors } from './embedding/hubness.js';
+import { missingSporeVectors, type MissingSporeVectors } from '../db/embeddings/calibration.js';
 import { resolveSemanticSearch } from './search.js';
 
-export const DEPLOYMENT_BUNDLE_VERSION = 1;
+const DEPLOYMENT_BUNDLE_VERSION = 1;
 
 /** How many queued runs one document lists, oldest first. */
-export const MAX_QUEUED_REPORTED = 50;
+const MAX_QUEUED_REPORTED = 50;
 
 /** What a Deployment document never carries, by class. */
-export const DEPLOYMENT_OMISSIONS: readonly string[] = [
+const DEPLOYMENT_OMISSIONS: readonly string[] = [
   'credentials — every stored provider key, and every member, run or grant token',
   'request bodies — the payload of any captured event and any stored blob',
   'authored text — prompts, responses, transcript contents and generated artifacts',
@@ -46,20 +49,20 @@ export const DEPLOYMENT_OMISSIONS: readonly string[] = [
 ] as const;
 
 /** One capability this server is configured for. */
-export interface CapabilityFacts {
+interface CapabilityFacts {
   capability: string;
   present: boolean;
   operatorNames: string[];
 }
 
 /** A harness a worker reported, and whether it reported it logged in. Its own probe, never a tested provider. */
-export interface ReportedHarnessFacts {
+interface ReportedHarnessFacts {
   id: string;
   authenticated: boolean;
 }
 
 /** One worker, by what the Deployment holds about it. */
-export interface WorkerFacts {
+interface WorkerFacts {
   credentialId: string;
   machineId: string | null;
   /** Null when the stored report could not be read; empty is a worker reporting none. */
@@ -83,12 +86,11 @@ export interface WorkerFacts {
 /** A task the catalogue retains, or null for one it does not name. */
 const knownTask = (task: string | null): string | null => (task !== null && RETAINED_TASKS.some((known) => known === task) ? task : null);
 
-
 /** A holder the shared vocabulary declares, or null. An inherited key is not a declaration. */
 const knownHolder = (heldBy: string | null): string | null => (heldBy !== null && declared(HELD_BY_WORDS, heldBy) !== undefined ? heldBy : null);
 
 /** One queued run, by the facts that explain its wait. */
-export interface QueuedRunFacts {
+interface QueuedRunFacts {
   runId: string;
   projectId: string;
   /** Null for a task the catalogue does not retain; the run id still names the row. */
@@ -105,7 +107,7 @@ export interface QueuedRunFacts {
 }
 
 /** A project, by what it has received. */
-export interface ProjectFacts {
+interface ProjectFacts {
   projectId: string;
   sessionCount: number;
   lastActivityAt: number | null;
@@ -114,7 +116,7 @@ export interface ProjectFacts {
 }
 
 /** One declared unit of recurring work, and whether this Deployment runs it. */
-export interface DeclaredWorkFacts {
+interface DeclaredWorkFacts {
   name: string;
   kind: 'job' | 'deferred' | 'continuation';
   /** The deepest power state a job still runs at; null for a continuation, which no power state gates. */
@@ -130,9 +132,9 @@ export interface DeclaredWorkFacts {
  * unreachable: telling the three apart would mean carrying the platform's
  * message.
  */
-export type StoreState = 'readable' | 'unavailable';
+type StoreState = 'readable' | 'unavailable';
 
-export interface DeploymentDiagnostics {
+interface DeploymentDiagnostics {
   bundle: 'myco.deployment.diagnostics';
   bundleVersion: number;
   generatedAt: number;

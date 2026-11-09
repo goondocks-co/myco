@@ -1,7 +1,9 @@
 import { encodeCard } from '@goondocks/myco-shared/turn-card';
 import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
-import { sessionLineage } from '@myco-server-worker/read/lineage.js';
+import {
+  lineage_sessionLineage as sessionLineage,
+} from '@myco-server-worker/read/catalog/lineage.js';
 /**
  * Sessions: the table across every project and within one, and a session's
  * reading page with what came of it, its conversation, its tabs, its raw data
@@ -36,7 +38,6 @@ const DAY = 24 * HOUR;
 /** Tuesday, September 29 2026, 16:00 local. */
 const NOW = new Date(2026, 8, 29, 16, 0, 0).getTime();
 const TODAY = new Date(2026, 8, 29).getTime();
-
 
 const ADMIN = { sub: '1', login: 'ada', member: { id: 'mem_q3Vb8xRk2LmT7wYz', label: 'Ada', role: 'admin' as const } };
 const MEMBER = { sub: '2', login: 'lin', member: { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin', role: 'member' as const } };
@@ -1205,7 +1206,6 @@ describe('the session reading page', () => {
     expect(within(row).getByText('1 spore no longer kept')).toBeTruthy();
   });
 
-
   it('shows all contributions, empty-answer diagnostics, durations and a nested sub-agent without inventing tokens', async () => {
     const prompt = (id: string, origin: string, text: string, parentPromptId: string | null = null) => ({ promptId: id, origin, text, parentPromptId, promptKind: null, threadLabel: null, blobKey: null, createdAt: NOW - 3000 });
     const empty = { responses: [], attachments: [], plans: [], children: [], injection: null };
@@ -1268,7 +1268,6 @@ describe('the session reading page', () => {
     expect(within(about).getByText('Not recorded, including sub-agents')).toBeTruthy();
     expect(within(about).getByText('Wall time')).toBeTruthy();
   });
-
 
   it('explains an empty match set once', async () => {
     server(routes({
@@ -2195,7 +2194,6 @@ describe('the session reading page', () => {
     expect(document.querySelector('[data-testid^="turn-"]')!.textContent).not.toContain('Reply time');
   });
 });
-
 
 describe('prompt display follows harness formats', () => {
   it.each([

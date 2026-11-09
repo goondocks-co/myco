@@ -6,7 +6,7 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { createCloudflareDeployment, updateCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
 import { deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord, queryCloudflareDatabase } from '@myco/server/cloudflare.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
-import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
+import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { Database } from 'bun:sqlite';
@@ -393,7 +393,6 @@ it('GATE: interrupted recovery imports and migration resumes record a bookmark b
   });
 });
 
-
 it('GATE: a failed durable deployment-record write refuses migrations after obtaining the bookmark', async () => {
   for (const verb of ['update', 'create'] as const) await fixture({ persistFail: true }, async (f) => {
     await expect(f[verb]()).rejects.toThrow('could not durably record');
@@ -415,7 +414,6 @@ it('GATE: a first create interrupted before schema installation requires a bookm
   });
 });
 
-
 it('GATE: a fresh provisioning receipt cannot exempt a populated database', async () => {
   await fixture({ fresh: true, freshPopulated: true }, async ({ home, create, calls }) => {
     fs.rmSync(deploymentRecordPath(home));
@@ -423,7 +421,6 @@ it('GATE: a fresh provisioning receipt cannot exempt a populated database', asyn
     expect(calls().some(({ args }) => args.includes('migrations'))).toBe(false);
   });
 });
-
 
 it('GATE: asynchronous durable-write failures refuse migrations', async () => {
   await fixture({}, async ({ root, home, calls }) => {
@@ -437,7 +434,6 @@ it('GATE: asynchronous durable-write failures refuse migrations', async () => {
   });
 });
 
-
 it('GATE: a populated database stamped zero is refused rather than treated as empty provisioning', async () => {
   await fixture({ fresh: true, freshPopulated: true, schema: '0' }, async ({ home, create, calls }) => {
     fs.rmSync(deploymentRecordPath(home));
@@ -446,7 +442,6 @@ it('GATE: a populated database stamped zero is refused rather than treated as em
     expect(calls().some(({ args }) => args.includes('migrations') || ((args[0] === 'vectorize' || args[0] === 'r2') && !args.includes('list')))).toBe(false);
   });
 });
-
 
 for(const fault of ['stamps','catalogue'])it(`publishes the Worker without disabling an active governor after a ${fault} read failure`,async()=>{
   await fixture({schema:String(SERVER_SCHEMA_VERSION),budgetReadFailure:fault},async({root,update,calls,reports})=>{

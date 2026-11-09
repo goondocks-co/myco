@@ -2,13 +2,13 @@ import { HARNESS_MEMBER_ID } from '../../constants.js';
 import { read, write } from '../index.js';
 import type { CatchupFamily } from '../projections/family.js';
 
-export const LINEAGE_HEAD_PROJECTION = 'credential_lineages';
-export const LINEAGE_HEAD_PHASE = 'credentialLineages';
+const LINEAGE_HEAD_PROJECTION = 'credential_lineages';
+const LINEAGE_HEAD_PHASE = 'credentialLineages';
 
 /** Run credentials are one-row lineages owned by their run, so only a member's own runtimes have a head. */
 const PERSON_CREDENTIAL = (alias: string) => `${alias}.member_id<>'${HARNESS_MEMBER_ID}'`;
 
-export const LINEAGE_HEAD_SOURCE = {
+const LINEAGE_HEAD_SOURCE = {
   table: 'member_credentials INDEXED BY idx_member_credentials_person_lineage',
   columns: ['lineage_root'],
   where: `member_id<>'${HARNESS_MEMBER_ID}'`,
@@ -41,7 +41,7 @@ const removeEmptyHead = (root: string): string => `DELETE FROM credential_lineag
   AND NOT EXISTS (SELECT 1 FROM member_credentials f INDEXED BY idx_member_credentials_person_lineage WHERE f.lineage_root=credential_lineages.lineage_root AND ${PERSON_CREDENTIAL('f')})`;
 
 /** The shared catch-up replays exactly the reconcile the triggers run. */
-export const LINEAGE_HEAD_RECONCILE = [write<[keys: string]>({
+const LINEAGE_HEAD_RECONCILE = [write<[keys: string]>({
   name: 'lineageHeads.reconcilePage',
   sql: reconcileHead(`SELECT json_extract(value,'$[0]') AS lineage_root FROM json_each(?1)`),
 })];
@@ -53,7 +53,7 @@ export const lineageHeadsReady = read<[], { done: number }>({
 });
 
 /** A restore replaces the credentials wholesale, and the rebuild starts from no heads. */
-export const clearLineageHeads = write<[]>({ name: 'lineageHeads.clear', sql: 'DELETE FROM credential_lineages' });
+const clearLineageHeads = write<[]>({ name: 'lineageHeads.clear', sql: 'DELETE FROM credential_lineages' });
 
 /** Replaying every lineage rebuilds its head, so heads a copy brought with it cannot survive a restart. */
 export const LINEAGE_HEAD_CATCHUP = {

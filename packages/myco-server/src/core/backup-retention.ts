@@ -10,13 +10,13 @@ import { observedSettingsGuard, storedSettings } from './settings.js';
 import { readRetentionIndex } from '../db/storage/backup-retention.js';
 
 const RETENTION_LEAVES = ['backup.retention.keep_daily','backup.retention.keep_weekly'] as const;
-export const KEEP_DAILY_DEFAULT = 14;
-export const KEEP_WEEKLY_DEFAULT = 8;
+const KEEP_DAILY_DEFAULT = 14;
+const KEEP_WEEKLY_DEFAULT = 8;
 
-export interface BackupRetentionPolicy { keepDaily: number; keepWeekly: number }
+interface BackupRetentionPolicy { keepDaily: number; keepWeekly: number }
 
 /** A catalogued backup as retention reads it. */
-export interface RetainedBackup { id: string; created_at: number; pinned: number }
+interface RetainedBackup { id: string; created_at: number; pinned: number }
 
 /** The retention policy the settings leaves hold now, with the defaults for a leaf never written. */
 export async function backupRetentionPolicy(db: RelationalStore): Promise<BackupRetentionPolicy> {

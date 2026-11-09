@@ -10,7 +10,11 @@ import { Database } from 'bun:sqlite';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
-import { searchAcross, searchProject, type SearchOptions } from '@myco-server-worker/read/search.js';
+import {
+  search_searchAcross as searchAcross,
+  search_searchProject as searchProject,
+} from '@myco-server-worker/read/catalog/search.js';
+import { type SearchOptions } from '@goondocks/myco-shared/search-types';
 import { getReleaseStatesAcross } from '@myco-server-worker/core/provenance.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 import { sqliteD1 } from './helpers/d1.js';

@@ -6,7 +6,7 @@ export const learningRecencySql = (fresh: boolean, now: number | string): string
   `source_activity_at ${fresh ? '>' : '<='} ${typeof now === 'number' ? Math.floor(now - FRESH_LEARNING_MS) : `(${now}-${FRESH_LEARNING_MS})`}`;
 
 /** Consecutive claims an admitted fresh session may take per stage before history policy holds it. */
-export const FRESH_LEARNING_ATTEMPTS = 4;
+const FRESH_LEARNING_ATTEMPTS = 4;
 
 /** A session admitted while fresh retains bounded attempts for its unfinished stage. */
 export const freshRetrySql = (kind: 'cards' | 'learning'): string =>

@@ -26,8 +26,6 @@ import { toBase64Url } from '../base64.js';
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { writeGuardBatch, writeGuardStore } from '../core/write-guard-store.js';
 import { storedRunnerCredentialChoices, parseRunnerCredentialChoices, type StoredRunnerCredentialChoices, type RunnerCredentialChoices, type RunnerCredentialChoice } from '@goondocks/myco-shared/runner-fleet';
-import type { RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
-export type { RunnerFleetRecord } from '@goondocks/myco-shared/runner-fleet';
 import { readWorkerFleet, invalidateRunnerContacts } from '../core/worker-contacts.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
@@ -37,23 +35,23 @@ import { deploymentIdentity, type AuthorizationSubject } from './authorization.j
 import { runParentLive } from '../db/runs/run-parent.js';
 import { MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_BYTES, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from './tokens.js';
 
-export const RUNNER_TOKEN_PREFIX = 'mycorun_';
+const RUNNER_TOKEN_PREFIX = 'mycorun_';
 /** Every runner bearer: the prefix and 32 random bytes as unpadded base64url. Disjoint from member tokens and grant keys. */
 export const RUNNER_TOKEN_PATTERN = new RegExp(`^${RUNNER_TOKEN_PREFIX}[A-Za-z0-9_-]{${Math.ceil((MEMBER_TOKEN_BYTES * 4) / 3)}}$`);
-export const RUNNER_ID_PREFIX = 'rn_';
-export const RUNNER_CREDENTIAL_ID_PREFIX = 'rc_';
+const RUNNER_ID_PREFIX = 'rn_';
+const RUNNER_CREDENTIAL_ID_PREFIX = 'rc_';
 const RUNNER_ID_BYTES = 12;
 /** A runner's display name: the identity grammar enrolled machines answer to. */
 export const RUNNER_NAME_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-export const RUNNER_TOKEN_TTL_MS = MEMBER_TOKEN_TTL_MS;
+const RUNNER_TOKEN_TTL_MS = MEMBER_TOKEN_TTL_MS;
 export const RUNNER_TOKEN_REFRESH_WINDOW_MS = MEMBER_TOKEN_REFRESH_WINDOW_MS;
 export const RUNNER_LINEAGE_IDLE_MS = MEMBER_LINEAGE_IDLE_MS;
 /** The `revoked_by` of every credential a replayed rotation ended. */
-export const RUNNER_REPLAY_REVOKER = 'runner-lineage-replay';
+const RUNNER_REPLAY_REVOKER = 'runner-lineage-replay';
 /** The `revoked_by` of every credential a removal ended. */
-export const RUNNER_REMOVAL_REVOKER = 'runner-removed';
+const RUNNER_REMOVAL_REVOKER = 'runner-removed';
 
-export type RunnerState = 'enabled' | 'paused' | 'removed';
+type RunnerState = 'enabled' | 'paused' | 'removed';
 
 /** A runner credential the pipeline authenticated. */
 export interface RunnerAuth {
@@ -144,7 +142,7 @@ export class RunnerWriteRefused extends Error {
  * The assertion every runner-admitted mutation commits with: the presenting credential still carries its runner's
  * authority, under the same expiry its route admitted it with — `lapsed` on the rotation route alone.
  */
-export function runnerWriteAssertion(db: RelationalStore, credentialId: string, expiry: 'live' | 'lapsed' = 'live'): () => PreparedStatement {
+function runnerWriteAssertion(db: RelationalStore, credentialId: string, expiry: 'live' | 'lapsed' = 'live'): () => PreparedStatement {
   return () => db.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM runner_credentials c WHERE c.id = ? AND ${runnerCredentialAuthority('c', SQL_NOW_MS, expiry)})
     THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(credentialId, RUNNER_WRITE_REFUSED);
 }
@@ -176,7 +174,7 @@ export async function activateRunnerSuccessor(db: RelationalStore, auth: RunnerA
   ]);
 }
 
-export type RunnerRotation =
+type RunnerRotation =
   | { rotated: true; credentialId: string; expiresAt: number; refreshAfter: number }
   | { rotated: false; code: 'refresh_too_early'; refreshAfter: number }
   | { rotated: false; code: 'parse' | 'candidate_conflict' | 'revoked'; reason: string };
@@ -316,7 +314,7 @@ const CONTROL_TRANSITIONS: Readonly<Record<RunnerControl, { from: string; to: Ru
   remove: { from: `state <> 'removed'`, to: 'removed', audit: 'removed' },
 };
 
-export interface RunnerRecord {
+interface RunnerRecord {
   id: string;
   name: string;
   state: RunnerState;
@@ -381,7 +379,6 @@ export async function runnerCredentialChoices(db: RelationalStore, runnerId: str
   if (row === null) throw new Error('runner not found');
   return storedRunnerCredentialChoices(row.credential_choices);
 }
-
 
 export class RunnerSignInUnavailable extends Error {
   constructor() { super('the chosen stored key is unavailable'); }

@@ -19,11 +19,11 @@ import { CLEANLINESS_SQL, getReleaseState, sourceOf, sourcePoint, type CapturePo
 import type { ReadScope } from './scope.js';
 
 /** Whether tracked files differed from the commit: `unreadable` when the member could not tell. */
-export type CommitChanges = 'none' | 'uncommitted' | 'unreadable';
+type CommitChanges = 'none' | 'uncommitted' | 'unreadable';
 
 const CHANGES: Record<Cleanliness, CommitChanges> = { '0': 'none', '1': 'uncommitted', unknown: 'unreadable' };
 
-export interface CommitObservation {
+interface CommitObservation {
   point: CapturePoint;
   /** The full commit; a reader shows it shortened. */
   headSha: string;
@@ -32,7 +32,7 @@ export interface CommitObservation {
   capturedAt: number;
 }
 
-export interface CommitReleaseCheck {
+interface CommitReleaseCheck {
   state: string;
   basisKind: string | null;
   basisRef: string | null;
@@ -45,7 +45,7 @@ export interface CommitReleaseCheck {
   covers: { point: CapturePoint; current: boolean } | null;
 }
 
-export interface SessionCommits {
+interface SessionCommits {
   /** Start first, then end. */
   observations: CommitObservation[];
   release: CommitReleaseCheck | null;

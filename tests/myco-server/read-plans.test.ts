@@ -22,8 +22,10 @@ import { explainReadPlan } from './helpers/prepared.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor } from '@myco-server-worker/read/scope.js';
-import { listSessions } from '@myco-server-worker/read/sessions.js';
-import { listPlans } from '@myco-server-worker/read/children.js';
+import {
+  sessions_listSessions as listSessions,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import { children_listPlans as listPlans } from '@myco-server-worker/read/catalog/children.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';

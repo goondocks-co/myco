@@ -1,4 +1,4 @@
-import { clearArchivedTranscriptRanges } from './transcript-ranges.js';
+import { clearArchivedTranscriptRanges } from '../db/documents/ranges.js';
 import { learningHolds, learningHoldsSql } from './learning-hold.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
@@ -41,7 +41,7 @@ const rawEventStateGuard=(s:RawEventState)=>({sql:`EXISTS (SELECT 1 FROM raw_eve
   params:[s.cursor_project,s.cursor_session,s.cursor_created,s.cursor_rowid,s.revision]});
 
 /** The stored leaves keep their observed versions through the archive transaction. */
-export async function policyGuard(db:RelationalStore,days:number):Promise<{sql:string;params:unknown[]}> {
+async function policyGuard(db:RelationalStore,days:number):Promise<{sql:string;params:unknown[]}> {
   const guard=await observedSettingsGuard(db,['retention.raw_days','retention.transcripts']);
   const fact=await transcriptRetentionFact(guard.view);
   if(fact.state!=='days'||fact.days!==days) throw new Error('raw_archive_policy_changed');

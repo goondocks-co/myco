@@ -17,17 +17,17 @@ export interface ChunkRow {
   object_key: string | null;
 }
 export interface PageRow { owner: string; page: number; chunk_no: number; records: number; bytes: number; sealed?: number }
-export interface Directory { generation: number; chunks: Map<number, ChunkRow>; pages: PageRow[] }
+interface Directory { generation: number; chunks: Map<number, ChunkRow>; pages: PageRow[] }
 
 /** Chunk rows of one generation with the stored object each names; binds `?1` project and `?2` session. */
-export const chunkRowsSql = (generation = '?3'): string => `SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,c.metadata,
+const chunkRowsSql = (generation = '?3'): string => `SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,c.metadata,
   ${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key
   FROM session_chunks c WHERE c.project_id=?1 AND c.session_id=?2 AND c.generation=${generation} ORDER BY c.chunk_no`;
 /** Page rows of one generation; binds `?1` project and `?2` session. */
-export const pageRowsSql = (generation = '?3'): string => `SELECT owner,page,chunk_no,records,bytes,sealed FROM session_pages
+const pageRowsSql = (generation = '?3'): string => `SELECT owner,page,chunk_no,records,bytes,sealed FROM session_pages
   WHERE project_id=?1 AND session_id=?2 AND generation=${generation} ORDER BY owner,page`;
 
-export function directoryOf(generation: number, chunks: readonly ChunkRow[], pages: readonly PageRow[]): Directory {
+function directoryOf(generation: number, chunks: readonly ChunkRow[], pages: readonly PageRow[]): Directory {
   return { generation, chunks: new Map(chunks.map((row) => [row.chunk_no, row])), pages: [...pages] };
 }
 

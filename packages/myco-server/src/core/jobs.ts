@@ -25,9 +25,10 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { declared } from './declared.js';
 import type { PowerState } from './power.js';
 import { POWER_STATE_DEPTH } from './power.js';
-import { CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 
-export interface ServerJob {
+interface ServerJob {
   name: string;
   /** The deepest power state this job still runs at. */
   runsThrough: PowerState;
@@ -56,7 +57,7 @@ export type TickWake = 'clock' | 'request';
  * remains the only alarm owner; it calls each continuation declared here, then derives its next wake from the
  * soonest deadline the continuations and the tick ask for.
  */
-export interface WakeContinuation {
+interface WakeContinuation {
   name: string;
   /** What it may advance. */
   advances: string;
@@ -191,7 +192,7 @@ export const SERVER_JOBS: readonly ServerJob[] = [
 ];
 
 /** A job declared for a state, awaiting the child that gives it work. Nothing runs it; naming the owner keeps the table honest. */
-export interface DeferredJob extends ServerJob {
+interface DeferredJob extends ServerJob {
   owner: string;
 }
 

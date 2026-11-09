@@ -14,10 +14,10 @@ import type { MaintenanceCheck, PortResult, StoreMaintenancePort, StoreMeasureme
 import { MAX_FINDINGS } from '../../db/maintenance/findings.js';
 
 /** Rows `PRAGMA optimize` may sample per index; SQLite's own recommended bound for a periodic optimize. */
-export const ANALYSIS_LIMIT = 400;
+const ANALYSIS_LIMIT = 400;
 
 /** What the integrity thread reports. `truncated` is true when a check had more to say than `max`. */
-export interface IntegrityReport {
+interface IntegrityReport {
   findings: string[];
   truncated: boolean;
 }

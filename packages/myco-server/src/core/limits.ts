@@ -13,9 +13,7 @@
 import type { RelationalStore } from './adapters.js';
 import { HELD_BY_WORDS, type CapabilityHold, type HeldBy } from '@goondocks/myco-shared/run-holds';
 
-export { HELD_BY_WORDS, holdSentence, type HeldBy } from '@goondocks/myco-shared/run-holds';
 import { settingTexts } from './settings.js';
-
 
 /** The holds that describe the Deployment rather than one task: a run behind any of them is behind every later run too. */
 export const DEPLOYMENT_WIDE_HOLDS: ReadonlySet<HeldBy> = new Set<HeldBy>(['fleet', 'concurrent_runs', 'runtime']);

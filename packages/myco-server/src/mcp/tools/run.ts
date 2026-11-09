@@ -58,7 +58,7 @@ const stateWeight = (key: string, value: string) =>
 const str = (v: unknown, max: number): string | undefined => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : undefined);
 
 /** The token that names a value's content, or undefined for a key that holds none. */
-export async function versionOf(value: string | null): Promise<string | undefined> {
+async function versionOf(value: string | null): Promise<string | undefined> {
   return value === null ? undefined : (await sha256Hex(value)).slice(0, VERSION_CHARS);
 }
 

@@ -16,8 +16,8 @@ import type { CatchupFamily } from '../projections/family.js';
  * `spore_counts` per Project, `spore_session_counts` per session and UTC day, and `spore_daily` per Project and UTC day
  * of `created_at`.
  */
-export const SPORE_COUNT_PROJECTION = 'spore_counts';
-export const SPORE_COUNT_PHASE = 'spores';
+const SPORE_COUNT_PROJECTION = 'spore_counts';
+const SPORE_COUNT_PHASE = 'spores';
 export const SPORE_DAY_MS = 86_400_000;
 
 const dayOf = (time: string) => `CAST((${time} - ((${time} % ${SPORE_DAY_MS} + ${SPORE_DAY_MS}) % ${SPORE_DAY_MS})) / ${SPORE_DAY_MS} AS INTEGER)`;
@@ -31,7 +31,7 @@ const authorKind = (s: string) => `CASE WHEN ${s}.author IS NULL THEN ''
 const FACT_COLUMNS = ['status', 'observation_type', 'author_kind', 'session_id', 'day'] as const;
 
 /** Re-derive the facts of the spore keys `keys` (columns `project_id,id`): a key whose spore is gone loses its fact. */
-export function reconcileSporeFacts(keys: string): string[] {
+function reconcileSporeFacts(keys: string): string[] {
   return [
     `DELETE FROM spore_count_facts WHERE (project_id,id) IN (SELECT project_id,id FROM (${keys}))
       AND NOT EXISTS (SELECT 1 FROM spores s WHERE s.project_id=spore_count_facts.project_id AND s.id=spore_count_facts.id)`,

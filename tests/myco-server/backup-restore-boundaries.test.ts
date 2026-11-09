@@ -292,7 +292,7 @@ test('restore guard reads remain linear across sessions and additive rows', asyn
 });
 
 test('archive selection clears only its named range with bounded store reads', async () => {
-  const { clearArchivedTranscriptRanges } = await import('@myco-server-worker/core/transcript-ranges.js');
+  const { clearArchivedTranscriptRanges } = await import('@myco-server-worker/db/documents/ranges.js');
   const { observeRestoreStore } = await import('./helpers/restore-observer.js');
   await withDocumentStores(async (db,target)=>{
     const blobs=memoryBlobStore();

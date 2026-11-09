@@ -15,25 +15,40 @@ import {
 } from '../constants.js';
 import { emit } from '../telemetry.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
-import { countConvergenceTitleSessions, listTitleCandidates, listReadyTitleSessions, type TitleCandidate, type TitleCandidateWindow } from '../read/children.js';
+import {
+  children_countConvergenceTitleSessions as countConvergenceTitleSessions,
+  children_listTitleCandidates as listTitleCandidates,
+  children_listReadyTitleSessions as listReadyTitleSessions,
+  type children_TitleCandidate as TitleCandidate,
+  type children_TitleCandidateWindow as TitleCandidateWindow,
+} from '../read/catalog/children.js';
 import { sessionHasUserPrompt } from '../read/document-catalog.js';
 import { deploymentLastTaskEntryAt, deploymentTaskCeilingWindow, deploymentTaskEntriesSince, deploymentTaskRunTally } from '../db/runs/claim.js';
 import { TITLING_BACKFILL_SCHEDULE, type ScheduleState } from './jobs.js';
 import type { PowerState } from './power.js';
-import { scheduleFor, scheduleLeaves } from './scheduled-tasks.js';
-import { claimOwnerTitling, claimRefreshTitling, claimTitling, restoreTitlingStamp } from '../read/sessions.js';
+import { scheduleFor, scheduleLeaves } from './schedule-rules.js';
+import {
+  claimOwnerTitling,
+  claimRefreshTitling,
+  claimTitling,
+  restoreTitlingStamp,
+} from '../db/session-titles.js';
 import { storedSettings } from './settings.js';
-import { CeilingReached, DispatchAdmissionRefused, dispatchPrepared, prepareDispatch, type ActorCeiling, type DispatchRefusal, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import {
+  CeilingReached,
+  DispatchAdmissionRefused,
+  dispatchPrepared,
+  prepareDispatch,
+  type DispatchRefusal,
+} from './harness.js';
+import { type ActorCeiling } from './runs.js';
+import { RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';
 import { TITLING_TASK } from './task-catalogue.js';
 import { assertSessionMaterialReady, SessionMaterialPendingError } from '../read/material-readiness.js';
 
-export { TITLING_TASK } from './task-catalogue.js';
 import { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, type TitlingMode, type TitlingParams } from './titling-params.js';
-export { SUMMARY_MAX_CHARS, TITLE_MAX_CHARS, TITLING_MODES, titlingParamsOf, type TitlingMode, type TitlingParams } from './titling-params.js';
 /** How long a titling run may take. The task definition says the same (`title-summary.yaml`); this is the bound the claim's in-flight window is computed from. */
 export const TITLING_RUN_TIMEOUT_SECONDS = 300;
-/** How long a run may outlive its own bound before the Deployment gives up on it; the dispatcher's own margin, re-exported so the owner window is computed from one number. */
-export { RUN_OVERRUN_MARGIN_MS };
 /** How long after an owner's ask a second ask is refused: the run's own bound plus the overrun margin, so a run still writing is never raced by a second one. */
 export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_OVERRUN_MARGIN_MS;
 
@@ -42,7 +57,7 @@ export const OWNER_TITLING_WINDOW_MS = TITLING_RUN_TIMEOUT_SECONDS * 1000 + RUN_
  * a claim another attempt holds. Other outcomes describe pending capture, missing
  * material, run limits, unavailable workers or a surfaced dispatch failure.
  */
-export type TitlingOutcome =
+type TitlingOutcome =
   | 'already' | 'no_material' | 'harness_unavailable'
   | 'error' | 'dispatched' | 'queued' | 'capture_pending' | 'ceiling';
 
@@ -64,7 +79,7 @@ export function cleanSummary(summary: string): string | null {
 /** Who an automatic titling is attributed to: the Deployment itself, acting on a capture. */
 const DEPLOYMENT_ACTOR = 'deployment';
 
-export interface TitlingTarget {
+interface TitlingTarget {
   projectId: string;
   sessionId: string;
   now: number;
@@ -72,7 +87,7 @@ export interface TitlingTarget {
   origin: string;
 }
 
-export interface TitlingResult {
+interface TitlingResult {
   outcome: TitlingOutcome;
   /** The run that will write the title, on `dispatched`. */
   runId?: string;
@@ -152,7 +167,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
 }
 
 /** The most deferred session titles one wake can attempt. */
-export const SESSION_TITLE_BATCH = 20;
+const SESSION_TITLE_BATCH = 20;
 
 /**
  * Live end requests not yet attempted, once their session has settled and its
@@ -192,7 +207,7 @@ export async function titlingIdleCloseMinutes(env: ServerEnv): Promise<number> {
 /** The daily runs held back from older backlog so a fresh session is titled the day it goes quiet. */
 export const freshReserve = (runsPerDay: number): number => Math.floor(runsPerDay / TITLING_FRESH_RESERVE_DIVISOR);
 
-export interface TitlingBackfillPolicy {
+interface TitlingBackfillPolicy {
   /** Whether the Deployment runs scheduled intelligence at all (`agent.scheduled_tasks_enabled`). */
   scheduledTasksEnabled: boolean;
   /** Whether the backfill's own block is on: the declared `enabled` under the owner's `title-summary` override. */
@@ -233,20 +248,20 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
  * started. `until` is when the hold lifts, where a clock decides it: the interval's
  * end, or the instant the ceiling's window next frees a place.
  */
-export type BackfillWaitReason = 'state' | 'interval' | 'overlap' | 'ceiling' | 'reserved' | 'skipped';
-export interface BackfillWait {
+type BackfillWaitReason = 'state' | 'interval' | 'overlap' | 'ceiling' | 'reserved' | 'skipped';
+interface BackfillWait {
   reason: BackfillWaitReason;
   until: number | null;
 }
 
 /** The interval's hold at `now`, from the last entry the backfill made; null once it has passed. */
-export function intervalWait(policy: Pick<TitlingBackfillPolicy, 'intervalSeconds'>, lastEntryAt: number | null, now: number): BackfillWait | null {
+function intervalWait(policy: Pick<TitlingBackfillPolicy, 'intervalSeconds'>, lastEntryAt: number | null, now: number): BackfillWait | null {
   if (lastEntryAt === null || now - lastEntryAt >= policy.intervalSeconds * 1000) return null;
   return { reason: 'interval', until: lastEntryAt + policy.intervalSeconds * 1000 };
 }
 
 /** The ceiling's hold, from the window `deploymentTaskCeilingWindow` read; null while the window holds fewer entries than the ceiling. It lifts the instant the pivot entry falls out of the trailing day. */
-export function ceilingWait(policy: Pick<TitlingBackfillPolicy, 'runsPerDay'>, window: { used: number; pivotAt: number | null }, reason: 'ceiling' | 'reserved' = 'ceiling'): BackfillWait | null {
+function ceilingWait(policy: Pick<TitlingBackfillPolicy, 'runsPerDay'>, window: { used: number; pivotAt: number | null }, reason: 'ceiling' | 'reserved' = 'ceiling'): BackfillWait | null {
   if (policy.runsPerDay === null || window.used < policy.runsPerDay) return null;
   return { reason, until: window.pivotAt === null ? null : window.pivotAt + DAY_MS + 1 };
 }
@@ -378,7 +393,7 @@ function titleWindow(now: number, idleBefore: number, imported: boolean): TitleC
 }
 
 /** What an owner reads of the convergence's wait: the holds a clock decides. The power state and a skipped candidate are known only to a wake, and are reported by it. */
-export type TitlingBackfillWait = BackfillWait & { reason: 'interval' | 'overlap' | 'ceiling' | 'reserved' };
+type TitlingBackfillWait = BackfillWait & { reason: 'interval' | 'overlap' | 'ceiling' | 'reserved' };
 
 export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
   /** Wholly imported sessions still untitled and ready for the backfill. */

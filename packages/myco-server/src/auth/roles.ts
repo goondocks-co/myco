@@ -16,7 +16,7 @@
  */
 
 /** Every role. An admin administers the Deployment; a member reads it and keeps their own machines and credentials. */
-export const MEMBER_ROLES = ['admin', 'member'] as const;
+const MEMBER_ROLES = ['admin', 'member'] as const;
 
 export type MemberRole = (typeof MEMBER_ROLES)[number];
 

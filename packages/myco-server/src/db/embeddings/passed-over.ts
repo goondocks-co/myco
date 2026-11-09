@@ -6,7 +6,7 @@ import type { CatchupFamily } from '../projections/family.js';
 
 const PASSED_OVER_KEYS = jsonKeys(['project_id', 'type', 'record_id', 'model_key']);
 
-export function reconcilePassedOver(keys: string): string[] {
+function reconcilePassedOver(keys: string): string[] {
   const eligible = `SELECT f.* FROM (${keys}) k JOIN embedding_source_failures f
     ON (f.project_id,f.type,f.record_id,f.model_key)=(k.project_id,k.type,k.record_id,k.model_key)
     JOIN embedding_versions v ON (v.project_id,v.type,v.record_id)=(f.project_id,f.type,f.record_id)

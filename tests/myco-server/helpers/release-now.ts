@@ -1,6 +1,10 @@
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { BlobRef } from '@myco-server-worker/core/blob-references.js';
-import { recordObservedCandidates, releaseBlobs, type ReleaseOutcome } from '@myco-server-worker/core/object-release.js';
+import { releaseBlobs } from '@myco-server-worker/core/object-release.js';
+import {
+  recordObservedCandidates,
+  type ReleaseOutcome,
+} from '@myco-server-worker/db/storage/release-queue.js';
 
 /** Candidates for `pairs` as a caller that has just read their references records them: each with the generation registered now. */
 export async function recordCurrent(db: RelationalStore, pairs: readonly BlobRef[], now: number): Promise<PreparedStatement[]> {

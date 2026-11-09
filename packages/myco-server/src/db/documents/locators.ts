@@ -35,7 +35,7 @@ export const LOCATOR_CATCHUP = {
 /** Retry delay for a document with no live generation yet or whose chunks moved during its read. */
 export const LOCATOR_RETRY_MS = 60_000;
 
-export interface LocatorRepair { project_id: string; session_id: string; generation: number; locate_after: number | null; due_at: number;
+interface LocatorRepair { project_id: string; session_id: string; generation: number; locate_after: number | null; due_at: number;
   live_generation: number | null; publication_input_revision: number | null; rollup_due: number | null }
 
 const CHUNKS_CHANGED = refusalCode('locator_chunks_changed');

@@ -1,5 +1,5 @@
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
-import { writeGuardBatch, writeGuardStore } from '../core/write-guard-store.js';
+import type { RelationalStore } from '../core/adapters.js';
+import { writeGuardStore } from '../core/write-guard-store.js';
 import { memberWritePredicate } from './authorization.js';
 import { MemberWriteRefused } from './member-write-refusal.js';
 export { MemberWriteRefused } from './member-write-refusal.js';
@@ -24,7 +24,3 @@ export function memberWriteStore(db: RelationalStore, memberId: string, authorit
   });
 }
 
-/** A dispatch's identity rows and run record share one live-actor admission. */
-export function memberWriteBatch(db: RelationalStore, actor: MemberWriteActor, statements: PreparedStatement[]) {
-  return writeGuardBatch(db, assertion(db, actor), refusal, statements);
-}

@@ -12,10 +12,19 @@
 import type { ServerEnv } from '../core/adapters.js';
 import { MAX_WORKER_RUN_SECONDS } from '@goondocks/myco-shared/harness-health';
 import type { OwnerContext } from '../context.js';
-import { CeilingReached, DEFAULT_DISPATCH_TIMEOUT_SECONDS, DISPATCH_REFUSAL_MESSAGE, DispatchAdmissionRefused, prepareDispatch, dispatchPrepared, RUNTIME_SERVED_TASKS, type DispatchRefusal } from '../core/harness.js';
+import {
+  CeilingReached,
+  DISPATCH_REFUSAL_MESSAGE,
+  DispatchAdmissionRefused,
+  prepareDispatch,
+  dispatchPrepared,
+  type DispatchRefusal,
+} from '../core/harness.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '../core/run-deadline.js';
+import { RUNTIME_SERVED_TASKS } from '../core/worker-selection.js';
 import { type ActorCeiling } from '../core/runs.js';
 import { deploymentTaskCeilingWindow } from '../db/runs/claim.js';
-import { memberRunsPerDay } from '../core/scheduled-tasks.js';
+import { memberRunsPerDay } from '../core/schedule-rules.js';
 import { isAdmin } from '../auth/roles.js';
 import { emit } from '../telemetry.js';
 import { runTimeoutForTask } from '../core/task-catalogue.js';
@@ -36,7 +45,7 @@ async function memberCeiling(env: ServerEnv, ctx: OwnerContext, task: string): P
 }
 
 /** A member's day of runs of a task: how many they may start, how many they have, and when the oldest leaves the window once it is full. */
-export interface MemberAllowance { perDay: number; used: number; resetsAt: number | null }
+interface MemberAllowance { perDay: number; used: number; resetsAt: number | null }
 
 async function allowanceOf(env: ServerEnv, ceiling: ActorCeiling): Promise<MemberAllowance> {
   const window = await deploymentTaskCeilingWindow(env.db, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.perDay);

@@ -7,13 +7,13 @@ import { MAX_ID_CHARS } from '@goondocks/myco-shared/member-protocol';
 export const OUTCOME_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The latest session whose document pass failed, and the failure's server code. */
-export interface DocumentPublishFailureSample {
+interface DocumentPublishFailureSample {
   projectId: string;
   sessionId: string;
   failure: string;
 }
 
-export interface DocumentPublishFailureFinding {
+interface DocumentPublishFailureFinding {
   kind: 'document_publish_failed';
   tone: 'warn';
   failures: number;
@@ -21,7 +21,7 @@ export interface DocumentPublishFailureFinding {
   failure: string;
 }
 
-export interface DocumentPublicationStoppedFinding {
+interface DocumentPublicationStoppedFinding {
   kind: 'document_publication_stopped';
   tone: 'warn';
   transcripts: number;

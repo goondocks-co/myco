@@ -4,10 +4,8 @@ import { prepareArchiveBundle,bundleArchiveStatements,readBundleEntry,type Prepa
 import { type DerivedContentSource, type VerifiedContent } from './registered-content.js';
 import { TOOL_INPUT_PREVIEW_BYTES } from './tool-input.js';
 
-
-export { restoreArchivedEvent } from './event-content-restore.js';
-export const CONTENT_SLICE_BYTES = 1024 * 1024;
-export const CONTENT_SCAN_BYTES_PER_PASS = 1024 * 1024;
+const CONTENT_SLICE_BYTES = 1024 * 1024;
+const CONTENT_SCAN_BYTES_PER_PASS = 1024 * 1024;
 
 export interface ContentRow {
   project_id: string;
@@ -25,7 +23,7 @@ export interface ContentRow {
   raw_provenance?: string | null;
 }
 
-export interface PreparedArchive {
+interface PreparedArchive {
   source: DerivedContentSource;
   body: VerifiedContent;
   receipt: VerifiedContent;

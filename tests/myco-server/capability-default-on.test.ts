@@ -9,7 +9,12 @@ import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { decideTask, readScheduleFacts, runScheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
 import type { TaskSchedule } from '@myco-server-worker/core/jobs.js';
-import { EXTRACTION_TASK, MAP_TASK, SEEDING_TASK, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import {
+  EXTRACTION_TASK,
+  SEEDING_TASK,
+  TITLING_TASK,
+} from '@myco-server-worker/core/task-catalogue.js';
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { CONTACT_RECENT_MS, recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { offeredHarness } from './helpers/offered-harness.js';

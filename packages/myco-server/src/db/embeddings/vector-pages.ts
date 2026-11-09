@@ -12,7 +12,7 @@ const RECLAIM_PAGE = 16;
 export const VECTOR_PAGE = { writing: 0, sealed: 1 } as const;
 
 /** A settled member still holding its vector in the database. */
-export interface InlineVector { id: string; vector: string }
+interface InlineVector { id: string; vector: string }
 const inlinePage = read<[string, string, number], InlineVector>({ name: 'vectorPages.inlineMembers',
   sql: `SELECT m.id AS id,m.vector AS vector FROM embedding_hubness_members m INDEXED BY idx_embedding_hubness_members_inline
     WHERE m.project_id=?1 AND m.model_key=?2 AND m.state=${MEMBER.settled} AND m.page_id IS NULL ORDER BY m.id LIMIT ?3` });

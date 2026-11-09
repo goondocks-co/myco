@@ -1,6 +1,6 @@
 import type { ServerEnv } from '../../core/adapters.js';
 import { RuntimeAlreadyHolding, RuntimeDraining } from '../../core/harness.js';
-import { EMBEDDING_TASK } from '../../core/embedding/jobs.js';
+import { EMBEDDING_TASK } from '../../core/embedding/task.js';
 import { executeEmbeddingRun } from '../../core/embedding/run.js';
 import { failStaleRun, getRun } from '../../db/runs/lifecycle.js';
 import { releaseRun } from '../../core/release.js';

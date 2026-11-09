@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import worker from '@myco-server-worker/index.js';
 import { issueEnrollmentAuthority, spendEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { issueIdentityLinkAuthority, linkStatement, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { authenticateServerMemberToken, issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';

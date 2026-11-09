@@ -14,9 +14,9 @@ export function documentFactsSelect(where: string): string {
 export const DOCUMENT_FACT_COLUMNS = 'project_id,session_id,state,due_at,transcripts,bytes,imported,classes';
 
 /** Radix sixteen partitions of nonnegative millisecond deadlines, through the safe integer time range. */
-export const DOCUMENT_DUE_RADIX = 16;
+const DOCUMENT_DUE_RADIX = 16;
 const DOCUMENT_DUE_LEVELS = Math.ceil(Math.log2(Number.MAX_SAFE_INTEGER)/Math.log2(DOCUMENT_DUE_RADIX));
-export const DOCUMENT_DUE_DIVISORS = Array.from({length:DOCUMENT_DUE_LEVELS},(_,level)=>DOCUMENT_DUE_RADIX ** level);
+const DOCUMENT_DUE_DIVISORS = Array.from({length:DOCUMENT_DUE_LEVELS},(_,level)=>DOCUMENT_DUE_RADIX ** level);
 
 export const refreshDocumentFacts = (row: string): string => `INSERT INTO document_publication_facts(${DOCUMENT_FACT_COLUMNS})
   ${documentFactsSelect(`d.project_id=${row}.project_id AND d.session_id=${row}.session_id`)}

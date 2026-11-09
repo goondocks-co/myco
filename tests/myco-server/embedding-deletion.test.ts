@@ -4,10 +4,15 @@ import { indexFixture } from './helpers/vector-index.js';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
-import { reconcileEmbedding, RECEIPT, type EmbeddingContext, type EmbeddingStep } from '../../packages/myco-server/src/core/embedding/reconcile.js';
+import {
+  reconcileEmbedding,
+  type EmbeddingContext,
+  type EmbeddingStep,
+} from '../../packages/myco-server/src/core/embedding/reconcile.js';
+import { RECEIPT } from '../../packages/myco-server/src/core/embedding/receipt-state.js';
 import { VECTOR_DELETE_CONFIRM_MS as C, VECTOR_DELETE_RETRY_MS as R, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
 import { vectorId, type VectorStore, type VectorType } from '../../packages/myco-server/src/core/embedding/vectors.js';
-import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/work.js';
 
 configureSqliteLibrary();
 const opened: ReturnType<typeof sqliteEnv>[] = [];

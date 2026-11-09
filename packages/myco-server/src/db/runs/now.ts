@@ -5,9 +5,9 @@ import { NOW_WATCHED_TASKS, unresolvedFailureRows } from './outcomes.js';
 import { RUN_TOOL_EVENT } from './evidence.js';
 import { read, readSet } from '../index.js';
 
-export const NOW_PROJECTS_MAX = 25;
-export const NOW_RUNNING_MAX = 20;
-export type TodayScope = { projectId: string } | { all: true };
+const NOW_PROJECTS_MAX = 25;
+const NOW_RUNNING_MAX = 20;
+type TodayScope = { projectId: string } | { all: true };
 export interface ProjectCursor { priority: number; activity: number; projectId: string }
 type Row = Record<string, unknown>;
 const scopeSql = `(?1 IS NULL AND EXISTS(SELECT 1 FROM projects p WHERE p.project_id=r.project_id AND p.archived_at IS NULL) OR r.project_id=?1)`;

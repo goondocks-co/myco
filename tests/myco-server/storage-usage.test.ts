@@ -4,7 +4,19 @@ import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
-import { acquireRecoveryHold, assignRestoreGeneration, drainObjectReleases, recordBlobCandidates, recordObservedCandidates, releaseAgedOrphans, releaseBlobs, releaseRecoveryHold, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
+import {
+  acquireRecoveryHold,
+  drainObjectReleases,
+  releaseBlobs,
+  releaseRecoveryHold,
+  resetRecoveryLedger,
+} from '@myco-server-worker/core/object-release.js';
+import {
+  assignRestoreGeneration,
+  recordBlobCandidates,
+  recordObservedCandidates,
+  releaseAgedOrphans,
+} from '@myco-server-worker/db/storage/release-queue.js';
 import { admitBlobUpload } from '@myco-server-worker/db/storage/blob-admission.js';
 import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
 import { releaseHolders } from '@myco-server-worker/ingest/document-batch.js';

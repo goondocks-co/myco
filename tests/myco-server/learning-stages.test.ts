@@ -1,6 +1,6 @@
 import { runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { commitRunUpdate } from '@myco-server-worker/core/release.js';
-import { storedCardFields } from '@goondocks/myco-shared/turn-card';
+import { storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-card';
 import { describe, expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
@@ -10,7 +10,13 @@ import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { learningHolds } from '@myco-server-worker/core/learning-hold.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
-import { forgetTurnStatement, cardStatements, cardMaterialPages, writeRunCards, type CardFields, type CardMaterial } from '@myco-server-worker/core/turn-cards.js';
+import {
+  forgetTurnStatement,
+  cardStatements,
+  cardMaterialPages,
+  writeRunCards,
+  type CardMaterial,
+} from '@myco-server-worker/core/turn-cards.js';
 import { MATERIAL_CHANGED, MATERIAL_UNREAD, materialRead } from '@myco-server-worker/core/material-pages.js';
 import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
@@ -1388,7 +1394,6 @@ it('continues a learning attempt after unavailable source, preserving material a
     })).toMatchObject({status:'completed'});
   });
 });
-
 
 it('repairs card refusals through the next named call without losing assigned turns', async () => {
   await withDocumentStores(async db => {

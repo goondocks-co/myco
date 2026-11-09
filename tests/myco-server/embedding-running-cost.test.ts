@@ -19,7 +19,7 @@ import { indexFixture } from './helpers/vector-index.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { vectorId, type StoredVector } from '@myco-server-worker/core/embedding/vectors.js';
 import { reconcileHubness, calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
-import { readDocumentStatus, pendingPublication } from '@myco-server-worker/read/document-status.js';
+import { readDocumentStatus, pendingPublication } from '@myco-server-worker/db/documents/status.js';
 
 const NOW = 10 ** 12;
 const MODEL = 'm';
@@ -381,7 +381,6 @@ test('bulk reread makes fully published sessions due and restores their byte lag
     expect((await pendingPublication(m.db,NOW)).limited).toBe(true);
   });
 });
-
 
 test('switch lifecycle changes fence failures from a superseded provider call', async () => {
   const f=sqliteEnv();

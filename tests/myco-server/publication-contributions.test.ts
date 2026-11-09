@@ -2,7 +2,7 @@ import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
 import { deferDocumentReadFailure } from '@myco-server-worker/ingest/document-read-failures.js';
-import { statusMetadata } from '@myco-server-worker/read/meta.js';
+import { statusMetadata } from '@myco-server-worker/db/documents/failure-head.js';
 import { afterEach, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
@@ -203,7 +203,6 @@ it('reports stale failures only as telemetry and defers a card alone when no liv
   expect(await deferObservedDocumentRead(r.db,{...card,changes:2},'document_blob_missing',200)).toBe(false);
 });
 
-
 it('settles a frontier against the transcript’s current session after it moves', () => {
   const r=fixture(); r.transcript('a'); r.publish('a',1,40);
   r.sqlite.exec("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_pub','other','m','t',1,1)");
@@ -216,7 +215,6 @@ it('settles a frontier against the transcript’s current session after it moves
   expect(r.sqlite.query("SELECT bytes FROM document_publication_facts WHERE session_id='other'").get()).toEqual({bytes:100});
 });
 
-
 it('keeps sessions added after refused activation inside the eventual initialization frontier', async () => {
   const r=fixture(true); r.transcript('a');
   r.sqlite.transaction(() => { for(const sql of V717_STATEMENTS) r.sqlite.exec(sql); })();
@@ -228,7 +226,6 @@ it('keeps sessions added after refused activation inside the eventual initializa
   expect(await projectionReadiness(r.db,'publication')).toBe('ready');
   expect(await pendingPublication(r.db,100)).toEqual({sessions:2,transcripts:2,bytes:200,imported:{sessions:0,transcripts:0,bytes:0}});
 });
-
 
 it("publication rows that predate their session's document row still settle exactly", () => {
   const r=fixture(); r.publish('d',1,100);

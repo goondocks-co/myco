@@ -7,7 +7,7 @@ import { ensureAgentStatement } from './claim.js';
 export const MUTATE_ATTEMPTS = 5;
 
 /** The state row a read returns, or null when the key is unset. */
-export interface StateRow {
+interface StateRow {
   key: string;
   value: string;
   updatedAt: number;

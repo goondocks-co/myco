@@ -6,7 +6,7 @@ import { describe, expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
-import { readDocumentStatus } from '@myco-server-worker/read/document-status.js';
+import { readDocumentStatus } from '@myco-server-worker/db/documents/status.js';
 import { LIFECYCLE_PHASE, sessionLifecycleState } from '@myco-server-worker/db/documents/lifecycle.js';
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareArchive, eventArchiveStatements } from '@myco-server-worker/core/event-content.js';

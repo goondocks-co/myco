@@ -1,9 +1,14 @@
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { InvalidSearch, searchAcross, searchProject } from '@myco-server-worker/read/search.js';
+import {
+  search_InvalidSearch as InvalidSearch,
+  search_searchAcross as searchAcross,
+  search_searchProject as searchProject,
+} from '@myco-server-worker/read/catalog/search.js';
 import type { SearchOptions } from '@goondocks/myco-shared/search-types';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { archiveProject, unarchiveProject } from '@myco-server-worker/read/sessions.js';
+import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
+import { unarchiveProject } from '@myco-server-worker/db/storage/projects.js';
 import { setPlanStatus } from '@myco-server-worker/read/plans.js';
 
 const run = (db: RelationalStore, sql: string, ...values: unknown[]) => db.prepare(sql).bind(...values).run();

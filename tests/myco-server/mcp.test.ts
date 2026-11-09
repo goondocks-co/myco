@@ -24,10 +24,10 @@ function catalogPrompts(sqlite: Database): void {
 import { SHIPPED_SKILLS } from '@goondocks/myco-shared/skills';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { PROJECT_HEADER, HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { isServedTool, isWriteOp, PROJECT_PIVOT, UNSERVED_OPS } from '@myco-server-worker/core/tool-catalogue.js';
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
-import { archiveProject } from '@myco-server-worker/read/sessions.js';
+import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
@@ -41,7 +41,6 @@ import { EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-serve
 import { grantToolContext, memberOf } from '@myco-server-worker/mcp/context.js';
 import { handlePlans } from '@myco-server-worker/mcp/tools/plans.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { launchQueued, recordDispatch, returnToQueue } from '@myco-server-worker/db/runs/claim.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 import type { ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
@@ -706,7 +705,6 @@ async function runSetup(options: Parameters<typeof sqliteEnv>[0] = {}) {
   const serve = (items = [{promptId:'p_1',sessionId:'sess_1',createdAt:RUN_NOW,endedAt:RUN_NOW}]) => recordServedPrompts(e.db, {projectId:'proj_1'}, 'run_1', items, RUN_NOW);
   return { ...e, harness, member, dispatch, call, list, writes, serve };
 }
-
 
 /**
  * A Project addressed by the repository's git remote, on every principal.

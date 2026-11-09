@@ -9,9 +9,9 @@ import { ARTIFACT_COLUMNS, type ArtifactKind, type SessionArtifactRow } from '..
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** The hosts whose artifact URLs a reader is offered as links. */
-export const LINKED_ARTIFACT_HOSTS: readonly string[] = ['github.com'];
+const LINKED_ARTIFACT_HOSTS: readonly string[] = ['github.com'];
 
-export interface SessionArtifact {
+interface SessionArtifact {
   id: string;
   kind: ArtifactKind;
   artifactId: string;

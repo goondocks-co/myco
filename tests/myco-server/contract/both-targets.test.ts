@@ -34,7 +34,10 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { migrateAndSeed } from '../helpers/d1.js';
 import { titleReadySessions, titleSession } from '@myco-server-worker/core/titling.js';
-import { listSessions, renameProject } from '@myco-server-worker/read/sessions.js';
+import {
+  sessions_listSessions as listSessions,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import { renameProject } from '@myco-server-worker/db/storage/s2a3.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { MAX_BLOB_BYTES, MAX_PROJECTS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
@@ -308,7 +311,6 @@ describe('one server product, two deployment targets', () => {
     }
     expect(said).toEqual([[null, 'cloudflare'], [null, 'bun']]);
   });
-
 
 });
 

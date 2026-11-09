@@ -10,8 +10,6 @@ const wroteSpores = (a: string): string => `EXISTS (SELECT 1 FROM spores sp WHER
 const recordedWrite = (a: string, tool: string): string => `EXISTS (SELECT 1 FROM agent_run_events e
   WHERE e.project_id = ${a}.project_id AND e.run_id = ${a}.id AND e.event_type = '${RUN_WRITE_EVENT}' AND e.tool_name = '${tool}')`;
 
-export const PRODUCING_TASKS = [EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK] as const;
-
 /** Whether a run recorded published output of its task's kind. Dry runs publish no output. */
 export const producedSql = (a: string): string => `(CASE WHEN ${a}.dry_run = 1 THEN 0 ELSE CASE ${a}.task
   WHEN '${EXTRACTION_TASK}' THEN ${wroteSpores(a)}

@@ -41,7 +41,7 @@ export interface ReportedHarness {
 }
 
 /** Why the worker's last claim took no run, in the claim's own vocabulary; null when it took one. */
-export const CONTACT_OUTCOMES = ['claimed', 'no_work', 'no_harness', 'at_limit', 'lost_race', 'paused'] as const;
+const CONTACT_OUTCOMES = ['claimed', 'no_work', 'no_harness', 'at_limit', 'lost_race', 'paused'] as const;
 export type ContactOutcome = (typeof CONTACT_OUTCOMES)[number];
 
 /** Whether a stored value belongs to the contact outcome vocabulary. */
@@ -78,7 +78,7 @@ export const CONTACT_RECENT_MS = WORKER_LEASE_MS;
 export const WORKER_CONTACT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** A worker's stored observation, as read back. */
-export interface WorkerContact {
+interface WorkerContact {
   credentialId: string;
   machineId: string | null;
   /** Null when the stored report cannot be read; an empty list is a worker reporting none. */
@@ -114,7 +114,7 @@ function boundedCapabilities(capabilities: readonly string[]): string[] {
 }
 
 /** Stored evidence that cannot be read answers null: a reader states that it does not know, and never an empty report. */
-export function parseOffers(raw: unknown): ReportedHarness[] | null {
+function parseOffers(raw: unknown): ReportedHarness[] | null {
   if (typeof raw !== 'string') return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -161,7 +161,7 @@ function sameOffers(left: readonly ReportedHarness[], right: readonly ReportedHa
 }
 
 /** One worker's stored observation, or null when it has never been recorded. */
-export async function readWorkerContact(db: RelationalStore, credentialId: string): Promise<WorkerContact | null> {
+async function readWorkerContact(db: RelationalStore, credentialId: string): Promise<WorkerContact | null> {
   const row = await db.prepare(
     `SELECT credential_id, machine_id, offers, capabilities, last_reason, last_seen_at FROM worker_contacts WHERE credential_id = ?`,
   ).bind(credentialId).first<Record<string, unknown>>();
@@ -465,7 +465,7 @@ export function fleetReports(fleet: readonly WorkerFleetRow[], includeBusy = fal
 }
 
 /** A machine's latest explicit offers, contact and run. */
-export interface MachineContact {
+interface MachineContact {
   /** The harnesses the latest readable explicit report offered. */
   offers: ReportedHarness[] | null;
   lastSeenAt: number;

@@ -11,10 +11,17 @@ import { Database } from 'bun:sqlite';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { encodeCursor, MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
-import { listSessions, listSessionsAcross, type SessionFilters } from '@myco-server-worker/read/sessions.js';
+import {
+  sessions_listSessions as listSessions,
+  sessions_listSessionsAcross as listSessionsAcross,
+  type sessions_SessionFilters as SessionFilters,
+} from '@myco-server-worker/read/catalog/sessions.js';
 import { listSporePageAcross } from '@myco-server-worker/core/spores.js';
 import { encodeProjectCursor } from '@myco-server-worker/read/project-cursor.js';
-import { pagePlansAcross, planTotals } from '@myco-server-worker/read/plans.js';
+import {
+  plans_pagePlansAcross as pagePlansAcross,
+  plans_planTotals as planTotals,
+} from '@myco-server-worker/read/catalog/plans.js';
 import { capabilityHolds, failingOutcomes, readWork, runsAwaitingWorker } from '@myco-server-worker/read/work.js';
 import { captureRecency } from '@myco-server-worker/read/capture.js';
 import { listMachines, machinesOf } from '@myco-server-worker/read/machines.js';
@@ -23,7 +30,7 @@ import { ownMachineNames } from '@myco-server-worker/read/capture.js';
 import { grantsExpiringBy } from '@myco-server-worker/auth/grants.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { createProject } from '@myco-server-worker/read/sessions.js';
+import { createProject } from '@myco-server-worker/db/storage/projects.js';
 
 type Statement = { sql: string; params: unknown[] };
 

@@ -7,18 +7,18 @@ import { CONTEXT_DELIVERED_KIND, DELIVERED_SESSION_RECORDS, HOOK_NAMED_SCHEMES, 
 
 /** Ceilings every bound of its type states; each is a real limit, never the language's. */
 export const MAX_TIME_MS = 4_102_444_800_000;
-export const MAX_DURATION_MS = 2_592_000_000;
-export const MAX_TOKEN_COUNT = 100_000_000;
-export const MAX_TRANSCRIPT_BYTES = 1_099_511_627_776;
+const MAX_DURATION_MS = 2_592_000_000;
+const MAX_TOKEN_COUNT = 100_000_000;
+const MAX_TRANSCRIPT_BYTES = 1_099_511_627_776;
 export const MAX_ARRAY_ITEMS = 1_000;
 /** The longest session title and summary an import carries: wider than a titling run writes, so a carried title keeps its stored length. */
-export const SESSION_TITLE_MAX_CHARS = 256;
-export const SESSION_SUMMARY_MAX_CHARS = 4096;
+const SESSION_TITLE_MAX_CHARS = 256;
+const SESSION_SUMMARY_MAX_CHARS = 4096;
 
 /** A blob key: the lowercase hex SHA-256 of the bytes. */
 export const BLOB_KEY_GRAMMAR = /^[0-9a-f]{64}$/;
 /** A transcript id: the deterministic `tx_` + 32 hex form derived from (machine, path, inode), or a member-minted id in the envelope's one lowercase id grammar — composed here from that grammar itself, so the two can never drift into case-forked ids. */
-export const TRANSCRIPT_ID_GRAMMAR = new RegExp(`^(tx_[0-9a-f]{32}|${ID_GRAMMAR.source.slice(1, -1)})$`);
+const TRANSCRIPT_ID_GRAMMAR = new RegExp(`^(tx_[0-9a-f]{32}|${ID_GRAMMAR.source.slice(1, -1)})$`);
 
 export type Bound =
   | { type: 'id' }
@@ -37,7 +37,7 @@ export type Bound =
 /** What an id-bounded field names: the row the event itself keys, a prompt row it points at, a grouping every member mints for itself, or a context record the Deployment served. Every id field declares one, so a field naming a prompt cannot enter the catalogue unmarked. */
 export type IdRole = 'key' | 'prompt' | 'group' | 'served';
 
-export interface FieldSpec {
+interface FieldSpec {
   bound: Bound;
   required?: boolean;
   /** The typed column this field lands in, when it does; every column-mapped field carries a bound by construction. */
@@ -262,7 +262,7 @@ export function kindSpec(name: string): KindSpec | null {
 }
 
 export type Payload = Record<string, unknown>;
-export type PayloadResult = { ok: true; value: Payload } | Refused;
+type PayloadResult = { ok: true; value: Payload } | Refused;
 /** A refusal of the payload's own shape: `invalid_field` unless a more specific classifier names it. */
 const refused = (reason: string, classifier: Refusal['classifier'] = 'invalid_field'): Refused => ({ ok: false, ...refusal(reason, classifier) });
 

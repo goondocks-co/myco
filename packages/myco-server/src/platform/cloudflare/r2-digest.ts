@@ -5,7 +5,7 @@
 import type { BlobFailureClassifier } from '../../core/adapters.js';
 
 /** The R2 error code for a digest that did not match the received bytes. */
-export const R2_BAD_DIGEST_CODE = 10037;
+const R2_BAD_DIGEST_CODE = 10037;
 
 /** R2 reports a digest rejection by its error code, and by its own wording when a code is absent. */
 export const classifyR2BlobFailure: BlobFailureClassifier = (message) =>

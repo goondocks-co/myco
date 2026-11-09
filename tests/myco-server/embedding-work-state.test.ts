@@ -1,10 +1,14 @@
 import { measuredStore } from './helpers/read-budget.js';
-import { prepareEmbeddingDue } from '@myco-server-worker/db/embeddings/work.js';
+import {
+  prepareEmbeddingDue,
+  retiringReceipt,
+  embeddingFailureWakeAt,
+} from '@myco-server-worker/db/embeddings/work.js';
 import { describe, expect, test } from 'bun:test';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
-import { retiringReceipt } from '@myco-server-worker/core/embedding/selection.js';
-import { INPUT_REFUSAL_RETRY_MS, embeddingFailureWakeAt, reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
+import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
+import { INPUT_REFUSAL_RETRY_MS } from '@myco-server-worker/db/embedding-due.js';
 import { VECTOR_DELETE_CONFIRM_MS, VECTOR_DELETE_RETRY_MS } from '@myco-server-worker/core/embedding/provider.js';
 /** Wakes well apart, as an idle Deployment's clock spaces them. */
 const WAKE_GAP_MS = 5 * 60_000;

@@ -43,7 +43,7 @@ export function clockArmsAlarms(bindings: { CLOCK_MODE?: string }): boolean {
 }
 
 /** What a clock holds an alarm in. */
-export interface AlarmStore {
+interface AlarmStore {
   getAlarm(): Promise<number | null>;
   setAlarm(at: number): Promise<void>;
   deleteAlarm(): Promise<void>;
@@ -78,7 +78,7 @@ export async function armFloor(storage: AlarmStore, bindings: { CLOCK_MODE?: str
  * What one wake did. A wake that could not tick says so rather than answering an empty tick: the Deployment's
  * database is unreadable while its own export runs, and a fabricated report would read as a quiet success.
  */
-export type WakeOutcome =
+type WakeOutcome =
   | { ticked: true; report: TickReport }
   | { ticked: false; heldBy: 'recovery_export'; attempt: number | null; stage: string }
   | { ticked: false; heldBy: 'tick_backoff'; retryInMs: number }

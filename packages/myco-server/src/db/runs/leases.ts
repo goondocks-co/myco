@@ -48,7 +48,7 @@ export async function workerRunLeaseExpiry(
 export type LeaseOwner = { kind: 'member'; leasedBy: string } | { kind: 'runner'; runnerId: string; credentialId: string };
 
 /** The owner a stored lease names, or null for a row that names none. */
-export function leaseOwnerOf(row: { leasedBy: string | null; leasedRunnerId: string | null; leasedRunnerCredentialId: string | null }): LeaseOwner | null {
+function leaseOwnerOf(row: { leasedBy: string | null; leasedRunnerId: string | null; leasedRunnerCredentialId: string | null }): LeaseOwner | null {
   if (row.leasedRunnerId !== null && row.leasedRunnerCredentialId !== null) return { kind: 'runner', runnerId: row.leasedRunnerId, credentialId: row.leasedRunnerCredentialId };
   return row.leasedBy === null ? null : { kind: 'member', leasedBy: row.leasedBy };
 }
@@ -64,7 +64,7 @@ export async function lapsedLeases(db: RelationalStore, now: number, limit: numb
 }
 
 /** A run with a single-flight subject ends when its lease lapses: its work stays due and a later claim pulls it again. */
-export const LEASE_LAPSED = 'lease_lapsed';
+const LEASE_LAPSED = 'lease_lapsed';
 
 const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_runs SET status = CASE WHEN subject IS NOT NULL THEN 'failed' ELSE 'queued' END,
     completed_at = CASE WHEN subject IS NOT NULL THEN ?1 ELSE completed_at END,

@@ -16,16 +16,18 @@ import { AGENT_LINE_GUIDANCE } from './injection.js';
  * name (`tests/myco-server/task-inputs.test.ts`).
  */
 import { sha256Hex } from '../hash.js';
-import { MAX_REPOSITORY_HISTORY_DEPTH, SOURCE_GIT_RULES } from '@goondocks/myco-shared/repository';
+import {
+  MAX_REPOSITORY_HISTORY_DEPTH,
+  SOURCE_GIT_RULES,
+  RUN_REPOSITORY_DIR as SEEDING_CHECKOUT_DIR,
+} from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from './adapters.js';
 import { repositoryIdentity } from './repositories.js';
 import { RUN_SKIP_ACTION, SEEDING_REPORT_ACTION } from './run-postconditions.js';
 import type { TaskInput } from './task-inputs.js';
 
-import { SEEDED_SPORE_FLOOR, SEEDING_CHECKOUT_DIR, SEEDING_SPORE_CEILING } from './seeding-params.js';
+import { SEEDED_SPORE_FLOOR, SEEDING_SPORE_CEILING } from './seeding-params.js';
 import { RUN_AUDIT_INSTRUCTION } from './run-audit.js';
-
-export { SEEDED_SPORE_FLOOR, SEEDING_CHECKOUT_DIR, SEEDING_SPORE_CEILING };
 
 /** The standing rules every seeding run works under, as the run's instructions file. */
 export const SEEDING_RULES = [

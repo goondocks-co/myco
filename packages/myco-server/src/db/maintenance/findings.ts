@@ -3,7 +3,7 @@
 /** At most this many findings are kept per outcome; the count beyond it is recorded, not the text. */
 export const MAX_FINDINGS = 20;
 /** At most this many characters of one finding are kept. */
-export const MAX_FINDING_CHARS = 300;
+const MAX_FINDING_CHARS = 300;
 
 export interface BoundedFindings { findings: string[]; findingsOmitted: number }
 

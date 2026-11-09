@@ -16,7 +16,8 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { claimNextRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { claimNextRun } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import { harnessesReading, isSecretSlotName, SECRET_SLOTS } from '@goondocks/myco-shared/secret-slots';

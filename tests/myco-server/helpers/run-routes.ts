@@ -1,7 +1,7 @@
 import { strictName, strictRunId } from '@goondocks/myco-shared/run-text';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import worker from '@myco-server-worker/index.js';
 import { memberPost, sqliteEnv } from './fixtures.js';

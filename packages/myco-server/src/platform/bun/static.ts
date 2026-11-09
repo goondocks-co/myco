@@ -47,7 +47,7 @@ export const FRAME_HEADERS = { 'x-frame-options': 'DENY', 'content-security-poli
 
 const notFound = (): Response => new Response(null, { status: 404 });
 
-export type Fetch = (request: Request) => Promise<Response>;
+type Fetch = (request: Request) => Promise<Response>;
 
 /** Wraps the server's fetch with static serving for the paths it does not own. */
 export function withStaticAssets(uiDir: string, next: Fetch): Fetch {

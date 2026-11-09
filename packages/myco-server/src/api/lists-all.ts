@@ -10,9 +10,16 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { badRequest, instantParam, notFound, ok, projectSetParam, resolveProjectSet } from './scope.js';
 import { paging, sessionFilters } from './sessions.js';
-import { listSessionSummariesAcross } from '../read/sessions.js';
+import {
+  sessions_listSessionSummariesAcross as listSessionSummariesAcross,
+} from '../read/catalog/sessions.js';
 import { listSporePageAcross, sporeListWindow, type ListSporesOptions } from '../core/spores.js';
-import { pagePlansAcross, planTotals, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import {
+  plans_pagePlansAcross as pagePlansAcross,
+  plans_planTotals as planTotals,
+  plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
+  plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
+} from '../read/catalog/plans.js';
 import type { ProjectSet } from '../read/scope.js';
 import { decodeProjectCursor, PROJECT_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { MAX_PAGE, OFFSET_REFUSAL } from './intelligence.js';

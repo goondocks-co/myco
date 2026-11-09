@@ -1,4 +1,4 @@
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '@myco-server-worker/core/harness.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '@myco-server-worker/core/run-deadline.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';

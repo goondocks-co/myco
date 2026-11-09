@@ -11,11 +11,11 @@ import type { CatchupFamily } from '../projections/family.js';
  * re-derived from the plan whenever a trigger or a catch-up page names its key; triggers on the fact move
  * `plan_counts` by `-old +new`.
  */
-export const PLAN_COUNT_PROJECTION = 'plan_counts';
-export const PLAN_COUNT_PHASE = 'plans';
+const PLAN_COUNT_PROJECTION = 'plan_counts';
+const PLAN_COUNT_PHASE = 'plans';
 
 /** Re-derive the facts of the plan keys `keys` (columns `project_id,plan_key`): a key whose plan is gone loses its fact. */
-export function reconcilePlanFacts(keys: string): string[] {
+function reconcilePlanFacts(keys: string): string[] {
   return [
     `DELETE FROM plan_count_facts WHERE (project_id,plan_key) IN (SELECT project_id,plan_key FROM (${keys}))
       AND NOT EXISTS (SELECT 1 FROM plans p WHERE p.project_id=plan_count_facts.project_id AND p.plan_key=plan_count_facts.plan_key)`,

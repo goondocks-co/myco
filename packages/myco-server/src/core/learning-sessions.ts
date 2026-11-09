@@ -22,9 +22,12 @@ import { commitAttributedWrite } from '../db/runs/attribution.js';
 import { prepareRecordAcknowledgement } from '../read/catalog/learning-sessions.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
 import { learningEnabledSql, learningHistoryEnabled } from './settings.js';
-import { FRESH_LEARNING_MS, freshRetrySql, learningRangeSql, learningRecencySql } from './learning-recency.js';
-export { FRESH_LEARNING_MS } from './learning-recency.js';
-export { LEARNING_TOOL };
+import {
+  FRESH_LEARNING_MS,
+  freshRetrySql,
+  learningRangeSql,
+  learningRecencySql,
+} from '../db/runs/learning-policy.js';
 
 /** Rows of each source-activity repair stream read by one wake. */
 export const LEARNING_SOURCE_REPAIR_PAGE = 100;
@@ -62,9 +65,9 @@ export async function repairLearningSources(db: RelationalStore): Promise<{ chan
 }
 
 /** Due cards one slice reads at most. */
-export const LEARNING_SLICE_CARDS = 200;
+const LEARNING_SLICE_CARDS = 200;
 /** How long a claimed learning slice keeps its session out of the eligible set before the claim is presumed lost. */
-export const LEARNING_CLAIM_MS = 900_000;
+const LEARNING_CLAIM_MS = 900_000;
 /** Backoff after repeated claims that never completed: 1 h, 6 h, then each 24 h. */
 export const LEARNING_BACKOFF_MS = [3_600_000, 21_600_000, 86_400_000] as const;
 export const HANDOFF_MAX_BYTES = 4096;
@@ -120,7 +123,6 @@ export interface LearningAssignment {
   handoff: string | null;
 }
 
-export { learningWorkFrom } from '../db/runs/pull-policy.js';
 /** A head reads source order and stops at its first ready session. */
 export const learningHeadFrom = (kind: 'cards' | 'learning'): string =>
   `learning_sessions l INDEXED BY ${kind === 'cards' ? 'idx_learning_source_pending' : 'idx_learning_source_eligible'}`;
@@ -164,7 +166,7 @@ export function claimLearningWrites(db: RelationalStore, projectId: string, sess
   return [claimLearningRetryWrite(db, projectId, sessionId, run), learningBackoffWrite.bind(now - FRESH_LEARNING_MS, now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy)];
 }
 
-export interface LearningCard { turnKey: string; card: string; signal: string; records: string; promptIds: string[] }
+interface LearningCard { turnKey: string; card: string; signal: string; records: string; promptIds: string[] }
 
 /** The assigned cards as they stand, verbatim, with the prompts each covers. */
 export async function assignedCards(db: RelationalStore, projectId: string, sessionId: string, assignment: LearningAssignment): Promise<LearningCard[]> {
@@ -239,7 +241,7 @@ export async function completeLearning(
 const STATUS_CAP = 1000;
 const capped = (inner: string) => `(SELECT COUNT(*) FROM (${inner} LIMIT ${STATUS_CAP + 1}))`;
 
-export interface LearningStatus {
+interface LearningStatus {
   dueSessions: number;
   dueCards: number;
   turnsAwaitingCards: number;
@@ -311,4 +313,3 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
 
 export function claimLearningRetryStatement(...args: Parameters<typeof claimLearningRetryWrite>): PreparedStatement { return prepareClaimCompanion(args[0], claimLearningRetryWrite(...args)); }
 
-export function claimLearningStatements(...args: Parameters<typeof claimLearningWrites>): PreparedStatement[] { return claimLearningWrites(...args).map(bound => prepareClaimCompanion(args[0], bound)); }

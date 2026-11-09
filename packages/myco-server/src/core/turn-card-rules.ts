@@ -9,9 +9,7 @@
  */
 import { TURN_INPUT_BUDGETS as B } from './read-window.js';
 
-export { TURN_QUIET_MS } from '../db/schema-v110.js';
-
-export interface TurnToolInput {
+interface TurnToolInput {
   toolCallId: string;
   toolName: string;
   input: string | null;
@@ -143,7 +141,7 @@ function polling(tool: TurnToolInput): boolean {
  * The declared triage rules, in order: the first that matches marks the turn `none` and names itself on the card.
  * A turn holding a failed tool call, a plan or a steering prompt is never triaged by rule.
  */
-export const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) => boolean }[] = [
+const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) => boolean }[] = [
   {
     name: 'no_human_text',
     matches: (turn) => turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt),

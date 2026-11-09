@@ -8,7 +8,7 @@ import { ROUTES } from '@myco-server-worker/routes.js';
 import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
 import { authorizeHttp, credentialListScope, httpAuthorizationDecision } from '@myco-server-worker/auth/http-authorization.js';
 import { listCredentials } from '@myco-server-worker/read/credentials.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 

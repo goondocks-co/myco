@@ -6,10 +6,32 @@ import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import {
-  BACKUP_FORMAT, BACKUP_TABLES, backupArtifact, BackupAdmissionError, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId,
-  EMPTY_ONLY_TABLES, EXCLUDED_TABLES, RETIRED_INPUT_TABLES, RETIRED_TABLES, listBackups, previewRestore, pruneBackups,
-  restoreBackup, restoreArtifact, retentionVictims, setBackupPinned, type BackupIndexRow,
+  BACKUP_FORMAT,
+  BACKUP_TABLES,
+  backupArtifact,
+  BackupIntegrityError,
+  BackupLineageError,
+  BackupSchemaError,
+  BackupTooLargeError,
+  MAX_BACKUP_BYTES,
+  createBackup,
+  deploymentId,
+  EMPTY_ONLY_TABLES,
+  EXCLUDED_TABLES,
+  RETIRED_INPUT_TABLES,
+  RETIRED_TABLES,
+  listBackups,
+  previewRestore,
+  pruneBackups,
+  restoreBackup,
+  restoreArtifact,
+  setBackupPinned,
+  type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
+import {
+  RelationalSnapshotAdmissionError as BackupAdmissionError,
+} from '@myco-server-worker/core/relational-snapshot.js';
+import { retentionVictims } from '@myco-server-worker/core/backup-retention.js';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { renderMigrationFile } from '@myco-server-worker/db/migrate.js';
 import { journaled, sqliteEnv } from './helpers/fixtures.js';

@@ -1,10 +1,8 @@
 import { cardsWritten } from '../db/runs/attributed-writes.js';
 import type { AttributedMutation } from '../db/runs/attribution.js';
 import type { Bound } from '../db/index.js';
-import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { cardBackoffWrite, cardDueWrite } from '../db/runs/claim-companions.js';
 import { encodeCard, cardFieldsError, readCard, renderCard, storedCardFields, type CardFields } from '@goondocks/myco-shared/turn-card';
-export { renderCard, type CardFields } from '@goondocks/myco-shared/turn-card';
 import { DOCUMENT_PREVIEW_CHARS } from '../db/document-tables.js';
 /**
  * Stage one of learning: one card per turn, written as turns complete.
@@ -21,8 +19,7 @@ import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
 import { claimLearningRetryWrite, claimLearningRetryStatement, LEARNING_BACKOFF_MS, pendingCardsStatement, sessionProgressStatements } from './learning-sessions.js';
-export { CARD_TASK } from './task-catalogue.js';
-import { FRESH_LEARNING_MS, learningRangeSql } from './learning-recency.js';
+import { FRESH_LEARNING_MS, learningRangeSql } from '../db/runs/learning-policy.js';
 import { learningHistoryEnabledSql } from './settings.js';
 import { writeGuardBatch } from './write-guard-store.js';
 import { SessionMaterialPendingError } from '../read/material-readiness.js';
@@ -30,7 +27,7 @@ import { SessionMaterialPendingError } from '../read/material-readiness.js';
 /** Due turns one claim reads at most. */
 export const CARD_CLAIM_TURNS = 64;
 /** How long a claimed card run keeps its turns out of the due set before they are offered again. */
-export const CARD_RETRY_MS = 3_600_000;
+const CARD_RETRY_MS = 3_600_000;
 
 /** A card claim advances the session backoff and holds its assigned turns until the claim is presumed lost. */
 export function claimCardsWrites(db: RelationalStore, projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
@@ -57,7 +54,7 @@ function cardMutationBatch(db: RelationalStore, projectId: string, sessionId: st
   }, statements);
 }
 
-export interface CardWrite { turns: string[]; signal: CardSignal; card: CardFields }
+interface CardWrite { turns: string[]; signal: CardSignal; card: CardFields }
 
 export interface CardMarks { decisions: boolean; rejected: boolean; errors: boolean; corrections: boolean; openQuestions: boolean }
 
@@ -257,4 +254,3 @@ export async function runCardsRemaining(db: RelationalStore, projectId: string, 
   return rows.results.map(row => row.turnKey);
 }
 
-export function claimCardsStatements(...args: Parameters<typeof claimCardsWrites>): PreparedStatement[] { return claimCardsWrites(...args).map(bound => prepareClaimCompanion(args[0], bound)); }

@@ -12,17 +12,20 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { claimNextRun, endLeasedRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
-import { RUN_CLOSE_AUDIT_ERROR, RUN_SKIP_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
+import { claimNextRun, endLeasedRun } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID, PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import {
+  RUN_SKIP_ACTION,
+  TITLING_REPORT_ACTION,
+} from '@myco-server-worker/core/run-postconditions.js';
+import { RUN_CLOSE_AUDIT_ERROR, runErrorCode } from '@myco-server-worker/core/reader-codes.js';
 import { listReports } from '@myco-server-worker/db/runs/evidence.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { parseRunAudit, RUN_AUDIT_INSTRUCTION } from '@myco-server-worker/core/run-audit.js';
-import { runErrorCode } from '@myco-server-worker/core/reader-codes.js';
 import { INPUT_BUILDERS } from '@myco-server-worker/core/task-inputs.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { readAttention } from '@myco-server-worker/core/attention.js';
 import { titleSession } from '@myco-server-worker/core/titling.js';
-import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { publishFixture, memberHeaders, memberPost, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';

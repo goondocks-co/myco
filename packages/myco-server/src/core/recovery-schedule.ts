@@ -18,12 +18,10 @@ import { ADVANCING_STAGES, type ExportWait, type ProducerRefusal, type RecoveryP
 /** The setting an owner edits as "Back up every", in hours. */
 export const INTERVAL_SETTING = 'backup.auto_interval_hours';
 
-export { SCHEDULE_JOB } from './jobs.js';
-
 const HOUR_MS = 60 * 60 * 1000;
 
 /** What recovery data this Deployment has, in the only terms that are true of what its own producer wrote. */
-export type RecoveryAvailability =
+type RecoveryAvailability =
   /** No attempt has produced anything. */
   | { state: 'none' }
   /** An attempt is running now, or stopped part-way: nothing here is recoverable. */
@@ -40,7 +38,7 @@ export type RecoveryAvailability =
   | { state: 'artifact'; attempt: number; at: string; needs: string };
 
 /** What the last attempt did, as an owner reads it. */
-export interface LatestAttempt {
+interface LatestAttempt {
   attempt: number;
   stage: string;
   startedAt: number | null;
@@ -120,7 +118,7 @@ export async function recoveryAttemptDue(env: ServerEnv, now: number): Promise<b
 }
 
 /** What the producer's status says the latest attempt did. */
-export function latestOf(status: RecoveryProducerStatus): LatestAttempt | null {
+function latestOf(status: RecoveryProducerStatus): LatestAttempt | null {
   if (status.attempt === null) return null;
   return {
     attempt: status.attempt,

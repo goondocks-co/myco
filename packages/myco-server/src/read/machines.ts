@@ -6,13 +6,13 @@ import { credentialLive } from '../db/liveness.js';
 import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
 import type { ActivityRow } from './credentials.js';
 
-export interface MachineCapture {
+interface MachineCapture {
   agent: string | null;
   lastEventAt: number;
   projectId: string;
 }
 
-export type MachineStanding = 'allowed' | 'stopped' | 'replayed' | 'expired';
+type MachineStanding = 'allowed' | 'stopped' | 'replayed' | 'expired';
 
 export interface MachineRow {
   machineId: string;

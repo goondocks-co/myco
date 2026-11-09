@@ -11,7 +11,7 @@ import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/admin/health/wire.ts';
 import type { MachineHarnessHealth } from '../../packages/myco-server/ui/src/features/today/wire.ts';
 import type { provisionedHarnessHealth } from '../../packages/myco-server/src/core/harness-health.ts';
-import type { KpiReport, KpiAnswer } from '../../packages/myco-server/src/read/kpis.ts';
+import type { KpiReport, KpiAnswer } from '../../packages/myco-server/src/db/insights/kpis';
 import type { ListedBackup, RestoreOutcome } from '../../packages/myco-server/src/core/backup.ts';
 import type { BackupsAnswer, CreateBackupAnswer, RestorePreviewAnswer } from '../../packages/myco-server/src/api/backups.ts';
 import type { MaintenanceCheckStatus, MaintenanceOutcome } from '../../packages/myco-server/src/core/store-maintenance.ts';

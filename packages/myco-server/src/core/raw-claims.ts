@@ -2,7 +2,6 @@ import type { RawClaimPreview, RawClaimOutcome, DeploymentOwnershipPreview } fro
 import type { RelationalStore } from './adapters.js';
 
 import { deploymentOwnerSql, isDeploymentOwner, ownershipPreview, OwnershipRefusal as RawClaimRefusal } from './ownership.js';
-export { deploymentOwnerSql, isDeploymentOwner, ownershipPreview, bootstrapOwnership, restoreOwnership, OwnershipRefusal as RawClaimRefusal } from './ownership.js';
 
 /** A claim covers only missing provenance at its reviewed revision; recorded and contradictory identities are excluded. */
 export const effectiveRawOwnerSql = (owner: string, provenance: string, revision: string, candidate = 'NULL'): string => `COALESCE(${owner},

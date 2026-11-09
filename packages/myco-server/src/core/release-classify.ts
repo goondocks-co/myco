@@ -20,17 +20,17 @@
 import type { CompareStatus, GithubFailure, GithubRead, GithubReads, MergedPull } from './github-refs.js';
 import { isCommitSha } from './github-refs.js';
 
-export const RELEASE_STATES = ['unreconciled', 'released', 'merged_unreleased', 'not_on_release_line', 'unknown'] as const;
-export type ReleaseStateValue = (typeof RELEASE_STATES)[number];
+const RELEASE_STATES = ['unreconciled', 'released', 'merged_unreleased', 'not_on_release_line', 'unknown'] as const;
+type ReleaseStateValue = (typeof RELEASE_STATES)[number];
 
-export const RELEASE_CONFIDENCE = ['high', 'medium', 'low'] as const;
-export type ReleaseConfidence = (typeof RELEASE_CONFIDENCE)[number];
+const RELEASE_CONFIDENCE = ['high', 'medium', 'low'] as const;
+type ReleaseConfidence = (typeof RELEASE_CONFIDENCE)[number];
 
-export const RELEASE_BASIS_KINDS = [
+const RELEASE_BASIS_KINDS = [
   'git_ancestry', 'git_patch_id', 'github_pr_squash', 'dirty_worktree',
   'configuration', 'missing_git_evidence', 'ref_check_failed',
 ] as const;
-export type ReleaseBasisKind = (typeof RELEASE_BASIS_KINDS)[number];
+type ReleaseBasisKind = (typeof RELEASE_BASIS_KINDS)[number];
 
 /** The most release lines one pattern contributes to a run. More lines than this makes a miss `unknown`. */
 export const MAX_RELEASE_LINES = 8;
@@ -57,18 +57,18 @@ export interface Classification {
   evidence: Record<string, unknown>;
 }
 
-export type ClassifyOutcome =
+type ClassifyOutcome =
   | { kind: 'classified'; classification: Classification }
   | { kind: 'unavailable'; failure: GithubFailure; reason: string };
 
 // --- Ref patterns ---
 
-export function globToRegex(pattern: string): RegExp {
+function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
   return new RegExp(`^${escaped}$`);
 }
 
-export function refAliases(ref: string): string[] {
+function refAliases(ref: string): string[] {
   const aliases = [ref];
   for (const prefix of ['refs/tags/', 'refs/heads/', 'refs/remotes/']) {
     if (ref.startsWith(prefix)) aliases.push(ref.slice(prefix.length));
@@ -76,7 +76,7 @@ export function refAliases(ref: string): string[] {
   return aliases;
 }
 
-export function pathMatchesGlob(path: string, glob: string): boolean {
+function pathMatchesGlob(path: string, glob: string): boolean {
   if (glob.endsWith('/')) return path.startsWith(glob);
   if (glob.endsWith('/*')) return path.startsWith(glob.slice(0, -1));
   if (glob.endsWith('/**')) return path.startsWith(glob.slice(0, -2));
@@ -95,7 +95,7 @@ function relativeReadings(path: string): string[] {
 }
 
 /** The tag patterns a session's changed paths select; empty when nothing maps. */
-export function tagPatternsForChangedPaths(changedPaths: readonly string[], mappings: readonly PackageTagMapping[]): string[] {
+function tagPatternsForChangedPaths(changedPaths: readonly string[], mappings: readonly PackageTagMapping[]): string[] {
   if (mappings.length === 0 || changedPaths.length === 0) return [];
   const matched = new Set<string>();
   for (const path of changedPaths) {
@@ -106,7 +106,7 @@ export function tagPatternsForChangedPaths(changedPaths: readonly string[], mapp
 }
 
 /** Configured production refs narrowed to the selected tag patterns; the whole set when none are selected or none match. */
-export function filterRefsByPackagePatterns(refs: readonly string[], patterns: readonly string[]): string[] {
+function filterRefsByPackagePatterns(refs: readonly string[], patterns: readonly string[]): string[] {
   if (patterns.length === 0) return [...refs];
   const matchers = patterns.map(globToRegex);
   const filtered = refs.filter((ref) => refAliases(ref).some((alias) => matchers.some((re) => re.test(alias))));
@@ -114,12 +114,12 @@ export function filterRefsByPackagePatterns(refs: readonly string[], patterns: r
 }
 
 /** A configured production ref as a fully qualified tag ref or pattern. */
-export function qualifyTagRef(ref: string): string {
+function qualifyTagRef(ref: string): string {
   return ref.startsWith('refs/') ? ref : `refs/tags/${ref}`;
 }
 
 /** A configured integration ref as a branch name GitHub can compare against: `origin/main`, `refs/heads/main` and `main` are one branch. */
-export function integrationBranch(ref: string): string {
+function integrationBranch(ref: string): string {
   return ref.replace(/^refs\/remotes\/[^/]+\//, '').replace(/^refs\/heads\//, '').replace(/^origin\//, '');
 }
 
@@ -136,7 +136,7 @@ function newerFirst(a: Version, b: Version): number {
   return Number(a.prerelease) - Number(b.prerelease);
 }
 
-export interface ResolvedPattern {
+interface ResolvedPattern {
   pattern: string;
   /** The object each checked ref points at, so a run can tell whether anything moved after a record's check. */
   shas: string[];
@@ -167,7 +167,7 @@ export function newestPerLine(pattern: string, refs: readonly string[]): { refs:
 }
 
 /** Resolve one configured production ref or pattern into the refs a run checks. One listing per pattern. */
-export async function resolveProductionRef(reads: GithubReads, configured: string): Promise<ResolvedPattern> {
+async function resolveProductionRef(reads: GithubReads, configured: string): Promise<ResolvedPattern> {
   const pattern = qualifyTagRef(configured);
   const prefix = (/[*?]/.test(pattern) ? pattern.split(/[*?]/, 1)[0] : pattern).replace(/^refs\//, '');
   const listed = await reads.matchingRefs(prefix);
@@ -180,9 +180,9 @@ export async function resolveProductionRef(reads: GithubReads, configured: strin
 }
 
 /** A listing that failed for a reason retrying could fix; `truncated` and `not_found` are answers, not outages. */
-export const isTransient = (failure: GithubFailure): boolean => failure !== 'truncated' && failure !== 'not_found';
+const isTransient = (failure: GithubFailure): boolean => failure !== 'truncated' && failure !== 'not_found';
 
-export interface RunRefs {
+interface RunRefs {
   config: ReleaseRefConfig;
   production: ReadonlyMap<string, ResolvedPattern>;
   /** The first failed read of an integration branch head, which makes every classification of the run unavailable. */
@@ -222,7 +222,7 @@ export async function resolveRunRefs(reads: GithubReads, config: ReleaseRefConfi
   return { config, production, integrationFailure, fingerprint: failed ? null : parts.join('\n') };
 }
 
-export interface ClassifyInput {
+interface ClassifyInput {
   headSha: string | null;
   changedPaths: readonly string[];
 }

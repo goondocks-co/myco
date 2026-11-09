@@ -1,7 +1,13 @@
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
-import { MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_DIGEST_TASKS, RUN_REPOSITORY_DIGESTS_FILE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import {
+  MAX_REPOSITORY_HISTORY_DEPTH,
+  REPOSITORY_DIGEST_TASKS,
+  RUN_REPOSITORY_DIGESTS_FILE,
+  WORKER_CAPABILITIES,
+  RUN_REPOSITORY_DIR as SEEDING_CHECKOUT_DIR,
+} from '@goondocks/myco-shared/repository';
 /**
  * What a run is told, and what happens to one nobody can instruct.
  *
@@ -18,11 +24,17 @@ import { MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_DIGEST_TASKS, RUN_REPOSITORY_D
 import { describe, expect, it } from 'bun:test';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { claimNextRun, DISPATCH_REFUSAL_MESSAGE, dispatchTask, HARNESS_MEMBER_ID, prepareDispatch } from '@myco-server-worker/core/harness.js';
+import {
+  claimNextRun,
+  DISPATCH_REFUSAL_MESSAGE,
+  dispatchTask,
+  prepareDispatch,
+} from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { buildTaskInput, INPUT_BUILDERS, instructionFor, instructionsFileFor, uninstructedError } from '@myco-server-worker/core/task-inputs.js';
 import { buildTitlingInput } from '@myco-server-worker/core/titling-input.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
-import { buildSeedingInput, SEEDING_CHECKOUT_DIR, SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
+import { buildSeedingInput, SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
 import { EXTRACTION_TASK, OUTCOME_TASKS, PULLED_ONLY_TASKS, UNLANDED_TASKS, SEEDING_TASK, taskTools, TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { acceptedActions, EXTRACTION_REPORT_ACTION, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';

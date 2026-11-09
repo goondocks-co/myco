@@ -8,14 +8,14 @@ export const KPI_MEASURES = [
   'deliveries', 'placed', 'identity_conflicts', 'duplicate_skips', 'scheme_conflicts', 'mixed_sessions',
 ] as const;
 export type KpiMeasure = typeof KPI_MEASURES[number];
-export type KpiGrain = 'p' | 'c' | 's' | 'd' | 'i' | 'a' | 't' | 'm';
+type KpiGrain = 'p' | 'c' | 's' | 'd' | 'i' | 'a' | 't' | 'm';
 
 const sameSession = (a: string, b: string) => `${a}.project_id=${b}.project_id AND ${a}.session_id=${b}.session_id`;
 const live = (a: string, session: string) => `${a}.generation=(SELECT doc.generation FROM session_documents doc WHERE ${sameSession('doc', session)} AND doc.state='live')`;
-export const harnessOf = (a: string) => `COALESCE((SELECT tr.agent FROM transcripts tr INDEXED BY idx_transcripts_session WHERE ${sameSession('tr', a)} AND tr.role='primary' ORDER BY tr.first_received_at,tr.transcript_id LIMIT 1),'unrecorded')`;
+const harnessOf = (a: string) => `COALESCE((SELECT tr.agent FROM transcripts tr INDEXED BY idx_transcripts_session WHERE ${sameSession('tr', a)} AND tr.role='primary' ORDER BY tr.first_received_at,tr.transcript_id LIMIT 1),'unrecorded')`;
 const dayOf = (time: string) => `CAST((${time} - ((${time} % ${KPI_DAY_MS} + ${KPI_DAY_MS}) % ${KPI_DAY_MS})) / ${KPI_DAY_MS} AS INTEGER)`;
 const conflictColumns = ['prompt_id', 'source_key', 'source_thread', 'source_record'];
-export const conflictKey = (a: string) => `json_array(${conflictColumns.map(c => `${a}.${c}`).join(',')})`;
+const conflictKey = (a: string) => `json_array(${conflictColumns.map(c => `${a}.${c}`).join(',')})`;
 
 interface GrainSource {
   table: string;
@@ -78,7 +78,7 @@ export function reconcileKpi(grain: KpiGrain, keys: string): string[] {
   ];
 }
 
-export function sessionKeys(grain: KpiGrain, sessions: string): string {
+function sessionKeys(grain: KpiGrain, sessions: string): string {
   const source = sources[grain];
   return `SELECT x.project_id,x.session_id,${source.key} AS k FROM (${sessions}) s JOIN ${source.table} x ON ${sameSession('x', 's')}
     UNION SELECT f.project_id,f.session_id,f.key AS k FROM (${sessions}) s JOIN kpi_fact f ON ${sameSession('f', 's')} WHERE f.grain='${grain}'`;
@@ -96,7 +96,7 @@ const lineageUpsert = (select: string, incremental: boolean) => {
     ON CONFLICT(lineage_root) DO UPDATE SET (${lineageValues.join(',')})=(${values.join(',')})
     WHERE (kpi_lineage.started_at,kpi_lineage.first_served_at) IS NOT (${values.join(',')})`;
 };
-export function reconcileLineages(roots: string): string[] {
+function reconcileLineages(roots: string): string[] {
   const from = `(${roots}) roots JOIN member_credentials c INDEXED BY idx_member_credentials_lineage ON c.lineage_root=roots.lineage_root
     JOIN sessions sess INDEXED BY idx_sessions_credential ON sess.created_by_token_id=c.id`;
   return [
@@ -110,7 +110,7 @@ const incrementLineage = (row: string, receipt: boolean) => lineageUpsert(
   `SELECT c.lineage_root,c.lineage_started_at,${receipt ? `${row}.created_at` : earliestReceipt(row)} FROM member_credentials c
    ${receipt ? `JOIN sessions s ON s.created_by_token_id=c.id WHERE ${sameSession('s', row)}` : `WHERE c.id=${row}.created_by_token_id`}`, true);
 
-export interface KpiTrigger { name: string; table: string; sql: string }
+interface KpiTrigger { name: string; table: string; sql: string }
 export function kpiTriggers(): KpiTrigger[] {
   const triggers: KpiTrigger[] = [];
   const add = (table: string, event: string, body: string[], when?: string) => {

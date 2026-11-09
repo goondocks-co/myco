@@ -1,6 +1,5 @@
 import { passedOverHealth } from '../../db/embeddings/health.js';
 import { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction } from './provider-failure.js';
-export { EmbeddingSwitchFailure, providerFailureAction as switchFailureAction, type SwitchFailureAction } from './provider-failure.js';
 /**
  * Switch embedding model: the one confirmed operation that moves search to another embedding model while search keeps
  * answering with the current one.
@@ -19,11 +18,16 @@ import { EMBEDDING_CATALOGUE, embeddingDimensions, embeddingPrice, type Embeddin
 import { heldPartitions, judgeEmbeddingChoice, storedEmbedding, writeSwitchedEmbedding, type EmbeddingChoice } from '../settings.js';
 import { resolveSemanticSearch } from '../search.js';
 import { deploymentLatestTaskRun } from '../../db/runs/claim.js';
-import { listProjects } from '../../read/sessions.js';
+import { sessions_listProjects as listProjects } from '../../read/catalog/sessions.js';
 import { EMBEDDING_TEXT_CHARS, EmbeddingUnavailable, embeddingDiagnostic, inputRefusal, type EmbeddingProvider } from './provider.js';
-import { ANY_MODEL, type PassedOverSource } from './reconcile.js';
+import { ANY_MODEL } from './reconcile.js';
+import {
+  type PassedOverSource,
+  switchComplete,
+  switchEstimate,
+  switchPassedOver,
+} from '../../db/embeddings/switch.js';
 import { modelProgress } from '../../db/embeddings/status.js';
-import { switchComplete, switchEstimate, switchPassedOver } from '../../db/embeddings/switch.js';
 import { SWITCH_REFUSAL, heldPartition, resolveEmbedding, selectionChangeRefusal, type EmbeddingSelection, type StoredEmbedding } from './policy.js';
 import { calibrationPending } from './hubness.js';
 import { VECTOR_DIMENSIONS } from './vectors.js';
@@ -35,15 +39,15 @@ const CHARS_PER_TOKEN = 4;
 /** How long a building switch may go without a new vector before it says why. */
 export const SWITCH_STALL_MS = 30 * 60_000;
 
-export type SwitchRefusal = { reason: 'invalid_value' | 'conflict'; detail: string };
+type SwitchRefusal = { reason: 'invalid_value' | 'conflict'; detail: string };
 export type SwitchAnswer = { applied: true; switch: EmbeddingSwitchStatus | null } | { applied: false; refusal: SwitchRefusal };
 
 /** What switching to a model would read and cost, shown before an admin confirms it. */
-export type SwitchEstimate = EmbeddingSwitchEstimate;
-export type EstimateAnswer = { applied: true; estimate: SwitchEstimate } | { applied: false; refusal: SwitchRefusal };
+type SwitchEstimate = EmbeddingSwitchEstimate;
+type EstimateAnswer = { applied: true; estimate: SwitchEstimate } | { applied: false; refusal: SwitchRefusal };
 
 /** The stored choice a switch names, as the embedding leaves would hold it. */
-export const switchChoice = (sw: Pick<EmbeddingSwitch, 'provider' | 'model' | 'endpoint'>): StoredEmbedding =>
+const switchChoice = (sw: Pick<EmbeddingSwitch, 'provider' | 'model' | 'endpoint'>): StoredEmbedding =>
   ({ 'embedding.provider': sw.provider, 'embedding.model': sw.model, ...(sw.endpoint === null ? {} : { 'embedding.base_url': sw.endpoint }) });
 
 /**
@@ -260,14 +264,8 @@ export async function embeddingWorkPlan(env: ServerEnv, now: number): Promise<Em
   return { model, building: building === model ? null : building, retain: retainedBy(sw), switching: sw?.modelKey ?? null };
 }
 
-/**
- * The model a Project's spores are calibrated under: a standing switch's, whose spores join calibration as their vectors
- * land, else `model`. Spores written under the current model meanwhile keep the statistics they hold.
- */
-export { calibrationModel } from './policy.js';
-
 /** What one embedding step's context writes with: the provider search uses, a switch's provider while it is asked, and the models kept. */
-export interface EmbeddingStepProviders {
+interface EmbeddingStepProviders {
   provider: EmbeddingProvider;
   building?: EmbeddingProvider;
   retain: string[];

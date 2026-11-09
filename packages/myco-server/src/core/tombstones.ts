@@ -7,7 +7,8 @@
  */
 import { DOCUMENT_SESSION_TABLES } from '../db/document-tables.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
-import { recordObservedCandidates, releaseBlobs } from './object-release.js';
+import { releaseBlobs } from './object-release.js';
+import { recordObservedCandidates } from '../db/storage/release-queue.js';
 import { BLOB_REFERENCES, blobReferenceColumn, kindFilter, type BlobReference } from './blob-references.js';
 import { inListChunks, type ReadScope } from '../read/scope.js';
 import { emit } from '../telemetry.js';
@@ -49,8 +50,6 @@ function sessionRoute(table: string): SessionRoute | null {
 const SESSION_REFERENCES: readonly { ref: BlobReference; route: SessionRoute }[] =
   BLOB_REFERENCES.flatMap((ref) => { const route = sessionRoute(ref.table); return route === null ? [] : [{ ref, route }]; });
 
-export { notTombstonedSql, NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
-
 /** Which of these sessions this Project has deleted. The set an import checks before it offers anything: a tombstoned session is never held again. */
 export async function tombstonedAmong(db: RelationalStore, projectId: string, sessionIds: readonly string[]): Promise<Set<string>> {
   const out = new Set<string>();
@@ -64,7 +63,7 @@ export async function tombstonedAmong(db: RelationalStore, projectId: string, se
   return out;
 }
 
-export interface TombstoneOutcome {
+interface TombstoneOutcome {
   /** False when the Project holds no such session; the caller answers not-found rather than inventing a tombstone. */
   applied: boolean;
   /** Rows removed across every derived table. */
@@ -92,9 +91,8 @@ async function blobsOf(db: RelationalStore, projectId: string, sessionId: string
   return [...found].map(([key, generation]) => ({ key, generation }));
 }
 
-
 /** A deleted session's own lineage facts, cleared: a session leaves the parent indexes when it is deleted, so they hold live sessions alone. */
-export const CLEAR_DELETED_PARENTS = `parent_session_id = NULL, parent_reason = NULL, launch_parent_session_id = NULL`;
+const CLEAR_DELETED_PARENTS = `parent_session_id = NULL, parent_reason = NULL, launch_parent_session_id = NULL`;
 
 /**
  * The statements that mark a session deleted: its tombstone, then what the session says of itself cleared, its title

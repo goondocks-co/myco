@@ -6,12 +6,14 @@ import { expect, it } from 'bun:test';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import worker from '@myco-server-worker/index.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
+import {
+  search_searchProject as searchProject,
+  search_searchAcross as searchAcross,
+} from '@myco-server-worker/read/catalog/search.js';
 import type { SearchOptions } from '@goondocks/myco-shared/search-types';
 import { definitionOf } from '@myco-server-worker/mcp/definitions.js';
 import { RUN_DEFINITIONS } from '@myco-server-worker/mcp/run-definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
-import { searchAcross } from '@myco-server-worker/read/search.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 const DAY = 86_400_000;

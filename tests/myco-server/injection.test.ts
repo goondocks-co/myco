@@ -15,11 +15,11 @@ import {
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { insertSpore, type SporeInsert } from '@myco-server-worker/core/spores.js';
 
-import { OBSERVATION_TYPES } from '@myco-server-worker/core/spores.js';
+import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
-import * as plans from '@myco-server-worker/read/plans.js';
+import * as plans from '@myco-server-worker/read/catalog/plans.js';
 import { receiptPlans } from '@myco-server-worker/read/catalog/injection-served-items.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
 /** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
@@ -326,8 +326,8 @@ describe('plan selection', () => {
       const snapshot = await receiptPlans(db, SCOPE, [{ receiptId: answer.receiptId!, planIds: expected }]);
       expect(snapshot.get(answer.receiptId!)?.map(plan => [plan.planKey, plan.sessionId, plan.contentHash, plan.unavailable]))
         .toEqual(expected.map(id => [id, 'history', id, false]));
-      const row = await plans.getPlan(db, SCOPE, 'retry');
-      const completed = spyOn(plans, 'getPlan').mockResolvedValue({ ...row!, status: 'completed' });
+      const row = await plans.plans_getPlan(db, SCOPE, 'retry');
+      const completed = spyOn(plans, 'plans_getPlan').mockResolvedValue({ ...row!, status: 'completed' });
       try {
         const changed = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
           { sessionId: 'changed', admission: admit(SCOPE.projectId, 'changed'), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
@@ -426,7 +426,6 @@ describe('the rendered context', () => {
     expect(JSON.parse(rows(sqlite)[0]!.spore_ids as string)).toEqual(served.items.map((i) => i.id));
   });
 });
-
 
 /**
  * The budget arithmetic, asserted as an inequality rather than as numbers.

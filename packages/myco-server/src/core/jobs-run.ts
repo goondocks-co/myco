@@ -22,9 +22,9 @@ import { STALE_RUN_ERROR, STALE_PENDING_REASON } from './reader-codes.js';
 import type { ServerEnv } from './adapters.js';
 import type { PowerState } from './power.js';
 import { expireGrants } from '../auth/grants.js';
-import { endQueuedRun, expireLeases, HARNESS_MEMBER_ID } from './harness.js';
+import { endQueuedRun, expireLeases } from './harness.js';
+import { HARNESS_MEMBER_ID } from '../constants.js';
 import { staleAfter } from './run-deadline.js';
-export { staleAfter, timeoutSecondsOf } from './run-deadline.js';
 import { classify, emit } from '../telemetry.js';
 import { moveRunBodies } from '../db/runs/bodies.js';
 import { failStaleRun, listLiveRunsAcrossProjects } from '../db/runs/lifecycle.js';
@@ -33,8 +33,11 @@ import { pruneRevokedCredentials } from '../db/credential-retention.js';
 import { pruneTerminalRuns } from '../db/runs/retention.js';
 import { storedSettings } from './settings.js';
 import { releaseRun } from './release.js';
-import { pendingSearchBlobs, reconcileSearchIndex } from './search-index.js';
-import { jobDispatchesAt } from './jobs.js';
+import { reconcileSearchIndex } from './search-index.js';
+import {
+  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
+} from '../read/catalog/search-index.js';
+import { jobDispatchesAt, SCHEDULE_JOB, STAGING_RETENTION_JOB } from './jobs.js';
 import { runEmbeddingJob } from './embedding/jobs.js';
 import { reclaimEnrollmentAuthorities } from '../auth/enrollment.js';
 import { transcriptRetention } from '../ingest/retention.js';
@@ -42,8 +45,8 @@ import { drainObjectReleases, objectReleaseBacklogged } from './object-release.j
 import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
 import { admitRecoveryExport } from './recovery-admission.js';
-import { attemptAdvancing, recoveryScheduleOf, SCHEDULE_JOB, stopDisabledRecovery } from './recovery-schedule.js';
-import { PRUNE_FILE_BUDGET, stagingPrunePolicy, STAGING_RETENTION_JOB } from './staging-retention.js';
+import { attemptAdvancing, recoveryScheduleOf, stopDisabledRecovery } from './recovery-schedule.js';
+import { PRUNE_FILE_BUDGET, stagingPrunePolicy } from './staging-retention.js';
 import { backfillTitles, titleReadySessions } from './titling.js';
 import { reconcileReleaseProvenance } from './release-provenance.js';
 import { MAINTENANCE_JOB, runMaintenance, type MaintenanceCheck } from './store-maintenance.js';
@@ -63,10 +66,10 @@ export const JOB_BATCH = 500;
  * tick asks for its next wake soon rather than at the depth's cadence. The tick reports both per job. It is told the
  * power state the wake resolved, for a job whose block names the states it dispatches in.
  */
-export type JobRun = (env: ServerEnv, now: number, state: PowerState, context?: { drainOnly: boolean }) => Promise<number | JobOutcome>;
+type JobRun = (env: ServerEnv, now: number, state: PowerState, context?: { drainOnly: boolean }) => Promise<number | JobOutcome>;
 
 /** What a draining job answers: rows it changed, and whether work remains for another pass. */
-export interface JobOutcome {
+interface JobOutcome {
   changed: number;
   more: boolean;
   /** Delay before another bounded pass, or the default drain cadence. */
@@ -155,8 +158,6 @@ export async function agentRunRetention(env: ServerEnv, now: number): Promise<nu
   return runs + credentials + answers;
 }
 
-export { STALE_RUN_ERROR } from './reader-codes.js';
-
 /**
  * How long a dispatch may wait in the queue before the Deployment gives up on it.
  *
@@ -236,7 +237,7 @@ export async function inviteExpiry(env: ServerEnv, now: number): Promise<number>
  * names it as author, and both the grant row and its agent row stay for that
  * name to point at.
  */
-export async function grantExpiry(env: ServerEnv, now: number): Promise<number> {
+async function grantExpiry(env: ServerEnv, now: number): Promise<number> {
   const changed = await expireGrants(env.db, now, JOB_BATCH);
   if (changed > 0) emit({ kind: 'grants_expired', changed });
   return changed;

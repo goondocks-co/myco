@@ -26,7 +26,7 @@ export function enrollmentAdmission(
 }
 
 /** True while `machineId` is unheld or held by `memberId`. Holds across an insert of that member's own claim. */
-export function machineClaimable(machineId: string, memberId: string): Fragment {
+function machineClaimable(machineId: string, memberId: string): Fragment {
   return {
     sql: `NOT EXISTS (SELECT 1 FROM machine_claims WHERE machine_id = ? AND member_id <> ?)`,
     params: [machineId, memberId],
@@ -34,7 +34,7 @@ export function machineClaimable(machineId: string, memberId: string): Fragment 
 }
 
 /** True while the authority this key names meets every admission. */
-export function authorityAdmitted(admission: Fragment): Fragment {
+function authorityAdmitted(admission: Fragment): Fragment {
   return {
     sql: `EXISTS (SELECT 1 FROM enrollment_authorities WHERE ${admission.sql})`,
     params: [...admission.params],

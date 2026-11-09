@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { parseDiagnostic, rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
-import { getSession } from '@myco-server-worker/read/sessions.js';
+import { sessions_getSession as getSession } from '@myco-server-worker/read/catalog/sessions.js';
 import { PARSER_VERSION } from '@myco-server-worker/constants.js';
 import { admittedDocumentEvent, RecordRefused } from '@myco-server-worker/ingest/document-admission.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';

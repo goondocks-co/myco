@@ -19,7 +19,8 @@ import type { ServerEnv } from './adapters.js';
 import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { buildMapInput, mapPrompt, MAP_RULES } from './canopy-input.js';
 import { buildSeedingInput, seedingPrompt, SEEDING_RULES } from './seeding-input.js';
-import { EXTRACTION_TASK, MAP_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_RULES } from './extraction-rules.js';
 import { buildHandStartLearning, learningPrompt } from './learning-stages.js';
 import { buildTitlingInput, titlingPrompt } from './titling-input.js';
@@ -56,7 +57,7 @@ export interface TaskTemplate {
 const TEMPLATE_REPOSITORY = { url: '{{repository.url}}', branch: '{{repository.branch}}' };
 
 /** Builds a task's prompt for one Project, and where the task is deduped, reads the hash the Project's current artifact carries. */
-export interface TaskInputBuilder {
+interface TaskInputBuilder {
   /** The launch renderer with placeholders for material selected per run. */
   template(patterns: readonly string[]): TaskTemplate;
   /** The instruction, or null when what the run carries is not enough to write one. */
@@ -93,7 +94,7 @@ export function inputBuilderFor(task: string): TaskInputBuilder | null {
 }
 
 /** What a decision to dispatch answers once the input is built: the run's material, or that the Project has not moved. */
-export type BuiltInput = { unchanged: true } | { unchanged: false; input: TaskInput };
+type BuiltInput = { unchanged: true } | { unchanged: false; input: TaskInput };
 
 /**
  * Build this task's input and, where the task is deduped, compare it against the

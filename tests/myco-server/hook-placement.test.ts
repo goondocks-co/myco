@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { countUnplacedContextRecords, listUnplacedHookRecords } from '@myco-server-worker/read/hook-placement.js';
+import {
+  hook_placement_countUnplacedContextRecords as countUnplacedContextRecords,
+  hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
+} from '@myco-server-worker/read/catalog/hook-placement.js';
 
-import { sessionTurnContexts } from '@myco-server-worker/read/turns.js';
-
+import {
+  turns_sessionTurnContexts as sessionTurnContexts,
+} from '@myco-server-worker/read/catalog/turns.js';
 
 const scope = { projectId: 'proj_1' };
 const opened: ReturnType<typeof sqliteEnv>[] = [];

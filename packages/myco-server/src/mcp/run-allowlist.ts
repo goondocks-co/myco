@@ -7,7 +7,7 @@
 import { isWriteOp, NO_OP, type AnyTool } from '../core/tool-catalogue.js';
 
 /** One `(tool, op)` a task tool reaches. Whether it writes is the catalogue's answer, never restated here. */
-export interface RunSurfaceTarget { tool: AnyTool; op: string }
+interface RunSurfaceTarget { tool: AnyTool; op: string }
 
 /** The one op every run holds, whatever its task declares. */
 export const ALWAYS_ALLOWED: RunSurfaceTarget = { tool: 'myco_run', op: 'report' };

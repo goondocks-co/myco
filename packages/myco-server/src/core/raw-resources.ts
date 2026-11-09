@@ -11,7 +11,7 @@ const RAW_TRANSCRIPT_PAGE = 10;
 
 export type RawResource = { kind: 'blob' | 'event' | 'transcript'; id: string };
 export type RawAction = 'enumerate' | 'read';
-export type RawSubject = { kind: 'member'; memberId: string } | { kind: 'run' | 'grant'; id: string };
+type RawSubject = { kind: 'member'; memberId: string } | { kind: 'run' | 'grant'; id: string };
 
 /** Raw responses require authentication again on every request, including cached browser navigations. */
 export const RAW_CACHE_HEADERS = { 'cache-control': 'private, no-store', vary: 'Cookie, Authorization' } as const;
@@ -132,8 +132,8 @@ export class RawResourceReader {
   }
 }
 
-export type RawTranscript = TranscriptRow & { segments: readonly SegmentRow[]; segmentsCursor: string | null };
-export interface RawTranscriptPage {
+type RawTranscript = TranscriptRow & { segments: readonly SegmentRow[]; segmentsCursor: string | null };
+interface RawTranscriptPage {
   transcripts: RawTranscript[];
   cursor: string | null;
 }

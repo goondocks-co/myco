@@ -3,9 +3,8 @@ import { attributedUpdate } from './runs/attribution.js';
 import { prepareBound } from './kernel/statement.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import { commitAttributedWrite } from './runs/attribution.js';
-import { titleRunInFlightSql } from './session-read-model.js';
+import { titleRunInFlightSql, notTombstonedSql } from './session-read-model.js';
 import { type RunWrite } from './runs/evidence.js';
-import { notTombstonedSql } from '../core/tombstones.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql, transcriptsPublishedSql } from '../read/material-readiness.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
 
@@ -24,7 +23,6 @@ const writeFirst = attributedUpdate<[string, string, string, string]>('sessionTi
 const titlingStamp = (db: RelationalStore, projectId: string, sessionId: string) =>
   readSet(db, stamp.bind(projectId, sessionId)).then(([rows]) => rows[0] ?? null);
 
-
 /**
  * Claims the first automatic attempt on a session that has ended or, given `idleBefore`, gone quiet (its last receipt at or before
  * that instant), or, given `retryBefore`, a retry of one that ended untitled with its stamp before that instant; null admits a
@@ -38,7 +36,6 @@ export async function claimTitling(db: RelationalStore, projectId: string, sessi
   return { claimed: result.results.length === 1, previous };
 }
 
-
 /**
  * Claims the refresh of a titled session, open or ended: its title stamped at or before `refreshBefore`, a later receipt, and no
  * title run of it in flight. Stamps `titled_at`, which holds the next refresh off for the interval and leaves `title_material_at`,
@@ -51,7 +48,6 @@ export async function claimRefreshTitling(db: RelationalStore, projectId: string
   return { claimed: result.results.length === 1, previous: row.titled_at };
 }
 
-
 /**
  * Claims a titling attempt an owner asked for: any session, ended or not, titled or not. Refused while an attempt begun within `inFlightMs` may still be running, so two asks make one run. Stamps `titled_at`, and answers the stamp it replaced so an attempt that never launches can put it back.
  */
@@ -62,12 +58,10 @@ export async function claimOwnerTitling(db: RelationalStore, projectId: string, 
   return { claimed: result.results.length === 1, previous: row.titled_at ?? null };
 }
 
-
 /** Puts back the stamp a claim replaced, for an attempt whose launch the runtime refused — the session keeps its own end-of-session attempt, and an owner may ask again at once. */
 export async function restoreTitlingStamp(db: RelationalStore, projectId: string, sessionId: string, stamp: number, previous: number | null): Promise<void> {
   await commit(db, restore.bind(previous, projectId, sessionId, stamp));
 }
-
 
 /**
  * Records on the session's live document the user prompts the title just written covers. It runs right after the title
@@ -84,12 +78,10 @@ export async function overwriteTitle(db: RelationalStore, projectId: string, ses
   return result.results.length > 0;
 }
 
-
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, attribution?: RunWrite): Promise<boolean> {
   const statement = writeFirst.bind(title, summary, projectId, sessionId);
   const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(db, projectId, sessionId)]);
   return result.results.length > 0;
 }
-
 

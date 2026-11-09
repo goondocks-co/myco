@@ -12,7 +12,8 @@
  * deadline, so it never answers that work remains while nothing can move it.
  */
 import type { ServerEnv } from '../core/adapters.js';
-import { trimTurn, triageTurn, TURN_QUIET_MS } from '../core/turn-card-rules.js';
+import { trimTurn, triageTurn } from '../core/turn-card-rules.js';
+import { TURN_QUIET_MS } from '../db/schema-v110.js';
 import {
   cardOutline, cardStatements, forgetTurnStatement, NONE_CARD, reusableCard, turnMaterial, type DueTurn, type CardMarks,
 } from '../core/turn-cards.js';

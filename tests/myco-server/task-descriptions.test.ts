@@ -3,7 +3,17 @@ import { describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/index.js';
 import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
-import { CARD_TASK, EXTRACTION_TASK, PULLED_ONLY_TASKS, RETAINED_TASKS, TASK_TOOLS, TASK_TIERS, TASK_WORDS, runTimeoutForTask, type RetainedTask } from '@myco-server-worker/core/task-catalogue.js';
+import {
+  EXTRACTION_TASK,
+  PULLED_ONLY_TASKS,
+  RETAINED_TASKS,
+  TASK_TOOLS,
+  TASK_TIERS,
+  TASK_WORDS,
+  runTimeoutForTask,
+  type RetainedTask,
+} from '@myco-server-worker/core/task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { TURN_CARD_PROMPT } from '@myco-server-worker/core/turn-card-prompt.js';
 import { RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
@@ -11,7 +21,8 @@ import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
 import { callWords } from '@goondocks/myco-shared/call-words';
 import { readWindowFor } from '@myco-server-worker/core/read-window.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from '@myco-server-worker/core/run-deadline.js';
+import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/worker-selection.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { buildTaskInput } from '@myco-server-worker/core/task-inputs.js';
 

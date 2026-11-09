@@ -8,9 +8,13 @@ import { DocumentBatch, type BatchDocument } from '@myco-server-worker/ingest/do
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { documentSessionActivity } from '@myco-server-worker/content/session-activity.js';
-import { listSessionSummaries } from '@myco-server-worker/read/sessions.js';
-import { listUnplacedHookRecords } from '@myco-server-worker/read/hook-placement.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
+import {
+  sessions_listSessionSummaries as listSessionSummaries,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import {
+  hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
+} from '@myco-server-worker/read/catalog/hook-placement.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 

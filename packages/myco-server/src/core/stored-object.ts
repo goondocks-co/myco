@@ -11,7 +11,7 @@ import { SHA256 } from '@stablelib/sha256';
 import { collectBounded } from '../bytes.js';
 import type { BlobStore } from './adapters.js';
 
-export type StoredObjectRead =
+type StoredObjectRead =
   | { kind: 'absent' }
   | { kind: 'size_mismatch' }
   | { kind: 'read'; bytes: Uint8Array<ArrayBuffer> };
@@ -38,7 +38,7 @@ export async function readStoredObject(blobs: BlobStore, key: string, expectedBy
   }
 }
 
-export type StoredRangeRead =
+type StoredRangeRead =
   | { kind: 'absent' }
   | { kind: 'size_mismatch' }
   | { kind: 'read'; bytes: Uint8Array<ArrayBuffer> };

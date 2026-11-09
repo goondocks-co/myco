@@ -21,7 +21,7 @@ const stateOf = `COALESCE((SELECT CASE WHEN r.ready<0 THEN 'unavailable' WHEN r.
  * of their Project: a key whose version is gone, ineligible, or whose model is no longer active loses its row; every
  * other key holds exactly one row per active model. Replaying it, or interleaving it with triggers, never double-counts.
  */
-export function reconcileSourceState(keys: string): string[] {
+function reconcileSourceState(keys: string): string[] {
   return [
     `DELETE FROM embedding_source_state WHERE (project_id,model_key,type,record_id) IN
       (SELECT key.project_id,m.model_key,key.type,key.record_id FROM (${keys}) key JOIN embedding_models m ON m.project_id=key.project_id)
@@ -42,7 +42,7 @@ export function reconcileSourceState(keys: string): string[] {
  * Re-derive whether the source keys `keys` are current eligible sources, model-independently: one presence row per
  * eligible source, so whether a Project holds anything to embed is one key seek, whatever its ineligible history.
  */
-export function reconcileEligibleSources(keys: string): string[] {
+function reconcileEligibleSources(keys: string): string[] {
   return [
     `DELETE FROM embedding_eligible_sources WHERE (project_id,type,record_id) IN (SELECT project_id,type,record_id FROM (${keys}))
       AND NOT EXISTS (SELECT 1 FROM embedding_versions v WHERE v.project_id=embedding_eligible_sources.project_id AND v.type=embedding_eligible_sources.type

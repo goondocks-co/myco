@@ -1,17 +1,36 @@
-import { listUnplacedHookRecords } from '../read/hook-placement.js';
+import {
+  hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
+} from '../read/catalog/hook-placement.js';
 import { getReleaseStatus } from '../core/provenance.js';
 import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { sessionLifecycleState } from '../db/documents/lifecycle.js';
-import { getSession, listSessionSummaries, projectStats, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
-import { activityFeed } from '../read/activity.js';
-import { SESSION_ACTIVITY_TYPES, type SessionActivityType } from '../read/session-activity.js';
+import {
+  sessions_getSession as getSession,
+  sessions_listSessionSummaries as listSessionSummaries,
+  sessions_projectStats as projectStats,
+  sessions_sessionDurationMs as sessionDurationMs,
+  type sessions_SessionFilters as SessionFilters,
+} from '../read/catalog/sessions.js';
+import { activity_activityFeed as activityFeed } from '../read/catalog/activity.js';
+import {
+  SESSION_ACTIVITY_TYPES,
+  type session_activity_SessionActivityType as SessionActivityType,
+} from '../read/catalog/session-activity.js';
 import { badRequest, instantParam, notFound, ok, resolveProjectScope, sessionInScope } from './scope.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
 import { decodeCursor } from '../read/scope.js';
-import { listAttachments, listContextInjections, listPlans, untitledReason } from '../read/children.js';
-import { parseOrigins, sessionTurnContexts } from '../read/turns.js';
+import {
+  children_listAttachments as listAttachments,
+  children_listContextInjections as listContextInjections,
+  children_listPlans as listPlans,
+  children_untitledReason as untitledReason,
+} from '../read/catalog/children.js';
+import {
+  turns_parseOrigins as parseOrigins,
+  turns_sessionTurnContexts as sessionTurnContexts,
+} from '../read/catalog/turns.js';
 import { documentCounters, listCatalogTurns } from '../read/document-catalog.js';
 import { TurnLocatorBuilding } from '../db/documents/locators.js';
 import { documentPromptTools, documentTurnCollection, documentTurnDetail, documentUnplacedRecords, TURN_COLLECTIONS, type TurnCollection } from '../content/session-turns.js';
@@ -20,18 +39,22 @@ import { sessionFiles } from '../read/session-files.js';
 import { RawResourceReader, RAW_CACHE_HEADERS } from '../core/raw-resources.js';
 import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
-import { PLAN_STATUS_MESSAGE, planInSession, WRITABLE_PLAN_STATUSES } from '../read/plans.js';
+import {
+  plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
+  plans_planInSession as planInSession,
+  plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
+} from '../read/catalog/plans.js';
 import { tombstoneSession } from '../core/tombstones.js';
 import { endSession } from '../core/session-end.js';
 import { sessionOutcome } from '../db/runs/reads.js';
 import { sessionCommits } from '../read/session-commits.js';
-import { sessionLineage } from '../read/lineage.js';
+import { lineage_sessionLineage as sessionLineage } from '../read/catalog/lineage.js';
 import { listSessionArtifacts } from '../read/session-artifacts.js';
 import { resumeCommandFor } from '../core/resume-command.js';
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 
 /** A cursor naming a document generation that is no longer live: the reader restarts from the first page. */
-export const staleCursor = (): Response => Response.json({ error: 'stale_cursor' }, { status: 409 });
+const staleCursor = (): Response => Response.json({ error: 'stale_cursor' }, { status: 409 });
 
 /** Session child collections, each served by the same scoped and paginated handler. */
 const CHILDREN = {
@@ -45,7 +68,7 @@ const CHILDREN = {
 export const CHILD_SEGMENTS = Object.keys(CHILDREN);
 
 /** The longest reason a deletion records; the note is an operator's own words, not a structured field. */
-export const MAX_TOMBSTONE_REASON_CHARS = 512;
+const MAX_TOMBSTONE_REASON_CHARS = 512;
 
 /**
  * The session id a path segment names. Ingest admits any non-empty string within
@@ -54,7 +77,7 @@ export const MAX_TOMBSTONE_REASON_CHARS = 512;
  * and then never opens it. The segment arrives percent-encoded; a malformed escape names
  * no session.
  */
-export function sessionIdParam(raw: string): string | null {
+function sessionIdParam(raw: string): string | null {
   let decoded: string;
   try {
     decoded = decodeURIComponent(raw);

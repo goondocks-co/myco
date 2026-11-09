@@ -1,6 +1,8 @@
 import { expect } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { listTitleCandidates } from '@myco-server-worker/read/children.js';
+import {
+  children_listTitleCandidates as listTitleCandidates,
+} from '@myco-server-worker/read/catalog/children.js';
 import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const HOUR = 3_600_000;

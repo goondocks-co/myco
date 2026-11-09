@@ -47,24 +47,23 @@ import { listReports, runRecordedWrite, insertReport, type ReportInsert } from '
 import { sessionNamedByRun, type RunRow, getRun, type RunCaller } from '../db/runs/lifecycle.js';
 import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { canopyMapWrittenBy } from './canopy.js';
-import { sessionCarriesTitle } from '../read/sessions.js';
+import { sessions_sessionCarriesTitle as sessionCarriesTitle } from '../read/catalog/sessions.js';
 import { sporeAuthoredBy } from './spores.js';
 import { activeSporesAtLeast } from '../db/spores/counts.js';
 import { CARD_TOOL, LEARNING_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
-import { CURATION_TASK, CARD_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { CURATION_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 import { titlingParamsOf } from './titling-params.js';
 import { parseRunAudit } from './run-audit.js';
 import { runHasAttempt } from '../db/runs/steps.js';
 import { RUN_CLOSE_AUDIT_ERROR } from './reader-codes.js';
 
-export { RUN_CLOSE_AUDIT_ERROR } from './reader-codes.js';
-
 /** The report a run records to say it found nothing to write. */
 export const RUN_SKIP_ACTION = 'skip';
 
 /** What one task's run owes before it closes. */
-export interface RunCloseRule {
+interface RunCloseRule {
   /** The report actions the run must have recorded one of. */
   reports: readonly string[];
   /** The evidence this rule requires, in reader words. */
@@ -113,7 +112,7 @@ export const SEEDING_REPORT_ACTION = 'seed';
  * `titled_by_run` column on the session would make the two one write and is the
  * long-run shape; the record is what holds the rule without a migration.
  */
-export async function titleWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+async function titleWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
   const sessionId = sessionNamedByRun(run);
   if (sessionId === null) return false;
   return (await runRecordedWrite(db, scope, run.id, TITLE_WRITE_TOOL)) && (await sessionCarriesTitle(db, scope, sessionId));
@@ -132,17 +131,17 @@ export async function cardsWrittenBy(db: RelationalStore, scope: ReadScope, run:
 }
 
 /** Whether THIS run wrote a spore: the spore row's `author` column names the run. */
-export async function sporesWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+async function sporesWrittenBy(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
   return sporeAuthoredBy(db, scope, run.id);
 }
 
 /** A seeding skip holds when the Project already holds enough active spores to count as seeded. */
-export async function alreadySeeded(db: RelationalStore, scope: ReadScope): Promise<boolean> {
+async function alreadySeeded(db: RelationalStore, scope: ReadScope): Promise<boolean> {
   return activeSporesAtLeast(db, scope.projectId, SEEDED_SPORE_FLOOR);
 }
 
 /** A titling skip holds when the session its dispatch named carries a title; a refresh exists to replace that title, so none holds for it. */
-export async function titleStands(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+async function titleStands(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
   const sessionId = sessionNamedByRun(run);
   if (titlingParamsOf(run.runContext)?.mode === 'refresh') return false;
   return sessionId !== null && (await sessionCarriesTitle(db, scope, sessionId));
@@ -164,7 +163,7 @@ export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
 };
 
 /** The rule this task's runs close under, or undefined for a name this Deployment does not serve. */
-export function closeRuleFor(task: string | null): RunCloseRule | undefined {
+function closeRuleFor(task: string | null): RunCloseRule | undefined {
   return task === null ? undefined : RUN_CLOSE_RULES[task];
 }
 
@@ -192,7 +191,7 @@ export interface RunCloseEvidence {
 }
 
 /** Whether this run's closing report owes its audit: its task's rule is audited and a worker's claim recorded its attempt. */
-export async function owesAudit(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
+async function owesAudit(db: RelationalStore, scope: ReadScope, run: RunRow): Promise<boolean> {
   return closeRuleFor(run.task)?.audited === true && await runHasAttempt(db, scope, run.id);
 }
 
@@ -236,13 +235,13 @@ export function unacceptedActionError(task: string | null, accepted: readonly st
  * task cannot close under. A landed row whose audit is absent or malformed says why in `auditError`, where the run's
  * task owes one or an audit is offered: the report stands without it, and cannot close the run as completed.
  */
-export type ReportOutcome =
+type ReportOutcome =
   | { recorded: true; auditError: string | null; auditRepairs: string[] }
   | { recorded: false; reason: 'unheld' }
   | { recorded: false; reason: 'unaccepted'; error: string };
 
 /** A report as either door offers it: the audit is the caller's raw argument, judged here. */
-export type ReportOffer = Omit<ReportInsert, 'audit'> & { audit: unknown };
+type ReportOffer = Omit<ReportInsert, 'audit'> & { audit: unknown };
 
 /** The most characters a report's summary and its details are stored with, on either door a run reports through. */
 export const MAX_REPORT_SUMMARY_CHARS = 4_096;
@@ -281,7 +280,6 @@ export async function recordReport(db: RelationalStore, scope: ReadScope, report
   }
   return (await insertReport(db, scope, { ...report, summary, details, audit }, caller)) ? { recorded: true, auditError, auditRepairs } : { recorded: false, reason: 'unheld' };
 }
-
 
 /** Resolve a runtime ending against the task's persisted evidence. */
 export async function decideRunEnd(

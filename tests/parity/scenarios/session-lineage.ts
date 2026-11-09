@@ -1,7 +1,13 @@
 import { launchParentSession } from '@myco/member/session-lineage.js';
 import { expect } from 'bun:test';
-import { sessionLineage, type SessionLineage } from '@myco-server-worker/read/lineage.js';
-import { sessionEdges, type SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
+import {
+  lineage_sessionLineage as sessionLineage,
+  type lineage_SessionLineage as SessionLineage,
+} from '@myco-server-worker/read/catalog/lineage.js';
+import {
+  session_activity_sessionEdges as sessionEdges,
+  type session_activity_SessionActivityRow as SessionActivityRow,
+} from '@myco-server-worker/read/catalog/session-activity.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 

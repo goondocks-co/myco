@@ -1,7 +1,7 @@
 import { PROMPT_ORIGINS } from '../ingest/kinds.js';
 
 /** Whether extraction reads a prompt of each declared origin. */
-export const EXTRACTION_ORIGINS: Readonly<Record<(typeof PROMPT_ORIGINS)[number], boolean>> = {
+const EXTRACTION_ORIGINS: Readonly<Record<(typeof PROMPT_ORIGINS)[number], boolean>> = {
   user: true,
   unknown: true,
   system: false,

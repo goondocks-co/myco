@@ -18,11 +18,8 @@ import { sqliteStoreMaintenance } from './store-maintenance.js';
 /** The self-hosted embedding platform: no binding of its own, so every provider is reached over HTTP. */
 export const BUN_EMBEDDING_PLATFORM: EmbeddingPlatform = { target: 'bun' };
 
-export const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
-export const TOKEN_LIMIT = { limit: 300, periodMs: 60_000 };
-
-/** What a self-hosted deployment requires, named as its operator would name it in Compose. */
-export const REQUIRED_BINDINGS = ['MYCO_DATABASE', 'MYCO_BLOB_DIR'] as const;
+const SOURCE_LIMIT = { limit: 600, periodMs: 60_000 };
+const TOKEN_LIMIT = { limit: 300, periodMs: 60_000 };
 
 export interface BunServerConfig extends OwnerBindings {
   /** The open SQLite database on the mounted volume. */
@@ -59,7 +56,7 @@ export const classifyBlobFailureOf: BlobFailureClassifier = (message) =>
  * One pass of a draining job on this target. Its store and blobs are local, so no platform caps the calls; the count
  * bounds one pass's work so the wake loop answers between passes, and the wall time is the same as every target's.
  */
-export const BUN_JOB_BUDGET: JobBudget = { calls: 2_000, wallMs: 15_000 };
+const BUN_JOB_BUDGET: JobBudget = { calls: 2_000, wallMs: 15_000 };
 
 export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
   // Usability, not merely presence: an open handle that cannot answer a trivial

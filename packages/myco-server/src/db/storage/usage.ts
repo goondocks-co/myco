@@ -13,10 +13,10 @@ import type { CatchupFamily } from '../projections/family.js';
  * build will stop at. A trigger moves a counter only for a counted key; a build page adds the keys it moves the cursor
  * past, in one commit with the cursor.
  */
-export const STORAGE_USAGE_PROJECTION = 'storage_usage';
+const STORAGE_USAGE_PROJECTION = 'storage_usage';
 export const STORAGE_USAGE_PHASE = 'blobUsage';
 export const STORAGE_USAGE_PAGE = 500;
-export const DEPLOYMENT_USAGE_KEY = '';
+const DEPLOYMENT_USAGE_KEY = '';
 
 const tuple = (json: string) => `COALESCE(json_extract(${json},'$[0]'),''),COALESCE(json_extract(${json},'$[1]'),'')`;
 const buildRow = (alias = '') => `${alias}projection='${STORAGE_USAGE_PROJECTION}' AND ${alias}phase='${STORAGE_USAGE_PHASE}'`;
@@ -72,7 +72,7 @@ export const STORAGE_USAGE_CATCHUP = {
 export const restartStorageUsage = write<[]>({ name: 'storageUsage.restart', sql:
   `UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL,generation=generation+1 WHERE ${buildRow()}` });
 
-export type StorageUsage = { state: 'ready'; blobs: number; registeredLogicalBytes: number } | { state: 'building' };
+type StorageUsage = { state: 'ready'; blobs: number; registeredLogicalBytes: number } | { state: 'building' };
 
 const deploymentUsage = read<[], { done: number; blobs: number | null; bytes: number | null }>({ name: 'storageUsage.deployment', sql:
   `SELECT c.done,u.blobs,u.registered_logical_bytes AS bytes FROM projection_catchup c

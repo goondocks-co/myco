@@ -1,23 +1,27 @@
 import { embeddingProviderReady, recordEmbeddingProviderFailure, clearEmbeddingProviderHold } from './provider-state.js';
 import {
-  claimReceiptDeletion, embeddingSource, journalSourceAttempt, nextDueSource, nextWriteType, passOverSource, prepareEmbeddingDue, rejournalSourceAttempt, retainEmbeddingModels,
-  settleReceiptDeletion, settleSourceWrite,
+  claimReceiptDeletion,
+  embeddingSource,
+  journalSourceAttempt,
+  nextDueSource,
+  nextWriteType,
+  passOverSource,
+  prepareEmbeddingDue,
+  rejournalSourceAttempt,
+  retainEmbeddingModels,
+  settleReceiptDeletion,
+  settleSourceWrite,
+  retiringReceipt,
 } from '../../db/embeddings/work.js';
-export { resetEmbeddingIndex, embeddingFailureWakeAt } from '../../db/embeddings/work.js';
-export { discardRecoveredVectorPages } from '../../db/embeddings/vector-pages.js';
-export { INPUT_REFUSAL_RETRY_MS } from '../../db/embedding-due.js';
-export type { PassedOverSource } from '../../db/embeddings/switch.js';
 
 /** The `model_key` of a passed-over source no model can read. */
 export const ANY_MODEL = '';
 import type { BlobStore, RelationalStore } from '../adapters.js';
 import { EMBEDDING_TEXT_CHARS, VECTOR_WRITE_TIMEOUT_MS, inputRefusal, type EmbeddingProvider } from './provider.js';
 import { VECTOR_TYPES, vectorId, type VectorMetadata, type VectorStore, type VectorType } from './vectors.js';
-import type { EmbeddingSource } from '../../read/embedding.js';
+import type { embedding_EmbeddingSource as EmbeddingSource } from '../../read/catalog/embedding.js';
 import { reconcileHubness } from './hubness.js';
-import { retiringReceipt } from './selection.js';
 import { RECEIPT } from './receipt-state.js';
-export { RECEIPT } from './receipt-state.js';
 
 /**
  * `provider` writes every source and, unless `calibrate` names another model, calibrates spores. While an embedding
@@ -76,7 +80,7 @@ const metadataOf = (s: EmbeddingSource): VectorMetadata => ({ type: s.type, reco
   release_state: s.release_state, release_confidence: s.release_confidence });
 
 /** Every model whose vectors a step keeps. */
-export const retainedModels = (context: Pick<EmbeddingContext, 'provider' | 'building' | 'retain'>): string[] =>
+const retainedModels = (context: Pick<EmbeddingContext, 'provider' | 'building' | 'retain'>): string[] =>
   [...new Set([context.provider.modelKey, ...(context.building === undefined ? [] : [context.building.modelKey]), ...(context.retain ?? [])])];
 
 /** The vector store call settles within `ms`, or the step fails. The deadline is the platform's own signal. */

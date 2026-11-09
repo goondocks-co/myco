@@ -7,8 +7,11 @@ import { consolidateSpores, getSpore, insertSpore, repairImportedSporeSource, re
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from './spore-writes.js';
 import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from '../db/runs/served.js';
 import { extractionSourceSession } from '../db/documents/prompt-locator.js';
-import { promptInSession } from '../read/turns.js';
-import { projectHoldsSession, sessionHeldByMachine } from '../read/sessions.js';
+import { turns_promptInSession as promptInSession } from '../read/catalog/turns.js';
+import {
+  sessions_projectHoldsSession as projectHoldsSession,
+  sessions_sessionHeldByMachine as sessionHeldByMachine,
+} from '../read/catalog/sessions.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from './injection.js';
 import { nearSpores } from './spore-near-matches.js';
@@ -18,9 +21,9 @@ import { ensureAgent } from '../db/runs/state.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 
-export type SporePrincipal = { kind: 'member'; memberId: string; machineId: string } | { kind: 'grant'; grantId: string }
+type SporePrincipal = { kind: 'member'; memberId: string; machineId: string } | { kind: 'grant'; grantId: string }
   | { kind: 'run'; runId: string; task: string | null; agentId: string; sessionId: string | null };
-export interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
+interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
 type SporeWriteInput = Record<string, unknown>;
 type SporeWriteFailure = { ok: false; error: string; repairCall?: {tool:string;op:string;page?:number;id?:string} };
 const failure = (error: string, repairCall?: SporeWriteFailure['repairCall']): SporeWriteFailure => ({ ok: false, error, ...(repairCall === undefined ? {} : {repairCall}) });

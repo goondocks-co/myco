@@ -20,9 +20,11 @@ import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { presentedDatesAfterPublication } from '@myco-server-worker/db/documents/lifecycle.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
-import { listSessions } from '@myco-server-worker/read/sessions.js';
+import {
+  sessions_listSessions as listSessions,
+} from '@myco-server-worker/read/catalog/sessions.js';
 import { endSession } from '@myco-server-worker/core/session-end.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { registerBlob } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
@@ -215,7 +217,6 @@ describe('an imported session\'s dates, in any order', () => {
     expect(state(r.sqlite)).toMatchObject({ ended_at: IMPORT_AT, occurred_ended_at: DERIVED_LAST + 5_000 });
   });
 });
-
 
 describe('an imported session a member goes on capturing live', () => {
   it('presents no overlay once a segment arrives on a live channel, with no hook start or end', async () => {
@@ -478,7 +479,6 @@ describe('two import ends at one instant', () => {
     expect(ascending).toEqual(descending);
   });
 });
-
 
 describe('undated lines in mixed imported and live segments', () => {
   for (const firstLane of ['import', 'cli'] as const) {

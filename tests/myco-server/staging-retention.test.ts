@@ -10,11 +10,17 @@
  */
 import { expect, it } from 'bun:test';
 import { runTick } from '@myco-server-worker/core/tick.js';
-import { jobRunsAt, SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
+import { jobRunsAt, SERVER_JOBS, STAGING_RETENTION_JOB } from '@myco-server-worker/core/jobs.js';
 import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
 import {
-  keptStagings, KEEP_STAGINGS_DEFAULT, KEEP_STAGINGS_SETTING, PRUNE_FILE_BUDGET, prunableStagings,
-  stagingPruneDue, stagingPrunePolicy, STAGING_RETENTION_JOB, type RetainedStaging,
+  keptStagings,
+  KEEP_STAGINGS_DEFAULT,
+  KEEP_STAGINGS_SETTING,
+  PRUNE_FILE_BUDGET,
+  prunableStagings,
+  stagingPruneDue,
+  stagingPrunePolicy,
+  type RetainedStaging,
 } from '@myco-server-worker/core/staging-retention.js';
 import type { StagingPrunePolicy, StagingPruneRequest } from '@myco-server-worker/core/recovery-producer.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';

@@ -14,17 +14,17 @@
  * lands before the deletion's batch, which then removes it, or writes nothing.
  */
 import type { RelationalStore } from './adapters.js';
-import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
+import { NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
 import type { ReadScope } from '../read/scope.js';
 
 export const ARTIFACT_KINDS = ['pr', 'issue', 'tag', 'release', 'deploy'] as const;
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
-export const ARTIFACT_ID_MAX_BYTES = 256;
-export const ARTIFACT_URL_MAX_BYTES = 2048;
+const ARTIFACT_ID_MAX_BYTES = 256;
+const ARTIFACT_URL_MAX_BYTES = 2048;
 
 /** One refusal for each malformed field, naming the shape it takes. */
-export const ARTIFACT_KIND_REASON = `kind is one of ${ARTIFACT_KINDS.join(', ')}`;
+const ARTIFACT_KIND_REASON = `kind is one of ${ARTIFACT_KINDS.join(', ')}`;
 export const ARTIFACT_ID_REASON = `artifact_id is the artifact's own id: not blank, no control characters, at most ${ARTIFACT_ID_MAX_BYTES} bytes`;
 export const ARTIFACT_URL_REASON = `url is the artifact's https URL, with no user name or password, at most ${ARTIFACT_URL_MAX_BYTES} bytes`;
 
@@ -46,7 +46,7 @@ function serializedUrl(raw: unknown): string | null {
   return bytes(url.href) > ARTIFACT_URL_MAX_BYTES ? null : url.href;
 }
 
-export interface AdmittedArtifact {
+interface AdmittedArtifact {
   kind: ArtifactKind;
   artifactId: string;
   /** Always in its serialized form. */
@@ -57,7 +57,7 @@ export interface AdmittedArtifact {
  * The artifact a writer may store, or the one refusal its fields earn. `report` serializes an incoming URL; `stored`
  * admits a URL only in the serialized form a report stores, so a stored value is never rewritten on its way back in.
  */
-export function admitArtifact(
+function admitArtifact(
   fields: { kind: unknown; artifactId: unknown; url: unknown }, source: 'report' | 'stored',
 ): { ok: true; artifact: AdmittedArtifact } | { ok: false; reason: string } {
   if (!isArtifactKind(fields.kind)) return { ok: false, reason: ARTIFACT_KIND_REASON };
@@ -78,7 +78,7 @@ export interface SessionArtifactRow {
   reportedAt: number;
 }
 
-export interface ArtifactReport {
+interface ArtifactReport {
   sessionId: string;
   kind: unknown;
   artifactId: unknown;
@@ -87,7 +87,7 @@ export interface ArtifactReport {
   reportedAt: number;
 }
 
-export type ReportOutcome =
+type ReportOutcome =
   | { outcome: 'created' | 'existing'; artifact: SessionArtifactRow }
   | { outcome: 'conflict'; artifact: SessionArtifactRow }
   | { outcome: 'refused'; reason: string }

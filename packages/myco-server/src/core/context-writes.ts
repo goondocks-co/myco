@@ -17,8 +17,6 @@ const CONTEXT_MATERIAL_COLUMNS = {
   'session-record':['kind','created_at','delivered_at','delivered_prompt_id','delivered_scope_reason'],
 } as const;
 
-export { prepareInjectionReceipt, preparePromptAnswer, prepareSessionRecord } from '../db/context-records.js';
-
 /** First delivery assigns the admitted naming to its row. */
 export function prepareContextDelivery(
   db: RelationalStore,

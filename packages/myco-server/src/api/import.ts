@@ -34,7 +34,11 @@ import { IMPORT_PLAN_MAX_CANDIDATES } from '../constants.js';
 import { importPolicy, IMPORT_DISABLED } from '../core/import-policy.js';
 import { tombstonedAmong } from '../core/tombstones.js';
 import { heldTranscriptsFor, type HeldTranscript } from '../read/transcript.js';
-import { heldSessionIds, sessionsOwnedByImporter, sessionsWithImportedPrompts } from '../read/sessions.js';
+import {
+  sessions_heldSessionIds as heldSessionIds,
+  sessions_sessionsOwnedByImporter as sessionsOwnedByImporter,
+  sessions_sessionsWithImportedPrompts as sessionsWithImportedPrompts,
+} from '../read/catalog/sessions.js';
 import { LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 import { refused } from '../ingest/events.js';
 import { emit, refusal } from '../telemetry.js';
@@ -43,7 +47,7 @@ const DAY_MS = 86_400_000;
 
 /** Why a candidate is not being shipped. Each is a stable name an operator and a report read; none is a caller's text. Exported as a value so a reader can enumerate them rather than restate them. */
 export const SKIP_REASONS = ['held', 'tombstoned', 'vault_sourced', 'replaced', 'session_held', 'window', 'cap'] as const;
-export type SkipReason = (typeof SKIP_REASONS)[number];
+type SkipReason = (typeof SKIP_REASONS)[number];
 
 /** What the member offers: an identity it minted, the file's size and age, and the digest of its first bytes. */
 interface Candidate {
@@ -56,7 +60,7 @@ interface Candidate {
 }
 
 /** What a candidate is answered: the byte to start shipping at, or the named skip. */
-export type CandidateAnswer =
+type CandidateAnswer =
   | { transcriptId: string; take: 'from'; fromOffset: number }
   | { transcriptId: string; take: 'none'; reason: SkipReason };
 

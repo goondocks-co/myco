@@ -9,12 +9,12 @@
  */
 import { reportSessionArtifact } from '../../core/session-artifacts.js';
 import { listSessionArtifacts, shape } from '../../read/session-artifacts.js';
-import { sessionInScope } from '../../read/sessions.js';
+import { sessions_sessionInScope as sessionInScope } from '../../read/catalog/sessions.js';
 import { failure, memberOf, scopeOf, sessionOf, writerOf, SESSION_NOT_FOUND, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
 import type { ToolInput } from '../validate.js';
 
-export const OUTCOMES_TOOL = 'myco_outcomes';
+const OUTCOMES_TOOL = 'myco_outcomes';
 
 export const ARTIFACT_CONFLICT_REASON = 'this artifact was already reported for this session with a different url';
 

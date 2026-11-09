@@ -17,13 +17,13 @@ import type { CatchupFamily } from '../projections/family.js';
  * subtracts at most one page of due rows and is ready only while no more than that page is overdue, so admission and
  * status read a bounded number of rows however long the Deployment has been idle.
  */
-export const BUDGET_PROJECTION = 'budget';
+const BUDGET_PROJECTION = 'budget';
 /** Due rows a new attempt retires inline. */
 export const SPEND_EXPIRY_PAGE = 8;
 /** Due rows a read subtracts; a larger backlog leaves accounting not ready until the expiry job retires it. */
 export const SPEND_DUE_READ_LIMIT = 64;
 /** Due rows one expiry job page retires. */
-export const SPEND_EXPIRY_JOB_PAGE = 256;
+const SPEND_EXPIRY_JOB_PAGE = 256;
 
 const unconfirmed = (row: string) => `(${row}.live=0 AND COALESCE(${row}.cost_source,'') NOT IN ('actual','estimated'))`;
 const SETTLED = "r.status IN ('completed','failed','skipped')";
@@ -49,7 +49,7 @@ function spendSource(keys: string): string {
  * history, and `NULL` inside triggers, where a newly settled fact counts until the due-row expiry takes it.
  * An expired fact stays expired unless its claim moves later.
  */
-export function reconcileSpend(keys: string, floor: string): string[] {
+function reconcileSpend(keys: string, floor: string): string[] {
   const counted = `CASE WHEN excluded.live=1 THEN 1 WHEN attempt_spend.counted=0 AND excluded.claimed_at<=attempt_spend.claimed_at THEN 0 ELSE excluded.counted END`;
   return [
     `DELETE FROM attempt_spend WHERE (project_id,run_id,attempt_id) IN (SELECT project_id,run_id,attempt_id FROM (${keys}))
@@ -68,7 +68,7 @@ const dispatchedKeys = `SELECT NEW.project_id AS project_id,NEW.id AS run_id,OLD
   UNION SELECT NEW.project_id,NEW.id,NEW.dispatched_by WHERE NEW.dispatched_by IS NOT NULL`;
 /** A run's task or origin reclassifies every attempt of the run. */
 const runKeys = 'SELECT project_id,run_id,attempt_id FROM agent_run_attempts WHERE project_id=NEW.project_id AND run_id=NEW.id';
-export const SPEND_JSON_KEYS = jsonKeys(['project_id', 'run_id', 'attempt_id']);
+const SPEND_JSON_KEYS = jsonKeys(['project_id', 'run_id', 'attempt_id']);
 
 /** The predicate of a due row at `floor`: a settled fact still counted after its claim left the window. */
 const DUE = (floor: string) => `counted=1 AND live=0 AND claimed_at<=${floor}`;
@@ -106,7 +106,7 @@ function rollup(key: string, plus: string | null, minus: string | null, where: s
 /** A fact that keeps its Project and origin moves its one rollup row by the difference. */
 const SAME_ROLLUP = 'OLD.project_id=NEW.project_id AND OLD.origin=NEW.origin';
 
-export interface SpendTrigger { name: string; table: string; sql: string }
+interface SpendTrigger { name: string; table: string; sql: string }
 /** Triggers in the order the schema step installs them. Their SQL is frozen in the step file. */
 export function spendTriggers(): SpendTrigger[] {
   const worker = (row: string) => workerTaskSql(`${row}.task`);
@@ -168,7 +168,7 @@ export const BUDGET_CATCHUP = {
 } as const satisfies CatchupFamily;
 
 /** Catch-up readiness, as a SQL predicate: every catch-up phase of the projection is done. */
-export const SPEND_CAUGHT_UP_SQL = `NOT EXISTS (SELECT 1 FROM projection_catchup WHERE projection='${BUDGET_PROJECTION}' AND done=0)`;
+const SPEND_CAUGHT_UP_SQL = `NOT EXISTS (SELECT 1 FROM projection_catchup WHERE projection='${BUDGET_PROJECTION}' AND done=0)`;
 
 /** The first due rows at `floor`, oldest first: never more than one read page plus the row that proves a backlog. */
 const duePage = (floor: string, extra = '') => `SELECT * FROM attempt_spend WHERE ${DUE(floor)}${extra} ORDER BY claimed_at LIMIT ${SPEND_DUE_READ_LIMIT + 1}`;
@@ -210,7 +210,7 @@ export async function readProjectSpend(db: RelationalStore, now: number): Promis
 export interface SpendTotals {
   origin: 'manual' | 'automatic'; usd: number; liveUsd: number; unconfirmed: number; unconfirmedEstimateUsd: number;
 }
-export interface LiveSpend { projectId: string; task: string; estimate: number; profileJson: string | null }
+interface LiveSpend { projectId: string; task: string; estimate: number; profileJson: string | null }
 
 const totals = read<[number], SpendTotals>({ name: 'runs.spendTotals', sql: `SELECT origin,SUM(usd) AS usd,SUM(live_usd) AS liveUsd,SUM(unconfirmed) AS unconfirmed,
   SUM(unconfirmed_estimate_usd) AS unconfirmedEstimateUsd FROM (${parts('1', '?1')}) GROUP BY origin` });
@@ -223,12 +223,6 @@ const readiness = read<[number], { ready: number }>({ name: 'runs.spendReady', s
 export async function readSpendSnapshot(db: RelationalStore, now: number): Promise<{ ready: boolean; totals: SpendTotals[]; live: LiveSpend[] }> {
   const [rows, live, ready] = await readSet(db, totals.bind(now - BUDGET_WINDOW_MS), liveAutomatic.bind(), readiness.bind(now - BUDGET_WINDOW_MS));
   return { ready: ready[0]?.ready === 1, totals: rows, live };
-}
-
-/** Whether accounting has caught up with attempt history and retired its due backlog at `now`. */
-export async function spendReady(db: RelationalStore, now: number): Promise<boolean> {
-  const [ready] = await readSet(db, readiness.bind(now - BUDGET_WINDOW_MS));
-  return ready[0]?.ready === 1;
 }
 
 const expiryPage = write<[number], { project_id: string }>({ name: 'runs.spendExpire', sql: `${expire('?1', SPEND_EXPIRY_JOB_PAGE)} RETURNING project_id` });

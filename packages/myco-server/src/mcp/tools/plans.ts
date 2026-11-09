@@ -8,14 +8,19 @@
  * dashboard makes; it names the session for the record and writes the row.
  */
 import { changePlanStatus, savePlan } from '../../core/plans.js';
-import { getPlan, listProjectPlans, PLAN_STATUS_MESSAGE, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../../read/plans.js';
+import {
+  plans_getPlan as getPlan,
+  plans_listProjectPlans as listProjectPlans,
+  plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
+  plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
+  type plans_ProjectPlanRow as ProjectPlanRow,
+} from '../../read/catalog/plans.js';
 import type { ReadScope } from '../../read/scope.js';
 import { processedBody } from '../../read/processed.js';
 import { failure, memberOf, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
-
-export interface PlanSummary {
+interface PlanSummary {
   id: string;
   title: string | null;
   status: string;

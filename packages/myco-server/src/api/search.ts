@@ -1,6 +1,11 @@
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { InvalidSearch, StaleSearch, searchAcross, type SearchOptions } from '../read/search.js';
+import {
+  search_InvalidSearch as InvalidSearch,
+  search_StaleSearch as StaleSearch,
+  search_searchAcross as searchAcross,
+} from '../read/catalog/search.js';
+import { type SearchOptions } from '@goondocks/myco-shared/search-types';
 import { searchDeployment } from '../core/search.js';
 import { badRequest, notFound, ok, projectSetParam, resolveProjectScope, resolveProjectSet } from './scope.js';
 

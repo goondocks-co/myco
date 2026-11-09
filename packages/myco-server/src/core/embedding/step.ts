@@ -1,10 +1,12 @@
 import type { ServerEnv } from '../adapters.js';
-import { missingSporeVectors, type MissingSporeVectors } from './hubness.js';
+import { missingSporeVectors, type MissingSporeVectors } from '../../db/embeddings/calibration.js';
 import { reconcileEmbedding, type EmbeddingContext, type EmbeddingStep } from './reconcile.js';
-import { EmbeddingSwitchFailure, calibrationModel, completeEmbeddingSwitch, embeddingStepProviders, settleSwitchFailure } from './switch.js';
+import { completeEmbeddingSwitch, embeddingStepProviders, settleSwitchFailure } from './switch.js';
+import { EmbeddingSwitchFailure } from './provider-failure.js';
+import { calibrationModel } from './policy.js';
 import { projectArchived, recordSwitchProgress } from './switch-store.js';
 
-export type EmbeddingStepAnswer = { provider_unavailable: true } | (EmbeddingStep & { missing?: MissingSporeVectors });
+type EmbeddingStepAnswer = { provider_unavailable: true } | (EmbeddingStep & { missing?: MissingSporeVectors });
 
 /** The steps after which a run may stop, or whose work changes what calibration leaves out: the only ones that report it. */
 const REPORTS_MISSING: ReadonlySet<EmbeddingStep['phase']> = new Set(['hubness', 'visibility', 'settled']);

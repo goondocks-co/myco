@@ -1,4 +1,5 @@
-import { InvalidSearch, SEARCH_TOOL_LIMIT, type SearchOptions } from '../../read/search.js';
+import { search_InvalidSearch as InvalidSearch } from '../../read/catalog/search.js';
+import { SEARCH_TOOL_LIMIT, type SearchOptions } from '@goondocks/myco-shared/search-types';
 import { searchDeployment } from '../../core/search.js';
 import { searchCuration } from '../../core/spore-curation.js';
 import { CURATION_TASK } from '../../core/task-catalogue.js';

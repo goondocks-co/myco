@@ -6,20 +6,20 @@
  * spores fills the rest, and it alone sees a spore saved moments ago, which has no vector yet.
  */
 import type { ServerEnv } from './adapters.js';
-import { semanticSearch } from '../read/embedding.js';
+import { embedding_semanticSearch as semanticSearch } from '../read/catalog/embedding.js';
 import type { ReadScope } from '../read/scope.js';
 import { resolveSemanticSearch } from './search.js';
 import { activeSporesMatchingAnyWord, listSporesByIds, SPORE_PREVIEW_CHARS } from './spores.js';
 
 /** The neighbours one save answers with. */
-export const NEAR_MATCH_LIMIT = 5;
+const NEAR_MATCH_LIMIT = 5;
 /** The longest words of a spore's line a word match reads. */
 const MATCH_WORDS = 8;
 /** Words shorter than this name nothing a neighbour would share. */
 const MATCH_WORD_MIN_CHARS = 4;
 
 /** One neighbour: enough to supersede it or consolidate it, and to judge whether to. */
-export interface NearMatch { id: string; revision: number; observation_type: string; agent_line: string }
+interface NearMatch { id: string; revision: number; observation_type: string; agent_line: string }
 
 async function semanticNeighbours(env: ServerEnv, scope: ReadScope, line: string): Promise<string[]> {
   try {
