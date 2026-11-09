@@ -18,7 +18,7 @@
  */
 import type { RateLimiter } from '../../core/adapters.js';
 
-export interface WindowOptions {
+interface WindowOptions {
   /** Requests admitted per window. */
   limit: number;
   /** Window length in milliseconds. */
@@ -29,7 +29,7 @@ export interface WindowOptions {
   now?: () => number;
 }
 
-export const DEFAULT_MAX_KEYS = 100_000;
+const DEFAULT_MAX_KEYS = 100_000;
 
 export function inProcessRateLimiter({ limit, periodMs, maxKeys = DEFAULT_MAX_KEYS, now = () => Date.now() }: WindowOptions): RateLimiter {
   let windowStart = now();

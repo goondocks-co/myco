@@ -48,7 +48,7 @@ const armSession=write<[string,string,number,number]>({name:'publication.metadat
     AND EXISTS(SELECT 1 FROM document_metadata_ready WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND failure IS NULL)
     AND NOT EXISTS(SELECT 1 FROM session_chunks WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND chunk_no>?4 AND (kind='page' OR metadata=1))
     AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=?1 AND session_id=?2)`});
-export const METADATA_KEYS_PER_PAGE=250;
+const METADATA_KEYS_PER_PAGE=250;
 const METADATA_FAILURE_LOOKBACK_MS=7*24*60*60*1000;
 type MetadataFailure = 'document_object_missing' | 'document_metadata_unreadable' | 'document_ownership_conflict';
 
@@ -129,7 +129,7 @@ const repairHeld=assertion<[string,string,number,number,number]>({name:'publicat
 const resumeFrom=write<[string,string,number,number]>({name:'publication.metadataResumeFrom',sql:'UPDATE document_metadata_ready SET failure_chunk=?4 WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND failure IS NOT NULL'});
 const repaired=write<[string,string,number]>({name:'publication.metadataRepaired',sql:'UPDATE document_metadata_ready SET failure=NULL,failure_chunk=NULL WHERE project_id=?1 AND session_id=?2 AND generation=?3'});
 const dueNow=write<[string,string,number]>({name:'publication.metadataRepairDue',sql:"UPDATE session_documents SET due_at=0 WHERE project_id=? AND session_id=? AND generation=? AND state='live'"});
-export const METADATA_REPAIR_CHUNKS=8;
+const METADATA_REPAIR_CHUNKS=8;
 
 /**
  * Re-reads a session's unreadable metadata when the session comes due, so a transient read or an object put back recovers

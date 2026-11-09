@@ -3,8 +3,12 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { changeMemberRole, ownershipPreview, transferOwnership } from '@myco-server-worker/core/ownership.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
+import {
+  changeMemberRole,
+  ownershipPreview,
+  transferOwnership,
+  bootstrapOwnership,
+} from '@myco-server-worker/core/ownership.js';
 import { issueIdentityLinkAuthority, spendIdentityLinkAuthority, memberByGithubId } from '@myco-server-worker/auth/identity-link.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { issueMemberToken, revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';

@@ -1,8 +1,8 @@
 /** Timing shared by the Deployment's hosted alarm and native wake loop. */
 export const ENSURE_SOON_MS = 1_000;
 export const CONTINUATION_FLOOR_MS = 2_000;
-export const WAKE_FAILURE_MIN_MS = 30_000;
-export const WAKE_FAILURE_MAX_MS = 5 * 60_000;
+const WAKE_FAILURE_MIN_MS = 30_000;
+const WAKE_FAILURE_MAX_MS = 5 * 60_000;
 const MAX_FAILURES = Math.ceil(Math.log2(WAKE_FAILURE_MAX_MS / WAKE_FAILURE_MIN_MS)) + 1;
 export interface WakeRetryState { failures: number; retryAt: number }
 const failureDelay = (failures: number): number => Math.min(WAKE_FAILURE_MIN_MS * 2 ** failures, WAKE_FAILURE_MAX_MS);

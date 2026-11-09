@@ -20,7 +20,7 @@ import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 
 /** The namespaces a caller names. */
-export const RELEASE_NAMESPACES = ['spore', 'session', 'plan'] as const;
+const RELEASE_NAMESPACES = ['spore', 'session', 'plan'] as const;
 export type ReleaseNamespace = (typeof RELEASE_NAMESPACES)[number];
 
 /**
@@ -67,7 +67,7 @@ export const sourcePoint = (source: string): CapturePoint | null => {
   return point === 'session_start' || point === 'session_end' ? point : null;
 };
 
-export interface ReleaseStateRow {
+interface ReleaseStateRow {
   id: string;
   namespace: string;
   recordId: string;
@@ -82,7 +82,7 @@ export interface ReleaseStateRow {
 }
 
 /** One record's latest release state, with the captured commit it is classified from. */
-export interface ReleaseStateWithSource extends ReleaseStateRow {
+interface ReleaseStateWithSource extends ReleaseStateRow {
   /** As `sourceOf` records it, or null for a state recorded without one. */
   source: string | null;
 }
@@ -151,7 +151,7 @@ export async function listReleaseStates(
 }
 
 /** A record's release state as every surface presents it: the state, its age, and whether the Project's latest check failed after it. */
-export interface ReleaseStatus {
+interface ReleaseStatus {
   state: string;
   confidence: string;
   ref: string | null;

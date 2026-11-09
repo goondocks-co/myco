@@ -21,7 +21,7 @@ export interface ReadyCard {
   publication_input_revision: number | null;
 }
 
-export type ObservedCard = Pick<ReadyCard, 'projectId' | 'sessionId' | 'turnKey' | 'changes' | 'settleAt'>;
+type ObservedCard = Pick<ReadyCard, 'projectId' | 'sessionId' | 'turnKey' | 'changes' | 'settleAt'>;
 
 const promote = write<[now: number, limit: number], { turn_key: string }>({ name: 'cardSettlement.promote', sql: `
   UPDATE turn_cards SET settle_promoted_at=settle_at WHERE rowid IN (

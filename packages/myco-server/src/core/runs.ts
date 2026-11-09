@@ -1,9 +1,8 @@
 import type { Bound } from '../db/index.js';
 import type { ProjectCapability } from './settings.js';
 import type { DispatchLimits } from './limits.js';
-import type { ClaimBudget } from './run-budget.js';
+import type { ClaimBudget } from '../db/runs/budget-policy.js';
 import type { MemberWriteActor } from '../auth/member-write-store.js';
-import { DISPATCH_ACTOR_SQL } from '../db/run-context.js';
 import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 
 /**
@@ -95,11 +94,6 @@ export type ClaimOutcome =
  * container — and each projects the columns it needs from it.
  */
 
-
-
-/** The actor a dispatch spec names, and null for a spec that names none. A spec the store did not write is not read as JSON at all. */
-export { DISPATCH_ACTOR_SQL };
-
 /**
  * A ceiling on the entries one actor may make of a task in a window,
  * across the Deployment or within one Project: the write that records the run refuses once the
@@ -153,8 +147,6 @@ export interface DispatchRecord {
   dispatchSpec?: string;
 }
 
-
-
 // The queue: a run that waits is a run row
 // ---------------------------------------------------------------------------
 
@@ -206,7 +198,6 @@ export interface QueuedRunRef {
   dispatchedBy: string | null;
 }
 
-
 /**
  * The claim queue, as a worker sees it.
  *
@@ -238,7 +229,6 @@ export interface ClaimedRunRow {
   dryRun: number;
 }
 
-
 /** A pulled run the claim creates: its identity, single-flight subject, built input and its stage's reassertion. */
 export interface PulledCandidate {
   projectId: string;
@@ -265,8 +255,6 @@ export interface PulledCandidate {
 
 /** The prompt a claim rebuilt, and the hash and counts the server filed it under, onto the row a worker now holds. */
 export interface ClaimedInput { instruction: string; instructions?: string; inputHash: string; counts: Readonly<Record<string, number | boolean>>; repository?: RepositoryCheckoutSpec; context?: Readonly<Record<string, unknown>>; subject?: string }
-
-
 
 // ---------------------------------------------------------------------------
 // What the clock reads before it schedules a task, per Project

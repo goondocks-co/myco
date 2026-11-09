@@ -10,7 +10,8 @@ import {
   EMBEDDING_SELECTION_LEAVES, embeddingEndpointRefusal, heldPartition, resolveEmbedding, selectionChangeRefusal,
   type EmbeddingSelection, type EmbeddingSelectionLeaf, type StoredEmbedding,
 } from '@myco-server-worker/core/embedding/policy.js';
-import { SWITCH_STANDS_SQL, readSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
+import { readSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
+import { SWITCH_STANDS_SQL } from '@myco-server-worker/db/embeddings/switch.js';
 
 /**
  * Deployment Settings: one operation every write goes through.

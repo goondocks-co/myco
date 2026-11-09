@@ -1,8 +1,8 @@
 import { readAttemptSpendOracle as readSpendRows } from './helpers/attempt-spend-oracle.js';
 import { describe, expect, it } from 'bun:test';
 import { budgetFixture } from './helpers/budget-fixture.js';
-import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
-import { automaticFits, budgetHold } from '@myco-server-worker/core/run-budget.js';
+import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
+import { automaticFits, budgetHold } from '@myco-server-worker/db/runs/budget-policy.js';
 import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { SPEND_DUE_READ_LIMIT, SPEND_EXPIRY_PAGE, expireSpend, spendSchemaStatements, spendTriggers } from '@myco-server-worker/db/runs/admission.js';

@@ -11,12 +11,22 @@
 import { describe, expect, it } from 'bun:test';
 import type { SetupProgress } from '../../packages/myco-server/src/api/setup.ts';
 import type * as Ui from '../../packages/myco-server/ui/src/features/today/wire.ts';
-import type { WorkAnswer, WorkOutcome, WorkRun, Upkeep, OutcomeKind, RunResult } from '../../packages/myco-server/src/read/work.ts';
+import type {
+  WorkAnswer,
+  WorkOutcome,
+  WorkRun,
+  Upkeep,
+  OutcomeKind,
+} from '../../packages/myco-server/src/read/work.ts';
+import type { RunResult } from '../../packages/myco-server/src/read/run-outcome';
 import type { AttentionAnswer, AttentionItem } from '../../packages/myco-server/src/core/attention.ts';
 import type { CaptureRow } from '../../packages/myco-server/src/read/capture.ts';
 import type { ConnectAnswer, ConnectRefusal, ConnectRefusalCode, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../../packages/myco-server/src/api/uncaptured.ts';
 import type { HeldState, UncapturedReason } from '../../packages/myco-shared/src/member-protocol.ts';
-import type { SessionAcrossRow, listSessionSummariesAcross } from '../../packages/myco-server/src/read/sessions.ts';
+import type {
+  sessions_SessionAcrossRow as SessionAcrossRow,
+  sessions_listSessionSummariesAcross as listSessionSummariesAcross,
+} from '../../packages/myco-server/src/read/catalog/sessions';
 import type { SporeAcrossRow, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
 
 /** True only when each type is assignable to the other. */

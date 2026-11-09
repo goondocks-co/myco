@@ -12,9 +12,14 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import { describe, expect, it } from 'bun:test';
 import { turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { HARNESS_MEMBER_ID, claimNextRun, endLeasedRun, expireLeases, renewLease } from '@myco-server-worker/core/harness.js';
+import {
+  claimNextRun,
+  endLeasedRun,
+  expireLeases,
+  renewLease,
+} from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID, WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { getRunDetail, listRuns } from '@myco-server-worker/read/runs.js';
-import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import worker_ from '@myco-server-worker/entry/cloudflare.js';
 import { memberHeaders } from './helpers/fixtures.js';
 

@@ -5,9 +5,9 @@ import { MAX_BLOB_BYTES } from '../../constants.js';
 import { utf8 } from '../../hash.js';
 
 /** Retained tool calls above this count become explicit failures. */
-export const MAX_PENDING_CALLS = 32;
-export const MAX_VIEW_PENDING_BYTES = MAX_BLOB_BYTES;
-export const PENDING_CALL_LIMIT_ERROR = 'tool call exceeded the pending-call limit';
+const MAX_PENDING_CALLS = 32;
+const MAX_VIEW_PENDING_BYTES = MAX_BLOB_BYTES;
+const PENDING_CALL_LIMIT_ERROR = 'tool call exceeded the pending-call limit';
 const textBytes = (text: string): number => utf8(JSON.stringify(text)).length - 2;
 
 /** One continuation owns turn replies, unresolved calls and every terminal outcome. */

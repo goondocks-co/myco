@@ -38,11 +38,11 @@ import { CARD_WRITE_BOUND } from '../core/turn-card-prompt.js';
  * tool that behaves two ways depending on who asked.
  */
 import { MAP_WRITE_BOUNDS, MAP_LIMITS } from '@goondocks/myco-shared/canopy';
-import { PROJECT_PIVOT, RUN_TOOLS, type RunTool } from '../core/tool-catalogue.js';
+import { PROJECT_PIVOT, type RunTool } from '../core/tool-catalogue.js';
 import { searchInstead, type ToolDefinition, type JsonSchemaProperty } from './definitions.js';
 
 /** A run-only definition, named from the catalogue so the two cannot drift. */
-export type RunToolDefinition = ToolDefinition & { name: RunTool };
+type RunToolDefinition = ToolDefinition & { name: RunTool };
 
 export const RUN_PROJECT_DESCRIPTION = 'The Project this run works in. Optional; it may name only that Project.';
 
@@ -448,4 +448,3 @@ export const RUN_DEFINITIONS: readonly RunToolDefinition[] = definitions.map((de
   inputSchema: { ...definition.inputSchema, examples: [RUN_EXAMPLES[definition.name]] },
 }));
 
-export { RUN_TOOLS };

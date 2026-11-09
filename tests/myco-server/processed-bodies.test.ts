@@ -1,11 +1,18 @@
-import { bootstrapOwnership, rawClaimPreview, claimUnknownRaw } from '@myco-server-worker/core/raw-claims.js';
+import { rawClaimPreview, claimUnknownRaw } from '@myco-server-worker/core/raw-claims.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { isProcessedBodyKind, processedAttachment, processedBody } from '@myco-server-worker/read/processed.js';
+import { processedAttachment, processedBody } from '@myco-server-worker/read/processed.js';
+import {
+  processed_isProcessedBodyKind as isProcessedBodyKind,
+} from '@myco-server-worker/read/catalog/processed.js';
 import { handlePlans } from '@myco-server-worker/mcp/tools/plans.js';
-import { getPlan } from '@myco-server-worker/read/plans.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
-import { pendingSearchBlobs, reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
+import { plans_getPlan as getPlan } from '@myco-server-worker/read/catalog/plans.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
+import {
+  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
+} from '@myco-server-worker/read/catalog/search-index.js';
 import { registerBlob, seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV, ownerCookie, MEMBER_SUB, seedMemberRoleAccount } from './helpers/owner.js';

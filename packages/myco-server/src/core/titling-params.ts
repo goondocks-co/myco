@@ -16,7 +16,7 @@ export const SUMMARY_MAX_CHARS = 1200;
  * same overwrite as an owner's ask, attributed to no member.
  */
 export type TitlingMode = 'claim' | 'owner' | 'refresh';
-export const TITLING_MODES: readonly TitlingMode[] = ['claim', 'owner', 'refresh'];
+const TITLING_MODES: readonly TitlingMode[] = ['claim', 'owner', 'refresh'];
 
 /** The parameters a titling run is dispatched with, as the runtime and the run routes read them back from the run's context the server wrote. */
 export interface TitlingParams {

@@ -29,7 +29,7 @@ export const documentRecordIdSql = (alias = ''): string => `CASE ${alias}kind WH
 
 export const DOCUMENT_IDENTITIES_SQL = `(SELECT project_id,session_id,record_id FROM event_refs WHERE kind IN ('prompt','response','tool.use','tool.failure'))`;
 
-export const ARCHIVED_EVENT_FIELDS = ['promptId','responseId','toolCallId','blob','outputBlob'] as const;
+const ARCHIVED_EVENT_FIELDS = ['promptId','responseId','toolCallId','blob','outputBlob'] as const;
 export const archivedEventPayloadSql = (alias = ''): string => `json_object(${ARCHIVED_EVENT_FIELDS.map(field=>`'${field}',${eventPayloadFieldSql(field,alias)}`).join(',')})`;
 export function archivedEventMetadata(payload: Record<string,unknown>): string {
   return JSON.stringify(Object.fromEntries(ARCHIVED_EVENT_FIELDS.map(field=>[field,typeof payload[field]==='string'?payload[field]:null])));

@@ -4,7 +4,7 @@ import { filesNamedByToolInput, mycoToolFields, MAX_FILE_PATH_CHARS, MAX_FILES_A
 import { getAtPath } from '@goondocks/myco-shared/dot-path';
 
 export const ROLLUP_TOOLS = 8;
-export const ERROR_EXCERPT_CHARS = 240;
+const ERROR_EXCERPT_CHARS = 240;
 
 export interface ToolRollup {
   tools: { name: string; count: number }[];

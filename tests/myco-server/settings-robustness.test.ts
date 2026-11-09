@@ -9,7 +9,7 @@ import worker from '@myco-server-worker/index.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { runRetentionDays } from '@myco-server-worker/core/jobs-run.js';
-import { scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
+import { scheduleLeaves } from '@myco-server-worker/core/schedule-rules.js';
 import { backupRetentionPolicy, currentRetentionVictims } from '@myco-server-worker/core/backup-retention.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';

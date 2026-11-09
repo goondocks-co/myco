@@ -6,7 +6,6 @@ import { writeGuardBatch } from './write-guard-store.js';
 
 import { sha256Hex } from '../hash.js';
 
-export type { RunnerUpdateResult, RunnerUpdateReport, RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
 import { RUNNER_UPDATE_RESULTS, isRunnerUpdateText, sanitizeRunnerUpdateReason, type RunnerUpdateResult, type RunnerUpdateReport, type RunnerUpdateRequest } from '@goondocks/myco-shared/runner-update';
 
 /** Update commands and machine reports belong to the credential epoch that received them. */
@@ -18,7 +17,7 @@ const MAX_VERSION = 64;
 const MAX_ID = 64;
 const timestamp = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
-export type RunnerUpdateMetadataIssue = { field: 'update' | 'lastResult' | 'blockedVersion' | 'updateState'; disposition: 'dropped' | 'sanitized' };
+type RunnerUpdateMetadataIssue = { field: 'update' | 'lastResult' | 'blockedVersion' | 'updateState'; disposition: 'dropped' | 'sanitized' };
 
 /** Update metadata never determines whether the runner may contact or execute work. */
 export function parseRunnerUpdateReport(value: unknown, issue: (issue: RunnerUpdateMetadataIssue) => void = () => {}): RunnerUpdateReport | null {
@@ -65,7 +64,7 @@ export function parseRunnerUpdateReport(value: unknown, issue: (issue: RunnerUpd
 }
 
 /** One metadata envelope carries the result and holds from one observation. */
-export const RUNNER_UPDATE_REPORT_FORMAT = 'runner-update-report/1';
+const RUNNER_UPDATE_REPORT_FORMAT = 'runner-update-report/1';
 export async function readRunnerUpdateRequest(db: RelationalStore, runnerId: string): Promise<RunnerUpdateRequest | null> {
   const request = await db.prepare('SELECT id, requested_at AS requestedAt FROM runner_update_requests WHERE runner_id = ?').bind(runnerId).first<Omit<RunnerUpdateRequest, 'clearBlock'>>();
   return request === null ? null : { ...request, clearBlock: true };
@@ -107,7 +106,7 @@ export async function readRunnerUpdateReceipt(db: RelationalStore, runnerId: str
 }
 
 const UPDATE_REFUSED = '$[myco_runner_update_refused]';
-export type RequestRunnerUpdateOutcome = { requested: true; updateRequest: RunnerUpdateRequest } | { requested: false; code: 'not_found' | 'disconnected' | 'unsupported_channel' | 'refused' };
+type RequestRunnerUpdateOutcome = { requested: true; updateRequest: RunnerUpdateRequest } | { requested: false; code: 'not_found' | 'disconnected' | 'unsupported_channel' | 'refused' };
 
 /** Each accepted administrator request records its actor against the runner's one pending command. */
 export async function requestRunnerUpdate(db: RelationalStore, actorId: string, runnerId: string, now: number): Promise<RequestRunnerUpdateOutcome> {

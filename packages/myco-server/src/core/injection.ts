@@ -1,5 +1,6 @@
 import { injectionServedIds, injectionPromptHeld } from '../read/catalog/injection.js';
-import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type ContextCommit} from './context-writes.js';
+import { commitContextWrite, type ContextCommit } from './context-writes.js';
+import { prepareInjectionReceipt } from '../db/context-records.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.
@@ -18,8 +19,7 @@ import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type C
  * and the insert is `INSERT OR IGNORE`, so a prompt resubmitted with the same
  * text, or an ask naming a prompt already served, serves nothing a second time
  * whatever the caller does. Each row carries a minted id of its own, which the
- * member reports back when the context reaches the agent
- * (`receiptDeliveredStatement`).
+ * member reports back when the context reaches the agent.
  *
  * **A spore already served is out of the pool as of the last committed
  * record.** The exclusion set is a read, not a constraint: two prompts of one
@@ -34,14 +34,17 @@ import {prepareInjectionReceipt,prepareContextDelivery,commitContextWrite,type C
  *
  * Relevance uses Mutual Proximity over the current semantic candidates.
  */
-import type { PreparedStatement, RelationalStore } from './adapters.js';
+import type { RelationalStore } from './adapters.js';
 import type { AskProtocol, PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { settingTexts } from './settings.js';
 import { listSporesByIds, type SporeRow } from './spores.js';
-import { getPlan } from '../read/plans.js';
+import { plans_getPlan as getPlan } from '../read/catalog/plans.js';
 import type { ReadScope } from '../read/scope.js';
 import { distributionStats, PLAN_MIN_CALIBRATION, selectRelevantPlans, selectRelevantSpores, type PlanCalibration } from '@goondocks/myco-shared/relevance';
-import { semanticHits, type SemanticSearch } from '../read/embedding.js';
+import {
+  embedding_semanticHits as semanticHits,
+  type embedding_SemanticSearch as SemanticSearch,
+} from '../read/catalog/embedding.js';
 import { EmbeddingUnavailable } from './embedding/provider.js';
 import { cosineSimilarity, VECTOR_QUERY_LIMIT } from './embedding/vectors.js';
 import type { ContextTimings, ContextTimingStage } from './context-timing.js';
@@ -58,10 +61,10 @@ export const INJECTION_MIN_ITEMS = 5;
 /** The most items one prompt carries. Reached only where the lines run shorter than their cap. */
 export const INJECTION_TARGET_ITEMS = 7;
 /** The leaf defaults, applied where the Deployment has written none. */
-export const INJECT_ON_PROMPT_SUBMIT_DEFAULT = true;
-export const MAX_PER_PROMPT_DEFAULT = INJECTION_TARGET_ITEMS;
+const INJECT_ON_PROMPT_SUBMIT_DEFAULT = true;
+const MAX_PER_PROMPT_DEFAULT = INJECTION_TARGET_ITEMS;
 /** The widest selection an operator may ask for. */
-export const MAX_PER_PROMPT_CEILING = 10;
+const MAX_PER_PROMPT_CEILING = 10;
 
 /** Four characters to a token, the estimate 1.4 renders its budget against. */
 const CHARS_PER_TOKEN = 4;
@@ -115,7 +118,6 @@ export const AGENT_LINE_TARGET_WORDS = Math.floor(AGENT_LINE_MAX_CHARS / AGENT_L
 export const AGENT_LINE_EXAMPLE = 'Changing run tools: declare write operations so dry runs enforce the same policy.';
 export const AGENT_LINE_GUIDANCE = `Aim for at most ${AGENT_LINE_TARGET_WORDS} short words in agent_line; use plain words and keep long identifiers in content. The hard limit remains ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization. Example: ${AGENT_LINE_EXAMPLE}`;
 
-
 /** The leaves this selector reads. */
 export const INJECTION_LEAVES: readonly string[] = ['cortex.spores.inject_on_prompt_submit', 'cortex.spores.max_per_prompt'];
 
@@ -147,7 +149,7 @@ export const emptyInjectionCounts = (): InjectionCounts => ({
   planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
 });
 
-export interface InjectionSelection {
+interface InjectionSelection {
   items: InjectionItem[];
   context: string;
   skipped: InjectionSkip | null;
@@ -170,14 +172,6 @@ export interface AskNaming {
 /** Where a rendered answer reached the agent: the delivery event's instant, and the prompt that carried it or why it has no name. */
 export interface Delivery extends DeliveredNaming {
   id: string;
-}
-
-/**
- * Mark one receipt delivered, once: the first delivery wins and a repeat changes nothing. Scoped to the delivering
- * session, so a delivery names only its own session's rows; `gate` is the caller's condition on the write that carries it.
- */
-export function receiptDeliveredStatement(db: RelationalStore, d: Delivery, gate: { sql: string; params: unknown[] }): PreparedStatement {
-  return prepareContextDelivery(db,'injection',d,gate).statement;
 }
 
 /** The selector operation that failed, with the original error retained for classification. */

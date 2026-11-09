@@ -19,7 +19,7 @@ import { rawBackfillPending } from './raw-backfill.js';
 import type { ServerEnv } from './adapters.js';
 import { jobsDueAt, type TickWake } from './jobs.js';
 import { JOB_IMPLEMENTATIONS } from './jobs-run.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './harness.js';
+import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from './run-deadline.js';
 import { nextWakeDelayMs, resolvePowerState, type PowerAssertion, type PowerState, type PowerThresholds, type WakeIntervals } from './power.js';
 import { hasQueuedRun } from '../db/runs/queue.js';
 import { hasRunInsideBound } from '../db/runs/claim.js';
@@ -27,11 +27,13 @@ import { drainQueue } from './harness.js';
 import { runScheduledTasks, type ScheduleReport } from './scheduled-tasks.js';
 import { lastActivityAt } from './activity.js';
 import { classify, constraintDetail, emit } from '../telemetry.js';
-import { pendingSearchBlobs } from './search-index.js';
+import {
+  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
+} from '../read/catalog/search-index.js';
 import { recoveryAttemptDue } from './recovery-schedule.js';
 import { stagingPruneDue } from './staging-retention.js';
 import { holdSettlementDue } from './recovery-hold.js';
-import { pendingPublication, type PublicationBacklog } from '../read/document-status.js';
+import { pendingPublication, type PublicationBacklog } from '../db/documents/status.js';
 import { embeddingKeepsAwake, embeddingSweepPending, EMBEDDING_SWEEP_ASSERTION } from './embedding/jobs.js';
 import { anyMaintenanceDue } from './store-maintenance.js';
 
@@ -40,7 +42,7 @@ export const POWER_THRESHOLDS: PowerThresholds = { idleMs: 5 * 60_000, sleepMs: 
 /** How long a woken Deployment waits before the next wake, by depth. Cadence, not a ceiling. */
 export const WAKE_INTERVALS: WakeIntervals = { activeMs: 60_000, sleepMs: 5 * 60_000 };
 
-export interface JobReport {
+interface JobReport {
   name: string;
   /** Rows the job changed, or the class of the failure that stopped it. */
   changed: number;

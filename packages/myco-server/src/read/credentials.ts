@@ -5,7 +5,7 @@ import { decodeProjectCursor, projectPage } from './project-cursor.js';
 import { clampLimit, decodeCursor, page, type Page } from './scope.js';
 
 /** Whether the credential belongs to an agent run or a member runtime. */
-export type CredentialPurpose = 'run' | 'member';
+type CredentialPurpose = 'run' | 'member';
 
 export interface CredentialRow {
   id: string;

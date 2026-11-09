@@ -3,9 +3,9 @@ import { registeredObjectKeySql } from '../../core/blob-objects.js';
 import { processedResourceProofSql } from '../../core/processed-resources.js';
 import { assertion, commit, read, readSet, refusalCode, refused, write } from '../index.js';
 
-export const CLAIM_LOST = refusalCode('search_index_claim_lost');
+const CLAIM_LOST = refusalCode('search_index_claim_lost');
 
-export interface QueuedBlob { project_id: string; blob_key: string; next_offset: number; attempted_at: number }
+interface QueuedBlob { project_id: string; blob_key: string; next_offset: number; attempted_at: number }
 
 /** Only currently referenced text blobs contribute to the search backlog. */
 export const SEARCH_BLOB_REFERENCED = `EXISTS (SELECT 1 FROM plans p WHERE p.project_id = q.project_id AND p.blob_key = q.blob_key AND ${processedResourceProofSql('p.project_id', 'plan', 'p.plan_key', 'p.blob_key')})`;
@@ -20,7 +20,7 @@ export async function nextSearchBlob(db: RelationalStore): Promise<(QueuedBlob &
   const [rows] = await readSet(db, next.bind());
   return rows[0] ?? null;
 }
-export interface IndexedChunk { offset: number; text: string }
+interface IndexedChunk { offset: number; text: string }
 
 /**
  * Claims a queued blob as read, for one pass: its stamp moves past both `now` and the stamp read, so every claim holds a

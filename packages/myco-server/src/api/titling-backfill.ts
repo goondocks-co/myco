@@ -10,14 +10,14 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { settingRevisionRoute } from './settings.js';
 import { settingsWriter } from '../core/settings.js';
-import { TITLING_TASK, titlingBackfillProgress } from '../core/titling.js';
+import { titlingBackfillProgress } from '../core/titling.js';
+import { TITLING_TASK } from '../core/task-catalogue.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
 /** `GET /api/titling-backfill`: the policy, what is left to title, and how the trailing day's runs went. */
 export async function handleTitlingBackfill(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   return ok(await titlingBackfillProgress(env, ctx.now));
 }
-
 
 /** `PUT /api/titling-backfill` with `{ enabled }`: sets the backfill block's switch in the owner's task overrides and answers the progress as it then stands. An absent task entry or schedule is created; one that is present and not an object, `null` included, is refused rather than replaced. */
 export const handleSetTitlingBackfill = settingRevisionRoute('agent.tasks', async (env, ctx, revision) => {

@@ -14,10 +14,10 @@ export const PLAN_COLUMNS = `plan_key, session_id, prompt_id, title, status, con
 const PLANS_ACROSS_INDEX = 'idx_plans_updated_deployment';
 
 /** A plan list's structured filters; a text match is a search (`/api/search`). */
-export interface PlanBrowseFilters { status?: string; sessionId?: string; since?: number }
+interface PlanBrowseFilters { status?: string; sessionId?: string; since?: number }
 
 /** The key after which a page starts: within one Project the update and the key; across Projects the Project too. */
-export interface PlanPageKey { createdAt: number; projectId?: string; id: string }
+interface PlanPageKey { createdAt: number; projectId?: string; id: string }
 
 /** A named set of Projects binds once as `,id,id,`: the Project id grammar holds no comma, so membership is one exact check per row. */
 type Scope = 'project' | 'all' | 'named';

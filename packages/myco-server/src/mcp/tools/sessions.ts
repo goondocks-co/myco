@@ -7,12 +7,17 @@
  * empty until it lands. Timestamps are the Deployment's, in milliseconds.
  */
 import { getReleaseStatus } from '../../core/provenance.js';
-import { getPlan } from '../../read/plans.js';
-import { getSession, listSessionSummaries, sessionCounts, type SessionRow } from '../../read/sessions.js';
+import { plans_getPlan as getPlan } from '../../read/catalog/plans.js';
+import {
+  sessions_getSession as getSession,
+  sessions_listSessionSummaries as listSessionSummaries,
+  sessions_sessionCounts as sessionCounts,
+  type sessions_SessionRow as SessionRow,
+} from '../../read/catalog/sessions.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 
-export const DEFAULT_LIMIT = 20;
+const DEFAULT_LIMIT = 20;
 
 interface SessionSummary {
   id: string;

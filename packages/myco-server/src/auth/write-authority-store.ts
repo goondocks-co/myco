@@ -12,8 +12,8 @@ export class GrantEndedError extends Error {
   }
 }
 
-export interface CredentialWriter { tokenId: string; memberId: string; clock: () => number }
-export interface GrantWriter { grantId: string; projectId: string; clock: () => number }
+interface CredentialWriter { tokenId: string; memberId: string; clock: () => number }
+interface GrantWriter { grantId: string; projectId: string; clock: () => number }
 
 /** Every write through this store commits only while the credential and its member still hold. */
 export function credentialWriteStore(db: RelationalStore, writer: CredentialWriter): RelationalStore {

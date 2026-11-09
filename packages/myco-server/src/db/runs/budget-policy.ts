@@ -3,13 +3,12 @@ import { budgetActivation, BUDGET_ENABLED, type BudgetActivation } from '../meta
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { spentUsdSql as spentSql, spendReadySql } from './admission.js';
 
-export { effectiveBudgetSql } from '../../core/settings.js';
 import { effectiveBudgetSql } from '../../core/settings.js';
 import { RUN_ADMISSION_READY_SQL } from './live.js';
 import { read, readSet } from '../index.js';
 
 /** Rolling spend in dollars at the floor slot, from the maintained totals: what every budget comparison reads. */
-export const spentUsdSql = (floor: string): string => spentSql(floor);
+const spentUsdSql = (floor: string): string => spentSql(floor);
 
 export interface ClaimBudget { active: boolean; estimate: number; profileJson: string; reserveUsd?: number; stateKey?: string; observedEstimate?: string | null }
 /**
@@ -34,7 +33,7 @@ export async function automaticFits(db: RelationalStore, estimate: number, now: 
 }
 
 /** Why the governor holds a queued run: no room in the window, accounting still catching up, or nothing. */
-export type BudgetHold = 'budget' | 'admission_building';
+type BudgetHold = 'budget' | 'admission_building';
 const quotedHold = read<[string, string, number, number, number], { reason: BudgetHold | null }>({
   name: 'runs.quotedBudgetHold', sql: `SELECT CASE WHEN r.origin='manual' THEN NULL
     WHEN ?5=0 OR NOT EXISTS(SELECT 1 FROM schema_meta WHERE key='${BUDGET_ENABLED}') THEN 'budget'

@@ -14,15 +14,14 @@ import { ensureMemberStatement } from '../auth/enrollment.js';
 import { identityLinkStatements } from '../auth/identity-link.js';
 import { MEMBER_ID_PREFIX, SERVER_SCHEMA_VERSION } from '../constants.js';
 import { FIRST_MEMBER_KEY, FIRST_OWNER_MEMBER_LABEL } from './ownership.js';
-export { FIRST_MEMBER_KEY } from './ownership.js';
 
 /** A first-owner setup the Deployment's state refuses, in words its operator acts on. */
-export class FirstOwnerRefused extends Error {}
+class FirstOwnerRefused extends Error {}
 
 export const FIRST_OWNER_HAS_MEMBERS = 'this Deployment already has members; use its existing administrator and invitation flow';
 export const FIRST_OWNER_LINKED = 'this Deployment already has a linked administrator; use its existing administrator and invitation flow';
 
-export interface FirstOwnerLink {
+interface FirstOwnerLink {
   memberId: string;
   /** The raw key; the Deployment holds only its digest. */
   key: string;

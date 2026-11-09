@@ -5,8 +5,12 @@ import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobObjectKey, blobObjectKeySql, registeredObjectKeySql, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
 import {
-  acquireRecoveryHold, assignRestoreGeneration, drainObjectReleases, releaseRecoveryHold, resetRecoveryLedger,
+  acquireRecoveryHold,
+  drainObjectReleases,
+  releaseRecoveryHold,
+  resetRecoveryLedger,
 } from '@myco-server-worker/core/object-release.js';
+import { assignRestoreGeneration } from '@myco-server-worker/db/storage/release-queue.js';
 import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
 import { freeOrphanedBlobs, TRANSCRIPT_RETENTION_BLOBS_PER_PASS } from '@myco-server-worker/ingest/retention.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';

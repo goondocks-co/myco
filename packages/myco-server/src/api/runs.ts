@@ -12,7 +12,8 @@ import type { RunRow } from '../db/runs/lifecycle.js';
 import { commitRunUpdate } from '../core/release.js';
 import { recordReport, decideRunEnd, runEndingContext, emitLateHarnessError } from '../core/run-postconditions.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
-import { HARNESS_MEMBER_ID, drainQueue, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
+import { drainQueue, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
+import { HARNESS_MEMBER_ID } from '../constants.js';
 import { classify, emit, refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
 import { badRequest, ok } from './scope.js';
@@ -149,7 +150,6 @@ async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: strin
 /** Whether a failure body asks for the one context word a runtime may add. */
 const asksReplaced = (body: Record<string, unknown>, status: unknown): boolean => body.replaced === true && status === 'failed';
 
-
 /** Terminal writes require the credential currently named by the run. */
 function foreignCredentialAnswer(ctx: RouteContext, before: RunRow | null): Response | null {
   if (ctx.memberId === HARNESS_MEMBER_ID && before?.dispatchedBy === ctx.tokenId) return null;
@@ -185,8 +185,7 @@ async function endRunAsCaller(
 }
 
 /** Columns admitted by the in-process run update channel. Other store columns are refused. */
-export const ROUTE_UPDATE_COLUMNS = Object.keys(RUN_UPDATE_FIELDS);
-
+const ROUTE_UPDATE_COLUMNS = Object.keys(RUN_UPDATE_FIELDS);
 
 /**
  * Apply a partial update to one run.

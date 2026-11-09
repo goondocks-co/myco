@@ -5,7 +5,7 @@
  * flight. `exclusive` puts those mutations in a queue of one; `shared` hands the step already running to the next
  * caller instead of starting a second, which is what keeps two overlapping wakes from asking a provider twice.
  */
-export interface SerialGate {
+interface SerialGate {
   exclusive<T>(work: () => Promise<T>): Promise<T>;
   shared<T>(work: () => Promise<T>): Promise<T>;
 }

@@ -22,7 +22,11 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { codeOf } from '../helpers/import-closure.ts';
 import { declaredScheduleFor, SERVER_JOBS, DEFERRED_JOBS, TASK_SCHEDULE, WAKE_CONTINUATIONS } from '@myco-server-worker/core/jobs.js';
-import { ACCELERATORS, PRE_CONDITIONS, scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
+import {
+  ACCELERATORS,
+  PRE_CONDITIONS,
+  scheduledTasks,
+} from '@myco-server-worker/core/schedule-rules.js';
 import { admissionForTask, runTimeoutForTask, taskTools } from '@myco-server-worker/core/task-catalogue.js';
 import { prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { CONTINUATION_IMPLEMENTATIONS } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';

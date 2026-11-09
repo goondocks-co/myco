@@ -453,7 +453,6 @@
     "tests/myco-server/execution-profile-settings.test.ts": 3565,
     "tests/myco-server/execution-profile.test.ts": 1840,
     "tests/myco-server/extraction-coverage-budget.test.ts": 123450,
-    "tests/myco-server/extraction-coverage-steady-state-budget.test.ts": 125703,
     "tests/myco-server/extraction-coverage.test.ts": 1271,
     "tests/myco-server/fleet-correction.test.ts": 56,
     "tests/myco-server/foreign-lineage-authority.test.ts": 1309,

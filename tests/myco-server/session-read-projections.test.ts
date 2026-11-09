@@ -4,7 +4,10 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
-import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
+import {
+  sessions_listProjects as listProjects,
+  sessions_listProjectsSql as listProjectsSql,
+} from '@myco-server-worker/read/catalog/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
 
 const session = (id: string, end: number | null, receipt = 1, project = 'proj_1') => `INSERT INTO sessions

@@ -7,7 +7,7 @@ import { scheduleLeaves, scheduledTasks } from '../core/schedule-rules.js';
 import { projectsDriving, type ProjectSet, type ReadScope } from './scope.js';
 
 /** Maximum repository notices in one dashboard read. */
-export const MAX_REPOSITORY_NOTICES = 100;
+const MAX_REPOSITORY_NOTICES = 100;
 const CAPABILITY_TASKS = RETAINED_TASKS.reduce((groups, task) => {
   const gate = admissionForTask(task);
   if (gate?.kind === 'capability') groups.set(gate.capability, [...(groups.get(gate.capability) ?? []), task]);
@@ -16,8 +16,8 @@ const CAPABILITY_TASKS = RETAINED_TASKS.reduce((groups, task) => {
 const CODE_CAPABILITIES = [...CAPABILITY_TASKS].filter(([, tasks]) => allTasksRequireRepository(tasks)).map(([capability]) => capability);
 
 const MAP_ONLY = [...CAPABILITY_TASKS.values()].filter(allTasksRequireRepository).flat().every(task => task === MAP_TASK);
-export interface RepositoryRequirement { projectId: string; codeMap?: boolean }
-export interface RepositoryRequirements { projects: RepositoryRequirement[]; overflow: boolean }
+interface RepositoryRequirement { projectId: string; codeMap?: boolean }
+interface RepositoryRequirements { projects: RepositoryRequirement[]; overflow: boolean }
 
 /** Explicit code intent or an effectively enabled code schedule, scoped and credential-blind. */
 export async function repositoriesNeeded(env: ServerEnv, scope: ProjectSet): Promise<RepositoryRequirements> {

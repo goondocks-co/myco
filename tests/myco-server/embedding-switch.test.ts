@@ -21,14 +21,23 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import { advanceEmbedding } from '@myco-server-worker/core/embedding/step.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
-import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
-import { SWITCH_STALL_MS, completeEmbeddingSwitch, embeddingSwitchStatus, embeddingWorkPlan, passedOverForHealth, switchFailureAction } from '@myco-server-worker/core/embedding/switch.js';
+import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
+import {
+  SWITCH_STALL_MS,
+  completeEmbeddingSwitch,
+  embeddingSwitchStatus,
+  embeddingWorkPlan,
+  passedOverForHealth,
+} from '@myco-server-worker/core/embedding/switch.js';
+import {
+  providerFailureAction as switchFailureAction,
+} from '@myco-server-worker/core/embedding/provider-failure.js';
 import { RECOVERED_SWITCH, holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { EmbeddingUnavailable, VECTOR_DELETE_CONFIRM_MS, workersAiFailure } from '@myco-server-worker/core/embedding/provider.js';
 import type { EmbeddingSwitchStatus } from '@goondocks/myco-shared/settings-contract';
 import { seededSqlite } from './helpers/d1.js';

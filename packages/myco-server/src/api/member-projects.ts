@@ -14,16 +14,19 @@ import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { CredentialContext } from '../context.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { MAX_PROJECTS } from '../constants.js';
-import { HELD_STATES, type HeldState } from '@goondocks/myco-shared/member-protocol';
-import { admitProject, PROJECT_NAME_MAX } from '../core/project-creation.js';
-export { PROJECT_NAME_MAX, AUTO_CREATE_LEAF, autoCreateProjects, mayCreateProjects } from '../core/project-creation.js';
-import { MAX_REMOTE_CHARS, normalizeRemote, resolveRepository } from '../core/remotes.js';
+import {
+  HELD_STATES,
+  type HeldState,
+  MAX_REMOTE_CHARS,
+  normalizeRemote,
+} from '@goondocks/myco-shared/member-protocol';
+import { admitProject, PROJECT_NAME_MAX } from '../db/storage/projects.js';
+import { resolveRepository } from '../core/remotes.js';
 import { connectedRoot, connectMachineRoot, disconnectMachineRoot } from '../core/machine-settings.js';
 import { ROOT_KEY } from '../core/settings.js';
 import { clearUncapturedStatement, heldUncapturedStatement, isUncapturedReason, recordUncapturedStatement, type UncapturedReason } from '../ingest/uncaptured.js';
 import { listVisibleProjects, ok, parseJsonObject } from './scope.js';
 import { emit } from '../telemetry.js';
-
 
 /** A fresh project id in the `proj_<32 hex>` form every project a machine has named uses. */
 const freshProjectId = (): string => `proj_${[...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('')}`;
@@ -78,7 +81,7 @@ function repositoryOf(body: Record<string, unknown> | null): { rootKey: string; 
 }
 
 /** What `POST /members/projects/resolve` answers. */
-export type RepositoryAnswer =
+type RepositoryAnswer =
   | { persisted: true; projectId: string; name: string; created: boolean }
   | { persisted: false; code: UncapturedReason | 'invalid_field'; reason: string };
 

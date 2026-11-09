@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { MAP_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 
 /**
  * An outcome run on both targets: an owner's ask for the code map builds

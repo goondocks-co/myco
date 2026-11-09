@@ -8,10 +8,6 @@ const PREFIX = 'packages/myco-server/src/';
 
 /** Modules loaded by operator tools, migrations or fixtures rather than serving entries. */
 const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
-  'read/prompts.ts': 'extraction read barrel; its readers are retired with the extraction stage',
-  'read/extraction-coverage.ts': 'extraction read barrel; its readers are retired with the extraction stage',
-  'read/catalog/extraction-coverage.ts': 'extraction read barrel; its readers are retired with the extraction stage',
-
   'context.ts': 'type declarations consumed by route handlers',
   'core/cost/types.ts': 'type declarations consumed by cost resolution',
   'platform/bun/native.ts': 'type declarations consumed by native storage bootstrap',

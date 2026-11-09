@@ -12,5 +12,3 @@ export const DELETION_RETRIES = [
   { state: RECEIPT.deletionFailed, waitMs: VECTOR_DELETE_RETRY_MS },
 ] as const;
 
-export const deletionRetryDue = (ready: number, updatedAt: number, now: number): boolean =>
-  DELETION_RETRIES.some(({ state, waitMs }) => ready === state && updatedAt <= now - waitMs);

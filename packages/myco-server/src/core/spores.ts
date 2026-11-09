@@ -29,8 +29,6 @@ import { decodeProjectCursor, encodeProjectCursor } from '../read/project-cursor
 import { readSporePage, SPORE_COLUMNS, SPORE_READ_COLUMNS, type SporeBrowseFilters, type SporePageKey } from '../db/spores/browse.js';
 import { SPORE_DAY_MS, sporeTotal, sporeTotalAndFacets, utcDays, type SporeCountFilters, type SporeFacetCounts } from '../db/spores/counts.js';
 
-export { OBSERVATION_TYPES, type ObservationType } from '@goondocks/myco-shared/member-protocol';
-
 export const SPORE_STATUSES = ['active', 'superseded', 'consolidated', 'obsolete'] as const;
 export type SporeStatus = (typeof SPORE_STATUSES)[number];
 
@@ -134,7 +132,7 @@ export interface ListSporesOptions extends SporeBrowseFilters {
  * `includeActive: false`, carries no total, whatever else it names. `window` is the widened time range the page and its
  * total read, when the list names one.
  */
-export interface SporeListPage<T> {
+interface SporeListPage<T> {
   rows: T[];
   cursor: string | null;
   hasMore: boolean;
@@ -159,7 +157,7 @@ export async function insertSpore(db: RelationalStore, scope: ReadScope, row: Sp
   return sporeInsert(db, scope, row, true).first<SporeRow>();
 }
 
-export type SporeAuthority = { kind: 'grant'; grantId: string } | { kind: 'member' | 'run' };
+type SporeAuthority = { kind: 'grant'; grantId: string } | { kind: 'member' | 'run' };
 
 /** Grant lifecycle sources and replacements must all carry the authenticated grant as author. */
 function grantSources(scope: ReadScope, authority: SporeAuthority | undefined, ids: readonly string[]): { sql: string; params: unknown[] } {
@@ -251,7 +249,7 @@ export async function sporeAuthoredBy(db: RelationalStore, scope: ReadScope, aut
   return row !== null;
 }
 
-export interface ResolutionEventInsert {
+interface ResolutionEventInsert {
   channel?: 'import';
   id: string;
   agentId: string;
@@ -284,7 +282,7 @@ export interface SporeSource {
   revision?: number;
 }
 
-export interface StaleSpore {
+interface StaleSpore {
   error: 'stale';
   reason: string;
   status: string;

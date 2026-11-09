@@ -7,7 +7,7 @@ import { EmbeddingRuntime } from '@myco-server-worker/platform/bun/embedding-run
 import { startDeployment } from '@myco-server-worker/platform/bun/server-main.js';
 import { prepareDispatch, dispatchPrepared } from '@myco-server-worker/core/harness.js';
 import { dispatchEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 

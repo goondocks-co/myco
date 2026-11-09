@@ -7,7 +7,7 @@ import { FIRST_OWNER_MEMBER_LABEL } from '../../core/ownership.js';
 import { commit, read, readSet, write } from '../index.js';
 
 export interface MemberNamingFailure { memberId: string; errorClass: string; failures: number; lastFailedAt: number }
-export interface MemberNamingFailures { members: MemberNamingFailure[]; hasMore: boolean }
+interface MemberNamingFailures { members: MemberNamingFailure[]; hasMore: boolean }
 
 /** The members one Attention notice lists; `hasMore` says when others stand behind them. */
 export const MEMBER_NAMING_PAGE = 8;

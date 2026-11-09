@@ -3,10 +3,13 @@ import { afterEach, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
-import { reconcileEmbedding, resetEmbeddingIndex } from '../../packages/myco-server/src/core/embedding/reconcile.js';
+import { reconcileEmbedding } from '../../packages/myco-server/src/core/embedding/reconcile.js';
+import { resetEmbeddingIndex } from '../../packages/myco-server/src/db/embeddings/work.js';
 import { EmbeddingUnavailable, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
-import { searchProject } from '../../packages/myco-server/src/read/search.js';
-import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/jobs.js';
+import {
+  search_searchProject as searchProject,
+} from '../../packages/myco-server/src/read/catalog/search.js';
+import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/work.js';
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import { modelReadiness } from '../../packages/myco-server/src/db/embeddings/status.js';
 import { tombstoneSession } from '../../packages/myco-server/src/core/tombstones.js';

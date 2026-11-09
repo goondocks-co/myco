@@ -10,20 +10,36 @@
  * spot test and let the next kind through.
  */
 import { registerBlob } from './helpers/d1.js';
-import { acquireRecoveryHold, drainObjectReleases, releaseRecoveryHold, RELEASE_PAGE } from '@myco-server-worker/core/object-release.js';
+import {
+  acquireRecoveryHold,
+  drainObjectReleases,
+  releaseRecoveryHold,
+} from '@myco-server-worker/core/object-release.js';
+import { RELEASE_PAGE } from '@myco-server-worker/db/storage/release-queue.js';
 import { describe, expect, it } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { isTombstoned, tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
+import { writeTitle, overwriteTitle } from '@myco-server-worker/db/session-titles.js';
 import {
-  writeTitle, overwriteTitle, getSession, listSessions, listSessionSummaries, projectHoldsSession, projectStats,
-  sessionCounts, sessionHeldByMachine, sessionInScope,
-} from '@myco-server-worker/read/sessions.js';
-import { activityFeed } from '@myco-server-worker/read/activity.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
-import { listProjectPlans } from '@myco-server-worker/read/plans.js';
+  sessions_getSession as getSession,
+  sessions_listSessions as listSessions,
+  sessions_listSessionSummaries as listSessionSummaries,
+  sessions_projectHoldsSession as projectHoldsSession,
+  sessions_projectStats as projectStats,
+  sessions_sessionCounts as sessionCounts,
+  sessions_sessionHeldByMachine as sessionHeldByMachine,
+  sessions_sessionInScope as sessionInScope,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import {
+  activity_activityFeed as activityFeed,
+} from '@myco-server-worker/read/catalog/activity.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import {
+  plans_listProjectPlans as listProjectPlans,
+} from '@myco-server-worker/read/catalog/plans.js';
 import { count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 

@@ -4,7 +4,7 @@ import { write } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 import type { RelationalStore } from '../../core/adapters.js';
 
-export const MEMBER_IDENTITY_SQL = `INSERT OR IGNORE INTO members (id,label,created_at,revoked_at,role) SELECT ?,?,?,NULL,?`;
+const MEMBER_IDENTITY_SQL = `INSERT OR IGNORE INTO members (id,label,created_at,revoked_at,role) SELECT ?,?,?,NULL,?`;
 export const memberIdentityInsert = write<readonly unknown[]>({name:'enrollment.memberIdentityInsert',sql:MEMBER_IDENTITY_SQL});
 const firstOwnerIdentity = write<readonly unknown[]>({name:'enrollment.firstOwnerIdentity',sql:MEMBER_IDENTITY_SQL+`
   WHERE (SELECT value FROM schema_meta WHERE key=?)=?`});

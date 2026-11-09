@@ -19,8 +19,6 @@ import { within } from './recovery-inventory.js';
 import { classify, emit } from '../telemetry.js';
 import { ADVANCING_STAGES, type AttemptStage, type StagingPrunePolicy } from './recovery-producer.js';
 
-export { STAGING_RETENTION_JOB } from './jobs.js';
-
 /** The leaf an owner edits: how many complete stagings this Deployment keeps. */
 export const KEEP_STAGINGS_SETTING = 'backup.recovery.keep_stagings';
 
@@ -33,10 +31,10 @@ export const KEEP_STAGINGS_SETTING = 'backup.recovery.keep_stagings';
 export const KEEP_STAGINGS_DEFAULT = 2;
 
 /** One complete staging is the floor. A policy may not leave a Deployment with no recovery data at all. */
-export const KEEP_STAGINGS_MIN = 1;
+const KEEP_STAGINGS_MIN = 1;
 
 /** The newest failed staging is kept for diagnostics; older settled failures are payload the store need not hold. */
-export const KEEP_FAILED_STAGINGS = 1;
+const KEEP_FAILED_STAGINGS = 1;
 
 /**
  * Files one wake may release.
@@ -57,7 +55,7 @@ export async function keptStagings(db: RelationalStore): Promise<number | null> 
 }
 
 /** How long a pass waits for the producer's own reading before this wake leaves retention alone. */
-export const PRUNE_READ_MS = 5_000;
+const PRUNE_READ_MS = 5_000;
 
 /**
  * What this Deployment keeps, and whose stagings nothing may touch.

@@ -10,7 +10,7 @@ import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { V116_STATEMENTS } from '@myco-server-worker/db/schema-v116.js';
 import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
-import { statusMetadata } from '@myco-server-worker/read/meta.js';
+import { statusMetadata } from '@myco-server-worker/db/documents/failure-head.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';

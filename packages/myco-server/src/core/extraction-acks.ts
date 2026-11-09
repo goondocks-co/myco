@@ -1,5 +1,5 @@
 import type { RelationalStore } from './adapters.js';
-import { NOT_TOMBSTONED_PARAMS } from './tombstones.js';
+import { NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
 
 /** Restore durable coverage independently of run retention, excluding deleted sessions. */
 export function restoreExtractionAckStatement(db: RelationalStore, row: Record<string, unknown>) {

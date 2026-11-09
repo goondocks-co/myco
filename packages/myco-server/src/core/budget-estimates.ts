@@ -5,8 +5,8 @@ import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile'
 import { ensureAgent, getState, guardedStateStatement } from '../db/runs/state.js';
 import { seedForStage, BUDGET_WORKER_TASKS, BUDGET_ESTIMATE_PREFIX } from './budget-policy.js';
 
-export const ESTIMATE_INTERVAL_MS = 3_600_000;
-export const ESTIMATE_SAMPLE_SIZE = 50;
+const ESTIMATE_INTERVAL_MS = 3_600_000;
+const ESTIMATE_SAMPLE_SIZE = 50;
 export const ESTIMATE_PUBLISH_PAGE = 32;
 export const ESTIMATE_AGENT = 'myco-agent';
 export interface EstimateSample { estimate: number; ratioP95: number | null; n: number; ratioN: number; refreshedAt: number }
@@ -84,8 +84,3 @@ export async function refreshEstimates(db: RelationalStore, now: number): Promis
   return {changed:results.length+writes.length,more:!done};
 }
 
-/** The observed Project/profile price and the same seed used by estimateForClaim. */
-export function estimatedClaimPriceSql(project: string, task: string, key?: string): string {
-  return key === undefined ? String(seedForStage(task)) : `COALESCE((SELECT json_extract(value,'$.estimate') FROM agent_state
-    WHERE project_id=${project} AND agent_id='${ESTIMATE_AGENT}' AND key='${key.replaceAll("'", "''")}'),${seedForStage(task)})`;
-}

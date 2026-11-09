@@ -13,12 +13,18 @@
 import { SERVER_PROTOCOL } from '../constants.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { ingestEvent,type IngestContext,type IngestResult } from '../ingest/events.js';
-import { getPlan, PLAN_STATUS_MESSAGE, setPlanStatus, WRITABLE_PLAN_STATUSES, type ProjectPlanRow } from '../read/plans.js';
+import { setPlanStatus } from '../read/plans.js';
+import {
+  plans_getPlan as getPlan,
+  plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
+  plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
+  type plans_ProjectPlanRow as ProjectPlanRow,
+} from '../read/catalog/plans.js';
 import type { ReadScope } from '../read/scope.js';
 import type { ServerEnv } from './adapters.js';
 
 /** What the `plan` events the tool emits say produced them. */
-export const MCP_PRODUCER = { adapter: 'mcp', version: String(SERVER_PROTOCOL) } as const;
+const MCP_PRODUCER = { adapter: 'mcp', version: String(SERVER_PROTOCOL) } as const;
 
 /** A path as the member keys it: forward slashes. The member sends it project-relative or `~/`-prefixed and the tool's caller passes the same form; nothing else is rewritten. */
 export const normalizePlanPath = (path: string): string => path.replace(/\\/g, '/');
@@ -31,7 +37,7 @@ export async function planKeyFor(projectId: string, input: { id?: string; source
   return null;
 }
 
-export interface SavePlanInput {
+interface SavePlanInput {
   id?: string;
   sessionId: string;
   content?: string;
@@ -44,17 +50,17 @@ export interface SavePlanInput {
   promptId?: string;
 }
 
-export type SavePlanOutcome =
+type SavePlanOutcome =
   | { ok: true; row: ProjectPlanRow; logicalKey: string }
   | { ok: false; error: string; code?: string };
 
 /** The member the save is written as: its machine owns the session the event names, and its credential is charged. */
-export interface SavingMember { machineId: string; tokenId: string }
+interface SavingMember { machineId: string; tokenId: string }
 
 /**
  * Creates or updates a plan as a capture event. A create names the prompt it came from; an update carries none, so the row keeps its own — a member's machine may not name a prompt another machine captured, and a plan is shared across them.
  */
-export function createPlanSave(write:(env:ServerEnv,ctx:IngestContext,body:unknown)=>Promise<IngestResult>){
+function createPlanSave(write:(env:ServerEnv,ctx:IngestContext,body:unknown)=>Promise<IngestResult>){
  return async function savePlan(env: ServerEnv, member: SavingMember, scope: ReadScope, input: SavePlanInput, nowMs: number): Promise<SavePlanOutcome> {
   if (input.content === undefined && input.id === undefined) return { ok: false, error: 'content is required when creating a new plan' };
   if (input.status !== undefined && !WRITABLE_PLAN_STATUSES.has(input.status)) return { ok: false, error: PLAN_STATUS_MESSAGE };

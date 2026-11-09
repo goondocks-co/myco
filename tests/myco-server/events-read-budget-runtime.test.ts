@@ -14,8 +14,11 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { LAST_ACTIVITY_SQL, LAST_REQUEST_KEY, lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { RETENTION_CANDIDATES_SQL, pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
-import { listProjects, listProjectsSql } from '@myco-server-worker/read/sessions.js';
-import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
+import {
+  sessions_listProjects as listProjects,
+  sessions_listProjectsSql as listProjectsSql,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import { notTombstonedSql } from '@myco-server-worker/db/session-read-model.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';

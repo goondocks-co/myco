@@ -1,7 +1,7 @@
-import { admitProject, PROJECT_NAME_MAX } from '../core/project-creation.js';
+import { admitProject, PROJECT_NAME_MAX, unarchiveProject } from '../db/storage/projects.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
-import { archiveProject, renameProject, unarchiveProject } from '../read/sessions.js';
+import { archiveProject, renameProject } from '../db/storage/s2a3.js';
 import { emit } from '../telemetry.js';
 import { readJsonObject, badRequest, listVisibleProjects, notFound, ok } from './scope.js';
 

@@ -11,10 +11,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { REPOSITORY_TASKS } from '@goondocks/myco-shared/repository';
-import { admissionForTask, CURATION_TASK, CARD_TASK, EXTRACTION_TASK, MANUAL_ONLY_TASKS, OUTCOME_TASKS, PULLED_ONLY_TASKS, RETAINED_TASKS, SEEDING_TASK, TASK_ADMISSION, TITLING_TASK, UNLANDED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
+import {
+  admissionForTask,
+  CURATION_TASK,
+  EXTRACTION_TASK,
+  MANUAL_ONLY_TASKS,
+  OUTCOME_TASKS,
+  PULLED_ONLY_TASKS,
+  RETAINED_TASKS,
+  SEEDING_TASK,
+  TASK_ADMISSION,
+  TITLING_TASK,
+  UNLANDED_TASKS,
+} from '@myco-server-worker/core/task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
-import { scheduledTasks } from '@myco-server-worker/core/scheduled-tasks.js';
-import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
+import { scheduledTasks } from '@myco-server-worker/core/schedule-rules.js';
+import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/worker-selection.js';
 import { PROJECT_CAPABILITIES } from '@myco-server-worker/core/settings.js';
 import { EXTRACTION_REPORT_ACTION, RUN_CLOSE_RULES, RUN_SKIP_ACTION, SEEDING_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { INPUT_BUILDERS } from '@myco-server-worker/core/task-inputs.js';
@@ -164,7 +177,6 @@ describe('the tasks a run checks a repository out for', () => {
     expect(REPOSITORY_TASKS).toContain(SEEDING_TASK);
   });
 });
-
 
 it('keeps the retained probe manual-only even when an archived override asks for a schedule', () => {
   expect(TASK_SCHEDULE['container-smoke']).toBeUndefined();

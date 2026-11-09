@@ -10,10 +10,27 @@ import { restoreDocuments } from '../ingest/document-restore.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import {
-  BackupAdmissionError, BackupApplyError, backupArtifact, BackupIntegrityError, BackupObjectsMissingError, BackupLineageError, BackupSchemaError, BackupTooLargeError,
-  assertBackupSize, createBackup, listBackups, previewRestore, pruneBackups,
-  restoreArtifact, restoreBackup, setBackupPinned, type ListedBackup, type BackupIndexRow,
+  BackupApplyError,
+  backupArtifact,
+  BackupIntegrityError,
+  BackupObjectsMissingError,
+  BackupLineageError,
+  BackupSchemaError,
+  BackupTooLargeError,
+  assertBackupSize,
+  createBackup,
+  listBackups,
+  previewRestore,
+  pruneBackups,
+  restoreArtifact,
+  restoreBackup,
+  setBackupPinned,
+  type ListedBackup,
+  type BackupIndexRow,
 } from '../core/backup.js';
+import {
+  RelationalSnapshotAdmissionError as BackupAdmissionError,
+} from '../core/relational-snapshot.js';
 import { backupPruneStatus, type BackupPruneStatus, type BackupPruneOutcome } from '../db/meta/backup-prune.js';
 import { restoreAdmission, RestoreAuthorizationError } from '../core/restore-authorization.js';
 import { RecordSchemeError } from '../ingest/record-scheme.js';

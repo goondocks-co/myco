@@ -5,7 +5,7 @@ import { linkedHumanAdminSql } from '../../core/ownership.js';
 import { linkAdmitted } from './link-policy.js';
 import { assertion, commit, read, refusalCode, refused, write } from '../index.js';
 
-export const IDENTITY_LINK_DENIED = refusalCode('identity_link_denied');
+const IDENTITY_LINK_DENIED = refusalCode('identity_link_denied');
 const live = assertion<[hash: string, now: number]>({
   name: 'identity.linkLive',
   refusal: IDENTITY_LINK_DENIED, when: `EXISTS (SELECT 1 FROM identity_link_authorities

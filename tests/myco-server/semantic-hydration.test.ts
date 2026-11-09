@@ -3,9 +3,15 @@ import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { semanticHits, semanticSearch, type SemanticHit, type SemanticHitCounts, type SemanticSearch } from '@myco-server-worker/read/embedding.js';
+import {
+  embedding_semanticHits as semanticHits,
+  embedding_semanticSearch as semanticSearch,
+  type embedding_SemanticHit as SemanticHit,
+  type embedding_SemanticHitCounts as SemanticHitCounts,
+  type embedding_SemanticSearch as SemanticSearch,
+} from '@myco-server-worker/read/catalog/embedding.js';
 import { vectorMatches, type VectorFilters, type VectorHit } from '@myco-server-worker/core/embedding/vectors.js';
-import { notTombstonedSql } from '@myco-server-worker/core/tombstones.js';
+import { notTombstonedSql } from '@myco-server-worker/db/session-read-model.js';
 import { inListChunks } from '@myco-server-worker/read/scope.js';
 import { SEARCH_PREVIEW_CHARS } from '@goondocks/myco-shared/search-types';
 import { selectSporesForPrompt } from '@myco-server-worker/core/injection.js';

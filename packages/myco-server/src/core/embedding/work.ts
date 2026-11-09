@@ -1,13 +1,12 @@
 import { embeddingProviderReady } from './provider-state.js';
-import { dueSourceWork } from '../../db/embeddings/work.js';
+import { dueSourceWork, embeddingWakeAt, retiringReceipt } from '../../db/embeddings/work.js';
 import type { RelationalStore } from '../adapters.js';
 import { calibrationPending } from './hubness.js';
 import { calibrationModel } from './policy.js';
-import { embeddingWakeAt, retiringReceipt } from './selection.js';
 import { recordedWork, WORK_PREDICATE_VERSION } from './work-state.js';
 
 /** What a Project's embedding work covers while a switch stands, and whether the Project is archived. */
-export interface EmbeddingWorkScope {
+interface EmbeddingWorkScope {
   /** A switch's model while it is asked: sources it has not written, or skipped, are work. */
   building?: string | null;
   /** Every further model whose vectors are kept. */

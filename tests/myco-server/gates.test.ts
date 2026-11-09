@@ -50,9 +50,6 @@ const allFiles = (dir: string): string[] =>
 const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith('.ts'));
 
 it('defines the extraction unread predicate once and never writes the historical processed flag', () => {
-  const owner = join(SRC, 'read/catalog/extraction-coverage.ts');
-  const coverageDeclarations = new Set(['MATERIAL_READS', 'effectiveMaterial', 'effectiveStatement',
-    'extraction_coverage_ACKNOWLEDGED_PROMPTS_SQL']);
   const historicalDdl = new Set([
     '\`ALTER TABLE prompt_batches ADD COLUMN processed INTEGER NOT NULL DEFAULT 0\`',
     '\`CREATE INDEX IF NOT EXISTS idx_prompt_batches_unprocessed ON prompt_batches (project_id, processed, created_at, prompt_id)\`',
@@ -70,8 +67,7 @@ it('defines the extraction unread predicate once and never writes the historical
     const owned = parsed.statements.filter(statement => {
       const name = ts.isVariableStatement(statement) ? statement.declarationList.declarations[0]?.name
         : ts.isFunctionDeclaration(statement) ? statement.name : undefined;
-      return name !== undefined && ts.isIdentifier(name) && ((file === owner && coverageDeclarations.has(name.text))
-        || (relative === 'db/session-read-model.ts' && name.text === 'unreadPromptSql'));
+      return name !== undefined && ts.isIdentifier(name) && relative === 'db/session-read-model.ts' && name.text === 'unreadPromptSql';
     });
     for (const [index, token] of tokens.entries()) {
       if (!/\bprocessed\b/.test(token.text)) continue;
@@ -92,7 +88,7 @@ it('defines the extraction unread predicate once and never writes the historical
     }
   }
   expect(unexpected).toEqual([]);
-  const historicalCallers = files(SRC).filter(file => file !== owner && /beforeLedger\s*:\s*true|promptSessionReadTriggers\(true\)/.test(readFileSync(file, 'utf8')));
+  const historicalCallers = files(SRC).filter(file => /beforeLedger\s*:\s*true|promptSessionReadTriggers\(true\)/.test(readFileSync(file, 'utf8')));
   expect(historicalCallers).toEqual([join(SRC, 'db/read-budget-session-statements.ts')]);
 });
 /**
@@ -896,7 +892,7 @@ describe('gates', () => {
     const family = `${moduleKey(join(SRC, 'db', 'settings'))}/`;
     const writer = moduleKey(join(SRC, 'core', 'settings.ts'));
     const owners = new Map([
-      [family + 'leaves.ts', new Set([writer])],
+      [family + 'leaves.ts', new Set([writer, moduleKey(join(SRC, 'db', 'runs', 'claim.ts'))])],
       [family + 'release-connection.ts', new Set([moduleKey(join(SRC, 'core', 'release-provenance.ts'))])],
       [family + 'secret-writes.ts', new Set([
         moduleKey(join(SRC, 'core', 'secrets.ts')),

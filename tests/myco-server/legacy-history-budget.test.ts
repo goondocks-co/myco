@@ -4,7 +4,9 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
 import { importedLegacyRows } from '@myco-server-worker/read/legacy-history.js';
-import { sessionsWithImportedPrompts } from '@myco-server-worker/read/sessions.js';
+import {
+  sessions_sessionsWithImportedPrompts as sessionsWithImportedPrompts,
+} from '@myco-server-worker/read/catalog/sessions.js';
 import { LEGACY_HISTORY_MAX_EVENTS } from '@goondocks/myco-shared/member-protocol';
 import { measuredStore } from './helpers/read-budget.js';
 

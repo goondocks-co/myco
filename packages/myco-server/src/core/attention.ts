@@ -25,20 +25,19 @@ import type { ServerEnv } from './adapters.js';
 import { CAPABILITY_HOLDS } from '@goondocks/myco-shared/run-holds';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
-import { statusMetadata, type StatusMetadata } from '../read/meta.js';
+import { statusMetadata, type StatusMetadata } from '../db/documents/failure-head.js';
 import { memberNamingFailures, type MemberNamingFailure } from '../db/meta/member-naming-failure.js';
 import { OUTCOME_LOOKBACK_MS } from './attention-state.js';
-export { OUTCOME_LOOKBACK_MS } from './attention-state.js';
 import { auditFailures, capabilityHolds, failingOutcomes, readUpkeep, runsAwaitingWorker, type OutcomeKind } from '../read/work.js';
 import { RUN_CLOSE_RULES } from './run-postconditions.js';
 import { stoppedTranscripts } from '../ingest/parse.js';
-import { searchBacklog } from './search-index.js';
+import { core_search_index_searchBacklog as searchBacklog } from '../read/catalog/search-index.js';
 import { latestBackupAt } from './backup.js';
 import { lastWorkerContactAt, CONTACT_RECENT_MS } from './worker-contacts.js';
 import { grantsExpiringBy } from '../auth/grants.js';
 import { scheduledIntervalHours } from './recovery-schedule.js';
 import { within } from './recovery-inventory.js';
-import { RUNTIME_SERVED_TASKS } from './harness.js';
+import { RUNTIME_SERVED_TASKS } from './worker-selection.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { provisionedHarnessAttention, type HarnessAttentionFact } from './harness-health.js';
 import { stuckRunBodies, type StuckRunBody } from '../db/runs/body-failures.js';
@@ -60,7 +59,7 @@ const PRODUCER_STATUS_MS = 5_000;
 const AUDITED_TASKS: readonly string[] = Object.entries(RUN_CLOSE_RULES).filter(([, rule]) => rule.audited === true).map(([task]) => task);
 
 /** The outcome tasks whose failure needs someone: learning and the code map. */
-export const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
+const WATCHED_OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, MAP_TASK];
 
 export type AttentionItem =
   | { kind: 'repository_missing'; tone: 'warn'; projectId: string; codeMap?: boolean }
@@ -78,7 +77,7 @@ export type AttentionItem =
   | { kind: 'harness_needs_repair'; tone: 'bad'; machineId: string; machineName: string | null; harness: string; state: 'binary_missing' | 'unwritable' | 'trust_required' | 'repair_failed'; action: string; since: number }
   | { kind: 'harness_capture_silent'; tone: 'warn'; machineId: string; machineName: string | null; harness: string; lastCapturedAt: number; lastMachineActivityAt: number };
 
-export type AttentionKind = AttentionItem['kind'];
+type AttentionKind = AttentionItem['kind'];
 
 export interface AttentionAnswer {
   items: AttentionItem[];

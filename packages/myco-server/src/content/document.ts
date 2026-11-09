@@ -9,7 +9,7 @@
  */
 import { utf8, utf8Preview } from '../hash.js';
 
-export const DOCUMENT_FORMAT = 1;
+const DOCUMENT_FORMAT = 1;
 /** Encoded bytes one page holds, its header included. */
 export const DOCUMENT_PAGE_BYTES = 262_144;
 /** Uncompressed bytes one page chunk holds. */
@@ -50,7 +50,7 @@ export interface DecodedChunk {
 }
 
 /** The body field of each record kind, the one field that may leave its record. */
-export const BODY_FIELDS: Readonly<Record<RecordKind, readonly string[]>> = {
+const BODY_FIELDS: Readonly<Record<RecordKind, readonly string[]>> = {
   prompt: ['text'],
   reply: ['text'],
   tool: ['input'],
@@ -67,7 +67,7 @@ export const pageBytes = (page: Page): number =>
 const RECORD_ROOM = DOCUMENT_PAGE_BYTES - pageHeaderBytes('x'.repeat(256), Number.MAX_SAFE_INTEGER);
 
 /** A body that must move out of its record: its field and complete text. */
-export interface ExtractedBody { field: string; text: string }
+interface ExtractedBody { field: string; text: string }
 
 /**
  * The record as a page holds it. While the whole encoded record exceeds an empty page, its largest inline body moves
@@ -88,13 +88,6 @@ export function fitRecord(record: DocRecord, place: (body: ExtractedBody) => Bod
     };
   }
   return fitted;
-}
-
-/** Bytes of a page chunk before compression. */
-export function chunkBytes(pages: readonly Page[], states: ReadonlyMap<string, Record<string, unknown>>, owners: DecodedChunk['owners']): number {
-  return pages.reduce((sum, page) => sum + pageBytes(page), 0)
-    + [...states].reduce((sum, [t, c]) => sum + lineBytes({ k: 'state', t, c }), 0)
-    + (owners === null ? 0 : lineBytes({ k: 'owners', owners }));
 }
 
 async function collect(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {

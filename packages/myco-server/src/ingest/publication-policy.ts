@@ -1,7 +1,7 @@
 import { PROMPT_ID_SCHEMES } from '@goondocks/myco-shared/prompt-identity';
 
 /** The record identity scheme a newly published transcript is minted under. */
-export const PUBLISHED_RECORD_SCHEME = 'source-record-v1';
+const PUBLISHED_RECORD_SCHEME = 'source-record-v1';
 
 /** Immutable policy expressions for a transcript's first publication frontier. */
 export function publicationPolicy(promptPin: string): { prompt: string; record: string } {

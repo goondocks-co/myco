@@ -1,8 +1,12 @@
 import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { bootstrapOwnership } from '@myco-server-worker/core/raw-claims.js';
-import { listSessionsAcross } from '@myco-server-worker/read/sessions.js';
-import { pagePlansAcross } from '@myco-server-worker/read/plans.js';
+import { bootstrapOwnership } from '@myco-server-worker/core/ownership.js';
+import {
+  sessions_listSessionsAcross as listSessionsAcross,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import {
+  plans_pagePlansAcross as pagePlansAcross,
+} from '@myco-server-worker/read/catalog/plans.js';
 import { credentialActivity } from '@myco-server-worker/read/credentials.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { encodeCursor, type Page } from '@myco-server-worker/read/scope.js';

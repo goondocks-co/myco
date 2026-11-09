@@ -3,7 +3,7 @@ const classes = (row:string) => `CASE WHEN ${row}.state='live' AND json_valid(${
   THEN COALESCE(json_extract(${row}.build,'$.report.classes'),'{}') ELSE '{}' END`;
 
 /** Refreshes one session's publication facts through its catalog identities. */
-export function documentFactsSelect(where:string):string {
+function documentFactsSelect(where:string):string {
   const transcripts = `FROM transcripts t LEFT JOIN transcript_publication p ON p.project_id=t.project_id
     AND p.transcript_id=t.transcript_id AND p.generation=d.generation WHERE t.project_id=d.project_id AND t.session_id=d.session_id`;
   return `SELECT d.project_id,d.session_id,d.state,d.due_at,
@@ -14,7 +14,7 @@ export function documentFactsSelect(where:string):string {
       ${classes('d')} FROM session_documents d WHERE ${where}`;
 }
 
-export const DOCUMENT_FACT_COLUMNS = 'project_id,session_id,state,due_at,transcripts,bytes,imported,classes';
+const DOCUMENT_FACT_COLUMNS = 'project_id,session_id,state,due_at,transcripts,bytes,imported,classes';
 
 export const refreshDocumentFacts = (row:string,when='1'):string => `INSERT INTO document_publication_facts(${DOCUMENT_FACT_COLUMNS})
   ${documentFactsSelect(`(${when}) AND d.project_id=${row}.project_id AND d.session_id=${row}.session_id`)}

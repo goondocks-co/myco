@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Database } from 'bun:sqlite';
-import { FIRST_MEMBER_KEY, setupFirstOwner } from '@myco-server-worker/core/first-owner.js';
+import { setupFirstOwner } from '@myco-server-worker/core/first-owner.js';
+import { FIRST_MEMBER_KEY } from '@myco-server-worker/core/ownership.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';

@@ -1,6 +1,9 @@
 import type { RelationalStore } from '../../../packages/myco-server/src/core/adapters.js';
 import type { ReadScope } from '../../../packages/myco-server/src/read/scope.js';
-import type { SemanticSearch, EmbeddingSource } from '../../../packages/myco-server/src/read/embedding.js';
+import type {
+  embedding_SemanticSearch as SemanticSearch,
+  embedding_EmbeddingSource as EmbeddingSource,
+} from '../../../packages/myco-server/src/read/catalog/embedding.js';
 import { vectorId, vectorMatches } from '../../../packages/myco-server/src/core/embedding/vectors.js';
 
 /**

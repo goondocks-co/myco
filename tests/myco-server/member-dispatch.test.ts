@@ -13,9 +13,14 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, PRINCIPAL, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
-import { CLOCK_ACTOR, MEMBER_RUNS_PER_DAY_DEFAULT, memberRunsPerDay, readScheduleFacts } from '@myco-server-worker/core/scheduled-tasks.js';
+import { CLOCK_ACTOR, readScheduleFacts } from '@myco-server-worker/core/scheduled-tasks.js';
+import {
+  MEMBER_RUNS_PER_DAY_DEFAULT,
+  memberRunsPerDay,
+} from '@myco-server-worker/core/schedule-rules.js';
 import { taskFactsKey } from '@myco-server-worker/db/runs/task-facts.js';
-import { CAPABILITY_OFF, claimNextRun, HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { CAPABILITY_OFF, claimNextRun } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { runTimeoutForTask } from '@myco-server-worker/core/task-catalogue.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';

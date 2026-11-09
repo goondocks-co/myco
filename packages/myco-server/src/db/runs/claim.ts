@@ -1,33 +1,21 @@
 import { storedQueueHold } from './queue.js';
 import { CREDENTIAL_INSERT_SQL } from './claim-companions.js';
-import { observedRevisionPredicate } from '../../core/settings.js';
+import { observedRevisionPredicate } from '../settings/leaves.js';
 import type { ClaimForm, WorkerClaim } from '../../core/worker-claim.js';
 import { leaseOwnerColumns } from '../../core/worker-lease.js';
 import { liveCountSql, RUN_ADMISSION_READY_SQL } from './live.js';
 import { resolvedConcurrency, type DispatchLimits } from '../../core/limits.js';
 
 /** One resolved Deployment limit and one task limit, re-read from maintained counts inside each admitted write. */
-export const CONCURRENCY_ADMISSION_SQL = `AND ${RUN_ADMISSION_READY_SQL}
+const CONCURRENCY_ADMISSION_SQL = `AND ${RUN_ADMISSION_READY_SQL}
   AND (? IS NULL OR ${liveCountSql('fleet', "''", '?', '?')} < ?)
   AND (? IS NULL OR ${liveCountSql('task', '?', '?', '?')} < ?)`;
 
-export const QUEUED_CLAIM_HEAD_SQL = `EXISTS(SELECT 1 FROM task_due d WHERE d.project_id=agent_runs.project_id AND d.run_id=agent_runs.id AND d.claimable=1)`;
+const QUEUED_CLAIM_HEAD_SQL = `EXISTS(SELECT 1 FROM task_due d WHERE d.project_id=agent_runs.project_id AND d.run_id=agent_runs.id AND d.claimable=1)`;
 
-export function concurrencyParams(projectId: string, task: string | null, runId: string, limits: DispatchLimits) {
+function concurrencyParams(projectId: string, task: string | null, runId: string, limits: DispatchLimits) {
   const { value } = resolvedConcurrency(limits);
   return [value, projectId, runId, value, limits.task_concurrent_runs, task, projectId, runId, task, limits.task_concurrent_runs];
-}
-
-/** Pulled-stage availability uses the same resolved limits as queue admission. */
-export function limitPassesSql(task: string, limits: DispatchLimits, now: number): string {
-  const t = `'${task.replaceAll("'", "''")}'`;
-  const { value } = resolvedConcurrency(limits);
-  const terms = [RUN_ADMISSION_READY_SQL,
-    value === null ? null : `${liveCountSql('fleet', t, 'NULL', 'NULL')} < ${Math.floor(value)}`,
-    limits.task_concurrent_runs === null ? null : `${liveCountSql('task', t, 'NULL', 'NULL')} < ${Math.floor(limits.task_concurrent_runs)}`,
-    limits.task_runs_per_hour === null ? null : `(SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task=${t} AND started_at IS NOT NULL AND started_at>=${Math.floor(now - 3_600_000)}) < ${Math.floor(limits.task_runs_per_hour)}`,
-  ].filter((term): term is string => term !== null);
-  return `(${terms.join(' AND ')})`;
 }
 
 import { assertion, commit, read, readSet, refused, write, type Bound } from '../index.js';
@@ -40,7 +28,7 @@ import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } fro
 import { runOriginSql, contextValue, DISPATCH_ACTOR_SQL } from '../run-context.js';
 import { admissionForTask } from '../../core/task-catalogue.js';
 import { PROJECT_WORK_SQL, CAPABILITY_ON_SQL, settingsWriter } from '../../core/settings.js';
-import { budgetClaimPredicate } from '../../core/run-budget.js';
+import { budgetClaimPredicate } from './budget-policy.js';
 import { runDeadlineSql, preparationAllowanceSql, SQL_NOW_MS } from '../../core/run-deadline.js';
 import { runnerCredentialAuthority, RUNNER_WRITE_REFUSED, runnerWriteRefusal } from '../../auth/runners.js';
 import { runParentLive } from './run-parent.js';
@@ -50,43 +38,43 @@ import { INPUT_UNCHANGED, SCHEDULE_ACTOR_SQL, SCHEDULE_ENTRY_SQL } from '../sche
 import { UNATTRIBUTED_DISPATCH_ACTOR, skipContext, type RunInsert, type RunningRunRef, type RunAdmissionGate, type ClaimOutcome, type ActorCeiling, type WriteAdmission, type DispatchRecord, type QueuedRecord, type QueuedRunEnd, type ClaimCandidate, type ClaimedRunRow, type PulledCandidate, type ClaimedInput } from '../../core/runs.js';
 import { type RunCaller } from './lifecycle.js';
 import { type AgentIdentity } from './state.js';
-export const CLAIM_SQL = `INSERT INTO agent_runs
+const CLAIM_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, harness, provider, model, status, dry_run, started_at, run_context, dispatched_by,origin)
   SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?,'manual'
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)`;
 
-export const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
+const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
    SET status = 'running', harness = ?, instruction = COALESCE(?, instruction), provider = COALESCE(provider, ?), model = COALESCE(model, ?),
        started_at = COALESCE(started_at, ?), held_by = NULL
  WHERE project_id = ? AND id = ? AND ${UNCLAIMED_RUN_STATUSES} AND dispatched_by = ? AND task IS ?`;
 
-export const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
+const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
 
-export const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
+const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;
 
-export const ACTOR_PROJECT_SQL = '(? IS NULL OR project_id = ?)';
+const ACTOR_PROJECT_SQL = '(? IS NULL OR project_id = ?)';
 
-export const ACTOR_CEILING_WHERE = `
+const ACTOR_CEILING_WHERE = `
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs WHERE ${ACTOR_ENTRY_SQL} AND ${ACTOR_PROJECT_SQL} AND ${NOT_THE_RUN_ADMITTED}) < ?)`;
 
-export function actorCeilingParams(runId: string, ceiling: ActorCeiling | undefined): (string | number | null)[] {
+function actorCeilingParams(runId: string, ceiling: ActorCeiling | undefined): (string | number | null)[] {
   return ceiling === undefined ? [null, null, null, null, null, null, runId, runId, null] : [ceiling.perDay, ceiling.task, ceiling.sinceMs, ceiling.actor, ceiling.projectId ?? null, ceiling.projectId ?? null, runId, runId, ceiling.perDay];
 }
 
-export const PROJECT_ADMISSION_WHERE = ` AND ${PROJECT_WORK_SQL} AND (? IS NULL OR ${CAPABILITY_ON_SQL})`;
+const PROJECT_ADMISSION_WHERE = ` AND ${PROJECT_WORK_SQL} AND (? IS NULL OR ${CAPABILITY_ON_SQL})`;
 
-export function projectAdmissionParams(scope: ReadScope, capability?: string | null): (string | null)[] {
+function projectAdmissionParams(scope: ReadScope, capability?: string | null): (string | null)[] {
   return [scope.projectId, capability ?? null, scope.projectId, capability ?? null];
 }
 
-export const ADMISSION_WHERE = `
+const ADMISSION_WHERE = `
    ${CONCURRENCY_ADMISSION_SQL}
    AND (? IS NULL OR (SELECT COUNT(*) FROM agent_runs INDEXED BY idx_agent_runs_task_started WHERE task = ? AND ${NOT_THE_RUN_ADMITTED} AND started_at IS NOT NULL AND started_at >= ?) < ?)
    AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} AND id != ?))${ACTOR_CEILING_WHERE}
 ${PROJECT_ADMISSION_WHERE}`;
 
-export async function writeDispatchRecord(db: RelationalStore, statement: Bound, admission?: { actor?: MemberWriteActor; setup?: Bound[] }): Promise<boolean> {
+async function writeDispatchRecord(db: RelationalStore, statement: Bound, admission?: { actor?: MemberWriteActor; setup?: Bound[] }): Promise<boolean> {
   const statements = [...(admission?.setup ?? []), statement];
   const store = admission?.actor === undefined ? db : memberWriteStore(db, admission.actor.memberId, admission.actor.authority);
   const results = await commit(store, ...statements);
@@ -95,7 +83,7 @@ export async function writeDispatchRecord(db: RelationalStore, statement: Bound,
 
 export const NO_LIMITS: DispatchLimits = { concurrent_runs: null, task_concurrent_runs: null, task_runs_per_hour: null, fleet: null };
 
-export function admissionParams(scope: ReadScope, task: string | null, runId: string, admission: WriteAdmission | undefined): (string | number | null)[] {
+function admissionParams(scope: ReadScope, task: string | null, runId: string, admission: WriteAdmission | undefined): (string | number | null)[] {
   const l = admission?.limits ?? NO_LIMITS;
   const hourStart = (admission?.now ?? 0) - 3_600_000;
   const single = admission?.singleFlight === true ? task : null;
@@ -110,15 +98,15 @@ export function admissionParams(scope: ReadScope, task: string | null, runId: st
   ];
 }
 
-export const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
+const RECORD_DISPATCH_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, started_at, run_context, dispatched_by, dispatch_spec,origin)
   SELECT ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, (SELECT ${runOriginSql()} FROM (SELECT NULL AS origin,? AS dispatch_spec))
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)${ADMISSION_WHERE} RETURNING id`;
 
-export const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
+const RUN_REF_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
    WHERE project_id = ? AND id = ?`;
 
-export const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
+const RUNNING_SQL = `SELECT id, task, started_at AS startedAt, resumed_at AS resumedAt FROM agent_runs
    WHERE project_id = ? AND task = ? AND status = 'running'
      AND COALESCE(resumed_at, started_at) > ?
    ORDER BY COALESCE(resumed_at, started_at) DESC LIMIT 1`;
@@ -185,7 +173,7 @@ export function runCallerGuard(caller: RunCaller | undefined, statuses = LIVE_RU
   };
 }
 
-export const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
+const RUN_INSIDE_BOUND_SQL = `SELECT 1 AS one FROM agent_runs
   WHERE ${LIVE_RUN_STATUSES} AND started_at IS NOT NULL
     AND ? < started_at + COALESCE(json_extract(run_context, '$.timeoutSeconds'), ?) * 1000 + ${preparationAllowanceSql()} + ?
   LIMIT 1`;
@@ -194,7 +182,7 @@ export async function hasRunInsideBound(db: RelationalStore, now: number, defaul
   return (((await readSet(db, insideBoundRead.bind(now, defaultTimeoutSeconds, marginMs)))[0][0] ?? null)) !== null;
 }
 
-export const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
+const RECORD_QUEUED_SQL = `INSERT INTO agent_runs
     (project_id, id, agent_id, task, instruction, provider, model, status, dry_run, queued_at, held_by, dispatch_spec, run_context,origin)
   SELECT ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, (SELECT ${runOriginSql()} FROM (SELECT NULL AS origin,? AS dispatch_spec))
    WHERE NOT EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?)
@@ -206,7 +194,7 @@ export async function recordQueued(db: RelationalStore, scope: ReadScope, record
   return writeDispatchRecord(db, statement, options);
 }
 
-export const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
+const LAUNCH_QUEUED_SQL = `UPDATE agent_runs
    SET status = 'pending', dispatched_by = ?, started_at = ?, run_context = ?, instruction = COALESCE(?, instruction),
        provider = COALESCE(?, provider), model = COALESCE(?, model), held_by = NULL
  WHERE project_id = ? AND id = ? AND status = 'queued' AND task = ?${ADMISSION_WHERE} RETURNING id`;
@@ -216,7 +204,7 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
   return writeDispatchRecord(db, statement, admission);
 }
 
-export const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
+const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
    SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?,
        queued_at = COALESCE(queued_at, started_at, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending' RETURNING id`;
@@ -239,7 +227,7 @@ export async function skipQueued(db: RelationalStore, scope: ReadScope, runId: s
   return { applied: row !== null, displaced: row?.displaced ?? null };
 }
 
-export function pulledClaimPredicate(pull: PulledCandidate, admission: WriteAdmission): { sql: string; params: unknown[] } {
+function pulledClaimPredicate(pull: PulledCandidate, admission: WriteAdmission): { sql: string; params: unknown[] } {
   const money = admission.budget===undefined ? {sql:'1',params:[]} : budgetClaimPredicate(admission.budget,admission.now);
   return {
     sql: `EXISTS (SELECT 1 FROM (SELECT ? AS project_id, ? AS id, ? AS task, 'automatic' AS origin) agent_runs
@@ -266,7 +254,7 @@ export function workerClaimAdmission(candidate: ClaimCandidate, admission: Write
   return { sql: `${authority.sql} AND ${gate.sql}`, params: [...authority.params, ...gate.params] };
 }
 
-export function runnerClaimGate(worker: WorkerPrincipal, now: number): { sql: string; params: unknown[] } {
+function runnerClaimGate(worker: WorkerPrincipal, now: number): { sql: string; params: unknown[] } {
   if (worker.kind === 'member') return { sql: '1', params: [] };
   return {
     sql: `EXISTS (SELECT 1 FROM runners claimant WHERE claimant.id = ? AND claimant.state = 'enabled')
@@ -445,8 +433,6 @@ const skippedRunWrite = write<readonly unknown[], { id: string }>({ name: 'runs.
 
 export function ensureAgentStatement(...args: Parameters<typeof ensureAgentWrite>): PreparedStatement { return prepareBound(args[0], ensureAgentWrite(...args)); }
 
-export function claimedInputStatement(...args: Parameters<typeof claimedInputWrite>): PreparedStatement { return prepareBound(args[0], claimedInputWrite(...args)); }
-
 /** The guarded source write and every named assertion settle with the claim companions. */
 export async function commitWorkerClaim(db: RelationalStore, setup: readonly Bound[],
   claim: Bound<ClaimedRunRow, 'write'>, companions: Bound[], guards: readonly Bound[] = []): Promise<ClaimedRunRow | undefined> {
@@ -538,7 +524,7 @@ export const runnerAssignmentWrite = write<readonly unknown[], {id:string}>({nam
   `UPDATE runners SET last_assigned_at=? WHERE id=? AND EXISTS(SELECT 1 FROM agent_runs
     WHERE project_id=? AND id=? AND leased_runner_id=runners.id AND dispatched_by=?)`});
 
-export const ACTOR_MATCH_SQL = `(? IS NULL OR COALESCE(${DISPATCH_ACTOR_SQL}, ?) = ?)`;
+const ACTOR_MATCH_SQL = `(? IS NULL OR COALESCE(${DISPATCH_ACTOR_SQL}, ?) = ?)`;
 
 const ACTOR_FILTER_SQL = `AND ${ACTOR_MATCH_SQL}`;
 const actorParams = (actor?: string): Array<string | null> => [actor ?? null, actor ?? null, actor ?? null];

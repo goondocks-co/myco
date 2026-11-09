@@ -2,8 +2,15 @@ import { RunnerSignInUnavailable } from '../auth/runners.js';
 import type { RelationalStore } from '../core/adapters.js';
 import type { DashboardMember } from '../auth/identity-link.js';
 import { MAX_NAMED_PROJECTS, type ProjectSet, type ReadScope } from '../read/scope.js';
-import { existingProjects, listProjects, projectExists, sessionInScope as coreSessionInScope, type ProjectRow } from '../read/sessions.js';
-import { normalizeRemote, projectForRemote } from '../core/remotes.js';
+import {
+  sessions_existingProjects as existingProjects,
+  sessions_listProjects as listProjects,
+  sessions_projectExists as projectExists,
+  sessions_sessionInScope as coreSessionInScope,
+  type sessions_ProjectRow as ProjectRow,
+} from '../read/catalog/sessions.js';
+import { projectForRemote } from '../core/remotes.js';
+import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 
 /**
  * Who is asking. Today there is one owner and every project is theirs, so this is
@@ -15,7 +22,7 @@ import { normalizeRemote, projectForRemote } from '../core/remotes.js';
  * identity may administer, so a caller that holds only an id — an MCP principal,
  * say — passes what it has instead of inventing a role to satisfy a type.
  */
-export type Principal = Pick<DashboardMember, 'id'>;
+type Principal = Pick<DashboardMember, 'id'>;
 
 /** The scope a project id resolves to for this principal, or null when there is no such project it may see. A project the principal does not hold is indistinguishable from one that does not exist. */
 export async function resolveProjectScope(db: RelationalStore, _principal: Principal, projectId: string): Promise<ReadScope | null> {

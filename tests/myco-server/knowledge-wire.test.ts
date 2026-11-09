@@ -11,7 +11,14 @@
 import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/knowledge/wire.ts';
 import type { SporeAcrossRow, SporeFacets, SporeRow, getSpore, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
-import type { PlanAcrossRow, ProjectPlanRow, getPlan, pagePlansAcross, pageProjectPlans, planTotals } from '../../packages/myco-server/src/read/plans.ts';
+import type {
+  plans_PlanAcrossRow as PlanAcrossRow,
+  plans_ProjectPlanRow as ProjectPlanRow,
+  plans_getPlan as getPlan,
+  plans_pagePlansAcross as pagePlansAcross,
+  plans_pageProjectPlans as pageProjectPlans,
+  plans_planTotals as planTotals,
+} from '../../packages/myco-server/src/read/catalog/plans';
 
 /** True only when each type is assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;

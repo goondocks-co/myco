@@ -1,5 +1,4 @@
 import type { Bound } from '../db/index.js';
-import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { pricedAttemptInsert } from '../db/runs/claim-companions.js';
 import {isExecutionProfile} from '@goondocks/myco-shared/execution-profile';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
@@ -7,7 +6,7 @@ import type { ReadScope } from '../read/scope.js';
 import { workerLeaseAuthority, type WorkerPrincipal } from './worker-lease.js';
 import { seedForStage, BUDGET_ESTIMATE_PREFIX } from './budget-policy.js';
 
-export interface AttemptPrice { estimate: number; profileJson: string }
+interface AttemptPrice { estimate: number; profileJson: string }
 const RESTORE_CLAIM_FIELDS=new Set(['claimed_at','leased_by','machine_id','owner_kind','runner_id','estimate_usd','cost_usd','cost_source','profile_json']);
 /** Settlement order belongs to the destination Deployment's estimator cursor. */
 export const portableAttemptRow = (row:Record<string,unknown>):Record<string,unknown> => Object.fromEntries(Object.entries(row).filter(([key])=>key!=='settled_seq'));
@@ -78,4 +77,3 @@ export function restoreAttemptStatement(db: RelationalStore, row: Record<string,
     .bind(...columns.map(key=>row[key] ?? null));
 }
 
-export function recordPricedAttempt(...args: Parameters<typeof recordPricedAttemptWrite>): PreparedStatement { return prepareClaimCompanion(args[0], recordPricedAttemptWrite(...args)); }

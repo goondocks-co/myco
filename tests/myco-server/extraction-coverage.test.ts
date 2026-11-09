@@ -9,7 +9,6 @@ import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
-import { hasProcessedPrompts } from '@myco-server-worker/read/prompts.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -123,7 +122,7 @@ describe('served extraction coverage', () => {
       const next = await f.run();
       const rest = await next.serve([hole, tie]);
       expect(rest.map(p => p.promptId)).toEqual([hole.promptId, tie.promptId]);
-      expect(await hasProcessedPrompts(f.db, f.scope)).toBe(true);
+      expect(f.sqlite.query('SELECT COUNT(*) AS n FROM extraction_acks WHERE project_id = ?').get(f.scope.projectId)).toEqual({ n: 1 });
       expect(f.count()).toEqual({ n: 2 });
       f.assertCounts();
       expect(await next.complete([hole, tie])).toEqual({ completed: true, covered: 2 });

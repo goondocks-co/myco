@@ -7,14 +7,14 @@ import { commit, read, readSet, write } from '../index.js';
 export const SWITCH_STANDS_SQL = 'EXISTS (SELECT 1 FROM embedding_switches)';
 
 /** One stored embedding model switch row, as the switch capability reads it. */
-export interface SwitchRow {
+interface SwitchRow {
   id: string; provider: string; model: string; endpoint: string | null; model_key: string; from_model_key: string;
   estimated_tokens: number; estimated_sources: number; state: string; reason: string | null; retry_at: number | null; failures: number;
   progressed_at: number; started_at: number; started_by: string;
 }
 
 /** What a new switch records. */
-export interface SwitchStart {
+interface SwitchStart {
   id: string; provider: string; model: string; endpoint: string | null; modelKey: string; fromModelKey: string;
   estimatedTokens: number; estimatedSources: number; startedAt: number; startedBy: string;
 }
@@ -172,7 +172,7 @@ export interface PassedOverSource { projectId: string; projectName: string | nul
 /** Passed-over sources under `?1` (or every model) at `?2`, in Projects that are not archived, without a ready vector under `?3` when it is set. */
 const membership = `FROM (${currentPassedOver('json_array(?1)', '?2')}) o JOIN projects p ON p.project_id=o.project_id AND p.archived_at IS NULL
   WHERE (?3 IS NULL OR NOT EXISTS (SELECT 1 FROM embedding_source_state s WHERE s.project_id=o.project_id AND s.model_key=?3 AND s.type=o.type AND s.record_id=o.record_id AND s.state='ready'))`;
-export const SWITCH_PASSED_OVER_SHOWN = 20;
+const SWITCH_PASSED_OVER_SHOWN = 20;
 const passedPage = read<[string, number, string | null], PassedOverSource>({ name: 'embedding.switchPassedOverPage',
   sql: `SELECT f.project_id AS projectId,(SELECT name FROM projects WHERE project_id=f.project_id) AS projectName,f.type,f.record_id AS recordId,f.model_key AS modelKey,f.reason,f.at AS recordedAt,
     CASE f.type ${CURRENT_EMBEDDING_SOURCES.map(s => `WHEN '${s.type}' THEN (SELECT ${s.title} FROM ${s.table} WHERE project_id=f.project_id AND ${s.id}=f.record_id)`).join(' ')} END AS title

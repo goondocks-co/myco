@@ -28,7 +28,7 @@ import {
 } from './index.js';
 
 /** The format version this parser reads. The plugin writes it on every line. */
-export const PLUGIN_TRANSCRIPT_FORMAT = 1;
+const PLUGIN_TRANSCRIPT_FORMAT = 1;
 
 /** Raised on a line no version of this parser can read; the driver fails the segment. */
 export class UnknownPluginFormat extends Error {}

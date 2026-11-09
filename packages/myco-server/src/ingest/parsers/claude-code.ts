@@ -48,7 +48,7 @@ const namesPrompt = (v: Record<string, unknown>): boolean =>
   && blocksOf((v.message as Record<string, unknown> | undefined)?.content).every((b) => b.type !== 'tool_result');
 
 /** The envelope prefixes of the message shapes the manifest keys on a record's own `uuid` (`capture.prompts.shapes`). */
-export const AGENT_MESSAGE_SHAPES: ReadonlyArray<readonly [ClaudePromptShape, string]> = [
+const AGENT_MESSAGE_SHAPES: ReadonlyArray<readonly [ClaudePromptShape, string]> = [
   ['agent_message', '<agent-message'], ['teammate_message', '<teammate-message'],
 ];
 

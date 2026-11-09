@@ -4,7 +4,7 @@ import { currentEmbeddingSourceSql } from '../embedding-retirement.js';
 import { DELETION_RETRIES, RECEIPT } from '../../core/embedding/receipt-state.js';
 import type { VectorType } from '../../core/embedding/vectors.js';
 import { registeredObjectKeySql } from '../../core/blob-objects.js';
-import type { EmbeddingSource } from '../../read/embedding.js';
+import type { embedding_EmbeddingSource as EmbeddingSource } from '../../read/catalog/embedding.js';
 import { binaryOrder } from '../../read/scope.js';
 import { eligibleEmbeddingSource } from '../embedding-sources.js';
 import { commit, read, readSet, write } from '../index.js';
@@ -12,7 +12,7 @@ import { SOURCE_STATE_RECONCILE } from './state.js';
 import type { CatchupFamily } from '../projections/family.js';
 
 /** Source identities one initialization page of a model reads. */
-export const MODEL_INIT_PAGE = 256;
+const MODEL_INIT_PAGE = 256;
 /** The vector types embedding writes, in the order work rotates through them. */
 const TYPES = `('session','spore','plan')`;
 /** The `model_key` of a failure no model can read past. */
@@ -173,9 +173,9 @@ const rejournal = write<[number, string, string, string, number], { id: string }
   sql: 'UPDATE embedding_receipts SET updated_at=?1 WHERE project_id=?2 AND model_key=?3 AND id=?4 AND ready=0 AND attempt=?5 RETURNING id' });
 
 /** A source write's identity: its receipt and the source revision it read, with the instant its attempt starts. */
-export interface SourceTarget { projectId: string; model: string; id: string; type: string; recordId: string; revision: string; at: number }
+interface SourceTarget { projectId: string; model: string; id: string; type: string; recordId: string; revision: string; at: number }
 /** A journaled attempt: its place on the attempt clock, and the model epoch and provider configuration it runs under. */
-export interface SourceAttempt extends SourceTarget { seq: number; epoch: number; config: string }
+interface SourceAttempt extends SourceTarget { seq: number; epoch: number; config: string }
 
 /**
  * Journal an attempt before any external write, in one commit: it takes the next attempt from the clock, records the
@@ -247,7 +247,7 @@ const deletionConfirmed = write<[string, string, string, number]>({ name: 'embed
   sql: `DELETE FROM embedding_receipts WHERE project_id=?1 AND model_key=?2 AND id=?3 AND ready=${RECEIPT_DELETION_SENT} AND attempt=?4` });
 
 /** A deletion attempt: the receipt it claims, the state and time it read, and the instant the attempt starts. */
-export interface DeletionAttempt { projectId: string; model: string; id: string; ready: number; updatedAt: number; at: number }
+interface DeletionAttempt { projectId: string; model: string; id: string; ready: number; updatedAt: number; at: number }
 
 /** Claim a receipt for deletion before the delete is sent, under a fresh attempt; null when another attempt moved it first. */
 export async function claimReceiptDeletion(db: RelationalStore, d: DeletionAttempt): Promise<number | null> {
@@ -329,8 +329,8 @@ export async function nextDueSource(db: RelationalStore, projectId: string, mode
 /** The work rows a scheduling check covered for one Project, as `[model_key, kind]` pairs: what a cleared attention row must find clean. */
 export type CheckedWork = ReadonlyArray<readonly [string, 'embedding' | 'hubness']>;
 /** Projects one audit page reads, and the most attention rows one scheduling check reads. */
-export const WORK_AUDIT_PAGE = 50;
-export const WORK_ATTENTION_PAGE = 32;
+const WORK_AUDIT_PAGE = 50;
+const WORK_ATTENTION_PAGE = 32;
 
 interface AuditRow { scope: string; after: string; done: number; audited_at: number; cursor: string }
 interface CandidateRow { project_id: string; archived: number; gone: number; marked: number }
@@ -359,7 +359,7 @@ const clearAttention = write<[string, string]>({ name: 'embedding.workAttentionC
     WHERE w.revision<>w.checked_revision OR w.pending=1))` });
 
 /** Where the Deployment's scheduling stands: the audit frontier, and the Projects a check reads now. */
-export interface WorkCandidates {
+interface WorkCandidates {
   /** Projects to check, each once: attention first, then those whose wake time came, then the audit page. */
   projects: Array<{ projectId: string; retireOnly: boolean; gone: boolean; marked: boolean; audited: boolean }>;
   /** The audit page's last Project when an audit is under way, to advance after the page is checked; else null. */
@@ -449,7 +449,7 @@ export async function readyProviders(db: RelationalStore, models: readonly strin
 }
 
 /** A receipt due for retirement or a deletion retry. */
-export interface RetiringReceipt { id: string; model_key: string; type: VectorType; record_id: string; revision: string; ready: number; updated_at: number }
+interface RetiringReceipt { id: string; model_key: string; type: VectorType; record_id: string; revision: string; ready: number; updated_at: number }
 const RECEIPT_COLUMNS = 'r.id,r.model_key,r.type,r.record_id,r.revision,r.ready,r.updated_at';
 const queuedRetirement = read<[string, string], RetiringReceipt>({ name: 'embedding.retirementQueued',
   sql: `SELECT ${RECEIPT_COLUMNS} FROM embedding_retirement_queue q CROSS JOIN embedding_receipts r ON r.project_id=q.project_id AND r.model_key=q.model_key AND r.id=q.id

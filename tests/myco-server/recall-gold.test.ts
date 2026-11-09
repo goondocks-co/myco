@@ -23,7 +23,10 @@ import { cosineSimilarity, vectorId, vectorMatches, type StoredVector } from '@m
 import { Database } from 'bun:sqlite';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import type { EmbeddingSource, SemanticSearch } from '@myco-server-worker/read/embedding.js';
+import type {
+  embedding_EmbeddingSource as EmbeddingSource,
+  embedding_SemanticSearch as SemanticSearch,
+} from '@myco-server-worker/read/catalog/embedding.js';
 
 describe('model-relative prompt selection on frozen gold geometry', () => {
   const { gold, corpus, index, data } = loadRecallFixture();

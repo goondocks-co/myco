@@ -89,7 +89,7 @@ const queuedHeads = read<[], { projectId: string; task: string; count: number; o
   name: 'runs.fleetQueueHeads', sql: `SELECT project_id AS projectId,task,queued_count AS count,oldest_queued_at AS oldest,oldest_run_id AS id FROM task_runtime WHERE queued_count>0`,
 });
 /** Each Project/task/origin head supplies its exact queue size and oldest run. */
-export async function queueProjection(env: ServerEnv, fleet: readonly WorkerFleetRow[], now: number, selection = fleetSelectionContext(env)): Promise<FleetQueue> {
+async function queueProjection(env: ServerEnv, fleet: readonly WorkerFleetRow[], now: number, selection = fleetSelectionContext(env)): Promise<FleetQueue> {
   if (!(await admissionReady(env.db))) {
     const queued = await queuedWorkExists(env.db, { all: true });
     return { observedAt: now, state: 'building', count: queued ? null : 0, oldestAt: null,

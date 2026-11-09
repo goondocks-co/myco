@@ -25,8 +25,6 @@ import { admissionForTask } from './task-catalogue.js';
 /** Deterministic embedding work executes inside the Deployment. */
 export const RUNTIME_SERVED_TASKS: readonly string[] = ['embedding-reconcile'];
 
-export { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from './run-deadline.js';
-
 /** The capability a task needs turned on in a Project, or null for a task no capability gates. */
 export function capabilityOf(task: string): ProjectCapability | null {
   const gate = admissionForTask(task);
@@ -49,7 +47,7 @@ export interface OfferedHarness {
   profile?: ProfileCapability;
 }
 
-export const parseLeaf = (value: string | undefined): unknown => {
+const parseLeaf = (value: string | undefined): unknown => {
   if (value === undefined) return undefined;
   try { return JSON.parse(value); } catch { return undefined; }
 };
@@ -109,9 +107,9 @@ export async function workerPreference(env: Pick<ServerEnv, 'db'>): Promise<{ pr
  * leaves the run's environment unchanged; a server login reads only the
  * selected agent's own slot.
  */
-export type LoginPlan = { kind: 'worker-login' } | { kind: 'deployment'; slot: SecretSlotName } | { reason: string };
+type LoginPlan = { kind: 'worker-login' } | { kind: 'deployment'; slot: SecretSlotName } | { reason: string };
 
-export function loginPlan(harness: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices): LoginPlan {
+function loginPlan(harness: string, settings: ReadonlyMap<string, string>, choices?: StoredRunnerCredentialChoices): LoginPlan {
   const configured = profileSetting(settings.get(`agent.harnesses.${harness}.credential`));
   if (choices?.[harness] === null) return { reason: credentialUnavailable(harness) };
   const source = choices === undefined ? configured ?? 'worker-login' : choices[harness] === 'stored' ? 'deployment' : 'worker-login';
@@ -126,7 +124,7 @@ export function loginPlan(harness: string, settings: ReadonlyMap<string, string>
 /** The step that turns a login plan into what a run is handed, or the holder that keeps it from running. */
 export type LoginStep<L> = (harness: string, plan: Exclude<LoginPlan, { reason: string }>) => Promise<{ login: L } | { reason: string }>;
 
-export type Selected<L> = { harness: string; profile: ExecutionProfile; login: L };
+type Selected<L> = { harness: string; profile: ExecutionProfile; login: L };
 
 /** Availability checks return no credential material. */
 export const availableLogin = (available: (harness: string) => Promise<boolean>): LoginStep<true> => async (harness, plan) =>
@@ -161,7 +159,7 @@ export async function selectExecution<L>(task: string, offers: readonly OfferedH
 export interface FleetReport { offers: readonly OfferedHarness[]; capabilities: readonly string[]; runner?: boolean; credentialChoices?: StoredRunnerCredentialChoices }
 
 /** The login step each report resolves its selection through. */
-export type ReportLogin<L> = (report: FleetReport) => LoginStep<L>;
+type ReportLogin<L> = (report: FleetReport) => LoginStep<L>;
 
 /**
  * What `reports` would run `task` under at a claim now: the execution the first
@@ -184,7 +182,7 @@ export async function fleetSelection<L>(task: string, reports: readonly FleetRep
 }
 
 /** One worker heard from lately, as a preview reads it: its report, and which credential it reported under. */
-export interface PreviewReport extends FleetReport { credentialId: string }
+interface PreviewReport extends FleetReport { credentialId: string }
 
 /** One way a start now could run: the agent and profile, and the workers heard from lately that would run it so. */
 export interface PreviewExecution { harness: string; profile: ExecutionProfile; credentialIds: string[] }

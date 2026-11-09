@@ -20,7 +20,7 @@ export interface ReleaseOutcome {
 }
 
 /** What binds a blob candidate to the preparation whose evidence is being released: `agedAt` is set only for an aged-only release. */
-export interface PreparationGuard {
+interface PreparationGuard {
   preparationId: string; projectId: string; archiveKey: string; receiptKey: string | null; expiresAt: number; agedAt: number | null;
 }
 
@@ -28,7 +28,7 @@ export interface PreparationGuard {
  * What a bundle's candidates are recorded against: the preparation or the bundle, still standing. A caller that read the
  * references itself records through `recordObservedCandidates`.
  */
-export type CandidateGuard = PreparationGuard | { bundle: { projectId: string; bundleId: number; archiveKey: string } };
+type CandidateGuard = PreparationGuard | { bundle: { projectId: string; bundleId: number; archiveKey: string } };
 
 /** A registration an aged orphan sweep read: the generation it saw, and nothing newer. */
 export interface ObservedOrphan extends BlobRef { generation: string | null }
@@ -132,7 +132,7 @@ export function recordObservedCandidates(db: RelationalStore, observed: readonly
 }
 
 /** A retired chunk holder, as a caller read it. */
-export interface HolderRef { p: string; s: string; k: string; i: string }
+interface HolderRef { p: string; s: string; k: string; i: string }
 
 /** Statements that record the blobs of those holders that still stand, ahead of the statement removing them. */
 export function recordHolderCandidates(db: RelationalStore, holders: readonly HolderRef[], now: number): PreparedStatement[] {
@@ -141,7 +141,7 @@ export function recordHolderCandidates(db: RelationalStore, holders: readonly Ho
   return statements;
 }
 
-export interface BlobDecision extends ReleaseOutcome {
+interface BlobDecision extends ReleaseOutcome {
   /** Candidates this decision took out of the queue, released or not. */
   decided: number;
 }

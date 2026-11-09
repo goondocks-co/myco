@@ -7,8 +7,8 @@ import type { CatchupFamily } from '../projections/family.js';
  * maintained where the evidence is written, so a page or a total never walks a run's history. `run_bodies` records the
  * immutable blob a moved instruction or report body lives in; a row exists only once its bytes were verified.
  */
-export const RUN_EVIDENCE_PROJECTION = 'run_evidence';
-export const RUN_EVIDENCE_PHASES = ['evidenceRuns', 'evidenceAttempts'] as const;
+const RUN_EVIDENCE_PROJECTION = 'run_evidence';
+const RUN_EVIDENCE_PHASES = ['evidenceRuns', 'evidenceAttempts'] as const;
 export const RUN_EVIDENCE_READY_SQL = `(SELECT COUNT(*) FROM projection_catchup WHERE projection='${RUN_EVIDENCE_PROJECTION}' AND done=1)=${RUN_EVIDENCE_PHASES.length}`;
 
 const seedHead = `INSERT INTO run_head(project_id,run_id,attempts,calls,calls_failed)

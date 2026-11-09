@@ -14,7 +14,6 @@ export interface BudgetHolds {
   heldHeads: NonNullable<BudgetStatus['heldHeads']> | null;
 }
 
-export { readTaskBudgetHolds as readBudgetHolds } from './queue.js';
 import { readTaskBudgetHolds as readBudgetHolds } from './queue.js';
 
 /** Deployment-wide totals come from the same maintained snapshot claim admission compares against; a projection still catching up reports building, never zero. */

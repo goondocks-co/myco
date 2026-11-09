@@ -1,9 +1,21 @@
-import { renderCard, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
+import { NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
+import { renderCard } from '@goondocks/myco-shared/turn-card';
 import { afterEach, describe, expect, it } from 'bun:test';
 import { registeredObject, sqliteEnv } from './helpers/fixtures.js';
 import { registerBlob } from './helpers/d1.js';
-import { searchProject, sanitizeFtsQuery, SEARCH_TYPES } from '@myco-server-worker/read/search.js';
-import { pendingSearchBlobs, reconcileSearchIndex, SEARCH_CHUNK_CHARS, SEARCH_CHUNKS_PER_PASS } from '@myco-server-worker/core/search-index.js';
+import {
+  search_searchProject as searchProject,
+  search_sanitizeFtsQuery as sanitizeFtsQuery,
+} from '@myco-server-worker/read/catalog/search.js';
+import { SEARCH_TYPES } from '@goondocks/myco-shared/search-types';
+import {
+  reconcileSearchIndex,
+  SEARCH_CHUNK_CHARS,
+  SEARCH_CHUNKS_PER_PASS,
+} from '@myco-server-worker/core/search-index.js';
+import {
+  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
+} from '@myco-server-worker/read/catalog/search-index.js';
 import { BackupObjectsMissingError, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { runTick, POWER_THRESHOLDS } from '@myco-server-worker/core/tick.js';
 

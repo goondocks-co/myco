@@ -19,7 +19,7 @@ import { grantToolContext, runToolContext, toolContext, type ProtocolContext , u
 import { createProtocolServer } from './server.js';
 
 /** The refusal an `answered` route gives a body that is not JSON-RPC: the pipeline's shape, the `parse` classifier. */
-export function jsonRpcRefusal(reason: string, code: string, status: number): Response {
+function jsonRpcRefusal(reason: string, code: string, status: number): Response {
   return Response.json({ jsonrpc: '2.0', id: null, error: { code: -32000, message: reason, data: { code } } }, { status });
 }
 
@@ -46,7 +46,7 @@ export async function handleRunMcp(env: ServerEnv, ctx: RunContext): Promise<Res
 }
 
 /** One JSON-RPC body answered for one principal. */
-export async function answerMcp(ctx: ProtocolContext, body: string): Promise<Response> {
+async function answerMcp(ctx: ProtocolContext, body: string): Promise<Response> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);

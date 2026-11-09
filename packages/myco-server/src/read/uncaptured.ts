@@ -6,7 +6,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 
 /** One repository a machine could not capture. */
-export interface UncapturedRoot {
+interface UncapturedRoot {
   machineId: string;
   rootKey: string;
   member: { id: string; label: string | null };
@@ -20,7 +20,7 @@ export interface UncapturedRoot {
 }
 
 /** Whose repositories a read answers: every member's, or one member's own. */
-export type UncapturedScope = { all: true } | { all: false; memberId: string };
+type UncapturedScope = { all: true } | { all: false; memberId: string };
 
 const toRow = (row: Record<string, unknown>): UncapturedRoot => ({
   machineId: String(row.machine_id),

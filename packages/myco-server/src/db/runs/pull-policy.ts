@@ -20,7 +20,7 @@ const accepts = (project: string, task: string) => {
   const gate = admissionForTask(task);
   return gate?.kind === 'capability' ? capabilityOnSql(project,literal(gate.capability)) : projectAcceptsWorkSql(project);
 };
-export function learningWorkFrom(project:string,now:number|string,kind:'cards'|'learning',fresh:boolean):string {
+function learningWorkFrom(project:string,now:number|string,kind:'cards'|'learning',fresh:boolean):string {
   const ready=kind==='cards'?'card_ready_at':'learning_ready_at', pending=kind==='cards'?'pending_cards > 0':'eligible_at IS NOT NULL';
   if(!fresh)return `learning_sessions l INDEXED BY ${kind==='cards'?'idx_learning_cards_ready':'idx_learning_ready'}`;
   const day=typeof now==='number'?String(Math.floor(now/FRESH_LEARNING_MS)):`CAST(${now}/${FRESH_LEARNING_MS} AS INTEGER)`;

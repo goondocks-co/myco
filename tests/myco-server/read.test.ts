@@ -7,8 +7,19 @@ import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
-import { archiveProject, getSession, listProjects, listSessions, projectStats, renameProject, sessionDurationMs, unarchiveProject, SESSION_OCCURRED_AT } from '@myco-server-worker/read/sessions.js';
-import { activityFeed } from '@myco-server-worker/read/activity.js';
+import { archiveProject, renameProject } from '@myco-server-worker/db/storage/s2a3.js';
+import {
+  sessions_getSession as getSession,
+  sessions_listProjects as listProjects,
+  sessions_listSessions as listSessions,
+  sessions_projectStats as projectStats,
+  sessions_sessionDurationMs as sessionDurationMs,
+  sessions_SESSION_OCCURRED_AT as SESSION_OCCURRED_AT,
+} from '@myco-server-worker/read/catalog/sessions.js';
+import { unarchiveProject } from '@myco-server-worker/db/storage/projects.js';
+import {
+  activity_activityFeed as activityFeed,
+} from '@myco-server-worker/read/catalog/activity.js';
 
 function seedSessions(sqlite: import('bun:sqlite').Database) {
   sqlite.run(`INSERT OR REPLACE INTO projects (project_id, name, created_at) VALUES ('proj_1','One',1), ('proj_2','Two',2)`);
@@ -134,13 +145,6 @@ describe('read/sessions', () => {
     expect((await listProjects(db)).map((p) => p.projectId)).toEqual(['proj_2', 'proj_1']);
   });
 });
-
-
-
-
-
-
-
 
 const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 
@@ -268,7 +272,7 @@ function sessionPlan(sqlite: Database, sql: string): { index: string | null; sca
  * The statement is a literal: the read that issues it has not landed yet, and
  * this step exists so the index is in place when it arrives. It is copied from
  * that branch's `read/sessions.ts`, and the ordering expression — the whole of
- * what this index answers — is the one `read/activity.ts` already orders by
+ * what this index answers — is the one `read/catalog/activity.ts` already orders by
  * here, so the test below holds the same plan against a statement the module
  * itself executes.
  */

@@ -14,8 +14,10 @@ import { parserFor } from '@myco-server-worker/ingest/parsers/registry.js';
 import { claudeCodeParser } from '@myco-server-worker/ingest/parsers/claude-code.js';
 import { claudeRecordIdFor, promptOwners, type DerivedEvent, type ParsedLine, type ParserInput } from '@myco-server-worker/ingest/parsers/index.js';
 import {  rereadTranscripts  } from '@myco-server-worker/ingest/parse.js';
-import { sessionTurnContexts } from '@myco-server-worker/read/turns.js';
-import { readKpis } from '@myco-server-worker/read/kpis.js';
+import {
+  turns_sessionTurnContexts as sessionTurnContexts,
+} from '@myco-server-worker/read/catalog/turns.js';
+import { readKpis } from '@myco-server-worker/db/insights/kpis.js';
 import { identityRig, type IdentityRig } from './helpers/prompt-identity-rig.js';
 
 const FIXTURES = path.join(import.meta.dir, '..', 'fixtures', 'claude-siblings');

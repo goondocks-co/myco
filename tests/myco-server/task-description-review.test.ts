@@ -3,9 +3,9 @@ import worker from '@myco-server-worker/index.js';
 import { scheduleWords, descriptionProfile } from '@myco-server-worker/read/task-descriptions.js';
 import { OFFERABLE_PROFILE_HARNESSES } from '@goondocks/myco-shared/execution-profile';
 
-import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/harness.js';
+import { RUNTIME_SERVED_TASKS } from '@myco-server-worker/core/worker-selection.js';
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
-import { PRE_CONDITIONS, ACCELERATORS } from '@myco-server-worker/core/scheduled-tasks.js';
+import { PRE_CONDITIONS, ACCELERATORS } from '@myco-server-worker/core/schedule-rules.js';
 import { RUN_CLOSE_RULES } from '@myco-server-worker/core/run-postconditions.js';
 import { TASK_WORDS, TASK_ADMISSION, RETAINED_TASKS } from '@myco-server-worker/core/task-catalogue.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
@@ -42,7 +42,6 @@ it('runtime-served tasks describe their own surface rather than an agent run', a
     expect(answer.tasks.find((task) => task.task === 'embedding-reconcile')!.triggers).toEqual(['When the search index has pending work and Myco is idle or in use. At least 60 seconds between runs.']);
   } finally { f.sqlite.close(); }
 });
-
 
 it('resolves every offerable agent without a preference and preserves run hold reasons', () => {
   const profile = descriptionProfile('extract-curate', new Map());

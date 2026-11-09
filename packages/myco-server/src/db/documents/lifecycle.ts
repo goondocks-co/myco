@@ -181,14 +181,14 @@ export async function sessionLifecycleState(db: RelationalStore, project: string
   return rows[0]!.state;
 }
 
-export type LifecycleGate = { eventId: string; nonce: string };
+type LifecycleGate = { eventId: string; nonce: string };
 
 /** The publisher's own document turn can reopen a session no lifecycle event has touched. */
 export const ensureSessionLifecycle = (db: RelationalStore, project: string, session: string): PreparedStatement =>
   prepareBound(db, ensureRow.bind(project, session));
 
 /** Settles the session's end from its facts, or, while it builds, from its standing end and known turns. */
-export interface SessionEnd { project: string; session: string; requestedAt: number | null; endedAt: number; actor: string | null; gate: LifecycleGate }
+interface SessionEnd { project: string; session: string; requestedAt: number | null; endedAt: number; actor: string | null; gate: LifecycleGate }
 export const settleSessionEnd = (db: RelationalStore, { project, session, requestedAt, endedAt, actor, gate }: SessionEnd): PreparedStatement =>
   prepareBound(db, settleEnd.bind(project, session, requestedAt, gate.eventId, endedAt, actor, project, gate.eventId, gate.nonce));
 
@@ -202,7 +202,7 @@ export const settlePublishedTurn = (db: RelationalStore, project: string, sessio
 export const presentedDatesAfterEvent = (db: RelationalStore, project: string, session: string, gate: LifecycleGate): PreparedStatement =>
   prepareBound(db, presentedEvent.bind(project, session, project, gate.eventId, gate.nonce));
 
-export interface SegmentDates { project: string; session: string; gate: LifecycleGate; transcriptId: string; baseOffset: number }
+interface SegmentDates { project: string; session: string; gate: LifecycleGate; transcriptId: string; baseOffset: number }
 export const presentedDatesAfterSegment = (db: RelationalStore, { project, session, gate, transcriptId, baseOffset }: SegmentDates): PreparedStatement =>
   prepareBound(db, presentedSegment.bind(project, session, project, gate.eventId, gate.nonce, transcriptId, baseOffset));
 

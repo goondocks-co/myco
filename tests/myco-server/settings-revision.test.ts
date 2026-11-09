@@ -2,7 +2,9 @@ import { readSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { afterEach, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
-import { listProjects } from '@myco-server-worker/read/sessions.js';
+import {
+  sessions_listProjects as listProjects,
+} from '@myco-server-worker/read/catalog/sessions.js';
 import { settingsWriter, settingsRevisions, observedSettingsGuard, writeSwitchedEmbedding, CURATION_DAILY_LIMIT_LEAF } from '@myco-server-worker/core/settings.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';

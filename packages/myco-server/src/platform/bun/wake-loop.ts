@@ -18,7 +18,7 @@ export interface WakeLoop {
   stop(): Promise<void>;
 }
 
-export interface WakeLoopOptions {
+interface WakeLoopOptions {
   /** The longest the loop waits between wakes, whatever the tick answers. */
   floorMs: number;
   /** How soon `ensure` wakes. */

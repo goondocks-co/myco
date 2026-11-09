@@ -1,6 +1,6 @@
 /** Bounded byte collection from a stream reader, shared by every reader that holds a stream to a byte bound. */
 
-export type BoundedBytes = { ok: true; bytes: Uint8Array<ArrayBuffer> } | { ok: false };
+type BoundedBytes = { ok: true; bytes: Uint8Array<ArrayBuffer> } | { ok: false };
 
 /** The part of a stream reader collection reads through. Typed structurally: a runtime may add its own methods to the reader, and this needs only `read`. */
 export interface ChunkReader {

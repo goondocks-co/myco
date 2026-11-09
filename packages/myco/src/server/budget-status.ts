@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
-import { readBudgetStatus } from '@myco-server-worker/read/budget.js';
+import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
 import { budgetStatusLine, type BudgetStatus } from '@goondocks/myco-shared/budget-status';
 import { LocalVolume } from './local-volume.js';
 import type { LocalDeploymentPaths } from './local.js';

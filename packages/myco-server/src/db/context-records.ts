@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
 import type { ContextWrite } from '../core/context-writes.js';
-import { NOT_TOMBSTONED_PARAMS } from '../core/tombstones.js';
+import { NOT_TOMBSTONED_PARAMS } from './session-read-model.js';
 import { write } from './index.js';
 import { prepareBound } from './kernel/statement.js';
 

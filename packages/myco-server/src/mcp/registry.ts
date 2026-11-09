@@ -26,7 +26,7 @@ import type { AuthorizationDeclaration, Action, ResourceKind, SubjectKind } from
 export type ToolHandler = (input: ToolInput, ctx: ToolContext) => Promise<unknown>;
 export type RegistryEntry = ({ handler: ToolHandler } | { notServed: string }) & { authorization: AuthorizationDeclaration };
 
-export interface ToolEntry {
+interface ToolEntry {
   /** The op a call without one runs; null for a tool with no op concept. */
   defaultOp: string | null;
   ops: Record<string, RegistryEntry>;

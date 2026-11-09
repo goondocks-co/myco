@@ -20,16 +20,16 @@
  *   the session reads as Live through its receipts alone, and no instant of the Deployment's clock is ever set against
  *   ends in the member's.
  *
- * A session with an open turn reads as working (`read/sessions.ts`, `WORKING_CAP_MS`).
+ * A session with an open turn reads as working (`read/catalog/sessions.ts`, `WORKING_CAP_MS`).
  */
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { TURN_END_HEADER, TURN_KIND } from '@goondocks/myco-shared/member-protocol';
 
 /** The event kinds that end a turn: a response, and the session's end. A transcript segment ends one only when sent with `TURN_END_HEADER`. */
-export const TURN_END_KINDS: ReadonlySet<string> = new Set(['response', 'session.end']);
+const TURN_END_KINDS: ReadonlySet<string> = new Set(['response', 'session.end']);
 /** The kind that ends a turn only when its session's own turn-end hook sends it. */
-export const TURN_END_SEGMENT_KIND = 'transcript.segment';
+const TURN_END_SEGMENT_KIND = 'transcript.segment';
 export { TURN_END_HEADER };
 
 /** What the turn rules read of an event. */
@@ -83,7 +83,7 @@ export function turnStartedAtAsk(askedAt: number, nowMs: number): number | null 
 /**
  * Open a session's turn at `at`, on the machine that holds the session, when no turn end at or after `at` has reached
  * the Deployment: a stamp arriving after its own turn's end opens nothing. The session's recorded end is weighed where
- * the turn is read (`read/sessions.ts`): a turn older than it is no turn, and a session resumed after it is working
+ * the turn is read (`read/catalog/sessions.ts`): a turn older than it is no turn, and a session resumed after it is working
  * again, with its end left as it stands. A session the Deployment does not hold yet is left alone: its first turn opens
  * nothing.
  */

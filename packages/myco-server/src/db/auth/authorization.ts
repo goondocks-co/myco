@@ -6,9 +6,9 @@ import { RUN_COLUMNS } from '../runs/run-columns.js';
 import { commitNamed, read, type Bound } from '../index.js';
 
 export interface MemberAuthorityRow { id: string; role: string; revoked_at: number | null; owner: string | null }
-export interface CredentialAuthorityRow { member_id: string; owner: string | null }
-export interface MachineClaimRow { machine_id: string; member_id: string; owner: string | null }
-export interface RunAuthorityRow { id: string; dispatch_spec: string | null }
+interface CredentialAuthorityRow { member_id: string; owner: string | null }
+interface MachineClaimRow { machine_id: string; member_id: string; owner: string | null }
+interface RunAuthorityRow { id: string; dispatch_spec: string | null }
 
 const deployment = read<[], { value: string }>({ name: 'authz.deployment', sql: "SELECT value FROM schema_meta WHERE key='deployment_id'" });
 const ownership = read<[], { member_id: string | null }>({ name: 'authz.ownership', sql: 'SELECT member_id FROM deployment_ownership WHERE id=1' });

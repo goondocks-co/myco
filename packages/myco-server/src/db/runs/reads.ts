@@ -21,7 +21,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet, type Bound } from '../index.js';
 import { RUN_WRITE_EVENT } from './evidence.js';
 import { TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
-import { notTombstonedSql } from '../../core/tombstones.js';
+import { notTombstonedSql } from '../session-read-model.js';
 import { contextValue } from '../run-context.js';
 import type { ReadScope } from '../../read/scope.js';
 
@@ -30,7 +30,7 @@ export const OUTCOME_RUN_LIMIT = 20;
 /** The most spores either read lists; the total counts every one. */
 export const OUTCOME_SPORE_LIMIT = 10;
 /** The most sessions a run's reads list; the total counts every one. */
-export const RUN_READ_LIMIT = 50;
+const RUN_READ_LIMIT = 50;
 
 /** A spore as an outcome lists it: its line, never its body. */
 export interface OutcomeSpore {

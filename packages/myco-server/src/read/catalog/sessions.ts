@@ -7,10 +7,12 @@ import { inListChunks as sessions_import_inListChunks } from "../scope.js";
 import { page as sessions_import_page, clampLimit as sessions_import_clampLimit, decodeCursor as sessions_import_decodeCursor } from "../scope.js";
 import { decodeProjectCursor as sessions_import_decodeProjectCursor, projectPage as sessions_import_projectPage } from "../project-cursor.js";
 import {
-  firstPromptSql as sessions_import_firstPromptSql, PRESENTED_ENDED_AT as sessions_import_PRESENTED_ENDED_AT, PRESENTED_STARTED_AT as sessions_import_PRESENTED_STARTED_AT,
-  readSessionPage as sessions_import_readSessionPage, SESSION_OCCURRED_AT as sessions_import_SESSION_OCCURRED_AT,
-  SESSIONS_ACROSS_INDEX as sessions_import_SESSIONS_ACROSS_INDEX, SESSIONS_ACTIVE_INDEX as sessions_import_SESSIONS_ACTIVE_INDEX,
-  SESSIONS_WORKING_INDEX as sessions_import_SESSIONS_WORKING_INDEX, WORKING_CAP_MS as sessions_import_WORKING_CAP_MS,
+  firstPromptSql as sessions_import_firstPromptSql,
+  PRESENTED_ENDED_AT as sessions_import_PRESENTED_ENDED_AT,
+  PRESENTED_STARTED_AT as sessions_import_PRESENTED_STARTED_AT,
+  readSessionPage as sessions_import_readSessionPage,
+  SESSION_OCCURRED_AT as sessions_import_SESSION_OCCURRED_AT,
+  WORKING_CAP_MS as sessions_import_WORKING_CAP_MS,
 } from "../../db/sessions/browse.js";
 import type { Page as sessions_import_Page } from "../scope.js";
 import type { ProjectSet as sessions_import_ProjectSet } from "../scope.js";
@@ -103,9 +105,6 @@ interface sessions_SessionCounts {
   attachments: number;
 }
 
-/** How much of the first prompt the label rule reads. */
-const sessions_FIRST_PROMPT_CHARS = 160;
-
 /** The longest label the fallback rule produces. */
 const sessions_LABEL_MAX_CHARS = 80;
 
@@ -142,9 +141,6 @@ function sessions_relatedSessionLabel(title: string | null, firstPrompt: string 
 
 const sessions_PRESENTED_STARTED_AT = sessions_import_PRESENTED_STARTED_AT;
 const sessions_PRESENTED_ENDED_AT = sessions_import_PRESENTED_ENDED_AT;
-const sessions_SESSIONS_ACROSS_INDEX = sessions_import_SESSIONS_ACROSS_INDEX;
-const sessions_SESSIONS_ACTIVE_INDEX = sessions_import_SESSIONS_ACTIVE_INDEX;
-const sessions_SESSIONS_WORKING_INDEX = sessions_import_SESSIONS_WORKING_INDEX;
 const sessions_WORKING_CAP_MS = sessions_import_WORKING_CAP_MS;
 
 /** A deleted session is absent from session reads, project counts, and latest activity. */
@@ -214,10 +210,6 @@ async function sessions_listProjects(db: sessions_import_RelationalStore, opts: 
   }));
 }
 
-type sessions_ArchiveOutcome = 'archived' | 'absent' | 'already_archived';
-
-type sessions_UnarchiveOutcome = import('../../db/storage/projects.js').UnarchiveOutcome;
-
 /** Sessions ordered by presented start and session ID. Refinement can move rows between keyset pages. */
 interface sessions_SessionFilters {
   branch?: string;
@@ -259,7 +251,6 @@ interface sessions_SessionFilters {
    */
   fidelity?: 'full' | 'any';
 }
-
 
 /**
  * When a session happened, for ordering: its own start where it has one, and
@@ -598,4 +589,37 @@ export function prepareRestoredSessionUnread(db: sessions_import_RelationalStore
   WHERE (project_id, session_id) IN (SELECT json_extract(value, '$.projectId'), json_extract(value, '$.sessionId') FROM json_each(?))`).bind(sessions);
 }
 
-export { type sessions_ProjectRow, type sessions_SessionRow, type sessions_ProjectStats, type sessions_SessionCounts, sessions_FIRST_PROMPT_CHARS, sessions_LABEL_MAX_CHARS, sessions_UNTITLED_SESSION_LABEL, sessions_sessionLabel, sessions_relatedSessionLabel, sessions_PRESENTED_STARTED_AT, sessions_PRESENTED_ENDED_AT, sessions_SESSIONS_ACROSS_INDEX, sessions_SESSIONS_ACTIVE_INDEX, sessions_SESSIONS_WORKING_INDEX, sessions_WORKING_CAP_MS, sessions_listProjectsSql, sessions_listProjects, type sessions_ArchiveOutcome, type sessions_UnarchiveOutcome, type sessions_SessionFilters, sessions_SESSION_OCCURRED_AT, sessions_listSessions, sessions_listSessionsAcross, sessions_getSession, sessions_sessionDurationMs, type sessions_SessionLifecycle, sessions_sessionLifecycle, sessions_sessionCounts, sessions_sessionCountsFor, type sessions_SessionSummaryRow, sessions_listSessionSummaries, type sessions_SessionAcrossRow, sessions_listSessionSummariesAcross, sessions_projectStats, sessions_projectExists, sessions_existingProjects, sessions_sessionInScope, sessions_sessionHeldByMachine, sessions_projectHoldsSession, sessions_sessionCarriesTitle, sessions_heldSessionIds, sessions_sessionsOwnedByImporter, sessions_sessionsWithImportedPrompts, sessions_FIRST_PROMPT_SQL, sessions_firstPromptSql };
+export {
+  type sessions_ProjectRow,
+  type sessions_SessionRow,
+  sessions_sessionLabel,
+  sessions_relatedSessionLabel,
+  sessions_PRESENTED_STARTED_AT,
+  sessions_PRESENTED_ENDED_AT,
+  sessions_WORKING_CAP_MS,
+  sessions_listProjectsSql,
+  sessions_listProjects,
+  type sessions_SessionFilters,
+  sessions_SESSION_OCCURRED_AT,
+  sessions_listSessions,
+  sessions_listSessionsAcross,
+  sessions_getSession,
+  sessions_sessionDurationMs,
+  sessions_sessionLifecycle,
+  sessions_sessionCounts,
+  sessions_listSessionSummaries,
+  type sessions_SessionAcrossRow,
+  sessions_listSessionSummariesAcross,
+  sessions_projectStats,
+  sessions_projectExists,
+  sessions_existingProjects,
+  sessions_sessionInScope,
+  sessions_sessionHeldByMachine,
+  sessions_projectHoldsSession,
+  sessions_sessionCarriesTitle,
+  sessions_heldSessionIds,
+  sessions_sessionsOwnedByImporter,
+  sessions_sessionsWithImportedPrompts,
+  sessions_FIRST_PROMPT_SQL,
+  sessions_firstPromptSql,
+};

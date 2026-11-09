@@ -8,7 +8,7 @@ export const RETENTION_CANDIDATES_SQL = `SELECT project_id AS projectId, id FROM
   ORDER BY COALESCE(completed_at, started_at) ASC, id ASC LIMIT ?2`;
 
 /** The most child rows one retention pass deletes, so no statement of it outlives the hosted store's query bound. */
-export const RETENTION_CHILD_ROWS = 10_000;
+const RETENTION_CHILD_ROWS = 10_000;
 
 interface RunRef { projectId: string; id: string }
 const eligibleRuns = read<[cutoff: number, limit: number], RunRef>({ name: 'runs.retireEligible', sql: RETENTION_CANDIDATES_SQL });

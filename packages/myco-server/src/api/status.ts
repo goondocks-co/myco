@@ -1,5 +1,5 @@
 import { readDocumentStatus } from '../db/documents/status.js';
-import { readBudgetStatus } from '../read/budget.js';
+import { readBudgetStatus } from '../db/runs/budget.js';
 import { learningStatusLine, readLearningStatus } from '../core/learning-sessions.js';
 import type { CapabilityStatus, ServerEnv } from '../core/adapters.js';
 import { pendingTranscripts } from '../ingest/parse.js';
@@ -8,15 +8,17 @@ import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { latestMeasurements, type MeasurementName, type StoreMeasurement } from '../core/store-maintenance.js';
 import { storedBytes } from '../ingest/live-credential.js';
-import { transcriptRetentionFact, type RetentionFact } from '../ingest/retention.js';
-import { databaseReadStatus, schemaVersion, statusMetadata } from '../read/meta.js';
+import { transcriptRetentionFact } from '../ingest/retention.js';
+import { databaseReadStatus, schemaVersion } from '../read/meta.js';
+import { statusMetadata } from '../db/documents/failure-head.js';
 import { emit, readFailureTelemetry } from '../telemetry.js';
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '../core/attention-state.js';
 import { listVisibleProjects } from './scope.js';
-import { readFleetProjection, fleetTaskReason, fleetSelectionContext } from '../read/fleet.js';
+import { readFleetProjection, fleetTaskReason, fleetSelectionContext } from '../db/runs/fleet.js';
 import { claimSettings } from '../core/worker-selection.js';
 import { readDispatchLimits } from '../core/limits.js';
-import { CARD_TASK, EXTRACTION_TASK } from '../core/task-catalogue.js';
+import { EXTRACTION_TASK } from '../core/task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { CONTACT_RECENT_MS } from '../core/worker-contacts.js';
 import { ok } from './scope.js';
 import { captureRecency } from '../read/capture.js';
@@ -34,7 +36,7 @@ import { provisionedHarnessHealth } from '../core/harness-health.js';
  * Deployment with no platform descriptor reports nothing rather than claiming
  * capability it cannot demonstrate.
  */
-export function deploymentCapabilities(env: ServerEnv): CapabilityStatus[] {
+function deploymentCapabilities(env: ServerEnv): CapabilityStatus[] {
   return env.platform?.capabilities() ?? [];
 }
 
@@ -43,11 +45,6 @@ const deploymentTarget = (env: ServerEnv): string | null => env.platform?.name ?
 
 /** The schema this server expects beside the one its store holds; `found` is null when the store answered none. */
 const schemaCheck = (found: number | null) => ({ expected: SERVER_SCHEMA_VERSION, found, matches: found === SERVER_SCHEMA_VERSION });
-
-/** Those capabilities this environment cannot currently perform. */
-export function absentCapabilities(env: ServerEnv): CapabilityStatus[] {
-  return deploymentCapabilities(env).filter((c) => !c.present);
-}
 
 /**
  * Binding and schema sanity for the owner.
@@ -122,7 +119,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
 }
 
 /** A byte count this Deployment measured, or why it could not. */
-export type ByteFact = { state: 'measured'; value: number; unit: 'bytes' } | { state: 'unavailable'; reason: string };
+type ByteFact = { state: 'measured'; value: number; unit: 'bytes' } | { state: 'unavailable'; reason: string };
 
 const bytes = (value: number): ByteFact => ({ state: 'measured', value, unit: 'bytes' });
 
@@ -143,8 +140,6 @@ async function storageFacts(env: ServerEnv): Promise<StorageFact[]> {
     ...recorded.filter((m) => !STORAGE_NAMED.includes(m.name)),
   ];
 }
-
-export type { RetentionFact };
 
 /**
  * `POST /members/status`: the Deployment's health as a member credential reads it, over a body that is the empty

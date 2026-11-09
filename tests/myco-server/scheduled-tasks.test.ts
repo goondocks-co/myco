@@ -7,7 +7,22 @@ import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
-import { ACTIVE_WINDOW_DAYS_DEFAULT, CLOCK_ACTOR, COLD_PROJECT_THRESHOLD_DAYS_DEFAULT, decideTask as decide, effectiveIntervalSeconds, PRE_CONDITIONS, readScheduleFacts, resolveSchedule, runScheduledTasks as runClock, scheduledTasks, scheduleFor, scheduleLeaves } from '@myco-server-worker/core/scheduled-tasks.js';
+import {
+  CLOCK_ACTOR,
+  decideTask as decide,
+  readScheduleFacts,
+  runScheduledTasks as runClock,
+} from '@myco-server-worker/core/scheduled-tasks.js';
+import {
+  ACTIVE_WINDOW_DAYS_DEFAULT,
+  COLD_PROJECT_THRESHOLD_DAYS_DEFAULT,
+  effectiveIntervalSeconds,
+  PRE_CONDITIONS,
+  resolveSchedule,
+  scheduledTasks,
+  scheduleFor,
+  scheduleLeaves,
+} from '@myco-server-worker/core/schedule-rules.js';
 import { TASK_SCHEDULE, type TaskSchedule } from '@myco-server-worker/core/jobs.js';
 import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
 import { skipContext } from '@myco-server-worker/core/runs.js';
@@ -61,7 +76,6 @@ function fixture(opts: { bound?: boolean } = {}) {
   capability('proj_2', 'cortex', true);
   return { ...e, env, launches, setting, receipt, capability, runs };
 }
-
 
 function scheduledFixture() {
   const f = fixture();

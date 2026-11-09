@@ -5,10 +5,10 @@ import { MAX_PROJECTS } from '../../constants.js';
 import { emit } from '../../telemetry.js';
 
 export const PROJECT_NAME_MAX = 200;
-export const AUTO_CREATE_LEAF = 'capture.auto_create_projects';
+const AUTO_CREATE_LEAF = 'capture.auto_create_projects';
 const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 export type ProjectCreator = { kind: 'member'; memberId: string } | { kind: 'operator' };
-export type ProjectAdmission =
+type ProjectAdmission =
   | { resolved: true; projectId: string; name: string; created: boolean; archived: boolean }
   | { resolved: false; reason: 'invalid_field' | 'auto_create_off' | 'refused' };
 
@@ -40,7 +40,7 @@ const held = read<[string, string | null], { projectId: string; name: string; ar
   SELECT project_id AS projectId,name,archived_at AS archivedAt FROM projects
   WHERE project_id=CASE WHEN ?2 IS NULL THEN ?1 ELSE (SELECT project_id FROM project_remotes WHERE remote=?2) END`,
 });
-export const PROJECT_LIMIT = refusalCode('project_limit');
+const PROJECT_LIMIT = refusalCode('project_limit');
 const restoreCapacity = assertion<[string]>({
   name: 'storage.projectRestoreCapacity',
   refusal: PROJECT_LIMIT,
@@ -57,7 +57,7 @@ const exists = read<[string], { project_id: string }>({
   name: 'storage.projectExistsForRestore',
   sql: 'SELECT project_id FROM projects WHERE project_id=?',
 });
-export type UnarchiveOutcome = 'restored' | 'absent' | 'not_archived'
+type UnarchiveOutcome = 'restored' | 'absent' | 'not_archived'
   | { reason: 'project_limit'; active: number; limit: number };
 export async function unarchiveProject(db: RelationalStore, projectId: string): Promise<UnarchiveOutcome> {
   try {

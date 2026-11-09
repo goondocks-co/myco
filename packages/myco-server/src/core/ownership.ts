@@ -66,7 +66,7 @@ export async function transferOwnership(db: RelationalStore, actor: string, cand
   return ownershipPreview(db);
 }
 
-export interface MemberRoleOutcome { memberId: string; role: MemberRole; roleRevision: string }
+interface MemberRoleOutcome { memberId: string; role: MemberRole; roleRevision: string }
 
 /**
  * Role changes and their immutable receipts share one batch, with authorization and recovery checked at the write.

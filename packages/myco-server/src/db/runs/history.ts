@@ -19,7 +19,6 @@ import { WORK_HISTORY_READY_SQL, WORK_TASKS, WORK_WINDOW_SPANS } from './history
 import { failureThreshold, unresolvedFailure } from './outcomes.js';
 import { runNotRetiring } from './evidence-schema.js';
 
-export const OUTCOME_TASKS: readonly string[] = WORK_TASKS;
 /** A window read by supported UTC days, its end excluded. */
 export interface UtcWindow { since: number; until: number; firstDay: number; lastDay: number; spanDays: number }
 export const DAY_MS = 86_400_000;
@@ -42,7 +41,6 @@ const bySet = <T>(build: (all: boolean, tag: string) => T): [T, T] => [build(tru
 const forSet = <T>(pair: [T, T], set: ProjectSet): T => pair[set.all ? 0 : 1];
 
 const readiness = read<[], { history: number; admission: number }>({ name: 'runs.workReadiness', sql: `SELECT ${WORK_HISTORY_READY_SQL} AS history,${RUN_ADMISSION_READY_SQL} AS admission` });
-export interface WorkReadiness { history: boolean; admission: boolean }
 /** Whether the rollups cover history yet: a timeline read answers `building` until they do, never a partial page. */
 export async function workHistoryReady(db: RelationalStore): Promise<boolean> {
   const [rows] = await readSet(db, readiness.bind());
@@ -163,10 +161,10 @@ const awaiting = read<[string], Row>({ name: 'runs.awaitingWorker', sql: `SELECT
 export const awaitingRow = async (db: RelationalStore, runtimeServed: readonly string[]): Promise<Row> => (await readSet(db, awaiting.bind(JSON.stringify(runtimeServed))))[0][0] ?? {};
 
 /** The run list's filters; a set filter narrows a page before its cursor applies. */
-export interface RunListFilters { status?: string; task?: string; agentId?: string; since?: number; until?: number }
-export interface RunListCursor { at: number; id: string }
-export const LIST_ORDER = 'COALESCE(queued_at, started_at)';
-export const WINDOW_ORDER = 'COALESCE(completed_at, queued_at, started_at)';
+interface RunListFilters { status?: string; task?: string; agentId?: string; since?: number; until?: number }
+interface RunListCursor { at: number; id: string }
+const LIST_ORDER = 'COALESCE(queued_at, started_at)';
+const WINDOW_ORDER = 'COALESCE(completed_at, queued_at, started_at)';
 const COLUMNS = `id, agent_id, task, status, provider, model, usage_data,
   ${runResultSql('agent_runs')} AS result,
   ${requestedProfileValue()} AS requested_profile,

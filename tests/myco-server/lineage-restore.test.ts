@@ -8,7 +8,10 @@ import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { BACKUP_FORMAT, BACKUP_TABLES, restoreArtifact } from '@myco-server-worker/core/backup.js';
-import { LINEAGE_MAX_NODES, sessionLineage } from '@myco-server-worker/read/lineage.js';
+import {
+  lineage_LINEAGE_MAX_NODES as LINEAGE_MAX_NODES,
+  lineage_sessionLineage as sessionLineage,
+} from '@myco-server-worker/read/catalog/lineage.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';

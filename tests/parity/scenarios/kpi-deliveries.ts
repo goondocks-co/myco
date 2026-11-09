@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { lit, type ParityScenario } from '../harness.ts';
 import type { AttentionAnswer } from '@myco-server-worker/core/attention.js';
-import type { KpiReport } from '@myco-server-worker/read/kpis.js';
+import type { KpiReport } from '@myco-server-worker/db/insights/kpis.js';
 
 /** Delivery hints place receipts independently of selection and transcript progress on both stores. */
 export const kpiDeliveries: ParityScenario = {

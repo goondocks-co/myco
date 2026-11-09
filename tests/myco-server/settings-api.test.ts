@@ -1,6 +1,6 @@
 import { TASK_SCHEDULE } from '@myco-server-worker/core/jobs.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
+import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 /**
  * The Deployment Settings surface (#915 L4), through the deployed entry.
@@ -473,7 +473,6 @@ describe('every Deployment leaf, the way the dashboard writes it', () => {
     expect(await dispatch()).toMatchObject({ error: 'capability_off' });
   });
 });
-
 
 it('surfaces ignored task fields, preserves them during sibling edits, and clears the whole document on reset', async () => {
   const e = env();

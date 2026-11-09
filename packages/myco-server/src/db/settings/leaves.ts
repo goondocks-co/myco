@@ -2,8 +2,11 @@ import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-co
 import type { RelationalStore } from '../../core/adapters.js';
 import type { AdmittedSettingsChange } from '../../core/settings.js';
 import type { EmbeddingSwitch } from '../../core/embedding/switch-store.js';
-import { SWITCH_STANDS_SQL } from '../../core/embedding/switch-store.js';
-import { SWITCH_COMPLETION_SQL, switchCompletionParams } from '../embeddings/switch.js';
+import {
+  SWITCH_STANDS_SQL,
+  SWITCH_COMPLETION_SQL,
+  switchCompletionParams,
+} from '../embeddings/switch.js';
 import { assertion, commit, read, readSet, refusalCode, refused, write, type Bound } from '../index.js';
 import { SETTINGS_REVISION_CONFLICT } from '../meta/settings-observation.js';
 
@@ -29,8 +32,8 @@ const states = read<[scope: string, leaves: string], SettingState>({ name: 'sett
   WHERE ?1<>''` });
 const revisions = read<[scope: string], { leaf: string; revision: number }>({ name: 'settings.revisions', sql:
   'SELECT leaf,revision FROM setting_revisions WHERE scope=?' });
-export const SETTINGS_PROJECT_INACTIVE = refusalCode('settings_project_inactive');
-export const SETTINGS_EMBEDDING_CONFLICT = refusalCode('settings_embedding_conflict');
+const SETTINGS_PROJECT_INACTIVE = refusalCode('settings_project_inactive');
+const SETTINGS_EMBEDDING_CONFLICT = refusalCode('settings_embedding_conflict');
 const unchanged = assertion<[scope: string, expected: string]>({ name: 'settings.unchanged', refusal: SETTINGS_REVISION_CONFLICT, when: `NOT EXISTS (SELECT 1 FROM json_each(?2) expected
     WHERE COALESCE((SELECT revision FROM setting_revisions WHERE scope=?1 AND leaf=expected.key),0)<>expected.value)` });
 const active = assertion<[project: string]>({ name: 'settings.activeProject', refusal: SETTINGS_PROJECT_INACTIVE, when: `EXISTS(SELECT 1 FROM projects WHERE project_id=? AND archived_at IS NULL)` });

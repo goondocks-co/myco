@@ -20,7 +20,9 @@ import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { turnStartedAt } from '@myco-server-worker/ingest/turns.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
-import { WORKING_CAP_MS } from '@myco-server-worker/read/sessions.js';
+import {
+  sessions_WORKING_CAP_MS as WORKING_CAP_MS,
+} from '@myco-server-worker/read/catalog/sessions.js';
 import { MAX_CLOCK_SKEW_MS } from '@myco-server-worker/constants.js';
 import { blobPost, envelope, memberHeaders, memberPost, recordingDeferred, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';

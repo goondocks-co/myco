@@ -38,7 +38,7 @@ function importSpecifiers(source: string): string[] {
 }
 
 /** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
-const CORE_MODULES = ['budget.ts', 'accounting.ts', 'activity.ts', 'canopy.ts', 'capture.ts', 'blobs.ts', 'children.ts', 'fleet.ts', 'meta.ts', 'plans.ts', 'prompts.ts', 'processed.ts', 'project-cursor.ts', 'hook-placement.ts', 'repository-requirements.ts', 'run-outcome.ts', 'runs.ts', 'scope.ts', 'search.ts', 'credentials.ts', 'document-catalog.ts', 'document-status.ts', 'embedding.ts', 'extraction-coverage.ts', 'extraction-origins.ts', 'kpis.ts', 'legacy-history.ts', 'lineage.ts', 'machines.ts', 'material-readiness.ts', 'session-activity.ts', 'session-artifacts.ts', 'session-commits.ts', 'session-files.ts', 'sessions.ts', 'task-descriptions.ts', 'task-start.ts', 'transcript.ts', 'turns.ts', 'uncaptured.ts', 'catalog/activity.ts', 'catalog/children.ts', 'catalog/embedding.ts', 'catalog/extraction-coverage.ts', 'catalog/hook-placement.ts', 'catalog/injection-served-items.ts', 'catalog/injection.ts', 'catalog/learning-sessions.ts', 'catalog/lineage.ts', 'catalog/plans.ts', 'catalog/processed.ts', 'catalog/release-provenance.ts', 'catalog/search-index.ts', 'catalog/search.ts', 'catalog/session-activity.ts', 'catalog/sessions.ts', 'catalog/shared.ts', 'catalog/turns.ts', 'work.ts', 'work-now.ts'] as const;
+const CORE_MODULES = ['accounting.ts', 'canopy.ts', 'capture.ts', 'blobs.ts', 'meta.ts', 'plans.ts', 'processed.ts', 'project-cursor.ts', 'hook-placement.ts', 'repository-requirements.ts', 'run-outcome.ts', 'runs.ts', 'scope.ts', 'credentials.ts', 'document-catalog.ts', 'extraction-origins.ts', 'legacy-history.ts', 'machines.ts', 'material-readiness.ts', 'session-artifacts.ts', 'session-commits.ts', 'session-files.ts', 'task-descriptions.ts', 'task-start.ts', 'transcript.ts', 'uncaptured.ts', 'catalog/activity.ts', 'catalog/children.ts', 'catalog/embedding.ts', 'catalog/hook-placement.ts', 'catalog/injection-served-items.ts', 'catalog/injection.ts', 'catalog/learning-sessions.ts', 'catalog/lineage.ts', 'catalog/plans.ts', 'catalog/processed.ts', 'catalog/release-provenance.ts', 'catalog/search-index.ts', 'catalog/search.ts', 'catalog/session-activity.ts', 'catalog/sessions.ts', 'catalog/shared.ts', 'catalog/turns.ts', 'work.ts', 'work-now.ts'] as const;
 
 const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//, /\/ingest\//];
 /** The one ingest module a read may name: the wire's kind catalogue, pure data — never the write path beside it. */
@@ -46,7 +46,7 @@ const ADMITTED_IMPORT = [/\/ingest\/kinds\.js$/];
 
 /** The secret store exposes only boolean presence and agent-login availability to reads. */
 const SECRET_STORE = join(SRC, 'core', 'secrets.ts');
-const SECRET_PRESENCE = new Set(['secretReadable', 'secretStored', 'harnessCredentialAvailable', 'harnessCredentialAvailability']);
+const SECRET_PRESENCE = new Set(['secretReadable', 'harnessCredentialAvailable', 'harnessCredentialAvailability']);
 /** What opens a stored secret: a read reaching any of these could hand a decrypted login to a dashboard. */
 const OPENS_SECRET = /\b(?:openHarnessCredential|openProviderCredential|deploymentSecretStore)\s*\(|crypto\.subtle\.decrypt\b/;
 
@@ -252,7 +252,7 @@ describe('read layer', () => {
     // core/ownership.ts owns the owner singleton, member roles and their audit receipts.
     // core/restore-authorization.ts guards every restore batch with current actor authority.
     // core/restore-rows.ts admits session rows and guards their tombstones across restore writes.
-    // core/transcript-ranges.ts owns hot/archive selection and the removal of archived hot ranges.
+    // db/documents/ranges.ts owns hot/archive selection and the removal of archived hot ranges.
     // core/raw-claims.ts owns raw claim receipts and restore revision reservations.
     // core/raw-backfill.ts owns bounded provenance snapshots and their atomic checkpoint.
     // Authorization resolvers read local identity, liveness and resource evidence.

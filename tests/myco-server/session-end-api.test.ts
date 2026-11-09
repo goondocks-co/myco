@@ -6,7 +6,9 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import { listReadyTitleSessions } from '@myco-server-worker/read/children.js';
+import {
+  children_listReadyTitleSessions as listReadyTitleSessions,
+} from '@myco-server-worker/read/catalog/children.js';
 import { endSession } from '@myco-server-worker/core/session-end.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';

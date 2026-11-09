@@ -27,7 +27,7 @@ import { removableAdministratorSql, deploymentOwnerSql } from '../core/ownership
 import { revokeLinkKeysOfMember } from './identity-link.js';
 import { revokeCredentialsOfMember } from './tokens.js';
 import { clearMemberUncapturedStatement } from '../ingest/uncaptured.js';
-import { asMemberRole, isAdmin, type MemberRole } from './roles.js';
+import { asMemberRole, type MemberRole } from './roles.js';
 import { memberWriteOutcome } from './member-write-refusal.js';
 
 export interface MemberRow {
@@ -124,18 +124,12 @@ export function identityBehindCredentialStatement(db: RelationalStore, tokenId: 
 }
 
 /** The role a member holds, or null when the Deployment holds no such member. */
-export async function memberRole(db: RelationalStore, memberId: string): Promise<MemberRole | null> {
+async function memberRole(db: RelationalStore, memberId: string): Promise<MemberRole | null> {
   const row = await db.prepare(`SELECT role FROM members WHERE id = ?`).bind(memberId).first<{ role: string }>();
   return row === null ? null : asMemberRole(row.role);
 }
 
-/** Whether `memberId` is a live admin of this Deployment. */
-export async function isLiveAdmin(db: RelationalStore, memberId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT role FROM members WHERE id = ? AND revoked_at IS NULL`).bind(memberId).first<{ role: string }>();
-  return row !== null && isAdmin(asMemberRole(row.role) ?? 'member');
-}
-
-export type MemberState = 'absent' | 'live' | 'revoked';
+type MemberState = 'absent' | 'live' | 'revoked';
 
 export async function memberState(db: RelationalStore, memberId: string): Promise<MemberState> {
   const row = await db.prepare(`SELECT revoked_at FROM members WHERE id = ?`).bind(memberId).first<{ revoked_at: number | null }>();
@@ -143,8 +137,8 @@ export async function memberState(db: RelationalStore, memberId: string): Promis
   return row.revoked_at === null ? 'live' : 'revoked';
 }
 
-export type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member' | 'last_admin' | 'active_owner' | 'not_owner' | 'system_member';
-export type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMemberRefusal };
+type RevokeMemberRefusal = 'absent' | 'already_revoked' | 'last_member' | 'last_admin' | 'active_owner' | 'not_owner' | 'system_member';
+type RevokeMemberResult = { ok: true } | { ok: false; reason: RevokeMemberRefusal };
 
 /**
  * Revokes a member and everything live that is theirs, in one transaction.

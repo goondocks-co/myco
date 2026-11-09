@@ -17,8 +17,3 @@ export function queueRetirementSql(where: string): string {
       AND ${staleReceiptSql('r')};`;
 }
 
-/** A safety page records only a retained model's stale identities, without changing admission's source revision. */
-export function queueRetirementStatement(): string {
-  return `INSERT OR IGNORE INTO embedding_retirement_queue(project_id,model_key,id,updated_at)
-    SELECT r.project_id,r.model_key,r.id,r.updated_at FROM embedding_receipts r WHERE r.project_id=? AND r.model_key=? AND r.id=? AND ${staleReceiptSql('r')}`;
-}

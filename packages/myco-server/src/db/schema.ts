@@ -131,7 +131,6 @@ import { V115_STATEMENTS } from './schema-v115.js';
 import { V116_STATEMENTS } from './schema-v116.js';
 
 import { projectIdGrammar, PROJECT_ID_GRAMMAR } from './project-id.js';
-export { projectIdGrammar, PROJECT_ID_GRAMMAR } from './project-id.js';
 
 /** The lifetime byte ceiling steps 1 and 5 write into their credential tables' CHECK, verbatim, so their DDL renders byte for byte as applied. Step 48 drops it from `member_credentials`: capture is never refused for volume (#1416). */
 const RETIRED_CREDENTIAL_BYTE_CEILING = 1_073_741_824;
@@ -1942,7 +1941,7 @@ const inList = (values: readonly string[]): string => values.map((v) => `'${v}'`
 const SCOPE_REASONS = inList(PROMPT_SCOPE_REASONS);
 
 /** A random RFC 4122 version-4 id in SQL: what a row written without one, by the copy below or a restored older backup, is given. */
-export const SQL_UUID4 = `(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-'
+const SQL_UUID4 = `(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-'
   || substr('89ab', 1 + (abs(random()) % 4), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))))`;
 
 /**

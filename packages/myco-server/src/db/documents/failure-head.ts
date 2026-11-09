@@ -8,7 +8,7 @@ const fields = ['session_id', 'failure', 'updated_at', 'diagnostic'] as const;
 const key = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.transcript_id AS transcript_id,${row}.generation AS generation`;
 
 /** Each contribution names a stopped transcript in the current visible document generation. */
-export function reconcilePublicationFailures(keys: string): string[] {
+function reconcilePublicationFailures(keys: string): string[] {
   const source = `SELECT p.project_id,p.transcript_id,p.generation,p.session_id,COALESCE(p.failure,'unknown') AS failure,p.updated_at,p.diagnostic
     FROM (${keys}) k CROSS JOIN transcript_publication p ON (p.project_id,p.transcript_id,p.generation)=(k.project_id,k.transcript_id,k.generation)
     JOIN session_documents d ON (d.project_id,d.session_id,d.generation)=(p.project_id,p.session_id,p.generation) AND d.state='live'
@@ -89,7 +89,7 @@ const FAILURE_PHASE_SOURCE = { table: 'transcript_publication', columns: ['proje
 const FAILURE_RECONCILE = reconcilePublicationFailures(jsonKeys(['project_id', 'transcript_id', 'generation']))
   .map((sql,i)=>write<[string]>({name:`publication.failurePage${i}`,sql}));
 
-export interface FailureTotal { project_id:string; failure:string; transcripts:number; latest_at:number; diagnostic:string|null }
+interface FailureTotal { project_id:string; failure:string; transcripts:number; latest_at:number; diagnostic:string|null }
 const readiness = read<[],{done:number}>({name:'publication.failureReadiness',sql:"SELECT done FROM projection_catchup WHERE projection='publication_failures' AND phase='publicationFailures'"});
 const totals = read<[],FailureTotal>({name:'publication.failureTotals',sql:'SELECT project_id,failure,transcripts,latest_at,diagnostic FROM document_failure_totals WHERE visible=1 AND transcripts>0 ORDER BY project_id,failure'});
 const head = read<[],{transcripts:number;latest_at:number|null;failure:string|null}>({name:'publication.failureHead',sql:'SELECT transcripts,latest_at,failure FROM document_failure_head WHERE slot=1'});

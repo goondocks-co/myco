@@ -10,8 +10,6 @@ import { toolInputPreview } from '../core/tool-input.js';
 import type { DocRecord, Page } from './document.js';
 import { readBodyChunk, readPageChunk, type ChunkRow } from './document-reader.js';
 
-/** Page chunks one request reads at most. */
-export const REQUEST_CHUNKS = 8;
 /** Pages of one turn a turn read opens at most. */
 export const TURN_PAGES = 4;
 
@@ -156,7 +154,7 @@ export type ResponseWireRow = ReturnType<typeof responseRow>;
 export type ToolCallWireRow = ReturnType<typeof toolCallRow>;
 
 const BODY_FIELD = { prompt: ['prompt', 'text'], response: ['reply', 'text'], 'tool-input': ['tool', 'input'], 'tool-output': ['tool', 'output_preview'] } as const;
-export type DocumentBodyKind = keyof typeof BODY_FIELD;
+type DocumentBodyKind = keyof typeof BODY_FIELD;
 export const isDocumentBodyKind = (kind: string): kind is DocumentBodyKind => Object.hasOwn(BODY_FIELD, kind);
 
 /**

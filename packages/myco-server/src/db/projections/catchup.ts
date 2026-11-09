@@ -25,7 +25,7 @@ import { LINEAGE_HEAD_CATCHUP } from '../identity/lineage-heads.js';
 import { everyPhaseDone, type CatchupFamily, type CatchupPhase, type PagePlan } from './family.js';
 
 export const PROJECTION_PAGE_SIZE = 50;
-export const PROJECTION_CATCHUP_BUDGET: Readonly<JobBudget> = { calls: 120, wallMs: 2_000 };
+const PROJECTION_CATCHUP_BUDGET: Readonly<JobBudget> = { calls: 120, wallMs: 2_000 };
 /** Every projection's catch-up. A new projection is one line here. */
 const FAMILIES = [
   KPI_CATCHUP, PUBLICATION_VERSION_CATCHUP, PUBLICATION_PIN_CATCHUP, PUBLICATION_OWNERSHIP_CATCHUP, PUBLICATION_FAILURE_CATCHUP,

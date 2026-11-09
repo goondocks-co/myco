@@ -1,5 +1,7 @@
 import { expect } from 'bun:test';
-import type { SessionActivityRow } from '@myco-server-worker/read/session-activity.js';
+import type {
+  session_activity_SessionActivityRow as SessionActivityRow,
+} from '@myco-server-worker/read/catalog/session-activity.js';
 import { documentsPublished, expectPersisted, type ParityScenario } from '../harness.ts';
 
 /** Tool outcomes are read through turns; activity serves related sessions. */

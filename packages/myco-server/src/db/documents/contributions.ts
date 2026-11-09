@@ -13,7 +13,7 @@ function affectedKeys(rows: readonly string[], select: (row: string) => string, 
 const sessionKey = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.session_id AS session_id`;
 
 /** Source bytes are positive; each generation subtracts only the bytes its frontier covers. */
-export function reconcilePublicationContributions(keys: string): string[] {
+function reconcilePublicationContributions(keys: string): string[] {
   const source = `SELECT t.project_id,t.transcript_id,'source' AS kind,0 AS generation,t.session_id,
 t.size AS bytes,(t.size>0) AS pending,1 AS sources,(t.imported_at IS NOT NULL) AS imported
 FROM (${keys}) k CROSS JOIN transcripts t ON (t.project_id,t.transcript_id)=(k.project_id,k.transcript_id)
@@ -37,7 +37,7 @@ IS NOT (${['session_id', ...measures].map(c => `excluded.${c}`).join(',')})`,
 }
 
 /** A generation switch reads the source total and that generation's frontier total. */
-export function reconcilePublicationFacts(keys: string): string[] {
+function reconcilePublicationFacts(keys: string): string[] {
   return [
     `DELETE FROM document_publication_facts WHERE (project_id,session_id) IN (${keys})
 AND NOT EXISTS (SELECT 1 FROM session_documents d WHERE (d.project_id,d.session_id)=(document_publication_facts.project_id,document_publication_facts.session_id))`,

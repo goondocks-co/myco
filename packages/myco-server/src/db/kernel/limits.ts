@@ -1,6 +1,6 @@
-export const MAX_BIND_SLOTS = 100;
+const MAX_BIND_SLOTS = 100;
 export const MAX_SQL_BYTES = 100_000;
-export const MAX_LIKE_BYTES = 50;
+const MAX_LIKE_BYTES = 50;
 
 const bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
 

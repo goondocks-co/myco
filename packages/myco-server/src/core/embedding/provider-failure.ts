@@ -14,7 +14,7 @@ export class EmbeddingSwitchFailure extends Error {
  * The provider failure policy: pass this one source over, hold the model off until `until`, or
  * pause for an admin.
  */
-export type SwitchFailureAction =
+type SwitchFailureAction =
   | { action: 'skip'; reason: string }
   | { action: 'wait'; until: number; reason: string }
   | { action: 'pause'; reason: string };

@@ -28,7 +28,7 @@ export function fixedTaskHarness(task: string): string | null {
     .find(harness => PROFILE_HARNESSES[harness]!.modelFamilies?.includes(fixed.model)) ?? null;
 }
 
-export type ProfileResolution = { profile: ExecutionProfile } | { reason: string };
+type ProfileResolution = { profile: ExecutionProfile } | { reason: string };
 
 /** A malformed stored task tier holds this task by name until Settings repairs it. */
 export function taskTierRefusal(task: string, settings: ReadonlyMap<string, string>): string | null {

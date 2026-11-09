@@ -2,7 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import type { ProjectCursor } from '../../read/project-cursor.js';
 import { read, readSet } from '../index.js';
 
-export interface CredentialEventRow { event_id: string; project_id: string; session_id: string; kind: string; created_at: number; received_at: number }
+interface CredentialEventRow { event_id: string; project_id: string; session_id: string; kind: string; created_at: number; received_at: number }
 
 const COLUMNS = 'event_id,project_id,session_id,kind,created_at,received_at';
 const ORDER = 'ORDER BY created_at DESC,event_id DESC,project_id DESC LIMIT ?';

@@ -7,7 +7,7 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { deploymentOwnerSql, linkedHumanAdminSql } from '../../core/ownership.js';
 import type { RelationalStore, ServerEnv } from '../../core/adapters.js';
 import { credentialLive } from '../liveness.js';
-import { applyFleetSignInAvailability } from '../../read/fleet.js';
+import { applyFleetSignInAvailability } from '../runs/fleet.js';
 import { readWorkerFleet } from '../../core/worker-contacts.js';
 import { harnessCredentialAvailability } from '../../core/secrets.js';
 import type { MachineScope } from '../../read/machines.js';

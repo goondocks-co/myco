@@ -6,7 +6,7 @@ import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { changed, jsonKeys, trigger, type Trigger } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
 
-export const RUN_ADMISSION_PROJECTION = 'run_admission';
+const RUN_ADMISSION_PROJECTION = 'run_admission';
 export const RUN_ADMISSION_READY_SQL = `EXISTS (SELECT 1 FROM projection_catchup WHERE projection='${RUN_ADMISSION_PROJECTION}' AND phase='runs' AND done=1)`;
 const fields = ['task', 'status', 'origin', 'queued_at', 'claimable', 'source_hold'] as const;
 const live = (row: string) => `CASE WHEN ${row}.${LIVE_RUN_STATUSES} THEN 1 ELSE 0 END`;
@@ -14,7 +14,7 @@ const queued = (row: string) => `CASE WHEN ${row}.status='queued' THEN 1 ELSE 0 
 const key = (row: string) => `SELECT ${row}.project_id AS project_id,${row}.id AS run_id`;
 
 /** Reconcile only the supplied run identities against the current source, including during catch-up replay. */
-export function reconcileLive(keys: string): string[] {
+function reconcileLive(keys: string): string[] {
   return [
     `DELETE FROM run_live WHERE (project_id,run_id) IN (SELECT project_id,run_id FROM (${keys}))
       AND NOT EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id=run_live.project_id AND r.id=run_live.run_id AND r.${IN_FLIGHT_RUN_STATUSES})`,

@@ -5,7 +5,7 @@ import { publicationReady } from './contributions.js';
 import { DEPENDENCY_PROJECTION, DEPENDENCY_STATUS } from './dependencies.js';
 import { LIFECYCLE_PROJECTION } from './lifecycle.js';
 
-export interface DocumentStatus {
+interface DocumentStatus {
   sessions: { live: number; converting: number };
   lagBytes: number;
   queued: number;
@@ -51,7 +51,7 @@ interface BuildingMeasures {
 }
 export type PublicationBacklog = DueBacklog & (ReadyMeasures | BuildingMeasures);
 /** Due sessions observed per capture class; both classes remain visible to wake admission. */
-export const PUBLICATION_BACKLOG_PAGE = 64;
+const PUBLICATION_BACKLOG_PAGE = 64;
 const due = read<[number, number, number], { transcripts: number; bytes: number }>({ name: 'publication.backlog', sql: `SELECT f.transcripts,f.bytes FROM document_due q CROSS JOIN document_publication_facts f
   WHERE q.imported=? AND q.due_at<=? AND f.project_id=q.project_id AND f.session_id=q.session_id
   ORDER BY q.due_at,q.project_id,q.session_id LIMIT ?` });

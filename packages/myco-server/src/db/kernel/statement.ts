@@ -4,7 +4,7 @@ import { checkLikePattern, checkStatement } from './limits.js';
 import { abortSql, type RefusalCode } from './refusal.js';
 
 export type BindValue = string | number | null | Uint8Array;
-export type StatementKind = 'read' | 'write' | 'assertion';
+type StatementKind = 'read' | 'write' | 'assertion';
 declare const boundType: unique symbol;
 
 /** Store-free bindings; preparation always uses the decorated store supplied to execution. */
@@ -14,7 +14,7 @@ export interface Bound<Row = unknown, Kind extends StatementKind = StatementKind
   readonly [boundType]: Row;
 }
 
-export interface StatementOptions {
+interface StatementOptions {
   readonly name: string;
   readonly sql: string;
   /** One-based slots containing final escaped, wildcard-wrapped LIKE patterns. */
@@ -69,7 +69,7 @@ export const definedStatements = (): ReadonlyMap<string, string> => definitions;
 export const read = <Params extends readonly unknown[], Row>(options: StatementOptions): Statement<Params, Row, 'read'> => define('read', options);
 export const write = <Params extends readonly unknown[], Row = never>(options: StatementOptions): Statement<Params, Row, 'write'> => define('write', options);
 
-export interface RefusalOptions {
+interface RefusalOptions {
   readonly name: string;
   /** SQL that is true while the batch may proceed. */
   readonly when: string;

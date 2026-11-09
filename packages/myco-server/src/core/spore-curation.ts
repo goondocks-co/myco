@@ -1,5 +1,4 @@
 import { curationPolicy, curationAdmissionSql, curationDueWorkSql, CURATION_MAX_FAILURES } from '../db/runs/pull-policy.js';
-export { curationAdmissionSql, CURATION_MAX_FAILURES } from '../db/runs/pull-policy.js';
 import { curationClaimWrite, curationDirtyWrite, curationCandidateWrite } from '../db/runs/claim-companions.js';
 import { runRefusal, REPORT_NEXT, type RunRefusal, type RefuseRunWrite } from './run-tool-contract.js';
 import { knowledgeRepositoryInput } from './knowledge-repository.js';
@@ -11,7 +10,10 @@ import type { TaskInput } from './task-inputs.js';
 import { CURATION_TASK } from './task-catalogue.js';
 import { capabilityOnSql, curationEnabledAtSql, nextCurationProject, curationAnyEnabledSql } from './settings.js';
 import { resolveSemanticSearch, searchDeployment } from './search.js';
-import { semanticHits, type SemanticHit } from '../read/embedding.js';
+import {
+  embedding_semanticHits as semanticHits,
+  type embedding_SemanticHit as SemanticHit,
+} from '../read/catalog/embedding.js';
 import { sha256Hex } from '../hash.js';
 import { getSpore } from './spores.js';
 import { LEARNING_BACKOFF_MS } from './learning-sessions.js';
@@ -21,16 +23,15 @@ import { curationChangeSql } from '../db/curation-changes.js';
 import { VECTOR_LOST_MS } from './embedding/provider.js';
 import { AGENT_LINE_GUIDANCE } from './injection.js';
 import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_REASON_CHARS, CURATION_COMPLETE_EXAMPLE, CURATION_MATERIAL_BYTES, CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from './spore-curation-contract.js';
-export { CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_MATERIAL_BYTES, CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from './spore-curation-contract.js';
 
 /** A seed needs a neighbour at least five standard deviations closer than usual on both sides. */
 export const CURATION_SEED_CLOSENESS = 5.0;
 /** Topic candidates must be at least three standard deviations closer than usual on both sides. */
-export const CURATION_GROUP_CLOSENESS = 3.0;
-export const CURATION_SEED_CAP = 8;
+const CURATION_GROUP_CLOSENESS = 3.0;
+const CURATION_SEED_CAP = 8;
 export const CURATION_SEEDS_PER_TICK = 8;
-export const CURATION_GATE_NEIGHBORS = 16;
-export const CURATION_NEIGHBORS = 48;
+const CURATION_GATE_NEIGHBORS = 16;
+const CURATION_NEIGHBORS = 48;
 
 const TOOL = 'myco_run_curation';
 interface Member { id: string; revision: number }
@@ -38,7 +39,7 @@ interface SeedMember extends Member { closeness: number }
 type Neighbour = SeedMember & { reviewed: number };
 type GateHit = Pick<SemanticHit, 'record_id' | 'revision' | 'score' | 'neighbor_mean' | 'neighbor_std'>;
 const neighbourOrder = (a: Neighbour, b: Neighbour) => a.reviewed-b.reviewed || b.closeness-a.closeness || a.id.localeCompare(b.id);
-export interface CurationAssignment { kind: 'curation'; key: string; members: Member[] }
+interface CurationAssignment { kind: 'curation'; key: string; members: Member[] }
 type CurationWriteAssignment = CurationAssignment & { operation: 'obsolete' | 'merge' };
 interface Cluster { cluster_key: string; members: string; final_members: string | null; read_bytes: number; due_at: number | null; failures: number; run_id: string | null; decision: string | null; write_refusal: string | null }
 const membersOf = (row: Cluster): SeedMember[] => JSON.parse(row.members) as SeedMember[];
@@ -49,7 +50,7 @@ const history = (project: string) => capabilityOnSql(project, "'spore_curation_b
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 /** Original ids and revisions identify a seed assignment independently of vector order. */
-export async function curationClusterKey(members: readonly Member[]): Promise<string> {
+async function curationClusterKey(members: readonly Member[]): Promise<string> {
   return sha256Hex(JSON.stringify([...members].sort((a, b) => a.id < b.id ? -1 : 1).map(({id,revision})=>({id,revision}))));
 }
 
@@ -211,7 +212,7 @@ export async function discoverSporeClusters(env: ServerEnv, now: number): Promis
 }
 
 /** A run receives every assigned spore whole, inside the shared input bound. */
-export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: string, key: string): Promise<TaskInput | null> {
+async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: string, key: string): Promise<TaskInput | null> {
   const row = await work(env.db, projectId, key);
   if (row === null || row.decision !== null) return null;
   const seeds = membersOf(row);

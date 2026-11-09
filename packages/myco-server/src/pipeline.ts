@@ -1,6 +1,6 @@
-import { CARD_TASK } from './core/task-catalogue.js';
+import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { CARD_WRITE_BOUND } from './core/turn-card-prompt.js';
-import { projectExists } from './read/sessions.js';
+import { sessions_projectExists as projectExists } from './read/catalog/sessions.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { SIGN_IN_UNCONFIGURED } from '@goondocks/myco-shared/setup-guidance';
 import { memberWriteStore, MemberWriteRefused } from './auth/member-write-store.js';
@@ -23,10 +23,20 @@ import { runWriteStore, RunWriteExpired } from './core/run-write-store.js';
 import { recordRunCall } from './db/runs/evidence.js';
 import { recordRunControlRefusal, type HeldRun } from './db/runs/lifecycle.js';
 import { dispatchRefusal, isDispatchProjectId } from './api/harness.js';
-import { HARNESS_MEMBER_ID } from './core/harness.js';
+import {
+  HARNESS_MEMBER_ID,
+  FEATURES_HEADER,
+  HSTS_MAX_AGE_SECONDS,
+  LINEAGE_REPLAY_GRACE_MS,
+  MIN_COMPAT_MEMBER_PROTOCOL,
+  PROJECT_HEADER,
+  PROTOCOL_HEADER,
+  RETRY_AFTER_SECONDS,
+  SERVER_FEATURES,
+  SERVER_PROTOCOL,
+} from './constants.js';
 import { forbiddenToMember } from './auth/roles.js';
 import { authenticateGrant, GRANT_KEY_PATTERN, touchGrant } from './auth/grants.js';
-import { FEATURES_HEADER, HSTS_MAX_AGE_SECONDS, LINEAGE_REPLAY_GRACE_MS, MIN_COMPAT_MEMBER_PROTOCOL, PROJECT_HEADER, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_FEATURES, SERVER_PROTOCOL } from './constants.js';
 import { sha256Hex } from './hash.js';
 import { readBoundedBody, MAX_BODY_BYTES } from './ingest/body.js';
 import { PROJECT_ARCHIVED, resolveProject } from './ingest/projects.js';
@@ -102,7 +112,7 @@ const admitsRunner = (route: Route): route is RunnerRoute | DeploymentRoute =>
 /** A server-side failure on a runner-reachable route, in the shape every such route answers. */
 const runnerUnavailable = (): Response => refusalResponse('persisted', UNAVAILABLE, UNAVAILABLE, 'retryable');
 /** What a runner credential is told when it no longer carries authority for the route it asked. */
-export const RUNNER_SCOPE_REFUSAL = 'this runner credential carries no authority for that request';
+const RUNNER_SCOPE_REFUSAL = 'this runner credential carries no authority for that request';
 /** A member route that also admits an External Agent grant. */
 type GrantRoute = Extract<MemberRoute, { bodyMode: 'json' }> & { grant: NonNullable<Extract<MemberRoute, { bodyMode: 'json' }>['grant']> };
 const admitsGrant = (route: Route): route is GrantRoute => route.auth === 'member' && route.bodyMode === 'json' && route.grant !== undefined;
@@ -174,10 +184,10 @@ function sameOrigin(request: Request, url: URL): boolean {
 }
 const unsupportedProtocol = () =>
   Response.json({ error: 'protocol_version_unsupported', server_protocol: SERVER_PROTOCOL, min_compat_member_protocol: MIN_COMPAT_MEMBER_PROTOCOL }, { status: 409 });
-export const NO_MACHINE_IDENTITY = 'token has no machine identity';
-export const NO_PROJECT = 'project header required';
+const NO_MACHINE_IDENTITY = 'token has no machine identity';
+const NO_PROJECT = 'project header required';
 /** What a member who does not administer the Deployment is told on a Deployment-scoped route. */
-export const NOT_ADMIN = 'this route serves an administrator of the Deployment';
+const NOT_ADMIN = 'this route serves an administrator of the Deployment';
 /** What a run's credential is told on a member route that is not its run's surface. */
 export const RUN_SCOPE = 'a run credential reaches only its run\'s surface';
 /** What a credential its issuer minted not to rotate is told on the refresh route. */
@@ -194,7 +204,7 @@ const captureRoute = (route: MemberRoute): boolean => route.capture !== false;
 export const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
 /** The two names the grammar admits but a Project may not carry. */
-export const RESERVED_PROJECT_IDS: readonly string[] = ['.', '..'];
+const RESERVED_PROJECT_IDS: readonly string[] = ['.', '..'];
 
 /** Whether `value` may be a Project id: in grammar and not reserved. The one predicate both the wire check and the member's own validation answer to. */
 export const isProjectId = (value: string): boolean => PROJECT_ID.test(value) && !RESERVED_PROJECT_IDS.includes(value);

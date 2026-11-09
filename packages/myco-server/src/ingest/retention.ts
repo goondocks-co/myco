@@ -7,38 +7,26 @@ import { measuredContentEnv, remainingContentBudget } from '../core/content-budg
  */
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import { unreferencedAmong } from '../db/storage/blob-held.js';
-import { releaseAgedOrphans } from '../core/object-release.js';
+import { releaseAgedOrphans } from '../db/storage/release-queue.js';
 import { storedSettings } from '../core/settings.js';
 import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 import { emit } from '../telemetry.js';
 
-/** The widest retention window a Deployment may set, in days. */
-export const TRANSCRIPT_RETENTION_MAX_DAYS = 3650;
-
-/** Parses the legacy transcript window; an absent or zero value means its explicit indefinite choice. */
-export function transcriptRetentionDays(raw: string | undefined): number | null | 'unreadable' {
-  if (raw === undefined) return null;
-  let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return 'unreadable'; }
-  if (typeof parsed !== 'number' || !Number.isInteger(parsed) || parsed < 0 || parsed > TRANSCRIPT_RETENTION_MAX_DAYS) return 'unreadable';
-  return parsed === 0 ? null : parsed;
-}
-
 /** The legacy raw age leaf. */
-export const TRANSCRIPT_RETENTION_LEAF = 'retention.transcripts';
+const TRANSCRIPT_RETENTION_LEAF = 'retention.transcripts';
 
 /**
  * The effective raw age policy: a canonical leaf wins, a finite legacy leaf is
  * honored, and an explicit legacy zero holds archival. Without either leaf,
  * the 90-day default applies. Unreadable settings hold archival visibly.
  */
-export type RetentionFact =
+type RetentionFact =
   | { state: 'forever'; configured: boolean; compatibility: 'legacy-hold' }
   | { state: 'days'; days: number; configured: boolean; compatibility: 'canonical'|'legacy-finite'|'default' }
   | { state: 'unavailable'; reason: string };
 
-export const RAW_RETENTION_LEAF = 'retention.raw_days';
-export const RAW_RETENTION_DEFAULT_DAYS = 90;
+const RAW_RETENTION_LEAF = 'retention.raw_days';
+const RAW_RETENTION_DEFAULT_DAYS = 90;
 
 /** Canonical raw age policy; an explicit legacy forever choice holds archival until a finite choice is made. */
 export async function transcriptRetentionFact(db: RelationalStore): Promise<RetentionFact> {
@@ -58,7 +46,7 @@ export async function transcriptRetentionFact(db: RelationalStore): Promise<Rete
 export const TRANSCRIPT_RETENTION_BLOBS_PER_PASS = 8;
 
 /** A session deletion admits orphan pages throughout this settlement window. */
-export const TOMBSTONE_SWEEP_GRACE_MS = 6 * 60 * 60 * 1000;
+const TOMBSTONE_SWEEP_GRACE_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Runs one bounded orphan page and one bounded raw archive page under the

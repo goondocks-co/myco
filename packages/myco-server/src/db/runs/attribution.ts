@@ -8,7 +8,7 @@ import { prepareBound } from '../kernel/statement.js';
 /** A mutation carries its admission predicate and the resulting state required before attribution. */
 export interface AttributedMutation { readonly guard: Bound; readonly mutation: Bound; readonly landed: Bound }
 const mutations = new WeakSet<AttributedMutation>();
-export const RUN_WRITE_NOT_ADMITTED = refusalCode('run_write_not_admitted');
+const RUN_WRITE_NOT_ADMITTED = refusalCode('run_write_not_admitted');
 
 /** Fixed definitions assert admission before the write and its resulting state before attribution. */
 export function attributedStatement<Params extends readonly unknown[]>(name: string, sql: string, admitted: string, landed: string) {

@@ -22,9 +22,9 @@ export interface QueuedRow {
 }
 
 
-export const PUBLICATION_TRANSCRIPTS_PAGE = 16;
+const PUBLICATION_TRANSCRIPTS_PAGE = 16;
 export const PUBLICATION_QUEUE_PAGE = 200;
-export const TRANSCRIPT_PRIORITY = "CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END";
+const TRANSCRIPT_PRIORITY = "CASE t.role WHEN 'subagent' THEN 1 ELSE 0 END";
 const policy = publicationPolicy('t.prompt_identity_scheme');
 const control = read<[string, string], DocumentRow>({ name: 'publication.control', sql: `SELECT d.generation,d.next_chunk,d.first_prompt,d.open_turn_key,d.prompts,s.created_by_token_id token_id,
   d.publication_input_revision,d.publication_after,d.publication_scan_due,d.publication_wake,s.ended_at,s.working_since,s.last_turn_end_at

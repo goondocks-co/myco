@@ -131,4 +131,11 @@ async function hook_placement_listUnplacedHookRecordsImpl(db: hook_placement_imp
   return hook_placement_import_page(rows, k.limit, row => ({ createdAt: row.createdAt, id: row.key }));
 }
 
-export { type hook_placement_UnplacedHookRecord, hook_placement_listUnplacedHookRecords, hook_placement_HOOK_STATUS_WINDOW_DAYS, hook_placement_countUnplacedContextRecords, hook_placement_placedHintSql, hook_placement_hookPlacementSql, hook_placement_sessionContextHints };
+export {
+  hook_placement_listUnplacedHookRecords,
+  hook_placement_HOOK_STATUS_WINDOW_DAYS,
+  hook_placement_countUnplacedContextRecords,
+  hook_placement_placedHintSql,
+  hook_placement_hookPlacementSql,
+  hook_placement_sessionContextHints,
+};

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { releaseProvenance, reconcileReleaseProvenance, type ReleaseProvenanceWrite } from '@myco-server-worker/core/release-provenance.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
-import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
+import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
 import { EMBEDDING_SOURCES as HISTORICAL_EMBEDDING_SOURCES, embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE as HISTORICAL_PRESENTED_SOURCES, V86_EMBEDDING_SOURCES } from '@myco-server-worker/db/embedding-sources.js';
 const EMBEDDING_SOURCES = HISTORICAL_EMBEDDING_SOURCES.filter((source) => source.type !== 'skill');

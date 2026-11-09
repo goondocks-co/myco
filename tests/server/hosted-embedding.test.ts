@@ -7,7 +7,7 @@ import { cloudflareEmbeddingLaunch, type HostedRunLifetime } from '@myco-server-
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { dispatchEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import { dispatchPrepared, prepareDispatch } from '@myco-server-worker/core/harness.js';
-import { searchProject } from '@myco-server-worker/read/search.js';
+import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { runControlClient } from '@goondocks/myco-shared/run-control';

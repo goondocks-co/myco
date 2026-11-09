@@ -7,8 +7,18 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { armNextWake, armSoon, CLOCK_MANUAL, clockArmsAlarms } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, ServerEnv } from '@myco-server-worker/core/adapters.js';
-import { DEFAULT_DISPATCH_TIMEOUT_SECONDS, RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/harness.js';
-import { JOB_IMPLEMENTATIONS, JOB_BATCH, RUN_RETENTION_DAYS_DEFAULT, STALE_RUN_ERROR, staleAfter, timeoutSecondsOf } from '@myco-server-worker/core/jobs-run.js';
+import {
+  DEFAULT_DISPATCH_TIMEOUT_SECONDS,
+  RUN_OVERRUN_MARGIN_MS,
+  staleAfter,
+  timeoutSecondsOf,
+} from '@myco-server-worker/core/run-deadline.js';
+import {
+  JOB_IMPLEMENTATIONS,
+  JOB_BATCH,
+  RUN_RETENTION_DAYS_DEFAULT,
+} from '@myco-server-worker/core/jobs-run.js';
+import { STALE_RUN_ERROR } from '@myco-server-worker/core/reader-codes.js';
 import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { lastActivityAt, REQUEST_STAMP_INTERVAL_MS, stampRequest } from '@myco-server-worker/core/activity.js';
 import { CHAINED_WAKE_MS, POWER_THRESHOLDS, runTick, tickPacer, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
@@ -392,7 +402,6 @@ describe('a clock\'s chained wakes (#1510)', () => {
 
 /** The store calls a draining wake may make beyond its jobs' own: the queue's drain and the backlog count. */
 const DRAINING_WAKE_STORE_CALLS = 8;
-
 
 it('keeps later non-archive jobs running after the first job spends the advisory content wall', async () => {
   const f = fixture();

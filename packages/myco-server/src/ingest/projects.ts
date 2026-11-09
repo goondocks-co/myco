@@ -1,8 +1,8 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { admitProject, type ProjectCreator } from '../core/project-creation.js';
+import { admitProject, type ProjectCreator } from '../db/storage/projects.js';
 
 export const PROJECT_ARCHIVED = 'this project is archived on the server; unarchive it from the dashboard to resume capture';
-export type ProjectResolution = { resolved: true; archived: boolean } | { resolved: false; reason?: string };
+type ProjectResolution = { resolved: true; archived: boolean } | { resolved: false; reason?: string };
 
 /** Existing Projects remain addressable when creation is disabled. */
 export async function resolveProject(db: RelationalStore, projectId: string, now: number, actor: ProjectCreator = { kind: 'operator' }): Promise<ProjectResolution> {
@@ -12,4 +12,3 @@ export async function resolveProject(db: RelationalStore, projectId: string, now
   return result.resolved ? { resolved: true, archived: result.archived } : result;
 }
 
-export { createProject as createNamedProject } from '../core/project-creation.js';

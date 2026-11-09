@@ -2,12 +2,16 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
-import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import {
+  MAX_BLOB_BYTES,
+  MAX_CLOCK_SKEW_MS,
+  PROJECT_HEADER,
+  HARNESS_MEMBER_ID,
+} from '@myco-server-worker/constants.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { CLASSIFIERS, UNAVAILABLE, type Classifier } from '@myco-server-worker/telemetry.js';
 import { ENROLLMENT_TTL_MS, ensureMember, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/core/harness.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { blobPost, envelope, memberHeaders, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
 

@@ -16,7 +16,7 @@ import { within } from './recovery-inventory.js';
 import { failureTelemetry, emit } from '../telemetry.js';
 
 /** How long an admission may take to answer: its staging writes are bounded inside the producer, well within this. */
-export const ADMISSION_MS = 120_000;
+const ADMISSION_MS = 120_000;
 
 /**
  * Who an attempt records as having started it.
@@ -24,12 +24,12 @@ export const ADMISSION_MS = 120_000;
  * A member admits one from the dashboard. The schedule admits one on an elapsed interval and carries no member:
  * nothing invents an identity for it, and `SCHEDULED_BY` is the value the staging records instead.
  */
-export type AdmissionActor = { kind: 'member'; id: string } | { kind: 'schedule' };
+type AdmissionActor = { kind: 'member'; id: string } | { kind: 'schedule' };
 
 /** What the staging records for an attempt the interval admitted. It is not a member id and never resolves to one. */
 export const SCHEDULED_BY = 'schedule';
 
-export const actorLabel = (actor: AdmissionActor): string => (actor.kind === 'member' ? actor.id : SCHEDULED_BY);
+const actorLabel = (actor: AdmissionActor): string => (actor.kind === 'member' ? actor.id : SCHEDULED_BY);
 
 /**
  * Every way admission ends: `refused` and `unavailable` are this Deployment's own answer, `running` is an attempt

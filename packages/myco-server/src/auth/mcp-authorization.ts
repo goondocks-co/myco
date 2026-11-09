@@ -5,7 +5,7 @@ import { readAuthorization, type AuthorizationQuery } from '../db/auth/authoriza
 import type { ProtocolContext, ToolContext } from '../mcp/context.js';
 import type { ToolInput } from '../mcp/validate.js';
 
-export interface ToolAuthorization {
+interface ToolAuthorization {
   subject: AuthorizationSubject;
   resourceFor(declaration: AuthorizationDeclaration): AuthorizationResource;
 }

@@ -59,7 +59,7 @@ export type StoreMeasurement =
 export type MeasurementName = 'size' | 'reclaimable' | 'size_limit' | 'daily_quota' | 'blob_bytes';
 
 /** A measurement with the instant the check that took it finished. */
-export type DatedMeasurement = StoreMeasurement & { measuredAt: number };
+type DatedMeasurement = StoreMeasurement & { measuredAt: number };
 
 /** What a port reports from one check. `findings` are the store's own words, one per problem. */
 export interface PortResult {
@@ -69,7 +69,7 @@ export interface PortResult {
   measurements: StoreMeasurement[];
 }
 
-export type CheckSupport = { supported: true; label: string } | { supported: false; reason: string; reasonCode?: string };
+type CheckSupport = { supported: true; label: string } | { supported: false; reason: string; reasonCode?: string };
 
 /**
  * How a target keeps one check running at a time.
@@ -87,12 +87,12 @@ export type Exclusivity =
   | { kind: 'platform-limit'; statementLimitMs: number; statements: Readonly<Record<MaintenanceCheck, number>> };
 
 /** The statements a claim sends before the check's own: one conditional write answering whether it landed. */
-export const CLAIM_STATEMENTS = 1;
+const CLAIM_STATEMENTS = 1;
 export const MAINTENANCE_PROGRESS_STATEMENTS = 2;
-export const MAINTENANCE_COMPLETION_STATEMENTS = 1;
+const MAINTENANCE_COMPLETION_STATEMENTS = 1;
 
 /** The statements this module sends inside a check beside the port's own: optimize also measures the bytes recorded blobs hold. */
-export const RECORD_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 0 };
+const RECORD_STATEMENTS: Readonly<Record<MaintenanceCheck, number>> = { optimize: 1, integrity: 0 };
 
 /** What a check measures on every target beside what the port reports: optimize reads the registered bytes counters hold. */
 async function recordMeasurements(env: ServerEnv, check: MaintenanceCheck): Promise<StoreMeasurement[]> {
@@ -125,8 +125,8 @@ export interface StoreMaintenancePort {
 }
 
 /** How an outcome ended. `failed` carries `errorClass`; `findings` means the store answered with problems. */
-export type OutcomeState = 'running' | 'healthy' | 'findings' | 'failed';
-export type MaintenanceTrigger = 'schedule' | 'owner';
+type OutcomeState = 'running' | 'healthy' | 'findings' | 'failed';
+type MaintenanceTrigger = 'schedule' | 'owner';
 
 /** The latest outcome of one check, as recorded. */
 export interface MaintenanceOutcome {
@@ -153,13 +153,13 @@ export interface MaintenanceOutcome {
 }
 
 /** Why a run did not start. */
-export type MaintenanceRefusal = 'unsupported' | 'not_configured' | 'already_running' | 'not_due';
+type MaintenanceRefusal = 'unsupported' | 'not_configured' | 'already_running' | 'not_due';
 
 /**
  * `recorded` is false when the run's own record had been replaced before it finished, and the newer record stands.
  * `started` is a claimed run whose work continues in the env's deferral; `record` is its running claim.
  */
-export type RunAnswer =
+type RunAnswer =
   | { outcome: 'ran'; record: MaintenanceOutcome; recorded: boolean }
   | { outcome: 'started'; record: MaintenanceOutcome }
   | { outcome: 'refused'; refusal: MaintenanceRefusal; reason: string };
@@ -168,7 +168,7 @@ export type RunAnswer =
  * A check's cadence as the owner's leaves state it. `not_configured` names the unset leaf; `invalid` names the
  * leaf whose stored value the dashboard could not have written. Only `on` schedules anything.
  */
-export type Cadence =
+type Cadence =
   | { state: 'on'; intervalHours: number }
   | { state: 'off' }
   | { state: 'not_configured'; leaf: string }
@@ -231,13 +231,13 @@ function inFlightOf(port: StoreMaintenancePort): Set<MaintenanceCheck> {
 }
 
 /** Whether a check is running now, by the port's own exclusivity. */
-export function checkRunning(port: StoreMaintenancePort, latest: MaintenanceOutcome | null, check: MaintenanceCheck, now: number): boolean {
+function checkRunning(port: StoreMaintenancePort, latest: MaintenanceOutcome | null, check: MaintenanceCheck, now: number): boolean {
   if (port.exclusivity.kind === 'serving-owner') return inFlightOf(port).has(check);
   return latest !== null && latest.state === 'running' && latest.claimExpiresAt !== null && latest.claimExpiresAt > now;
 }
 
 /** When a configured check next falls due: the last run's start plus the interval, or now when it never ran. */
-export function dueAt(cadence: Cadence, latest: MaintenanceOutcome | null, now: number): number | null {
+function dueAt(cadence: Cadence, latest: MaintenanceOutcome | null, now: number): number | null {
   if (cadence.state !== 'on') return null;
   return latest === null ? now : latest.startedAt + cadence.intervalHours * HOUR_MS;
 }
@@ -395,7 +395,7 @@ export async function maintenanceStatus(env: ServerEnv, now: number): Promise<Ma
 }
 
 /** Stored outcomes and direct results carry codes beside store-provided text. */
-export function maintenanceWordsCodes(record: MaintenanceOutcome): MaintenanceOutcome {
+function maintenanceWordsCodes(record: MaintenanceOutcome): MaintenanceOutcome {
   return {
     ...record,
     findingCodes: record.findings.map(() => 'store_problem'),

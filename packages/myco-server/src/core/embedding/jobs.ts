@@ -7,16 +7,14 @@ import {
 } from '../../db/embeddings/work.js';
 import { WORK_PREDICATE_VERSION, WORK_SWEEP_CONTINUE_MS } from './work-state.js';
 import { hasEmbeddingWork } from './work.js';
-export { hasEmbeddingWork, type EmbeddingWorkScope } from './work.js';
 import { advanceEmbedding } from './step.js';
 import { calibrationModel } from './policy.js';
 import { completeEmbeddingSwitch, embeddingWorkPlan, type EmbeddingWorkPlan } from './switch.js';
 import { readSwitch } from './switch-store.js';
 
-export { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
 import { EMBEDDING_RETRY_MS, EMBEDDING_TASK } from './task.js';
 export const EMBEDDING_SWEEP_ASSERTION = 'embedding:sweep';
-export const PREVENT_DEEP_SLEEP_LEAF = 'embedding.prevent_deep_sleep';
+const PREVENT_DEEP_SLEEP_LEAF = 'embedding.prevent_deep_sleep';
 /** How long after a finished audit of every Project the next one starts: the finite pass that finds what no trigger marks. */
 export const WORK_AUDIT_INTERVAL_MS = 60 * 60_000;
 

@@ -59,9 +59,7 @@ import { UnknownPluginFormat } from './parsers/plugin-events.js';
 import { isPromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
 /** Sessions one wake publishes. */
-export const PUBLISH_SESSIONS_PER_WAKE = 4;
-/** Queued member events one pass publishes. */
-export { PUBLISH_QUEUE_PER_PASS };
+const PUBLISH_SESSIONS_PER_WAKE = 4;
 /** How long a superseded chunk version stays readable before its holder is retired. */
 export const RETIRED_OBJECT_GRACE_MS = 15 * 60_000;
 const RETIRE_PAGE = 100;
@@ -194,7 +192,7 @@ export async function runPublishWake(env: ServerEnv, now: number): Promise<{ cha
 }
 
 /** Releases the holders past their grace. */
-export async function retireSupersededObjects(db: RelationalStore, now: number): Promise<number> {
+async function retireSupersededObjects(db: RelationalStore, now: number): Promise<number> {
   const rows = (await db.prepare(`SELECT project_id p,session_id s,blob_key k,source_id i FROM retired_objects
     WHERE retired_at<=? ORDER BY retired_at LIMIT ${RETIRE_PAGE}`).bind(now - RETIRED_OBJECT_GRACE_MS).all<Holder>()).results;
   if (rows.length === 0) return 0;

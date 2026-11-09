@@ -1,10 +1,12 @@
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { releaseNow } from './helpers/release-now.js';
-import { readDocumentStatus as publicationStatus } from '@myco-server-worker/db/documents/status.js';
+import {
+  readDocumentStatus as publicationStatus,
+  readDocumentStatus,
+} from '@myco-server-worker/db/documents/status.js';
 import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
 import { PARSER_VERSION, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { documentTurnCollection } from '@myco-server-worker/content/session-turns.js';
-import { readDocumentStatus } from '@myco-server-worker/read/document-status.js';
 import { blobHeld } from '@myco-server-worker/db/storage/blob-held.js';
 import { stoppedTranscripts, rereadTranscripts, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
@@ -30,7 +32,7 @@ import { readSchemaVersion } from '@myco-server-worker/db/migrate.js';
 import { V116_STATEMENTS } from '@myco-server-worker/db/schema-v116.js';
 import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
-import { statusMetadata } from '@myco-server-worker/read/meta.js';
+import { statusMetadata } from '@myco-server-worker/db/documents/failure-head.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
 import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { envelope, memoryBlobStore, uuid, readFixtureRecords } from './helpers/fixtures.js';
@@ -687,8 +689,6 @@ test('admission refuses missing records and preserves archived blob holders in t
     expect(await db.prepare(`SELECT payload FROM events WHERE event_id='invalid'`).first(),name).toEqual({payload:'not JSON'});
   },116);
 });
-
-
 
 test('ranged event references survive archive, deletion and a failed range transaction', async () => {
   await withDocumentStores(async (db,name)=>{

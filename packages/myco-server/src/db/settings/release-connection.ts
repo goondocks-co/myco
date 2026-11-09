@@ -1,7 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, refusalCode, refused, write, type BindValue, type Bound } from '../index.js';
 import { commitSecretChange } from './secret-writes.js';
-export const RELEASE_REVISION_CONFLICT = refusalCode('release_revision_conflict');
+const RELEASE_REVISION_CONFLICT = refusalCode('release_revision_conflict');
 const unchanged = assertion<[string, string | null]>({
   name: 'settings.releaseUnchanged',
   refusal: RELEASE_REVISION_CONFLICT, when: `(SELECT revision FROM project_release_provenance WHERE project_id=?1) IS ?2`,

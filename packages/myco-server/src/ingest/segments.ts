@@ -20,7 +20,7 @@
 import type { ParsedLine } from './parsers/index.js';
 
 /** What one read of a transcript's bytes yielded, and where the next read starts. */
-export interface SplitResult {
+interface SplitResult {
   lines: ParsedLine[];
   /** The absolute byte offset just past the last complete line; the cursor's next value. */
   nextOffset: number;
@@ -29,7 +29,6 @@ export interface SplitResult {
 }
 
 const decoder = new TextDecoder('utf-8');
-const encoder = new TextEncoder();
 
 /**
  * The complete lines in `bytes`, each carrying its absolute byte offset.
@@ -65,9 +64,6 @@ export function splitCompleteLines(bytes: Uint8Array, baseOffset: number): Split
 
   return { lines, nextOffset: offset, pending: bytes.length - start, malformed, malformedOffset };
 }
-
-/** The byte length of a string as the transcript stores it, for a caller sizing a read against `transcripts.size`. */
-export const byteLength = (text: string): number => encoder.encode(text).length;
 
 /**
  * The stored segments covering `[from, from + budget)`, in offset order.
