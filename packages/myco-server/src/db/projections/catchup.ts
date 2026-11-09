@@ -4,6 +4,8 @@ import { metadataCursorHeld, metadataFailure, metadataPage } from '../documents/
 import { emit } from '../../telemetry.js';
 import { METADATA_PHASE_SOURCE, OWNERSHIP_READY_SOURCE, OWNERSHIP_INPUTS_READY, OWNERSHIP_READY_RECONCILE } from '../documents/ownership.js';
 import { FAILURE_PHASE_SOURCE, FAILURE_RECONCILE, FAILURE_RECORD_SOURCE, FAILURE_RECORD_RECONCILE } from '../documents/failure-head.js';
+import { LIFECYCLE_PHASE_SOURCE, LIFECYCLE_PROJECTION, LIFECYCLE_RECONCILE } from '../documents/lifecycle.js';
+import { DEPENDENCY_PHASE_SOURCE, DEPENDENCY_PROJECTION, DEPENDENCY_RECONCILE } from '../documents/dependencies.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { RUN_ADMISSION_PROJECTION, LIVE_CATCHUP } from '../runs/live.js';
 import { CALIBRATION_PHASE_SOURCES, CALIBRATION_RECONCILE } from '../embeddings/calibration.js';
@@ -38,6 +40,8 @@ interface Source {
   where?: string;
   pageSize?: number;
   startKey?: readonly (string|number)[];
+  /** Every key is unique, so a page stops at its limit instead of sorting the whole range. */
+  unique?: boolean;
 }
 export const KPI_PHASE_SOURCES = {
   sessions: { table: 'sessions', columns: ['project_id', 'session_id'] },
@@ -71,6 +75,8 @@ const PHASE_SOURCES = {
   publicationOwnershipReady: OWNERSHIP_READY_SOURCE,
   publicationFailures: FAILURE_PHASE_SOURCE,
   publicationFailureRecord: FAILURE_RECORD_SOURCE,
+  sessionLifecycle: LIFECYCLE_PHASE_SOURCE,
+  publicationDependencies: DEPENDENCY_PHASE_SOURCE,
   publicationInputs: { table: 'transcripts', columns: ['project_id', 'transcript_id'] },
   publicationSessions: { table: 'session_documents', columns: ['project_id', 'session_id'] },
   runs: { table: 'agent_runs INDEXED BY idx_agent_runs_admission_catchup', columns: ['project_id', 'id'], where: IN_FLIGHT_RUN_STATUSES },
@@ -89,7 +95,7 @@ const projectionOf = (phase: ProjectionPhase) => phase === STORAGE_USAGE_PHASE ?
   : phase in VERSION_PHASE_SOURCES ? 'publication_version'
   : (phase === 'publicationPinGroups' || phase === 'publicationPinsReady') ? 'publication_pins'
   : (phase === 'publicationMetadata' || phase === 'publicationOwnershipReady') ? 'publication_ownership'
-  : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'workRuns' ? WORK_HISTORY_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION : (phase === 'publicationFailures' || phase === 'publicationFailureRecord') ? 'publication_failures' : phase.startsWith('publication') ? 'publication'
+  : phase === 'attempts' ? BUDGET_PROJECTION : phase === 'workRuns' ? WORK_HISTORY_PROJECTION : phase === 'spores' ? SPORE_COUNT_PROJECTION : phase === 'plans' ? PLAN_COUNT_PROJECTION : (phase === 'publicationFailures' || phase === 'publicationFailureRecord') ? 'publication_failures' : phase === 'sessionLifecycle' ? LIFECYCLE_PROJECTION : phase === 'publicationDependencies' ? DEPENDENCY_PROJECTION : phase.startsWith('publication') ? 'publication'
   : phase in RESET_PHASE_SOURCES ? 'embedding_reset' : phase in CALIBRATION_PHASE_SOURCES ? 'embedding_calibration' : 'kpi';
 const frontierAssertions = (phase: ProjectionPhase) => phase === 'publicationSessions' ? [PUBLICATION_INPUTS_READY.bind('[]')] : phase === 'publicationOwnershipReady' ? [OWNERSHIP_INPUTS_READY.bind()] : phase === 'publicationPinsReady' ? [PIN_GROUPS_READY.bind()] : [];
 const pageSize = (phase: ProjectionPhase) => (PHASE_SOURCES[phase] as Source).pageSize ?? PROJECTION_PAGE_SIZE;
@@ -101,7 +107,7 @@ const pages = Object.fromEntries(Object.entries(PHASE_SOURCES).map(([phase, spec
   return [phase, {
     frontier: write<[]>({ name: `projection.${phase}Frontier`, sql: `UPDATE projection_catchup SET frontier=COALESCE((SELECT ${key} FROM ${source.table} WHERE ${source.where ?? '1'} ORDER BY ${source.columns.map(c => `${c} DESC`).join(',')} LIMIT 1),'[]') WHERE ${state} AND frontier IS NULL AND done=0` }),
     state: read<[], Phase>({ name: `projection.${phase}State`, sql: `SELECT projection,phase,after_key,frontier,done,generation FROM projection_catchup WHERE ${state}` }),
-    keys: read<[], { key: string }>({ name: `projection.${phase}Keys`, sql: `SELECT DISTINCT ${key} AS key FROM ${source.table}
+    keys: read<[], { key: string }>({ name: `projection.${phase}Keys`, sql: `SELECT ${source.unique ? '' : 'DISTINCT '}${key} AS key FROM ${source.table}
       WHERE ${source.where ?? '1'} AND ${tuple(source.columns)} > ${jsonTuple(source.columns, `COALESCE(NULLIF((SELECT after_key FROM projection_catchup WHERE ${state}),'[]'),'${JSON.stringify(source.startKey ?? source.columns.map(() => ''))}')`)}
       AND ${tuple(source.columns)} <= ${jsonTuple(source.columns, `(SELECT frontier FROM projection_catchup WHERE ${state})`)}
       ORDER BY ${order} LIMIT ${source.pageSize ?? PROJECTION_PAGE_SIZE}` }),
@@ -129,6 +135,7 @@ const reconciles = {
   publicationMetadata: [], publicationOwnershipReady: OWNERSHIP_READY_RECONCILE,
   publicationFailures: FAILURE_RECONCILE,
   publicationFailureRecord: FAILURE_RECORD_RECONCILE,
+  sessionLifecycle: LIFECYCLE_RECONCILE, publicationDependencies: DEPENDENCY_RECONCILE,
   publicationInputs: PUBLICATION_SOURCE_RECONCILE, publicationSessions: PUBLICATION_DOCUMENT_RECONCILE,
   runs: LIVE_CATCHUP, workRuns: WORK_CATCHUP,
   failures: PASSED_OVER_RECONCILE, versions: SOURCE_STATE_RECONCILE, spores: SPORE_COUNT_RECONCILE, plans: PLAN_COUNT_RECONCILE, ...RESET_RECONCILE, calibrationReceipts: CALIBRATION_RECONCILE, calibrationMembers: CALIBRATION_RECONCILE, sessions: sessionReconcile, documents: KPI_DOCUMENT_RECONCILE, receipts: KPI_RECONCILE.d,
@@ -184,7 +191,7 @@ export const publicationReady = (phases: readonly Pick<Phase, 'phase' | 'done'>[
   ['publicationInputs','publicationSessions'].every(phase => phases.some(row => row.phase === phase && row.done === 1));
 
 const SINGLE_PHASE = { [RUN_ADMISSION_PROJECTION]: 'runs', passed_over: 'failures', embedding_state: 'versions', [BUDGET_PROJECTION]: 'attempts',
-  [SPORE_COUNT_PROJECTION]: 'spores', [PLAN_COUNT_PROJECTION]: 'plans', [WORK_HISTORY_PROJECTION]: 'workRuns', [STORAGE_USAGE_PROJECTION]: STORAGE_USAGE_PHASE } as const;
+  [SPORE_COUNT_PROJECTION]: 'spores', [PLAN_COUNT_PROJECTION]: 'plans', [WORK_HISTORY_PROJECTION]: 'workRuns', [STORAGE_USAGE_PROJECTION]: STORAGE_USAGE_PHASE, [LIFECYCLE_PROJECTION]: 'sessionLifecycle', [DEPENDENCY_PROJECTION]: 'publicationDependencies' } as const;
 export async function projectionReadiness(db: RelationalStore, projection: 'kpi' | 'publication' | keyof typeof SINGLE_PHASE): Promise<'ready' | 'building'> {
   const [rows] = await readSet(db, projectionPhases.bind(projection));
   if (projection === 'kpi') return kpiReadiness(rows).state;

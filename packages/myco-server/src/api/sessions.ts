@@ -3,6 +3,7 @@ import { getReleaseStatus } from '../core/provenance.js';
 import { nameOwnMachines, ownMachineNames } from '../read/capture.js';
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
+import { sessionLifecycleState } from '../db/documents/lifecycle.js';
 import { getSession, listSessionSummaries, projectStats, sessionDurationMs, type SessionFilters } from '../read/sessions.js';
 import { activityFeed } from '../read/activity.js';
 import { SESSION_ACTIVITY_TYPES, type SessionActivityType } from '../read/session-activity.js';
@@ -136,7 +137,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
     filesEdited: counters?.filesEdited ?? 0,
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },
-    session, resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),
+    session, lifecycle: await sessionLifecycleState(env.db, scope.projectId, sessionId), resume: resumeCommandFor(session.agent, session.sessionId, session.originPath), untitled: await untitledReason(env.db, scope.projectId, sessionId),
     counts: {
       userPrompts: counters?.userPrompts ?? 0, mycoCalls: counters?.mycoCalls ?? 0,
       prompts: counters?.prompts ?? 0, toolCalls: counters?.toolCalls ?? 0, failedTools: counters?.failedTools ?? 0,

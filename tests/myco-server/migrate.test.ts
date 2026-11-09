@@ -744,6 +744,9 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0725_v725.sql': '11b23c419844c547632338f930cc6f325b07a84429ab0c73b0a02b843570e960',
   '0726_v726.sql': '0d085d3dda1d1a938ee152419b97e9f33ddedfa8c05c80fee73c1fad929ce4b8',
   '0727_v727.sql': '3cf17d74ad9bcc8aee63a3e7fd4987c0d76252f27a9d2082458824d486d9bb35',
+  '0728_v728.sql': 'f1c83a9a70b127604d05e862bcd8e400df647e41b6ee9719897401e2e7e376a0',
+  '0729_v729.sql': 'b7079b30f3cafd2752df176d84ce4f1121b86bdf1f7c0ab5dd6007d7080b2a6a',
+  '0730_v730.sql': 'ec2327b12f300dd41ce161c5087fed7ec0e5fb14fae6b541fe938751cb9bc571',
 };
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -1430,6 +1433,7 @@ describe('versioned schema steps', () => {
         // A step row names a kind and an outcome from its own vocabulary.
         const values = cols.map((c) => (c.name === 'project_id' ? `'${projectId}'` : t === 'blobs' && c.name === 'generation' ? `'${crypto.randomUUID()}'`
           : ['document_publication_contributions','document_publication_totals'].includes(t) && c.name === 'kind' ? "'source'"
+          : t === 'publication_dependencies' && c.name === 'prerequisite_kind' ? "'read'" : t === 'publication_dependencies' && c.name === 'outcome' ? "'waiting'"
           : t === 'transcripts' && c.name === 'parser_context' ? `'{}'`
           : t === 'embedding_work_state' && c.name === 'kind' ? `'embedding'`
           : t === 'raw_resources' && c.name === 'provenance' ? `'missing'`
@@ -1465,6 +1469,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
+      'publication_dependencies','session_lifecycle_facts','session_user_prompt_firsts',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',
       'document_publication_contributions','document_publication_totals','document_publication_ready',

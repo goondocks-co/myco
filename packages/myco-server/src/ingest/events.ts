@@ -348,6 +348,7 @@ export async function planEventWrite(
         blob_key: spilledKey(spec, p),
         payload_bytes: e.payloadBytes.byteLength,
         ingest_nonce: write.nonce,
+        actor: write.actor,
       },
       ['created_at', 'received_at', 'payload_bytes'],
     ),

@@ -8,6 +8,8 @@ import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
  * archived human turns distinct.
  */
 import { describe, expect, it } from 'bun:test';
+import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
+import { LIFECYCLE_PHASE } from '@myco-server-worker/db/documents/lifecycle.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sqliteD1, seededSqlite, seedCredential } from './helpers/d1.js';
 import { envelope, uuid, memoryBlobStore } from './helpers/fixtures.js';
@@ -152,8 +154,8 @@ describe('a session\'s lifecycle', () => {
     expect(r.row()).toMatchObject({ endedAt: 2_000, endedBy: 'mem_1', requestedAt: 2_000 });
     await r.end(1_500, { actor: 'mem_2' });
     expect(r.row()).toMatchObject({ endedAt: 2_000, endedBy: 'mem_1' });
-    await r.end(2_000, { eventId: uuid(9), actor: 'mem_2' });
-    await r.end(2_000, { eventId: uuid(9), actor: 'mem_2' });
+    await r.end(2_000, { eventId: uuid(9000), actor: 'mem_2' });
+    await r.end(2_000, { eventId: uuid(9000), actor: 'mem_2' });
     expect(r.row()).toMatchObject({ endedAt: 2_000, endedBy: 'mem_1' });
     await r.end(3_000);
     expect(r.row()).toMatchObject({ endedAt: 3_000, endedBy: null });
@@ -175,6 +177,10 @@ it('keeps the newest archived user prompt distinct when no prompt directory exis
       VALUES('project',?,'archived-user',?,'prompt','cli',?,'hash',?,?)`)
       .bind(`prompt-${at}`,token.tokenId,JSON.stringify({promptId:uuid(at),origin:'user'}),at,at).run();
     await db.prepare(`UPDATE events SET payload='{}',payload_format='archived',archived_prompt_origin='user' WHERE event_id IN ('prompt-100','prompt-300')`).run();
+    // The rows above stand in for old captured history: the walk over its source events builds their facts.
+    await db.batch([...['session_lifecycle_facts','session_user_prompt_firsts'].map(table=>db.prepare(`DELETE FROM ${table} WHERE session_id='archived-user'`)),
+      db.prepare("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE projection='session_lifecycle'")]);
+    while(await catchUpPhase(db,LIFECYCLE_PHASE as never)>0);
     expect(await db.prepare("SELECT COUNT(*) n FROM session_prompts WHERE session_id='archived-user'").first(),name).toEqual({n:0});
     for(const at of [200,400]){
       const result=await ingestEvent(db,{projectId:'project',machineId:'machine',tokenId:token.tokenId,bodyBytes:1,now:1000},

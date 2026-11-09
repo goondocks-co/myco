@@ -19,7 +19,7 @@ import { BODY_ENCODING, encodePageChunk, PAGE_ENCODING, SESSION_OWNER, type DocR
 import { readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark } from '../content/document-writer.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
-import { resolvePresentedDates } from './projections.js';
+import { ensureSessionLifecycle, presentedDatesAfterPublication, settlePublishedTurn } from '../db/documents/lifecycle.js';
 import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
 import { sessionEditStatements } from './session-edits.js';
 import { heldToolCalls, turnStatisticsStatements, type StatisticsChange } from '../content/tool-statistics.js';
@@ -145,16 +145,9 @@ function sessionRowStatements(db: RelationalStore, projectId: string, sessionId:
           JOIN blobs b ON b.project_id=p.project_id AND b.key=p.blob_key
         WHERE json_extract(j.value,'$.blob') IS NOT NULL ON CONFLICT DO NOTHING`).bind(projectId, rows));
   }
-  if (latestUserPrompt !== null) {
-    statements.push(db.prepare(`UPDATE sessions SET ended_at=NULL,ended_by=NULL WHERE project_id=? AND session_id=? AND ended_at IS NOT NULL AND ended_at<?`)
-      .bind(projectId, sessionId, latestUserPrompt));
-  }
-  statements.push(resolvePresentedDates(db, projectId, sessionId, undefined, {
-    min: { sql: `(SELECT sp.created_at FROM session_prompts sp WHERE sp.project_id=? AND sp.session_id=? AND sp.generation=? AND sp.turn_key=sp.prompt_id
-      ORDER BY sp.ord LIMIT 1)`, params: [projectId, sessionId, generation] },
-    max: { sql: `MAX(COALESCE((SELECT d.last_record_at FROM session_documents d WHERE d.project_id=? AND d.session_id=?),0),COALESCE(?,0))`,
-      params: [projectId, sessionId, lastRecordAt] },
-  }));
+  statements.push(ensureSessionLifecycle(db, projectId, sessionId));
+  if (latestUserPrompt !== null) statements.push(settlePublishedTurn(db, projectId, sessionId));
+  statements.push(presentedDatesAfterPublication(db, projectId, sessionId, generation, lastRecordAt));
   return statements;
 }
 
@@ -687,7 +680,7 @@ export class DocumentBatch {
       statements.push(db.prepare(`WITH j(id,value) AS MATERIALIZED (SELECT json_extract(value,'$.id'),value FROM json_each(?1))
         UPDATE session_prompts SET ${kept('preview')},${kept('text_chars')},${count('tools')},${count('replies')},${count('children')},
           ${count('plans')},${kept('failed_tools')},${kept('myco_calls')},${kept('files_named')},${kept('tool_rollup')},${kept('tool_state')},tool_revision=tool_revision+1,${kept('input_hash')},${kept('input_chars')}
-        FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id`)
+        FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id AND prompt_id IN (SELECT id FROM j)`)
         .bind(JSON.stringify(page), p, s, g));
     }
     statements.push(...turnStatisticsStatements(db, [p, s, g], statistics, statistics.map(change => change.id)));

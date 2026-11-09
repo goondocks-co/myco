@@ -25,7 +25,6 @@ import { encodeCursor } from '@myco-server-worker/read/scope.js';
 import { listSessions } from '@myco-server-worker/read/sessions.js';
 import { listPlans } from '@myco-server-worker/read/children.js';
 import { heldTranscriptsFor } from '@myco-server-worker/read/transcript.js';
-import { resolvePresentedDates } from '@myco-server-worker/ingest/projections.js';
 
 import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 import { listSessionArtifacts } from '@myco-server-worker/read/session-artifacts.js';
@@ -113,22 +112,6 @@ describe('the reads a person waits on', () => {
     } finally {
       db.close();
     }
-  });
-
-  it('resolves an imported session\'s presented dates over indexes, on every table it reads', async () => {
-    // The refinement rides with the cursor on a parse pass, so a scan here is
-    // paid once per pass per imported transcript for the whole backfill.
-    const { db: recorder, statements } = recordingStore();
-    resolvePresentedDates(recorder, 'proj_1', 's1');
-    expect(statements).toHaveLength(1);
-
-    const db = migrated();
-    const plan = await planOf(db, statements[0].sql, statements[0].params);
-    db.close();
-    // Any SCAN at all, by whatever name the statement gives the table: a list of
-    // table names would not see a scan of one the statement aliases.
-    const scanned = plan.split('\n').filter((step) => /\bSCAN\b/.test(step));
-    expect({ scanned, plan }).toEqual({ scanned: [], plan });
   });
 
   it('asks nothing when it is given nothing to look up', async () => {

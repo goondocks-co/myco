@@ -1,6 +1,8 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet } from '../index.js';
 import { projectionPhases, publicationReady } from '../projections/catchup.js';
+import { DEPENDENCY_PROJECTION, DEPENDENCY_STATUS } from './dependencies.js';
+import { LIFECYCLE_PROJECTION } from './lifecycle.js';
 
 export interface DocumentStatus {
   sessions: { live: number; converting: number };
@@ -8,6 +10,10 @@ export interface DocumentStatus {
   queued: number;
   retired: number;
   differences: Record<string, number>;
+  /** Queued events waiting on a prerequisite: their cycle inspections pending and cycles found, or building while held causes are translated. */
+  dependencies: { waiting: number; inspecting: number; cycles: number } | { state: 'building' };
+  /** Whether every session's lifecycle facts are built from its history. */
+  lifecycle: 'ready' | 'building';
 }
 interface Totals { live: number; converting: number; lag: number; queued: number; retired: number }
 const totals = read<[], Totals>({ name: 'publication.statusTotals', sql: 'SELECT live,converting,lag,queued,retired FROM document_status_totals WHERE slot=1' });
@@ -18,8 +24,11 @@ export async function readDocumentStatus(db: RelationalStore): Promise<DocumentS
   const [phases, rows, classes] = await readSet(db, projectionPhases.bind('publication'), totals.bind(), differences.bind());
   if (!publicationReady(phases)) return { state: 'building' };
   const row = rows[0]!;
+  const [dependencyPhases, dependency, lifecyclePhases] = await readSet(db, projectionPhases.bind(DEPENDENCY_PROJECTION), DEPENDENCY_STATUS.bind(), projectionPhases.bind(LIFECYCLE_PROJECTION));
+  const dependencies = dependencyPhases.every(item => item.done === 1) && dependency[0] !== undefined ? dependency[0] : { state: 'building' as const };
   return { sessions: { live: row.live, converting: row.converting }, lagBytes: row.lag, queued: row.queued, retired: row.retired,
-    differences: Object.fromEntries(classes.map(item => [item.class, item.n])) };
+    differences: Object.fromEntries(classes.map(item => [item.class, item.n])), dependencies,
+    lifecycle: lifecyclePhases.length > 0 && lifecyclePhases.every(item => item.done === 1) ? 'ready' : 'building' };
 }
 
 interface DueBacklog {

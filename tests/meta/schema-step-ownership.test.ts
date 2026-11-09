@@ -2,6 +2,9 @@ import { REVISION_KINDS } from '@myco-server-worker/db/search/ranking.js';
 import { V723, V723_STATEMENTS } from '@myco-server-worker/db/schema-v723.js';
 import { V727, V727_STATEMENTS } from '@myco-server-worker/db/schema-v727.js';
 import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usage.js';
+import { SESSION_LIFECYCLE_STEPS } from '@myco-server-worker/db/schema-v728.js';
+import { SESSION_LIFECYCLE_EVENTS_INDEX, SESSION_LIFECYCLE_HISTORY_INDEXES, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
+import { publicationDependencySchema } from '@myco-server-worker/db/documents/dependencies.js';
 import { publicationOwnershipSchema } from '@myco-server-worker/db/documents/ownership.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -58,6 +61,14 @@ const LISTED: readonly Exception[] = [
       reason: sql.startsWith('CREATE TRIGGER') ? 'A registered blob moves the storage usage counters of its Project and the Deployment for every key the build has reached.'
         : 'The object-release drain reads its next page of each release queue from this order.' }];
   }),
+  ...SESSION_LIFECYCLE_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{step,object:match[1]!,table:match[2]!,
+      reason: match[2] === 'events' ? 'Each lifecycle event applies its own contribution to the keyed facts of its session in the event commit, never recounting history.'
+        : match[2] === 'transcripts' ? 'A transcript\'s import class moves its session\'s live-transcript count by the keyed delta.'
+        : match[2] === 'session_prompts' ? 'The latest user prompt a live document holds is one seek, not a count of the session\'s prompts.'
+        : 'Publication dependency rows keep their reverse lookups, totals and queue wake keyed.'}];
+  })),
   ...V723_STATEMENTS.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null ? [] : [{step:V723,object:match[1]!,table:match[2]!,
@@ -332,6 +343,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V727_STATEMENTS.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|UPDATE object_releases|DROP INDEX)/.test(sql)).map(sql => ({
     step: V727, sql, reason: 'Each release key carries when it is next due, and storage usage stays building until the catch-up has counted every registered blob.'
   })),
+  ...SESSION_LIFECYCLE_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO)/.test(sql)).map(sql => ({
+    step, sql, reason: 'Events gain their acting member, the wake continuation and totals row are seeded, and catch-up phases are registered.'
+  }))),
   ...V723_STATEMENTS.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
     step: V723, sql, reason: 'Document metadata remains in source blobs with a keyed directory and an explicit chunk class.'
   })),
@@ -850,5 +864,6 @@ it('pins the frozen publication directory step to its generator', () => {
 
 it('pins the frozen publication ownership step to its generators', () => {
   expect(V727_STATEMENTS.slice(0, storageUsageSchemaStatements().length)).toEqual(storageUsageSchemaStatements());
+  expect(SESSION_LIFECYCLE_STEPS.map(step => step.statements)).toEqual([[SESSION_LIFECYCLE_EVENTS_INDEX], SESSION_LIFECYCLE_HISTORY_INDEXES, [...sessionLifecycleSchema(), ...publicationDependencySchema()]]);
   expect(V723_STATEMENTS).toEqual([...publicationOwnershipSchema(),...publicationPinSchema(),...publicationFailureSchema(),...publicationRebuildSchema()]);
 });

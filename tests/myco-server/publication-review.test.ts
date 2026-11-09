@@ -6,6 +6,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { publishDocuments, PUBLISH_BACKOFF_MIN_MS, PUBLISH_BACKOFF_MAX_MS } from '@myco-server-worker/ingest/publish.js';
+import { inspectPublicationCycles } from '@myco-server-worker/db/documents/dependencies.js';
 import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { documentPromptTools } from '@myco-server-worker/content/session-turns.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
@@ -91,7 +92,10 @@ test('queued self-parent and multi-prompt cycles publish without holding later t
       envelope({ eventId: uuid(110), sessionId: 'cycle', kind: 'prompt', payload: { promptId: uuid(43), text: 'later turn', origin: 'user' } }),
       envelope({ eventId: uuid(111), sessionId: 'cycle', kind: 'response', payload: { responseId: uuid(44), promptId: uuid(41), text: 'cycle reply' } })];
     for (const event of events) expect((await ingestEvent(db, ctx, event, env)).persisted, target).toBe(true);
-    for (let pass = 0; pass < 4; pass++) await publishDocuments(env, now + pass * PUBLISH_BACKOFF_MAX_MS, limits());
+    for (let pass = 0; pass < 4; pass++) {
+      await publishDocuments(env, now + pass * PUBLISH_BACKOFF_MAX_MS, limits());
+      await inspectPublicationCycles(db, now + pass * PUBLISH_BACKOFF_MAX_MS);
+    }
     expect(await db.prepare(`SELECT prompts,replies,first_prompt,open_turn_key,due_at FROM session_documents WHERE session_id='cycle'`).first(), target)
       .toEqual({ prompts: size + 1, replies: 1, first_prompt: 'later turn', open_turn_key: uuid(43), due_at: null });
     expect((await readPage(env, 'project', 'cycle', '', 0))!.map(record => record.id).sort(), target)

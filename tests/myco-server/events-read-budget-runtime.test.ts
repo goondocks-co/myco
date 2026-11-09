@@ -24,6 +24,11 @@ const PROJECT = 'proj_event_budget';
 const BLOB = await sha256Hex('x');
 const CONTEXT = { projectId: PROJECT, machineId: 'machine', tokenId: 'credential', bodyBytes: 100, now: 2_000 };
 const ROW_READ_LIMIT = 64;
+/** A complete capture settles its session end and presented dates from the keyed lifecycle facts: the fact row, the phase row, the transcript and document seeks. */
+const LIFECYCLE_CAPTURE_READS = 16;
+/** The lifecycle event walk's index, and the facts row a session's first lifecycle event creates. */
+const LIFECYCLE_EVENT_INDEX_WRITES = 1;
+const LIFECYCLE_FACT_INSERT_WRITES = 1;
 const CORPUS_SIZES = [1_000, 10_000] as const;
 const ACTIVE_COUNTER_INDEX_REPLACE_WRITES = 2;
 const ACTIVE_COUNTER_INDEX_UPDATE_WRITES = 1;
@@ -43,6 +48,12 @@ const TRANSCRIPT_HEALTH_INDEX_WRITES = 1;
 const CAPTURE_HEAD_INSERT_WRITES = 1;
 /** A new session contributes one fact, one daily row and at most one lineage row. */
 const KPI_PROJECTION_WRITES = 3;
+/** A human prompt's first delivery records its identity's earliest instant and the session's latest turn, and writes one idx_session_user_prompt_firsts entry. */
+const LIFECYCLE_PROMPT_WRITES = 2;
+/** An end moves the session's winning-end fact row. */
+const LIFECYCLE_END_WRITES = 1;
+/** A live transcript's arrival moves its session's live-transcript count. */
+const LIFECYCLE_TRANSCRIPT_WRITES = 1;
 /** A live prompt contributes one fact and one daily row. */
 const KPI_PROMPT_PROJECTION_WRITES = 2;
 /** An unpinned transcript contributes one scheme-conflict fact and one daily row. */
@@ -62,11 +73,11 @@ const PUBLICATION_LIFECYCLE_REVISION_WRITES = 1;
 /** A registered transcript contributes its pin, group admission and scheme total. */
 const PUBLICATION_PIN_WRITES = 3;
 const CAPTURE_WRITE_LIMITS = {
-  'session.start': 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
-  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': PUBLICATION_PIN_WRITES + PUBLICATION_DIRECTORY_INDEX_WRITES + 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
+  'session.start': LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_FACT_INSERT_WRITES + 38 + SESSION_HEALTH_INDEX_WRITES + CAPTURE_HEAD_INSERT_WRITES + KPI_PROJECTION_WRITES, prompt: 30 + LIFECYCLE_EVENT_INDEX_WRITES + LIFECYCLE_PROMPT_WRITES + ACTIVE_COUNTER_INDEX_REPLACE_WRITES + LEARNING_QUEUE_WRITES + DOCUMENT_QUEUE_WRITES + KPI_PROMPT_PROJECTION_WRITES,
+  notification: 16 + ACTIVE_COUNTER_INDEX_UPDATE_WRITES, 'transcripts insert': LIFECYCLE_TRANSCRIPT_WRITES + PUBLICATION_PIN_WRITES + PUBLICATION_DIRECTORY_INDEX_WRITES + 14 + DOCUMENT_DUE_WRITES + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + KPI_TRANSCRIPT_PROJECTION_WRITES + PUBLICATION_CONTRIBUTION_WRITES,
   'transcript grows after full publish': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES,
   'transcript grows during directory pass': 3 + TRANSCRIPT_PAGE_INDEX_WRITES + TRANSCRIPT_HEALTH_INDEX_WRITES + PUBLICATION_CONTRIBUTION_WRITES + PUBLICATION_FRONTIER_REOPEN_WRITES + PUBLICATION_DIRECTORY_RESTART_WRITES,
-  'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': 26 + 2 * PUBLICATION_LIFECYCLE_REVISION_WRITES, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
+  'publication-progress UPDATE': 3 + PUBLICATION_CONTRIBUTION_WRITES, 'session.end': 26 + 2 * PUBLICATION_LIFECYCLE_REVISION_WRITES + LIFECYCLE_END_WRITES + LIFECYCLE_EVENT_INDEX_WRITES, 'learning slice completion': LEARNING_SLICE_COMPLETION_WRITES,
 } as const;
 type CaptureWrite = keyof typeof CAPTURE_WRITE_LIMITS;
 const CAPTURE_WRITE_NAMES = Object.keys(CAPTURE_WRITE_LIMITS) as CaptureWrite[];
@@ -84,6 +95,8 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
       VALUES('credential','member','machine','hash',1,99999999,'credential',1)`).run();
     await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES(?,'session','machine','credential',1,1)`).bind(PROJECT).run();
+    // A session whose lifecycle facts already stand: a first touch reconciles history once, and this reads the steady state after it.
+    await db.prepare("INSERT INTO session_lifecycle_facts(project_id,session_id) VALUES(?,'session')").bind(PROJECT).run();
     const blobs = memoryBlobStore();
     const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: blobs, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
     const uploaded = await handleBlob(env, new Request(`http://127.0.0.1/blobs/${BLOB}`, {
@@ -146,7 +159,7 @@ it('D1 event admission reads stay bounded as unrelated archive bundles and event
     expect(blobs.gets).toHaveLength(CORPUS_SIZES.length);
     for (const [index, rowsRead] of reads.entries()) {
       expect(rowsRead, `event admission at ${CORPUS_SIZES[index]} archive bundles`).toBeLessThanOrEqual(ROW_READ_LIMIT);
-      expect(captureReads[index]!, `complete capture at ${CORPUS_SIZES[index]} archive bundles`).toBeLessThanOrEqual(ROW_READ_LIMIT);
+      expect(captureReads[index]!, `complete capture at ${CORPUS_SIZES[index]} archive bundles`).toBeLessThanOrEqual(ROW_READ_LIMIT + LIFECYCLE_CAPTURE_READS);
     }
     expect(reads[1]).toBe(reads[0]);
     for (const [name, rows] of [['blob-media-type', media]] as const) {
