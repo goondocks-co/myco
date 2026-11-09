@@ -6,6 +6,7 @@ import { lineageHeadSchemaStatements } from '@myco-server-worker/db/identity/lin
 import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usage.js';
 import { SESSION_LIFECYCLE_STEPS, V730 } from '@myco-server-worker/db/schema-v728.js';
 import { CARD_SETTLE_AND_LOCATOR_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2b2.js';
+import { VNEXT_S2C_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2c.js';
 import { SESSION_LIFECYCLE_EVENTS_INDEX, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -86,6 +87,11 @@ const LISTED: readonly Exception[] = [
       reason: sql.startsWith('CREATE TRIGGER') ? 'A registered blob moves the storage usage counters of its Project and the Deployment for every key the build has reached.'
         : 'The object-release drain reads its next page of each release queue from this order.' }];
   }),
+  ...VNEXT_S2C_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE TRIGGER(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || match[2] === 'session_title_work' ? [] : [{ step, object: match[1]!, table: match[2]!,
+      reason: 'A session\'s own columns, its live document and its transcripts move its one title work row, so a pass reads due and ready rows instead of scanning sessions.' }];
+  })),
   ...CARD_SETTLE_AND_LOCATOR_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
     const match = /^CREATE INDEX(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null || match[2] === 'document_locator_repair' ? [] : [{step,object:match[1]!,table:match[2]!,
@@ -382,6 +388,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
     step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'
   })),
+  ...VNEXT_S2C_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(INSERT INTO projection_catchup|DROP INDEX)/.test(sql)).map(sql => ({
+    step, sql, reason: 'Title work is seeded through the shared catch-up, and the four titling scan indexes go once their readers read title work.'
+  }))),
   ...CARD_SETTLE_AND_LOCATOR_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|DROP INDEX)/.test(sql)).map(sql => ({
     step, sql, reason: 'A pending card records the deadline it was promoted at, the two scan indexes go with their reader, and the locator repair catch-up is registered.'
   }))),

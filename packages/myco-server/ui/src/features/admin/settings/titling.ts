@@ -44,12 +44,15 @@ export function waitingWords(p: Pick<TitlingBackfillProgress, 'waiting' | 'runsP
 
 /** Where titling stands in full: what waits for a title, what holds it, when titles start, and how today went. */
 export function progressWords(p: TitlingBackfillProgress, now: number = Date.now()): string {
-  const owed = p.owed === 0
-    ? 'No session that ended here is waiting for a title.'
-    : `${plural(p.owed, 'session that ended here is', 'sessions that ended here are')} waiting for a title; they are titled on their own within the daily limit.`;
-  const left = p.remaining === 0
-    ? 'No imported session is waiting for a title.'
-    : `${plural(p.remaining, 'imported session is', 'imported sessions are')} waiting for a title.`;
+  const building = 'Still counting which sessions wait for a title.';
+  const owed = p.owed === null ? building
+    : p.owed === 0
+      ? 'No session that ended here is waiting for a title.'
+      : `${plural(p.owed, 'session that ended here is', 'sessions that ended here are')} waiting for a title; they are titled on their own within the daily limit.`;
+  const left = p.remaining === null ? (p.owed === null ? '' : building)
+    : p.remaining === 0
+      ? 'No imported session is waiting for a title.'
+      : `${plural(p.remaining, 'imported session is', 'imported sessions are')} waiting for a title.`;
   const imported = !p.backfillEnabled ? `${left} Titling imported sessions is off.`
     : !p.scheduledTasksEnabled ? `${left} Titling them is on, but runs only while Work on a schedule is on.`
     : left;

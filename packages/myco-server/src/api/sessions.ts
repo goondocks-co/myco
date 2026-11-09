@@ -25,8 +25,8 @@ import {
   children_listAttachments as listAttachments,
   children_listContextInjections as listContextInjections,
   children_listPlans as listPlans,
-  children_untitledReason as untitledReason,
 } from '../read/catalog/children.js';
+import { untitledReason } from '../db/sessions/title-work.js';
 import {
   turns_parseOrigins as parseOrigins,
   turns_sessionTurnContexts as sessionTurnContexts,

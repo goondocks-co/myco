@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { sessionMaterialReadySql } from '../../read/material-readiness.js';
+import { sessionMaterialReadySql } from './material.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
 import { occurredAt, presentedEndedAt, presentedStartedAt } from '../session-dates.js';

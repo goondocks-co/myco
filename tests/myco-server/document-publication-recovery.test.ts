@@ -6,7 +6,7 @@ import { rereadTranscripts } from '@myco-server-worker/ingest/parse.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { documentRecord } from '@myco-server-worker/content/document-records.js';
-import { assertSessionMaterialReady } from '@myco-server-worker/read/material-readiness.js';
+import { assertSessionMaterialReady } from '@myco-server-worker/db/sessions/material.js';
 import { readDocumentStatus } from '@myco-server-worker/db/documents/status.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
 import { documentPromptTools } from '@myco-server-worker/content/session-turns.js';

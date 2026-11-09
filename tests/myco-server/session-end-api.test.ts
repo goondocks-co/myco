@@ -6,9 +6,8 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
-import {
-  children_listReadyTitleSessions as listReadyTitleSessions,
-} from '@myco-server-worker/read/catalog/children.js';
+import { takeTitleRequests } from '@myco-server-worker/db/sessions/title-work.js';
+import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { endSession } from '@myco-server-worker/core/session-end.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -43,7 +42,7 @@ describe('ending a session as a person', () => {
     expect(body.outcome).toBe('ended');
     expect(r.row('s1')).toEqual({ endedAt: body.endedAt, endedBy: 'mem_machine_1', requestedAt: body.endedAt, lastReceivedAt: NOW - 5_000 });
     expect(r.sqlite.query(`SELECT kind, channel, producer_adapter AS adapter, token_id AS tokenId FROM events WHERE kind='session.end'`).all()).toEqual([{ kind: 'session.end', channel: 'http', adapter: 'deployment', tokenId: r.tokenId }]);
-    expect((await listReadyTitleSessions(r.db, 10, NOW - 5_000)).map((s) => s.sessionId)).toEqual(['s1']);
+    expect((await takeTitleRequests(r.db, { now: NOW - 5_000 + SESSION_END_SETTLE_MS, idleBefore: 0 }, 10)).map((s) => s.sessionId)).toEqual(['s1']);
 
     const again = await r.post('s1');
     expect(await again.json() as unknown).toEqual({ outcome: 'already_ended', endedAt: body.endedAt });

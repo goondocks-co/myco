@@ -1,6 +1,7 @@
-import type { RelationalStore } from '../core/adapters.js';
-import { titleRunInFlightSql } from '../db/session-read-model.js';
-import { TITLING_MAX_ATTEMPTS } from '../constants.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { TITLING_MAX_ATTEMPTS } from '../../constants.js';
+import { first, read } from '../index.js';
+import { titleRunInFlightSql } from '../session-read-model.js';
 
 /**
  * An automatic titling claim the session admits: under the attempt bound, and
@@ -31,9 +32,11 @@ export class SessionMaterialPendingError extends Error {
   constructor() { super('Session capture is incomplete or has errors; retry after its transcripts are fully published.'); }
 }
 
+const materialReady = read<[project: string, session: string], { ready: number }>({ name: 'sessionMaterial.ready',
+  sql: `SELECT ${sessionMaterialReadySql('x')} AS ready FROM (SELECT ?1 AS project_id, ?2 AS session_id) x` });
+
 /** Refuses a session whose publisher has not caught up with it. */
 export async function assertSessionMaterialReady(db: RelationalStore, projectId: string, sessionId: string): Promise<void> {
-  const row = await db.prepare(`SELECT ${sessionMaterialReadySql('x')} AS ready FROM (SELECT ? AS project_id, ? AS session_id) x`)
-    .bind(projectId, sessionId).first<{ ready: number }>();
+  const row = await first(db, materialReady.bind(projectId, sessionId));
   if (row?.ready !== 1) throw new SessionMaterialPendingError();
 }

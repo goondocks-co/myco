@@ -22,7 +22,7 @@ import { claimLearningRetryWrite, LEARNING_BACKOFF_MS, pendingCardsStatement, se
 import { FRESH_LEARNING_MS, learningRangeSql } from '../db/runs/learning-policy.js';
 import { learningHistoryEnabledSql } from './settings.js';
 import { writeGuardBatch } from './write-guard-store.js';
-import { SessionMaterialPendingError } from '../read/material-readiness.js';
+import { SessionMaterialPendingError } from '../db/sessions/material.js';
 
 /** Due turns one claim reads at most. */
 export const CARD_CLAIM_TURNS = 64;

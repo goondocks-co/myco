@@ -5,7 +5,8 @@
  * settle window and its publisher has caught up with every byte it holds, queueing a `title-summary` run
  * for a worker that calls back to the Deployment's origin.
  */
-import { backfillTitles, OWNER_TITLING_WINDOW_MS, TITLING_RUN_TIMEOUT_SECONDS, titleReadySessions } from '@myco-server-worker/core/titling.js';
+import { backfillTitles, titleReadySessions } from '@myco-server-worker/core/titling.js';
+import { OWNER_TITLING_WINDOW_MS, TITLE_WORK_RECHECK_MS, TITLING_RUN_TIMEOUT_SECONDS } from '@myco-server-worker/db/sessions/title-work.js';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
 import { longestDeclaredHookTimeoutMs } from '@myco/member/budget.js';
 import { POWER_THRESHOLDS, runTick, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
@@ -53,12 +54,13 @@ describe('the events route', () => {
     expect(await backfillTitles(env, later + 2, 'idle')).toBe(0);
     e.sqlite.run(`UPDATE agent_runs SET status = 'failed' WHERE id = 'owner-attempt'`);
     // Two wakes at once make one retry.
-    expect((await Promise.all([backfillTitles(env, later + 3, 'idle'), backfillTitles(env, later + 3, 'idle')])).sort()).toEqual([0, 1]);
+    const rechecked = later + TITLE_WORK_RECHECK_MS + 3;
+    expect((await Promise.all([backfillTitles(env, rechecked, 'idle'), backfillTitles(env, rechecked, 'idle')])).sort()).toEqual([0, 1]);
     expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM agent_runs WHERE id != 'owner-attempt'`).get()).toEqual({ n: 2 });
     // Never over a title that stands.
-    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [later + 4]);
+    e.sqlite.run(`UPDATE agent_runs SET status = 'failed', completed_at = ? WHERE status = 'queued'`, [rechecked + 1]);
     e.sqlite.run(`UPDATE sessions SET title = 'A title already written', summary = 'Keep this result' WHERE session_id = 'sess_1'`);
-    expect(await backfillTitles(env, later + 2 * OWNER_TITLING_WINDOW_MS, 'idle')).toBe(0);
+    expect(await backfillTitles(env, rechecked + 2 * OWNER_TITLING_WINDOW_MS, 'idle')).toBe(0);
   });
 
   it('persists a deferred title with the admitted live end and retries after publication, while import creates no request', async () => {

@@ -4,7 +4,7 @@ import type { RelationalStore } from '../core/adapters.js';
 import { commitAttributedWrite } from './runs/attribution.js';
 import { titleRunInFlightSql, notTombstonedSql } from './session-read-model.js';
 import { type RunWrite } from './runs/evidence.js';
-import { sessionMaterialReadySql, titlingClaimAvailableSql, transcriptsPublishedSql } from '../read/material-readiness.js';
+import { sessionMaterialReadySql, titlingClaimAvailableSql, transcriptsPublishedSql } from './sessions/material.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
 
 const stamp = read<[string, string], { titled_at: number | null }>({ name: 'sessionTitle.stamp', sql: 'SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?' });
