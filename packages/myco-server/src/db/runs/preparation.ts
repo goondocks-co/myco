@@ -3,7 +3,8 @@ import { parseMapSourcePin, type MapSourcePin } from '@goondocks/myco-shared/can
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
 import { renewingLeaseAuthority } from '../../core/worker-lease.js';
-import { read, readSet } from '../index.js';
+import { commit, first, read, readSet, write, type BindValue, type Statement } from '../index.js';
+import { leaseShape, shapedStatements } from './statement-shapes.js';
 import { knowledgeUnavailable } from './attributed-writes.js';
 import { commitAttributedWrite } from './attribution.js';
 import { MUTATE_ATTEMPTS } from './state.js';
@@ -44,23 +45,27 @@ export async function pinRepositoryForRun(db: RelationalStore, scope: ReadScope,
   return result === null ? null : result.committed ? pin : repositoryPinOfRun(result.row);
 }
 
+const mapRepositoryPin = shapedStatements<Statement<BindValue[], { id: string }, 'write'>>();
+const preparationPin = shapedStatements<Statement<BindValue[], { id: string }, 'write'>>();
+const knowledgeCheckoutHeld = shapedStatements<Statement<BindValue[], { checkout: string | null; instruction: string | null }, 'read'>>();
+
 /** Pin a map run's repository and source input in one guarded write. */
 export async function pinMapRepositoryForRun(
   db: RelationalStore, scope: ReadScope, run: RunRow, repository: RepositoryPin, source: MapSourcePin, lease: RunLease,
 ): Promise<{ committed: true } | { committed: false; row: RunRow } | null> {
   if (run.dispatchedBy === null) return null;
   const authority = renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy, true);
-  const write = await db.prepare(`UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'),
+  const pin = mapRepositoryPin(leaseShape(lease.worker, run.dispatchedBy), shape => write<BindValue[], { id: string }>({ name: `runs.pinMapRepository${shape}`, sql: `UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'),
       '$.repository', json(?), '$.canopy', json(?))
     WHERE project_id = ? AND id = ? AND ${authority.sql}
       AND json_type(COALESCE(run_context, '{}'), '$.canopy') IS NULL
       AND (json_type(COALESCE(run_context, '{}'), '$.repository') IS NULL
         OR (json_extract(run_context, '$.repository.url') = ?
           AND json_extract(run_context, '$.repository.branch') = ?
-          AND json_extract(run_context, '$.repository.commit') = ?)) RETURNING id`)
-    .bind(JSON.stringify(repository), JSON.stringify(source), scope.projectId, run.id, ...authority.params,
-      repository.url, repository.branch, repository.commit).run();
-  if (write.results.length === 1) return { committed: true };
+          AND json_extract(run_context, '$.repository.commit') = ?)) RETURNING id` }));
+  const [pinned] = await commit(db, pin.bind(JSON.stringify(repository), JSON.stringify(source), scope.projectId, run.id, ...authority.params as BindValue[],
+    repository.url, repository.branch, repository.commit));
+  if (pinned.results.length === 1) return { committed: true };
   if (await workerRunLeaseExpiry(db, scope, run.id, lease.worker, lease.now, run.dispatchedBy) === null) return null;
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
@@ -86,11 +91,11 @@ async function pinRunPreparation(db: RelationalStore, scope: ReadScope, run: Run
   const authority = lease === undefined
     ? { sql: "status = 'running' AND dispatched_by = ?", params: [run.dispatchedBy] }
     : renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy ?? undefined, true);
-  const write = await db.prepare(`UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), ?, json(?))
+  const pin = preparationPin(lease === undefined ? 'Held' : leaseShape(lease.worker, run.dispatchedBy ?? undefined), shape => write<BindValue[], { id: string }>({ name: `runs.pinPreparation${shape}`, sql: `UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), ?, json(?))
     WHERE project_id = ? AND id = ? AND ${authority.sql}
-      AND json_type(COALESCE(run_context, '{}'), ?) IS NULL RETURNING id`)
-    .bind(path, JSON.stringify(value), scope.projectId, run.id, ...authority.params, path).run();
-  if (write.results.length === 1) return { committed: true };
+      AND json_type(COALESCE(run_context, '{}'), ?) IS NULL RETURNING id` }));
+  const [pinned] = await commit(db, pin.bind(path, JSON.stringify(value), scope.projectId, run.id, ...authority.params as BindValue[], path));
+  if (pinned.results.length === 1) return { committed: true };
   if (lease !== undefined && await workerRunLeaseExpiry(db, scope, run.id, lease.worker, lease.now, run.dispatchedBy ?? undefined) === null) return null;
   const fresh = await getRun(db, scope, run.id);
   if (fresh === null || fresh.status !== 'running' || fresh.dispatchedBy !== run.dispatchedBy) return null;
@@ -102,6 +107,8 @@ export async function recordKnowledgeRepositoryUnavailable(db: RelationalStore, 
   failure: RepositoryFailure, lease: RunLease): Promise<boolean> {
   if (run.dispatchedBy === null || !KNOWLEDGE_REPOSITORY_TASKS.includes(run.task ?? '')) return false;
   const authority = renewingLeaseAuthority(lease.worker, lease.now, run.dispatchedBy, true);
+  const heldCheckout = knowledgeCheckoutHeld(leaseShape(lease.worker, run.dispatchedBy), shape => read<BindValue[], { checkout: string | null; instruction: string | null }>({ name: `runs.knowledgeCheckoutHeld${shape}`, sql:
+    `SELECT json_type(run_context,'$.checkout') AS checkout,instruction FROM agent_runs WHERE project_id=? AND id=? AND ${authority.sql}` }));
   for (let attempt = 0; attempt < MUTATE_ATTEMPTS; attempt += 1) {
     const [[prompt]] = await readSet(db, instructionRead.bind(scope.projectId, run.id));
     // The rewrite lands only over the instruction it is derived from; a newer instruction is read again and rewritten.
@@ -109,8 +116,7 @@ export async function recordKnowledgeRepositoryUnavailable(db: RelationalStore, 
     const result = await commitAttributedWrite(db,scope,mutation,{runId:run.id,toolName:'worker_repository',op:'unavailable',
       detail:{code:failure.code},recordedAt:lease.now});
     if (result.results.length === 1) return true;
-    const held = await db.prepare(`SELECT json_type(run_context,'$.checkout') AS checkout,instruction FROM agent_runs WHERE project_id=? AND id=? AND ${authority.sql}`)
-      .bind(scope.projectId,run.id,...authority.params).first<{checkout:string|null;instruction:string|null}>();
+    const held = await first(db, heldCheckout.bind(scope.projectId, run.id, ...authority.params as BindValue[]));
     if (held === null) return false;
     if (held.checkout === null) return true;
     if (held.checkout !== 'object' || held.instruction === (prompt?.instruction ?? null)) return false;

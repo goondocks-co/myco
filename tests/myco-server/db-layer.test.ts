@@ -2,7 +2,7 @@ import { write } from '@myco-server-worker/db/index.js';
 import { expect, it } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript-v6';
-import { boundaryInventory, boundarySites, boundaryViolations, changeCountInventory, changeCountSites, changeCountViolations } from './helpers/db-boundary.js';
+import { boundaryInventory, boundarySites, boundaryViolations, changeCountInventory, changeCountSites, changeCountViolations, gatedSites, staleStoreAllowances } from './helpers/db-boundary.js';
 
 const PENDING: ReadonlyMap<string, number> = new Map([
   ['api/runners.ts', 1],
@@ -16,7 +16,7 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['auth/member-write-store.ts', 2],
   ['auth/members-admin.ts', 17],
   ['auth/runners.ts', 84],
-  ['auth/tokens.ts', 30],
+  ['auth/tokens.ts', 31],
   ['content/document-reader.ts', 9],
   ['content/session-pages.ts', 12],
   ['content/session-turns.ts', 14],
@@ -78,9 +78,9 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/tombstones.ts', 35],
   ['core/turn-card-prompt.ts', 1],
   ['core/turn-cards.ts', 17],
-  ['core/worker-contacts.ts', 27],
+  ['core/worker-contacts.ts', 28],
   ['core/worker-lease.ts', 2],
-  ['core/write-guard-store.ts', 3],
+  ['core/write-guard-store.ts', 4],
   ['ingest/artifact-record.ts', 2],
   ['ingest/card-settle.ts', 2],
   ['ingest/document-admission.ts', 2],
@@ -136,6 +136,11 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['read/transcript.ts', 10],
   ['read/uncaptured.ts', 5],
   ['routes.ts', 4],
+  // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
+  ['db/meta/budget-estimates.ts', 3], // A restore's guard is composed from the columns of the rows it replaces.
+  ['db/runs/attribution.ts', 1], // Learning completion passes companions core still composes.
+  ['db/runs/change.ts', 2], // A run update's column set varies with the caller; its companions are core statements.
+  ['db/storage/cleanup.ts', 1], // A page commits core/archive-bundle statements.
 ]);
 
 /** Reads of a statement's change count awaiting their slice: decide from RETURNING or an in-batch assertion, then lower the count. */
@@ -171,6 +176,44 @@ const inventory = (text: string) => new Map([['core/example.ts', boundarySites(s
 it('keeps SQL producers and store execution inside db, with exact temporary exceptions', () => {
   const root = fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url));
   expect(boundaryViolations(boundaryInventory(root), PENDING)).toEqual([]);
+});
+
+it('names only allowances that still reach the store', () => {
+  expect(staleStoreAllowances(fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url)))).toEqual([]);
+});
+
+it('counts direct store calls inside db but not SQL text, and leaves allowed and frozen files alone', () => {
+  const sites = boundarySites(source('db.prepare(sql); db.batch([]); const text = `SELECT id FROM runs WHERE id = ?`; prepareBound(db, bound);'));
+  expect(gatedSites('db/runs/example.ts', sites).map(site => site.kind)).toEqual(['prepare', 'batch']);
+  expect(gatedSites('db/kernel/commit.ts', sites)).toEqual([]);
+  expect(gatedSites('db/schema-v117.ts', sites)).toEqual([]);
+  expect(boundaryViolations(new Map([['db/runs/example.ts', gatedSites('db/runs/example.ts', sites)]]), new Map())).toEqual([
+    'db/runs/example.ts: 2 new direct store calls; use a kernel definition and commit',
+  ]);
+});
+
+it('counts a call compiling a Bound outside db under a known name or by its signature', () => {
+  expect(boundarySites(source('prepareClaimCompanion(db, bound);')).map(site => site.kind)).toEqual(['compile']);
+  const text = `
+    interface Bound { name: string }
+    interface PreparedStatement { run(): void }
+    declare function renamed(db: unknown, bound: Bound): PreparedStatement;
+    declare function unrelated(db: unknown, name: string): PreparedStatement;
+    declare function nullable(db: unknown, bound: Bound | string): PreparedStatement | string;
+    declare function spread(...args: [unknown, Bound]): PreparedStatement;
+    declare const kernel: { renamed(db: unknown, bound: Bound): PreparedStatement };
+    declare const held: Bound;
+    renamed(null, held);
+    unrelated(null, 'x');
+    nullable(null, held);
+    spread(null, held);
+    kernel.renamed(null, held);
+  `;
+  const file = source(text);
+  const host = ts.createCompilerHost({ noLib: true });
+  host.getSourceFile = name => name === file.fileName ? file : undefined;
+  const program = ts.createProgram([file.fileName], { noLib: true }, host);
+  expect(boundarySites(file, program.getTypeChecker()).map(site => site.line)).toEqual([10, 12, 13, 14]);
 });
 
 it('keeps change-count reads to the store adapters, with exact temporary exceptions', () => {

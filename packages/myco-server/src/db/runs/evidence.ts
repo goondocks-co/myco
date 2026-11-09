@@ -3,7 +3,8 @@ import { storedAudit, type RunAudit } from '../../core/run-audit.js';
 import { notTombstonedSql } from '../session-read-model.js';
 import { emit } from '../../telemetry.js';
 import type { ReadScope } from '../../read/scope.js';
-import { commit, read, write } from '../index.js';
+import { commit, read, rows, write, type BindValue, type Statement } from '../index.js';
+import { shapedStatements } from './statement-shapes.js';
 import { runCallerGuard } from './claim.js';
 import type { RunCaller } from './lifecycle.js';
 import { RUN_EVIDENCE_READY_SQL } from './evidence-schema.js';
@@ -50,18 +51,19 @@ export interface ReportInsert {
   createdAt: number;
 }
 
+const reportInsert = shapedStatements<Statement<BindValue[], { id: number }, 'write'>>();
+
 /** Record one report against a run this Project holds; an unknown run or an unregistered agent writes nothing and answers false — a foreign-key throw would read as retryable, and neither condition is. */
 export async function insertReport(db: RelationalStore, scope: ReadScope, report: ReportInsert, caller?: RunCaller): Promise<boolean> {
   const guard = runCallerGuard(caller);
-  const inserted = await db
-    .prepare(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, audit, created_at)
+  const statement = reportInsert(caller === undefined ? 'Any' : 'Caller', shape => write<BindValue[], { id: number }>({ name: `runs.insertReport${shape}`, sql:
+    `INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, audit, created_at)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?
         WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?${guard.sql})
-          AND EXISTS (SELECT 1 FROM agents WHERE id = ?) RETURNING id`)
-    .bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.audit, report.createdAt,
-          scope.projectId, report.runId, ...guard.params, report.agentId)
-    .all<{ id: number }>();
-  return inserted.results.length === 1;
+          AND EXISTS (SELECT 1 FROM agents WHERE id = ?) RETURNING id` }));
+  const inserted = await rows(db, statement.bind(scope.projectId, report.runId, report.agentId, report.action, report.summary, report.details, report.audit, report.createdAt,
+    scope.projectId, report.runId, ...guard.params, report.agentId));
+  return inserted.length === 1;
 }
 
 /**
@@ -199,15 +201,15 @@ interface RunEventRowInsert {
   recordedAt: number;
 }
 
+const runEventInsert = write<[project: string, run: string, phase: string | null, type: string, tool: string | null, outcome: string | null, duration: number | null, payload: string | null, at: number, heldProject: string, heldRun: string], { landed: number }>({ name: 'runs.insertEvent', sql:
+  `INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?) RETURNING 1 AS landed` });
+
 /** Record a burst of run events in one batch; each row lands independently through its own EXISTS guard, and a row naming a run this Project does not hold writes nothing. Answers how many landed. */
 async function recordRunEvents(db: RelationalStore, scope: ReadScope, events: readonly RunEventRowInsert[]): Promise<number> {
-  const statements = events.map((event) => db
-    .prepare(`INSERT INTO agent_run_events (project_id, run_id, phase_name, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-        WHERE EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?) RETURNING 1 AS landed`)
-    .bind(scope.projectId, event.runId, event.phaseName, event.eventType, event.toolName, event.outcome, event.durationMs, event.payload, event.recordedAt,
-          scope.projectId, event.runId));
-  const results = await db.batch(statements);
+  const results = await commit(db, ...events.map((event) => runEventInsert.bind(scope.projectId, event.runId, event.phaseName, event.eventType, event.toolName, event.outcome, event.durationMs, event.payload, event.recordedAt,
+    scope.projectId, event.runId)));
   return results.reduce((landed, result) => landed + result.results.length, 0);
 }
 

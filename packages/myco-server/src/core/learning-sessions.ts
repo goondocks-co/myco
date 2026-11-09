@@ -1,7 +1,6 @@
 import { servedRecords } from '../db/runs/served.js';
 import { learningCompleted } from '../db/runs/attributed-writes.js';
 import type { Bound } from '../db/index.js';
-import { prepareClaimCompanion } from '../db/runs/claim-companions.js';
 import { learningRetryWrite, learningBackoffWrite } from '../db/runs/claim-companions.js';
 /**
  * Stage two of learning, and the progress both stages share: one `learning_sessions` row per session.
@@ -311,5 +310,4 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
   return `${parts.join('; ')}.`;
 }
 
-export function claimLearningRetryStatement(...args: Parameters<typeof claimLearningRetryWrite>): PreparedStatement { return prepareClaimCompanion(args[0], claimLearningRetryWrite(...args)); }
 

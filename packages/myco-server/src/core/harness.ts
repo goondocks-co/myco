@@ -70,7 +70,7 @@ import { mintWrite, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revoke
 import { type ProjectCapability, projectWorkEnabled, observedSettingsGuard } from './settings.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
 import { pruneUncaptured } from '../ingest/uncaptured.js';
-import { runnerContactStatement, workerContactStatement, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
+import { runnerContactWrite, workerContactWrite, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
 import { catalogResolution, pruneModelCatalogs, type CatalogOwner } from './model-catalogs.js';
 import { workerKey, type WorkerPrincipal } from './worker-lease.js';
 import { runnerAcceptsWork } from '../auth/runners.js';
@@ -79,7 +79,8 @@ import { UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } fr
 import { claimQueuedRun, claimPulledRun } from './worker-claim.js';
 import { deploymentTaskEntriesSince } from '../db/runs/claim.js';
 import { lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
-import { TERMINAL_RUN_STATUSES, runUpdateStatement, runRemainingMs, applyRunUpdate, getRun, type RunRow } from '../db/runs/lifecycle.js';
+import { TERMINAL_RUN_STATUSES, runRemainingMs, getRun, type RunRow } from '../db/runs/lifecycle.js';
+import { applyRunUpdate, runUpdateStatement } from '../db/runs/change.js';
 import { ensureAgent } from '../db/runs/state.js';
 import { getDispatchActor, recordDispatch, hasSuccessorOf, launchQueued, recordQueued, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS } from '../db/runs/claim.js';
 import { dispatchLoad } from '../db/runs/live.js';
@@ -1207,8 +1208,8 @@ export async function renewLease(env: ServerEnv, worker: { principal: WorkerPrin
   const { principal } = worker;
   if (principal.kind === 'runner' && run.attemptId === undefined) return { held: false, expiresAt };
   const contact = principal.kind === 'member'
-    ? await workerContactStatement(env.db, { credentialId: principal.tokenId, machineId: principal.machineId, now: worker.now }, run)
-    : runnerContactStatement(env.db, { runnerId: principal.runnerId, now: worker.now }, run, principal);
+    ? await workerContactWrite(env.db, { credentialId: principal.tokenId, machineId: principal.machineId, now: worker.now }, run)
+    : runnerContactWrite(env.db, { runnerId: principal.runnerId, now: worker.now }, run, principal);
   const stored = await renewRunLeaseExpiry(env.db, { projectId: run.projectId }, run.runId, principal, expiresAt, worker.now, run.attemptId, contact);
   return { held: stored !== null, expiresAt: stored ?? expiresAt };
 }

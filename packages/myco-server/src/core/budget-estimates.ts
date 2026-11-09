@@ -1,8 +1,8 @@
 import { budgetActivation } from '../db/meta/budget-activation.js';
-import { estimateAdvanceStatement, estimateCompletionStatements, estimateCursor, estimateProgressGuard, estimatesRefreshedAt } from '../db/meta/budget-estimates.js';
+import { estimateAdvanceStatement, estimateCompletionStatements, estimateCursor, estimateSampleStatement, estimatesRefreshedAt } from '../db/meta/budget-estimates.js';
 import type { RelationalStore } from './adapters.js';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
-import { ensureAgent, getState, guardedStateStatement } from '../db/runs/state.js';
+import { ensureAgent, getState } from '../db/runs/state.js';
 import { seedForStage, BUDGET_WORKER_TASKS, BUDGET_ESTIMATE_PREFIX } from './budget-policy.js';
 
 const ESTIMATE_INTERVAL_MS = 3_600_000;
@@ -68,14 +68,13 @@ export async function refreshEstimates(db: RelationalStore, now: number): Promis
   if(last!==undefined)progress.after=last.seq;
   progress.revision=crypto.randomUUID();
   const next=JSON.stringify(progress);
-  const guard=estimateProgressGuard(progress.revision);
   const advance=estimateAdvanceStatement(db,held?.value??null,next,observed.epoch,now-ESTIMATE_INTERVAL_MS);
   if(groups.size>0)await ensureAgent(db,{id:ESTIMATE_AGENT,name:ESTIMATE_AGENT,provider:null,model:null,enabled:true},now);
   const writes=[...groups.values()].map(group=>{
     const ratios=group.points.flatMap(point=>point.ratio===null?[]:[point.ratio]).sort((a,b)=>a-b);
     const sample:SampleState={estimate:group.points.reduce((sum,point)=>sum+point.cost,0)/group.points.length,
       ratioP95:ratios.length===0?null:ratios[Math.ceil(ratios.length*0.95)-1]!,n:group.points.length,ratioN:ratios.length,refreshedAt:now,cycle:progress.cycle,points:group.points};
-    return guardedStateStatement(db,{projectId:group.projectId},ESTIMATE_AGENT,group.key,JSON.stringify(sample),now,guard);
+    return estimateSampleStatement(db,group.projectId,ESTIMATE_AGENT,group.key,JSON.stringify(sample),now,progress.revision);
   });
   const done=results.length<ESTIMATE_PUBLISH_PAGE;
   const completion=done?estimateCompletionStatements(db,progress.until,now,progress.revision):[];

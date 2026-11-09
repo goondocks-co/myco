@@ -1,6 +1,6 @@
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { runWriteStore, RunWriteExpired } from '@myco-server-worker/core/run-write-store.js';
-import { applyRunUpdate } from '@myco-server-worker/db/runs/lifecycle.js';
+import { applyRunUpdate } from '@myco-server-worker/db/runs/change.js';
 
 /** A batch waits past each authority bound before the real adapter executes it. */
 export async function runAuthorityWait(db: RelationalStore): Promise<{ bound: string; refused: boolean; rows: number; applied: number }[]> {

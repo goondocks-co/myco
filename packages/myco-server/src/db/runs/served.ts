@@ -3,11 +3,11 @@
  * A dispatch-named session does not narrow the sessions the run may cite.
  */
 import type { RelationalStore } from '../../core/adapters.js';
-import { writeGuardStore } from '../../core/write-guard-store.js';
+import { boundWriteGuardStore } from '../../core/write-guard-store.js';
 import { notTombstonedSql } from '../session-read-model.js';
 import type { ReadScope } from '../../read/scope.js';
 import { LEDGER_ENABLED_AT } from '../schema-v95.js';
-import { commit, read, write } from '../index.js';
+import { assertion, commit, read, readSet, write } from '../index.js';
 
 /** A captured material item identified by the canonical prompt and session ids. */
 interface PromptMaterial {
@@ -70,6 +70,9 @@ export async function dispatchedBeforeLedger(db: RelationalStore, scope: ReadSco
 const SERVED_SESSION = `SELECT 1 FROM run_served_material m
   JOIN sessions s ON s.project_id = m.project_id AND s.session_id = m.session_id
   WHERE m.project_id = ? AND m.run_id = ? AND m.session_id = ? AND ${notTombstonedSql('s')} LIMIT 1`;
+const servedSession = read<[project: string, run: string, session: string], { 1: number }>({ name: 'runs.servedSession', sql: SERVED_SESSION });
+const servedSessionHeld = assertion<[project: string, run: string, session: string, refusal: string]>({ name: 'runs.servedSessionHeld', sql: `SELECT CASE WHEN EXISTS (${SERVED_SESSION})
+    THEN 1 ELSE json_extract('[]', ?) END AS admitted` });
 const CITATION_REFUSAL_PATH = '$[session_not_served_to_run]';
 export const SESSION_NOT_SERVED = 'session_id not served to this run';
 
@@ -81,10 +84,10 @@ export class ServedSessionRefused extends Error {
 export async function servedSessionStore(
   db: RelationalStore, scope: ReadScope, runId: string, sessionId: string,
 ): Promise<RelationalStore | null> {
-  const params = [scope.projectId, runId, sessionId];
-  if (await db.prepare(SERVED_SESSION).bind(...params).first() === null) return null;
-  return writeGuardStore(db, () => db.prepare(`SELECT CASE WHEN EXISTS (${SERVED_SESSION})
-    THEN 1 ELSE json_extract('[]', ?) END AS admitted`).bind(...params, CITATION_REFUSAL_PATH), error => {
+  const params = [scope.projectId, runId, sessionId] as const;
+  const [served] = await readSet(db, servedSession.bind(...params));
+  if (served.length === 0) return null;
+  return boundWriteGuardStore(db, () => servedSessionHeld.bind(...params, CITATION_REFUSAL_PATH), error => {
     if (error instanceof Error && error.message.includes(CITATION_REFUSAL_PATH.slice(1))) throw new ServedSessionRefused();
     throw error;
   });

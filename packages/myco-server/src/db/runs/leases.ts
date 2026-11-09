@@ -1,24 +1,27 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
 import { renewingLeaseAuthority, type WorkerPrincipal } from '../../core/worker-lease.js';
 import { runDeadlineSql } from '../../core/run-deadline.js';
-import { commit, read, readSet, write } from '../index.js';
+import { commit, first, read, readSet, write, type BindValue, type Bound, type Statement } from '../index.js';
+import { leaseShape, shapedStatements } from './statement-shapes.js';
 
 /** Worker identity and the instant its preparation write is admitted. */
 export interface RunLease { worker: WorkerPrincipal; now: number }
 
+const leaseRenewal = shapedStatements<Statement<BindValue[], { expiresAt: number }, 'write'>>();
+const leaseExpiry = shapedStatements<Statement<BindValue[], { expiresAt: number }, 'read'>>();
+
 /** Extend a lease the caller still holds. False says the lease is gone: swept, or the run ended. */
 export async function renewRunLeaseExpiry(
-  db: RelationalStore, scope: ReadScope, runId: string, worker: WorkerPrincipal, expiresAt: number, now: number, dispatchedBy?: string, contact?: PreparedStatement | null,
+  db: RelationalStore, scope: ReadScope, runId: string, worker: WorkerPrincipal, expiresAt: number, now: number, dispatchedBy?: string, contact?: Bound | null,
 ): Promise<number | null> {
   const authority = renewingLeaseAuthority(worker, now, dispatchedBy, true);
   const deadline = runDeadlineSql();
-  const statement = db.prepare(
+  const renewal = leaseRenewal(leaseShape(worker, dispatchedBy), shape => write<BindValue[], { expiresAt: number }>({ name: `runs.renewLease${shape}`, sql:
     `UPDATE agent_runs SET lease_expires_at = MIN(${deadline}, MAX(lease_expires_at, ?))
-      WHERE project_id = ? AND id = ? AND ${authority.sql} RETURNING lease_expires_at AS expiresAt`,
-  ).bind(expiresAt, scope.projectId, runId, ...authority.params);
-  const [result] = await db.batch([statement, ...(contact == null ? [] : [contact])]);
-  return (result!.results[0] as { expiresAt: number } | undefined)?.expiresAt ?? null;
+      WHERE project_id = ? AND id = ? AND ${authority.sql} RETURNING lease_expires_at AS expiresAt` }));
+  const [result] = await commit(db, renewal.bind(expiresAt, scope.projectId, runId, ...authority.params as BindValue[]), ...(contact == null ? [] : [contact]));
+  return result.results[0]?.expiresAt ?? null;
 }
 
 /** Extend a held lease through the shared renewal and report whether it landed. */
@@ -33,9 +36,10 @@ export async function workerRunLeaseExpiry(
   db: RelationalStore, scope: ReadScope, runId: string, worker: WorkerPrincipal, now: number, dispatchedBy?: string,
 ): Promise<number | null> {
   const authority = renewingLeaseAuthority(worker, now, dispatchedBy, true);
-  const row = await db.prepare(`SELECT lease_expires_at AS expiresAt FROM agent_runs
-    WHERE project_id = ? AND id = ? AND ${authority.sql}`)
-    .bind(scope.projectId, runId, ...authority.params).first<{ expiresAt: number }>();
+  const definition = leaseExpiry(leaseShape(worker, dispatchedBy), shape => read<BindValue[], { expiresAt: number }>({ name: `runs.leaseExpiry${shape}`, sql:
+    `SELECT lease_expires_at AS expiresAt FROM agent_runs
+    WHERE project_id = ? AND id = ? AND ${authority.sql}` }));
+  const row = await first(db, definition.bind(scope.projectId, runId, ...authority.params as BindValue[]));
   return row?.expiresAt ?? null;
 }
 
