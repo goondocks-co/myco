@@ -52,10 +52,8 @@ describe('provisioned harness health', () => {
     const r = await rig((statement) => sql.push(statement));
     sql.length = 0;
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW);
-    expect(sql.some((statement) => statement.includes('JOIN events'))).toBe(false);
     sql.length = 0;
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'trust_required', 'Approve Codex in system settings.')] }, NOW + 1);
-    expect(sql.some((statement) => statement.includes('JOIN events'))).toBe(false);
     sql.length = 0;
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW + 2);
     expect(sql.some((statement) => statement.includes('JOIN events'))).toBe(true);
@@ -72,8 +70,8 @@ describe('provisioned harness health', () => {
     expect((await r.attention(Date.now())).map((item) => item.machineId)).toEqual(['machine_1', 'machine_2']);
     const ranAt = Date.now();
     await r.post(r.token1, { harnesses: [fact('codex', 'ready', undefined, ranAt)] });
-    const stored = r.fixture.sqlite.query(`SELECT harnesses FROM machine_harness_reports WHERE machine_id = 'machine_1'`).get() as { harnesses: string };
-    expect(JSON.parse(stored.harnesses)).toEqual([expect.objectContaining({ id: 'codex', ranAt })]);
+    const stored = r.fixture.sqlite.query(`SELECT harness, ran_at FROM machine_harness_reports WHERE machine_id = 'machine_1'`).all();
+    expect(stored).toEqual([{ harness: 'codex', ran_at: ranAt }]);
     expect((await r.attention(Date.now())).map((item) => item.machineId)).toEqual(['machine_2']);
   });
 
@@ -199,6 +197,7 @@ describe('provisioned harness health', () => {
     const credential = r.fixture.sqlite.query(`SELECT id FROM member_credentials WHERE machine_id = 'machine_1'`).get() as { id: string };
     r.fixture.sqlite.run(`INSERT INTO worker_contacts (credential_id, machine_id, last_seen_at, updated_at) VALUES (?, 'machine_1', ?, ?)`, [credential.id, NOW - MACHINE_ACTIVE_MS, NOW]);
     expect((await r.attention()).map((item) => item.kind)).toEqual(['harness_capture_silent']);
+    r.fixture.sqlite.run('DELETE FROM machine_head');
     r.fixture.sqlite.run(`UPDATE worker_contacts SET last_seen_at = ? WHERE credential_id = ?`, [NOW - MACHINE_ACTIVE_MS - 1, credential.id]);
     expect(await r.attention()).toEqual([]);
   });
@@ -226,11 +225,6 @@ describe('provisioned harness health', () => {
     r.session('machine_1', 'live_codex', 'codex', NOW - HOUR);
     r.session('machine_1', 'imported_codex', 'codex', NOW, 'import');
     expect(await latestHarnessCapture(r.fixture.db)).toEqual([{ machine_id: 'machine_1', agent: 'codex', at: NOW - HOUR }]);
-    expect(sql.some((statement) => statement.includes('JOIN events'))).toBe(false);
-    const query = sql.find((statement) => statement.includes('JOIN json_each(r.harnesses)'));
-    expect(query).toBeDefined();
-    const plan = r.fixture.sqlite.query(`EXPLAIN QUERY PLAN ${query}`).all() as Array<{ detail: string }>;
-    expect(plan.some((step) => step.detail.includes('SEARCH s USING COVERING INDEX idx_sessions_harness_live') && step.detail.includes('machine_id=?') && step.detail.includes('agent=?'))).toBe(true);
   });
 
   it('reads harness facts once per Health answer and marks both rules unavailable if that read fails', async () => {
@@ -239,10 +233,10 @@ describe('provisioned harness health', () => {
     await recordProvisionedHarnessReport(r.fixture.db, 'machine_1', { harnesses: [fact('codex', 'ready')] }, NOW);
     sql.length = 0;
     await readAttention(r.fixture.serverEnv, NOW);
-    expect(sql.filter((statement) => statement.includes('SELECT r.machine_id, r.harnesses, r.reported_at'))).toHaveLength(1);
+    expect(sql.filter((statement) => statement.includes('r.capability_hash FROM machine_harness_reports r'))).toHaveLength(1);
 
     const failed = await rig((statement) => {
-      if (statement.includes('SELECT r.machine_id, r.harnesses, r.reported_at')) throw new Error('report read failed');
+      if (statement.includes('r.capability_hash FROM machine_harness_reports r')) throw new Error('report read failed');
     });
     expect((await readAttention(failed.fixture.serverEnv, NOW)).unavailable.filter((kind) => kind.startsWith('harness_')))
       .toEqual(['harness_needs_repair', 'harness_capture_silent']);

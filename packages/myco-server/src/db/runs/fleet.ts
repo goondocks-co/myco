@@ -127,7 +127,7 @@ export async function applyFleetSignInAvailability(fleet: readonly WorkerFleetRo
   }
 }
 
-/** One fleet read supplies every registered runner, the compatibility inventory and queue readiness. */
+/** One fleet read supplies every active runner, the compatibility inventory and queue readiness. */
 export async function readFleetProjection(env: ServerEnv, now: number, includeStoredCredentials = false) {
   const selection = fleetSelectionContext(env, includeStoredCredentials);
   const fleet = await fleetAvailability(env, now, selection.includeSignIn);

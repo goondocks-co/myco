@@ -123,6 +123,7 @@ describe('a worker lease is bounded by its run deadline', () => {
     let committedExpiry: number | null = null;
     r.e.db.batch = async (statements) => {
       const results = await batch(statements);
+      if (statements.length === 1) return results;
       committedExpiry = r.expiry();
       r.e.sqlite.run('UPDATE agent_runs SET dispatched_by=?, lease_expires_at=? WHERE id=?', [replacement.tokenId, NOW + 1234, RUN]);
       return results;

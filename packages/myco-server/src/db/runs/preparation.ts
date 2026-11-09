@@ -2,7 +2,7 @@ import { REPOSITORY_COMMIT_PATTERN, parseRepositoryCheckoutSpec, KNOWLEDGE_REPOS
 import { parseMapSourcePin, type MapSourcePin } from '@goondocks/myco-shared/canopy';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
-import { renewingLeaseAuthority } from '../../core/worker-lease.js';
+import { renewingLeaseAuthority } from '../runners/lease-authority.js';
 import { commit, first, read, readSet, write, type BindValue, type Statement } from '../index.js';
 import { leaseShape, shapedStatements } from './statement-shapes.js';
 import { knowledgeUnavailable } from './attributed-writes.js';

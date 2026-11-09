@@ -48,7 +48,7 @@ async function seeded() {
   await credential('mem_machine_2', 'm_member', null, now - HOUR / 2);
   const gone = await credential('mem_machine_2', 'm_gone', 'retired-box', now - 5 * HOUR);
   sqlite.run(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`, [now - 4 * HOUR, gone]);
-  sqlite.run(`INSERT INTO worker_contacts (credential_id, machine_id, offers, last_seen_at, updated_at) VALUES (?, 'm_admin', '[{"id":"codex","authenticated":true}]', ?, ?)`, [adminCredential, now - 60_000, now - 60_000]);
+  sqlite.run(`INSERT INTO worker_contacts (credential_id, machine_id, offers, last_seen_at, updated_at, last_claim_at) VALUES (?, 'm_admin', '[{"id":"codex","authenticated":true}]', ?, ?, ?)`, [adminCredential, now - 60_000, now - 60_000, now - 30 * 60_000]);
   sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_1', 'a', 'built-in', 1, ?)`, [now]);
   sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, leased_by, lease_expires_at) VALUES ('proj_1', 'run_1', 'agent_1', 'digest', 'completed', ?, ?, ?, ?)`,
     [now - 30 * 60_000, now - 20 * 60_000, adminCredential, now - 25 * 60_000]);

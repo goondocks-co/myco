@@ -1273,10 +1273,10 @@ export async function expireLeases(env: ServerEnv, now: number): Promise<number>
     emit({ kind: 'worker_lease_expired', runId: lapsed.id, projectId: lapsed.projectId,
       ...(lapsed.owner?.kind === 'runner' ? { runnerId: lapsed.owner.runnerId } : { tokenId: lapsed.owner?.leasedBy ?? null }) });
   }
-  // The same sweep forgets a worker unheard from past the contact horizon,
-  // bounded like the lease batch above. A worker holding a live lease keeps its
-  // row whatever its age.
-  await pruneWorkerContacts(env.db, now, WORKER_CONTACT_RETENTION_MS, DRAIN_BATCH);
+  // The same sweep retires a worker unheard from past the contact horizon, bounded
+  // like the lease batch above, and only after its row is stored in an export. A
+  // worker holding a live lease keeps its row whatever its age.
+  await pruneWorkerContacts(env, now, WORKER_CONTACT_RETENTION_MS, DRAIN_BATCH);
   // And the model lists no machine has renewed within their freshness window, bounded the same way.
   await pruneModelCatalogs(env.db, now, DRAIN_BATCH);
   // And forgets a repository no machine has reported for a month, bounded the same way.

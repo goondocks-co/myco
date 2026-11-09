@@ -5,8 +5,8 @@ export const RECONCILIATION_MATRICES = {
   provenance: { 'ingest/projections.ts#sessionCommit': ['event-rank'] },
   roots: {},
   embedding: { 'db/settings/leaves.ts#<module>': ['writer-revision'] },
-  catalog: { 'core/model-catalogs.ts#recordModelCatalog': ['reporter-stamp'] },
-  runner: { 'core/runner-updates.ts#runnerUpdateReportStatements': ['reporter-stamp'] },
+  catalog: { 'db/runners/catalogs.ts#upsert': ['reporter-stamp'] },
+  runner: { 'db/runners/updates.ts#<module>': ['reporter-stamp'] },
   budget: { 'db/meta/budget-activation.ts#indexWitness': ['catalogue-snapshot'] },
 } satisfies Record<string, Record<string, UpsertRule[]>>;
 

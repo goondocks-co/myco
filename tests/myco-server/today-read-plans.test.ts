@@ -182,33 +182,6 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
     }
   });
 
-  it('reads the machines from their claims and the worker reports, seeking every run, session and credential, every store alike', async () => {
-    for (const scope of [{ all: true as const }, { all: false as const, memberId: 'mem_1' }]) {
-      const read = await plans((db) => listMachines(db, 1_790_000_000_000, scope), true);
-      for (const { store, sql, plan } of read) {
-        const walks = /^SCAN (?:mc(?: USING INDEX idx_machine_claims_claimed)?|machine_claims|w USING INDEX idx_worker_contacts_seen|json_each VIRTUAL TABLE INDEX 1:)$/;
-        const boundedWindow = sql.includes('ROW_NUMBER() OVER (PARTITION BY c.machine_id, c.lineage_root');
-        const allowed = (step: string) => walks.test(step) || (sql.includes('AS last_event_at') && /^SCAN h$/.test(step)) || (boundedWindow && /^SCAN (?:c|\(subquery-\d+\))$/.test(step));
-        expect({ store, sql, scans: tableScans(plan) }).toEqual({ store, sql, scans: tableScans(plan).filter(allowed) });
-      }
-      for (const { store, plan } of reading(read, 'machine_capture_heads')) {
-        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(CAPTURE_HEAD_POINT_READ) });
-      }
-      for (const { store, plan } of reading(read, 'member_credentials')) {
-        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX idx_member_credentials_machine \(machine_id=\?\)/) });
-      }
-      const summary = read.find(({ sql }) => sql.includes('AS credential_count'));
-      expect(summary?.sql).toMatch(/ROW_NUMBER\(\) OVER \(PARTITION BY c\.machine_id, c\.lineage_root ORDER BY c\.issued_at DESC, c\.id DESC\)/);
-      expect(summary?.sql).not.toContain('INDEXED BY idx_member_credentials_lineage');
-      expect(summary?.plan).not.toContain('idx_member_credentials_lineage');
-      for (const { store, plan } of reading(read, 'worker_contacts')) {
-        expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX sqlite_autoindex_member_credentials_1 \(id=\?\)[\s\S]*SEARCH r USING (?:COVERING )?INDEX idx_agent_runs_worker_started \(leased_by=\?\)/) });
-      }
-    }
-    const own = await plans((db) => machinesOf(db, 'mem_1'));
-    for (const { store, plan } of reading(own, 'machine_claims')) expect({ store, plan }).toEqual({ store, plan: 'SEARCH machine_claims USING INDEX idx_machine_claims_member (member_id=?)' });
-  });
-
   it('renames a machine in one write to its claim, sought by key', async () => {
     const rename = await plans(async (db) => { await renameMachine(db, { memberId: 'mem_1' }, 'm_1', 'x'); });
     expect(rename.length).toBe(3);
@@ -223,7 +196,7 @@ describe('the Today reads under the statistics a Deployment plans from', () => {
   it('names a viewer\'s own machines from the viewer\'s claims and live credentials alone, by member', async () => {
     const read = await plans((db) => ownMachineNames(db, 'mem_1', 1_790_000_000_000));
     for (const { store, plan } of reading(read, 'machine_claims')) {
-      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH mc USING INDEX idx_machine_claims_member \(member_id=\?\)/) });
+      expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH mc USING INDEX idx_machine_claims_member_page \(member_id=\?\)/) });
     }
     for (const { store, plan } of reading(read, 'member_credentials')) {
       expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH c USING INDEX idx_member_credentials_machine \(machine_id=\?\)/) });

@@ -8,7 +8,7 @@ import { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE } from '@goondock
 export { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE };
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
-import { HARNESS_MEMBER_ID, MEMBER_TOKEN_TTL_MS, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
+import { HARNESS_MEMBER_ID, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_TTL_MS, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
 import type { DashboardMember } from './identity-link.js';
@@ -16,10 +16,9 @@ import { authorize, credentialResourceOf, machineResourcesOf, memberSubjectOf } 
 import { readAuthorization } from '../db/auth/authorization.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
-export { MEMBER_TOKEN_TTL_MS };
+export { MEMBER_TOKEN_TTL_MS, MEMBER_LINEAGE_IDLE_MS };
 
 /** How long after its issue (the lineage's last refresh, or the join) a lapsed token may still refresh. Longer than the TTL, so it never bounds a live token. */
-export const MEMBER_LINEAGE_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
 /** Shape of every minted token: `MEMBER_TOKEN_BYTES` random bytes as unpadded base64url. */
 export const MEMBER_TOKEN_PATTERN = new RegExp(`^[A-Za-z0-9_-]{${Math.ceil((MEMBER_TOKEN_BYTES * 4) / 3)}}$`);
 

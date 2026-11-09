@@ -1,8 +1,10 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-import { LATEST_S4B2 } from './db/schema-vNEXT-s4b2.js';
-export const SERVER_SCHEMA_VERSION = LATEST_S4B2;
+import { NEXT_S1C } from './db/schema-vNEXT-s1c.js';
+export const SERVER_SCHEMA_VERSION = NEXT_S1C;
 /** How long a member token lives before it must be refreshed. */
 export { MEMBER_TOKEN_TTL_MS } from '@goondocks/myco-shared/member-protocol';
+/** How long an unrefreshed credential lineage stays renewable. */
+export const MEMBER_LINEAGE_IDLE_MS = 90 * 24 * 60 * 60 * 1000;
 /** State keys owned by the Deployment and read-only to run tools. */
 export const SERVER_STATE_PREFIX = 'server.';
 export const SPORE_READ_STATE_PREFIX = 'spore_reads:';
@@ -152,6 +154,11 @@ export const INSTRUCTIONS_TEMPLATE_MAX_BYTES = 4096;
  */
 export const WORKER_LEASE_MS = 90_000;
 export const WORKER_HEARTBEAT_MS = 30_000;
+/**
+ * How long an unchanged worker observation may go unwritten: half the heartbeat, so a worker renewing a lease always
+ * refreshes between two writes, while a worker polling while idle writes once per throttle. A material change is written at once.
+ */
+export const CONTACT_THROTTLE_MS = WORKER_HEARTBEAT_MS / 2;
 export const WORKER_POLL_IDLE_MS = 2_000;
 
 /** Maximum error detail stored on a run. */

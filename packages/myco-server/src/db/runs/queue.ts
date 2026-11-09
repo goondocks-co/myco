@@ -24,8 +24,10 @@ export const taskHoldSql = (hold: string, origin: string) => `CASE WHEN ${origin
 /** One task/origin's first eligible identity; the row's payload is fetched only after the seek. */
 export const queueHeadSeek = (columns: string, task: string, origin: string): string => `SELECT ${columns} FROM agent_runs
   WHERE (project_id,id)=(SELECT project_id,run_id FROM task_due WHERE task=${task} AND origin=${origin} AND claimable=1 ORDER BY queued_at,run_id,project_id LIMIT 1)`;
+/** While the task queues are still being built, a queued run must not read as no work: the source table answers. */
+const BUILDING_QUEUED = `EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_claimable WHERE r.status='queued')`;
 const anyQueued = read<[], { queued: number }>({ name: 'runs.unclaimedQueued', sql:
-  'SELECT EXISTS(SELECT 1 FROM task_due WHERE claimable=1) AS queued' });
+  `SELECT CASE WHEN ${RUN_ADMISSION_READY_SQL} THEN EXISTS(SELECT 1 FROM task_due WHERE claimable=1) ELSE ${BUILDING_QUEUED} END AS queued` });
 export async function unclaimedQueued(db: RelationalStore): Promise<boolean> {
   const [rows] = await readSet(db, anyQueued.bind());
   return rows[0]!.queued === 1;
@@ -127,11 +129,12 @@ export async function listQueuedAcrossProjects(db: RelationalStore, limit: numbe
   const [rows] = await readSet(db, queuedRuns.bind(JSON.stringify(excludeAutomaticTasks), limit));
   return rows;
 }
-const hasQueued = read<[string], { one: number }>({ name: 'runs.hasQueued', sql: `SELECT 1 AS one FROM task_runtime WHERE queued_count>0
-  AND (?1='any' OR (?1='budget' AND ${taskHoldSql('hold_reason', 'origin')}='budget') OR (?1='other' AND ${taskHoldSql('hold_reason', 'origin')} IS NOT 'budget')) LIMIT 1` });
+const hasQueued = read<[holder: string], { queued: number }>({ name: 'runs.hasQueued', sql: `SELECT CASE WHEN ${RUN_ADMISSION_READY_SQL} THEN EXISTS(SELECT 1 FROM task_runtime WHERE queued_count>0
+  AND (?1='any' OR (?1='budget' AND ${taskHoldSql('hold_reason', 'origin')}='budget') OR (?1='other' AND ${taskHoldSql('hold_reason', 'origin')} IS NOT 'budget')))
+  ELSE (?1<>'budget' AND ${BUILDING_QUEUED}) END AS queued` });
 export async function hasQueuedRun(db: RelationalStore, holder: 'any' | 'budget' | 'other' = 'any'): Promise<boolean> {
   const [rows] = await readSet(db, hasQueued.bind(holder));
-  return rows.length > 0;
+  return rows[0]?.queued === 1;
 }
 
 export interface QueueFailureGuard { heldBy: string | null; queuedAt: number; automatic: boolean; openedAt: string | null; quote?: number }

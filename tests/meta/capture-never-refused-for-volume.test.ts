@@ -45,7 +45,8 @@ const COUNTER_READERS: Record<string, string> = {
   'db/storage/content-lifecycle.ts': 'the charge for a stored blob',
   'read/credentials.ts': 'the dashboard\'s credential list',
   'db/identity/credential-pages.ts': 'the query behind the dashboard\'s credential list',
-  'read/machines.ts': 'the dashboard\'s machine lineage totals',
+  'read/machines.ts': 'the dashboard\'s machine lineage totals, as answered',
+  'db/runners/machines.ts': 'the dashboard\'s machine lineage totals',
   'platform/bun/blobs.ts': 'FileHandle.write reports physical write progress; no credential counter is read',
 };
 
