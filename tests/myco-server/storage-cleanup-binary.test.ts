@@ -5,7 +5,7 @@ import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { chromium } from 'playwright';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { resolveLocalPaths, writeLocalSecrets } from '@myco/server/local.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';

@@ -1,6 +1,6 @@
 import { sqliteEnv } from './fixtures.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './member-token.js';
 import { legacyWorker } from './worker-principal.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';

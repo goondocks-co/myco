@@ -1,17 +1,18 @@
-import type { Bound } from '../db/index.js';
-import { credentialInsert, prepareClaimCompanion } from '../db/runs/claim-companions.js';
+import { commitNamed, first, read, refused, rows, type Bound } from '../db/index.js';
+import { credentialInsert } from '../db/runs/claim-companions.js';
+import {
+  activationWrites, CREDENTIAL_NOT_REFRESHABLE, refreshableAssertion, retireBankedWrite,
+  revokeLineageAsMemberWrite, revokeLineageWrite, revokeMachineAsMemberWrite,
+} from '../db/identity/credentials.js';
 import { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE } from '@goondocks/myco-shared/member-protocol';
 export { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE };
-import { personMemberSql } from './member-kind.js';
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID, MEMBER_TOKEN_TTL_MS, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
-import { carriedBytes, TOKEN_LIVE } from '../ingest/live-credential.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
-import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 import type { DashboardMember } from './identity-link.js';
-import { authorize, credentialResourceOf, machineResourcesOf, memberSubjectOf, memberWritePredicate, OWNER_CONTROL_CREDENTIAL_WRITE } from './authorization.js';
+import { authorize, credentialResourceOf, machineResourcesOf, memberSubjectOf } from './authorization.js';
 import { readAuthorization } from '../db/auth/authorization.js';
 
 export const MEMBER_TOKEN_BYTES = 32;
@@ -111,15 +112,15 @@ export const NO_RUNTIME_CLAIMS: RuntimeClaims = { runtimeLabel: null, runtimeKin
 interface MintOptions {
   rotates?: boolean;
   /** A condition the insert must also meet; a caller batching it decides the outcome from the statement's returned row. */
-  claim?: {write:import('../db/index.js').Statement<readonly unknown[],never,'write'>;values:readonly unknown[]};
+  claim?: {write:import('../db/index.js').Statement<readonly unknown[],{id:string},'write'>;values:readonly unknown[]};
 }
 
 
 /** The one INSERT into member_credentials, prepared and unrun: a fresh token and id, the digest stored, `bytes_written` at 0, the runtime claims as given, whether it rotates, and the lineage columns — its own id and `nowMs` for a root, the inherited chain for a successor. The row expires one TTL from now. A successor's row always rotates, and is written only while its predecessor is still live and rotates at the instant of the insert (the statement's returned row says whether it was); a root has no predecessor. The optional claim definition conjoins its admission. */
 function memberTokenInsert(
-  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
+  member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null, tokenId: string, digest: string, runtime: RuntimeClaims,
   options: MintOptions,
-): { statement: Bound; expiresAt: number } {
+): { statement: Bound<{ id: string }, 'write'>; expiresAt: number } {
   const { claim } = options;
   const predecessorId = lineage === null ? null : lineage.predecessorId;
   const lineageRoot = lineage === null ? tokenId : lineage.lineageRoot;
@@ -131,28 +132,12 @@ function memberTokenInsert(
   return { statement, expiresAt };
 }
 
-/** A fresh raw token and its id, with the insert that stores the digest. `options.claim` selects a named claim admission; `options.rotates: false` mints a root that never rotates. */
-async function mintMaterial(db: RelationalStore, member: {memberId:string;machineId:string|null}, nowMs:number,
-  lineage:TokenLineage|null, runtime:RuntimeClaims, options:MintOptions) {
+export async function mintWrite(db: RelationalStore, member: {memberId:string;machineId:string|null}, nowMs:number,
+  lineage:TokenLineage|null, runtime:RuntimeClaims, options:MintOptions = {}): Promise<{statement:Bound<{ id: string },'write'>;issued:IssuedMemberToken}> {
   const token=mintMemberToken();
   const tokenId=`${TOKEN_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(TOKEN_ID_BYTES)))}`;
-  const inserted=memberTokenInsert(db,member,nowMs,lineage,tokenId,await sha256Hex(token),runtime,options);
-  return {...inserted,issued:{token,tokenId,expiresAt:inserted.expiresAt}};
-}
-export async function mintWrite(db: RelationalStore, member: {memberId:string;machineId:string|null}, nowMs:number,
-  lineage:TokenLineage|null, runtime:RuntimeClaims, options:MintOptions = {}): Promise<{statement:Bound;issued:IssuedMemberToken}> {
-  const {statement,issued}=await mintMaterial(db,member,nowMs,lineage,runtime,options);
-  return {statement,issued};
-}
-
-/** Sole inserter of member_credentials rows. Stores the digest; returns the raw token once. Without `lineage` the token roots a lineage of its own, rotating unless `options.rotates` is false; with it, the token succeeds `lineage.predecessorId` and rotates. Either way it expires one TTL from `nowMs`. */
-export async function issueMemberToken(
-  db: RelationalStore, member: { memberId: string; machineId: string | null }, nowMs: number, lineage: TokenLineage | null = null, runtime: RuntimeClaims = NO_RUNTIME_CLAIMS,
-  options: Pick<MintOptions, 'rotates'> = {},
-): Promise<IssuedMemberToken> {
-  const { statement, issued } = await mintInsert(db, member, nowMs, lineage, runtime, options);
-  await statement.run();
-  return issued;
+  const inserted=memberTokenInsert(member,nowMs,lineage,tokenId,await sha256Hex(token),runtime,options);
+  return {statement:inserted.statement,issued:{token,tokenId,expiresAt:inserted.expiresAt}};
 }
 
 /** The attributed revocation of one token row, as a statement: the break-glass script renders it for a token whose successors are known to be its owner's. */
@@ -162,17 +147,6 @@ export function revokeCredentialStatement(db: RelationalStore, revokedBy: string
     .bind(nowMs, revokedBy, tokenId);
 }
 
-/**
- * The attributed revocation of a credential's whole lineage, as a statement: the named token, the predecessor still live while
- * its successor is banked, and any successor already minted from it. Each is the same machine's credential at another moment,
- * and a live one left behind would rotate on. `memberId` confines it to that member's own rows.
- */
-function revokeLineageStatement(db: RelationalStore, revokedBy: string, tokenId: string, nowMs: number, memberId: string | null = null, controlActor?: string): PreparedStatement {
-  return db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL${memberId === null ? '' : ' AND member_id = ?'}${controlActor === undefined ? '' : ` AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE} AND ${memberWritePredicate('?', 'member_credentials.member_id')}`} RETURNING id`)
-    .bind(nowMs, revokedBy, tokenId, ...(memberId === null ? [] : [memberId]), ...(controlActor === undefined ? [] : [controlActor, controlActor]));
-}
-
 /** Revoke an admitted credential's lineage with attribution and the caller's member scope. */
 export async function revokeCredentialAsMember(
   db: RelationalStore, actor: DashboardMember, tokenId: string, nowMs: number,
@@ -180,9 +154,9 @@ export async function revokeCredentialAsMember(
   const revokedBy = actor.id;
   const snapshot = await readAuthorization(db, { subjectMember: actor.id, credential: tokenId });
   if (!authorize(memberSubjectOf(snapshot, actor.id, 'http'), 'edit', credentialResourceOf(snapshot, tokenId))) return { revoked: false, revokedBy };
-  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs, null, actor.id).run();
-  const revoked = result.results.length > 0;
-  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: result.results.length });
+  const revokedRows = await rows(db, revokeLineageAsMemberWrite(nowMs, actor.id, tokenId));
+  const revoked = revokedRows.length > 0;
+  emit({ kind: 'credential_revoked', tokenId, revokedBy, revoked, rows: revokedRows.length });
   return { revoked, revokedBy };
 }
 
@@ -192,15 +166,9 @@ export async function revokeMachineCredentialsAsMember(
 ): Promise<{ revoked: number; revokedBy: string }> {
   const snapshot = await readAuthorization(db, { subjectMember: actor.id, machines: [machineId] });
   if (!authorize(memberSubjectOf(snapshot, actor.id, 'http'), 'edit', machineResourcesOf(snapshot, 'credential', [machineId])[0]!)) return { revoked: 0, revokedBy: actor.id };
-  const result = await db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
-      WHERE machine_id = ? AND revoked_at IS NULL
-        AND ${personMemberSql('member_credentials.member_id')} AND ${OWNER_CONTROL_CREDENTIAL_WRITE}
-        AND ${memberWritePredicate('?', 'member_credentials.member_id')}
-        AND EXISTS (SELECT 1 FROM machine_claims mc WHERE mc.machine_id = member_credentials.machine_id
-          AND mc.member_id = member_credentials.member_id) RETURNING id`)
-    .bind(nowMs, actor.id, machineId, actor.id, actor.id).run();
-  emit({ kind: 'credential_revoked', machineId, revokedBy: actor.id, revoked: result.results.length > 0, rows: result.results.length });
-  return { revoked: result.results.length, revokedBy: actor.id };
+  const revokedRows = await rows(db, revokeMachineAsMemberWrite(nowMs, actor.id, machineId));
+  emit({ kind: 'credential_revoked', machineId, revokedBy: actor.id, revoked: revokedRows.length > 0, rows: revokedRows.length });
+  return { revoked: revokedRows.length, revokedBy: actor.id };
 }
 
 /**
@@ -227,18 +195,9 @@ export async function revokeCredentialOfMember(
   return revoked;
 }
 
-/** Every live credential of a member, revoked and attributed in one statement — effective only once the member row itself carries this revocation, so a batch whose first statement changed nothing changes nothing here either. */
-export function revokeCredentialsOfMember(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
-  return db
-    .prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ?
-               WHERE member_id = ? AND revoked_at IS NULL AND ${MEMBER_REVOKED_BY}`)
-    .bind(nowMs, revokedBy, memberId, ...memberRevokedByParams(memberId, nowMs, revokedBy));
-}
-
 /** Revokes every live token of the lineage `tokenId` belongs to — the named token, its predecessors, and its successors — in one statement; `revoked` counts the rows that changed. */
 export async function revokeMemberLineage(db: RelationalStore, tokenId: string, nowMs: number, revokedBy: string): Promise<{ revoked: number }> {
-  const result = await revokeLineageStatement(db, revokedBy, tokenId, nowMs).run();
-  return { revoked: result.results.length };
+  return { revoked: (await rows(db, revokeLineageWrite(nowMs, revokedBy, tokenId))).length };
 }
 
 /** The window opens at `expires_at − MEMBER_TOKEN_REFRESH_WINDOW_MS`; earlier, the answer is `refresh_too_early` with the instant it opens. It stays open past the token's own expiry: a token that lapsed with its holder offline still asks for its successor until `MEMBER_LINEAGE_IDLE_MS` after its own `issued_at` (`lineageInactive`); past that it answers `lineage_expired`, the code every member build treats as final. A lineage is never refused for its age: every successor expires one TTL from its refresh. Past both checks, one batch revokes the live, never-used successor this token may already have and inserts the new one, and the answer carries the successor's own window start as `refreshAfter`. Both statements act only while the presented token is still live at that instant (`TOKEN_LIVE` on each): a token revoked in between changes nothing — its banked successor stays as it is — and raises `TokenRevokedError`. The presented token stays live; the successor's first authenticated use revokes it. */
@@ -251,40 +210,40 @@ export async function refreshMemberToken(db: RelationalStore, subject: RefreshSu
   // caller sends is how a device silently loses its binding and reverts to whoever
   // first authenticated it; carrying the row forward is what keeps a refresh a
   // continuation of one runtime rather than a fresh claim about which runtime it is.
-  const successor = await mintInsert(db, { memberId: subject.memberId, machineId: subject.machineId }, nowMs,
+  const successor = await mintWrite(db, { memberId: subject.memberId, machineId: subject.machineId }, nowMs,
     { predecessorId: subject.tokenId, lineageRoot: subject.lineageRoot, lineageStartedAt: subject.lineageStartedAt }, subject.runtime);
-  const [, inserted] = await db.batch([
-    db.prepare(`UPDATE member_credentials SET revoked_at = ? WHERE predecessor_id = ? AND revoked_at IS NULL AND first_used_at IS NULL AND ${TOKEN_LIVE}`).bind(nowMs, subject.tokenId, subject.tokenId),
-    successor.statement,
-  ]);
-  if (inserted.results.length !== 1) throw new TokenRevokedError(subject.tokenId);
+  let inserted: { id: string } | undefined;
+  try {
+    const committed = await commitNamed(db, {
+      refreshable: refreshableAssertion(subject.tokenId),
+      retired: retireBankedWrite(nowMs, subject.tokenId),
+      successor: successor.statement,
+    });
+    inserted = committed.successor.results[0];
+  } catch (error) {
+    if (refused(error, CREDENTIAL_NOT_REFRESHABLE)) throw new TokenRevokedError(subject.tokenId);
+    throw error;
+  }
+  if (inserted === undefined) throw new TokenRevokedError(subject.tokenId);
   return { refreshed: true, ...successor.issued, refreshAfter: windowOpensAt(successor.issued.expiresAt) };
 }
 
 /** Whether a lapsed token's lineage has gone unrefreshed for `MEMBER_LINEAGE_IDLE_MS`, read off the presented row's immutable `issued_at` — not `first_used_at`, which the pipeline stamps on this very request when it activates a never-used successor. A missing row reads as active and meets the insert's liveness gate. */
 async function lineageInactive(db: RelationalStore, tokenId: string, nowMs: number): Promise<boolean> {
-  const row = await db.prepare(`SELECT issued_at FROM member_credentials WHERE id = ?`).bind(tokenId).first<{ issued_at: number }>();
+  const row = await first(db, credentialIssuedAt.bind(tokenId));
   return row !== null && row.issued_at + MEMBER_LINEAGE_IDLE_MS <= nowMs;
 }
+const credentialIssuedAt = read<[token: string], { issued_at: number }>({ name: 'credential.issuedAt', sql: 'SELECT issued_at FROM member_credentials WHERE id=?1' });
 
-/** A successor's first authenticated use atomically transfers live worker leases and stored bytes, records the instant, and revokes the predecessor. The attempt identity and completed-run attribution stay unchanged. */
-export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAuth, 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<void> {
-  const held = carriedBytes(auth.predecessorId, nowMs);
-  await db.batch([
-    db.prepare(`UPDATE agent_runs SET leased_by = ?
-                  WHERE leased_by = ? AND status = 'running' AND lease_expires_at > ?
-                    AND EXISTS (
-                      SELECT 1 FROM member_credentials successor
-                      JOIN member_credentials predecessor ON predecessor.id = successor.predecessor_id
-                       WHERE successor.id = ? AND predecessor.id = ?
-                         AND successor.first_used_at IS NULL AND successor.revoked_at IS NULL
-                         AND successor.member_id = predecessor.member_id
-                         AND successor.machine_id IS predecessor.machine_id
-                         AND successor.lineage_root = predecessor.lineage_root
-                    )`).bind(auth.tokenId, auth.predecessorId, nowMs, auth.tokenId, auth.predecessorId),
-    db.prepare(`UPDATE member_credentials SET bytes_written = COALESCE(${held.sql}, 0), first_used_at = ? WHERE id = ? AND first_used_at IS NULL`).bind(...held.params, nowMs, auth.tokenId),
-    db.prepare(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).bind(nowMs, auth.predecessorId),
-  ]);
+/**
+ * A successor's first authenticated use atomically transfers live worker leases and stored bytes, records the instant,
+ * and revokes the predecessor, all conditional on that successor still being live and unused at this commit. The attempt
+ * identity and completed-run attribution stay unchanged. Answers whether this request activated it; a successor already
+ * replaced activates nothing and ends nothing.
+ */
+export async function activateSuccessor(db: RelationalStore, auth: Pick<MemberAuth, 'tokenId'> & { predecessorId: string }, nowMs: number): Promise<boolean> {
+  const { stamp } = await commitNamed(db, activationWrites(auth.tokenId, auth.predecessorId, nowMs));
+  return stamp.results.length === 1;
 }
 
 /** Whether a credential past its own expiry authenticates: `live` refuses it, `lapsed` admits it — for credential routes declaring `admitsLapsed`: refresh checks lineage inactivity, and self-revocation ends the lineage. A revoked credential, or one whose member is revoked, never authenticates under either. */
@@ -388,9 +347,4 @@ export async function releasedRunCredential(db: RelationalStore, digest: string,
     JOIN members m ON m.id = t.member_id AND m.revoked_at IS NULL
     WHERE t.token_hash = ? AND t.member_id = ? AND t.revoked_by = ? AND t.revoked_at IS NOT NULL AND t.expires_at > ?`)
     .bind(digest, HARNESS_MEMBER_ID, HARNESS_MEMBER_ID, now).first<{ memberId: string; tokenId: string }>();
-}
-
-export async function mintInsert(...args:Parameters<typeof mintWrite>):Promise<{statement:PreparedStatement;issued:IssuedMemberToken}> {
-  const {statement,issued}=await mintWrite(...args);
-  return {statement:prepareClaimCompanion(args[0],statement),issued};
 }

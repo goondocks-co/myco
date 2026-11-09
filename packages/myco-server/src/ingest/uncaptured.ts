@@ -9,7 +9,6 @@ import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 
 export { isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
 import type { HeldState, UncapturedReason } from '@goondocks/myco-shared/member-protocol';
-import { MEMBER_REVOKED_BY, memberRevokedByParams } from '../db/liveness.js';
 
 /** One report of a repository a machine could not capture. */
 interface UncapturedReport {
@@ -47,11 +46,6 @@ export function clearUncapturedStatement(db: RelationalStore, machineId: string,
 /** Record that a machine no longer holds a repository's capture: past its cap, or discarded with age. */
 export function heldUncapturedStatement(db: RelationalStore, machineId: string, rootKey: string, held: Exclude<HeldState, 'held'>): PreparedStatement {
   return db.prepare(`UPDATE uncaptured_roots SET held = ? WHERE machine_id = ? AND root_key = ?`).bind(held, machineId, rootKey);
-}
-
-/** Forget a revoked member's repositories, in the batch that revokes them: only once that batch's first statement has. */
-export function clearMemberUncapturedStatement(db: RelationalStore, memberId: string, revokedBy: string, nowMs: number): PreparedStatement {
-  return db.prepare(`DELETE FROM uncaptured_roots WHERE member_id = ? AND ${MEMBER_REVOKED_BY}`).bind(memberId, ...memberRevokedByParams(memberId, nowMs, revokedBy));
 }
 
 /** How long a repository no machine reports again stays listed. */

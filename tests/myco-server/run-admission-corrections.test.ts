@@ -2,7 +2,7 @@ import { prepareLearningSlice } from './helpers/extraction.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 import { expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { HARNESS_MEMBER_ID, PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { createServer } from '@myco-server-worker/pipeline.js';

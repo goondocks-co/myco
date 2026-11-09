@@ -23,7 +23,7 @@ import { runWorker } from '@myco/runner/loop.js';
 import { deploymentScopedHeaders } from '@myco/member/constants.js';
 import type { RunEvent } from '@myco/runner/events.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { expireLeases } from '@myco-server-worker/core/harness.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';

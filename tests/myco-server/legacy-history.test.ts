@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { LEGACY_HISTORY_SQL, LEGACY_SPORES_SQL, LEGACY_LINEAGE_SQL } from '@myco-server-worker/read/legacy-history.js';
 import { LEGACY_HISTORY_MAX_EVENTS, LEGACY_HISTORY_PATH, LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
 import { memberPost, noOutboundFetch, sqliteEnv, uuid } from './helpers/fixtures.js';

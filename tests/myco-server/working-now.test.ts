@@ -17,7 +17,7 @@ import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js'
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { handlePromptContext } from '@myco-server-worker/api/recall.js';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { turnStartedAt } from '@myco-server-worker/ingest/turns.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
 import {

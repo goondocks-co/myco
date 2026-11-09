@@ -18,7 +18,7 @@ const TRANSCRIPT_PARSE_EVENTS_PER_BATCH = 50;
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { presentedDatesAfterPublication } from '@myco-server-worker/db/documents/lifecycle.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import {
   sessions_listSessions as listSessions,

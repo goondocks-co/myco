@@ -17,7 +17,8 @@
  * Deployment starts from comes through here. Naming a project binds the key to
  * it, which a sandbox joining on this key requires.
  */
-import { enrollmentInsert, ENROLLMENT_ID_PREFIX, ENROLLMENT_KEY_BYTES, ENROLLMENT_TTL_MS } from '../src/auth/enrollment.ts';
+import { prepareClaimCompanion } from '../src/db/runs/claim-companions.ts';
+import { enrollmentMintWrite, ENROLLMENT_ID_PREFIX, ENROLLMENT_KEY_BYTES, ENROLLMENT_TTL_MS } from '../src/auth/enrollment.ts';
 import { sha256Hex } from '../src/hash.ts';
 import { sqlCapture } from './sql-capture.ts';
 
@@ -40,8 +41,8 @@ const id = `${ENROLLMENT_ID_PREFIX}${b64url(crypto.getRandomValues(new Uint8Arra
 
 const now = Date.now();
 const { db, statements } = sqlCapture();
-const { statement, expiresAt } = enrollmentInsert(db, now, ttlMinutes * 60_000, { kind: 'operator' }, await sha256Hex(key), id, 'admin', null, projectId);
-await statement.run();
+const { write, expiresAt } = enrollmentMintWrite(now, ttlMinutes * 60_000, { kind: 'operator' }, await sha256Hex(key), id, { role: 'admin', projectId });
+await prepareClaimCompanion(db, write).run();
 
 console.log(`-- enrollment authority ${id}; expires_at ${expiresAt} (${ttlMinutes} minutes)`);
 for (const rendered of statements) console.log(`${rendered};`);

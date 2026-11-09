@@ -22,11 +22,8 @@ import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
-import {
-  restoreAuthorityAuditStatement,
-  restoreMembershipBatch,
-  restoreOwnership,
-} from './ownership.js';
+import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
+import { restoreOwnership } from '../db/identity/ownership.js';
 import { effectiveRawOwnerSql, reserveRawRestore } from './raw-claims.js';
 /**
  * Deployment backup and restore.
@@ -147,7 +144,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
-  'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities',
+  'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities', 'identity_link_redemptions', 'active_project_count',
   'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress', 'backup_publications', 'recovery_forget_commands',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
@@ -258,11 +255,6 @@ export async function deploymentId(db: RelationalStore): Promise<string> {
   if (value === null) throw new Error('this store carries no deployment_id; its migrations have not run');
   return value;
 }
-
-const tableCount = async (db: RelationalStore, table: string): Promise<number> => {
-  const row = await db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).first<{ c: number }>();
-  return row?.c ?? 0;
-};
 
 const MACHINE_REPORT_COLUMNS = new Set(['settings_cached_revision', 'settings_cached_values', 'settings_report_order', 'settings_contract_supported']);
 

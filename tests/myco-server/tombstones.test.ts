@@ -41,7 +41,7 @@ import {
   plans_listProjectPlans as listProjectPlans,
 } from '@myco-server-worker/read/catalog/plans.js';
 import { count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 
 const NOW = 1_000_000;
 const SCOPE = { projectId: 'proj_1' };

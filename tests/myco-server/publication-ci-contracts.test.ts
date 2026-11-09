@@ -1,7 +1,7 @@
 import { test } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';

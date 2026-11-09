@@ -34,10 +34,7 @@ export async function storedBytes(db: RelationalStore, tokenId: string): Promise
  * nothing reads again, so its bytes are counted once in the lineage by being
  * carried here. A count, never an admission.
  */
-export function carriedBytes(predecessorId: string, now: number): Fragment {
-  return {
-    sql: `(SELECT bytes_written FROM member_credentials WHERE id = ?)
-          + (SELECT COALESCE(SUM(size), 0) FROM blob_reservations WHERE token_id = ? AND expires_at > ?)`,
-    params: [predecessorId, predecessorId, now],
-  };
+export function carriedBytes(predecessorSlot: string, nowSlot: string): string {
+  return `(SELECT bytes_written FROM member_credentials WHERE id=${predecessorSlot})
+    +(SELECT COALESCE(SUM(size),0) FROM blob_reservations WHERE token_id=${predecessorSlot} AND expires_at>${nowSlot})`;
 }

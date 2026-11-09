@@ -7,7 +7,7 @@ import { type OfferedHarness } from '@myco-server-worker/core/worker-selection.j
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { recordTaskHolder } from '@myco-server-worker/db/runs/queue.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';

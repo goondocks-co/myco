@@ -6,7 +6,7 @@ import { settingsWriter, learningHistoryEnabled } from '@myco-server-worker/core
 import { effectiveSettings } from '@myco-server-worker/core/settings-policies.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';

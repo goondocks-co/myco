@@ -481,6 +481,8 @@
     "tests/myco-server/injection.test.ts": 7918,
     "tests/myco-server/intelligence-api.test.ts": 238,
     "tests/myco-server/intelligence-schema.test.ts": 3151,
+    "tests/myco-server/authority-operations.test.ts": 1300,
+    "tests/myco-server/authority-retention.test.ts": 1400,
     "tests/myco-server/invites.test.ts": 282,
     "tests/myco-server/join.test.ts": 459,
     "tests/myco-server/kinds.test.ts": 4370,

@@ -1,17 +1,13 @@
-import { joinAdmission } from '../db/runs/enrollment.js';
+import { commitNamed, refused } from '../db/index.js';
+import { JOIN_REFUSED, joinIdentityRead, joinWrites } from '../db/identity/join.js';
 import { toBase64Url } from '../base64.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { MEMBER_ID_PREFIX } from '../constants.js';
 import { emit, StorageContractError, type Classifier } from '../telemetry.js';
-import {
-  claimMachineIdentityStatement, enrollmentAdmission, ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN,
-  enrollmentTarget, explainEnrollment, spendStatement,
-  type EnrollmentRefusal, type Fragment,
-} from './enrollment.js';
-import { identityBehindCredentialStatement } from './members-admin.js';
+import { ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN, enrollmentTarget, explainEnrollment, type EnrollmentRefusal } from './enrollment.js';
 import { asMemberRole } from './roles.js';
-import { mintInsert } from './tokens.js';
-import { stampRequestStatement } from '../core/activity.js';
+import { mintWrite } from './tokens.js';
+import { stampRequestWrite } from '../core/activity.js';
 import { sha256Hex } from '../hash.js';
 
 /** Bytes of randomness in a server-named member id. */
@@ -73,32 +69,25 @@ export async function joinMember(env: ServerEnv, input: unknown, now: number): P
   const invitation = await enrollmentTarget(env.db, keyHash);
   const memberId = invitation?.memberId ?? `${MEMBER_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_ID_BYTES)))}`;
 
-  const admission = enrollmentAdmission(keyHash, now, { forProject: forProjectAsked, memberId });
-  const namedAdmission=joinAdmission(keyHash,now,memberId,machineId,forProjectAsked);
-  const admitted=namedAdmission.predicate;
   const runtime = {
     runtimeLabel: typeof runtimeLabel === 'string' ? runtimeLabel : null,
     runtimeKind: typeof runtimeKind === 'string' ? runtimeKind : null,
   };
-  const { statement: credential, issued } = await mintInsert(env.db, { memberId, machineId }, now, null, runtime, { claim: namedAdmission.credential });
-  const minted: Fragment = { sql: `EXISTS (SELECT 1 FROM member_credentials WHERE id = ?)`, params: [issued.tokenId] };
-  const identityRead = identityBehindCredentialStatement(env.db, issued.tokenId);
+  const { statement: credential, issued } = await mintWrite(env.db, { memberId, machineId }, now, null, runtime);
+  const { admitted, member, claim, spend } = joinWrites({ keyHash, now, memberId, machineId, forProject: forProjectAsked, runtimeLabel: runtime.runtimeLabel });
 
-  const statements = [
-    namedAdmission.member(env.db,invitation?.role ?? 'member'),
-    claimMachineIdentityStatement(env.db, machineId, memberId, now, admitted, runtime.runtimeLabel),
-    credential,
-    spendStatement(env.db, admission, now, machineId, minted),
-    // Only a committed credential advances the activity clock.
-    stampRequestStatement(env.db, now, minted),
-    identityRead,
-  ];
-  const credentialAt = statements.indexOf(credential);
-  const results = await env.db.batch(statements);
-  if (results.length !== statements.length) throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
-  const issuedCredential = results[credentialAt]!.results.length === 1;
-
-  if (!issuedCredential) {
+  let identityRow: { role?: unknown; memberLabel?: string | null; owner?: number } | undefined;
+  try {
+    const committed = await commitNamed(env.db, {
+      admitted, member, claim, credential, spend,
+      // Only a committed credential advances the activity clock.
+      stamp: stampRequestWrite(now),
+      identity: joinIdentityRead(issued.tokenId),
+    });
+    if (committed.spend.results.length !== 1) throw new StorageContractError(`join spent ${committed.spend.results.length} authorities`);
+    identityRow = committed.identity.results[0];
+  } catch (error) {
+    if (!refused(error, JOIN_REFUSED)) throw error;
     // Enrollment refusals precede identity refusals.
     const explained = await explainEnrollment(env.db, key, now, { forProject: forProjectAsked, memberId });
     const classifier: Classifier = explained.admissible ? 'identity_claimed' : REFUSALS[explained.reason];
@@ -107,7 +96,6 @@ export async function joinMember(env: ServerEnv, input: unknown, now: number): P
       : `enrollment key ${explained.reason.replace('_', ' ')}`);
   }
 
-  const identityRow = results[statements.indexOf(identityRead)]!.results[0] as { role?: unknown; memberLabel?: string | null; owner?: number } | undefined;
   const committedRole = asMemberRole(identityRow?.role);
   if (committedRole === null) throw new StorageContractError(`credential ${issued.tokenId} inserted but names no member`);
 

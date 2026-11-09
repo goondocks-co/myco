@@ -8,12 +8,13 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import {
-  IDENTITY_LINK_KEY_PATTERN, IDENTITY_LINK_RETENTION_MS, IDENTITY_LINK_TTL_MS,
-  issueIdentityLinkAuthority, memberByGithubId, previewIdentityLinkAuthority, reclaimIdentityLinkAuthorities, spendIdentityLinkAuthority,
+  IDENTITY_LINK_KEY_PATTERN, IDENTITY_LINK_TTL_MS,
+  issueIdentityLinkAuthority, memberByGithubId, previewIdentityLinkAuthority, spendIdentityLinkAuthority,
   type IssuedIdentityLinkAuthority,
 } from '@myco-server-worker/auth/identity-link.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { IDENTITY_LINK_RETENTION_MS, reclaimFinishedAuthorities } from '@myco-server-worker/db/identity/authority-retention.js';
 import { migrateAndSeed } from './helpers/d1.js';
 
 const NOW = 1_800_000_000_000;
@@ -101,14 +102,14 @@ describe('identity link authority', () => {
     expect(await memberByGithubId(r.db, '1')).toBeNull();
   });
 
-  it('reclaims finished authorities older than the retention on the spend path, and never a live one', async () => {
+  it('reclaims finished authorities older than the retention, and never a live one', async () => {
     const r = rig();
     const old = NOW - IDENTITY_LINK_RETENTION_MS - 1;
     const spent = await issue(r.db, 'mem_machine_2', old);
     await spendIdentityLinkAuthority(r.db, spent.key, '9001', old);
     const expired = await issue(r.db, 'mem_machine_3', old - IDENTITY_LINK_TTL_MS);
     const live = await issue(r.db, 'mem_machine_4', NOW - IDENTITY_LINK_RETENTION_MS - 1, { ttlMs: 2 * IDENTITY_LINK_RETENTION_MS });
-    expect(await reclaimIdentityLinkAuthorities(r.db, NOW)).toEqual({ reclaimed: 2 });
+    expect(await reclaimFinishedAuthorities(r.db, NOW, 100)).toEqual({ reclaimed: 3 });
     const remaining = r.sqlite.query(`SELECT id FROM identity_link_authorities ORDER BY id`).all() as { id: string }[];
     expect(remaining.map((x) => x.id)).toEqual([live.id]);
     expect(remaining.map((x) => x.id)).not.toContain(spent.id);

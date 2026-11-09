@@ -3,7 +3,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { memberHeaders, noOutboundFetch, sqliteEnv } from './helpers/fixtures.js';
 

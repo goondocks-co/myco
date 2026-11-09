@@ -22,7 +22,7 @@ import { taskFactsKey } from '@myco-server-worker/db/runs/task-facts.js';
 import { CAPABILITY_OFF, claimNextRun } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { runTimeoutForTask } from '@myco-server-worker/core/task-catalogue.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 
 const DAY = 86_400_000;

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../../myco-server/helpers/member-token.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { linkStatement } from '@myco-server-worker/auth/identity-link.js';

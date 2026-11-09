@@ -7,7 +7,7 @@ import { harnessById } from '@myco/runner/harnesses.js';
 import { describe, expect, it } from 'bun:test';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { applyRunUpdate } from '@myco-server-worker/db/runs/change.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { claimNextRun, endLeasedRun, expireLeases } from '@myco-server-worker/core/harness.js';

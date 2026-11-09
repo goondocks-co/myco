@@ -1,6 +1,6 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-import { LAST_S2C } from './db/schema-vNEXT-s2c.js';
-export const SERVER_SCHEMA_VERSION = LAST_S2C;
+import { LATEST_S6B } from './db/schema-vNEXT-s6b.js';
+export const SERVER_SCHEMA_VERSION = LATEST_S6B;
 /** How long a member token lives before it must be refreshed. */
 export { MEMBER_TOKEN_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** State keys owned by the Deployment and read-only to run tools. */

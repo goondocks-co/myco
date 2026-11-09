@@ -15,7 +15,7 @@ import { authenticateRunner } from '@myco-server-worker/auth/runners.js';
 import { memberByGithubId } from '@myco-server-worker/auth/identity-link.js';
 import { memberSubject } from '@myco-server-worker/auth/authorization.js';
 import { listMembers } from '@myco-server-worker/auth/members-admin.js';
-import { changeMemberRole } from '@myco-server-worker/core/ownership.js';
+import { changeMemberRole } from '@myco-server-worker/db/identity/ownership.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 

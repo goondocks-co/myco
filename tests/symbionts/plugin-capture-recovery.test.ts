@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'bun:test';
 import { snippetModule } from '../support/plugin-snippet.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { readFixtureRecords, sqliteEnv } from '../myco-server/helpers/fixtures.js';

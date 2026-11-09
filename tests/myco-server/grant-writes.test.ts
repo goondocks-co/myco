@@ -14,7 +14,7 @@ import worker from '@myco-server-worker/index.js';
 import { issueExternalGrant, rotateExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { USER_AGENT_ID } from '@myco-server-worker/mcp/context.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { sqliteEnv, memberHeaders } from './helpers/fixtures.js';
 
 const DAY_MS = 86_400_000;

@@ -9,7 +9,7 @@ import { backupArtifact, createBackup, pruneBackups, setBackupPinned } from '@my
 import { drainObjectReleases, releaseBackups, DRAIN_PAGE } from '@myco-server-worker/core/object-release.js';
 import { consumeUpload, reconcileObjectIntents } from '@myco-server-worker/db/storage/object-lifecycle.js';
 import { retentionDecision } from '@myco-server-worker/core/backup-retention.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { d1StoreMaintenance, D1_QUERY_LIMIT_MS } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';

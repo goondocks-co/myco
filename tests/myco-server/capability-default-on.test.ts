@@ -3,7 +3,7 @@ import { CAPABILITY_ON_SQL, enabledCapabilities, PROJECT_CAPABILITIES, settingsW
 import { sqliteEnv } from './helpers/fixtures.js';
 
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { claimNextRun, dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';

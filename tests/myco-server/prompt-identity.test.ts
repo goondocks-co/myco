@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { composePromptContext, composeSessionContext, PROMPT_ANSWER_RETENTION_DAYS, prunePromptAnswers, type RecallLeaves } from '@myco-server-worker/core/recall.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';

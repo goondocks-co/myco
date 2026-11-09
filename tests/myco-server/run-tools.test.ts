@@ -17,7 +17,7 @@ import { estimateKey } from '@myco-server-worker/core/budget-estimates.js';
  */
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';

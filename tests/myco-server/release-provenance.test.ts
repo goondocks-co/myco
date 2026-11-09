@@ -14,7 +14,7 @@ import { getReleaseState } from '@myco-server-worker/core/provenance.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { memberHeaders } from './helpers/fixtures.js';
 import { A, B, C, D, M, MISSING, REPO, X, fakeGithub, type Repo } from './helpers/github-fake.js';
 import { GIT_STATUS_UNREADABLE } from '@myco-server-worker/ingest/projections.js';

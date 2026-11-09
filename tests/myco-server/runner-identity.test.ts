@@ -34,7 +34,7 @@ import { getRunDetail } from '@myco-server-worker/read/runs.js';
 import { prepareRecoveredTenant } from '@myco-server-worker/core/recovered-tenant.js';
 import { renameRunner, controlRunner, registerRunner, runnerWriteStore, RunnerWriteRefused, RUNNER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/runners.js';
 import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { toBase64Url } from '@myco-server-worker/base64.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { PROTOCOL, publishFixture, memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';

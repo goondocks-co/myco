@@ -1,6 +1,6 @@
 import { enrollmentAuthorityPredicate } from '../../auth/authorization.js';
 import type { RelationalStore } from '../../core/adapters.js';
-import { deploymentOwnerSql } from '../../core/ownership.js';
+import { deploymentOwnerSql } from './ownership-policy.js';
 import type { Page } from '../../read/scope.js';
 import { clampLimit, decodeCursor, page } from '../../read/scope.js';
 import { memberLive } from '../liveness.js';

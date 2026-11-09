@@ -15,7 +15,7 @@ import { join } from 'node:path';
 
 import { createBunHandler } from '@myco-server-worker/entry/bun.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from '../helpers/member-token.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { memberPost, envelope } from '../helpers/fixtures.js';
 

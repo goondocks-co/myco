@@ -7,6 +7,8 @@ import { storageUsageSchemaStatements } from '@myco-server-worker/db/storage/usa
 import { SESSION_LIFECYCLE_STEPS, V730 } from '@myco-server-worker/db/schema-v728.js';
 import { CARD_SETTLE_AND_LOCATOR_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2b2.js';
 import { VNEXT_S2C_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2c.js';
+import { NEXT_S6B, VNEXT_S6B_STEPS } from '@myco-server-worker/db/schema-vNEXT-s6b.js';
+import { authorityRetentionSchemaStatements } from '@myco-server-worker/db/identity/authority-retention.js';
 import { SESSION_LIFECYCLE_EVENTS_INDEX, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -71,6 +73,12 @@ interface Exception {
 }
 const LISTED: readonly Exception[] = [
   { step: NEXT_S4B, object: 'spore_resolution_edge_insert', table: 'resolution_events', reason: 'Each new resolution event writes the lineage edge browsing reads.' },
+  ...VNEXT_S6B_STEPS.flatMap(({ version, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || match[2] === 'identity_link_redemptions' ? [] : [{ step: version, object: match[1]!, table: match[2]!,
+      reason: match[2] === 'projects' ? 'Every Project write keeps the active count exact, restore included, so the limit never counts.'
+        : 'A due-row deadline moves in the commit that finishes the row, and the job reads it by this index.' }];
+  })),
   ...VNEXT_S6_INDEX_STEPS.flatMap(({ version, statements: [sql] }) => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql!);
     return match === null ? [] : [{ step: version, object: match[1]!, table: match[2]!, reason: 'Lineage heads re-derive from a lineage\'s unrevoked credentials, and a member\'s credential page reads newest lineage first.' }];
@@ -385,6 +393,9 @@ interface StatementException {
   reason: string;
 }
 const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
+  ...VNEXT_S6B_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO|DROP TABLE)/.test(sql)).map(sql => ({
+    step, sql, reason: 'Authority retention adds its deadline, registers the catch-up, seeds the active Project count, and retires the last unused authority table.'
+  }))),
   ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
     step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'
   })),
@@ -923,6 +934,7 @@ it('schema steps are contiguous from one through the server version and migratio
 const triggerSql = (triggers: readonly { sql: string }[]) => triggers.map(trigger => trigger.sql);
 const GENERATOR_PINS: readonly (readonly [step: number, generated: () => readonly string[]])[] = [
   [NEXT_S6, lineageHeadSchemaStatements],
+  [NEXT_S6B + 4, authorityRetentionSchemaStatements],
   [V711, () => triggerSql(kpiTriggers())],
   [V712, () => triggerSql(passedOverTriggers())],
   [V714, spendSchemaStatements],

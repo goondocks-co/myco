@@ -14,7 +14,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { claimNextRun } from '@myco-server-worker/core/harness.js';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';

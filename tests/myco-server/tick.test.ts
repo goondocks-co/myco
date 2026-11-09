@@ -24,7 +24,7 @@ import { lastActivityAt, REQUEST_STAMP_INTERVAL_MS, stampRequest } from '@myco-s
 import { CHAINED_WAKE_MS, POWER_THRESHOLDS, runTick, tickPacer, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { ENROLLMENT_RETENTION_MS } from '@myco-server-worker/auth/enrollment.js';
+import { ENROLLMENT_RETENTION_MS } from '@myco-server-worker/db/identity/authority-retention.js';
 import { handleDeviceStart } from '@myco-server-worker/auth/device.js';
 
 const NOW = 1_800_000_000_000;

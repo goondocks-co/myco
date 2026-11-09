@@ -1,7 +1,8 @@
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import {
   MAX_BLOB_BYTES,
   MAX_CLOCK_SKEW_MS,

@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { deploymentDiagnostics, declaredWork } from '@myco-server-worker/core/diagnostics.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { VECTOR_LOST_MS, VECTOR_REWRITE_LIMIT } from '@myco-server-worker/core/embedding/provider.js';

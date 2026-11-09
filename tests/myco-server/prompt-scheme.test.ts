@@ -15,7 +15,7 @@ import { publishFixtureDocuments } from './helpers/fixtures.js';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
-import { issueMemberToken } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import {  rereadTranscripts, TRANSCRIPT_IDLE_MS  } from '@myco-server-worker/ingest/parse.js';
 import { promptIdAtOffset } from '@myco-server-worker/ingest/parsers/index.js';

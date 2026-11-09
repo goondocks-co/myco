@@ -31,7 +31,7 @@ export async function prepareRecoveredTenant(db: RelationalStore, mode: Recovery
     return original;
   }
   const identity = crypto.randomUUID();
-  const authorityTables = ['member_credentials', 'runner_credentials', 'enrollment_authorities', 'identity_link_authorities', 'external_grants', 'step_up_authorities'] as const;
+  const authorityTables = ['member_credentials', 'runner_credentials', 'enrollment_authorities', 'identity_link_authorities', 'external_grants'] as const;
   await db.batch([
     db.prepare("UPDATE schema_meta SET value = ? WHERE key = 'deployment_id' AND value = ?").bind(identity, original),
     ...stale,

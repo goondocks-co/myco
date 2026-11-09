@@ -3,7 +3,8 @@ import { credentialResourceOf, deploymentIdentity, memberSubject } from '@myco-s
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { httpAuthorizationDecision, httpPolicy } from '@myco-server-worker/auth/http-authorization.js';
 import { authorizeTool } from '@myco-server-worker/auth/mcp-authorization.js';
-import { issueMemberToken, revokeCredentialAsMember } from '@myco-server-worker/auth/tokens.js';
+import { revokeCredentialAsMember } from '@myco-server-worker/auth/tokens.js';
+import { issueMemberToken } from './helpers/member-token.js';
 import { readAuthorization } from '@myco-server-worker/db/auth/authorization.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
