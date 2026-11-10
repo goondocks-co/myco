@@ -127,7 +127,7 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
   const replacementReady = preview !== null && preview.code === value && preview.subject === 'runner' && preview.runnerName === runner.name && preview.replacingRunnerId === runner.id;
   const tone = runner.display === 'Busy' || runner.display === 'Online' ? 'ok' : runner.display === 'Not ready' ? 'warn' : 'neutral';
   return (
-    <article className="rounded-card border border-line bg-surface-1 p-s4" data-runner={runner.id}>
+    <article id={`runner-${runner.id}`} className="rounded-card border border-line bg-surface-1 p-s4" data-runner={runner.id}>
       <div className="flex flex-col gap-s3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-s2">

@@ -344,6 +344,7 @@
     "tests/myco-server-ui/repository-map.test.tsx": 205,
     "tests/myco-server-ui/route-project.test.tsx": 2033,
     "tests/myco-server-ui/run-activity.test.tsx": 1238,
+    "tests/myco-server-ui/run-story.test.tsx": 900,
     "tests/myco-server-ui/runners.test.tsx": 818,
     "tests/myco-server-ui/search.test.tsx": 2962,
     "tests/myco-server-ui/sessions.test.tsx": 28000,

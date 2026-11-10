@@ -88,6 +88,35 @@ describe('run panel recorded evidence', () => {
     } finally { f.sqlite.close(); }
   });
 
+  it('reads curation, card and search runs by what each recorded, not as changed nothing', async () => {
+    const f = await fixture();
+    try {
+      const report = (id: string, action: string, details: object) => f.sqlite.run(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, details, created_at)
+        VALUES ('proj_1', ?, 'audit_agent', ?, 'Reported.', ?, ?)`, [id, action, JSON.stringify(details), NOW]);
+      f.run('curated', 'curate-spores');
+      f.run('kept_apart', 'curate-spores');
+      f.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, created_at) VALUES ('proj_1', 'older', 'audit_agent', 'gotcha', 'obsolete', 'x', ?)`, [NOW]);
+      f.sqlite.run(`INSERT INTO resolution_events (project_id, id, agent_id, spore_id, action, created_at, author) VALUES ('proj_1', 'retire-older', 'audit_agent', 'older', 'obsolete', ?, 'curated')`, [NOW]);
+      f.run('carded', 'turn-cards');
+      f.run('carded_nothing', 'turn-cards');
+      f.event('carded', 'run_write', 'myco_run_cards', 'written', {});
+      f.run('indexed', 'embedding-reconcile');
+      f.run('index_current', 'embedding-reconcile');
+      f.run('index_failed', 'embedding-reconcile', 'failed');
+      report('indexed', 'embedding', { processed: 340, phase: 'settled' });
+      report('index_current', 'embedding', { processed: 0, phase: 'settled' });
+      report('index_failed', 'embedding', { processed: 12, phase: 'pending' });
+      const listed = await f.get('/api/projects/proj_1/runs');
+      for (const [id, result] of [
+        ['curated', 'produced'], ['kept_apart', 'unchanged'], ['carded', 'produced'], ['carded_nothing', 'unchanged'],
+        ['indexed', 'produced'], ['index_current', 'unchanged'], ['index_failed', 'failed_with_output'],
+      ]) {
+        expect({ id, result: (await f.get(`/api/projects/proj_1/runs/${id}`)).run.result }).toEqual({ id, result });
+        expect({ id, result: listed.rows.find((row: Answer) => row.id === id).result }).toEqual({ id, result });
+      }
+    } finally { f.sqlite.close(); }
+  });
+
   it('keeps terminal error distinct from a success report in work', async () => {
     const f = await fixture();
     try {

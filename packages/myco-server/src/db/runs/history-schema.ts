@@ -40,7 +40,7 @@ const sporeCount = (row: string, value: string) => `(SELECT ${value} FROM spores
 
 const FACT_FIELDS = ['task', 'status', 'origin', 'day', 'at', 'tokens', 'cost', 'duration_ms', 'no_cost', 'produced', 'spores', 'sessions', 'title_session', 'listed'] as const;
 const fact = (r: string) => {
-  const produced = producedSql(r);
+  const produced = producedSql(r, WORK_TASKS);
   const title = `CASE WHEN ${r}.task='${TITLING_TASK}' THEN ${titled(r)} END`;
   return [
     `COALESCE(${r}.task,'')`, `${r}.status`, runOriginSql(r), day(r), at(r), `${r}.tokens_used`, `${r}.cost_usd`,

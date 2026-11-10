@@ -567,7 +567,7 @@ describe('running a task by hand', () => {
 
 for (const [code, sentence] of [
   ['machine_did_not_start', 'No machine started the task within a day.'],
-  ['machine_unresponsive', 'The machine running it stopped responding.'],
+  ['machine_unresponsive', 'Myco heard nothing from it until its time limit passed, so Myco ended it. Whether its machine stopped is not known.'],
   ['task_start_failed', 'The machine could not start the task.'],
   ['model_not_applied', 'The agent couldn’t use the chosen model.'],
   ['report_without_audit', 'The agent didn’t account for the steps it took, so its work couldn’t be checked.'],
@@ -738,7 +738,7 @@ it('keeps a coded failure as the headline when the run also filed a report', asy
   })) } }));
   mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
   const open = await panel();
-  await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('The machine running it stopped responding.'));
+  await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('Myco heard nothing from it until its time limit passed, so Myco ended it. Whether its machine stopped is not known.'));
   expect(open.textContent).not.toContain(reason);
   expect(open.querySelector('[data-run-report]')!.textContent).toContain(report);
   fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
