@@ -213,8 +213,8 @@ it('retains all attempt prices through a full native recovery and repeated start
   }
 });
 
-it('recovers paused learning preferences and migrates a snapshot lacking the pause state', async () => {
-  for(const learningSource of ['paused','pre-pause'] as const) {
+for(const learningSource of ['paused','pre-pause'] as const) {
+  it(`recovers paused learning preferences and migrates a snapshot lacking the pause state (${learningSource})`, async () => {
     const f=await fixture('local',{learningSource});
     try {
       await f.restore();
@@ -229,8 +229,8 @@ it('recovers paused learning preferences and migrates a snapshot lacking the pau
           updated_at:123,updated_by:'owner'});
       } finally {restored.close();}
     } finally {f.cleanup();}
-  }
-});
+  });
+}
 
 it('recovers hosted data, independently wrapped credentials and pinned artifacts into a fresh native volume', async () => {
   const f = await fixture();
