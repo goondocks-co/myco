@@ -249,7 +249,7 @@ export const MAX_REPORT_DETAILS_CHARS = 65_536;
 
 /**
  * Record a run's report: the one door every report lands through, on the MCP
- * surface and the container's route alike (`tests/meta/report-record-chokepoint.test.ts`).
+ * surface and the container's route alike.
  * An action the run's task cannot close under is refused here, naming what it
  * can, and leaves no row; a row the judgment would ignore is never written. The
  * audit is held to its shape here (`parseRunAudit`), and the summary and details
