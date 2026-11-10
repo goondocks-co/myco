@@ -284,7 +284,7 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
       </div>
     );
   }
-  return <p className="t-small text-muted">{run.result === 'unchanged' ? 'Checked and changed nothing.' : 'Nothing'}{run.status === 'failed' ? '; it stopped before writing anything' : ''}.</p>;
+  return <p className="t-small text-muted">{run.result === 'unchanged' ? 'Checked and changed nothing' : 'Nothing'}{run.status === 'failed' ? '; it stopped before writing anything' : ''}.</p>;
 }
 
 function tookWords(ms: number): string {

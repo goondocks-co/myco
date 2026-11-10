@@ -160,14 +160,10 @@ export function runStory({ answer, calls, steps, startedBy, cause, memberName, n
 
   const latest = answer.attempts.at(-1);
   const live = run.status === 'running' || run.status === 'claimed';
-  if (latest !== undefined && latest.steps === null && (live || run.status === 'completed' || run.status === 'failed')) {
-    story.push(row({
-      key: 'no-steps', words: live ? 'What it is doing on the machine isn’t visible yet' : 'The runner’s step log never arrived', source: 'none',
-      note: live ? 'The runner sends its step log when the attempt ends.' : 'A runner sends its step log when the attempt ends; none reached Myco for this one.',
-    }));
-  }
+  const stepLogMissing = latest !== undefined && latest.steps === null;
   if (live) {
     if (heard !== null && now - heard > SILENCE_MS) story.push(row({ key: 'quiet', words: `No call to Myco for ${spanWords(now - heard)} so far`, source: 'saw' }));
+    if (stepLogMissing) story.push(row({ key: 'no-steps', words: 'What it is doing on the machine isn’t visible yet', source: 'none', note: 'The runner sends its step log when the attempt ends.' }));
     return story;
   }
   const ended = run.completedAt;
@@ -179,6 +175,9 @@ export function runStory({ answer, calls, steps, startedBy, cause, memberName, n
     story.push(row({ key: 'inferred', at: ended, words: said.words, source: 'inferred', tone: 'bad', note: said.note }));
   }
   story.push(endRow(answer, ended, inferred !== undefined, cause));
+  if (stepLogMissing && (run.status === 'completed' || run.status === 'failed')) {
+    story.push(row({ key: 'no-steps', words: 'The runner’s step log never arrived', source: 'none', note: 'A runner sends its step log when the attempt ends; none reached Myco for this one.' }));
+  }
   return story;
 }
 

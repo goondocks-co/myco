@@ -3,7 +3,7 @@ import { useIsAdmin } from '../../hooks/use-me';
 import { useTaskRuns } from '../../hooks/use-work';
 import { cn } from '../../lib/cn';
 import { RUNNERS_PATH, runPath } from '../../routes/nav';
-import { PartLabel } from './OutcomeCard';
+import { InkLink, PartLabel } from './OutcomeCard';
 import {
   askedRows, clockWords, exactDetails, SOURCE_WORDS, TRY_WINDOW_MS, triesOf, tryResultWords, verdictOf,
   type Source, type StoryRow, type Tone, type Try,
@@ -28,7 +28,7 @@ function StoryLine({ entry }: { entry: StoryRow }) {
   const admin = useIsAdmin();
   const silent = entry.at === null;
   const words = entry.runner !== null && admin
-    ? <>{entry.words.slice(0, entry.words.indexOf(entry.runner.name))}<ItemLink to={`${RUNNERS_PATH}#runner-${encodeURIComponent(entry.runner.id)}`}>{entry.runner.name}</ItemLink>{entry.words.slice(entry.words.indexOf(entry.runner.name) + entry.runner.name.length)}</>
+    ? <>{entry.words.slice(0, entry.words.indexOf(entry.runner.name))}<InkLink to={`${RUNNERS_PATH}#runner-${encodeURIComponent(entry.runner.id)}`}>{entry.runner.name}</InkLink>{entry.words.slice(entry.words.indexOf(entry.runner.name) + entry.runner.name.length)}</>
     : entry.words;
   return (
     <li className={cn('grid grid-cols-[5.5rem_1fr] gap-s3 py-s2', silent && 'border-l-2 border-dashed border-line pl-s2')} data-story-row={entry.key} data-story-tone={entry.tone ?? undefined}>
