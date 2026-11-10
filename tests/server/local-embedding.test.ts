@@ -7,8 +7,7 @@ import { EmbeddingRuntime } from '@myco-server-worker/platform/bun/embedding-run
 import { startDeployment } from '@myco-server-worker/platform/bun/server-main.js';
 import { prepareDispatch, dispatchPrepared } from '@myco-server-worker/core/harness.js';
 import { dispatchEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
-import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
+import { searchDeployment } from '@myco-server-worker/core/search.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 
 async function fixture(options: { sourceFrom?: 'socket' | 'proxy'; rejectControl?: boolean; failPersistence?: boolean } = {}) {
@@ -56,8 +55,8 @@ test('native runtime indexes clock-dispatched work and serves semantic results w
     const reports = await f.server.env.db.prepare('SELECT summary FROM agent_reports WHERE run_id=?').bind(run.id).all<{ summary: string }>();
     expect(reports.results).toHaveLength(1);
     expect(reports.results[0]!.summary).toContain('Processed 1 embedding records');
-    const search = await searchProject(f.server.env.db, { projectId: 'proj_1' }, { query: 'architecture', mode: 'semantic' }, () => resolveSemanticSearch(f.server.env));
-    expect(search.results.map((row) => row.id)).toEqual(['memory']);
+    const search = await searchDeployment(f.server.env, { projectId: 'proj_1' }, { query: 'architecture', mode: 'semantic' }, 'member:test');
+    expect(search.hits.map((row) => row.id)).toEqual(['memory']);
     expect(f.failures).toEqual([]);
   } finally { await f.close(); }
 });

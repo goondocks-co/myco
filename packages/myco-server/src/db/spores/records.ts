@@ -42,14 +42,6 @@ const sporesWithSourceByIds = read<[project: string, ids: string], SporeWithSour
 /** A spore's point read, for a batch that decides from it beside other rows. */
 export const sporeReadStatement = (project: string, id: string): Bound<SporeWithSource, 'read'> => sporeById.bind(project, id);
 const authored = read<[project: string, author: string], { one: number }>({ name: 'spores.authoredBy', sql: 'SELECT 1 AS one FROM spores WHERE project_id=?1 AND author=?2 LIMIT 1' });
-const wordMatches = read<[words: string, bodyChars: number, project: string, excluding: string, window: number, limit: number], { id: string }>({
-  name: 'spores.wordMatches',
-  sql: `SELECT id,(SELECT COUNT(*) FROM json_each(?1) word WHERE instr(text,word.value)>0) AS score FROM (
-      SELECT id,created_at,lower(COALESCE(agent_line,'')||' '||substr(content,1,?2)) AS text FROM spores INDEXED BY idx_spores_status
-      WHERE project_id=?3 AND status='active' AND id<>?4 ORDER BY created_at DESC LIMIT ?5)
-    WHERE score>0 ORDER BY score DESC,created_at DESC,id LIMIT ?6`,
-});
-
 const insertSlots = (scope: ReadScope, row: SporeInsert): InsertSlots => [scope.projectId, row.id, row.agentId, row.sessionId, row.observationType, row.status ?? 'active', row.content, row.context, row.importance ?? 5, row.filePath, row.tags, row.contentHash, row.properties, row.author,
   row.provenance?.kind ?? null, row.provenance?.ref ?? null, row.agentLine ?? null, row.createdAt];
 
@@ -96,17 +88,6 @@ export const listSporesByIds = (db: RelationalStore, scope: ReadScope, ids: read
 /** The named spores of this Project with the time their source session started, keyed by id. */
 export async function sporesWithSourceById(db: RelationalStore, scope: ReadScope, ids: readonly string[]): Promise<Map<string, SporeWithSource>> {
   return new Map((await rows(db, sporesWithSourceByIds.bind(scope.projectId, JSON.stringify([...new Set(ids)].slice(0, MAX_SPORE_LIMIT))))).map(spore => [spore.id, spore]));
-}
-
-/** The newest active spores of one Project a word match reads. */
-const WORD_MATCH_WINDOW = MAX_SPORE_LIMIT;
-/** How much of a spore's body a word match reads, beside its agent line. */
-const WORD_MATCH_BODY_CHARS = 2_000;
-
-/** The ids of active spores holding the most of these words, among the Project's newest: the index stops at the window before any is scored. */
-export async function activeSporesMatchingAnyWord(db: RelationalStore, scope: ReadScope, words: readonly string[], excludingId: string, limit: number): Promise<string[]> {
-  if (words.length === 0) return [];
-  return (await rows(db, wordMatches.bind(JSON.stringify(words), WORD_MATCH_BODY_CHARS, scope.projectId, excludingId, WORD_MATCH_WINDOW, limit))).map(row => row.id);
 }
 
 /** Whether this author — a run id, a member id or a grant id — wrote at least one spore in this Project. */

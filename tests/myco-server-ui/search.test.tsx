@@ -21,7 +21,7 @@ afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
 const NAMES: Record<string, string> = { one: 'Project one', two: 'Project two', proj_6d79636f3a3e1c0b: 'Myco' };
 const hit = (overrides: Partial<SearchAcrossResult> = {}): SearchAcrossResult => ({ projectId: 'one', id: 'sp', type: 'spore', title: 'decision', preview: 'Use a bounded cache.', score: 1, ...overrides });
-const answer = (results: unknown[], pending = 0, unavailable = false) => Response.json({ results, mode: 'fts', provider_unavailable: unavailable, coverage: { pending_blobs: pending } });
+const answer = (results: unknown[], pending = 0, unavailable = false) => Response.json({ hits: results, mode: 'fts', provider_unavailable: unavailable, coverage: { state: 'ready', pendingBlobs: pending, horizon: null }, partial: false, asOf: 0, nextCursor: null });
 function Location() { return <output data-testid="location">{useLocation().pathname}{useLocation().search}</output>; }
 
 /** The shell's wiring in small: a trigger, the shortcut, and the search keyed by the project it searches. */
@@ -67,7 +67,7 @@ it('searches the project a page names, debounced, with its filters, and opens a 
   expect(asked[0]!.pathname).toBe('/api/projects/one/search');
   expect(asked[0]!.searchParams.get('mode')).toBe('auto');
   expect(asked[0]!.searchParams.get('limit')).toBe(String(SEARCH_RESULT_CAP));
-  expect(await screen.findByText(/Indexing 2 captured bodies/)).toBeDefined();
+  expect(await screen.findByText(/Search is still reading earlier records/)).toBeDefined();
   await pick('Result type', 'Spores');
   await pick('Spore type', 'Fixes');
   await waitFor(() => expect(asked.at(-1)!.searchParams.get('observation_type')).toBe('bug_fix'));
@@ -158,6 +158,33 @@ it('says a project’s search matched words when search by meaning is unavailabl
   expect(await screen.findByText(/Search by meaning is unavailable, so this matched words\./)).toBeTruthy();
 });
 
+it('says when older matches exist than the ones shown, and never counts them', async () => {
+  globalThis.fetch = (async () => Response.json({ hits: [hit()], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: 1 }, partial: true, asOf: 0, nextCursor: 'more' })) as typeof fetch;
+  mount();
+  fireEvent.click(screen.getByRole('button', { name: /Search/ }));
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'cache' } });
+  expect(await screen.findByText(/add words to reach older ones/)).toBeTruthy();
+  expect(screen.getByRole('dialog').textContent).not.toMatch(/\d+ matches/);
+});
+
+it('never says nothing matches while older matches follow: Show more reads them', async () => {
+  const asked: URL[] = [];
+  globalThis.fetch = (async (path: string) => {
+    const url = new URL(path, 'https://s');
+    asked.push(url);
+    if (url.searchParams.get('cursor') === 'older') return answer([hit({ id: 'sp9', preview: 'An older match.' })]);
+    return Response.json({ hits: [], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: 1 }, partial: true, asOf: 0, nextCursor: 'older' });
+  }) as typeof fetch;
+  mount();
+  fireEvent.click(screen.getByRole('button', { name: /Search/ }));
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'cache' } });
+  expect(await screen.findByText('None of the newest matches fit these filters; older ones follow.')).toBeTruthy();
+  expect(screen.queryByText('No results match this search.')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+  expect(await screen.findByText('An older match.')).toBeTruthy();
+  expect(asked.at(-1)!.searchParams.get('cursor')).toBe('older');
+});
+
 it('keeps the results, and the keyboard’s place in them, while the search is read again in the background', async () => {
   let reads = 0;
   let release: (() => void) | undefined;
@@ -232,7 +259,7 @@ it('shows a failed request as a failure and supports retry', async () => {
 it('opens a plan on its own page, a reply at its turn', () => {
   expect(searchResultPath('a/b', hit({ type: 'plan', id: 'p&1', session_id: 's' }))).toBe('/p/a%2Fb/plans/p%261');
   expect(searchResultPath('p', hit({ type: 'plan', id: 'k' }))).toBe('/p/p/plans/k');
-  expect(searchResultPath('p', hit({ type: 'response', session_id: 's', prompt_id: 'turn' }))).toBe('/p/p/sessions/s?turn=turn');
+  expect(searchResultPath('p', hit({ type: 'card', session_id: 's', prompt_id: 'turn' }))).toBe('/p/p/sessions/s?turn=turn');
 });
 
 it('opens on ⌘K and Ctrl K from every page: under a project it searches that project, elsewhere every project with the last one offered', async () => {

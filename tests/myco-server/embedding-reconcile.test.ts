@@ -1,14 +1,15 @@
 import { DIAGNOSTIC_PAYLOADS } from '../helpers/secret-corpus.ts';
 import { afterEach, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
+import type { ServerEnv } from '../../packages/myco-server/src/core/adapters.js';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
 import { reconcileEmbedding } from '../../packages/myco-server/src/core/embedding/reconcile.js';
 import { resetEmbeddingIndex } from '../../packages/myco-server/src/db/embeddings/work.js';
 import { EmbeddingUnavailable, type EmbeddingProvider } from '../../packages/myco-server/src/core/embedding/provider.js';
 import {
-  search_searchProject as searchProject,
-} from '../../packages/myco-server/src/read/catalog/search.js';
+  searchDeployment,
+} from '../../packages/myco-server/src/core/search.js';
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/work.js';
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import { modelReadiness } from '../../packages/myco-server/src/db/embeddings/status.js';
@@ -29,7 +30,7 @@ function fixture() {
   const provider: EmbeddingProvider = { modelKey: 'test-model', embed: async (text) => { calls.push(text); return text.includes('unrelated') ? [0, 1] : [1, 0]; } };
   const vectors = sqliteVectorStore(f.sqlite);
   const context = { db: f.db, blobs: f.bucket, vectors, provider };
-  const search = (query: string, mode = 'semantic') => searchProject(f.db, { projectId: 'p' }, { query, mode }, async () => ({ provider: context.provider, vectors }));
+  const search = (query: string, mode = 'semantic') => searchDeployment({ db: f.db, vectors, embeddingProvider: async () => context.provider } as unknown as ServerEnv, { projectId: 'p' }, { query, mode }, 'member:test');
   const step = (now = 1000) => reconcileEmbedding(context, 'p', now);
   return { ...f, spore, calls, provider, context, search, step, insert };
 }
@@ -40,22 +41,22 @@ test('deleted sessions are hidden by both searches while saved knowledge remains
   f.spore('kept', 'architecture decision');
   f.sqlite.run("UPDATE spores SET session_id='s' WHERE project_id='p' AND id='kept'");
   for (let i = 0; i < 4; i++) await f.step();
-  for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).results.map((r) => r.id).sort()).toEqual(['kept', 's']);
+  for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).hits.map((r) => r.id).sort()).toEqual(['kept', 's']);
   f.insert('session_tombstones', { project_id: 'p', session_id: 's', created_at: 2, created_by: 'operator' });
-  for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).results.map((r) => r.id)).toEqual(['kept']);
+  for (const mode of ['semantic', 'fts']) expect((await f.search('architecture', mode)).hits.map((r) => r.id)).toEqual(['kept']);
   await tombstoneSession(f.serverEnv, { projectId: 'p' }, 's', 'operator', 3);
   for (let i = 0; i < 4; i++) await f.step();
   expect(f.sqlite.query("SELECT metadata_json FROM local_vectors WHERE project_id='p'").all()).toHaveLength(1);
-  expect((await f.search('architecture')).results.map((r) => r.id)).toEqual(['kept']);
+  expect((await f.search('architecture')).hits.map((r) => r.id)).toEqual(['kept']);
 });
 
 test('a plan hit of a tombstoned session leaves the semantic results at once', async () => {
   const f = fixture();
   f.insert('plans', { project_id: 'p', plan_key: 'plan-1', session_id: 's', event_id: 'e-plan', machine_id: 'm', token_id: 't', title: 'architecture plan', content: 'architecture plan body', content_hash: 'h', status: 'active', updated_by: 'm', created_at: 1, updated_at: 1, received_at: 1 });
   for (let i = 0; i < 6; i++) await f.step();
-  expect((await f.search('architecture')).results.map((r) => r.id)).toContain('plan-1');
+  expect((await f.search('architecture')).hits.map((r) => r.id)).toContain('plan-1');
   f.insert('session_tombstones', { project_id: 'p', session_id: 's', created_at: 2, created_by: 'operator' });
-  expect((await f.search('architecture')).results.map((r) => r.id)).not.toContain('plan-1');
+  expect((await f.search('architecture')).hits.map((r) => r.id)).not.toContain('plan-1');
 });
 
 test('rebuilds a recovered empty index without changing source knowledge or another project', async () => {
@@ -68,7 +69,7 @@ test('rebuilds a recovered empty index without changing source knowledge or anot
   const versions = f.sqlite.query('SELECT project_id, type, record_id, revision FROM embedding_versions ORDER BY record_id').all();
   f.sqlite.run("INSERT INTO embedding_cursors(project_id,hubness_model,hubness_count) VALUES ('proj_1','other-model',4)");
   f.sqlite.run("DELETE FROM local_vectors WHERE project_id = 'p'");
-  expect((await f.search('architecture')).results).toEqual([]);
+  expect((await f.search('architecture')).hits).toEqual([]);
   expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
   const retire = async () => { while ((await catchUpProjections(f.db, { budget: { calls: 200, wallMs: 10_000 } })).more); };
   await resetEmbeddingIndex(f.db, 'p');
@@ -80,7 +81,7 @@ test('rebuilds a recovered empty index without changing source knowledge or anot
   await retire();
   for (let i = 0; i < 6; i++) await f.step(2000);
   expect(await hasEmbeddingWork(f.db, 'p', f.provider.modelKey, 2000)).toBe(false);
-  expect((await f.search('architecture')).results.map((row) => row.id)).toEqual(['one']);
+  expect((await f.search('architecture')).hits.map((row) => row.id)).toEqual(['one']);
   expect(f.sqlite.query('SELECT * FROM spores ORDER BY id').all()).toEqual(sources);
   expect(f.sqlite.query('SELECT project_id, type, record_id, revision FROM embedding_versions ORDER BY record_id').all()).toEqual(versions);
   expect(f.sqlite.query("SELECT hubness_model,hubness_count FROM embedding_cursors WHERE project_id='proj_1'").get())
@@ -91,12 +92,12 @@ test('plan status writes report their own result and invalidate indexed metadata
   const f = fixture();
   f.insert('plans', { project_id: 'p', plan_key: 'plan', session_id: 's', event_id: 'e', machine_id: 'm', title: 'architecture', content: 'a plan', content_hash: 'hash', status: 'active', created_at: 1, updated_at: 1, token_id: 't', received_at: 1 });
   await f.step();
-  expect((await f.search('architecture')).results).toHaveLength(1);
+  expect((await f.search('architecture')).hits).toHaveLength(1);
   expect(await setPlanStatus(f.db, { projectId: 'p' }, 'plan', 'completed', 'operator', 2)).toBe(true);
-  expect((await f.search('architecture')).results).toEqual([]);
+  expect((await f.search('architecture')).hits).toEqual([]);
   expect(await setPlanStatus(f.db, { projectId: 'p' }, 'plan', 'completed', 'operator', 3)).toBe(false);
   expect((await f.step()).phase).toBe('stale');
-  expect((await f.search('architecture')).results).toHaveLength(1);
+  expect((await f.search('architecture')).hits).toHaveLength(1);
 });
 
 test('indexes summaries only, invalidates source edits immediately and reconciles a changed model', async () => {
@@ -104,15 +105,15 @@ test('indexes summaries only, invalidates source edits immediately and reconcile
   f.spore('one', 'a durable decision');
   expect(await f.step()).toEqual({ phase: 'missing', processed: 1 });
   expect(f.calls).toHaveLength(1);
-  expect((await f.search('architecture')).results.map((r) => r.id)).toEqual(['one']);
+  expect((await f.search('architecture')).hits.map((r) => r.id)).toEqual(['one']);
   f.sqlite.query("UPDATE spores SET content = 'unrelated decision' WHERE id = 'one'").run();
-  expect((await f.search('architecture')).results).toEqual([]);
+  expect((await f.search('architecture')).hits).toEqual([]);
   expect(await f.step()).toEqual({ phase: 'stale', processed: 1 });
-  expect((await f.search('architecture')).results).toEqual([]);
+  expect((await f.search('architecture')).hits).toEqual([]);
   f.context.provider = { ...f.provider, modelKey: 'model-two' };
-  expect((await f.search('unrelated')).results).toEqual([]);
+  expect((await f.search('unrelated')).hits).toEqual([]);
   expect(await f.step()).toEqual({ phase: 'stale', processed: 1 });
-  expect((await f.search('unrelated')).results.map((r) => r.id)).toEqual(['one']);
+  expect((await f.search('unrelated')).hits.map((r) => r.id)).toEqual(['one']);
   expect((await f.step()).phase).toBe('orphans');
   expect((await f.step()).phase).toBe('orphans');
   expect((await f.step()).phase).toBe('settled');
@@ -123,10 +124,10 @@ test('does not fall back after zero semantic matches; reports only provider unav
   f.spore('one', 'unrelated architecture');
   await f.step();
   const zero = await f.search('architecture', 'auto');
-  expect(zero).toMatchObject({ mode: 'semantic', provider_unavailable: false, results: [] });
+  expect(zero).toMatchObject({ mode: 'semantic', provider_unavailable: false, hits: [] });
   f.context.provider = { modelKey: f.provider.modelKey, embed: async () => { throw new EmbeddingUnavailable('offline'); } };
-  expect(await f.search('architecture', 'auto')).toMatchObject({ mode: 'fts', provider_unavailable: true, results: [{ id: 'one' }] });
-  expect(await f.search('architecture', 'semantic')).toMatchObject({ mode: 'semantic', provider_unavailable: true, results: [] });
+  expect(await f.search('architecture', 'auto')).toMatchObject({ mode: 'fts', provider_unavailable: true, hits: [{ id: 'one' }] });
+  expect(await f.search('architecture', 'semantic')).toMatchObject({ mode: 'semantic', provider_unavailable: true, hits: [] });
   f.context.provider = { modelKey: f.provider.modelKey, embed: async () => { throw new Error('invalid vector'); } };
   await expect(f.search('architecture', 'auto')).rejects.toThrow('invalid vector');
 });
@@ -139,7 +140,7 @@ test('a status change during the provider call never publishes an eligible vecto
     return [1, 0];
   } };
   await f.step();
-  expect((await f.search('architecture')).results).toEqual([]);
+  expect((await f.search('architecture')).hits).toEqual([]);
   expect((await f.step()).phase).toBe('orphans');
   expect(f.sqlite.query('SELECT COUNT(*) AS n FROM local_vectors').get()).toEqual({ n: 0 });
   expect((await f.step()).phase).toBe('settled');
@@ -157,7 +158,7 @@ test('journals interrupted writes and advances fairly to the next namespace befo
   expect(f.calls[0]).toContain('spore decision');
   await f.step(61_000);
   expect(f.calls[1]).toContain('session summary');
-  expect((await f.search('decision')).results.map((r) => r.type).sort()).toEqual(['session', 'spore']);
+  expect((await f.search('decision')).hits.map((r) => r.type).sort()).toEqual(['session', 'spore']);
 });
 
 test('calibrates in bounded operations, waits for vector visibility, and takes a new spore in without recomputing every pair', async () => {

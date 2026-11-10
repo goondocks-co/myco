@@ -6,9 +6,7 @@ import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { emit, refusal, StorageContractError, TokenRevokedError, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js';
 import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
-import {
-  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
-} from '../read/catalog/search-index.js';
+import { searchBlobsDue } from '../db/search/blob-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { RecordSchemeError } from './record-scheme.js';
 import {
@@ -618,7 +616,7 @@ export async function handleEvents(env: ServerEnv, ctx: RouteContext): Promise<R
   if (result.persisted && result.projected === true && typeof envelope?.payload?.blob === 'string') {
     env.afterResponse(async () => {
       try {
-        if ((await pendingSearchBlobs(env.db, ctx.projectId)) > 0) await env.wake?.();
+        if (await searchBlobsDue(env.db, Date.now())) await env.wake?.();
       } catch {
         emit({ kind: 'search_wake_failed', projectId: ctx.projectId });
       }

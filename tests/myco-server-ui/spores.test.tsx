@@ -45,7 +45,7 @@ const spore = (over: Record<string, unknown> = {}) => ({
 });
 const FACETS = { type: { gotcha: 3, decision: 2, bug_fix: 1 }, project: { [MYCO]: 4, [ATLAS]: 2 } };
 const stream = (spores: unknown[], total = spores.length, facets: unknown = FACETS, cursor: string | null = null) => Response.json({ spores, cursor, hasMore: cursor !== null, total, maxPage: 200, ...(facets === null ? {} : { facets }) });
-const noMatches = () => Response.json({ results: [], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null });
+const noMatches = () => Response.json({ hits: [], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null });
 
 const ROWS = [
   spore(),
@@ -232,7 +232,7 @@ describe('the spore stream', () => {
 
   it('lists a search’s best matches under the filters picked, and reads the next ones by cursor until none follow', async () => {
     const hit = (id: string, title: string) => ({ id, type: 'spore', title, preview: '', score: 1, created_at: NOW - MINUTE, projectId: MYCO });
-    const answer = (results: unknown[], cursor: string | null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor, hasMore: cursor !== null });
+    const answer = (results: unknown[], cursor: string | null) => Response.json({ hits: results, mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: cursor });
     const { requested } = server(base({
       '/api/spores?type=decision&status=active&limit=25': () => stream(ROWS),
       '/api/search?q=port&type=spore&limit=20&observation_type=decision&status=active': () => answer([hit('gotcha-1', 'Ports collide in parallel tests')], 'c1'),
@@ -246,9 +246,25 @@ describe('the spore stream', () => {
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
   });
 
+  it('never says no spores match while older ones follow a page the filters emptied: Show more reads them', async () => {
+    const hit = (id: string, title: string) => ({ id, type: 'spore', title, preview: '', score: 1, created_at: NOW - MINUTE, projectId: MYCO });
+    const answer = (results: unknown[], cursor: string | null) => Response.json({ hits: results, mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: true, asOf: 0, nextCursor: cursor });
+    const FIRST = '/api/search?q=port&type=spore&limit=20&status=active';
+    server(base({
+      '/api/spores?status=active&limit=25': () => stream(ROWS),
+      [FIRST]: () => answer([], 'c1'),
+      [`${FIRST}&cursor=c1`]: () => answer([hit('gotcha-3', 'An older port match')], null),
+    }));
+    mount('/knowledge?q=port');
+    expect(await screen.findByText('None of the newest spores fit these filters; older ones follow.')).toBeTruthy();
+    expect(screen.queryByText('No spores match “port”.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('An older port match')).toBeTruthy();
+  });
+
   it('reads a search again from its first page when the matches changed under it, discarding the pages read', async () => {
     const hit = (id: string, title: string) => ({ id, type: 'spore', title, preview: '', score: 1, created_at: NOW - MINUTE, projectId: MYCO });
-    const answer = (results: unknown[], cursor: string | null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor, hasMore: cursor !== null });
+    const answer = (results: unknown[], cursor: string | null) => Response.json({ hits: results, mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: cursor });
     const FIRST = '/api/search?q=port&type=spore&limit=20&status=active';
     let firstReads = 0;
     const { requested } = server(base({

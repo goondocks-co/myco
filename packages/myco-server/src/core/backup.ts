@@ -122,7 +122,8 @@ export const EMPTY_ONLY_TABLES: ReadonlySet<string> = new Set([
  * admissions, repository connections, release provenance settings and sealed secrets require their validated writers and a recorded actor.
  * Operators re-enter configuration on the dashboard after a restore. Embedding state is rebuilt from the sources an
  * artifact carries, calibration members and their stored vector pages among it; the sources embedding passes over are found again, and an embedding model switch is not carried, so a restored Deployment
- * spends on another model only once an admin there starts the switch again.
+ * spends on another model only once an admin there starts the switch again. The search index, its stored plan-body work and
+ * its stored rankings are rebuilt from the records an artifact carries.
  */
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'document_rebuild_receipts', 'document_rebuild_totals',
@@ -136,11 +137,12 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',
+  'search_documents', 'search_blob_refs', 'search_blobs', 'search_index_status', 'search_result_windows',
   'session_read_facts', 'session_served_items', 'project_session_counts', 'session_statistics', 'session_attachment_counts', 'project_session_days', 'context_placements', 'context_placement_days', 'machine_capture_heads',
   'embedding_retirement_queue','embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_calibration_state','embedding_calibration_population','embedding_vector_pages','embedding_provider_holds',
   'document_due','document_status_totals','document_difference_totals','document_publication_facts',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
-  ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]
+  ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards', 'search_documents'].map(table => `${table}_fts`)]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities', 'identity_link_redemptions', 'active_project_count',
   'backup_week_heads', 'backup_retention_state', 'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',

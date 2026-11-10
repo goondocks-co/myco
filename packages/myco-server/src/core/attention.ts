@@ -31,7 +31,7 @@ import { OUTCOME_LOOKBACK_MS } from './attention-state.js';
 import { auditFailures, capabilityHolds, failingOutcomes, readUpkeep, runsAwaitingWorker, type OutcomeKind } from '../read/work.js';
 import { RUN_CLOSE_RULES } from './run-postconditions.js';
 import { stoppedTranscripts } from '../ingest/parse.js';
-import { core_search_index_searchBacklog as searchBacklog } from '../read/catalog/search-index.js';
+import { searchBacklog } from '../db/search/blob-index.js';
 import { latestBackupAt } from './backup.js';
 import { lastWorkerContactAt, CONTACT_RECENT_MS } from './worker-contacts.js';
 import { grantsExpiringBy } from '../auth/grants.js';

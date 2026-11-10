@@ -29,13 +29,13 @@ export function useConversationSearch(projectId: string, sessionId: string, quer
     initialPageParam: null as string | null,
     enabled,
     queryFn: ({ pageParam, signal }) => fetchJson<SearchAnswer>(
-      searchPath({ projectId }, { query, type: 'prompt', since: '', observationType: '', sessionId, mode: 'fts', order: 'time', ...(pageParam === null ? {} : { cursor: pageParam }) }),
+      searchPath({ projectId }, { query, type: 'card', since: '', observationType: '', sessionId, mode: 'fts', order: 'time', ...(pageParam === null ? {} : { cursor: pageParam }) }),
       signal,
     ),
-    getNextPageParam: (last) => last.cursor ?? undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
     ...live('still'),
   });
-  const hits = [...new Map((read.data?.pages.flatMap((page) => page.results) ?? []).map(asHit).map((hit) => [hit.key, hit])).values()];
+  const hits = [...new Map((read.data?.pages.flatMap((page) => page.hits) ?? []).map(asHit).map((hit) => [hit.key, hit])).values()];
   return {
     hits,
     enabled,

@@ -141,7 +141,7 @@ describe('the plans board', () => {
     const hit = { id: KEY, type: 'plan', title: 'Myco’s work as outcomes', preview: 'Group runs by task', score: 1, created_at: NOW - HOUR, projectId: MYCO };
     const { requested } = server(base({
       ...columns(),
-      '/api/search?q=runs&type=plan&limit=20': () => Response.json({ results: [hit], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
+      '/api/search?q=runs&type=plan&limit=20': () => Response.json({ hits: [hit], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
     }));
     mount('/knowledge/plans');
     fireEvent.change(await screen.findByRole('searchbox', { name: 'Search plans' }), { target: { value: 'runs' } });

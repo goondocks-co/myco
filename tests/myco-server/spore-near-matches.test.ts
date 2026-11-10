@@ -1,15 +1,11 @@
 import { afterEach, expect, it } from 'bun:test';
 import { nearSpores } from '@myco-server-worker/core/spore-near-matches.js';
-import { MAX_SPORE_LIMIT } from '@myco-server-worker/core/spores.js';
-import { activeSporesMatchingAnyWord } from '@myco-server-worker/db/spores/records.js';
 import { writeSpore } from '@myco-server-worker/core/spore-admission.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
-
-const WORDS = ['scheduler', 'retries'];
 
 /** A Project and a neighbour Deployment-mate, with a spore inserted the way the word match reads them. */
 function wordMatchStore(onSql?: (sql: string) => void) {
@@ -40,7 +36,7 @@ async function project(embed: EmbeddingProvider['embed']) {
     `INSERT INTO spores(project_id,id,agent_id,content,observation_type,status,agent_line,created_at) VALUES('p',?,'a',?,'decision',?,?,1)`, [id, content, status, line]);
   spore('close', 'Exponential backoff belongs around the claim', 'active', 'Back off around the claim.');
   spore('gone', 'Exponential backoff was once around everything', 'superseded');
-  spore('shares', 'Their dashboard   words\ndiffer from ours');
+  spore('shares', 'Their dashboard   limit\ndiffers from ours');
   const index = indexFixture();
   const provider: EmbeddingProvider = { modelKey: MODEL, embed: async (text) => (/backoff|retries/.test(text) ? [1, 0] : [0, 1]) };
   const context = { db: f.db, blobs: f.bucket, vectors: cloudflareVectorStore(index), provider };
@@ -52,15 +48,15 @@ async function project(embed: EmbeddingProvider['embed']) {
   return { f, env: { ...f.serverEnv, vectors: context.vectors, embeddingProvider: async () => ({ ...provider, embed }) } };
 }
 
-it('answers the closest active spores, semantic neighbours first, then what only full text finds', async () => {
+it('answers the closest active spores, semantic neighbours first, then what only a word search finds', async () => {
   const { env } = await project(async () => [1, 0]);
   expect(await nearSpores(env, SCOPE, 'saved', LINE)).toEqual([
     { id: 'close', revision: expect.any(Number), observation_type: 'decision', agent_line: 'Back off around the claim.' },
-    { id: 'shares', revision: expect.any(Number), observation_type: 'decision', agent_line: 'Their dashboard words differ from ours' },
+    { id: 'shares', revision: expect.any(Number), observation_type: 'decision', agent_line: 'Their dashboard limit differs from ours' },
   ]);
 });
 
-it('falls back to full text when the provider fails, and still answers a save when a read fails', async () => {
+it('falls back to a word search when the provider fails, and still answers a save when a read fails', async () => {
   const { f, env } = await project(async () => { throw new Error('provider down'); });
   expect((await nearSpores(env, SCOPE, 'saved', LINE)).map((match) => match.id)).toEqual(['shares']);
   expect(await nearSpores({ ...env, db: { ...f.db, prepare: () => { throw new Error('storage down'); } } as never }, SCOPE, 'saved', LINE)).toEqual([]);
@@ -88,14 +84,12 @@ it('leaves a neighbour out when it is retired between finding it and reading it'
   expect(retire).toBe(false);
 });
 
-it('ranks the word match inside one Project\'s active spores and bounds the window before any is scored', async () => {
+it('ranks the word search inside one Project\'s active spores by how many of the line\'s words each holds, never the saved one', async () => {
   const { f, spore } = wordMatchStore(() => undefined);
   spore('p', 'one', 'scheduler only', 1);
   spore('p', 'both', 'SCHEDULER and retries', 2);
   spore('p', 'retired', 'scheduler retries', 3, 'superseded');
   spore('p', 'saved', 'scheduler retries', 4);
   spore('other', 'elsewhere', 'scheduler retries', 5);
-  expect(await activeSporesMatchingAnyWord(f.db, SCOPE, WORDS, 'saved', 5)).toEqual(['both', 'one']);
-  for (let at = 0; at < MAX_SPORE_LIMIT; at += 1) spore('p', `newer-${at}`, 'nothing in common', 1_000 + at);
-  expect(await activeSporesMatchingAnyWord(f.db, SCOPE, WORDS, 'saved', 5)).toEqual([]);
+  expect((await nearSpores(f.serverEnv, SCOPE, 'saved', LINE)).map((match) => match.id)).toEqual(['both', 'one']);
 });

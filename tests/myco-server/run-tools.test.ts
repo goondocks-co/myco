@@ -385,7 +385,7 @@ describe('the read window binds on the MCP path', () => {
     expect(searched.error?.message).toMatch(/^Not read: myco_run_spores list; search is not a list filter.*Next call: myco_search \{"query":"x","type":"spore","mode":"fts","status":"active"\}\.$/);
     // The call it names is one this run may make.
     const followed = await call(harness.token, 'myco_search', { query: 'x', type: 'spore', mode: 'fts' }) as any;
-    expect({ error: followed.error, hasMore: followed.result?.hasMore }).toEqual({ error: undefined, hasMore: false });
+    expect({ error: followed.error, nextCursor: followed.result?.nextCursor }).toEqual({ error: undefined, nextCursor: null });
   });
 
   it('spends a full read per get, refuses past the budget, and spends one even for an id the Project does not hold', async () => {

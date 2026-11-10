@@ -1,9 +1,8 @@
 import { useMemo } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { retryCursorRead } from './cursor-retry';
 import type { SearchAcrossAnswer, SearchAcrossResult, SearchAnswer, SearchResult } from '@goondocks/myco-shared/search-types';
 import { SEARCH_API_LIMIT, SEARCH_TYPES } from '@goondocks/myco-shared/search-types';
-import { fetchJson } from '../lib/api';
+import { ApiError, fetchJson } from '../lib/api';
 import { planPagePath } from './use-knowledge';
 import { live } from '../lib/live';
 
@@ -36,21 +35,14 @@ export interface SearchFilters {
   sessionId?: string;
   /** How a project's search matches: by meaning where it can (`auto`, the default) or by words alone (`fts`). */
   mode?: 'auto' | 'fts';
-  /** How a project's search lists its matches: best first (the default), or oldest first; both continue by `cursor`. */
+  /** How a project's search lists its matches: best of the newest first (the default), or oldest first; both continue by `cursor`. */
   order?: 'relevance' | 'time';
   /** The cursor an earlier answer to this search returned: the answer then lists the matches after it. */
   cursor?: string;
 }
 
-/** A search's answer with every result carrying the project it belongs to. */
-export interface ScopedSearchAnswer {
-  results: SearchAcrossResult[];
-  mode: SearchAnswer['mode'];
-  provider_unavailable: boolean;
-  coverage: SearchAnswer['coverage'];
-  cursor: string | null;
-  hasMore: boolean;
-}
+/** A search's answer with every hit carrying the project it belongs to. */
+export type ScopedSearchAnswer = Omit<SearchAnswer, 'hits'> & { hits: SearchAcrossResult[] };
 
 /** The request a search sends: a project's own search (which may answer by meaning), or the one across every project (words only). */
 export function searchPath(scope: SearchScope, { query, type, since, observationType, status, agent, branch, sessionId, mode = 'auto', order, cursor }: SearchFilters): string {
@@ -75,17 +67,18 @@ export function useSearch(scope: SearchScope, filters: SearchFilters, enabled: b
     queryFn: async ({ signal }): Promise<ScopedSearchAnswer> => {
       if (scope === 'all') return fetchJson<SearchAcrossAnswer>(path, signal);
       const answer = await fetchJson<SearchAnswer>(path, signal);
-      return { ...answer, results: answer.results.map((hit) => ({ ...hit, projectId: scope.projectId })) };
+      return { ...answer, hits: answer.hits.map((hit) => ({ ...hit, projectId: scope.projectId })) };
     },
     enabled: enabled && filters.query.length >= SEARCH_MIN_CHARS,
-    ...live<ScopedSearchAnswer>({ follows: ['sessions', 'runs'] }),
+    ...live('still'),
   });
 }
 
 /**
- * Every match of a search, a page at a time by word: best first, `more()` continuing after the last match shown by the
- * cursor the page answered, until no more follow. A search never counts its matches. When the matches change under a
- * walk, the server refuses the next page as stale and the walk reads again from the first page.
+ * Every match of a search, a page at a time by word: the best of the newest first, `more()` continuing by the cursor the
+ * page answered, into older matches, until none follow. A search never counts its matches. A search's later pages
+ * expire after a while; reading one then starts the walk again from the first page. The list does not follow capture:
+ * `refresh()` reads it again.
  */
 export function useSearchPages(scope: SearchScope, filters: Omit<SearchFilters, 'cursor' | 'order' | 'mode'>, enabled: boolean) {
   const client = useQueryClient();
@@ -99,12 +92,13 @@ export function useSearchPages(scope: SearchScope, filters: Omit<SearchFilters, 
       const path = searchPath(scope, { ...filters, mode: 'fts', ...(pageParam === null ? {} : { cursor: pageParam }) });
       if (scope === 'all') return fetchJson<SearchAcrossAnswer>(path, signal);
       const answer = await fetchJson<SearchAnswer>(path, signal);
-      return { ...answer, results: answer.results.map((hit) => ({ ...hit, projectId: scope.projectId })) };
+      return { ...answer, hits: answer.hits.map((hit) => ({ ...hit, projectId: scope.projectId })) };
     },
-    getNextPageParam: (last) => (last.hasMore && last.cursor !== null ? last.cursor : undefined),
-    ...live({ follows: ['sessions', 'runs', 'knowledge'] }),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    ...live('still'),
   });
-  const hits = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.results) ?? []).map((hit) => [`${hit.projectId}/${hit.type}/${hit.id}`, hit])).values()], [query.data]);
+  const hits = useMemo(() => [...new Map((query.data?.pages.flatMap((page) => page.hits) ?? []).map((hit) => [`${hit.projectId}/${hit.type}/${hit.id}`, hit])).values()], [query.data]);
+  const restart = () => client.resetQueries({ queryKey: key, exact: true });
   return {
     hits,
     isPending: query.isPending,
@@ -113,7 +107,8 @@ export function useSearchPages(scope: SearchScope, filters: Omit<SearchFilters, 
     isFetchingMore: query.isFetchingNextPage,
     // A page already on its way is joined, never asked for again.
     more: () => { void query.fetchNextPage({ cancelRefetch: false }); },
-    retry: () => { void retryCursorRead(client, key, query.error, () => query.refetch()); },
+    retry: () => { if (query.error instanceof ApiError && query.error.code === 'cursor_expired') void restart(); else void query.refetch(); },
+    refresh: () => { void restart(); },
   };
 }
 
@@ -123,7 +118,7 @@ export function searchResultPath(projectId: string, hit: SearchResult): string |
   const id = encodeURIComponent(hit.id);
   if (hit.type === 'spore') return `${base}/spores/${id}`;
   if (hit.type === 'plan') return planPagePath(projectId, { planKey: hit.id });
-  if (hit.type !== 'session' && hit.type !== 'prompt' && hit.type !== 'response') return null;
+  if (hit.type !== 'session' && hit.type !== 'card') return null;
   const session = `${base}/sessions/${encodeURIComponent(hit.session_id ?? hit.id)}`;
   if (hit.prompt_id) return `${session}?${new URLSearchParams({ turn: hit.prompt_id })}`;
   return session;

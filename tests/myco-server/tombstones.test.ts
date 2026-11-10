@@ -33,7 +33,7 @@ import {
 import {
   activity_activityFeed as activityFeed,
 } from '@myco-server-worker/read/catalog/activity.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { searchWords as searchProject } from './helpers/search-fixture.js';
 import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import {
   plans_listProjectPlans as listProjectPlans,
@@ -93,10 +93,10 @@ describe('tombstoning a session', () => {
     const { sqlite, env, send } = await rig();
     await populate(send);
     expect(await writeTitle(env.db, SCOPE.projectId, SESSION, 'retentioncanary', 'retentioncanary summary')).toBe(true);
-    expect((await searchProject(env.db, SCOPE, { query: 'retentioncanary', mode: 'fts' })).results).toHaveLength(1);
+    expect((await searchProject(env.db, SCOPE, { query: 'retentioncanary', mode: 'fts' })).hits).toHaveLength(1);
     expect((await activityFeed(env.db, SCOPE)).map((item) => item.id)).toContain(SESSION);
     await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
-    expect((await searchProject(env.db, SCOPE, { query: 'retentioncanary', mode: 'fts' })).results).toHaveLength(0);
+    expect((await searchProject(env.db, SCOPE, { query: 'retentioncanary', mode: 'fts' })).hits).toHaveLength(0);
     expect((await activityFeed(env.db, SCOPE)).map((item) => item.id)).not.toContain(SESSION);
     expect(sqlite.query("SELECT COUNT(*) AS n FROM embedding_sources WHERE type='session'").get()).toEqual({ n: 0 });
     expect(await writeTitle(env.db, SCOPE.projectId, SESSION, 'returned', 'returned')).toBe(false);

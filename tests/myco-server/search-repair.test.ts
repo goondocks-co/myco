@@ -6,10 +6,8 @@ import { expect, it } from 'bun:test';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import worker from '@myco-server-worker/index.js';
-import {
-  search_searchProject as searchProject,
-  search_searchAcross as searchAcross,
-} from '@myco-server-worker/read/catalog/search.js';
+import { searchAcross } from '@myco-server-worker/core/search.js';
+import { searchWords as searchProject } from './helpers/search-fixture.js';
 import type { SearchOptions } from '@goondocks/myco-shared/search-types';
 import { definitionOf } from '@myco-server-worker/mcp/definitions.js';
 import { RUN_DEFINITIONS } from '@myco-server-worker/mcp/run-definitions.js';
@@ -42,9 +40,9 @@ async function harness() {
     const found: string[] = [];
     for (let cursor: string | undefined; ;) {
       const answer = await searchProject(f.db, { projectId: 'proj_1' }, { ...options, limit: 100, ...(cursor === undefined ? {} : { cursor }) });
-      found.push(...answer.results.map((r) => r.id));
-      if (answer.cursor === null) return found.sort();
-      cursor = answer.cursor;
+      found.push(...answer.hits.map((r) => r.id));
+      if (answer.nextCursor === null) return found.sort();
+      cursor = answer.nextCursor;
     }
   };
   return { ...f, post, ids, searched };
@@ -108,11 +106,11 @@ it('names the reach a search across every Project loses as myco_search, and its 
   // The named call reads one Project, the caller's current one, and the refusal says so rather than passing it off as every Project.
   expect(reason).toContain('Search cannot narrow by every Project (myco_search reads one Project, the current one when it names none; the HTTP search reads them all)');
   const call = namedCall(reason);
-  expect(await searchProject(f.db, { projectId: 'proj_1' }, { ...call, limit: 100 }).then((a) => a.results.map((r) => r.id).sort())).toEqual(['proj_1_0', 'proj_1_1', 'proj_1_2']);
+  expect(await searchProject(f.db, { projectId: 'proj_1' }, { ...call, limit: 100 }).then((a) => a.hits.map((r) => r.id).sort())).toEqual(['proj_1_0', 'proj_1_1', 'proj_1_2']);
   // The HTTP search it names reads every Project.
   const [, path] = /over HTTP, GET (\S+?)\.$/.exec(reason) ?? [];
   expect(new URL(path!, 'https://s').pathname).toBe('/api/search');
   const http = namedPath(reason);
-  expect((await searchAcross(f.db, { all: true }, { ...http, limit: 100 })).results.map((r) => `${r.projectId}/${r.id}`).sort())
+  expect((await searchAcross(f.serverEnv, { all: true }, { ...http, limit: 100 }, 'member:test')).hits.map((r) => `${r.projectId}/${r.id}`).sort())
     .toEqual(['proj_1/proj_1_0', 'proj_1/proj_1_1', 'proj_1/proj_1_2', 'proj_2/proj_2_0', 'proj_2/proj_2_1', 'proj_2/proj_2_2']);
 });

@@ -31,7 +31,7 @@ export async function seedKnowledge(target: SeedTarget, sessionId: string, word:
   }
   await target.primeEmbedding(target.projectId);
   const found = await owner(target, `/api/projects/${target.projectId}/search?mode=fts&q=${encodeURIComponent(word)}`);
-  expect((found.body.results as Array<{ id: string }>).map((hit) => hit.id)).toContain(spores.current);
+  expect((found.body.hits as Array<{ id: string }>).map((hit) => hit.id)).toContain(spores.current);
 
   const served = { sessionId, promptId: crypto.randomUUID() };
   const text = 'When upgrading a schema, does the upgrade keep records and refusals unchanged?';
@@ -62,7 +62,7 @@ export async function observeKnowledge(target: RouteTarget, seed: KnowledgeSeed,
     current: [current.status, pick(current.body.spore, ['id', 'status', 'content', 'agentLine']), current.body.supersededBy, current.body.supersedes],
     sporeList: [sporeList.status, (sporeList.body.spores ?? []).map((spore: unknown) => pick(spore, ['id', 'status', 'content', 'agentLine', 'sessionId']))],
     planBoard: [planBoard.status, (planBoard.body.plans ?? []).map((plan: unknown) => pick(plan, ['planKey', 'sessionId', 'title', 'status', 'content', 'progress'])), planBoard.body.totals],
-    search: [search.status, (search.body.results ?? []).map((hit: unknown) => pick(hit, ['id', 'type', 'kind', 'title']))],
+    search: [search.status, (search.body.hits ?? []).map((hit: unknown) => pick(hit, ['id', 'type', 'kind', 'title']))],
     plans: listed.map((plan) => pick(plan, planFields)),
     saved: pick(await mcp(target, 'myco_plans', { op: 'get', id: seed.plans.saved }), [...planFields, 'content']),
     served: [turn.status, pick(turn.body.prompt, ['promptId', 'text']), turn.body.injection],
