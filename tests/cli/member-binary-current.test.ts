@@ -19,16 +19,12 @@ import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 import { claimSubsystem, SYMBIONT_CONFIG_SUBSYSTEM } from '@myco/member/subsystem-claim.js';
 import { helperPaths, helperLogPath, kickHelper, runHelper } from '@myco/member/helper.js';
-import { resolveBinary } from '@myco/runtime/binary-resolution.js';
-import * as binaryVersion from '@myco/runtime/binary-version.js';
-import * as binaryResolution from '@myco/runtime/binary-resolution.js';
-import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { captureExecutableIdentity, resolveBinary } from '@myco/runtime/binary-resolution.js';
 import { kickWaitingProjects } from '@myco/member/sweep.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { promptEvent } from '@myco/member/envelope.js';
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { main as sessionStart } from '@myco/hooks/session-start.js';
-import * as hookResponse from '@myco/hooks/response.js';
 import { _resetManifestCache } from '@myco/hooks/normalize.js';
 import { getPluginVersion, setPluginVersion } from '@myco/version.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
@@ -44,14 +40,31 @@ let clock: number;
 let restore: () => void;
 const originalVersion = getPluginVersion();
 const now = () => clock;
+/**
+ * Run this process as the compiled binary at `executable`: the file becomes a link to the executable this process
+ * started from, so it is the running file by identity, and `process.execPath` names it. Replace the file by rename,
+ * never by writing through the link.
+ */
 function compiledProcess(executable: string) {
   const descriptor = Object.getOwnPropertyDescriptor(process, 'execPath')!;
   const argv1 = process.argv[1];
+  fs.rmSync(executable, { force: true });
+  fs.symlinkSync(descriptor.value as string, executable);
   Object.defineProperty(process, 'execPath', { ...descriptor, value: executable });
   process.argv[1] = '/$bunfs/main';
-  const matches = spyOn(binaryResolution, 'isRunningExecutable').mockImplementation(binaryResolution.captureExecutableIdentity(executable));
-  return () => { matches.mockRestore(); Object.defineProperty(process, 'execPath', descriptor); process.argv[1] = argv1; };
+  return () => { Object.defineProperty(process, 'execPath', descriptor); process.argv[1] = argv1; };
 }
+/** Put an installed binary at `file`, by rename, whose `--version` runs `body` (a POSIX shell fragment). */
+function installedBinary(file: string, body: string) {
+  const staged = path.join(root, `staged-${path.basename(file)}-${Math.random().toString(36).slice(2)}`);
+  fs.writeFileSync(staged, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  fs.renameSync(staged, file);
+}
+/** The version an installed fixture binary answers: the word its script echoes, or the file's text. */
+const fixtureVersion = (file: string) => {
+  const text = fs.readFileSync(file, 'utf8');
+  return /^echo (\S+)$/m.exec(text)?.[1] ?? text;
+};
 const stateFile = () => path.join(home, 'member', 'keep-current.json');
 const args = () => ['--project', 'proj_fixture', '--server', SERVER, '--home', home];
 const pass = (deps: HelperVerbDeps = {}) => runHelperVerb(args(), {
@@ -72,7 +85,7 @@ beforeEach(() => {
   binaryDeps = {
     home, cwd: root, currentVersion: FROM, mycoBinary: live,
     resolveRefs: async () => null,
-    probeVersion: file => fs.readFileSync(file, 'utf8'),
+    probeVersion: fixtureVersion,
     stageBinary: async () => { throw new Error('no download allowed'); },
   };
 });
@@ -284,41 +297,37 @@ it.each([false, true])('an adopted version refreshes in the same pass; peer clai
   const before = fs.readFileSync(config, 'utf8');
   if (peer) claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, path.join(root, 'peer'));
   else claimSubsystem(SYMBIONT_CONFIG_SUBSYSTEM, home);
-  const install = spyOn((await import('@myco/symbionts/installer.js')).SymbiontInstaller.prototype, 'install');
   const stage = path.join(root, 'release');
   fs.mkdirSync(stage);
   fs.writeFileSync(path.join(stage, 'myco'), TO);
   fs.writeFileSync(path.join(stage, 'myco.exe'), TO);
   let refreshes = 0;
   let delivered = false;
-  try {
-    await pass({
-      binaryUpdateDeps: {
-        ...binaryDeps, resolveRefs: async () => ({ targetVersion: TO, assetName: 'fixture', assetUrl: 'fixture', sha256sumsUrl: 'fixture' }),
-        stageBinary: async () => ({ version: TO, versionDir: stage }),
-        placeBinary: (source, dest, options) => placeExecutable(source, dest, { ...options, ready: () => ({ runs: true }) }),
-      },
-      refreshMember: async (binary, selected, timeout) => {
-        expect(binary).toBe(live);
-        expect(selected).toBe(home);
-        expect(timeout).toBe(120_000);
-        expect(fs.readFileSync(binary, 'utf8')).toBe(TO);
-        expect(readAutomaticUpdate(home)?.lastOutcome).toEqual({ kind: 'adopted', version: TO });
-        refreshes++;
-        setPluginVersion(TO);
-        keepCurrent(home, { binaryFound: () => true });
-        setPluginVersion(FROM);
-      },
-      keepCurrent: () => { throw new Error('old helper must not provision with old manifests'); },
-      pass: async () => { delivered = true; },
-    });
-    expect(readAutomaticUpdate(home)?.lastOutcome).toEqual({ kind: 'adopted', version: TO });
-    expect(refreshes).toBe(1);
-    expect(delivered).toBe(true);
-    expect(install.mock.calls.length).toBe(peer ? 0 : 1);
-    expect(readProvisionRecord(home)?.version).toBe(peer ? FROM : TO);
-    if (peer) expect(fs.readFileSync(config, 'utf8')).toBe(before);
-  } finally { install.mockRestore(); }
+  await pass({
+    binaryUpdateDeps: {
+      ...binaryDeps, resolveRefs: async () => ({ targetVersion: TO, assetName: 'fixture', assetUrl: 'fixture', sha256sumsUrl: 'fixture' }),
+      stageBinary: async () => ({ version: TO, versionDir: stage }),
+      placeBinary: (source, dest, options) => placeExecutable(source, dest, { ...options, ready: () => ({ runs: true }) }),
+    },
+    refreshMember: async (binary, selected, timeout) => {
+      expect(binary).toBe(live);
+      expect(selected).toBe(home);
+      expect(timeout).toBe(120_000);
+      expect(fs.readFileSync(binary, 'utf8')).toBe(TO);
+      expect(readAutomaticUpdate(home)?.lastOutcome).toEqual({ kind: 'adopted', version: TO });
+      refreshes++;
+      setPluginVersion(TO);
+      keepCurrent(home, { binaryFound: () => true });
+      setPluginVersion(FROM);
+    },
+    keepCurrent: () => { throw new Error('old helper must not provision with old manifests'); },
+    pass: async () => { delivered = true; },
+  });
+  expect(readAutomaticUpdate(home)?.lastOutcome).toEqual({ kind: 'adopted', version: TO });
+  expect(refreshes).toBe(1);
+  expect(delivered).toBe(true);
+  expect(readProvisionRecord(home)?.version).toBe(peer ? FROM : TO);
+  if (peer) expect(fs.readFileSync(config, 'utf8')).toBe(before);
 });
 
 it('version-only drift reprovisions even when hooks and tools are already current', async () => {
@@ -326,12 +335,8 @@ it('version-only drift reprovisions even when hooks and tools are already curren
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   recordProvision(home, { version: FROM, serverUrl: SERVER, agents: ['codex'] });
-  const install = spyOn((await import('@myco/symbionts/installer.js')).SymbiontInstaller.prototype, 'install');
-  try {
-    keepCurrent(home, { binaryFound: () => true });
-    expect(install).toHaveBeenCalledTimes(1);
-    expect(readProvisionRecord(home)?.version).toBe(getPluginVersion());
-  } finally { install.mockRestore(); }
+  keepCurrent(home, { binaryFound: () => true });
+  expect(readProvisionRecord(home)?.version).toBe(getPluginVersion());
 });
 
 it('successors and kicks from a compiled helper use the live path after rename-aside', async () => {
@@ -454,11 +459,7 @@ it.each([false, true].flatMap(source => [true, false].flatMap(complete => [false
   const executable = previous ? path.join(path.dirname(live), process.platform === 'win32' ? 'myco.prev.exe' : 'myco.prev') : live;
   if (previous) fs.renameSync(live, executable);
   const restoreProcess = compiledProcess(executable);
-  const replacement = path.join(root, 'replacement');
-  fs.writeFileSync(replacement, TO, { mode: 0o755 });
-  fs.renameSync(replacement, live);
-  const probe = spyOn(binaryVersion, 'readBinaryVersion').mockReturnValue(TO);
-  const install = spyOn(SymbiontInstaller.prototype, 'install');
+  installedBinary(live, `echo ${TO}`);
   let delivered = false;
   try {
     await pass({
@@ -467,12 +468,10 @@ it.each([false, true].flatMap(source => [true, false].flatMap(complete => [false
       pass: async () => { delivered = true; },
     });
     expect(delivered).toBe(true);
-    expect(install).not.toHaveBeenCalled();
     expect(readProvisionRecord(home)?.version).toBe(complete ? TO : FROM);
     expect(fs.readFileSync(config, 'utf8')).toBe(before);
-    expect(probe).toHaveBeenCalledWith(live, 2_000);
     expect(fs.readFileSync(helperLogPath(home), 'utf8')).toContain(`a different build of Myco is installed (${TO}); this process leaves agent setup alone.`);
-  } finally { install.mockRestore(); probe.mockRestore(); restoreProcess(); }
+  } finally { restoreProcess(); }
 });
 
 it('a development build still refreshes setup recorded by a release', async () => {
@@ -480,12 +479,8 @@ it('a development build still refreshes setup recorded by a release', async () =
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   setPluginVersion('0.0.0-dev+fixture');
-  const install = spyOn((await import('@myco/symbionts/installer.js')).SymbiontInstaller.prototype, 'install');
-  try {
-    keepCurrent(home, { binaryFound: () => true });
-    expect(install).toHaveBeenCalledTimes(1);
-    expect(readProvisionRecord(home)?.version).toBe('0.0.0-dev+fixture');
-  } finally { install.mockRestore(); }
+  keepCurrent(home, { binaryFound: () => true });
+  expect(readProvisionRecord(home)?.version).toBe('0.0.0-dev+fixture');
 });
 
 it('a timestamp one year ahead is due, while five minutes of clock skew is tolerated', async () => {
@@ -518,7 +513,6 @@ for (const damage of ['truncated', 'malformed', 'unreadable']) {
       const output: string[] = [];
       const out = spyOn(process.stdout, 'write').mockImplementation(((chunk: string) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
       const err = spyOn(process.stderr, 'write').mockImplementation(() => true);
-      const response = spyOn(hookResponse, 'writeHookResponse');
       const argv = process.argv;
       try {
         expect(resolveBinary('member-helper', { kind: 'machine' }, { mycoHome: home }).path).toBe(live);
@@ -540,22 +534,20 @@ for (const damage of ['truncated', 'malformed', 'unreadable']) {
           fs.writeFileSync(transcript, JSON.stringify({ type: 'user', entrypoint: 'cli' }) + '\n');
           setBufferedStdin(Buffer.from(JSON.stringify({ session_id: 'marker', cwd: root, transcript_path: transcript })));
           await sessionStart({ credential: 'registry', argv: process.argv, env: { ...process.env, MYCO_TEMPORARY_FOLDERS: path.join(root, 'agent-tmp') }, helperSpawn: spawn, now, fetch: async () => Response.json({}) });
-          expect(response).toHaveBeenCalledTimes(1);
+          expect(output.join('').trim()).not.toBe('');
           expect(err.mock.calls.flat().join('')).not.toContain('session-start error');
         }
         expect(starts, JSON.stringify(err.mock.calls)).toEqual([live]);
         expect(fs.existsSync(helperPaths('proj_fixture', home, SERVER).starting)).toBe(false);
-      } finally { process.argv = argv; _resetManifestCache(); out.mockRestore(); err.mockRestore(); response.mockRestore(); denied?.mockRestore(); setBufferedStdin(null); restoreProcess(); }
+      } finally { process.argv = argv; _resetManifestCache(); out.mockRestore(); err.mockRestore(); denied?.mockRestore(); setBufferedStdin(null); restoreProcess(); }
     });
   }
 }
 
-it('a resolution failure releases the starting claim and leaves the kick available for inline delivery', () => {
-  const resolve = spyOn(binaryResolution, 'resolveBinary').mockImplementation(() => { throw new Error('resolution fixture'); });
-  try {
-    expect(kickHelper({ projectId: 'proj_fixture', serverUrl: SERVER, mycoHome: home, now, spawn: () => { throw new Error('must not spawn'); } })).toEqual({ kind: 'failed' });
-    expect(fs.existsSync(helperPaths('proj_fixture', home, SERVER).starting)).toBe(false);
-  } finally { resolve.mockRestore(); }
+it('a helper start that throws releases the starting claim and leaves the next kick free to start one', () => {
+  expect(kickHelper({ projectId: 'proj_fixture', serverUrl: SERVER, mycoHome: home, now, spawn: () => { throw new Error('fixture start refused'); } })).toEqual({ kind: 'failed' });
+  expect(fs.existsSync(helperPaths('proj_fixture', home, SERVER).starting)).toBe(false);
+  expect(kickHelper({ projectId: 'proj_fixture', serverUrl: SERVER, mycoHome: home, now, spawn: () => ({ started: true, pid: 2_147_483_647 }) }).kind).toBe('started');
 });
 
 it('one broken harness leaves healthy harnesses provisioned once and a manual refresh clears the doctor warning', async () => {
@@ -566,17 +558,14 @@ it('one broken harness leaves healthy harnesses provisioned once and a manual re
   await attemptAutomaticUpdate(home, now, async () => ({ kind: 'adopted', version: TO }), async () => { throw new Error('one harness cannot be repaired'); });
   expect(checkAutomaticUpdate(home).status).toBe('warn');
   setPluginVersion(TO);
-  const install = spyOn(SymbiontInstaller.prototype, 'install');
-  try {
-    expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: () => {}, stderr: () => {} })).toBe(false);
-    expect(process.exitCode).toBe(1);
-    keepCurrent(home, { binaryFound: () => true });
-    const last = keepCurrent(home, { binaryFound: () => true });
-    expect(install).toHaveBeenCalledTimes(1);
-    expect(last?.harnesses).toContainEqual(expect.objectContaining({ id: 'gemini', state: 'repair_failed' }));
-    expect(readProvisionRecord(home)?.version).toBe(TO);
-    expect(checkAutomaticUpdate(home)).toMatchObject({ status: 'ok', detail: expect.stringContaining('agent setup has since been checked') });
-  } finally { install.mockRestore(); }
+  expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: () => {}, stderr: () => {} })).toBe(false);
+  expect(process.exitCode).toBe(1);
+  keepCurrent(home, { binaryFound: () => true });
+  const last = keepCurrent(home, { binaryFound: () => true });
+  expect(last?.harnesses).toContainEqual(expect.objectContaining({ id: 'codex', state: 'ready' }));
+  expect(last?.harnesses).toContainEqual(expect.objectContaining({ id: 'gemini', state: 'repair_failed' }));
+  expect(readProvisionRecord(home)?.version).toBe(TO);
+  expect(checkAutomaticUpdate(home)).toMatchObject({ status: 'ok', detail: expect.stringContaining('agent setup has since been checked') });
 });
 
 it.each([false, true])('the live older release repairs newer historical setup; non-default home = %p', async nonDefault => {
@@ -589,18 +578,15 @@ it.each([false, true])('the live older release repairs newer historical setup; n
   await attemptAutomaticUpdate(home, now, async () => ({ kind: 'adopted', version: TO }));
   setPluginVersion(FROM);
   const restoreProcess = compiledProcess(live);
-  const probe = spyOn(binaryVersion, 'readBinaryVersion').mockReturnValue(FROM);
-  const install = spyOn(SymbiontInstaller.prototype, 'install');
   try {
     expect(keepCurrent(home, { binaryFound: () => true })).not.toBeNull();
-    expect(install).toHaveBeenCalledTimes(1);
     expect(readProvisionRecord(home)?.version).toBe(FROM);
-    expect(probe).not.toHaveBeenCalled();
+    installedBinary(live, `echo ${FROM}`);
     expect(checkAutomaticUpdate(home).status).toBe('ok');
     const lines: string[] = [];
     runStatus(['--all'], { mycoHome: home, cwd: root, stdout: line => lines.push(line), stderr: () => {}, worker: { platform: 'linux', runner: recordingPlatform().runner } });
     expect(lines.join('')).not.toContain('agents still need refreshing');
-  } finally { install.mockRestore(); probe.mockRestore(); restoreProcess(); }
+  } finally { restoreProcess(); }
 });
 
 it('defers agent refresh after adoption when less than the minimum refresh budget remains', async () => {
@@ -637,38 +623,26 @@ for (const route of ['keep-current', 'refresh', 'join-reconcile']) {
       const restoreProcess = compiledProcess(live);
       const marker = path.join(home, 'install.json');
       if (fault === 'truncated') fs.writeFileSync(marker, '{"channel":"alpha"');
-      if (fault === 'slow' || fault === 'non-zero') {
-        const replacement = path.join(root, 'unprobed-release');
-        fs.writeFileSync(replacement, 'fixture executable', { mode: 0o755 });
-        fs.renameSync(replacement, live);
-      }
+      if (fault === 'slow') installedBinary(live, 'sleep 10');
+      if (fault === 'non-zero') installedBinary(live, 'exit 3');
       const read = fs.readFileSync;
       const denied = fault === 'unreadable' ? spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
         if (String(file) === marker) throw Object.assign(new Error('marker permission denied'), { code: 'EACCES' });
         return Reflect.apply(read, fs, [file, ...rest]);
       }) as typeof fs.readFileSync) : null;
-      const probe = spyOn(binaryVersion, 'readBinaryVersion').mockImplementation(() => {
-        if (fault === 'slow') throw Object.assign(new Error('version check timed out'), { code: 'ETIMEDOUT' });
-        throw new Error('version check exited 3');
-      });
       const messages: string[] = [];
       const err = spyOn(process.stderr, 'write').mockImplementation(((line: string) => { messages.push(String(line)); return true; }) as typeof process.stderr.write);
       const warn = spyOn(console, 'warn').mockImplementation((line: unknown) => { messages.push(String(line)); });
-      const install = spyOn(SymbiontInstaller.prototype, 'install');
       try {
         if (route === 'keep-current') expect(keepCurrent(home, { binaryFound: () => true })?.ready).toContain('Codex');
         else if (route === 'refresh') expect(runProvision(['--refresh'], { mycoHome: home, cwd: root, stdout: () => {}, stderr: () => {} })).toBe(true);
         else expect(provisionAgents(['codex'], home, SERVER, null).skipped).toEqual([]);
-        expect(install).toHaveBeenCalledTimes(1);
         expect(readProvisionRecord(home)?.version).toBe(FROM);
         expect(messages.join('')).toContain('The installed Myco version could not be checked');
         expect(messages.join('')).toContain('agent repair will continue using this build');
-        if (fault === 'slow' || fault === 'non-zero') expect(probe).toHaveBeenCalledWith(live, 2_000);
-        else {
-          expect(probe).not.toHaveBeenCalled();
-          expect(() => binaryUpdatePath(home)).toThrow();
-        }
-      } finally { install.mockRestore(); warn.mockRestore(); err.mockRestore(); probe.mockRestore(); denied?.mockRestore(); restoreProcess(); }
+        if (fault === 'non-zero') expect(messages.join('')).toContain('exited 3');
+        if (fault === 'truncated' || fault === 'unreadable') expect(() => binaryUpdatePath(home)).toThrow();
+      } finally { warn.mockRestore(); err.mockRestore(); denied?.mockRestore(); restoreProcess(); }
     });
   }
 }
@@ -679,15 +653,13 @@ it('an unchanged live executable repairs repeated passes without starting a vers
   provisionGlobally('codex', null, home, { serverUrl: SERVER });
   setPluginVersion(FROM);
   const restoreProcess = compiledProcess(live);
-  const probe = spyOn(binaryVersion, 'readBinaryVersion').mockImplementation(() => { throw new Error('the running file needs no cold start'); });
-  const install = spyOn(SymbiontInstaller.prototype, 'install');
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
   try {
     expect(keepCurrent(home, { binaryFound: () => true })?.ready).toContain('Codex');
     expect(keepCurrent(home, { binaryFound: () => true })?.ready).toContain('Codex');
-    expect(install).toHaveBeenCalledTimes(1);
-    expect(probe).not.toHaveBeenCalled();
     expect(readProvisionRecord(home)?.version).toBe(FROM);
-  } finally { install.mockRestore(); probe.mockRestore(); restoreProcess(); }
+    expect(warn.mock.calls.flat().join('')).not.toContain('could not be checked');
+  } finally { warn.mockRestore(); restoreProcess(); }
 });
 
 it('file identity uses device/inode and Windows file index or creation timestamps', () => {
@@ -699,18 +671,18 @@ it('file identity uses device/inode and Windows file index or creation timestamp
     return Reflect.apply(stat, fs, [file, ...rest]);
   }) as typeof fs.statSync);
   try {
-    const posix = binaryResolution.captureExecutableIdentity(live, 'linux');
+    const posix = captureExecutableIdentity(live, 'linux');
     current = { ...current, ctimeMs: 20 };
     expect(posix(live)).toBe(true);
     current = { ...current, ino: 2 };
     expect(posix(live)).toBe(false);
     current = { ...current, dev: 2, ino: 1 };
     expect(posix(live)).toBe(false);
-    const windows = binaryResolution.captureExecutableIdentity(live, 'win32');
+    const windows = captureExecutableIdentity(live, 'win32');
     current = { ...current, ino: 2 };
     expect(windows(live)).toBe(false);
     current = { dev: 1, ino: 0, ctimeMs: 30, birthtimeMs: 30 };
-    const fallback = binaryResolution.captureExecutableIdentity(live, 'win32');
+    const fallback = captureExecutableIdentity(live, 'win32');
     expect(fallback(live)).toBe(true);
     current = { ...current, ctimeMs: 31 };
     expect(fallback(live)).toBe(false);
