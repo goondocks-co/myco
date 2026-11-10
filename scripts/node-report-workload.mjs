@@ -8,7 +8,17 @@ import { nodeGroupBudget } from './node-test-durations.mjs';
 /** A file ran long enough, against its weight, to call the weight stale. */
 export const DURATION_DRIFT_FACTOR = 1.5;
 
-const PHASE_OUTCOME = /\[run-bun-tests\] (?:FINISHED|KILLED \((?:over budget|wedged)\)) (.*?) in (\d+(?:\.\d+)?)ms \(exit /g;
+const PHASE_OUTCOME = /\[run-bun-tests\] (FINISHED|KILLED \((?:over budget|wedged)\)) (.*?) in (\d+(?:\.\d+)?)ms \(exit /g;
+
+/** The last FINISHED or KILLED line in a phase log. */
+export function phaseOutcome(log) {
+  const outcomes = [...log.matchAll(PHASE_OUTCOME)];
+  if (outcomes.length === 0) return null;
+  const outcome = outcomes.at(-1);
+  const milliseconds = Number(outcome[3]);
+  if (!(milliseconds > 0)) return null;
+  return { label: outcome[2], milliseconds, killed: outcome[1].startsWith('KILLED') };
+}
 
 /** Per-test JUnit times. Used to weight a file after it is split. */
 export function caseMilliseconds(xml) {
@@ -41,12 +51,9 @@ export function fileSuiteMilliseconds(xml) {
 
 /** One phase: its runner label, wall time, and per-file suite times. */
 export function phaseGroup(log, xml) {
-  const outcomes = [...log.matchAll(PHASE_OUTCOME)];
-  if (outcomes.length === 0) throw new Error('phase log has no FINISHED or KILLED line');
-  const outcome = outcomes.at(-1);
-  const label = outcome[1];
-  const milliseconds = Number(outcome[2]);
-  if (!(milliseconds > 0)) throw new Error(`${label}: phase wall time is not positive`);
+  const outcome = phaseOutcome(log);
+  if (!outcome) throw new Error('phase log has no FINISHED or KILLED line');
+  const { label, milliseconds } = outcome;
   let files = fileSuiteMilliseconds(xml);
   const recorded = Object.values(files).reduce((sum, time) => sum + time, 0);
   if (!(recorded > 0)) {
@@ -77,18 +84,34 @@ function newestRunDirectory(directory) {
   return found[0].full;
 }
 
-/** Groups from one downloaded test-reports-node-* directory, or a test-reports directory. */
+/** Groups from one test-reports directory. Phases without a JUnit file are omitted; killed phases and unreadable logs are returned beside the groups. */
 export function artifactGroups(artifactDirectory) {
+  const killed = [];
+  const reports = [];
   const runDirectory = newestRunDirectory(artifactDirectory);
-  if (!runDirectory) throw new Error(`${path.basename(artifactDirectory)}: no run directory`);
+  if (!runDirectory) {
+    reports.push(`${path.basename(artifactDirectory)}: no run directory`);
+    return { groups: [], killed, reports };
+  }
   const groups = [];
   for (const name of fs.readdirSync(runDirectory).filter(file => file.endsWith('.log')).sort()) {
+    const log = fs.readFileSync(path.join(runDirectory, name), 'utf8');
     const xmlPath = path.join(runDirectory, name.replace(/\.log$/, '.junit.xml'));
-    if (!fs.existsSync(xmlPath)) throw new Error(`${name}: missing JUnit report`);
-    groups.push(phaseGroup(fs.readFileSync(path.join(runDirectory, name), 'utf8'), fs.readFileSync(xmlPath, 'utf8')));
+    if (!fs.existsSync(xmlPath)) {
+      const outcome = phaseOutcome(log);
+      if (outcome?.killed) killed.push({ label: outcome.label, milliseconds: outcome.milliseconds });
+      else if (!outcome) reports.push(`${name}: no FINISHED or KILLED line`);
+      else reports.push(`${name}: no JUnit report`);
+      continue;
+    }
+    try {
+      groups.push(phaseGroup(log, fs.readFileSync(xmlPath, 'utf8')));
+    } catch (error) {
+      reports.push(error instanceof Error ? error.message : String(error));
+    }
   }
-  if (groups.length === 0) throw new Error(`${path.basename(artifactDirectory)}: no phase logs`);
-  return groups;
+  if (groups.length === 0 && killed.length === 0 && reports.length === 0) reports.push(`${path.basename(artifactDirectory)}: no phase logs`);
+  return { groups, killed, reports };
 }
 
 /** The node matrix entry an artifact name names, from the workflow's include list. */
@@ -118,7 +141,12 @@ export function workloadRun(downloadDirectory, source, include) {
   if (artifactNames.length === 0) throw new Error(`${source}: no node test-report artifacts`);
   const shards = artifactNames.map(name => {
     const indexed = nodeArtifactShard(name, include);
-    return { ...indexed, groups: artifactGroups(path.join(downloadDirectory, name)) };
+    const read = artifactGroups(path.join(downloadDirectory, name));
+    if (read.killed.length > 0 || read.reports.length > 0) {
+      const detail = [...read.killed.map(item => `${item.label} was killed`), ...read.reports].join('; ');
+      throw new Error(`${source}: ${detail}`);
+    }
+    return { ...indexed, groups: read.groups };
   });
   const shardCount = shards[0].shardCount;
   if (shards.some(shard => shard.shardCount !== shardCount)) throw new Error(`${source}: mixed node shard counts`);
@@ -158,8 +186,10 @@ function seconds(milliseconds) {
 
 /** Step-summary markdown. Names the refresh command when a weight or a group drifted. */
 export function driftSummary(drift) {
+  const killed = drift.killed ?? [];
+  const reports = drift.reports ?? [];
   const lines = ['### Node duration drift'];
-  if (drift.files.length === 0 && drift.groups.length === 0) {
+  if (drift.files.length === 0 && drift.groups.length === 0 && killed.length === 0 && reports.length === 0) {
     lines.push(`No file ran over ${DURATION_DRIFT_FACTOR}× its weight and no group ran over its ${seconds(drift.groupBudget)}s budget.`);
     return lines.join('\n');
   }
@@ -170,7 +200,11 @@ export function driftSummary(drift) {
   for (const group of drift.groups) {
     lines.push(`- group \`${group.label}\` ran ${seconds(group.milliseconds)}s against a ${seconds(drift.groupBudget)}s budget`);
   }
-  lines.push('Refresh weights from the last green main runs: `npm run refresh:node-durations`');
+  for (const phase of killed) lines.push(`- group \`${phase.label}\` was killed`);
+  for (const report of reports) lines.push(`- ${report}`);
+  if (drift.files.length > 0 || drift.groups.length > 0 || killed.length > 0) {
+    lines.push('Refresh weights from the last green main runs: `npm run refresh:node-durations`');
+  }
   return lines.join('\n');
 }
 
