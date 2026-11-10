@@ -1,6 +1,6 @@
 /**
  * The run list, a run's detail, what a run read and the spores a run wrote cost the same on D1 when a Deployment holds
- * ten times the run history, with and without planner statistics. A full page of runs is one D1 request, so its ids
+ * ten times the run history. A full page of runs is one D1 request, so its ids
  * travel within the store's bind limit.
  */
 import { expect, it } from 'bun:test';

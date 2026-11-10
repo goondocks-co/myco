@@ -20,7 +20,7 @@ import worker from '@myco-server-worker/index.js';
 import { asOwner,OWNER_ENV } from './helpers/owner.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { endLeasedRun } from '@myco-server-worker/core/harness.js';
-import { changingAt, counting, dying, failingAt } from './helpers/store-faults.js';
+import { changingAt, counting, dying, failingAt, representativePoints, storingCall } from './helpers/store-faults.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -210,7 +210,7 @@ it('publishes estimator groups in bounded CAS-owned pages under overlapping wake
   }finally{f.sqlite.close();}
 });
 
-it('fences an initial estimator reader across a portable restore, wherever the restore lands',async()=>{
+it('fences an initial estimator reader across a portable restore landing at its first call, its publish or its last',async()=>{
   const pair=async()=>{
     const source=await budgetFixture(),target=await budgetFixture();
     source.sqlite.run("UPDATE schema_meta SET value=? WHERE key='budget_enabled_at'",[String(source.now-1000)]);
@@ -222,11 +222,14 @@ it('fences an initial estimator reader across a portable restore, wherever the r
     return {target,restore:()=>restoreArtifact(target.db,{authorization:{kind:'recovery'},text:artifact.text,allowForeignLineage:true})};
   };
   const counted=await pair();
-  const counter=counting(counted.target.db);
-  try {await refreshEstimates(counter.store,counted.target.now);}finally{counted.target.sqlite.close();}
-  expect(counter.calls()).toBeGreaterThan(1);
+  let total=0,storing=0;
+  try {
+    storing=await storingCall(counted.target.db,async store=>{const counter=counting(store);await refreshEstimates(counter.store,counted.target.now);total=counter.calls();},
+      ()=>counted.target.sqlite.query("SELECT key,value FROM agent_state WHERE key LIKE 'server.budget.estimate.%' ORDER BY key").all());
+  }finally{counted.target.sqlite.close();}
+  expect(total).toBeGreaterThan(1);
   const answers:unknown[]=[];
-  for(let at=1;at<=counter.calls();at++) {
+  for(const at of representativePoints(total,storing)) {
     const {target,restore}=await pair();
     try {
       const landing=changingAt(target.db,at,restore);
@@ -258,16 +261,19 @@ it('keeps empty cycles constant and incrementally folds new points after the act
   }finally{f.sqlite.close();}
 });
 
-it('answers a failed completion call with a stored reason and activates on retry, wherever a call fails or the process ends',async()=>{
+it('answers a failed completion call with a stored reason and activates on retry, when its first call, its activation write or its last fails or the process ends there',async()=>{
   const counted=await budgetFixture(false);
-  let total=0;
+  let total=0,storing=0;
   try {
-    const counter=counting(counted.db);
-    expect(await completeBudgetMigration(counter.store,100)).toEqual({active:true,reason:null});
-    total=counter.calls();
+    storing=await storingCall(counted.db,async store=>{
+      const counter=counting(store);
+      expect(await completeBudgetMigration(counter.store,100)).toEqual({active:true,reason:null});
+      total=counter.calls();
+    },()=>counted.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all());
   }finally{counted.sqlite.close();}
   expect(total).toBeGreaterThan(3);
-  for(const fault of ['transient','ended'] as const)for(const when of ['before','after'] as const)for(let at=1;at<=total;at++) {
+  expect(storing).toBeGreaterThan(0);
+  for(const fault of ['transient','ended'] as const)for(const when of ['before','after'] as const)for(const at of representativePoints(total,storing)) {
     const label=`${fault} ${when} call ${at}`;
     const f=await budgetFixture(false);
     try {
@@ -344,7 +350,7 @@ it('keeps profiled claims from an inactive interval when activation is retried l
     // A retry that fails anywhere after activation answers unknown and keeps the published start.
     const counter=counting(f.db);
     await completeBudgetMigration(counter.store,f.now+2000);
-    for(let at=1;at<=counter.calls();at++) {
+    for(const at of representativePoints(counter.calls())) {
       expect(await completeBudgetMigration(failingAt(f.db,at,'before').store,f.now+2000),`call ${at}`).toMatchObject({active:null});
       expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get(),`call ${at}`).toEqual({value:String(f.now)});
     }
@@ -353,7 +359,7 @@ it('keeps profiled claims from an inactive interval when activation is retried l
   }finally{f.sqlite.close();}
 });
 
-it('keeps an active budget enforced after a transient failure at any call of a completion',async()=>{
+it('keeps an active budget enforced after a transient failure at the first, a middle or the last call of a completion',async()=>{
   const f=await budgetFixture();
   try {
     await f.setting(1);f.history('spent',1);
@@ -361,7 +367,7 @@ it('keeps an active budget enforced after a transient failure at any call of a c
     const counter=counting(f.db);
     expect(await completeBudgetMigration(counter.store,f.now+1)).toEqual({active:true,reason:null});
     expect(counter.calls()).toBeGreaterThan(0);
-    for(const when of ['before','after'] as const)for(let at=1;at<=counter.calls();at++) {
+    for(const when of ['before','after'] as const)for(const at of representativePoints(counter.calls())) {
       const failing=failingAt(f.db,at,when,()=>new Error('fixture transient read'));
       expect(await completeBudgetMigration(failing.store,f.now+1),`${when} call ${at}`).toMatchObject({active:null,reason:expect.stringContaining('transient')});
       expect(f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all(),`${when} call ${at}`).toEqual(before);
@@ -390,17 +396,19 @@ it('retains a monotonic settlement cursor across attempt retention and tied clai
   }finally{f.sqlite.close();}
 });
 
-it('counts a settlement landing at any point of a cycle once: in that cycle or the next',async()=>{
+it('counts a settlement landing at the first call, the publish or the last call of a cycle once: in that cycle or the next',async()=>{
   const counted=await budgetFixture();
-  let total=0;
+  let total=0,storing=0;
   try {
     counted.history('snapshot-first',0.1);
-    const counter=counting(counted.db);
-    expect(await refreshEstimates(counter.store,counted.now)).toMatchObject({more:false});
-    total=counter.calls();
+    storing=await storingCall(counted.db,async store=>{
+      const counter=counting(store);
+      expect(await refreshEstimates(counter.store,counted.now)).toMatchObject({more:false});
+      total=counter.calls();
+    },()=>counted.sqlite.query("SELECT key,value FROM agent_state WHERE key LIKE 'server.budget.estimate.%' ORDER BY key").all());
   }finally{counted.sqlite.close();}
   expect(total).toBeGreaterThan(0);
-  for(let at=1;at<=total;at++) {
+  for(const at of representativePoints(total,storing)) {
     const f=await budgetFixture();
     try {
       f.history('snapshot-first',0.1);

@@ -4,7 +4,7 @@ import { installCreateSigkillResume, resumeCreateAfterSigkill } from './fixtures
 describe('cloudflare create journeys across SIGKILL', () => {
   const dirs = { root: '', project: '' };
   installCreateSigkillResume(dirs);
-  for (const boundary of ['create', 'conversion', 'signin', 'owner-mint', 'owner-link', 'machine']) {
+  for (const boundary of ['cloudflare-login', 'partial-create', 'installed']) {
     it(`cloudflare: resumes after SIGKILL at ${boundary}`, async () => {
       await resumeCreateAfterSigkill('cloudflare', boundary, dirs.root, dirs.project);
     }, 90_000);

@@ -1,7 +1,6 @@
 /**
  * Auto-join's reads and writes (a repository a machine reports uncaptured, resolving a repository to its Project, what a
- * machine is told it connected) cost the same on D1 when a Deployment holds ten times the reports and remotes, with
- * and without planner statistics.
+ * machine is told it connected) cost the same on D1 when a Deployment holds ten times the reports and remotes.
  */
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';

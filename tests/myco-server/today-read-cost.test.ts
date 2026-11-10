@@ -1,6 +1,6 @@
 /**
  * The Today reads (plans across Projects, capture recency, a viewer's machines, Needs you) and an actor's task entries
- * cost the same on D1 when a Deployment holds ten times the history, with and without planner statistics; and every
+ * cost the same on D1 when a Deployment holds ten times the history; and every
  * across-Projects read answers on both stores when it names the most Projects a read may.
  */
 import { expect, it } from 'bun:test';

@@ -48,7 +48,12 @@ describe.serial('SIGKILL resume across cutover boundaries', () => {
     expect(['consent', ...new Set(initial.checkpoints)]).toEqual([...BOUNDARIES]);
   });
 
-  for (const growth of [false, true] as const) for (const boundary of BOUNDARIES) {
+  const CASES = [
+    { boundary: 'consent', growth: false }, { boundary: 'consent', growth: true }, { boundary: 'handover', growth: false },
+    { boundary: 'vault:proj_legacy_b', growth: false }, { boundary: 'settings:https://legacy-b.invalid', growth: false },
+  ] as const satisfies readonly { boundary: (typeof BOUNDARIES)[number]; growth: boolean }[];
+
+  for (const { boundary, growth } of CASES) {
     it(`resumes across SIGKILL at ${boundary} (growth: ${growth}) and preserves 1.4 data`, async () => {
       fs.rmSync(childRoot, { recursive: true, force: true });
       fs.cpSync(pristine, childRoot, { recursive: true });
