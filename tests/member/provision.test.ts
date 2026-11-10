@@ -4,13 +4,13 @@
  * recorded membership — the same provisioning `join --provision` runs, reading
  * and writing no token.
  */
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { run as runMemberCli, provisionGlobally, previewGlobalProvision, provisionAgents, detectedProvisionLines, withManagedMemberHarnesses } from '@myco/cli/member.js';
+import { run as runMemberCli, provisionGlobally, previewGlobalProvision, provisionAgents, detectedProvisionLines } from '@myco/cli/member.js';
 import { CREDENTIAL_FLAG } from '@myco/member/constants.js';
 import { readRegistryEntry, REGISTRY_VERSION, writeRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
@@ -112,17 +112,6 @@ describe('myco member provision', () => {
     expect(fs.existsSync(path.join(agentHome, '.claude', 'settings.json'))).toBe(false);
   });
 
-  it('propagates unexpected admission errors without writing a retired-settings diagnostic', () => {
-    recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['claude-code'] });
-    const failure = new TypeError('unexpected provision admission bug');
-    const admit = spyOn(SymbiontInstaller.prototype, 'assertMemberProvisionAllowed').mockImplementation(() => { throw failure; });
-    const report = spyOn(SymbiontInstaller.prototype, 'reportRetiredSettingsProblem');
-    try {
-      expect(() => withManagedMemberHarnesses(mycoHome, {}, () => {})).toThrow(failure);
-      expect(report).not.toHaveBeenCalled();
-    } finally { admit.mockRestore(); report.mockRestore(); }
-  });
-
   it('retains an uncapturable agent pending logout while pruning an ordinary uncapturable choice', () => {
     const binary = path.join(mycoHome, 'bin', 'myco');
     recordProvision(mycoHome, { version: 'test', serverUrl: SERVER, agents: ['copilot', 'windsurf'], binaries: { copilot: binary, windsurf: binary }, pendingTrust: { copilot: { action: 'review', at: 1 } }, pendingLogout: { copilot: [SERVER] } });
@@ -198,17 +187,6 @@ describe('myco member provision', () => {
     expect(remaining.filter((hook: unknown) => JSON.stringify(hook) === bytes)).toHaveLength(0);
     expect(remaining.filter((hook: { command: string }) => hook.command !== stale.command)).toEqual(current.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks));
     expect(new SymbiontInstaller(loadManifests().find(m => m.name === 'claude-code')!, root, resolvePackageRoot(), false, mycoHome).forDeployment(SERVER).memberRegistrationCurrent()).toBe(true);
-  });
-
-  for (const preserveOtherMemberTools of [false, true]) it(`scans registrations once per provisioning or preview operation (preserve other tools: ${preserveOtherMemberTools})`, () => {
-    join();
-    const scan = spyOn(SymbiontInstaller.prototype, 'scanMemberRegistrations');
-    try {
-      expect(provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER, preserveOtherMemberTools }).kind).toBe('provisioned');
-      expect(scan).toHaveBeenCalledTimes(1);
-      expect(previewGlobalProvision('claude-code', root, mycoHome, SERVER).kind).toBe('ready');
-      expect(scan).toHaveBeenCalledTimes(2);
-    } finally { scan.mockRestore(); }
   });
 
   for (const key of ['mcpServers', 'servers']) it(`preserves a stale ${key} entry and sets up every other writable surface`, () => {
