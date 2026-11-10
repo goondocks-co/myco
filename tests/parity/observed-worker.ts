@@ -9,6 +9,8 @@ import {EMBEDDING_CATALOGUE} from '../../packages/myco-shared/src/settings-contr
 import {wordVector} from './embedding/word-vectors.ts';
 import {serverEnvFromBindings} from '../../packages/myco-server/src/platform/cloudflare/env.ts';
 import {reconcileEmbedding} from '../../packages/myco-server/src/core/embedding/reconcile.ts';
+import {reconcileReleaseProvenance} from '../../packages/myco-server/src/core/release-provenance.ts';
+import {fakeGithub, REPO} from '../myco-server/helpers/github-fake.ts';
 import {cloudflareEmbeddingLaunch} from '../../packages/myco-server/src/platform/cloudflare/embedding-runtime.ts';
 import {createServer} from '../../packages/myco-server/src/pipeline.ts';
 import type {ServerEnv} from '../../packages/myco-server/src/core/adapters.ts';
@@ -33,6 +35,9 @@ export async function primeObservedEmbedding(env:ServerEnv,projectId:string){
  for(let step=0;step<maximum;step++)if((await reconcileEmbedding({db:env.db,blobs:env.blobs,provider:configured,vectors:env.vectors},projectId,Date.now())).phase==='settled')return;
  throw new Error('Fixture embedding did not settle');
 }
+
+/** Runs the release checks due, as the clock's job runs them, against a modelled GitHub instead of the network. */
+export async function checkObservedRelease(env:ServerEnv){await reconcileReleaseProvenance({...env,outbound:fakeGithub(REPO)},Date.now());}
 
 /** A local run-control transport serves the canonical embedding runtime under its dispatch span. */
 export function installObservedEmbeddingRuntime(env:ServerEnv,pending=new Set<Promise<void>>()){
@@ -137,6 +142,7 @@ export class ObservedDeploymentClock extends RawDeploymentClock {
  }
  async observeAlarm(at?:number){return withObservedClock(at,()=>this.alarm());}
  async observeEmbedding(projectId:string){try{return await runSpan('DeploymentClock.embedding-fixture','direct',undefined,()=>primeObservedEmbedding(this.observedEnvironment,projectId));}finally{await this.flushObservations();}}
+ async observeRelease(){try{return await runSpan('DeploymentClock.release-fixture','direct',undefined,()=>checkObservedRelease(this.observedEnvironment));}finally{await this.flushObservations();}}
 }
 
 export class ObservedRecoveryProducer extends RawRecoveryProducer {

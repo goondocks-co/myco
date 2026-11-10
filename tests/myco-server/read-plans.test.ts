@@ -27,7 +27,6 @@ import {
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { children_listPlans as listPlans } from '@myco-server-worker/read/catalog/children.js';
 
-import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 import { listSessionArtifacts } from '@myco-server-worker/read/session-artifacts.js';
 
 /** A store that answers no rows and remembers every statement, with the values bound to it. */
@@ -91,7 +90,6 @@ describe('the reads a person waits on', () => {
   });
 
 
-
   it('pages a session\'s plans narrowed by status through every match once, oldest edit first, and none from elsewhere', async () => {
     const sqlite = migrated();
     try {
@@ -122,21 +120,6 @@ describe('the reads a person waits on', () => {
     }
   });
 
-  it('reads a session\'s commit observations and its release state over indexes, with no scan', async () => {
-    const { db: recorder, statements } = recordingStore();
-    await sessionCommits(recorder, { projectId: 'proj_1' }, 's1');
-    expect(statements).toHaveLength(2);
-    const db = migrated();
-    try {
-      const [observed, release] = await Promise.all(statements.map((s) => planOf(db, s.sql, s.params)));
-      expect({ index: /SEARCH g USING INDEX idx_fk_knowledge_git_provenance_project_id_session_id \(project_id=\? AND session_id=\?\)/.test(observed), scan: /\bSCAN\b/.test(observed), observed })
-        .toEqual({ index: true, scan: false, observed });
-      expect({ index: /SEARCH knowledge_release_state USING INDEX idx_knowledge_release_embedding/.test(release), scan: /\bSCAN\b/.test(release), release })
-        .toEqual({ index: true, scan: false, release });
-    } finally {
-      db.close();
-    }
-  });
 
   it('pages a session\'s reported artifacts over their session index in its own order, with no sort step and no scan', async () => {
     const { db: recorder, statements } = recordingStore();

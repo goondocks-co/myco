@@ -18,25 +18,21 @@
  */
 import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
+import { readLatestCheck, readReleaseState, readReleaseStatePage, readReleaseStates, readReleaseStatesAcross, type StoredReleaseState } from '../db/release/states.js';
 
 /** The namespaces a caller names. */
 const RELEASE_NAMESPACES = ['spore', 'session', 'plan'] as const;
 export type ReleaseNamespace = (typeof RELEASE_NAMESPACES)[number];
 
-/**
- * Each namespace's stored forms. The reconciler, the search filter and the
- * embedding sources write and join on the table name (`sessions`, `spores`);
- * a row may also carry the singular name. A read matches either, and names
- * the row by the singular one.
- */
-const STORED_FORMS: Readonly<Record<ReleaseNamespace, readonly [string, string]>> = {
+/** The forms a stored row or a caller may name a namespace by: the table name is canonical, and a read answers by the singular one. */
+const NAMESPACE_FORMS: Readonly<Record<ReleaseNamespace, readonly [string, string]>> = {
   spore: ['spore', 'spores'],
   session: ['session', 'sessions'],
   plan: ['plan', 'plans'],
 };
 
 const PUBLIC_BY_STORED = new Map<string, ReleaseNamespace>(
-  RELEASE_NAMESPACES.flatMap((n) => STORED_FORMS[n].map((form) => [form, n] as const)),
+  RELEASE_NAMESPACES.flatMap((n) => NAMESPACE_FORMS[n].map((form) => [form, n] as const)),
 );
 
 /** A namespace as a caller or a stored row names it, or null when it names none. */
@@ -53,10 +49,7 @@ export type Cleanliness = '0' | '1' | 'unknown';
 export type CapturePoint = 'session_start' | 'session_end';
 
 /** A session's observed commit, as the release check classifies it. */
-export interface ReleaseSource { point: CapturePoint; headSha: string; cleanliness: Cleanliness }
-
-/** A git provenance row `g`'s cleanliness as `Cleanliness`; session starts and rows with an observation error are `unknown`. */
-export const CLEANLINESS_SQL = "CASE WHEN g.capture_point = 'session_start' OR g.error IS NOT NULL THEN 'unknown' ELSE CAST(g.is_dirty AS TEXT) END";
+interface ReleaseSource { point: CapturePoint; headSha: string; cleanliness: Cleanliness }
 
 /** The captured commit a release state is classified from, as `evidence_json.source` records it: a new one is classified afresh. */
 export const sourceOf = (c: ReleaseSource) => `${c.point}:${c.headSha}:${c.cleanliness}`;
@@ -79,6 +72,8 @@ interface ReleaseStateRow {
   releasePrNumber: number | null;
   reason: string | null;
   checkedAt: number;
+  /** The session state this record follows has changed and is still being carried to it, so `state` is what it last carried. */
+  propagating: boolean;
 }
 
 /** One record's latest release state, with the captured commit it is classified from. */
@@ -87,18 +82,12 @@ interface ReleaseStateWithSource extends ReleaseStateRow {
   source: string | null;
 }
 
-const named = (row: ReleaseStateRow): ReleaseStateRow => ({ ...row, namespace: canonicalNamespace(row.namespace) ?? row.namespace });
-
-const COLUMNS = `id, namespace, record_id AS recordId, state, confidence,
-  basis_kind AS basisKind, basis_ref AS basisRef, basis_sha AS basisSha,
-  release_pr_number AS releasePrNumber, reason, checked_at AS checkedAt`;
+const named = (row: StoredReleaseState): ReleaseStateRow => ({ ...row, namespace: canonicalNamespace(row.namespace) ?? row.namespace, propagating: row.propagating === 1 });
 
 export async function getReleaseState(
   db: RelationalStore, scope: ReadScope, namespace: ReleaseNamespace, recordId: string,
 ): Promise<ReleaseStateWithSource | null> {
-  const row = await db.prepare(`SELECT ${COLUMNS}, json_extract(evidence_json, '$.source') AS source FROM knowledge_release_state
-     WHERE project_id = ? AND namespace IN (?, ?) AND record_id = ? ORDER BY checked_at DESC, id DESC LIMIT 1`)
-    .bind(scope.projectId, ...STORED_FORMS[namespace], recordId).first<ReleaseStateWithSource>();
+  const row = await readReleaseState(db, scope.projectId, namespace, recordId);
   return row === null ? null : { ...named(row), source: row.source };
 }
 
@@ -112,13 +101,8 @@ export async function getReleaseStatesForRecords(
   db: RelationalStore, scope: ReadScope, namespace: ReleaseNamespace, recordIds: readonly string[],
 ): Promise<Record<string, ReleaseStateRow>> {
   if (recordIds.length === 0) return {};
-  const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM knowledge_release_state
-       WHERE project_id = ? AND namespace IN (?, ?) AND record_id IN (SELECT value FROM json_each(?))
-       ORDER BY checked_at ASC, id ASC`)
-    .bind(scope.projectId, ...STORED_FORMS[namespace], JSON.stringify([...new Set(recordIds)]))
-    .all<ReleaseStateRow>();
-  return Object.fromEntries(results.map((r) => [r.recordId, named(r)]));
+  const states = await readReleaseStates(db, scope.projectId, namespace, recordIds);
+  return Object.fromEntries(states.map((r) => [r.recordId, named(r)]));
 }
 
 /**
@@ -130,24 +114,41 @@ export async function getReleaseStatesAcross(
   db: RelationalStore, wanted: ReadonlyArray<{ projectId: string; namespace: ReleaseNamespace; recordIds: readonly string[] }>,
 ): Promise<Array<Record<string, ReleaseStateRow>>> {
   if (wanted.length === 0) return [];
-  const answers = await db.batch(wanted.map((w) => db.prepare(`SELECT ${COLUMNS} FROM knowledge_release_state
-       WHERE project_id = ? AND namespace IN (?, ?) AND record_id IN (SELECT value FROM json_each(?))
-       ORDER BY checked_at ASC, id ASC`).bind(w.projectId, ...STORED_FORMS[w.namespace], JSON.stringify([...new Set(w.recordIds)]))));
-  return wanted.map((_, i) => Object.fromEntries(((answers[i]?.results ?? []) as ReleaseStateRow[]).map((r) => [r.recordId, named(r)])));
+  const answers = await readReleaseStatesAcross(db, wanted);
+  return wanted.map((_, i) => Object.fromEntries((answers[i] ?? []).map((r) => [r.recordId, named(r)])));
 }
 
+interface ReleaseStatesCursor { checkedAt: number; id: string; namespace: ReleaseNamespace | null; state: string | null }
+
+/** The largest page a release-state list answers. */
+const MAX_RELEASE_LIST = 200;
+
+/** The list-position token: the full order tuple and the filter it continues, so a cursor never continues a different listing. */
+const encodeReleaseStatesCursor = (cursor: ReleaseStatesCursor): string => btoa(JSON.stringify([1, cursor.namespace, cursor.state, cursor.checkedAt, cursor.id]));
+
+/** Reads a cursor back, or null when it is not one this listing issued. */
+export function decodeReleaseStatesCursor(token: string): ReleaseStatesCursor | null {
+  try {
+    const value = JSON.parse(atob(token)) as unknown;
+    if (!Array.isArray(value) || value.length !== 5 || value[0] !== 1) return null;
+    const [, namespace, state, checkedAt, id] = value as [number, unknown, unknown, unknown, unknown];
+    if (typeof checkedAt !== 'number' || typeof id !== 'string' || (namespace !== null && !isReleaseNamespace(namespace)) || (state !== null && typeof state !== 'string')) return null;
+    return { checkedAt, id, namespace, state };
+  } catch { return null; }
+}
+
+/** One page of a Project's release states, newest checked first, continuing a listing with `cursor`. */
 export async function listReleaseStates(
-  db: RelationalStore, scope: ReadScope, o: { namespace?: ReleaseNamespace; state?: string; limit?: number } = {},
-): Promise<ReleaseStateRow[]> {
-  const conditions = ['project_id = ?'];
-  const params: unknown[] = [scope.projectId];
-  if (o.namespace !== undefined) { conditions.push('namespace IN (?, ?)'); params.push(...STORED_FORMS[o.namespace]); }
-  if (o.state !== undefined) { conditions.push('state = ?'); params.push(o.state); }
-  const { results } = await db
-    .prepare(`SELECT ${COLUMNS} FROM knowledge_release_state WHERE ${conditions.join(' AND ')}
-       ORDER BY checked_at DESC, id DESC LIMIT ?`)
-    .bind(...params, Math.min(o.limit ?? 100, 500)).all<ReleaseStateRow>();
-  return results.map(named);
+  db: RelationalStore, scope: ReadScope, o: { namespace?: ReleaseNamespace; state?: string; limit?: number; cursor?: ReleaseStatesCursor | null } = {},
+): Promise<{ states: ReleaseStateRow[]; nextCursor: string | null }> {
+  const limit = Math.max(1, Math.min(o.limit ?? 100, MAX_RELEASE_LIST));
+  const page = await readReleaseStatePage(db, scope.projectId, {
+    before: o.cursor ? { checkedAt: o.cursor.checkedAt, id: o.cursor.id } : null, namespace: o.namespace, state: o.state, limit,
+  });
+  return {
+    states: page.states.map(named),
+    nextCursor: page.next === null ? null : encodeReleaseStatesCursor({ ...page.next, namespace: o.namespace ?? null, state: o.state ?? null }),
+  };
 }
 
 /** A record's release state as every surface presents it: the state, its age, and whether the Project's latest check failed after it. */
@@ -166,9 +167,7 @@ export async function getReleaseStatus(
 ): Promise<ReleaseStatus | null> {
   const row = await getReleaseState(db, scope, namespace, recordId);
   if (row === null) return null;
-  const check = await db.prepare(`SELECT check_status AS status, check_failure AS failure, check_finished_at AS finishedAt
-     FROM project_release_provenance WHERE project_id = ?`).bind(scope.projectId)
-    .first<{ status: string | null; failure: string | null; finishedAt: number | null }>();
+  const check = await readLatestCheck(db, scope.projectId);
   const failedAfter = check !== null && check.status !== null && check.status !== 'complete' && check.failure !== null
     && check.finishedAt !== null && check.finishedAt > row.checkedAt;
   return {

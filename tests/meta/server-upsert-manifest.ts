@@ -422,6 +422,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   ],
     'db/release/classification.ts#<module>': [
     { tables: ['knowledge_release_state'], order: 'unverified' },
+    { tables: ['release_propagation_due'], order: 'unverified' },
   ],
     'db/settings/secret-writes.ts#<module>': [
     { tables: ['deployment_secrets'], order: 'unverified' },
@@ -438,6 +439,9 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/schema-v710.ts#<module>': [{ tables: ['setting_revisions'], order: 'unverified' }],
   'db/storage/backup-week-heads.ts#<module>': [{ tables: ['backup_week_heads'], order: 'unverified' }],
   'db/storage/release-queue.ts#<module>': [{ tables: ['blob_release_candidates'], order: 'unverified' }],
+  'db/release/schema.ts#sourceUpsert': [{ tables: ['release_work_due'], order: 'unverified' }],
+  'db/release/schema.ts#queueDerived': [{ tables: ['release_propagation_due'], order: 'unverified' }],
+  'db/release/due.ts#<module>': [{ tables: ['release_check_due'], order: 'unverified' }],
   'db/sessions/deletion-phases.ts#phase': [{ tables: ['blob_release_candidates'], order: 'unverified' }],
   'db/documents/reread.ts#<module>': [{ tables: ['transcript_publication'], order: 'unverified' }],
   'db/storage/cleanup.ts#<module>': [

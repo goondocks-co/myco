@@ -1,6 +1,12 @@
 import { saveReleaseSettings } from '../db/settings/release-connection.js';
-import { prepareReleasePaths, prepareReleaseCandidates, prepareReleasePropagation } from '../read/catalog/release-provenance.js';
-import { writeReleaseClassification, type ClassificationColumns } from '../db/release/classification.js';
+import { commitClassification, settleUnrecorded, type ClassificationOutcome } from '../db/release/classification.js';
+import { readReleaseConfig, requestReleaseCheck, unresolvedReleaseStates, type ReleaseConfigRow } from '../db/release/config.js';
+import { claimReleaseCheck, dueReleaseChecks, openReleaseGeneration, releaseDueAfterSave, settleReleaseCheck, type ReleaseClaim } from '../db/release/due.js';
+import { openReleaseWork, sessionPaths, type ReleaseWork } from '../db/release/work.js';
+import { drainReleasePropagation } from '../db/release/propagation.js';
+import { RELEASE_PROJECTION } from '../db/release/schema.js';
+import { SESSION_PATHS_LIMIT } from '../db/document-tables.js';
+import { projectionReadiness } from '../db/projections/catchup.js';
 /**
  * Release provenance for one Project: its configuration, its credential, and
  * the scheduled check that answers whether captured work shipped.
@@ -30,20 +36,21 @@ import { writeReleaseClassification, type ClassificationColumns } from '../db/re
  * records what stopped it.
  *
  * **One check at a time, and only for the settings it read.** A check claims
- * the Project with a run id and a lease under the revision it read. Every
- * state it writes and its outcome land only while that claim stands; a
- * settings save clears the claim, so a check still waiting on GitHub for the
- * previous repository publishes nothing.
+ * the Project's due row with a lease under the revision it read. Every state it
+ * writes and its outcome land only while that claim stands; a settings save
+ * clears the claim, so a check still waiting on GitHub for the previous
+ * repository publishes nothing, and a lease that lapses leaves the row due.
  *
- * **Bounded.** One check makes at most the Project's configured number of
- * GitHub reads, classifies at most `SESSIONS_PER_CHECK` sessions, and skips a
- * session already classified from the same inputs — repository, package map,
- * refs and the session's changed paths — so a quiet repository costs its tag
- * listings and nothing more.
+ * **Bounded, and only ever forward.** One check makes at most the Project's
+ * configured number of GitHub reads and classifies at most `SESSIONS_PER_CHECK`
+ * sessions, read from the Project's open work rows rather than from history. A
+ * capture, a changed path or a settings save moves a work row; a classification
+ * settles only the capture it read, so a stale result cannot replace a newer one.
+ * A repository that cannot be read leaves every state and work row as it was.
  *
- * **Spores and plans follow their session.** Each check gives a spore or plan
- * that has no release state, or that now names another session, its session's
- * state, without a GitHub read; a released row stays.
+ * **Spores and plans follow their session** through a keyed queue drained in
+ * bounded pages, without a GitHub read; a released row stays. While a record's
+ * session state is still being carried, a read says so.
  */
 import type { ServerEnv, OutboundFetch, RelationalStore } from './adapters.js';
 import type { SecretStore } from './secrets.js';
@@ -55,18 +62,19 @@ import {
   classifyCommit, memoizedCompare, resolveRunRefs, type Classification, type PackageTagMapping,
 } from './release-classify.js';
 import { emit } from '../telemetry.js';
-import { CLEANLINESS_SQL, sourceOf, type ReleaseSource } from './provenance.js';
+import { sourceOf } from './provenance.js';
 const RECONCILE_INTERVAL_LEAF = 'release_provenance.reconcile_interval_minutes';
 const DEFAULT_RECONCILE_INTERVAL_MINUTES = 15;
 const DEFAULT_MAX_LOOKUPS = 50;
 const MAX_LOOKUPS_CEILING = 1_000;
 const SESSIONS_PER_CHECK = 200;
 /** How many Projects one pass checks; the rest are due on the next tick. */
-const PROJECTS_PER_PASS = 3;
+export const PROJECTS_PER_PASS = 3;
 const MAX_REFS = 20;
 const MAX_REF_CHARS = 200;
 const MAX_PACKAGE_MAPPINGS = 50;
-const MAX_PATHS_PER_SESSION = 500;
+/** The report a surface states exactly up to; past it, "at least". */
+const UNRESOLVED_REPORT_CAP = 1000;
 const MAX_CREDENTIAL_CHARS = 4096;
 const REF_GRAMMAR = /^[A-Za-z0-9._/*?-]+$/;
 
@@ -126,6 +134,10 @@ export interface ReleaseProvenanceView extends ReleaseProvenanceSettings {
   check: ReleaseCheck | null;
   /** Set when the stored settings cannot be read: the fields above are then not the Project's settings, and no check runs until they are saved again. */
   problem: typeof STORED_SETTINGS_UNREADABLE | null;
+  /** True while release history is still being prepared after an upgrade: no check runs yet, and an absent state means not yet looked at, never not released. */
+  building: boolean;
+  /** Stored release rows that could not be placed under one current row per record, up to the report cap: left as they were, or preserved in the report, never guessed at. */
+  unresolvedStates: number;
 }
 
 export interface ReleaseProvenanceWrite extends ReleaseProvenanceSettings {
@@ -134,37 +146,7 @@ export interface ReleaseProvenanceWrite extends ReleaseProvenanceSettings {
   credential?: { token: string } | null;
 }
 
-interface Row {
-  revision: string;
-  enabled: number;
-  githubRepo: string | null;
-  productionRefs: string;
-  integrationRefs: string;
-  packageMap: string;
-  includeUnknown: number;
-  maxLookups: number;
-  secretSlot: string | null;
-  updatedAt: number;
-  updatedBy: string;
-  checkRequestedAt: number | null;
-  checkRunId: string | null;
-  checkLeaseUntil: number | null;
-  checkStartedAt: number | null;
-  checkFinishedAt: number | null;
-  checkStatus: ReleaseCheckStatus | null;
-  checkFailure: string | null;
-  checkCounts: string | null;
-  checkLookups: number | null;
-  lastCompleteAt: number | null;
-}
-
-const SELECT_ROW = `SELECT revision, enabled, github_repo AS githubRepo, production_refs AS productionRefs,
-  integration_refs AS integrationRefs, package_map AS packageMap, include_unknown AS includeUnknown,
-  max_lookups AS maxLookups, secret_slot AS secretSlot, updated_at AS updatedAt, updated_by AS updatedBy,
-  check_requested_at AS checkRequestedAt, check_run_id AS checkRunId, check_lease_until AS checkLeaseUntil, check_started_at AS checkStartedAt, check_finished_at AS checkFinishedAt,
-  check_status AS checkStatus, check_failure AS checkFailure, check_counts AS checkCounts,
-  check_lookups AS checkLookups, last_complete_at AS lastCompleteAt
-  FROM project_release_provenance WHERE project_id = ?`;
+type Row = ReleaseConfigRow;
 
 function parseStored<T>(json: string | null, field: string, admits: (value: unknown) => value is T): T {
   let value: unknown;
@@ -258,10 +240,12 @@ function validateSettings(input: Record<string, unknown>): ReleaseProvenanceSett
 
 /** The single writer of a Project's release provenance settings, its sealed credential and its check requests. */
 export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
-  const row = (projectId: string) => db.prepare(SELECT_ROW).bind(projectId).first<Row>();
+  const row = (projectId: string) => readReleaseConfig(db, projectId);
 
   const describe = async (projectId: string): Promise<ReleaseProvenanceView> => {
-    const [current, identity] = await Promise.all([row(projectId), repositoryIdentity(db, { projectId })]);
+    const [current, identity, readiness, unresolvedStates] = await Promise.all([
+      row(projectId), repositoryIdentity(db, { projectId }), projectionReadiness(db, RELEASE_PROJECTION), unresolvedReleaseStates(db, projectId, UNRESOLVED_REPORT_CAP),
+    ]);
     const configured = current?.secretSlot ? (await secrets.describe(current.secretSlot)).configured : false;
     let settings = DEFAULTS;
     let check: ReleaseCheck | null = null;
@@ -285,6 +269,8 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
       suggestedRepo: githubRepoOf(identity?.url),
       check,
       problem,
+      building: readiness === 'building',
+      unresolvedStates,
     };
   };
 
@@ -308,14 +294,13 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
         JSON.stringify(settings.integrationRefs), JSON.stringify(settings.packageMap), settings.includeUnknown ? 1 : 0,
         settings.maxLookups, secretSlot, now, actor,
       ];
-      if (!await saveReleaseSettings(db, projectId, previous, values, secretSlot, sealed, now, actor)) throw new ReleaseProvenanceConflictError();
+      const due = releaseDueAfterSave({ projectId, revision, tracked: settings.enabled && settings.githubRepo !== null });
+      if (!await saveReleaseSettings(db, { project: projectId, previous, values, slot: secretSlot, sealed, now, actor, due })) throw new ReleaseProvenanceConflictError();
       return describe(projectId);
     },
     /** Asks the next tick to check this Project now; answers false when tracking is off. */
     async requestCheck(projectId: string, now: number): Promise<boolean> {
-      const result = await db.prepare(`UPDATE project_release_provenance SET check_requested_at = ?
-        WHERE project_id = ? AND enabled = 1 AND github_repo IS NOT NULL`).bind(now, projectId).run();
-      return result.meta.changes === 1;
+      return requestReleaseCheck(db, projectId, now);
     },
   };
 }
@@ -325,61 +310,35 @@ export function releaseProvenance(db: RelationalStore, secrets: SecretStore) {
 /** How long a claimed check holds the Project: every read at its timeout, and a margin. */
 const leaseMs = (maxLookups: number) => Math.min(maxLookups * GITHUB_READ_TIMEOUT_MS + 60_000, 30 * 60_000);
 
-interface Candidate extends ReleaseSource { sessionId: string; pathsMark: number }
+/** The paths a session changed: `unreadable` while its document still converts or a stored list cannot be parsed, and `too_many` once the stored catalogue is full, where a partial list can prove no package absent. */
+type SessionChangedPaths = { paths: string[]; mark: number } | 'unreadable' | 'too_many';
 
-const identityOf = (projectId: string, namespace: string, recordId: string) => `${projectId}:${namespace}:${recordId}`;
-
-/**
- * The paths a session's tool calls touched, from its document's catalog: none for a session with no document, and null
- * while its document still converts or when a stored list cannot be read.
- */
-async function changedPaths(db: RelationalStore, projectId: string, sessionId: string): Promise<string[] | null> {
-  const { results } = await prepareReleasePaths(db, projectId, sessionId).all<{ state: string; files: string | null }>();
-  const paths = new Set<string>();
-  for (const { files } of results) {
-    let list: string[];
-    try { list = parseStored(files, 'changed paths', isStringList); } catch { return null; }
-    for (const path of list) {
-      paths.add(path);
-      if (paths.size >= MAX_PATHS_PER_SESSION) return [...paths];
-    }
-  }
-  return [...paths];
+async function changedPaths(db: RelationalStore, projectId: string, sessionId: string): Promise<SessionChangedPaths> {
+  const row = await sessionPaths(db, projectId, sessionId, SESSION_PATHS_LIMIT);
+  if (row === null) return { paths: [], mark: 0 };
+  let list: string[];
+  try { list = parseStored(row.files, 'changed paths', isStringList); } catch { return 'unreadable'; }
+  if (list.length >= SESSION_PATHS_LIMIT) return 'too_many';
+  return { paths: list, mark: row.toolCalls };
 }
 
-const uncaptured = (c: Candidate, basisKind: Classification['basisKind'], reason: string): Classification => ({
-  state: 'unknown', confidence: 'low', basisKind, basisRef: null, basisSha: c.headSha, releasePrNumber: null, reason, evidence: {},
+const uncaptured = (w: ReleaseWork, basisKind: Classification['basisKind'], reason: string): Classification => ({
+  state: 'unknown', confidence: 'low', basisKind, basisRef: null, basisSha: w.headSha, releasePrNumber: null, reason, evidence: {},
 });
 
-interface Claim { projectId: string; runId: string; revision: string }
-const fenceParams = (claim: Claim) => [claim.projectId, claim.runId, claim.revision];
-
 /**
- * Write one session's classification and carry it to the spores and plans the
- * session produced, inside the claim. Answers whether the session's state
- * changed, or null when the claim is gone.
+ * Write one session's classification inside the claim, only for the capture read.
  */
-async function writeClassification(
-  db: RelationalStore, claim: Claim, c: Candidate, classification: Classification, fingerprint: string | null, now: number,
-): Promise<boolean | null> {
-  const { projectId } = claim;
+function writeClassification(db: RelationalStore, claim: ReleaseClaim, work: ReleaseWork, classification: Classification,
+  run: { fingerprint: string | null; generation: number; pathsMark: number | null; now: number }): Promise<ClassificationOutcome> {
   const k = classification;
-  const evidence = JSON.stringify({ ...k.evidence, source: sourceOf(c), refs_fingerprint: fingerprint, paths_mark: c.pathsMark });
-  const columns: ClassificationColumns = [k.state, k.confidence, k.basisKind, k.basisRef, k.basisSha, k.releasePrNumber, k.reason, evidence, now];
-  return writeReleaseClassification(db, { projectId, sessionId: c.sessionId, key: identityOf(projectId, 'sessions', c.sessionId) },
-    columns, now, [claim.projectId, claim.runId, claim.revision]);
-}
-
-/**
- * Give each spore and plan its session's current release state when it has
- * none, or when it now names another session, inside the claim. Reads no
- * GitHub; a released row is kept. At most `SESSIONS_PER_CHECK` records per
- * namespace, so a backlog completes over later checks.
- */
-async function propagateDerived(db: RelationalStore, claim: Claim, now: number): Promise<void> {
-  const { projectId } = claim;
-  const sessionPrefix = identityOf(projectId, 'sessions', '');
-  await db.batch(prepareReleasePropagation(db, projectId, sessionPrefix, now, fenceParams(claim), SESSIONS_PER_CHECK));
+  const source = sourceOf(work);
+  return commitClassification(db, claim, {
+    sessionId: work.sessionId, sourceRevision: work.sourceRevision, generation: run.generation,
+    state: k.state, confidence: k.confidence, basisKind: k.basisKind, basisRef: k.basisRef, basisSha: k.basisSha, releasePrNumber: k.releasePrNumber, reason: k.reason,
+    evidence: JSON.stringify({ ...k.evidence, source, refs_fingerprint: run.fingerprint, paths_mark: run.pathsMark }),
+    source, configRevision: claim.revision, fingerprint: run.fingerprint, pathsMark: run.pathsMark, now: run.now,
+  });
 }
 
 /**
@@ -391,17 +350,15 @@ async function propagateDerived(db: RelationalStore, claim: Claim, now: number):
 export async function checkProject(
   db: RelationalStore, secrets: SecretStore, outbound: OutboundFetch, projectId: string, now: number,
 ): Promise<number> {
-  const current = await db.prepare(SELECT_ROW).bind(projectId).first<Row>();
+  const current = await readReleaseConfig(db, projectId);
   if (current === null || current.enabled !== 1 || current.githubRepo === null) return 0;
-  const claim: Claim = { projectId, runId: crypto.randomUUID(), revision: current.revision };
-  const claimed = await db.prepare(`UPDATE project_release_provenance SET check_run_id = ?, check_lease_until = ?, check_started_at = ?
-    WHERE project_id = ? AND revision = ? AND enabled = 1 AND github_repo IS NOT NULL AND (check_run_id IS NULL OR check_lease_until <= ?)`)
-    .bind(claim.runId, now + leaseMs(current.maxLookups), now, projectId, claim.revision, now).run();
-  if (claimed.meta.changes !== 1) return 0;
+  const claim: ReleaseClaim = { projectId, leaseId: crypto.randomUUID(), revision: current.revision };
+  const intervalMs = (await reconcileIntervalMinutes(db)) * 60_000;
+  const opened = await claimReleaseCheck(db, claim, { until: now + leaseMs(current.maxLookups), now, intervalMs });
+  if (opened === null) return 0;
 
   const counts: ReleaseCheckCounts = { checked: 0, changed: 0, unchanged: 0, unknown: 0, unavailable: 0, deferred: 0 };
   let failure: string | null = null;
-  let fingerprint: string | null = null;
   let lookups = 0;
   let settings: ReleaseProvenanceSettings | null = null;
   let superseded = false;
@@ -413,10 +370,10 @@ export async function checkProject(
   if (settings !== null) {
     const token = current.secretSlot === null ? null : await secrets.get(current.secretSlot);
     const reads = githubReads({ repo: current.githubRepo, token, maxLookups: settings.maxLookups, fetcher: outbound });
-    const outcome = await classifyProject(db, reads, claim, settings, counts, token !== null, now);
+    const outcome = await classifyProject(db, reads, { claim, settings, counts, hasToken: token !== null, now });
     lookups = reads.lookupsUsed();
     if (outcome === null) superseded = true;
-    else ({ failure, fingerprint } = outcome);
+    else failure = outcome.failure;
     // What the check ran with, not the setting read later: a limit or refusal met without a token says so.
     if (!token && (failure === 'rate_limited' || failure === 'forbidden')) failure += '_without_credential';
   }
@@ -424,58 +381,57 @@ export async function checkProject(
   const status: ReleaseCheckStatus = failure === null
     ? (counts.deferred > 0 ? 'partial' : 'complete')
     : (counts.checked > 0 ? 'partial' : 'unavailable');
-  const recorded = superseded ? null : await db.prepare(`UPDATE project_release_provenance SET check_finished_at = ?, check_status = ?, check_failure = ?,
-      check_counts = ?, check_lookups = ?, check_fingerprint = ?, check_run_id = NULL, check_lease_until = NULL,
-      last_complete_at = CASE WHEN ? = 'complete' THEN ? ELSE last_complete_at END
-    WHERE project_id = ? AND check_run_id = ? AND revision = ?`)
-    .bind(now, status, failure, JSON.stringify(counts), lookups, fingerprint, status, now, ...fenceParams(claim)).run();
-  const published = recorded !== null && recorded.meta.changes === 1;
+  const published = !superseded && await settleReleaseCheck(db, claim, { now, status, failure, counts: JSON.stringify(counts), lookups });
   emit({ kind: 'release_provenance_check', status: published ? status : 'superseded', failure: failure ?? 'none', lookups, ...counts });
   return published ? counts.changed : 0;
 }
 
 /**
- * Classify the Project's pending sessions inside the claim. Answers the
- * failure that stopped it and the refs fingerprint, or null when the claim was
- * lost and nothing more may be published.
+ * Classify the Project's open sessions inside the claim. Answers the failure
+ * that stopped it, or null when the claim is gone and nothing more may be
+ * published. A repository that cannot be read returns before any work row is
+ * touched, so it marks nothing.
  */
 async function classifyProject(
-  db: RelationalStore, reads: ReturnType<typeof githubReads>, claim: Claim, settings: ReleaseProvenanceSettings,
-  counts: ReleaseCheckCounts, hasToken: boolean, now: number,
-): Promise<{ failure: string | null; fingerprint: string | null } | null> {
+  db: RelationalStore, reads: ReturnType<typeof githubReads>,
+  { claim, settings, counts, hasToken, now }: { claim: ReleaseClaim; settings: ReleaseProvenanceSettings; counts: ReleaseCheckCounts; hasToken: boolean; now: number },
+): Promise<{ failure: string | null } | null> {
   const { projectId } = claim;
-  await propagateDerived(db, claim, now);
   const repository = await reads.repository();
   if (!repository.ok) {
     const notFound = hasToken ? 'repository_not_found' : 'repository_not_found_without_credential';
-    return { failure: repository.failure === 'not_found' ? notFound : repository.failure, fingerprint: null };
+    return { failure: repository.failure === 'not_found' ? notFound : repository.failure };
   }
   const run = await resolveRunRefs(reads, settings);
   const fingerprint = run.fingerprint === null ? null : `repo=${settings.githubRepo}\n${run.fingerprint}`;
-  const mapped = settings.packageMap.length > 0 ? 1 : 0;
-  // The session's latest captured commit: its end, or its start while no end is captured.
-  const { results: candidates } = await prepareReleaseCandidates(db, projectId, mapped, identityOf(projectId, 'sessions', ''), fingerprint, SESSIONS_PER_CHECK + 1)
-    .all<Candidate & { capturedAt: number }>();
+  const generation = await openReleaseGeneration(db, claim, fingerprint);
+  if (generation === null) return null;
+  const candidates = await openReleaseWork(db, projectId, generation, SESSIONS_PER_CHECK + 1);
   if (candidates.length > SESSIONS_PER_CHECK) counts.deferred += candidates.length - SESSIONS_PER_CHECK;
   const compare = memoizedCompare(reads);
   const batch = candidates.slice(0, SESSIONS_PER_CHECK);
   let failure: string | null = null;
   for (let i = 0; i < batch.length; i += 1) {
-    const candidate = batch[i];
+    const work = batch[i]!;
+    const source = sourceOf(work);
     let classification: Classification;
-    if (candidate.point === 'session_start') {
-      classification = uncaptured(candidate, 'missing_git_evidence', 'Only the commit the session started on is captured; its own work is not');
-    } else if (candidate.cleanliness === '1') {
-      classification = uncaptured(candidate, 'dirty_worktree', 'The session ended with uncommitted changes to tracked files');
-    } else if (candidate.cleanliness === 'unknown') {
-      classification = uncaptured(candidate, 'missing_git_evidence', 'Whether the session ended with uncommitted changes could not be read');
+    let pathsMark: number | null = null;
+    if (work.point === 'session_start') {
+      classification = uncaptured(work, 'missing_git_evidence', 'Only the commit the session started on is captured; its own work is not');
+    } else if (work.cleanliness === '1') {
+      classification = uncaptured(work, 'dirty_worktree', 'The session ended with uncommitted changes to tracked files');
+    } else if (work.cleanliness === 'unknown') {
+      classification = uncaptured(work, 'missing_git_evidence', 'Whether the session ended with uncommitted changes could not be read');
     } else {
-      const paths = settings.packageMap.length === 0 ? [] : await changedPaths(db, projectId, candidate.sessionId);
-      if (paths === null) {
-        classification = uncaptured(candidate, 'missing_git_evidence', 'The paths the session changed could not be read, so its package is not established');
+      const changed = settings.packageMap.length === 0 ? { paths: [], mark: null } : await changedPaths(db, projectId, work.sessionId);
+      if (changed === 'unreadable') {
+        classification = uncaptured(work, 'missing_git_evidence', 'The paths the session changed could not be read, so its package is not established');
         failure ??= CHANGED_PATHS_UNREADABLE;
+      } else if (changed === 'too_many') {
+        classification = uncaptured(work, 'missing_git_evidence', `The session touched at least ${SESSION_PATHS_LIMIT} paths, so its package is not established`);
       } else {
-        const outcome = await classifyCommit(reads, compare, run, { headSha: candidate.headSha, changedPaths: paths });
+        pathsMark = changed.mark;
+        const outcome = await classifyCommit(reads, compare, run, { headSha: work.headSha, changedPaths: changed.paths });
         if (outcome.kind === 'unavailable') {
           counts.unavailable += 1;
           failure = outcome.failure;
@@ -489,14 +445,18 @@ async function classifyProject(
     counts.checked += 1;
     if (classification.state === 'unknown') {
       counts.unknown += 1;
-      if (!settings.includeUnknown) continue;
+      if (!settings.includeUnknown) {
+        if (!await settleUnrecorded(db, claim, { sessionId: work.sessionId, sourceRevision: work.sourceRevision, generation, source })) return null;
+        continue;
+      }
     }
-    const changed = await writeClassification(db, claim, candidate, classification, fingerprint, now);
-    if (changed === null) return null;
-    if (changed) counts.changed += 1;
+    const written = await writeClassification(db, claim, work, classification, { fingerprint, generation, pathsMark, now });
+    if (written === 'claim_lost') return null;
+    if (written === 'source_moved') counts.deferred += 1;
+    else if (written === 'changed') counts.changed += 1;
     else counts.unchanged += 1;
   }
-  return { failure, fingerprint };
+  return { failure };
 }
 
 /** The interval the Deployment's leaf names, in minutes, or the default where it names none. */
@@ -506,19 +466,17 @@ export async function reconcileIntervalMinutes(db: RelationalStore): Promise<num
 }
 
 /**
- * The job: check each enabled Project whose interval has passed, or whose
- * owner asked for a check after the last one started, oldest first; a Project
- * whose check still holds its lease waits.
+ * The job: wait while release history is still being prepared, check the Projects whose due row has come round,
+ * soonest first, then carry session states to their records in one bounded pass. Answers how many release states
+ * changed, and asks for a sooner pass while records still wait to be carried.
  */
-export async function reconcileReleaseProvenance(env: ServerEnv, now: number): Promise<number> {
-  const interval = (await reconcileIntervalMinutes(env.db)) * 60_000;
-  const { results } = await env.db.prepare(`SELECT project_id AS projectId FROM project_release_provenance
-    WHERE enabled = 1 AND github_repo IS NOT NULL AND (check_run_id IS NULL OR check_lease_until <= ?)
-      AND (check_started_at IS NULL OR check_started_at <= ? OR check_requested_at > check_started_at)
-    ORDER BY COALESCE(check_started_at, 0), project_id LIMIT ?`).bind(now, now - interval, PROJECTS_PER_PASS).all<{ projectId: string }>();
-  if (results.length === 0) return 0;
+export async function reconcileReleaseProvenance(env: ServerEnv, now: number): Promise<{ changed: number; more: boolean }> {
+  if (await projectionReadiness(env.db, RELEASE_PROJECTION) === 'building') return { changed: 0, more: false };
+  const intervalMs = (await reconcileIntervalMinutes(env.db)) * 60_000;
+  const due = await dueReleaseChecks(env.db, { countedBefore: now - intervalMs, now, limit: PROJECTS_PER_PASS });
   const secrets = deploymentSecretStore(env.db, env.wrappingKey);
   let changed = 0;
-  for (const { projectId } of results) changed += await checkProject(env.db, secrets, env.outbound, projectId, now);
-  return changed;
+  for (const projectId of due) changed += await checkProject(env.db, secrets, env.outbound, projectId, now);
+  const carried = await drainReleasePropagation(env.db, now);
+  return { changed, more: carried.more };
 }

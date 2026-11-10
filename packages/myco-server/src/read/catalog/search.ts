@@ -383,7 +383,7 @@ async function search_withRelease(db: search_import_RelationalStore, scope: sear
 }
 
 const search_annotation = (row: Awaited<ReturnType<typeof search_import_getReleaseStatesForRecords>>[string]): search_import_ReleaseAnnotation =>
-  ({ state: row.state, confidence: row.confidence, ref: row.basisRef, checked_at: row.checkedAt });
+  ({ state: row.state, confidence: row.confidence, ref: row.basisRef, checked_at: row.checkedAt, ...(row.propagating ? { propagating: true } : {}) });
 
 /** Each result's release state across Projects, one batched read per Project and namespace present. */
 async function search_withReleaseAcross(db: search_import_RelationalStore, results: search_import_SearchAcrossResult[]): Promise<search_import_SearchAcrossResult[]> {

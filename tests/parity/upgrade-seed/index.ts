@@ -1,5 +1,6 @@
 import { observeKnowledge, seedKnowledge, type KnowledgeSeed } from './knowledge.ts';
 import { observeMachines, seedMachines, type MachinesSeed } from './machines.ts';
+import { observeRelease, seedRelease, type ReleaseSeed } from './release.ts';
 import { mcp, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
 import { observeRuns, seedRuns, type RunsSeed } from './runs.ts';
 import { observeSessions, seedSessions, type SessionsSeed } from './sessions.ts';
@@ -9,7 +10,7 @@ import { observeSessions, seedSessions, type SessionsSeed } from './sessions.ts'
  * A table the upgrade changes must hold rows: when the carry names one this seed leaves empty, add its route here.
  */
 
-interface Seeded { sessions: SessionsSeed; knowledge: KnowledgeSeed; machines: MachinesSeed; runs: RunsSeed }
+interface Seeded { sessions: SessionsSeed; knowledge: KnowledgeSeed; machines: MachinesSeed; runs: RunsSeed; release: ReleaseSeed }
 export interface SeededDeployment extends Seeded { observed: Record<string, unknown> }
 
 /** The seeded Deployments, by Deployment id, for the scenario that reads them back after the upgrade. */
@@ -27,7 +28,8 @@ export async function seedDeployment(target: SeedTarget): Promise<SeededDeployme
   const knowledge = await seedKnowledge(target, sessions.captured.sessionId, sessions.word, stamp);
   const machines = await seedMachines(target, stamp);
   const runs = await seedRuns(target, stamp, sessions.sibling.sessionId);
-  const seeded = { sessions, knowledge, machines, runs };
+  const release = await seedRelease(target, stamp);
+  const seeded = { sessions, knowledge, machines, runs, release };
   const result = { ...seeded, observed: await observe(target, seeded) };
   SEEDED.set(target.deploymentId, result);
   return result;
@@ -45,6 +47,7 @@ export async function observe(target: RouteTarget, seeded: Seeded): Promise<Reco
     knowledge: await observeKnowledge(target, seeded.knowledge, seeded.sessions.captured.sessionId, seeded.sessions.word),
     machines: await observeMachines(target, seeded.machines),
     runs: await observeRuns(target, seeded.runs),
+    release: await observeRelease(target, seeded.release),
     unknownSession: await mcp(target, 'myco_spores', { op: 'save', type: 'decision', content: 'nowhere', agent_line: 'When citing evidence, name the session that holds it.', session_id: 'upgrade-no-such-session', project: target.projectId }),
   };
 }
