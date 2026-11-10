@@ -230,7 +230,7 @@ function recoveryAdvice(evidence: StopEvidence, now: number): string {
     parts.push(`To put the database back on schema ${workerSchema}, which the old Worker serves, restore bookmark ${compatible.bookmark}, taken on ${compatible.recordedAt} (it discards writes made since): ${compatible.command}`);
   }
   if (current !== undefined && current.bookmark !== compatible?.bookmark) {
-    parts.push(`This update's own recovery point, bookmark ${current.bookmark}, returns the database to schema ${current.schema}${current.schema === workerSchema ? '' : ', which the old Worker does not serve'}: ${current.command}`);
+    parts.push(`This update's own recovery point, bookmark ${current.bookmark}, returns the database to schema ${current.schema}${workerSchema === undefined ? '; whether the old Worker serves it is not recorded' : current.schema === workerSchema ? '' : ', which the old Worker does not serve'}: ${current.command}`);
   }
   return parts.join(' ');
 }

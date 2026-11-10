@@ -362,6 +362,18 @@ it('after two stopped updates against one Worker, recommends the bookmark at the
   });
 });
 
+it('claims nothing about the old Worker when the record does not show which schema it serves', async () => {
+  await fixture({ schema: String(T - 3), workerBefore: null, liveSchema: true, overloadAt: [{ at: T - 2 }, { at: T - 2 }, { at: T - 2 }] }, async ({ root, home, update, reports }) => {
+    writeDeploymentRecord({ ...readDeploymentRecord(home)!, versionId: null }, home);
+    const file = migrationFileName(SCHEMA_STEPS.find((step) => step.version === T - 2)!);
+    await expect(update()).rejects.toThrow(`migration ${file} failed twice`);
+    expect(liveVersion(root)).toBe(T - 3);
+    const text = reports.join('\n');
+    expect(text).toContain(`returns the database to schema ${T - 3}; whether the old Worker serves it is not recorded`);
+    expect(text).not.toContain('which the old Worker does not serve');
+  });
+});
+
 it('settles a failure other than overload once, as before, without waiting', async () => {
   await fixture({ schema: String(T - 3), liveSchema: true, migrationExit: 1, migrationError: 'internal error [code: 7500]' }, async ({ update, calls, reports, waits }) => {
     await expect(update()).rejects.toThrow('internal error [code: 7500]');
