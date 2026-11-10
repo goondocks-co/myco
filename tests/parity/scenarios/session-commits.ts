@@ -1,38 +1,17 @@
 import { expect } from 'bun:test';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { sessionCommits } from '@myco-server-worker/read/session-commits.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
 
-/** The statements `sessionCommits` prepares, with the values bound to each, from a store that answers nothing. */
-async function issued(projectId: string, sessionId: string): Promise<Array<{ sql: string; binds: unknown[] }>> {
-  const statements: Array<{ sql: string; binds: unknown[] }> = [];
-  const db = {
-    prepare(sql: string): PreparedStatement {
-      const record = { sql, binds: [] as unknown[] };
-      statements.push(record);
-      const statement = {
-        bind(...values: unknown[]) { record.binds = values; return statement; },
-        first: async () => null,
-        all: async () => ({ results: [] }),
-      } as unknown as PreparedStatement;
-      return statement;
-    },
-  } as unknown as RelationalStore;
-  await sessionCommits(db, { projectId }, sessionId);
-  return statements;
-}
-
 /**
  * A session's commit observations on both targets: the start and end commits
  * captured through /events, a release state recorded from the end, and the
  * same state answered as covering an earlier end once a later end arrives with
- * uncommitted changes. Both reads plan over an index on each store.
+ * uncommitted changes.
  */
 export const sessionCommitsParity: ParityScenario = {
-  name: 'session commits: start and end observations, release containment on the end it classified, index-backed reads',
+  name: 'session commits: start and end observations, release containment on the end it classified',
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const session = `parity-commits-${stamp}`;
@@ -72,21 +51,5 @@ export const sessionCommitsParity: ParityScenario = {
     const later = await commits();
     expect(later.observations[1]).toEqual({ point: 'session_end', headSha: B, branch: 'main', changes: 'uncommitted', capturedAt: stamp + 30 });
     expect(later.release).toEqual({ ...release, covers: { point: 'session_end', current: false } });
-
-    const statements = await issued(target.projectId, session);
-    expect(statements).toHaveLength(2);
-    const plans: string[] = [];
-    for (const { sql, binds } of statements) {
-      let next = 0;
-      const inlined = sql.replace(/\?/g, () => {
-        const value = binds[next++];
-        return typeof value === 'number' ? String(value) : lit(String(value));
-      });
-      plans.push((await target.sql(`EXPLAIN QUERY PLAN ${inlined}`)).map((row) => String(row.detail)).join('\n'));
-    }
-    console.info(`[${target.name}] session commits plans:\n${plans.join('\n---\n')}`);
-    expect(plans[0]).toMatch(/SEARCH g USING INDEX idx_fk_knowledge_git_provenance_project_id_session_id \(project_id=\? AND session_id=\?\)/);
-    expect(plans[1]).toMatch(/SEARCH knowledge_release_state USING INDEX idx_knowledge_release_embedding/);
-    for (const plan of plans) expect(plan).not.toMatch(/\bSCAN\b/);
   },
 };

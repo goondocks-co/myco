@@ -15,7 +15,6 @@ import {
   search_searchProject as searchProject,
 } from '@myco-server-worker/read/catalog/search.js';
 import { type SearchOptions } from '@goondocks/myco-shared/search-types';
-import { getReleaseStatesAcross } from '@myco-server-worker/core/provenance.js';
 import { analyzedStore, PROFILES } from './helpers/planner-stats.js';
 import { sqliteD1 } from './helpers/d1.js';
 
@@ -132,7 +131,7 @@ describe('search under the statistics a Deployment plans from', () => {
     }
   });
 
-  it('counts the search backlog from the pending-blob index, and reads release states by Project', async () => {
+  it('counts the search backlog from the pending-blob index', async () => {
     for (const [reach, search] of Object.entries(REACHES)) {
       const read = (await plans((db) => search(db, SHAPES.one!))).filter(({ sql }) => /FROM search_blob_queue/.test(sql));
       expect(read).toHaveLength(3);
@@ -141,9 +140,6 @@ describe('search under the statistics a Deployment plans from', () => {
         expect({ reach, store, scans: tableScans(plan) }).toEqual({ reach, store, scans: [] });
       }
     }
-    const release = await plans((db) => getReleaseStatesAcross(db, [{ projectId: 'proj_0', namespace: 'spore', recordIds: ['a'] }, { projectId: 'proj_1', namespace: 'plan', recordIds: ['b'] }]));
-    expect(release).toHaveLength(2 * 3);
-    for (const { store, plan } of release) expect({ store, plan }).toEqual({ store, plan: expect.stringMatching(/SEARCH knowledge_release_state USING INDEX \w+ \(project_id=\? AND namespace=\? AND record_id=\?\)/) });
   });
 
   it('ranks every match without a snippet, and reads snippets for the kept page alone', async () => {

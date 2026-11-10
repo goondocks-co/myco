@@ -15,7 +15,8 @@
  * one.
  */
 import type { RelationalStore } from '../core/adapters.js';
-import { CLEANLINESS_SQL, getReleaseState, sourceOf, sourcePoint, type CapturePoint, type Cleanliness } from '../core/provenance.js';
+import { getReleaseState, sourceOf, sourcePoint, type CapturePoint, type Cleanliness } from '../core/provenance.js';
+import { readSessionObservations } from '../db/release/states.js';
 import type { ReadScope } from './scope.js';
 
 /** Whether tracked files differed from the commit: `unreadable` when the member could not tell. */
@@ -55,13 +56,7 @@ const POINT_ORDER: Record<CapturePoint, number> = { session_start: 0, session_en
 
 /** The session's commit observations and its release state. `idx_fk_knowledge_git_provenance_project_id_session_id` serves the read. */
 export async function sessionCommits(db: RelationalStore, scope: ReadScope, sessionId: string): Promise<SessionCommits> {
-  const { results } = await db.prepare(`SELECT g.capture_point AS point, g.head_sha AS headSha, g.branch, g.captured_at AS capturedAt,
-      ${CLEANLINESS_SQL} AS cleanliness
-    FROM knowledge_git_provenance g
-    WHERE g.project_id = ? AND g.session_id = ? AND g.capture_point IN ('session_start', 'session_end') AND g.head_sha IS NOT NULL`)
-    .bind(scope.projectId, sessionId)
-    .all<{ point: CapturePoint; headSha: string; branch: string | null; capturedAt: number; cleanliness: Cleanliness }>();
-  const rows = [...results].sort((a, b) => POINT_ORDER[a.point] - POINT_ORDER[b.point]);
+  const rows = (await readSessionObservations(db, scope.projectId, sessionId)).sort((a, b) => POINT_ORDER[a.point] - POINT_ORDER[b.point]);
   const state = await getReleaseState(db, scope, 'session', sessionId);
   let release: CommitReleaseCheck | null = null;
   if (state !== null) {

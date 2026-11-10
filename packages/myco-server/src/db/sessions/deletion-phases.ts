@@ -62,6 +62,8 @@ const SPECS: ReadonlyArray<readonly [table: string, spec: PhaseSpec]> = [
   ['run_served_material', { key: ['project_id', 'served_id'] }],
   ['learning_sessions', { key: ['project_id', 'session_id'] }],
   ['session_title_work', { key: ['project_id', 'session_id', 'mode'] }],
+  ['release_work_due', { key: ['project_id', 'session_id'] }],
+  ['release_propagation_due', { key: ['project_id', 'session_id'] }],
   ['session_documents', { key: ['project_id', 'session_id'] }],
   ['session_prompts', { key: ['project_id', 'session_id', 'generation', 'prompt_id'], before: promptsLeaveSpores(3) }],
   ['session_chunks', { key: ['project_id', 'session_id', 'generation', 'chunk_no'] }],

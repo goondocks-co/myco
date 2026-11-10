@@ -85,7 +85,7 @@ export const BACKUP_TABLES: readonly string[] = [
   'attachments', 'transcripts', 'transcript_segments', 'raw_resources', 'raw_archive_refs', 'tags',
   'spore_curation_work', 'spore_curation_receipts', 'spore_curation_owners',
   'agent_tasks', 'agent_runs', 'run_served_material', 'extraction_acks', 'agent_run_attempts', 'agent_run_steps', 'run_reads', 'agent_state', 'spores', 'resolution_events', 'spore_injections', 'session_injections', 'prompt_context_answers', 'prompt_identity_conflicts',
-  'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'external_grants',
+  'injection_served_items', 'canopy_maps', 'knowledge_release_state', 'release_state_unresolved', 'external_grants',
   'agent_run_events', 'agent_run_write_intents', 'agent_turns', 'agent_reports', 'run_bodies',
   'knowledge_git_provenance', 'session_artifacts', 'turn_cards', ...DOCUMENT_ARTIFACT_TABLES,
 ];
@@ -148,7 +148,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'backup_restore_progress', 'backup_publications', 'recovery_forget_commands', 'session_deletion_jobs', 'transcript_reread_jobs',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_settlement_intents', 'object_reconciliation_cursor', 'object_store_reconciliation', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
-  'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots', 'machine_head', 'runner_head',
+  'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots', 'machine_head', 'runner_head', 'release_check_due', 'release_work_due', 'release_propagation_due',
   '_v2_guard_project_id_grammar', '_v2_guard_session_machine_id',
   '_v68_guard_retired_settings',
   '_v5_guard_credential_backfillable', '_v5_guard_backfill_complete',

@@ -11,6 +11,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { OWNER_ENV, PRINCIPAL, ownerCookie } from './helpers/owner.js';
 import { saveReleaseSettings } from '@myco-server-worker/db/settings/release-connection.js';
+import { releaseDueAfterSave } from '@myco-server-worker/db/release/due.js';
 import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
 import type { OwnerContext } from '@myco-server-worker/context.js';
@@ -128,12 +129,13 @@ describe('identity and Project atomic writes', () => {
     const revision = 'fixture-release-revision';
     const slot = `release-provenance:proj_1:${revision}`;
     const values = [revision, 2, 'example/project', '[]', '[]', '[]', 1, 10, slot, NOW, 'mem_machine_1'];
+    const due = releaseDueAfterSave({ projectId: 'proj_1', revision, tracked: true });
     const sealed = await secrets.preparePut(slot, 'fixture-release-token', 'mem_machine_1', NOW);
-    await expect(saveReleaseSettings(r.db, 'proj_1', null, values, slot, sealed, NOW, 'mem_machine_1')).rejects.toThrow();
+    await expect(saveReleaseSettings(r.db, { project: 'proj_1', previous: null, values, slot, sealed, now: NOW, actor: 'mem_machine_1', due })).rejects.toThrow();
     expect(r.sqlite.query("SELECT revision,secret_slot FROM project_release_provenance WHERE project_id='proj_1'").all()).toEqual([]);
     expect(await secrets.list()).toEqual([]);
     values[1] = 1;
-    expect(await saveReleaseSettings(r.db, 'proj_1', null, values, slot, sealed, NOW, 'mem_machine_1')).toBe(true);
+    expect(await saveReleaseSettings(r.db, { project: 'proj_1', previous: null, values, slot, sealed, now: NOW, actor: 'mem_machine_1', due })).toBe(true);
     expect(r.sqlite.query("SELECT revision,secret_slot FROM project_release_provenance WHERE project_id='proj_1'").get())
       .toEqual({ revision, secret_slot: slot });
     expect(await secrets.get(slot)).toBe('fixture-release-token');

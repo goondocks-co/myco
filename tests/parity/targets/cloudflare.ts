@@ -228,7 +228,8 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       // The Deployment's users write at the latest schema; their rows are carried to the last release's schema, which
       // every later file upgrades through Wrangler's own apply, with Wrangler's ledger naming every released file.
       await seedDeployment({ url, projectId: PROJECT_ID, deploymentId, sql: workerdSql, ownerHeaders, memberHeaders,
-        primeEmbedding: async (projectId) => { await runtime.command({ op: 'embedding', tag, clockName: CLOCK_NAME, projectId }); } });
+        primeEmbedding: async (projectId) => { await runtime.command({ op: 'embedding', tag, clockName: CLOCK_NAME, projectId }); },
+        checkRelease: async () => { await runtime.command({ op: 'release', tag, clockName: CLOCK_NAME }); } });
       await runtime.command({ op: 'stop', tag });
       started = false;
       const { previous, upgrade } = upgradeSplit();

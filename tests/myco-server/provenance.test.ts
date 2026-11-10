@@ -84,8 +84,8 @@ describe('release state', () => {
     seed(sqlite, SCOPE.projectId, 'rs1', 'spore', 'sp1', 'released');
     seed(sqlite, SCOPE.projectId, 'rs2', 'plan', 'pl1', 'released');
     seed(sqlite, OTHER.projectId, 'rs3', 'spore', 'sp9', 'released');
-    expect((await listReleaseStates(db, SCOPE, { namespace: 'spore' })).map((r) => r.recordId)).toEqual(['sp1']);
-    expect((await listReleaseStates(db, SCOPE)).map((row) => row.recordId)).toEqual(['pl1', 'sp1']);
+    expect((await listReleaseStates(db, SCOPE, { namespace: 'spore' })).states.map((r) => r.recordId)).toEqual(['sp1']);
+    expect((await listReleaseStates(db, SCOPE)).states.map((row) => row.recordId)).toEqual(['pl1', 'sp1']);
   });
 
   it('answers the public singular namespaces for rows stored under the table names the reconciler and search write', async () => {
@@ -95,7 +95,7 @@ describe('release state', () => {
     seed(sqlite, SCOPE.projectId, 'rs4', 'plans', 'pl1');
     expect(await getReleaseState(db, SCOPE, 'spore', 'sp1')).toMatchObject({ namespace: 'spore', state: 'merged_unreleased' });
     expect(Object.keys(await getReleaseStatesForRecords(db, SCOPE, 'session', ['se1']))).toEqual(['se1']);
-    expect((await listReleaseStates(db, SCOPE, { namespace: 'plan' })).map((r) => r.recordId)).toEqual(['pl1']);
+    expect((await listReleaseStates(db, SCOPE, { namespace: 'plan' })).states.map((r) => r.recordId)).toEqual(['pl1']);
     for (const n of ['spore', 'session', 'plan']) expect(isReleaseNamespace(n)).toBe(true);
     expect([canonicalNamespace('spores'), canonicalNamespace('skill_records'), canonicalNamespace('spore'), canonicalNamespace('sporez')])
       .toEqual(['spore', null, 'spore', null]);

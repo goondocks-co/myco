@@ -6,8 +6,11 @@ import { revisionHeaders } from '../settings-revision.ts';
 /** What reading a target takes: its routes, its credentials and its store. */
 export type RouteTarget = Pick<ParityTarget, 'url' | 'projectId' | 'deploymentId' | 'sql' | 'ownerHeaders' | 'memberHeaders'>;
 
-/** What seeding a target takes besides: a way to embed what its members saved. */
-export type SeedTarget = RouteTarget & { primeEmbedding(projectId: string): Promise<void> };
+/**
+ * What seeding a target takes besides: a way to embed what its members saved, and to run the release check its owner
+ * requested against a modelled GitHub.
+ */
+export type SeedTarget = RouteTarget & { primeEmbedding(projectId: string): Promise<void>; checkRelease(): Promise<void> };
 
 /** An answer's status and body. */
 export interface Answer { status: number; body: any }

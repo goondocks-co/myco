@@ -1,7 +1,7 @@
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import {PARITY_PULLED_STAGES} from '../../helpers/pulled-test-stage.ts';
 import {installPulledStages} from '@myco-server-worker/core/pulled-stages.js';
-import {primeObservedEmbedding,installObservedEmbeddingRuntime} from '../observed-worker.ts';
+import {checkObservedRelease,primeObservedEmbedding,installObservedEmbeddingRuntime} from '../observed-worker.ts';
 import { wordVectorProvider } from '../embedding/word-vectors.ts';
 import { revisionHeaders } from '../settings-revision.ts';
 import { Database } from 'bun:sqlite';
@@ -77,7 +77,7 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
         const embedding = await fetch(`${url}/api/embedding`, { method: 'PUT', headers: { cookie, origin: url, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
         if (embedding.status !== 200) throw new Error(`the native seed could not configure embeddings: ${embedding.status} ${await embedding.text()}`);
         await seedDeployment({ url, projectId: PROJECT_ID, deploymentId, sql, ownerHeaders: () => ({ cookie }), memberHeaders: (extra = {}) => memberHeadersFor(token, PROJECT_ID, extra),
-          primeEmbedding: (projectId) => primeObservedEmbedding(seeding.env, projectId) });
+          primeEmbedding: (projectId) => primeObservedEmbedding(seeding.env, projectId), checkRelease: () => checkObservedRelease(seeding.env) });
         await seeding.env.settle();
       } finally { await seeding.stop(); }
       upgradeNativeStore(databasePath);
