@@ -3,4 +3,4 @@
  * a release ships without it. `scripts/prepare-plugin-release.mjs` sets it to the release it replaces the first time it
  * prepares a release, and leaves it as it stands after that.
  */
-export const LAST_RELEASE_RESTORING_RETIRED_FORMAT: string | null = null;
+export const LAST_RELEASE_RESTORING_RETIRED_FORMAT: string | null = "2.0.0-alpha.23";
