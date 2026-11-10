@@ -30,6 +30,6 @@ export const BUILD_JOB_FILES = [
 /** The parity a pull request runs: the capture and read spine on every store, then both populated schema upgrades. */
 export const PARITY_SMOKE_SCENARIOS = [
   'session turns: capture keyed to prompts, turns read, turn body, tool calls on their own, rail summaries and filters',
-  'D1: latest migration upgrades seeded previous schema to expected state',
+  'schema upgrade: a Deployment populated by its users upgrades from the previous schema with every record, refusal and write unchanged',
   'budget: populated schema upgrade keeps activation and its refusal visible',
 ];

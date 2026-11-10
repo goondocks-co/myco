@@ -2,6 +2,8 @@ import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-acti
 import {PARITY_PULLED_STAGES} from '../../helpers/pulled-test-stage.ts';
 import {installPulledStages} from '@myco-server-worker/core/pulled-stages.js';
 import {primeObservedEmbedding,installObservedEmbeddingRuntime} from '../observed-worker.ts';
+import { wordVectorProvider } from '../embedding/word-vectors.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,9 +20,11 @@ import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHea
 import { stopRaceFixture } from '../owner-review/stop-race.ts';
 import { receiptSnapshotEndpoint } from '../receipt-snapshots/endpoint.ts';
 import {statementRecorder,observeStatementSpans,withStatementSpan,type StatementFrame} from '../../helpers/statement-recorder.js';
+import { upgradeNativeStore } from '../schema-carry.ts';
+import { seedDeployment } from '../upgrade-seed/index.ts';
 
 /** The shipped self-hosted server, in-process: real entry, real migrations, a temp volume. */
-export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; pulledStage?: boolean; embeddingFixture?:boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
+export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; pulledStage?: boolean; embeddingFixture?:boolean; latestSchemaUpgrade?: boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-parity-'));
   const databasePath = path.join(root, 'myco.sqlite');
 
@@ -58,6 +62,27 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
     GITHUB_CLIENT_ID: 'parity-client',
     GITHUB_CLIENT_SECRET: 'parity-secret',
   };
+  const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+  // The embedding endpoint a Deployment seeded for an upgrade recalls through, for as long as the target runs.
+  const provider = options.latestSchemaUpgrade === true ? wordVectorProvider() : null;
+  if (provider !== null) {
+    // The Deployment's users write at the latest schema; their rows are carried to the last release's schema, which the self-hosted migrator upgrades.
+    try {
+      const seeding = await serve(serverOptions);
+      try {
+        const url = `http://127.0.0.1:${seeding.port}`;
+        // The owner points the Deployment at the embedding endpoint, so what members save is recalled into their prompts.
+        const body = { provider: 'ollama', model: 'parity-words', endpoint: provider.origin };
+        const headers = await revisionHeaders({ url, ownerHeaders: () => ({ cookie }) }, '/api/embedding', body);
+        const embedding = await fetch(`${url}/api/embedding`, { method: 'PUT', headers: { cookie, origin: url, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+        if (embedding.status !== 200) throw new Error(`the native seed could not configure embeddings: ${embedding.status} ${await embedding.text()}`);
+        await seedDeployment({ url, projectId: PROJECT_ID, deploymentId, sql, ownerHeaders: () => ({ cookie }), memberHeaders: (extra = {}) => memberHeadersFor(token, PROJECT_ID, extra),
+          primeEmbedding: (projectId) => primeObservedEmbedding(seeding.env, projectId) });
+        await seeding.env.settle();
+      } finally { await seeding.stop(); }
+      upgradeNativeStore(databasePath);
+    } catch (error) { provider.stop(); throw error; }
+  }
   const started = options.stopRace === true || options.receiptSnapshots === true || options.pulledStage===true ? await (async () => {
     const handler = await createBunHandler(serverOptions);
     const restoreStages = options.pulledStage === true ? installPulledStages(PARITY_PULLED_STAGES) : () => {};
@@ -78,7 +103,6 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
   const spans:StatementFrame[]=[];
   const stopObservingSpans=observeStatementSpans(frame=>spans.push(frame));
   const url = `http://127.0.0.1:${started.port}`;
-  const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
 
   return {
     name: 'selfhosted',
@@ -100,7 +124,7 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
     },
     stop: async () => {
       try{await started.stop();}
-      finally{stopObservingSpans();fs.rmSync(root, { recursive: true, force: true });}
+      finally{provider?.stop();stopObservingSpans();fs.rmSync(root, { recursive: true, force: true });}
     },
   };
 }
