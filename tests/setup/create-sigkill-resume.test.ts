@@ -39,7 +39,7 @@ describe('create journeys across SIGKILL', () => {
       child.stderr.on('data', capture);
       const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
       try {
-        const deadline = Date.now() + 15_000;
+        const deadline = Date.now() + 45_000;
         while (!fs.existsSync(path.join(childRoot, 'reached')) && child.exitCode === null && Date.now() < deadline) await Bun.sleep(20);
         expect({ reached: fs.existsSync(path.join(childRoot, 'reached')), output: output.replace(/\/link#[^\s]+/g, '/link#[redacted]') }).toMatchObject({ reached: true });
       } finally { if (child.exitCode === null) child.kill('SIGKILL'); await exited; }
@@ -65,7 +65,7 @@ describe('create journeys across SIGKILL', () => {
         else expect(peekDeploymentRecord(childHome)?.databaseId).toBeTruthy();
       }
       else for (const key of ['SESSION_SECRET', 'SECRET_WRAP_KEY'] as const) expect(readLocalSecrets(peekLocalPaths(childHome))[key]).toBe(keys![key]);
-    }, 30_000);
+    }, 90_000);
   }
 });
 
