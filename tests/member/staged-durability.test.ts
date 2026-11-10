@@ -187,7 +187,12 @@ describe('staged capture durability', () => {
     const event = promptEvent(context(source, 'replay'), { promptId: mintId(), text: LARGE });
     appendPending(repo, 'replay', [event], (state) => { state.prompts.receipt = 'id'; }, opts);
     const target = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
-    const interrupt = spyOn(target, 'appendMovedTurnEnds').mockImplementation(() => { throw new Error('interrupted move'); });
+    const journal = path.join(source.dir, 'replay.jsonl');
+    const rm = fs.rmSync;
+    const interrupt = spyOn(fs, 'rmSync').mockImplementation(((...args: Parameters<typeof fs.rmSync>) => {
+      if (String(args[0]) === journal) throw Object.assign(new Error('interrupted move'), { code: 'EIO' });
+      return rm(...args);
+    }) as typeof fs.rmSync);
     try { expect(() => flushPending(repo.rootKey, target, opts)).toThrow('interrupted move'); }
     finally { interrupt.mockRestore(); }
     expect(source.readRecords('replay')).toHaveLength(1);
