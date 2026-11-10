@@ -15,6 +15,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       full: true
+      enforce_test_headroom: true
 
   report-failure:
     name: Report a failed nightly

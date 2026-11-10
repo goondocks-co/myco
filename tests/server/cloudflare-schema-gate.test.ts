@@ -60,19 +60,19 @@ for(const failure of ['empty','error'])it(`publishes the Worker with a visible i
   });
 });
 
-it('refuses unreadable or newer live schemas before requesting recovery or changing remote resources', async () => {
-  for (const schema of ['0', '', 'NaN', '1.5', String(SERVER_SCHEMA_VERSION + 1)]) {
+for (const schema of ['0', '', 'NaN', '1.5', String(SERVER_SCHEMA_VERSION + 1)]) {
+  it(`refuses unreadable or newer live schemas before requesting recovery or changing remote resources (${JSON.stringify(schema)})`, async () => {
     await fixture({ schema }, async ({ home, update, calls }) => {
       const before = readDeploymentRecord(home);
       await expect(update()).rejects.toThrow();
       expect(readDeploymentRecord(home)).toEqual(before);
       expect(calls().some(({ args }) => args.includes('time-travel') || args[0] === 'vectorize' || args[0] === 'deploy')).toBe(false);
     });
-  }
-});
+  });
+}
 
-it('GATE: recorded create, adopted create and interrupted-create retries admit migrations through the same durable gate', async () => {
-  for (const mode of ['recorded', 'adopted', 'retry'] as const) {
+for (const mode of ['recorded', 'adopted', 'retry'] as const) {
+  it(`GATE: recorded create, adopted create and interrupted-create retries admit migrations through the same durable gate (${mode})`, async () => {
     await fixture({ workerBefore: mode === 'adopted' ? null : OLD_WORKER, migrationExit: mode === 'retry' ? 1 : 0 }, async ({ home, create, calls }) => {
       if (mode === 'adopted') fs.rmSync(deploymentRecordPath(home));
       if (mode === 'retry') {
@@ -85,10 +85,10 @@ it('GATE: recorded create, adopted create and interrupted-create retries admit m
       const commands = calls().map(({ args }) => args.slice(0, 3).join(' '));
       expect(commands.indexOf('d1 migrations apply')).toBeGreaterThan(commands.indexOf('d1 time-travel info'));
     });
-  }
-}, 60_000);
+  }, 60_000);
+}
 
-it('GATE: existing create refuses missing bookmarks, and fresh empty provisioning needs none', async () => {
+it('GATE: existing create refuses missing bookmarks', async () => {
   await fixture({ bookmarkExit: 1 }, async ({ home, create, calls }) => {
     const before = fs.readFileSync(deploymentRecordPath(home), 'utf8');
     await expect(create()).rejects.toThrow('a current D1 Time Travel bookmark is required');
@@ -97,6 +97,9 @@ it('GATE: existing create refuses missing bookmarks, and fresh empty provisionin
     expect(calls().some(({ args }) => args.includes('migrations') || args[0] === 'deploy')).toBe(false);
     expect(readDeploymentRecord(home)!.schemaUpdates).toBeUndefined();
   });
+});
+
+it('GATE: fresh empty provisioning needs no bookmark', async () => {
   await fixture({ fresh: true, schema: '0', bookmarkExit: 1 }, async ({ home, create, calls }) => {
     fs.rmSync(deploymentRecordPath(home));
     await create();
