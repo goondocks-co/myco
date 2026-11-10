@@ -21,6 +21,7 @@
     "pretypecheck:tests": "tsx packages/myco/scripts/gen-worker-bundle.ts",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "prelint": "tsx packages/myco/scripts/gen-worker-bundle.ts",
+    "refresh:node-durations": "node scripts/refresh-node-test-durations.mjs",
     "test": "node scripts/run-bun-tests.mjs",
     "test:parity": "MYCO_PARITY=1 node scripts/run-bun-tests.mjs tests/parity/parity.test.ts",
     "smoke:worker": "bun --no-env-file scripts/smoke-worker-run.ts",

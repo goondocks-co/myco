@@ -312,6 +312,10 @@ jobs:
         run: |
           echo '### Test phase timings' >> "$GITHUB_STEP_SUMMARY"
           find target/test-reports -name '*.log' -type f -exec grep -hE '\[run-bun-tests\] (FINISHED|KILLED)' {} + >> "$GITHUB_STEP_SUMMARY"
+      - name: Node duration drift
+        if: always() && matrix.kind == 'node'
+        continue-on-error: true
+        run: node scripts/report-node-duration-drift.mjs target/test-reports
       - uses: actions/upload-artifact@v7
         if: always()
         with:
