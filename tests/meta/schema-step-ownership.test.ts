@@ -12,6 +12,7 @@ import { VNEXT_S2C_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2c.js';
 import { NEXT_S6B, VNEXT_S6B_STEPS } from '@myco-server-worker/db/schema-vNEXT-s6b.js';
 import { authorityRetentionSchemaStatements } from '@myco-server-worker/db/identity/authority-retention.js';
 import { VNEXT_S2C2_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2c2.js';
+import { VNEXT_S7_STEPS } from '@myco-server-worker/db/schema-vNEXT-s7.js';
 import { SESSION_LIFECYCLE_EVENTS_INDEX, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -124,6 +125,11 @@ const LISTED: readonly Exception[] = [
       reason: sql.startsWith('CREATE TRIGGER') ? 'A registered blob moves the storage usage counters of its Project and the Deployment for every key the build has reached.'
         : 'The object-release drain reads its next page of each release queue from this order.' }];
   }),
+  ...VNEXT_S7_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE TRIGGER(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null ? [] : [{ step, object: match[1]!, table: match[2]!,
+      reason: 'A session\'s activity and new sessions compute their idle-close deadline from the policy generation, so a changed setting rewrites deadlines in pages and never in the write.' }];
+  })),
   ...VNEXT_S2C2_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
     return match === null || match[2] === 'session_statistics' || match[2] === 'session_attachment_counts' || match[2] === 'context_placements' ? [] : [{ step, object: match[1]!, table: match[2]!,
@@ -441,6 +447,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...VNEXT_S6_STATEMENTS.filter(sql => /^INSERT INTO projection_catchup/.test(sql)).map(sql => ({
     step: NEXT_S6, sql, reason: 'Runtime counts stay building until the catch-up has given every existing lineage its head.'
   })),
+  ...VNEXT_S7_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(INSERT INTO learning_quiet_policy|DROP TRIGGER)/.test(sql)).map(sql => ({
+    step, sql, reason: 'Existing deadlines already hold the stored idle close, so the first generation is seeded as active; the triggers that rewrote every session in a settings write go, and the per-row triggers are replaced to follow the generation.'
+  }))),
   ...VNEXT_S2C2_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|DROP INDEX)/.test(sql)).map(sql => ({
     step, sql, reason: 'The session and uncaptured indexes go once a complete order replaces them, and Project statistics add counter columns and are seeded through the shared catch-up.'
   }))),

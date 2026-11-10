@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { capabilityOnSql, learningEnabledSql } from '../../core/settings.js';
+import { capabilityOnSql, learningEnabledSql } from '../../db/settings/admission.js';
 import { read, readSet } from '../index.js';
 
 /** Learning retains raw source until its session has published a live document. */

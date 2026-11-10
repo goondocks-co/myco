@@ -1,5 +1,5 @@
 import { Button, Switch } from '../../../design';
-import { useSetTitlingBackfill, useTitlingBackfill } from '../../../hooks/use-settings';
+import { settingsRefusalText, useSetTitlingBackfill, useSettings, useTitlingBackfill } from '../../../hooks/use-settings';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 import { progressWords } from './titling';
 
@@ -14,6 +14,7 @@ export const TITLING_ANCHOR = 'titling';
 export function TitlingSwitch() {
   const progress = useTitlingBackfill();
   const set = useSetTitlingBackfill();
+  const settings = useSettings();
   const p = progress.data;
   const refused = set.isError;
   const wanted = set.variables;
@@ -49,8 +50,8 @@ export function TitlingSwitch() {
         />
         {refused && (
           <div role="alert" className="flex flex-wrap items-center gap-s2 px-s4 py-s3 t-small text-bad">
-            <span>{`The server didn’t turn titling imported sessions ${wanted ? 'on' : 'off'}.`}</span>
-            <Button size="sm" variant="ghost" disabled={set.isPending} onClick={() => set.mutate(wanted ?? !(p?.backfillEnabled ?? false))}>Try again</Button>
+            <span>{settingsRefusalText(set.error)}</span>
+            <Button size="sm" variant="ghost" disabled={set.isPending || settings.isFetching} onClick={() => set.mutate(wanted ?? !(p?.backfillEnabled ?? false))}>Try again</Button>
           </div>
         )}
         {p !== undefined && (

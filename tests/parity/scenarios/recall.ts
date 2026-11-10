@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
 import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 /** Both unconfigured targets retain independent recall contributors and explicitly skip semantic spores. */
 export const recall: ParityScenario = {
@@ -30,7 +31,7 @@ export const recall: ParityScenario = {
     const admit = async (enabled: boolean) => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/capabilities/cortex`, {
         method: 'PUT',
-        headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+        headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...await revisionHeaders(target, `/api/projects/${target.projectId}/capabilities/cortex`) },
         body: JSON.stringify({ enabled }),
       });
       expect(`cortex ${enabled}: ${res.status}`).toBe(`cortex ${enabled}: 200`);

@@ -14,7 +14,7 @@ import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { TaskInput } from './task-inputs.js';
 import type { PulledStage } from './pulled-stages.js';
 import { sha256Hex } from '../hash.js';
-import { learningEnabledSql } from './settings.js';
+import { learningEnabledSql } from '../db/settings/admission.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { EXTRACTION_RULES } from './extraction-rules.js';
 import { EXTRACTION_REPORT_ACTION } from './run-postconditions.js';

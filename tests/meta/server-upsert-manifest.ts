@@ -416,11 +416,9 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/runs/attributed-writes.ts#<module>': [
     { tables: ['canopy_maps'], order: 'unverified' },
   ],
-    'core/machine-settings.ts#machineBlockFor': [
-    { tables: ['machine_settings_snapshots'], order: 'unverified' },
-  ],
-  'core/machine-settings.ts#setMachineLeaf': [
+  'db/settings/machines.ts#<module>': [
     { tables: ['machine_settings'], order: 'unverified' },
+    { tables: ['machine_settings_snapshots'], order: 'unverified' },
   ],
     'db/release/classification.ts#<module>': [
     { tables: ['knowledge_release_state'], order: 'unverified' },

@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { commitNamed, read, readSet, refusalCode, refused, write, assertion, type Bound } from '../index.js';
+import { read, readSet, write, type Bound } from '../index.js';
 import { jsonKeys } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
 import { FRESH_LEARNING_MS } from '../runs/learning-policy.js';
@@ -11,35 +11,22 @@ const POLICY_MINUTES = '(SELECT minutes FROM learning_quiet_policy WHERE id=1)';
 const PAGE_KEYS = jsonKeys(['project_id', 'session_id']);
 
 /**
- * The idle-close policy generation: a settings writer names a generation and its minutes, the shared catch-up rewrites
- * each session's quiet deadline for that generation in keyed pages, and the generation activates when the walk completes.
- * While a generation builds the deadlines already held keep working; a session not yet visited stays on the previous
- * value and is rewritten when the walk reaches it. An older generation than the held one is refused, so a retried
- * accept cannot overwrite a newer intent.
+ * The idle-close policy generation: the settings commit records a generation and its minutes, the shared catch-up
+ * rewrites each session's quiet deadline for that generation in keyed pages, and the generation activates when the walk
+ * completes. While a generation builds the deadlines already held keep working; a session not yet visited stays on the
+ * effective value and is rewritten when the walk reaches it. A commit that leaves the minutes as they stand records nothing.
  */
-export const QUIET_POLICY_STALE = refusalCode('learning_quiet_policy_stale');
+const record = write<[generation: number, minutes: number, now: number]>({
+  name: 'learningQuietPolicy.record', sql: `INSERT INTO learning_quiet_policy(id,generation,minutes,state,updated_at)
+    SELECT 1,?1,?2,'building',?3 WHERE NOT EXISTS(SELECT 1 FROM learning_quiet_policy WHERE id=1 AND minutes=?2)
+    ON CONFLICT(id) DO UPDATE SET generation=excluded.generation,minutes=excluded.minutes,state='building',updated_at=excluded.updated_at` });
+const restart = write<[generation: number]>({ name: 'learningQuietPolicy.restart', sql: `UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL,generation=generation+1
+    WHERE projection='learning_quiet_policy' AND phase='learningQuietPolicy'
+      AND EXISTS(SELECT 1 FROM learning_quiet_policy WHERE id=1 AND generation=?1)` });
 
-const newer = assertion<[generation: number]>({ name: 'learningQuietPolicy.newer', when: 'NOT EXISTS(SELECT 1 FROM learning_quiet_policy WHERE id=1 AND generation>=?1)', refusal: QUIET_POLICY_STALE });
-const record = write<[generation: number, minutes: number, now: number], { generation: number }>({
-  name: 'learningQuietPolicy.record', sql: `INSERT INTO learning_quiet_policy(id,generation,minutes,state,updated_at) VALUES(1,?1,?2,'building',?3)
-    ON CONFLICT(id) DO UPDATE SET generation=excluded.generation,minutes=excluded.minutes,state='building',updated_at=excluded.updated_at RETURNING generation` });
-const restart = write<[]>({ name: 'learningQuietPolicy.restart', sql: "UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL,generation=generation+1 WHERE projection='learning_quiet_policy' AND phase='learningQuietPolicy'" });
-
-/**
- * Accept a policy generation and start its rebuild. Returns `recorded` for a new generation; `current` when this
- * generation is already held; `stale` for an older one, which changes nothing.
- */
-export async function acceptQuietPolicy(db: RelationalStore, input: { generation: number; minutes: number; now: number }): Promise<'recorded' | 'current' | 'stale'> {
-  const [held] = await readSet(db, policy.bind());
-  if (held[0] !== undefined && held[0].generation === input.generation) return 'current';
-  try {
-    const { accepted } = await commitNamed(db, { admitted: newer.bind(input.generation), accepted: record.bind(input.generation, input.minutes, input.now), restart: restart.bind() });
-    return accepted.results.length > 0 ? 'recorded' : 'stale';
-  } catch (error) {
-    if (refused(error, QUIET_POLICY_STALE)) return 'stale';
-    throw error;
-  }
-}
+/** Statements for the settings commit that changed the idle-close leaf. `generation` grows with each admitted change of that leaf. */
+export const handQuietPolicy = (input: { generation: number; minutes: number; now: number }): readonly Bound[] =>
+  [record.bind(input.generation, input.minutes, input.now), restart.bind(input.generation)];
 
 const quietAt = `CASE WHEN s.ended_at IS NOT NULL THEN 0
   WHEN learning_sessions.source_activity_at+${FRESH_LEARNING_MS}>s.last_received_at THEN MIN(s.last_received_at+60000*${POLICY_MINUTES},learning_sessions.source_activity_at+${FRESH_LEARNING_MS - ADMISSION_MARGIN_MS})
@@ -48,6 +35,7 @@ const rebuild = write<[keys: string]>({ name: 'learningQuietPolicy.rebuildPage',
     quiet_at=COALESCE((SELECT ${quietAt} FROM sessions s WHERE s.project_id=learning_sessions.project_id AND s.session_id=learning_sessions.session_id),0),
     quiet_generation=(SELECT generation FROM learning_quiet_policy WHERE id=1)
   WHERE (project_id,session_id) IN (SELECT project_id,session_id FROM keys)
+    AND EXISTS(SELECT 1 FROM learning_quiet_policy WHERE id=1)
     AND quiet_generation IS NOT (SELECT generation FROM learning_quiet_policy WHERE id=1)` });
 const activate = write<[now: number, walkGeneration: number]>({ name: 'learningQuietPolicy.activate', sql: `UPDATE learning_quiet_policy SET state='active',effective_minutes=minutes,updated_at=?1
   WHERE id=1 AND state='building' AND EXISTS(SELECT 1 FROM projection_catchup WHERE projection='learning_quiet_policy' AND phase='learningQuietPolicy' AND generation=?2)` });

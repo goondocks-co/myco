@@ -32,5 +32,5 @@ export async function handleSetMachineSetting(env: ServerEnv, ctx: OwnerContext)
     : await setMachineLeaf(env.db, machineId, ctx.params.leaf!, body.value, ctx.member.id, ctx.now);
   if (written.applied) return ok({ applied: true });
   if (written.reason === 'absent') return notFound();
-  return Response.json(written, { status: 400 });
+  return Response.json(written, { status: written.reason === 'conflict' ? 409 : 400 });
 }

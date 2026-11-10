@@ -23,8 +23,9 @@ import {
   RETIRED_SECRET_SLOTS,
 } from '../core/settings.js';
 import { effectiveSettings, embeddingChoices, retiredAnswer } from '../core/settings-policies.js';
+import { readQuietPolicy } from '../db/learning/quiet-policy.js';
 import { EMBEDDING_SELECTION_LEAVES } from '../core/embedding/policy.js';
-import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
+import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices, type IdleCloseDeadlines } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
 import { readModelCatalogs, type StoredModelCatalog } from '../core/model-catalogs.js';
@@ -63,22 +64,31 @@ const malformed = (leaf: string, reason: string): Response =>
 /** The time a saved backup setting waits for each follow-up operation before the schedule reconciles it. */
 const RECOVERY_REARM_MS = 5_000;
 
-/** Saved backup settings retain their success response when follow-up work fails. */
-async function rearmRecovery(env: ServerEnv): Promise<void> {
-  const followUp = async (kind: 'recovery_stop_deferred' | 'recovery_wake_deferred', work: () => Promise<void>) => {
-    try { await within(work, RECOVERY_REARM_MS, Date.now); }
-    catch (error) { emit({ kind, ...failureTelemetry(error, env.platform.classifyError) }); }
-  };
-  await followUp('recovery_stop_deferred', () => stopDisabledRecovery(env, Date.now()));
-  const wake = env.wake;
-  if (wake !== undefined) await followUp('recovery_wake_deferred', wake);
+/** A saved setting keeps its success response when the work that follows it fails. */
+async function followUp(env: ServerEnv, kind: 'recovery_stop_deferred' | 'recovery_wake_deferred' | 'idle_close_wake_deferred', work: () => Promise<void>): Promise<void> {
+  try { await within(work, RECOVERY_REARM_MS, Date.now); }
+  catch (error) { emit({ kind, ...failureTelemetry(error, env.platform.classifyError) }); }
 }
 
-/** The writer for this request, judging writes against this Deployment's target. Membership is the whole authorization: the write path still validates, persists, and records the actor in one order. */
-function writerFor(env: ServerEnv) {
+async function rearmRecovery(env: ServerEnv): Promise<void> {
+  await followUp(env, 'recovery_stop_deferred', () => stopDisabledRecovery(env, Date.now()));
+  const wake = env.wake;
+  if (wake !== undefined) await followUp(env, 'recovery_wake_deferred', wake);
+}
+
+/** A saved idle close wakes the catch-up, so the rebuild of session deadlines starts now rather than at the next tick. */
+async function wakeForRebuild(env: ServerEnv): Promise<void> {
+  const wake = env.wake;
+  if (wake !== undefined) await followUp(env, 'idle_close_wake_deferred', wake);
+}
+
+const IDLE_CLOSE_LEAF = 'agent.titling_idle_close_minutes';
+
+/** The writer for this request, judging writes against this Deployment's target. The route's admin role is asserted inside every commit by the store the pipeline hands this module. */
+export function writerFor(env: ServerEnv) {
   return settingsWriter(env.db, { target: env.platform.name, rearm: async ({ leaf }) => {
-    if (leaf !== INTERVAL_SETTING) return;
-    await rearmRecovery(env);
+    if (leaf === INTERVAL_SETTING) await rearmRecovery(env);
+    else if (leaf === IDLE_CLOSE_LEAF) await wakeForRebuild(env);
   } });
 }
 
@@ -129,6 +139,8 @@ export type SettingsLeafRow = {
   error?: 'invalid_value';
   remedy?: string;
   repair?: 'reset-leaf' | 'clean-document';
+  /** Set on the idle-close leaf: the value configured, the one a rebuild is moving to, and the one learning runs on now. */
+  learningDeadlines?: IdleCloseDeadlines;
 } & EffectiveSetting;
 
 /**
@@ -141,6 +153,7 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
   const stored = await settingsWriter(read.db).leaves();
   const revisions = await settingsRevisions(read.db);
   const effective = await effectiveSettings(read);
+  const deadlines = await readQuietPolicy(read.db);
   const leaves = DEPLOYMENT_LEAVES.map((leaf): SettingsLeafRow => {
     const held = stored[leaf];
     const retired = RETIRED_LEAVES.has(leaf);
@@ -161,6 +174,12 @@ async function deploymentSettings(env: ServerEnv, redacted: boolean): Promise<{ 
       ...(leaf === 'agent.tasks' && held !== undefined ? taskOverridesMetadata(held.value) : {}),
       ...(invalid ? { error: 'invalid_value' as const, remedy: answer.reason ?? 'Correct this setting or reset it.' } : {}),
       ...(canClean ? { repair: 'clean-document' as const } : held?.malformed && invalid ? { repair: 'reset-leaf' as const } : {}),
+      ...(leaf === IDLE_CLOSE_LEAF ? { learningDeadlines: {
+        configured: answer.effective as number,
+        pending: deadlines?.pendingMinutes ?? null,
+        effective: deadlines?.effectiveMinutes ?? (answer.effective as number),
+        rebuilding: deadlines?.state === 'building',
+      } } : {}),
     };
   });
   const taskTiers = effectiveTaskTiers(stored['agent.tasks']?.value);
@@ -255,35 +274,45 @@ export const handleMemberSettings = emptyBodyRoute(async (env: ServerEnv, ctx: C
   return ok({ ...deployment, ...(machine === null ? {} : { machine }) });
 });
 
-/** The revision the editor read, supplied as an If-Match header. */
-function expectedSettingRevision(request: Request): number | undefined | null {
-  const text = request.headers.get('if-match');
-  if (text === null) return undefined;
+/** The revision the editor read, supplied as an If-Match header; null where it does not read as one. */
+function expectedSettingRevision(text: string): number | null {
   if (!/^(0|[1-9][0-9]*)$/.test(text)) return null;
   const value = Number(text);
   return Number.isSafeInteger(value) ? value : null;
 }
 
-const invalidRevision = (leaf: string) => malformed(leaf, 'Invalid If-Match; omit the header or use the current revision from GET /api/settings; nothing was saved');
+const REVISION_SOURCE = 'GET /api/settings, or GET /api/projects/{projectId}/capabilities for a Project setting';
 
-type RevisionHandler<Revision> = (env: ServerEnv, ctx: OwnerContext, revision: Revision | undefined) => Promise<Response>;
+/** What a route's If-Match holds: one leaf's revision, and a route that takes more names its own shape. */
+const ONE_REVISION = 'the leaf\'s current revision, a whole number';
+const EMBEDDING_REVISIONS = `an object of the three embedding revisions, such as {${EMBEDDING_SELECTION_LEAVES.map(leaf => `"${leaf}":0`).join(',')}}`;
 
-function withRevision<Revision>(leaf: string | ((ctx: OwnerContext) => string), read: (request: Request) => Revision | undefined | null,
-  handler: RevisionHandler<Revision>): (env: ServerEnv, ctx: OwnerContext) => Promise<Response> {
+const invalidRevision = (leaf: string, shape: string) => malformed(leaf, `Invalid If-Match; send ${shape}, from ${REVISION_SOURCE}; nothing was saved`);
+
+/** A settings write that names no revision: nothing is saved, and the answer says what to read and resend. */
+const revisionRequired = (leaf: string, shape: string): Response => Response.json({
+  applied: false, reason: 'revision_required', leaf,
+  detail: `Every settings change carries the revision it was made against; nothing was saved. Read it from ${REVISION_SOURCE}, then repeat this request with an If-Match header holding ${shape}.`,
+}, { status: 428 });
+
+type RevisionHandler<Revision> = (env: ServerEnv, ctx: OwnerContext, revision: Revision) => Promise<Response>;
+
+function withRevision<Revision>(leaf: string | ((ctx: OwnerContext) => string), read: (text: string) => Revision | null,
+  handler: RevisionHandler<Revision>, shape = ONE_REVISION): (env: ServerEnv, ctx: OwnerContext) => Promise<Response> {
   return async (env, ctx) => {
-    const revision = read(ctx.request);
-    if (revision === null) return invalidRevision(typeof leaf === 'string' ? leaf : leaf(ctx));
-    return handler(env, ctx, revision);
+    const name = typeof leaf === 'string' ? leaf : leaf(ctx);
+    const text = ctx.request.headers.get('if-match');
+    if (text === null) return revisionRequired(name, shape);
+    const revision = read(text);
+    return revision === null ? invalidRevision(name, shape) : handler(env, ctx, revision);
   };
 }
 
-/** Settings mutation routes enforce the editor revision when If-Match is supplied. */
+/** Settings mutation routes refuse a change that does not carry the revision the editor read. */
 export const settingRevisionRoute = (leaf: string | ((ctx: OwnerContext) => string), handler: RevisionHandler<number>) =>
   withRevision(leaf, expectedSettingRevision, handler);
 
-function expectedEmbeddingRevisions(request: Request): Record<string, number> | undefined | null {
-  const text = request.headers.get('if-match');
-  if (text === null) return undefined;
+function expectedEmbeddingRevisions(text: string): Record<string, number> | null {
   let revisions: unknown;
   try { revisions = JSON.parse(text); } catch { return null; }
   const expected = record(revisions);
@@ -314,7 +343,7 @@ export const handleSetEmbedding = withRevision('embedding.provider', expectedEmb
   const choice = choiceOf(body);
   const result = await writerFor(env).setEmbedding(choice, ctx.member.id, ctx.now, revisions);
   return result.applied ? ok({ applied: true }) : refused(result.refusal);
-});
+}, EMBEDDING_REVISIONS);
 
 /** A switch operation's answer: the switch as it now stands, or the refusal in this surface's shape. */
 const switchAnswer = (answer: SwitchAnswer): Response => answer.applied

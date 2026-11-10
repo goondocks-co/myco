@@ -1,4 +1,5 @@
 import { commit, type Bound } from '../db/index.js';
+import { listSecrets, readSecret, type SecretRow } from '../db/settings/secret-rows.js';
 import { putSecret, removeSecret, recordSecretDeletion } from '../db/settings/secret-writes.js';
 import { HARNESS_CREDENTIALS, credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import type { RelationalStore, SecretWrappingKey } from './adapters.js';
@@ -104,7 +105,7 @@ export interface SecretStore {
   get(name: string): Promise<string | null>;
   /** What a settings surface may show. Never returns the value. */
   describe(name: string): Promise<SecretDescription>;
-  /** Every stored secret's description, for the settings surface. */
+  /** Every stored secret's description, including the private slots recovery has to carry. */
   list(): Promise<Array<SecretDescription & { name: string }>>;
   /** `deleted` is false when no row existed under `name`. */
   delete(name: string, actor: string, nowMs: number): Promise<{ deleted: boolean }>;
@@ -120,15 +121,6 @@ export interface SecretStore {
 export function maskSecret(value: string): string | null {
   if (value.length < MASKABLE_MIN) return null;
   return `${value.slice(0, MASK_PREFIX)}…${value.slice(-MASK_SUFFIX)}`;
-}
-
-interface SecretRow {
-  name: string;
-  ciphertext: string;
-  iv: string;
-  key_version: number;
-  updated_at: number;
-  updated_by: string;
 }
 
 /**
@@ -189,11 +181,7 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     return open(importedKey, r);
   };
 
-  const row = (name: string): Promise<SecretRow | null> => db
-    .prepare(`SELECT name, ciphertext, iv, key_version, updated_at, updated_by FROM deployment_secrets WHERE name = ?`)
-    .bind(name)
-    .first<SecretRow>();
-
+  const row = (name: string): Promise<SecretRow | null> => readSecret(db, name);
   /**
    * A row as a surface may see it.
    *
@@ -241,10 +229,7 @@ export function deploymentSecretStore(db: RelationalStore, wrappingKey: SecretWr
     },
 
     async list() {
-      const { results } = await db
-        .prepare(`SELECT name, ciphertext, iv, key_version, updated_at, updated_by FROM deployment_secrets ORDER BY name`)
-        .all<SecretRow>();
-      return Promise.all(results.map(described));
+      return Promise.all((await listSecrets(db)).map(described));
     },
 
     async delete(name, actor, nowMs) {

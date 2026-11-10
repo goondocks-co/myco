@@ -3,6 +3,7 @@ import { REPOSITORY_FAILURE_FEATURE, WORKER_CAPABILITIES } from '@goondocks/myco
 import { FEATURES_HEADER, featureAdvertised } from '@goondocks/myco-shared/member-protocol';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
 import { lit, MEMBER_ID, type ParityScenario } from '../harness.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 export const repositoryFailure: ParityScenario = {
   name: 'repository preparation failure: leased worker metadata reaches runs and work on both targets',
@@ -23,7 +24,7 @@ export const repositoryFailure: ParityScenario = {
       return response.json() as Promise<Record<string, any>>;
     };
     const configured = await fetch(`${target.url}/api/settings/agent.harnesses.claude-code.credential`, {
-      method: 'PUT', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+      method: 'PUT', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...await revisionHeaders(target, '/api/settings/agent.harnesses.claude-code.credential') },
       body: JSON.stringify({ value: 'worker-login' }),
     });
     expect(configured.status).toBe(200);

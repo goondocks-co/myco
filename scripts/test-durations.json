@@ -513,6 +513,7 @@
     "tests/myco-server/live-actor-writes.test.ts": 5000,
     "tests/myco-server/live-worker-writes.test.ts": 1100,
     "tests/myco-server/machine-head-cost.test.ts": 15000,
+    "tests/myco-server/settings-cost.test.ts": 15000,
     "tests/myco-server/machine-heads.test.ts": 9000,
     "tests/myco-server/machine-privacy.test.ts": 2300,
     "tests/myco-server/machine-settings-contract.test.ts": 1314,

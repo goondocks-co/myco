@@ -1,5 +1,6 @@
 import { describe, expect, it, spyOn } from 'bun:test';
-import { CAPABILITY_ON_SQL, enabledCapabilities, PROJECT_CAPABILITIES, settingsWriter } from '@myco-server-worker/core/settings.js';
+import { enabledCapabilities, PROJECT_CAPABILITIES, settingsWriter } from '@myco-server-worker/core/settings.js';
+import { CAPABILITY_ON_SQL } from '@myco-server-worker/db/settings/admission.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';

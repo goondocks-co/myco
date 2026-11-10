@@ -232,6 +232,8 @@ export const RECONCILIATION_FIXTURE = [
   'CREATE TABLE tags(project_id TEXT,entity_kind TEXT,entity_id TEXT,tag TEXT,PRIMARY KEY(project_id,entity_kind,entity_id,tag))',
   'CREATE TABLE machine_claims(machine_id TEXT PRIMARY KEY,member_id TEXT)',
   "INSERT INTO machine_claims VALUES ('machine','member')",
+  'CREATE TABLE members(id TEXT PRIMARY KEY,revoked_at INTEGER)',
+  "INSERT INTO members(id) VALUES ('member')",
   'CREATE TABLE machine_settings(machine_id TEXT,leaf TEXT,value TEXT,updated_at INTEGER,updated_by TEXT,PRIMARY KEY(machine_id,leaf))',
   'CREATE TABLE deployment_settings(leaf TEXT PRIMARY KEY,value TEXT,updated_at INTEGER,updated_by TEXT,write_id TEXT)',
   'CREATE TABLE deployment_setting_resets(leaf TEXT PRIMARY KEY,reset_at INTEGER,reset_by TEXT)',

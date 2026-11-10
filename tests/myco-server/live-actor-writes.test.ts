@@ -4,7 +4,7 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
-import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { OWNER_ENV, ownerCookie, settingsRevisionHeaders } from './helpers/owner.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
 import { runTimeoutForTask } from '@myco-server-worker/core/task-catalogue.js';
@@ -54,7 +54,7 @@ async function setup(onSql?: (sql: string, sqlite: ReturnType<typeof sqliteEnv>[
 async function send(f: ReturnType<typeof sqliteEnv>, operation: Operation, sub = '9002') {
   return worker.fetch(new Request(`https://s${operation.path}`, {
     method: operation.method,
-    headers: { cookie: await ownerCookie(f.db, Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(f.db, Date.now(), sub), origin: 'https://s', 'cf-connecting-ip': '1.2.3.4', 'content-type': 'application/json', ...await settingsRevisionHeaders(f.db, operation.path, operation.body) },
     ...(operation.body === undefined ? {} : { body: JSON.stringify(operation.body) }),
   }), { ...f.env, ...OWNER_ENV, VECTORIZE: indexFixture(), AI: { run: async () => ({ data: [[1, 0]] }) }, HARNESS_LAUNCH_MODE: 'record', SECRET_WRAP_KEY: { get: async () => WRAP_KEY },
     RECOVERY_BUCKET: f.env.BUCKET,

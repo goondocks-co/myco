@@ -244,7 +244,7 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       label={field.label}
       htmlFor={field.kind === 'patterns' ? undefined : id}
       note={field.note}
-      status={error ?? [retired ? 'Nothing on this server reads it any more.' : effectiveWords(field, row, row?.configured ? nameOf(row.updatedBy) : null), !admin && !field.readOnly ? settingPermission.reason : null].filter(Boolean).join(' ')}
+      status={error ?? [retired ? 'Nothing on this server reads it any more.' : effectiveWords(field, row, row?.configured ? nameOf(row.updatedBy) : null), deadlineWords(row?.learningDeadlines), !admin && !field.readOnly ? settingPermission.reason : null].filter(Boolean).join(' ')}
       details={row?.configured ? <>
         <StoredValue value={row.stored} />
         {field.kind === 'json' && JSON.stringify(row.stored) !== JSON.stringify(row.effective) && <StoredValue summary="Effective value" value={row.effective} />}
@@ -262,6 +262,12 @@ function ValueControl({ field, row }: { field: LeafField; row: LeafRow | undefin
       </div> : control}
     />
   );
+}
+
+/** What is in effect while a saved quiet time is reaching existing sessions; nothing to say once it has. */
+export function deadlineWords(deadlines: LeafRow['learningDeadlines']): string | null {
+  if (deadlines === undefined || !deadlines.rebuilding || deadlines.pending === null) return null;
+  return `Sessions Myco hasn’t reached yet still wait ${deadlines.effective} minutes. Myco is moving them to ${deadlines.pending}; new sessions and the ones it has reached already use ${deadlines.pending}.`;
 }
 
 /** The option that clears a preferred agent. */

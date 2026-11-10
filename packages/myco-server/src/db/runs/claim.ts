@@ -27,7 +27,8 @@ import { memberWriteStore, type MemberWriteActor } from '../../auth/member-write
 import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../run-statuses.js';
 import { runOriginSql, contextValue, DISPATCH_ACTOR_SQL } from '../run-context.js';
 import { admissionForTask } from '../../core/task-catalogue.js';
-import { PROJECT_WORK_SQL, CAPABILITY_ON_SQL, settingsWriter } from '../../core/settings.js';
+import { settingsWriter } from '../../core/settings.js';
+import { PROJECT_WORK_SQL, CAPABILITY_ON_SQL } from '../../db/settings/admission.js';
 import { budgetClaimPredicate } from './budget-policy.js';
 import { runDeadlineSql, preparationAllowanceSql, SQL_NOW_MS } from '../../core/run-deadline.js';
 import { runnerWriteRefusal } from '../../auth/runners.js';

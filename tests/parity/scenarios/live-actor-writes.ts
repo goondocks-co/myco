@@ -2,6 +2,7 @@ import { embeddingFixture } from '../embedding/provider.ts';
 import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 const ADMIN = 'mem_live_write_admin';
 const MEMBER = 'mem_live_write_member';
@@ -9,7 +10,7 @@ const TASK = 'title-summary';
 
 async function request(target: ParityTarget, path: string, method: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
   return fetch(`${target.url}${path}`, {
-    method, headers: { ...headers, origin: target.url, 'content-type': 'application/json' },
+    method, headers: { ...headers, origin: target.url, 'content-type': 'application/json', ...(/^\/api\/(settings\/|titling-backfill|embedding$)/.test(path) || /\/capabilities\//.test(path) ? await revisionHeaders(target, path, body) : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 }

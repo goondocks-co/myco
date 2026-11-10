@@ -23,6 +23,7 @@ function refusalWords(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 403) return 'Only the member this machine belongs to can change its settings.';
     if (err.status === 400) return 'The server could not accept those folders.';
+    if (err.status === 409) return 'This changed since the page read it. Review the current value before saving again.';
     return `The server refused (${err.status}).`;
   }
   return 'Could not reach the server.';
@@ -167,7 +168,7 @@ function SettingsBody({ machine, onClose }: { machine: { id: string; name: strin
 
   const clear = useMutation({
     mutationFn: (leaf: string) => putJson(`${settingsPath(machine.id)}/${leaf}`, { value: null, reset: true }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['machine-settings', machine.id] }),
+    onSettled: () => client.invalidateQueries({ queryKey: ['machine-settings', machine.id] }),
   });
   const connections = settings.data?.leaves.find((leaf) => leaf.leaf === 'capture.connect_roots');
   const connectedCount = Object.keys((connections?.nextEffective ?? connections?.effective ?? connections?.value ?? {}) as object).length;

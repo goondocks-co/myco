@@ -4,6 +4,7 @@ import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 type LearningTarget = Pick<ParityTarget, 'url' | 'projectId' | 'memberHeaders' | 'ownerHeaders' | 'sql'>;
 type Claim = { claimed: boolean; reason?: string; run: { id: string; task: string; attemptId: string; runToken: string } };
@@ -24,7 +25,7 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
     ['agent.harnesses.claude-code.credential', 'worker-login'], ['agent.scheduled_tasks_enabled', true],
     ['agent.tasks', { 'title-summary': { schedule: { maxRunsPerDay: 0 } } }], ['agent.budget.daily_usd', 1],
   ] as const) {
-    const response = await request(new Request(`${target.url}/api/settings/${leaf}`, { method: 'PUT', headers: owner, body: JSON.stringify({ value }) }));
+    const response = await request(new Request(`${target.url}/api/settings/${leaf}`, { method: 'PUT', headers: { ...owner, ...await revisionHeaders({ url: target.url, ownerHeaders: () => target.ownerHeaders() }, `/api/settings/${leaf}`, undefined, request) }, body: JSON.stringify({ value }) }));
     expect({ leaf, status: response.status, body: await response.json() }).toMatchObject({ status: 200 });
   }
   await target.sql("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,1)");

@@ -1,7 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { commitNamed, read, readSet, write } from '../index.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
-import { learningEnabledSql } from '../../core/settings.js';
+import { learningEnabledSql } from '../../db/settings/admission.js';
 import { EXTRACTION_TASK } from '../../core/task-catalogue.js';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { FRESH_LEARNING_MS, learningRangeSql } from '../runs/learning-policy.js';

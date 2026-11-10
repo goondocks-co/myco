@@ -2,7 +2,8 @@ import { observedSettingsAssertion } from '../db/meta/settings-observation.js';
 import type { Bound } from '../db/index.js';
 import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';
 import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from './budget-policy.js';
-import { persistSettings, readSettingStates, readProjectEditor, projectCurationLimitSql, readCurationLimit, settingRevisions, observedRevisionPredicate, type SettingState } from '../db/settings/leaves.js';
+import { persistSettings, readEveryLeaf, readLeafValues, readSettingStates, readProjectEditor, projectCurationLimitSql, readCurationLimit, settingRevisions, observedRevisionPredicate, type SettingState } from '../db/settings/leaves.js';
+import { DEFAULT_OFF_CAPABILITIES, capabilityOnSql, projectWorkEnabled, readCapabilities, readCapabilityOn, readRetiredCapabilities } from '../db/settings/admission.js';
 import type { EmbeddingSwitch } from './embedding/switch-store.js';
 import type { PreparedStatement, RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
@@ -39,7 +40,6 @@ import { SWITCH_STANDS_SQL, heldModels } from '../db/embeddings/switch.js';
 /** A capability the Deployment may admit a Project to. */
 export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution', 'spore_curation', 'spore_curation_backfill'] as const;
 export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
-const DEFAULT_OFF_CAPABILITIES: readonly string[] = ['spore_curation', 'spore_curation_backfill'];
 
 /**
  * The rule a leaf's value satisfies at write.
@@ -431,11 +431,11 @@ export const INSTRUCTIONS_TEMPLATE_LEAF = 'instructions.template';
 /** Why a settings write did not apply. */
 export type SettingsRefusal =
   | { reason: 'not_deployment_tier'; leaf: string }
-  | { reason: 'invalid_value'; leaf: string; detail: string }
+  | { reason: 'invalid_value'; leaf: string; detail: string; next?: string }
   | { reason: 'unauthorized'; leaf: string }
   | { reason: 'retired'; leaf: string }
   /** Another write changed the leaves this one is judged against before it landed; nothing is written. */
-  | { reason: 'conflict'; leaf: string; revision: number }
+  | { reason: 'conflict'; leaf: string; actual: number; expected: number; next: string }
   | { reason: 'unknown_capability'; capability: string };
 
 /** A stored leaf: its value and who last wrote it. */
@@ -466,8 +466,22 @@ const admittedChange = (change: Omit<AdmittedSettingsChange, typeof admittedSett
 export const settingsRevisions = (db: RelationalStore, scope = ''): Promise<Record<string, number>> =>
   scope === '' && SNAPSHOT_REVISIONS.has(db) ? Promise.resolve(SNAPSHOT_REVISIONS.get(db)!) : settingRevisions(db, scope);
 
-async function conflict(db: RelationalStore, leaf: string, scope = '', revisionLeaf = leaf): Promise<SettingsResult> {
-  return { applied: false, refusal: { reason: 'conflict', leaf, revision: (await settingRevisions(db, scope))[revisionLeaf] ?? 0 } };
+/** The call that puts a refused write right: read the leaf's current revision, then repeat the change with it. */
+function afterConflict(leaf: string, scope: string, actual: number): string {
+  const repeat = `then repeat this request with If-Match: ${actual}. Nothing was saved.`;
+  if (scope.startsWith('capability:')) return `GET /api/projects/${scope.slice('capability:'.length)}/capabilities and read capabilityRevisions, ${repeat}`;
+  if (scope !== '') return `GET /api/projects/${scope}/capabilities and read revisions, ${repeat}`;
+  if ((EMBEDDING_SELECTION_LEAVES as readonly string[]).includes(leaf)) return `GET /api/settings for each embedding leaf's revision, then repeat this request with those revisions in If-Match (PUT /api/embedding takes all three as a JSON object). Nothing was saved.`;
+  return `GET /api/settings for ${leaf}'s current value and revision, ${repeat}`;
+}
+
+async function conflict(db: RelationalStore, leaf: string, expected: Readonly<Record<string, number>>, scope = ''): Promise<SettingsResult> {
+  const revisions = await settingRevisions(db, scope);
+  const stale = Object.keys(expected).find(name => (revisions[name] ?? 0) !== expected[name]) ?? Object.keys(expected)[0];
+  const named = stale === undefined || scope.startsWith('capability:') ? leaf : stale;
+  const key = stale ?? leaf;
+  const actual = revisions[key] ?? 0;
+  return { applied: false, refusal: { reason: 'conflict', leaf: named, actual, expected: expected[key] ?? actual, next: afterConflict(named, scope, actual) } };
 }
 
 export type SettingsResult = { applied: true } | { applied: false; refusal: SettingsRefusal };
@@ -488,7 +502,7 @@ type ScheduleRearm = (change: { leaf: string }) => Promise<void>;
 /** The embedding selection one write sets: a provider, and its model and endpoint, each left at its default when absent. */
 export interface EmbeddingChoice { provider: unknown; model?: unknown; endpoint?: unknown }
 
-interface SettingsWriter {
+export interface SettingsWriter {
   setProjectLeaf(projectId: string, leaf: string, value: unknown, actor: string, nowMs: number, expectedRevision?: number): Promise<SettingsResult>;
   /** Set one Deployment leaf. */
   setLeaf(leaf: string, value: unknown, actor: string, nowMs: number, expectedRevision?: number): Promise<SettingsResult>;
@@ -515,24 +529,6 @@ interface SettingsWriter {
   capabilities(projectId: string): Promise<Record<ProjectCapability, boolean>>;
   /** Stored admissions for capabilities outside the live set, for read-only inspection. */
   retiredCapabilities(projectId: string): Promise<Record<string, boolean>>;
-}
-
-/**
- * SQL over one leaf's stored text, for an admission that runs inside another
- * module's batch.
- *
- * The settings store is the only module that names its own table, so a check
- * elsewhere reads through this rather than spelling the query itself: one
- * module knows how a leaf is stored, and every admission over a leaf asks it.
- *
- * `admission` holds while the leaf is absent or carries anything but `off`;
- * `read` answers the row that carries it.
- */
-export function leafOffChecks(leaf: string, off: string): { admission: { sql: string; params: string[] }; read: { sql: string; params: string[] } } {
-  return {
-    admission: { sql: `NOT EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = ? AND value = ?)`, params: [leaf, off] },
-    read: { sql: `SELECT 1 AS disabled FROM deployment_settings WHERE leaf = ? AND value = ?`, params: [leaf, off] },
-  };
 }
 
 /** A settings table read once, keyed by leaf. */
@@ -599,11 +595,7 @@ async function leafValues(db: RelationalStore, leaves: readonly string[]): Promi
   if (leaves.length === 0) return new Map();
   const snapshot = SNAPSHOTS.get(db);
   if (snapshot !== undefined) return new Map(leaves.flatMap((leaf) => { const row = snapshot.get(leaf); return row === undefined ? [] : [[leaf, row.value] as const]; }));
-  const rows = await db
-    .prepare(`SELECT leaf, value FROM deployment_settings WHERE leaf IN (${leaves.map(() => '?').join(', ')})`)
-    .bind(...leaves)
-    .all<{ leaf: string; value: string }>();
-  return new Map(rows.results.map((r) => [r.leaf, r.value]));
+  return new Map((await readLeafValues(db, leaves)).map((row) => [row.leaf, row.value]));
 }
 
 /**
@@ -716,7 +708,8 @@ export function judgeEmbeddingChoice(choice: EmbeddingChoice, target: Deployment
 export const switchUnderWay = (model: string): string => `A switch to ${model} is under way. Cancel it under Search embeddings to choose another model`;
 
 /** Judge the selection, then assert its revisions, switch state and held partitions in the write batch. */
-async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | undefined, changes: StoredEmbedding, actor: string, nowMs: number, leaf: string, expectedRevisions?: Readonly<Record<string, number>>): Promise<SettingsResult> {
+async function writeEmbedding(db: RelationalStore, input: { target: DeploymentTarget | undefined; changes: StoredEmbedding; actor: string; now: number; leaf: string; expected?: Readonly<Record<string, number>> }): Promise<SettingsResult> {
+  const { target, changes, actor, now: nowMs, leaf, expected: expectedRevisions } = input;
   if (target === undefined) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'this write names no server type, so the embedding choice cannot be judged' } };
   const underWay = await readSwitch(db);
   if (underWay !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: switchUnderWay(underWay.model) } };
@@ -734,11 +727,15 @@ async function writeEmbedding(db: RelationalStore, target: DeploymentTarget | un
   const refusal = selectionChangeRefusal(resolveEmbedding(before, target).selection, resolved.selection, held);
   if (refusal !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: refusal } };
 
+  const expected = { ...revisions, ...expectedRevisions };
   const written = await persistSettings(db, admittedChange({
-    parts: embeddingWriteParts(parts, before), expected: { ...revisions, ...expectedRevisions },
-    actor, now: nowMs, embeddingEmpty: held.length === 0,
+    parts: embeddingWriteParts(parts, before), expected, actor, now: nowMs, embeddingEmpty: held.length === 0,
   }));
-  return written === 'applied' ? { applied: true } : conflict(db, leaf);
+  if (written === 'switch_started') {
+    const started = await readSwitch(db);
+    return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: switchUnderWay(started?.model ?? 'another model'), next: 'GET /api/embedding/switch shows how far it has got; nothing was saved. Change the selection once it finishes or is cancelled.' } };
+  }
+  return written === 'applied' ? { applied: true } : conflict(db, leaf, expected);
 }
 
 /** Atomically publish a completed selection and end its still-complete switch. */
@@ -753,23 +750,6 @@ export async function writeSwitchedEmbedding(
   return written === 'applied';
 }
 
-/** A Project accepting new intelligence work, with any additional admission bound inside the same read. */
-function projectWorkSql(project: string, admission = ''): string {
-  return `EXISTS (SELECT 1 FROM projects capability_project
-    WHERE capability_project.project_id = ${project} AND capability_project.archived_at IS NULL ${admission})`;
-}
-
-/** A live Project's admission to intelligence work, for the Project the SQL expression `project` names. */
-export const projectAcceptsWorkSql = (project: string): string => projectWorkSql(project);
-
-/** A live Project's admission to intelligence work, bound as: Project. */
-export const PROJECT_WORK_SQL = projectWorkSql('?');
-
-/** Whether a Project accepts new intelligence work. */
-export async function projectWorkEnabled(db: RelationalStore, projectId: string): Promise<boolean> {
-  return (await db.prepare(`SELECT ${PROJECT_WORK_SQL} AS enabled`).bind(projectId).first<{ enabled: number }>())?.enabled === 1;
-}
-
 /** Current task capabilities and live-project admission for the retained run protocol. */
 export async function taskWorkEnabled(db: RelationalStore, projectId: string, task: string | null): Promise<boolean> {
   const gate = task === null ? null : admissionForTask(task);
@@ -777,23 +757,6 @@ export async function taskWorkEnabled(db: RelationalStore, projectId: string, ta
     ? settingsWriter(db).capabilityEnabled(projectId, gate.capability)
     : projectWorkEnabled(db, projectId);
 }
-
-/** Live Projects default on for context, maps and learning; curation capabilities require explicit opt-in. */
-export function capabilityOnSql(project: string, capability: string): string {
-  return projectWorkSql(project, `AND EXISTS (SELECT 1 FROM (SELECT ${capability} AS capability) admitted
-    WHERE COALESCE((SELECT pc.enabled FROM project_capabilities pc
-      WHERE pc.project_id = capability_project.project_id AND pc.capability = admitted.capability),
-      CASE WHEN admitted.capability IN (${DEFAULT_OFF_CAPABILITIES.map(value => `'${value}'`).join(', ')}) THEN 0 ELSE 1 END) = 1)`);
-}
-
-/** An owner has explicitly enabled this Project capability. */
-export function capabilityExplicitlyOnSql(project: string, capability: string): string {
-  return `EXISTS (SELECT 1 FROM project_capabilities pc WHERE pc.project_id = ${project}
-    AND pc.capability = ${capability} AND pc.enabled = 1)`;
-}
-
-/** A capability's admission condition, bound as: Project, capability. */
-export const CAPABILITY_ON_SQL = capabilityOnSql('?', '?');
 
 function requestedCapabilities(capabilities: readonly ProjectCapability[]): string {
   return capabilities.map(() => 'SELECT ? AS capability').join(' UNION ALL ');
@@ -827,7 +790,7 @@ export function settingsWriter(
   const apply = async (leaf: string, change: Omit<AdmittedSettingsChange, typeof admittedSettings>): Promise<SettingsResult> => {
     const outcome = await persistSettings(db, admittedChange(change));
     if (outcome === 'inactive') return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: 'Project is not active' } };
-    if (outcome === 'conflict') return conflict(db, leaf, change.capability ? `capability:${change.project!}` : change.project ?? '', change.capability ? change.parts[0]!.leaf : leaf);
+    if (outcome === 'conflict') return conflict(db, leaf, change.expected, change.capability ? `capability:${change.project!}` : change.project ?? '');
     if (change.parts.length > 0) await rearm({ leaf });
     return { applied: true };
   };
@@ -851,8 +814,10 @@ export function settingsWriter(
     return withLeafWrite({ leaf, value: { task }, actor }, async () => {
       const invalid = validate?.();
       if (invalid != null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail: invalid } };
+      let last: Readonly<Record<string, number>> = {};
       for (let attempt = 0; attempt < TASK_PATCH_ATTEMPTS; attempt++) {
         const { states, expected } = await observed([leaf], attempt === 0 ? expectedRevision : undefined);
+        last = expected;
         let held: unknown = {};
         const text = states.get(leaf)!.value;
         try { if (text !== null) held = JSON.parse(text); }
@@ -871,7 +836,7 @@ export function settingsWriter(
         const written = await apply(leaf, { parts: [{ leaf, value }], expected, actor, now: nowMs });
         if (written.applied || written.refusal.reason !== 'conflict' || expectedRevision !== undefined) return written;
       }
-      return conflict(db, leaf);
+      return conflict(db, leaf, last);
     });
   };
 
@@ -891,8 +856,8 @@ export function settingsWriter(
         if ('type' in spec && spec.type === 'embedding') {
           const detail = leafRuleViolation(spec, value);
           if (detail !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf, detail } };
-          const written = await writeEmbedding(db, opts.target, { [spec.leaf]: value }, actor, nowMs, leaf,
-            expectedRevision === undefined ? undefined : { [leaf]: expectedRevision });
+          const written = await writeEmbedding(db, { target: opts.target, changes: { [spec.leaf]: value }, actor, now: nowMs, leaf,
+            ...(expectedRevision === undefined ? {} : { expected: { [leaf]: expectedRevision } }) });
           if (written.applied) await rearm({ leaf });
           return written;
         }
@@ -923,7 +888,7 @@ export function settingsWriter(
           const violation = value === undefined ? null : embeddingPartViolation(part, value);
           if (violation !== null) return { applied: false, refusal: { reason: 'invalid_value', leaf: part, detail: violation } };
         }
-        const written = await writeEmbedding(db, opts.target, changes, actor, nowMs, leaf, expectedRevisions);
+        const written = await writeEmbedding(db, { target: opts.target, changes, actor, now: nowMs, leaf, ...(expectedRevisions === undefined ? {} : { expected: expectedRevisions }) });
         if (written.applied) for (const part of EMBEDDING_SELECTION_LEAVES) await rearm({ leaf: part });
         return written;
       });
@@ -933,8 +898,8 @@ export function settingsWriter(
       return withLeafWrite({ leaf, actor }, async () => {
         const spec = DEPLOYMENT_LEAF_SPECS[leaf]!;
         if ('type' in spec && spec.type === 'embedding') {
-          const written = await writeEmbedding(db, opts.target, { [spec.leaf]: undefined }, actor, nowMs, leaf,
-            expectedRevision === undefined ? undefined : { [leaf]: expectedRevision });
+          const written = await writeEmbedding(db, { target: opts.target, changes: { [spec.leaf]: undefined }, actor, now: nowMs, leaf,
+            ...(expectedRevision === undefined ? {} : { expected: { [leaf]: expectedRevision } }) });
           if (written.applied) await rearm({ leaf });
           return written;
         }
@@ -1003,9 +968,7 @@ export function settingsWriter(
 
     async leaves() {
       const snapshot = SNAPSHOTS.get(db);
-      const results = snapshot !== undefined ? [...snapshot.entries()].map(([leaf, row]) => ({ ...row, leaf })) : (await db
-        .prepare(`SELECT leaf, value, updated_at, updated_by FROM deployment_settings`)
-        .all<{ leaf: string; value: string; updated_at: number; updated_by: string }>()).results;
+      const results = snapshot !== undefined ? [...snapshot.entries()].map(([leaf, row]) => ({ ...row, leaf })) : await readEveryLeaf(db);
       const out: Record<string, LeafRecord> = {};
       for (const r of results) {
         try {
@@ -1018,80 +981,21 @@ export function settingsWriter(
       return out;
     },
 
-    async capabilityEnabled(projectId, capability) {
-      const row = await db.prepare(`SELECT ${CAPABILITY_ON_SQL} AS enabled`)
-        .bind(projectId, capability).first<{ enabled: number }>();
-      return row?.enabled === 1;
-    },
-
-    async retiredCapabilities(projectId) {
-      const rows = await db.prepare(`SELECT capability, enabled FROM project_capabilities WHERE project_id = ?
-        AND capability NOT IN (${PROJECT_CAPABILITIES.map(() => '?').join(', ')})`).bind(projectId, ...PROJECT_CAPABILITIES)
-        .all<{ capability: string; enabled: number }>();
-      return Object.fromEntries(rows.results.map((row) => [row.capability, row.enabled === 1]));
-    },
-
-    async capabilities(projectId) {
-      const { results } = await db.prepare(
-        `SELECT requested.capability, ${capabilityOnSql('?', 'requested.capability')} AS enabled
-         FROM (${requestedCapabilities(PROJECT_CAPABILITIES)}) requested`,
-      ).bind(projectId, ...PROJECT_CAPABILITIES).all<{ capability: ProjectCapability; enabled: number }>();
-      return Object.fromEntries(results.map((row) => [row.capability, row.enabled === 1])) as Record<ProjectCapability, boolean>;
-    },
+    capabilityEnabled: (projectId, capability) => readCapabilityOn(db, projectId, capability),
+    retiredCapabilities: (projectId) => readRetiredCapabilities(db, projectId, PROJECT_CAPABILITIES),
+    capabilities: async (projectId) => readCapabilities(db, projectId, PROJECT_CAPABILITIES) as Promise<Record<ProjectCapability, boolean>>,
   };
 }
-
-/** An absent task preference enables learning; invalid stored preferences retain its source. */
-function taskEnabledSql(task: typeof EXTRACTION_TASK): string {
-  return `NOT EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.tasks'
-    AND CASE WHEN json_valid(value) THEN json_type(value, '$."${task}".enabled') = 'false' ELSE 0 END)`;
-}
-
-/** The Deployment's automatic learning switch and per-task preference apply together. */
-export function learningEnabledSql(history = false): string {
-  return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'
-      AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)
-    AND ${taskEnabledSql(EXTRACTION_TASK)}${history ? ` AND ${learningHistoryEnabledSql()}` : ''}`;
-}
-
-/** The admitted effective value, evaluated by the automatic claim write. */
-export const effectiveBudgetSql = (): string => `COALESCE((SELECT CASE WHEN json_valid(value) THEN
-  CASE WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$')>=${BUDGET_MINIMUM_USD} AND json_extract(value,'$')<=${Number.MAX_VALUE}
-  THEN json_extract(value,'$') END END FROM deployment_settings WHERE leaf='${BUDGET_LEAF}'),${BUDGET_DEFAULT_USD})`;
 
 export async function dailyBudget(db: RelationalStore): Promise<number> {
   const text=(await settingTexts(db,[BUDGET_LEAF])).get(BUDGET_LEAF);
   return text===undefined?BUDGET_DEFAULT_USD:JSON.parse(text) as number;
 }
 
-/** History learning requires an explicit Deployment opt-in; absence keeps it off. */
-export function learningHistoryEnabledSql(): string {
-  return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.learning_history_enabled'
-    AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)`;
-}
-
 /** The history switch as the learning stages and settings surface both resolve it. */
 export async function learningHistoryEnabled(db: RelationalStore): Promise<boolean> {
   const text = (await settingTexts(db, ['agent.learning_history_enabled'])).get('agent.learning_history_enabled');
   return text !== undefined && JSON.parse(text) === true;
-}
-
-/** The instant this Project opted into curation; missing and disabled switches admit no work. */
-export function curationEnabledAtSql(project: string): string {
-  return `(SELECT updated_at FROM project_capabilities WHERE project_id = ${project} AND capability = 'spore_curation' AND enabled = 1)`;
-}
-
-/** One dirty Project after a saved discovery cursor; admission is checked on that bounded candidate. */
-export function nextCurationProject(db: RelationalStore, after: string): Promise<{ project_id: string } | null> {
-  return db.prepare(`SELECT c.project_id FROM spore_curation_changes c INDEXED BY idx_curation_changes_due
-    WHERE c.dirty=1 AND c.project_id > ? ORDER BY c.project_id LIMIT 1`)
-    .bind(after).first<{ project_id: string }>();
-}
-
-/** Whether any Project explicitly admits curation claims. */
-export function curationAnyEnabledSql(): string {
-  return `EXISTS (SELECT 1 FROM project_capabilities INDEXED BY idx_curation_projects
-    WHERE capability='spore_curation' AND enabled=1 LIMIT 1)`;
 }
 
 export const CURATION_DAILY_LIMIT_LEAF = CURATION_DAILY_LIMIT_SETTING.leaf;

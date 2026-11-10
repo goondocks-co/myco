@@ -195,9 +195,11 @@ test('Settings tier changes the model shown by the real Tasks registry', async (
       for (const leaf of changedLeaves) {
         const saved = original.leaves.find((row) => row.leaf === leaf);
         const restored = await page.evaluate(async ({ leaf, saved }) => {
+          const current = await (await fetch('/api/settings')).json() as { leaves: Array<{ leaf: string; revision: string | number }> };
+          const ifMatch = String(current.leaves.find((row) => row.leaf === leaf)?.revision ?? 0);
           const response = await fetch(`/api/settings/${encodeURIComponent(leaf)}`, saved?.configured
-            ? { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: saved.value }) }
-            : { method: 'DELETE' });
+            ? { method: 'PUT', headers: { 'Content-Type': 'application/json', 'If-Match': ifMatch }, body: JSON.stringify({ value: saved.value }) }
+            : { method: 'DELETE', headers: { 'If-Match': ifMatch } });
           return response.status;
         }, { leaf, saved });
         expect(restored).toBe(200);
