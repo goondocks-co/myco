@@ -2,7 +2,6 @@ import { classify, emit } from '../telemetry.js';
 import { pinBackup } from '../db/storage/backup-pin.js';
 import { readBackupRow, type BackupVerification, type BackupVerificationDetail } from '../db/storage/backup-list.js';
 import { recordBackupVerification } from '../db/storage/backup-verification.js';
-import { EXTRACTION_RECOUNT_PHASE } from '../db/storage/backup-retention.js';
 import { resetProjectionCatchup } from '../db/projections/catchup.js';
 import { restoreRunBodyStatement } from '../db/runs/body-restore.js';
 import {
@@ -12,12 +11,13 @@ import {
 import { excludeDeletedRestoreRows, excludeDeletedSnapshotRows, excludeRetiredRuns, restoreBlobReferences } from './restore-rows.js';
 import { contentAssertion } from './registered-content.js';
 import { eventReferenceStatement } from '../db/event-references.js';
-import { restoreLegacyEventReferences } from '../ingest/document-restore.js';
 import { archivedEventMetadata } from '../db/document-tables.js';
 import { estimateInvalidationStatements } from '../db/meta/budget-estimates.js';
 import { storedDeploymentId, storedSchemaVersion } from '../db/meta/deployment.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { restoreDocuments } from '../ingest/document-restore.js';
+import { holdArtifactForRestore, releaseArtifactAfterRestore } from '../db/storage/restore-hold.js';
+import { LAST_RELEASE_RESTORING_RETIRED_FORMAT } from './retired-format-release.js';
 import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
 import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
@@ -56,7 +56,6 @@ import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureC
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content-restore.js';
 import { clearDeletedParentsStatement } from '../db/sessions/tombstones.js';
-import { prepareRestoredSessionUnread } from '../read/catalog/sessions.js';
 import { restoreExtractionAckStatement } from './extraction-acks.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 import { restoredPin, restoreSchemeDecisions, restoreRecordSchemeDecisions } from '../db/documents/restore-pins.js';
@@ -90,8 +89,8 @@ export const BACKUP_TABLES: readonly string[] = [
   'knowledge_git_provenance', 'session_artifacts', 'turn_cards', ...DOCUMENT_ARTIFACT_TABLES,
 ];
 
-/** Input-only tables whose artifact rows are converted directly to documents. */
-const LEGACY_DOCUMENT_TABLES = ['prompt_batches', 'responses', 'tool_calls', 'fact_classes', 'transcript_parser_state_chunks', 'prompt_key_owners'];
+/** The content tables of the format before session documents; an artifact holding any of their rows is refused as retired. */
+const RETIRED_FORMAT_TABLES: readonly string[] = ['prompt_batches', 'responses', 'tool_calls', 'fact_classes', 'transcript_parser_state_chunks', 'prompt_key_owners'];
 
 /** Artifact names of the content storage schema steps 265 to 464 dropped; their rows are skipped unless they are legacy document input. */
 export const RETIRED_INPUT_TABLES: ReadonlySet<string> = new Set([
@@ -139,7 +138,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',
   'session_read_facts', 'session_served_items', 'project_session_counts', 'session_statistics', 'session_attachment_counts', 'project_session_days', 'context_placements', 'context_placement_days', 'machine_capture_heads',
   'embedding_retirement_queue','embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_calibration_state','embedding_calibration_population','embedding_vector_pages','embedding_provider_holds',
-  'document_due','document_status_totals','document_difference_totals','document_publication_facts','document_due_totals',
+  'document_due','document_status_totals','document_difference_totals','document_publication_facts',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
   ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
@@ -202,6 +201,20 @@ export class BackupApplyError extends Error {
   constructor(readonly table: string, detail: string) {
     super(`the artifact could not be applied at ${table}: ${detail}; committed chunks are preserved; retry the same artifact after resolving the error`);
     this.name = 'BackupApplyError';
+  }
+}
+/**
+ * A backup holding content in the format before session documents. Nothing is restored from it: a backup taken after
+ * the format change restores, or a complete recovery artifact, which carries the stored bytes.
+ */
+export class BackupFormatRetiredError extends Error {
+  readonly code = 'artifact_format_retired';
+  /** The release that still restores this backup, or null while no release has shipped without it. */
+  readonly restoresOn = LAST_RELEASE_RESTORING_RETIRED_FORMAT;
+  constructor(readonly counts: Readonly<Record<string, number>>) {
+    const held = Object.entries(counts).map(([table, rows]) => `${rows} ${table}`).join(', ');
+    super(`artifact_format_retired: this backup holds content in the format before session documents (${held} rows), which this release does not restore, so nothing was restored from it. Restore a backup taken after the format change, or recover the Deployment from a complete recovery artifact with \`myco server restore --from <directory>\`, which carries the stored bytes`);
+    this.name = 'BackupFormatRetiredError';
   }
 }
 /**
@@ -372,7 +385,7 @@ const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): 
 
 /** Admit every table named by the artifact before any restore write. */
 function artifactTable(table: string): void {
-  if (!BACKUP_TABLES.includes(table) && !LEGACY_DOCUMENT_TABLES.includes(table) && !EXCLUDED_TABLES.has(table) && !RETIRED_INPUT_TABLES.has(table) && !RETIRED_TABLES.has(table)) {
+  if (!BACKUP_TABLES.includes(table) && !RETIRED_FORMAT_TABLES.includes(table) && !EXCLUDED_TABLES.has(table) && !RETIRED_INPUT_TABLES.has(table) && !RETIRED_TABLES.has(table)) {
     throw new BackupApplyError(table, 'unknown artifact table');
   }
 }
@@ -387,11 +400,13 @@ function restoreRows(lines: Iterable<string>, header: BackupHeader): {
   const rows: Array<{ t: string; r: Record<string, unknown> }> = [];
   const tables: RestoreOutcome['tables'] = {};
   const retiredCounts: Record<string, number> = {};
+  const retiredFormat: Record<string, number> = {};
   for (const line of lines) {
     if (line.length === 0) continue;
     const row = JSON.parse(line) as { t: string; r: Record<string, unknown> };
     artifactTable(row.t);
-    if ((EXCLUDED_TABLES.has(row.t) || RETIRED_INPUT_TABLES.has(row.t)) && !LEGACY_DOCUMENT_TABLES.includes(row.t)) continue;
+    if (RETIRED_FORMAT_TABLES.includes(row.t)) { retiredFormat[row.t] = (retiredFormat[row.t] ?? 0) + 1; continue; }
+    if (EXCLUDED_TABLES.has(row.t) || RETIRED_INPUT_TABLES.has(row.t)) continue;
     const namespace = row.t === 'knowledge_release_state' ? row.r.namespace : undefined;
     const retiredTable = retiredBackupTable(row.t) ?? retiredBackupTable(namespace);
     if (retiredTable !== undefined) {
@@ -400,6 +415,7 @@ function restoreRows(lines: Iterable<string>, header: BackupHeader): {
       tables[row.t] = { rows: previous + 1, inserted: 0, skipped: 'retired' };
     } else rows.push(row);
   }
+  if (Object.keys(retiredFormat).length > 0) throw new BackupFormatRetiredError(retiredFormat);
   const notice = retiredBackupNotice(retiredCounts);
   return { rows, tables, ...(notice === null ? {} : { retiredNotice: notice }) };
 }
@@ -447,7 +463,7 @@ function revokeForeignAuthority(byTable: ReadonlyMap<string, Record<string, unkn
 }
 
 /** What a restore does to session documents, decided before any write: sessions converted, merged and refused. */
-interface DocumentRestoreSummary { convert: number; merge: number; records: number; refuse: string[] }
+interface DocumentRestoreSummary { convert: number; merge: number }
 /**
  * The document side of a restore: a plan read before any write and atomically published once the rows are restored.
  */
@@ -456,8 +472,6 @@ export interface RestoreDocuments {
     summary: DocumentRestoreSummary; apply(now: number): Promise<void>;
   }>;
 }
-/** The refusal of an artifact whose legacy-classified content a live document may hold under another id. */
-const ARTIFACT_PRECEDENCE_AMBIGUOUS = 'artifact_precedence_ambiguous';
 
 export interface RestoreOutcome {
   danglingEventBlobs?: { table: string; projectId: string; eventId: string; key: string }[];
@@ -670,11 +684,6 @@ export async function restoreArtifact(
         resourceId:event.event_id as string,eventId:event.event_id as string,
         envelopeHash:event.envelope_hash as string,tokenId:event.token_id as string});
     }
-    for (const tool of byTable.get('tool_calls') ?? []) {
-      if (tool.project_id !== row.project_id || tool.input_bundle_id !== row.id) continue;
-      locators.push({projectId:row.project_id as string,entry:tool.input_bundle_entry as number,
-        kind:'tool-input',resourceId:tool.tool_call_id as string,tokenId:tool.token_id as string});
-    }
     try {
       const contents = await verifyBundleArtifact({db,blobs:opts.blobs!},row as Parameters<typeof verifyBundleArtifact>[1],
         byTable.get('registered_content_proofs') ?? [],locators);
@@ -695,13 +704,10 @@ export async function restoreArtifact(
     throw new BackupApplyError('deployment_ownership', 'ownership requires its matching audit receipt');
   }
 
-  const legacyContent = ['session_chunks','prompt_batches', 'responses', 'tool_calls'].some((table) => (byTable.get(table)?.length ?? 0) > 0);
-  if (legacyContent && opts.blobs === undefined) throw new BackupApplyError('documents', 'document restoration requires a content store');
-  const documentRestorer = opts.documents ?? (legacyContent ? restoreDocuments({ db, blobs: opts.blobs! }) : undefined);
+  const documentContent = (byTable.get('session_chunks')?.length ?? 0) > 0;
+  if (documentContent && opts.blobs === undefined) throw new BackupApplyError('documents', 'document restoration requires a content store');
+  const documentRestorer = opts.documents ?? (documentContent ? restoreDocuments({ db, blobs: opts.blobs! }) : undefined);
   const documents = documentRestorer === undefined ? undefined : await documentRestorer.plan(byTable);
-  if (documents !== undefined && documents.summary.refuse.length > 0) {
-    throw new BackupApplyError('documents', `${ARTIFACT_PRECEDENCE_AMBIGUOUS}: sessions ${documents.summary.refuse.join(', ')} hold legacy-classified content their live documents may keep under other ids; restore them through the staged restore`);
-  }
   const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
     ...(retiredRuns.excluded === 0 ? {} : { retiredRunsExcluded: retiredRuns.excluded, retiredNotice: [admitted.retiredNotice, `${retiredRuns.excluded} run${retiredRuns.excluded === 1 ? '' : 's'} this Deployment has removed under retention ${retiredRuns.excluded === 1 ? 'is' : 'are'} left out.`].filter(Boolean).join(' ') }),
     ...(documents === undefined ? {} : { documents: documents.summary }) };
@@ -709,13 +715,7 @@ export async function restoreArtifact(
   await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
   const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
   const hash = await sha256Hex(opts.text);
-  const restoredSessions = new Map<string, { projectId: string; sessionId: string }>();
-  for (const table of ['sessions', 'prompt_batches', 'extraction_acks']) for (const row of byTable.get(table) ?? []) {
-    if (typeof row.project_id === 'string' && typeof row.session_id === 'string') restoredSessions.set(
-      JSON.stringify([row.project_id, row.session_id]), { projectId: row.project_id, sessionId: row.session_id });
-  }
-  const recountPhase = `${EXTRACTION_RECOUNT_PHASE}:${hash}`;
-  const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'prompt_batches', 'responses', 'plans', 'tool_calls'].flatMap((table) => byTable.get(table) ?? []);
+  const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'plans'].flatMap((table) => byTable.get(table) ?? []);
   const sourceRevision = provenance.reduce((max, row) => Math.max(max,
     ...['revision','raw_revision','cutoff_revision'].map((key) => typeof row[key] === 'number' ? row[key] as number : 0)), 0);
   if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0) throw new BackupApplyError('raw_claims', 'invalid raw provenance revision');
@@ -742,8 +742,7 @@ export async function restoreArtifact(
     segments.push(row);
     transcriptSegments.set(identity, segments);
   }
-  if (restoredSessions.size > 0) await db.prepare(`INSERT INTO backup_restore_progress(table_name,artifact_hash,next_row)
-    VALUES(?,?,0) ON CONFLICT(table_name) DO UPDATE SET next_row=0`).bind(recountPhase, hash).run();
+  await holdArtifactForRestore(db, hash);
   for (const table of BACKUP_TABLES) {
     let rows = byTable.get(table) ?? [];
     const artifactRowCount = rows.length;
@@ -975,17 +974,6 @@ export async function restoreArtifact(
       outcome.tables[table] = { ...applied, rows: applied.rows + skipped.rows, skipped: skipped.skipped };
     }
   }
-  if (restoredSessions.size > 0) await db.batch([
-    prepareRestoredSessionUnread(db, JSON.stringify([...restoredSessions.values()])),
-    db.prepare('UPDATE backup_restore_progress SET next_row=1 WHERE table_name=? AND artifact_hash=?').bind(recountPhase, hash),
-  ]);
-  for (const row of byTable.get('tool_calls') ?? []) {
-    if (row.input_bundle_id == null) continue;
-    const restored = restoredBundleIds.get(transcriptIdentity(row.project_id, row.input_bundle_id));
-    if (restored === undefined) throw new BackupApplyError('documents', 'a restored input has no verified bundle');
-    row.input_bundle_id = restored;
-  }
-  await restoreLegacyEventReferences(db,byTable);
   await documents?.apply(restoredAt);
   for (const bundle of restoredBundles) {
     const unused = `NOT (${bundleHeld('?', '?')})`;
@@ -1005,6 +993,7 @@ export async function restoreArtifact(
       if (bundle.inserted && outcome.tables.archive_bundles) outcome.tables.archive_bundles.inserted--;
     }
   }
+  await releaseArtifactAfterRestore(db, hash);
   return outcome;
 }
 

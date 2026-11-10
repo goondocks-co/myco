@@ -36,12 +36,12 @@ IS NOT (${['session_id', ...measures].map(c => `excluded.${c}`).join(',')})`,
   ];
 }
 
+/** Removes the facts of the sessions `keys` names whose document is gone. */
+const factsDelete = (keys: string): string => `DELETE FROM document_publication_facts WHERE (project_id,session_id) IN (${keys})
+AND NOT EXISTS (SELECT 1 FROM session_documents d WHERE (d.project_id,d.session_id)=(document_publication_facts.project_id,document_publication_facts.session_id))`;
+
 /** A generation switch reads the source total and that generation's frontier total. */
-function reconcilePublicationFacts(keys: string): string[] {
-  return [
-    `DELETE FROM document_publication_facts WHERE (project_id,session_id) IN (${keys})
-AND NOT EXISTS (SELECT 1 FROM session_documents d WHERE (d.project_id,d.session_id)=(document_publication_facts.project_id,document_publication_facts.session_id))`,
-    `INSERT INTO document_publication_facts(project_id,session_id,state,due_at,transcripts,bytes,imported,classes)
+const factsUpsert = (keys: string): string => `INSERT INTO document_publication_facts(project_id,session_id,state,due_at,transcripts,bytes,imported,classes)
 SELECT d.project_id,d.session_id,d.state,d.due_at,
 CASE WHEN r.session_id IS NULL THEN COALESCE(held.transcripts,0) WHEN d.state='live' THEN COALESCE(s.pending,0)+COALESCE(f.pending,0) ELSE 0 END,
 CASE WHEN r.session_id IS NULL THEN COALESCE(held.bytes,0) WHEN d.state='live' THEN COALESCE(s.bytes,0)+COALESCE(f.bytes,0) ELSE 0 END,
@@ -56,9 +56,48 @@ WHERE true
 ON CONFLICT(project_id,session_id) DO UPDATE SET
 ${['state','due_at','transcripts','bytes','imported','classes'].map(c => `${c}=excluded.${c}`).join(',')}
 WHERE (${['state','due_at','transcripts','bytes','imported','classes'].map(c => `document_publication_facts.${c}`).join(',')})
-IS NOT (${['state','due_at','transcripts','bytes','imported','classes'].map(c => `excluded.${c}`).join(',')})`,
-  ];
+IS NOT (${['state','due_at','transcripts','bytes','imported','classes'].map(c => `excluded.${c}`).join(',')})`;
+
+/** Reconciles the facts of every session `keys` names, deleting through one set. */
+const reconcilePublicationFacts = (keys: string): string[] => [factsDelete(keys), factsUpsert(keys)];
+
+/**
+ * Reconciles the facts of the sessions each key select names, deleting through one key at a time: a delete through
+ * their union is not sought by the facts key and reads every fact on D1.
+ */
+const reconcileKeyedPublicationFacts = (keys: readonly string[]): string[] => [...keys.map(factsDelete), factsUpsert(keys.join(' UNION '))];
+
+/** The keys of the sessions a write to `table` moves the facts of: its own rows' sessions, and a frontier's transcript's. */
+function factKeys(table: 'transcripts' | 'transcript_publication', rows: readonly string[]): string[] {
+  const keys = affectedKeys(rows, sessionKey, 'session_id');
+  if (table === 'transcript_publication') keys.push(`SELECT t.project_id,t.session_id
+        FROM (${affectedKeys(rows, key, 'transcript_id').join(' UNION ')}) k CROSS JOIN transcripts t
+        ON (t.project_id,t.transcript_id)=(k.project_id,k.transcript_id)`);
+  return keys;
 }
+
+const FACT_FIELDS = {
+  transcripts: ['project_id','session_id','transcript_id','size','imported_at'],
+  transcript_publication: ['project_id','session_id','transcript_id','generation','published_offset'],
+} as const;
+const actionRows = (action: 'insert' | 'update' | 'delete'): string[] => action === 'insert' ? ['NEW'] : action === 'delete' ? ['OLD'] : ['OLD','NEW'];
+
+/** The trigger that moves a transcript's or frontier's contributions and its sessions' facts with each write. */
+function publicationFactTrigger(table: 'transcripts' | 'transcript_publication', action: 'insert' | 'update' | 'delete',
+  facts: (keys: readonly string[]) => string[]): string {
+  const rows = actionRows(action);
+  const fields = FACT_FIELDS[table];
+  return `CREATE TRIGGER IF NOT EXISTS ${table}_facts_${action} AFTER ${action === 'update' ? `UPDATE OF ${fields.join(',')}` : action.toUpperCase()} ON ${table}
+        ${action === 'update' ? `WHEN ${changed(fields)}` : ''} BEGIN
+        ${affectedKeys(rows, key, 'transcript_id').flatMap(reconcilePublicationContributions).join(';')};
+        ${facts(factKeys(table, rows)).join(';')}; END`;
+}
+
+/** The transcript and frontier fact triggers whose session keys are a union, rebuilt to delete facts one key at a time. */
+export const KEYED_PUBLICATION_FACT_TRIGGERS: readonly { name: string; table: string; sql: string }[] = ([
+  ['transcripts', 'update'], ['transcript_publication', 'insert'], ['transcript_publication', 'update'], ['transcript_publication', 'delete'],
+] as const).map(([table, action]) => ({ name: `${table}_facts_${action}`, table,
+  sql: publicationFactTrigger(table, action, reconcileKeyedPublicationFacts).replace(/[ \t]+$/gm, '') }));
 
 function delta(row: string, sign: number, when = '1'): string {
   return `INSERT INTO document_publication_totals(project_id,session_id,kind,generation,${measures.join(',')})
@@ -82,8 +121,8 @@ export function publicationContributionSchema(): string[] {
       kind TEXT NOT NULL CHECK(kind IN ('source','frontier')),generation INTEGER NOT NULL,
       ${measures.map(c => `${c} INTEGER NOT NULL`).join(',')},PRIMARY KEY(project_id,session_id,kind,generation)) WITHOUT ROWID`,
   ];
-  for (const action of ['insert','update','delete']) {
-    const rows = action === 'insert' ? ['NEW'] : action === 'delete' ? ['OLD'] : ['OLD','NEW'];
+  for (const action of ['insert','update','delete'] as const) {
+    const rows = actionRows(action);
     const sameTotal = '(OLD.project_id,OLD.session_id,OLD.kind,OLD.generation) IS (NEW.project_id,NEW.session_id,NEW.kind,NEW.generation)';
     statements.push(`CREATE TRIGGER IF NOT EXISTS publication_contribution_${action} AFTER ${action.toUpperCase()} ON document_publication_contributions BEGIN
       ${action === 'update' ? `INSERT INTO document_publication_totals(project_id,session_id,kind,generation,${measures.join(',')})
@@ -95,18 +134,9 @@ export function publicationContributionSchema(): string[] {
         WHERE (project_id,session_id,kind,generation)=(${row}.project_id,${row}.session_id,${row}.kind,${row}.generation)
           AND ((sources=0 AND bytes=0 AND pending=0 AND imported=0) OR (kind='frontier' AND EXISTS(SELECT 1 FROM session_documents
             WHERE (project_id,session_id)=(${row}.project_id,${row}.session_id) AND generation>${row}.generation)));`).join(' ')} END`);
-    for (const table of ['transcripts','transcript_publication']) {
-      const fields = table === 'transcripts' ? ['project_id','session_id','transcript_id','size','imported_at']
-        : ['project_id','session_id','transcript_id','generation','published_offset'];
-      const factKeys = affectedKeys(rows, sessionKey, 'session_id');
-      if (table === 'transcript_publication') factKeys.push(`SELECT t.project_id,t.session_id
-        FROM (${affectedKeys(rows, key, 'transcript_id').join(' UNION ')}) k CROSS JOIN transcripts t
-        ON (t.project_id,t.transcript_id)=(k.project_id,k.transcript_id)`);
+    for (const table of ['transcripts','transcript_publication'] as const) {
       statements.push(`DROP TRIGGER IF EXISTS ${table}_facts_${action}`);
-      statements.push(`CREATE TRIGGER IF NOT EXISTS ${table}_facts_${action} AFTER ${action === 'update' ? `UPDATE OF ${fields.join(',')}` : action.toUpperCase()} ON ${table}
-        ${action === 'update' ? `WHEN ${changed(fields)}` : ''} BEGIN
-        ${affectedKeys(rows, key, 'transcript_id').flatMap(reconcilePublicationContributions).join(';')};
-        ${reconcilePublicationFacts(factKeys.join(' UNION ')).join(';')}; END`);
+      statements.push(publicationFactTrigger(table, action, (keys) => reconcilePublicationFacts(keys.join(' UNION '))));
     }
     statements.push(`DROP TRIGGER IF EXISTS session_documents_facts_${action}`);
     const fields = ['project_id','session_id','generation','state','due_at','build'];

@@ -612,7 +612,7 @@ test('Git plugin versions survive npm sync, and preparation updates every commit
     for (const file of ['scripts/sync-package-versions.mjs', 'scripts/prepare-plugin-release.mjs',
       'packages/myco/package.json', 'packages/myco/plugin-version.json', 'packages/myco/scripts/release-policy.mjs', 'packages/myco/scripts/install-marker-schema.mjs',
       'packages/myco/scripts/gen-plugin-bundle.ts', 'packages/myco/scripts/codegen-bundle.mjs',
-      'packages/myco/src/plugins/spec.ts', 'packages/myco/skills', 'packages/myco/evals']) {
+      'packages/myco/src/plugins/spec.ts', 'packages/myco/skills', 'packages/myco/evals', 'packages/myco-server/src/core/retired-format-release.ts']) {
       const destination = join(scratch, file);
       fs.mkdirSync(join(destination, '..'), { recursive: true });
       fs.cpSync(file, destination, { recursive: true });
@@ -626,6 +626,15 @@ test('Git plugin versions survive npm sync, and preparation updates every commit
     expect(sync.status, sync.stderr).toBe(0);
     expect(generate(true).status).toBe(0);
     const prepare = (version: string) => spawnSync('node', ['scripts/prepare-plugin-release.mjs', version], { cwd: scratch, encoding: 'utf8' });
+    const retiredFormat = join(scratch, 'packages/myco-server/src/core/retired-format-release.ts');
+    const lastReading = () => /LAST_RELEASE_RESTORING_RETIRED_FORMAT: string \| null = (.+);/.exec(readFileSync(retiredFormat, 'utf8'))?.[1];
+    fs.writeFileSync(retiredFormat, readFileSync(retiredFormat, 'utf8').replace(/(LAST_RELEASE_RESTORING_RETIRED_FORMAT: string \| null = ).+;/, '$1null;'));
+    const replaced = JSON.parse(readFileSync(join(scratch, 'packages/myco/plugin-version.json'), 'utf8')).version;
+    expect(prepare('2.0.0-beta.2').status).toBe(0);
+    // The first release prepared names the one it replaces as the last that restores the retired backup format, once.
+    expect(lastReading()).toBe(JSON.stringify(replaced));
+    expect(prepare('2.0.0-beta.3').status).toBe(0);
+    expect(lastReading()).toBe(JSON.stringify(replaced));
     expect(prepare('2.0.0-beta.2').status).toBe(0);
     expect(generate(true).status).toBe(0);
     for (const client of CLIENTS) {

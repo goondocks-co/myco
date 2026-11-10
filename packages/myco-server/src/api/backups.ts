@@ -13,6 +13,7 @@ import {
   BackupApplyError,
   backupArtifact,
   BackupIntegrityError,
+  BackupFormatRetiredError,
   BackupObjectsMissingError,
   BackupLineageError,
   BackupSchemaError,
@@ -94,6 +95,10 @@ export async function handleVerifyBackup(env: ServerEnv, ctx: OwnerContext): Pro
   }
 }
 
+/** A backup in the format before session documents: nothing was restored, and the answer names the release that restores it. */
+const formatRetired = (err: BackupFormatRetiredError): Response =>
+  Response.json({ error: err.code, message: err.message, retiredRows: err.counts, restoresOn: err.restoresOn }, { status: 409 });
+
 /** What a restore would touch, the authority a foreign-lineage restore lands without, and whether this member may apply its rows. */
 export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   try {
@@ -110,6 +115,7 @@ export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): P
   } catch (err) {
     const refusal = storedArtifactRefusal(err);
     if (refusal !== null) return refusal;
+    if (err instanceof BackupFormatRetiredError) return formatRetired(err);
     if (err instanceof BackupApplyError) return badRequest(err.message);
     if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
     throw err;
@@ -142,6 +148,7 @@ export const handleRestoreBackup = retryablePublicationRestore(async (env: Serve
     if (err instanceof BackupObjectsMissingError) {
       return Response.json({ error: 'objects_missing', message: err.message }, { status: 409 });
     }
+    if (err instanceof BackupFormatRetiredError) return formatRetired(err);
     const refusal = storedArtifactRefusal(err);
     if (refusal !== null) return refusal;
     if (err instanceof BackupApplyError || err instanceof SyntaxError) return badRequest(err.message);
@@ -184,6 +191,7 @@ export const handleRestoreUpload = retryablePublicationRestore(async (env: Serve
     if (err instanceof BackupLineageError) return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
     if (err instanceof BackupSchemaError) return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
     if (err instanceof BackupObjectsMissingError) return Response.json({ error: 'objects_missing', message: err.message }, { status: 409 });
+    if (err instanceof BackupFormatRetiredError) return formatRetired(err);
     if (err instanceof BackupTooLargeError) return badRequest('the artifact is past the byte bound this path serves');
     if (err instanceof BackupApplyError) return badRequest(err.message);
     if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');

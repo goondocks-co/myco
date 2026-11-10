@@ -1,4 +1,5 @@
 import { observeKnowledge, seedKnowledge, type KnowledgeSeed } from './knowledge.ts';
+import { seedLearning } from './learning.ts';
 import { observeMachines, seedMachines, type MachinesSeed } from './machines.ts';
 import { observeRelease, seedRelease, type ReleaseSeed } from './release.ts';
 import { mcp, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
@@ -26,6 +27,7 @@ export async function seedDeployment(target: SeedTarget): Promise<SeededDeployme
   const stamp = Date.now();
   const sessions = await seedSessions(target, stamp);
   const knowledge = await seedKnowledge(target, sessions.captured.sessionId, sessions.word, stamp);
+  await seedLearning(target, stamp);
   const machines = await seedMachines(target, stamp);
   const runs = await seedRuns(target, stamp, sessions.sibling.sessionId);
   const release = await seedRelease(target, stamp);

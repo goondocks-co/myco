@@ -1,6 +1,5 @@
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
-import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
 import { prepareLearningSlice } from './extraction.js';
@@ -22,17 +21,7 @@ async function catalogCapturedPrompts(db: RelationalStore, begin: number, end: n
     .bind(scope.projectId, begin, end).run();
 }
 
-/** Seeds the coverage fixture into `db`, a database holding the current schema. */
-export async function fill(db: RelationalStore, prompts = PROMPTS, acks = ACKS) {
-  await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('coverage-budget','Coverage',1)").run();
-  await ensureAgent(db, { id: 'coverage', name: 'Coverage', provider: null, model: null, enabled: true }, 1);
-  await recordDispatch(db, scope, { id: runId, agentId: 'coverage', task: 'extract-curate', provider: null, model: null,
-    runContext: null, dispatchedBy: null, startedAt: Date.now() });
-  await seedCapturedHistory(db, 0, prompts, prompts);
-  await acknowledgeHistory(db, acks);
-}
-
-export async function acknowledgeHistory(db: RelationalStore, end = ACKS, begin = 0) {
+async function acknowledgeHistory(db: RelationalStore, end = ACKS, begin = 0) {
   for (let start = begin; start < end; start += WRITE_BATCH) {
     const rows = Array.from({ length: Math.min(WRITE_BATCH, end - start) }, (_, offset) => ({ promptId: uuid(start + offset), sessionId: 'session', createdAt: start + offset, endedAt: 1 }));
     const sliceRun = `${runId}-${start}`;

@@ -1,4 +1,3 @@
-import { sessionDocumentUnreadSql } from '../../db/document-tables.js';
 import { readSessionDetail } from '../../db/sessions/publication.js';
 import type { PreparedStatement as sessions_import_PreparedStatement } from "../../core/adapters.js";
 import type { RelationalStore as sessions_import_RelationalStore } from "../../core/adapters.js";
@@ -538,12 +537,6 @@ async function sessions_sessionsWithImportedPrompts(db: sessions_import_Relation
       AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)`)
     .bind(scope.projectId, sessionId).first<sessions_SessionCounts>();
   return row ?? { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 };
-}
-
-export function prepareRestoredSessionUnread(db: sessions_import_RelationalStore, sessions: string) {
-  return db.prepare(`UPDATE session_read_facts SET eligible_prompts =
-  ${sessionDocumentUnreadSql('session_read_facts.project_id','session_read_facts.session_id')}
-  WHERE (project_id, session_id) IN (SELECT json_extract(value, '$.projectId'), json_extract(value, '$.sessionId') FROM json_each(?))`).bind(sessions);
 }
 
 export {

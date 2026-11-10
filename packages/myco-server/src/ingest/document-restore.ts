@@ -1,42 +1,30 @@
-import { eventReferenceStatement } from '../db/event-references.js';
 import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
 import { PublicationRestoreBuilding } from '../db/documents/readiness.js';
-import { materialRecord } from '../content/document-records.js';
 import { isTombstoned, sessionPresent } from '../db/sessions/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { readStoredObject } from '../core/stored-object.js';
 /**
- * Legacy backup content is converted directly into documents. A live document keeps its held records and admits
- * absent authoritative ids. Ambiguous legacy precedence refuses before writes. A converting session's records,
+ * A backup's session documents are restored from its immutable chunks. A session without a live document is converted
+ * from the artifact's snapshot; a live document merges the snapshot's records. A converting session's records,
  * continuation, publication frontier and catalog become live in one transaction.
  */
 import type { PreparedStatement, ServerEnv } from '../core/adapters.js';
-import { sha256Hex, sha256HexOf } from '../hash.js';
+import { sha256HexOf } from '../hash.js';
 import { contentAssertion } from '../core/registered-content.js';
 import { SessionDocument } from '../content/session-pages.js';
 import { generationHasChunks } from '../db/documents/directory.js';
 import { DocumentBatch, publicationStatement, type BatchDocument } from './document-batch.js';
-import { legacyRecord } from './artifact-record.js';
 import type { RestoreDocuments } from '../core/backup.js';
 
-/** The legacy content tables a restore converts, in the order their records are placed: prompts before what names them. */
-const CONTENT = [
-  { table: 'prompt_batches', kind: 'prompt' },
-  { table: 'responses', kind: 'reply' },
-  { table: 'tool_calls', kind: 'tool' },
-  { table: 'plans', kind: 'plan' },
-] as const;
-type ContentKind = (typeof CONTENT)[number]['kind'];
 type Row = Record<string, unknown>;
 
 interface SessionRef { projectId: string; sessionId: string }
 interface ArtifactDocument { records:DocRecord[]; states:Map<string,Row>; owners:DecodedChunk['owners']; plans:Set<string>; frontiers:readonly Row[]; chunks:readonly Row[] }
-type HeldRows = SessionRef & { snapshot?:ArtifactDocument; rows: { kind: ContentKind; row: Row }[]; transcripts?: readonly Row[]; checkpoints?: readonly Row[]; owners?: readonly Row[] };
+type HeldDocument = SessionRef & { snapshot: ArtifactDocument };
 interface DocumentRestorePlan {
-  convert: HeldRows[];
-  merge: HeldRows[];
-  refuse: SessionRef[];
+  convert: HeldDocument[];
+  merge: HeldDocument[];
 }
 const PLAN_STALE = 'restore_plan_stale';
 class RestorePlanStale extends Error {
@@ -108,79 +96,25 @@ async function artifactDocument(env:Pick<ServerEnv,'db'|'blobs'>, tables:Readonl
   return snapshot;
 }
 
-/** Decides each session the artifact holds content for, reading the target before anything is written. */
+/** Decides each session document the artifact holds, reading the target before anything is written. */
 async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, byTable: ReadonlyMap<string, readonly Row[]>): Promise<DocumentRestorePlan> {
-  const legacy = new Set((byTable.get('fact_classes') ?? []).filter((row) => row.class === 'legacy')
-    .map((row) => JSON.stringify([row.project_id, row.table_name, row.record_id])));
-  const artifactSessions = new Set((byTable.get('sessions') ?? []).map(row=>JSON.stringify([row.project_id,row.session_id])));
-  const documented = new Set((byTable.get('session_documents') ?? []).map(row=>JSON.stringify([row.project_id,row.session_id])));
-  const sessions = new Map<string, SessionRef & { rows: { kind: ContentKind; table: string; id: string; row: Row }[] }>();
-  for (const { table, kind } of CONTENT) for (const row of byTable.get(table) ?? []) {
-    if (typeof row.project_id !== 'string' || typeof row.session_id !== 'string') continue;
-    const key = JSON.stringify([row.project_id, row.session_id]);
-    if (kind==='plan' && documented.has(key)) continue;
-    const held = sessions.get(key) ?? { projectId: row.project_id, sessionId: row.session_id, rows: [] };
-    held.rows.push({ kind, table, id: materialRecord(kind,row).id, row });
-    sessions.set(key, held);
-  }
-  const snapshots=new Map<string,ArtifactDocument>();
-  for(const doc of byTable.get('session_documents')??[]){
-    if(typeof doc.project_id!=='string'||typeof doc.session_id!=='string')throw new Error('artifact_document_identity');
-    const key=JSON.stringify([doc.project_id,doc.session_id]);
-    snapshots.set(key,await artifactDocument(env,byTable,doc));
-    if(!sessions.has(key))sessions.set(key,{projectId:doc.project_id,sessionId:doc.session_id,rows:[]});
-  }
-  const plan: DocumentRestorePlan = { convert: [], merge: [], refuse: [] };
-  for (const session of sessions.values()) {
-    const ref = { projectId: session.projectId, sessionId: session.sessionId };
-    if(await isTombstoned(env.db,ref.projectId,ref.sessionId))continue;
-    const key=JSON.stringify([ref.projectId,ref.sessionId]);
-    const snapshot=snapshots.get(key);
-    if(!artifactSessions.has(key) && session.rows.some(({kind})=>kind==='plan') && !await sessionPresent(env.db,ref.projectId,ref.sessionId)) {
-      session.rows=session.rows.filter(({kind})=>kind!=='plan');
-      if(session.rows.length===0 && snapshot===undefined)continue;
-    }
-    const present = await documentIds(env, ref);
-    if (present === null) { plan.convert.push({ ...ref, snapshot, rows: session.rows.map(({ kind, row }) => ({ kind, row })),
-      transcripts: (byTable.get('transcripts') ?? []).filter(row=>row.project_id===ref.projectId&&row.session_id===ref.sessionId),
-      checkpoints: byTable.get('transcript_parser_state_chunks') ?? [],
-      owners: (byTable.get('prompt_key_owners') ?? []).filter(row=>row.project_id===ref.projectId&&row.session_id===ref.sessionId) }); continue; }
-    const absent = session.rows.filter((held) => !present.has(`${held.kind}:${held.id}`));
-    if (absent.some((held) => legacy.has(JSON.stringify([ref.projectId, held.table, held.id])))) plan.refuse.push(ref);
-    else if (absent.length > 0 || snapshot!==undefined) plan.merge.push({ ...ref, snapshot, rows: absent.map(({ kind, row }) => ({ kind, row })) });
+  const plan: DocumentRestorePlan = { convert: [], merge: [] };
+  for (const doc of byTable.get('session_documents') ?? []) {
+    if (typeof doc.project_id !== 'string' || typeof doc.session_id !== 'string') throw new Error('artifact_document_identity');
+    const ref = { projectId: doc.project_id, sessionId: doc.session_id };
+    const snapshot = await artifactDocument(env, byTable, doc);
+    if (await isTombstoned(env.db, ref.projectId, ref.sessionId)) continue;
+    (await documentIds(env, ref) === null ? plan.convert : plan.merge).push({ ...ref, snapshot });
   }
   return plan;
 }
 
-/** Converts an artifact's saved continuation and frontier without replaying its already-restored records. */
-async function artifactFrontiers(batch: DocumentBatch, session: HeldRows): Promise<Row[]> {
-  const rows: Row[]=[];
-  if(session.snapshot!==undefined){
-    for(const [key,state]of session.snapshot.states)batch.writer.states.set(key,state);
-    for(const [key,owner]of session.snapshot.owners??[])batch.writer.owners.set(key,owner);
-    return session.snapshot.frontiers.map(row=>({t:row.transcript_id,o:row.published_offset,l:row.segment_lines,p:row.open_prompt_id,
-      u:row.unfinished,r:row.reply_unfinished,a:row.reply_latest_at,ps:row.prompt_scheme,rs:row.record_scheme,v:row.parser_version,s:row.state,f:row.failure,w:row.awaited_size,n:row.placed_records??null,d:row.placed_digest??null,diag:row.diagnostic??null}));
-  }
-  for(const row of session.transcripts ?? []){
-    let context = typeof row.parser_context==='string' ? JSON.parse(row.parser_context) as Row : null;
-    const state=context?.mycoParserState as Row | undefined;
-    if(state?.chunked === true){
-      const chunks=(session.checkpoints ?? []).filter(chunk=>chunk.project_id===session.projectId&&chunk.transcript_id===row.transcript_id&&chunk.cursor_offset===row.parsed_offset)
-        .sort((a,b)=>Number(a.chunk_index)-Number(b.chunk_index));
-      if(chunks.length===0||chunks.some((chunk,index)=>chunk.chunk_index!==index||chunk.chunk_count!==chunks.length||typeof chunk.payload!=='string')) throw new Error('artifact_checkpoint_incomplete');
-      const encoded=chunks.map(chunk=>String(chunk.payload)).join('');
-      if(await sha256Hex(encoded)!==state.digest)throw new Error('artifact_checkpoint_digest');
-      context={...context,mycoParserState:JSON.parse(encoded)};
-    }
-    if(context!==null)batch.writer.states.set(String(row.transcript_id),context);
-    const error=row.parse_error;
-    rows.push({t:row.transcript_id,o:Number(row.parsed_offset??0),l:Number(row.parse_segment_lines??0),p:row.open_prompt_id??null,
-      u:context?.mycoParserUnfinished===1?1:0,r:context?.mycoParserReplyUnfinished===1?1:0,a:context?.mycoParserReplyLatestAt??null,
-      ps:row.prompt_identity_scheme??null,rs:row.record_identity_scheme??'legacy-session-v1',
-      s:error==null?'active':error==='awaiting_bytes'?'awaiting':'failed',f:error==='awaiting_bytes'?null:error??null,w:row.parse_awaited_size??null});
-  }
-  for(const row of session.owners??[])batch.writer.owners.set(String(row.source_key),{thread:String(row.source_thread),record:String(row.source_record)});
-  return rows;
+/** The artifact's saved continuation, ownership and frontier for a converting session, without replaying its records. */
+function artifactFrontiers(batch: DocumentBatch, snapshot: ArtifactDocument): Row[] {
+  for (const [key, state] of snapshot.states) batch.writer.states.set(key, state);
+  for (const [key, owner] of snapshot.owners ?? []) batch.writer.owners.set(key, owner);
+  return snapshot.frontiers.map(row=>({t:row.transcript_id,o:row.published_offset,l:row.segment_lines,p:row.open_prompt_id,
+    u:row.unfinished,r:row.reply_unfinished,a:row.reply_latest_at,ps:row.prompt_scheme,rs:row.record_scheme,v:row.parser_version,s:row.state,f:row.failure,w:row.awaited_size,n:row.placed_records??null,d:row.placed_digest??null,diag:row.diagnostic??null}));
 }
 
 /** The catalog tables a conversion fills before its flip. */
@@ -188,13 +122,13 @@ const BUILT = ['document_owners','document_continuations','document_plan_keys','
 
 /** Publishes each restored document atomically against its current catalog and frontier. */
 export async function applyDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, plan: DocumentRestorePlan, now: number): Promise<void> {
-  for(const session of [...plan.convert,...plan.merge])for(const chunk of session.snapshot?.chunks??[])await env.db.prepare(`INSERT OR IGNORE INTO retired_objects(project_id,session_id,blob_key,source_id,retired_at) VALUES(?,?,?,?,?)`)
+  for(const session of [...plan.convert,...plan.merge])for(const chunk of session.snapshot.chunks)await env.db.prepare(`INSERT OR IGNORE INTO retired_objects(project_id,session_id,blob_key,source_id,retired_at) VALUES(?,?,?,?,?)`)
     .bind(session.projectId,session.sessionId,chunk.blob_key,chunk.source_id,now).run();
   for (const session of plan.convert) await mergeSession(env, session, now, true);
   for (const session of plan.merge) await mergeSession(env, session, now, false);
 }
 
-async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldRows, now: number, plannedConversion: boolean): Promise<void> {
+async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldDocument, now: number, plannedConversion: boolean): Promise<void> {
   const db = env.db;
   const state = `state=? AND restore_hold IS ? AND (restore_hold IS NULL OR due_at<=?)`;
   const [docs] = await db.batch([
@@ -220,20 +154,9 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
   const batch = new DocumentBatch(env, session.projectId, session.sessionId, doc);
   try { await batch.open(); }
   catch(error) { if(error instanceof PublicationOwnershipBuilding)throw new PublicationRestoreBuilding('ownership',error.failure); throw error; }
-  const frontiers = !plannedConversion&&session.snapshot!==undefined?[]:await artifactFrontiers(batch, session);
-  const order = new Map(CONTENT.map(({ kind }, index) => [kind, index]));
-  const rows = [...session.rows].sort((a, b) => order.get(a.kind)! - order.get(b.kind)! || Number(a.row.created_at) - Number(b.row.created_at));
-  const records:DocRecord[] = [...(session.snapshot?.records??[])];
-  const build = doc.build === null ? {} : JSON.parse(doc.build) as { report?: { classes?: Record<string,number> } };
-  const classes = { ...build.report?.classes };
-  for (const { kind, row } of rows) {
-    const restored = await legacyRecord(env, session.projectId, kind, row);
-    records.push(restored.record);
-    for (const name of restored.classes) classes[name] = (classes[name] ?? 0) + 1;
-  }
-  const diagnostics = Object.keys(classes).length === 0 ? doc.build : JSON.stringify({ ...build, report: { ...build.report, classes } });
-  await batch.place(records, doc.agent);
-  for(const key of session.snapshot?.plans??[])batch.writer.plans.add(key);
+  const frontiers = plannedConversion ? artifactFrontiers(batch, session.snapshot) : [];
+  await batch.place(session.snapshot.records, doc.agent);
+  for(const key of session.snapshot.plans)batch.writer.plans.add(key);
   await batch.commit(batch.writer.changed, 'live', now, (version) => ({
     sql: `${selected}
       AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,
@@ -262,7 +185,7 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldR
         .bind(doc.generation,session.projectId,session.sessionId),
     );
     return { before, after: [...(frontiers.length===0?[]:[publicationStatement(db,session.projectId,session.sessionId,doc.generation,now,frontiers)]), db.prepare(`UPDATE session_documents SET state='live',generation=?,restore_hold=NULL,due_at=0,build=?,${set.sql} WHERE project_id=? AND session_id=?`)
-      .bind(doc.generation, diagnostics, ...set.params, session.projectId, session.sessionId)] };
+      .bind(doc.generation, doc.build, ...set.params, session.projectId, session.sessionId)] };
   });
 }
 
@@ -272,21 +195,9 @@ export function restoreDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>): RestoreD
     async plan(byTable) {
       const plan = await planDocumentRestore(env, byTable);
       return {
-        summary: { convert: plan.convert.length, merge: plan.merge.length, records: plan.merge.reduce((sum, s) => sum + s.rows.length, 0),
-          refuse: plan.refuse.map((s) => s.sessionId) },
+        summary: { convert: plan.convert.length, merge: plan.merge.length },
         apply: (now) => applyDocumentRestore(env, plan, now),
       };
     },
   };
-}
-
-/** Legacy artifact references fill only absent values of events the destination holds. */
-export async function restoreLegacyEventReferences(db: ServerEnv['db'], tables: ReadonlyMap<string, readonly Row[]>): Promise<void> {
-  for(const [table,id,blob] of [['prompt_batches','prompt_id','blob_key'],['responses','response_id','blob_key'],['tool_calls','tool_call_id','input_blob_key']] as const) {
-    for(const row of tables.get(table)??[]) {
-      if(typeof row.event_id!=='string')continue;
-      await eventReferenceStatement(db,{project_id:row.project_id,event_id:row.event_id,session_id:row.session_id,
-        record_id:row[id],blob:row[blob],output_blob:row.output_blob_key},true).all();
-    }
-  }
 }
