@@ -15,7 +15,7 @@ import { documentTurnInput } from '@myco-server-worker/content/turn-material.js'
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { beforeWriteBatch } from './helpers/prepared.js';
+import { sweepChange } from './helpers/store-faults.js';
 import { memberHeaders, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -187,15 +187,21 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(await db.prepare(`SELECT last_completed_reason AS reason FROM learning_sessions WHERE session_id = 'quiet'`).first()).toEqual({ reason: 'no_signal' });
     expect(await runs()).toEqual([{ task: 'turn-cards', subject: null, status: 'completed' }]);
 
-    // The switch turned off after selection refuses the claim's write: no run, no priced attempt.
-    env.db = beforeWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'), async () => { await learning(false); }, true);
-    expect(await poll(at + 1)).toMatchObject({ claimed: false });
-    expect(await db.prepare(`SELECT COUNT(*) AS n FROM agent_run_attempts WHERE run_id <> 'spent'`).first()).toEqual({ n: 0 });
-    env.db = db;
+    // The switch turned off anywhere before the claim stores refuses it: no run, no priced attempt.
+    const attempts = async () => (await db.prepare(`SELECT COUNT(*) AS n FROM agent_run_attempts WHERE run_id <> 'spent'`).first<{ n: number }>())!.n;
+    let cards: Awaited<ReturnType<typeof poll>> | undefined;
+    await sweepChange(db, {
+      request: async (store) => { env.db = store; try { return await poll(at + 1); } finally { env.db = db; } },
+      change: () => learning(false), undo: () => learning(true),
+      stored: async () => (await attempts()) > 0,
+      check: async (result, point) => {
+        if (!point.landed || point.afterStored) { cards = result; return; }
+        expect({ at: point.at, claimed: result.claimed, attempts: await attempts() }).toEqual({ at: point.at, claimed: false, attempts: 0 });
+      },
+    });
     await learning(true);
 
-    const cards = await poll(at + 1);
-    if (!cards.claimed) throw new Error(`no card run: ${cards.reason}`);
+    if (!cards?.claimed) throw new Error(`no card run: ${cards?.reason}`);
     expect(cards.run).toMatchObject({ task: 'turn-cards', profile: { tier: 'low' } });
     const material = await call(cards.run.runToken, 'myco_run_cards', { op: 'material' }) as { revision: string; turns: { turn_key: string; input: string }[] };
     expect(material.turns.map(turn => turn.turn_key)).toEqual([uuid(1), uuid(2), uuid(3), uuid(4)]);

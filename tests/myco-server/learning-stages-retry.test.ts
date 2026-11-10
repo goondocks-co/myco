@@ -9,7 +9,7 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { MATERIAL_CHANGED } from '@myco-server-worker/core/material-pages.js';
 import { readLearningStatus } from '@myco-server-worker/core/learning-sessions.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { beforeWriteBatch } from './helpers/prepared.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { envelope, memberHeaders, memoryBlobStore, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -71,9 +71,10 @@ it('waits for the shared idle window at card and learning claims, rechecks conta
     await catchUpProjections(db, { budget: { calls: 120, wallMs: 60_000 } });
     const idle = NOW + 5 * 60_000;
     expect(await poll(idle - 1)).toMatchObject({ claimed: false });
-    harness.env.db = beforeWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'),
-      () => capture(db, 'quiet-rule', [], 'project', idle), true);
+    const contacted = changingAtStatement(db, 'runs.pulledobservedMemberQuietObserved', () => capture(db, 'quiet-rule', [], 'project', idle));
+    harness.env.db = contacted.store;
     expect(await poll(idle)).toMatchObject({ claimed: false });
+    expect(contacted.landed()).toBe(true);
     expect(await db.prepare('SELECT COUNT(*) AS n FROM agent_runs').first()).toEqual({ n: 0 });
     expect(await db.prepare('SELECT COUNT(*) AS n FROM agent_run_attempts').first()).toEqual({ n: 0 });
     harness.env.db = db;
@@ -100,9 +101,11 @@ it('waits for the shared idle window at card and learning claims, rechecks conta
       .toMatchObject({ persisted: true });
     expect(await dispatchTask(harness.env, 'extract-curate', 'project', { serverUrl: 'https://myco.test', actor: 'mem_worker',
       params: { session_id: 'quiet-rule' } }, at + 4)).toMatchObject({ dispatched: true, queued: true });
-    harness.env.db = beforeWriteBatch(db, sql => sql.includes("SET status = 'running', started_at"),
-      async () => { await db.prepare("UPDATE sessions SET ended_at=NULL,last_received_at=? WHERE session_id='quiet-rule'").bind(at + 4).run(); }, true);
+    const resumed = changingAtStatement(db, 'runs.queuedobservedMemberQuietObserved',
+      async () => { await db.prepare("UPDATE sessions SET ended_at=NULL,last_received_at=? WHERE session_id='quiet-rule'").bind(at + 4).run(); });
+    harness.env.db = resumed.store;
     expect(await poll(at + 4)).toMatchObject({ claimed: false });
+    expect(resumed.landed()).toBe(true);
     harness.env.db = db;
     expect(await db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task='extract-curate' AND status='running'").first()).toEqual({ n: 0 });
     expect(await db.prepare('SELECT COUNT(*) AS n FROM agent_run_attempts').first()).toEqual({ n: 1 });

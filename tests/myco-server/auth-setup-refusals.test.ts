@@ -5,22 +5,22 @@ import { issueIdentityLinkAuthority } from '@myco-server-worker/auth/identity-li
 import { nameMemberFromLogin, revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { failingStatement } from './helpers/store-faults.js';
 
 describe('auth setup refusals', () => {
   it('records the login once, keeps named repeated auth/me reads free of writes, and records a changed login', async () => {
-    const statements: string[] = [];
-    const e = sqliteEnv({ onSql: sql => statements.push(sql) });
+    const e = sqliteEnv();
     try {
       const server = createServer({ now: Date.now, sourceOf: () => '192.0.2.4', fetchImpl: () => { throw new Error('no OAuth'); } });
       const cookie = await ownerCookie(e.db);
       const me = () => server.handleRequest(new Request('https://s/auth/me', { headers: { cookie } }), { ...e.serverEnv, secrets: OWNER_ENV });
       expect((await me()).status).toBe(200);
       expect(e.sqlite.query("SELECT value FROM schema_meta WHERE key = 'github_login:583231'").get()).toEqual({ value: 'octocat' });
-      statements.length = 0;
+      const stored = Buffer.from(e.sqlite.serialize());
       for (let n = 0; n < 2; n++) {
         expect(await (await me()).json()).toMatchObject({ member: { label: 'machine_1' } });
       }
-      expect(statements.filter(sql => /^\s*(UPDATE|INSERT|DELETE|REPLACE)\b/i.test(sql))).toEqual([]);
+      expect(Buffer.from(e.sqlite.serialize()).equals(stored)).toBe(true);
       e.sqlite.run("UPDATE schema_meta SET value = 'old-login' WHERE key = 'github_login:583231'");
       expect((await me()).status).toBe(200);
       expect(e.sqlite.query("SELECT value FROM schema_meta WHERE key = 'github_login:583231'").get()).toEqual({ value: 'octocat' });
@@ -43,10 +43,9 @@ describe('auth setup refusals', () => {
 
   for (const operation of ['link', 'approve'] as const) {
     it(`does not fail ${operation} when the courtesy naming write fails`, async () => {
-      let failures = 0;
-      const e = sqliteEnv({ onSql: sql => {
-        if (sql.startsWith('UPDATE members SET label = ?')) { failures++; throw new Error('naming unavailable'); }
-      } });
+      const e = sqliteEnv();
+      const naming = failingStatement(e.env.MYCO_DB, 'identity.nameFromLogin');
+      e.env.MYCO_DB = naming.store;
       try {
         const now = Date.now();
         const server = createServer({ now: () => now, sourceOf: () => '192.0.2.5', fetchImpl: () => { throw new Error('no OAuth'); } });
@@ -68,7 +67,7 @@ describe('auth setup refusals', () => {
           expect((await post('/api/device/approve', { user_code: grant.user_code })).status).toBe(200);
           expect(await (await post('/auth/device/poll', { device_code: grant.device_code })).json()).toMatchObject({ joined: true, memberId: 'mem_machine_1' });
         }
-        expect(failures).toBe(1);
+        expect(naming.failures()).toBe(1);
       } finally { e.sqlite.close(); }
     });
   }

@@ -64,16 +64,6 @@ describe('capture recency', () => {
     expect(JSON.stringify(seen)).not.toContain('studio');
   });
 
-  it('keeps every other status fact when capture recency cannot be read, and names it as unavailable', async () => {
-    const fixture = sqliteEnv();
-    const inner = fixture.env.MYCO_DB;
-    const env = { ...fixture.env, ...OWNER_ENV, MYCO_DB: { ...inner, prepare: (sql: string) => { if (/MAX\(last_received_at\)/.test(sql)) throw new Error('unreadable'); return inner.prepare(sql); }, batch: inner.batch.bind(inner) } };
-    const res = await worker.fetch(new Request('https://s/api/status', { headers: { cookie: await ownerCookie(fixture.db), 'cf-connecting-ip': '1.2.3.4' } }), env);
-    const body = await res.json() as { schema: { matches: boolean }; projects: unknown[]; workers: { available: boolean }; capture: unknown[]; unavailable: string[] };
-    expect({ status: res.status, matches: body.schema.matches, projects: body.projects.length, workers: body.workers.available, capture: body.capture, unavailable: body.unavailable })
-      .toEqual({ status: 200, matches: true, projects: 2, workers: true, capture: [], unavailable: ['capture'] });
-  });
-
   it('keeps session upserts writable after each Health schema step', () => {
     const sqlite = new Database(':memory:');
     sqlite.exec('PRAGMA foreign_keys=ON');

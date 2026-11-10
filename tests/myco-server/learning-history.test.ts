@@ -15,7 +15,7 @@ import { buildCardInput, LEARNING_STAGES } from '@myco-server-worker/core/learni
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { beforeWriteBatch } from './helpers/prepared.js';
+import { sweepChange } from './helpers/store-faults.js';
 import { legacyWorker } from './helpers/worker-principal.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { envelope, memoryBlobStore, recordingLimiter, uuid } from './helpers/fixtures.js';
@@ -52,6 +52,27 @@ async function workerHarness(db: RelationalStore) {
   const principal = legacyWorker(token.tokenId, 'machine');
   const poll = (now = NOW) => claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
   return { env, blobs, poll, token };
+}
+
+/**
+ * Polls once per point of a claim with learning history switched off just before that call, until the switch goes off
+ * only after the claim stored its run: every earlier claim is refused and stores no run. Answers the run that claim made.
+ */
+async function claimRefusedWhereverHistoryStops(db: RelationalStore, env: { db: RelationalStore }, poll: () => ReturnType<Awaited<ReturnType<typeof workerHarness>>['poll']>, at: number) {
+  const runs = async () => (await db.prepare('SELECT COUNT(*) AS n FROM agent_runs').first<{ n: number }>())!.n;
+  let now = at;
+  let claimed: Awaited<ReturnType<typeof poll>> | undefined;
+  await sweepChange(db, {
+    request: async (store) => { env.db = store; try { return await poll(); } finally { env.db = db; } },
+    change: () => settingsWriter(db).setLeaf(HISTORY, false, 'owner', ++now),
+    undo: () => settingsWriter(db).setLeaf(HISTORY, true, 'owner', ++now),
+    stored: async () => (await runs()) > 0,
+    check: async (result, { at: point, afterStored, landed }) => {
+      if (!landed || afterStored) { expect({ point, claimed: result.claimed }).toEqual({ point, claimed: true }); claimed = result; return; }
+      expect({ point, claimed: result.claimed, runs: await runs() }).toEqual({ point, claimed: false, runs: 0 });
+    },
+  });
+  return claimed!;
 }
 
 async function sourceSession(db: RelationalStore, session: string, activity: number) {
@@ -320,17 +341,14 @@ it('advances repair past unstampable rows without chaining empty pages', async (
   });
 });
 
-it('refuses the history card claim write after the switch is disabled', async () => {
+it('refuses the history card claim wherever the switch is disabled before the claim stores', async () => {
   await withDocumentStores(async db => {
     const { env, poll } = await workerHarness(db);
     await sourceSession(db, 'history', OLD);
     await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards) VALUES('project','history','ready',?,1)").bind(OLD).run();
     await db.prepare("INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,source_activity_at,due_at) VALUES('project','history','old',?,?,?)").bind(OLD, OLD, NOW).run();
     await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
-    env.db = beforeWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'),
-      async () => { await settingsWriter(db).setLeaf(HISTORY, false, 'owner', NOW + 1); }, true);
-    expect(await poll()).toMatchObject({ claimed: false });
-    expect(await db.prepare('SELECT COUNT(*) AS n FROM agent_runs').first()).toEqual({ n: 0 });
+    await claimRefusedWhereverHistoryStops(db, env, () => poll(), NOW);
   });
 });
 
@@ -439,12 +457,8 @@ it('learns the newest history session first and keeps retried learning behind th
     await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
     const selected = (await LEARNING_STAGES[3]!.head(db, 'project', NOW))!;
     expect(selected.key).toBe('newer');
-    env.db = beforeWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'),
-      async () => { await settingsWriter(db).setLeaf(HISTORY, false, 'owner', NOW + 1); }, true);
-    expect(await poll()).toMatchObject({ claimed: false });
-    env.db = db;
+    const claimed = await claimRefusedWhereverHistoryStops(db, env, () => poll(NOW + 2), NOW);
     await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW + 2);
-    const claimed = await poll(NOW + 2);
     expect(claimed).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
     if (!claimed.claimed) throw new Error('claim refused');
     expect(await db.prepare('SELECT subject FROM agent_runs WHERE id=?').bind(claimed.run.id).first())

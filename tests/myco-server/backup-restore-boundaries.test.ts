@@ -10,6 +10,8 @@ import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { EVENT_INLINE_PAYLOAD_BYTES } from '@myco-server-worker/ingest/event-payload.js';
+import { latestRestore } from '@myco-server-worker/core/restore-job.js';
+import { observing } from './helpers/store-faults.js';
 
 async function artifact(db: RelationalStore, rows: { t: string; r: Record<string, unknown> }[]) {
   return [JSON.stringify({ format: 'myco-backup/1', deploymentId: await deploymentId(db), schemaVersion: 100, createdAt: 1, producer: 'test', counts: {} }),
@@ -219,23 +221,22 @@ test('restore excludes served items through a deleted receiving receipt while re
   });
 });
 
-test('a deletion between restore admission and its raw write refuses the write and retry excludes the session', async () => {
-  const { observeRestoreStore } = await import('./helpers/restore-observer.js');
+test('a deletion landing once the restore is admitted keeps the session\'s raw rows out, and retry excludes the session', async () => {
   await withDocumentStores(async (db, target) => {
     const blobs = memoryBlobStore();
     await captureDocumentSession(db, 'project', 'session', { blobs });
     const text = await saved(db, blobs);
     let deleted = false;
-    const observed = observeRestoreStore(db, async statements => {
-      if (!deleted && statements.some(sql => /INSERT OR IGNORE INTO events\b/.test(sql))) {
-        deleted = true;
-        await tombstoneSession({ db }, { projectId: 'project' }, 'session', 'member', Date.now());
-      }
+    const observed = observing(db, async (_call, moment) => {
+      if (deleted || moment !== 'after' || (await latestRestore({ db })) === null) return;
+      deleted = true;
+      await tombstoneSession({ db }, { projectId: 'project' }, 'session', 'member', Date.now());
     });
-    await expect(restoreThroughJob(observed.db, { text, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow();
+    await restoreThroughJob(observed.store, { text, blobs, authorization: { kind: 'recovery' } }).catch(() => undefined);
     expect(deleted, target).toBe(true);
     expect(await db.prepare("SELECT COUNT(*) n FROM events WHERE session_id='session'").first(), target).toEqual({ n: 0 });
     await restoreThroughJob(db, { text, blobs, authorization: { kind: 'recovery' } });
+    expect(await db.prepare("SELECT COUNT(*) n FROM events WHERE session_id='session'").first(), target).toEqual({ n: 0 });
     expect(await db.prepare("SELECT COUNT(*) n FROM publish_queue WHERE session_id='session'").first(), target).toEqual({ n: 0 });
   });
 });

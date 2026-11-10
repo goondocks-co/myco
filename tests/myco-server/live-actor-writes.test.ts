@@ -9,6 +9,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
 import { runTimeoutForTask } from '@myco-server-worker/core/task-catalogue.js';
 import { BACKUP_FORMAT } from '@myco-server-worker/core/backup.js';
+import { changingAt, failingStatement, storingCall } from './helpers/store-faults.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -16,23 +17,23 @@ const MEMBER = 'mem_machine_3';
 const TASK = 'title-summary';
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 
-type Operation = { name: string; method: string; path: string; body?: unknown; sql: RegExp; seed?: string };
+type Operation = { name: string; method: string; path: string; body?: unknown; seed?: string };
 const operations: Operation[] = [
-  { name: 'setting', method: 'PUT', path: '/api/settings/agent.scheduled_tasks_enabled', body: { value: true }, sql: /INSERT INTO deployment_settings/ },
-  { name: 'setting reset', method: 'DELETE', path: '/api/settings/agent.scheduled_tasks_enabled', sql: /DELETE FROM deployment_settings/, seed: `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'true', 1, 'seed')` },
-  { name: 'task tier', method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: TASK, tier: 'high' }, sql: /INSERT INTO deployment_settings/ },
-  { name: 'task repair', method: 'POST', path: '/api/settings/agent.tasks/repair', body: {}, sql: /INSERT INTO deployment_settings/, seed: `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', '{"retired-task":{"enabled":true}}', 1, 'seed')` },
-  { name: 'capability', method: 'PUT', path: '/api/projects/proj_1/capabilities/cortex', body: { enabled: true }, sql: /INSERT INTO project_capabilities/ },
-  { name: 'titling switch', method: 'PUT', path: '/api/titling-backfill', body: { enabled: true }, sql: /INSERT INTO deployment_settings/ },
-  { name: 'project create', method: 'POST', path: '/api/projects', body: { name: 'new project', projectId: 'proj_new' }, sql: /INSERT.*INTO projects/ },
-  { name: 'project rename', method: 'PATCH', path: '/api/projects/proj_1', body: { name: 'new name' }, sql: /UPDATE projects/ },
-  { name: 'project archive', method: 'POST', path: '/api/projects/proj_1/archive', body: {}, sql: /UPDATE projects/ },
-  { name: 'project unarchive', method: 'POST', path: '/api/projects/proj_1/unarchive', body: {}, sql: /UPDATE projects/, seed: `UPDATE projects SET archived_at = 1 WHERE project_id = 'proj_1'` },
-  { name: 'secret', method: 'PUT', path: '/api/secrets/openai', body: { value: 'fixture-value' }, sql: /INSERT INTO deployment_secrets/ },
-  { name: 'backup', method: 'POST', path: '/api/backups', body: {}, sql: /INSERT INTO backups/ },
-  { name: 'recovery forget', method: 'POST', path: '/api/recovery/exports/forget-unsettled', body: {}, sql: /INSERT INTO recovery_forget_commands/ },
-  { name: 'runtime dispatch', method: 'POST', path: '/api/harness/dispatch', body: { task: 'embedding-reconcile', projectId: 'proj_1', fresh: true, timeoutSeconds: 123 }, sql: /INSERT INTO agent_runs/ },
-  { name: 'dispatch', method: 'POST', path: '/api/harness/dispatch', body: { task: TASK, projectId: 'proj_1', fresh: true, timeoutSeconds: 123 }, sql: /INSERT INTO agent_runs/ },
+  { name: 'setting', method: 'PUT', path: '/api/settings/agent.scheduled_tasks_enabled', body: { value: true } },
+  { name: 'setting reset', method: 'DELETE', path: '/api/settings/agent.scheduled_tasks_enabled', seed: `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.scheduled_tasks_enabled', 'true', 1, 'seed')` },
+  { name: 'task tier', method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: TASK, tier: 'high' } },
+  { name: 'task repair', method: 'POST', path: '/api/settings/agent.tasks/repair', body: {}, seed: `INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.tasks', '{"retired-task":{"enabled":true}}', 1, 'seed')` },
+  { name: 'capability', method: 'PUT', path: '/api/projects/proj_1/capabilities/cortex', body: { enabled: true } },
+  { name: 'titling switch', method: 'PUT', path: '/api/titling-backfill', body: { enabled: true } },
+  { name: 'project create', method: 'POST', path: '/api/projects', body: { name: 'new project', projectId: 'proj_new' } },
+  { name: 'project rename', method: 'PATCH', path: '/api/projects/proj_1', body: { name: 'new name' } },
+  { name: 'project archive', method: 'POST', path: '/api/projects/proj_1/archive', body: {} },
+  { name: 'project unarchive', method: 'POST', path: '/api/projects/proj_1/unarchive', body: {}, seed: `UPDATE projects SET archived_at = 1 WHERE project_id = 'proj_1'` },
+  { name: 'secret', method: 'PUT', path: '/api/secrets/openai', body: { value: 'fixture-value' } },
+  { name: 'backup', method: 'POST', path: '/api/backups', body: {} },
+  { name: 'recovery forget', method: 'POST', path: '/api/recovery/exports/forget-unsettled', body: {} },
+  { name: 'runtime dispatch', method: 'POST', path: '/api/harness/dispatch', body: { task: 'embedding-reconcile', projectId: 'proj_1', fresh: true, timeoutSeconds: 123 } },
+  { name: 'dispatch', method: 'POST', path: '/api/harness/dispatch', body: { task: TASK, projectId: 'proj_1', fresh: true, timeoutSeconds: 123 } },
 ];
 
 function snapshot(f: ReturnType<typeof sqliteEnv>) {
@@ -40,11 +41,12 @@ function snapshot(f: ReturnType<typeof sqliteEnv>) {
     .map(table => [table, f.sqlite.query(table === 'members' ? 'SELECT COUNT(*) AS n FROM members' : `SELECT * FROM ${table} ORDER BY rowid`).all()])) };
 }
 
-async function setup(onSql?: (sql: string, sqlite: ReturnType<typeof sqliteEnv>['sqlite']) => void) {
-  const f = sqliteEnv({ workerLogin: true, onSql });
+/** A Deployment with an owner, an admin and a member; `owned: false` leaves the owner to be chosen. */
+async function setup(owned = true) {
+  const f = sqliteEnv({ workerLogin: true });
   f.sqlite.run("UPDATE members SET role = 'admin', github_id = '9002' WHERE id = ?", [ADMIN]);
   f.sqlite.run("UPDATE members SET role = 'member', github_id = '9003' WHERE id = ?", [MEMBER]);
-  await bootstrapOwnership(f.db, OWNER, OWNER, '0', Date.now());
+  if (owned) await bootstrapOwnership(f.db, OWNER, OWNER, '0', Date.now());
   turnOnGatedCapabilities(f.sqlite);
   f.sqlite.run(`INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.reasoning_map.claude-code.default', '"claude-opus-5"', 1, 'seed')`);
   await deploymentSecretStore(f.db, wrappingKeyFromText(async () => WRAP_KEY, 'test')).put('anthropic', 'synthetic-subscription', OWNER, 1);
@@ -65,134 +67,136 @@ async function send(f: ReturnType<typeof sqliteEnv>, operation: Operation, sub =
   });
 }
 
+type Fixture = Awaited<ReturnType<typeof setup>>;
+
+/** Every row these writes touch, in full: what a refused write leaves as it was. */
+function stored(f: Fixture) {
+  return {
+    ...snapshot(f).rows,
+    ...Object.fromEntries(['members', 'deployment_ownership', 'deployment_ownership_audit', 'member_role_audit', 'restore_jobs'].map(table => [table, f.sqlite.query(`SELECT * FROM ${table} ORDER BY rowid`).all()])),
+  };
+}
+
+/**
+ * A request sent on a fresh Deployment with `change` landing just before the call that stores its write: the call is
+ * found on another fresh Deployment by what the uninterrupted request stores, never by the SQL it sends. `fault` wraps
+ * the store under the change, for a second failure after it.
+ */
+async function raced(options: {
+  prepare?: (f: Fixture) => unknown; request: (f: Fixture) => Promise<Response>; change: (f: Fixture) => void;
+  fault?: (f: Fixture) => void; owned?: boolean;
+}): Promise<{ f: Fixture; response: Response; unchanged: () => void; landed: boolean }> {
+  const observed = await setup(options.owned);
+  let at = 0;
+  try {
+    await options.prepare?.(observed);
+    at = await storingCall(observed.env.MYCO_DB, async (store) => { observed.env.MYCO_DB = store; await options.request(observed); }, () => stored(observed));
+  } finally { observed.sqlite.close(); }
+  expect(at).toBeGreaterThan(0);
+  const f = await setup(options.owned);
+  await options.prepare?.(f);
+  const kept = (fixture: Fixture) => {
+    const { members, ...rows } = stored(fixture);
+    return { rows, members: members.length, objects: snapshot(fixture).objects };
+  };
+  const before = kept(f);
+  options.fault?.(f);
+  const landing = changingAt(f.env.MYCO_DB, at, () => options.change(f));
+  f.env.MYCO_DB = landing.store;
+  return { f, response: await options.request(f), unchanged: () => expect(kept(f)).toEqual(before), landed: landing.landed() };
+}
+
 describe('live authority at administrative writes', () => {
   for (const operation of ['owner bootstrap', 'member revoke'] as const) {
     it(`${operation}: late admin demotion preserves its writer's refusal`, async () => {
-      let armed = false;
-      let fired = false;
-      const f = await setup((sql, sqlite) => {
-        const write = operation === 'owner bootstrap' ? /UPDATE deployment_ownership SET member_id/ : /UPDATE members SET revoked_at\s*=/;
-        if (!armed || !write.test(sql)) return;
-        armed = false;
-        fired = true;
-        sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]);
-      });
-      try {
-        if (operation === 'owner bootstrap') f.sqlite.run('UPDATE deployment_ownership SET member_id=NULL, revision=0 WHERE id=1');
-        const before = snapshot(f);
-        const ownership = f.sqlite.query('SELECT * FROM deployment_ownership').all();
-        const audit = f.sqlite.query('SELECT * FROM deployment_ownership_audit').all();
-        armed = true;
-        const response = await send(f, {
-          name: operation, method: 'POST', sql: /unused/,
+      const { f, response, unchanged, landed } = await raced({
+        owned: operation !== 'owner bootstrap',
+        request: f => send(f, {
+          name: operation, method: 'POST',
           path: operation === 'owner bootstrap' ? '/api/ownership' : `/api/members/${MEMBER}/revoke`,
           body: operation === 'owner bootstrap' ? { revision: '0', ownerMemberId: OWNER } : {},
-        });
-        expect(fired).toBe(true);
+        }),
+        change: f => f.sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]),
+      });
+      try {
+        expect(landed).toBe(true);
         expect(response.status).toBe(409);
         expect(await response.json() as Record<string, unknown>).toEqual({ error: operation === 'owner bootstrap' ? 'revision_conflict' : 'last_admin' });
-        expect(snapshot(f)).toEqual(before);
-        expect(f.sqlite.query('SELECT * FROM deployment_ownership').all()).toEqual(ownership);
-        expect(f.sqlite.query('SELECT * FROM deployment_ownership_audit').all()).toEqual(audit);
+        unchanged();
         expect(f.sqlite.query('SELECT revoked_at FROM members WHERE id=?').get(MEMBER)).toEqual({ revoked_at: null });
       } finally { f.sqlite.close(); }
     });
   }
   for (const operation of ['stored restore', 'restore upload'] as const) {
     it(`${operation}: late owner revocation preserves the restore refusal`, async () => {
-      let armed = false;
-      let fired = false;
-      const f = await setup((sql, sqlite) => {
-        if (!armed || !/INSERT INTO restore_reference_guard/.test(sql)) return;
-        armed = false;
-        fired = true;
-        sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [OWNER]);
-      });
-      try {
+      const artifactOf = (f: Fixture) => {
         const lineage = (f.sqlite.query("SELECT value FROM schema_meta WHERE key='deployment_id'").get() as { value: string }).value;
-        const artifact = [
+        return [
           { format: BACKUP_FORMAT, deploymentId: lineage, schemaVersion: 74, createdAt: 1, producer: OWNER, counts: { members: 1 } },
           { t: 'members', r: { id: 'mem_restore_refusal', role: 'admin', github_id: '9004', created_at: 1 } },
         ].map(row => JSON.stringify(row)).join('\n');
-        if (operation === 'stored restore') {
+      };
+      const { f, response, unchanged, landed } = await raced({
+        prepare: async f => {
+          if (operation !== 'stored restore') return;
           const key = 'backups/refusal.jsonl';
-          const bytes = new TextEncoder().encode(artifact);
+          const bytes = new TextEncoder().encode(artifactOf(f));
           await f.bucket.put(key, new Response(bytes).body!);
           f.sqlite.run(`INSERT INTO backups (id,key,created_at,size_bytes,counts_json,schema_version,producer) VALUES ('backup_refusal', ?, 1, ?, '{"members":1}', 74, ?)`, [key, bytes.length, OWNER]);
-        }
-        const before = snapshot(f);
-        armed = true;
-        const response = await send(f, {
-          name: operation, method: 'POST', sql: /unused/,
+        },
+        request: f => send(f, {
+          name: operation, method: 'POST',
           path: operation === 'stored restore' ? '/api/backups/backup_refusal/restore' : '/api/backups/restore-upload',
-          body: operation === 'stored restore' ? {} : { artifact },
-        }, '583231');
-        expect(fired).toBe(true);
+          body: operation === 'stored restore' ? {} : { artifact: artifactOf(f) },
+        }, '583231'),
+        change: f => f.sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [OWNER]),
+      });
+      try {
+        expect(landed).toBe(true);
         expect(response.status).toBe(403);
-        expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_owner' });
-        expect(snapshot(f)).toEqual(before);
+        // The job's commit rechecks the requester as an admin; an earlier check refuses the revoked owner as not the owner.
+        expect(['not_owner', 'not_admin']).toContain((await response.json() as { error: string }).error);
+        unchanged();
       } finally { f.sqlite.close(); }
     });
   }
   for (const operation of ['ownership transfer', 'member role'] as const) {
     it(`${operation}: a late owner revocation preserves its writer's refusal`, async () => {
-      let armed = false;
-      let fired = false;
-      const f = await setup((sql, sqlite) => {
-        const write = operation === 'ownership transfer' ? /UPDATE deployment_ownership SET member_id/ : /UPDATE members SET role/;
-        if (!armed || !write.test(sql)) return;
-        armed = false;
-        fired = true;
-        sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [OWNER]);
+      const { f, response, unchanged, landed } = await raced({
+        request: f => send(f, {
+          method: 'POST', name: operation,
+          path: operation === 'ownership transfer' ? '/api/ownership/transfer' : `/api/members/${ADMIN}/role`,
+          body: {
+            member_id: ADMIN, ...(operation === 'member role' ? { role: 'member' } : {}),
+            expected_revision: operation === 'ownership transfer' ? String((f.sqlite.query('SELECT revision FROM deployment_ownership').get() as { revision: number }).revision) : '0',
+          },
+        }, '583231'),
+        change: f => f.sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [OWNER]),
       });
       try {
-        const before = snapshot(f);
-        const ownership = f.sqlite.query('SELECT * FROM deployment_ownership').all();
-        const audit = f.sqlite.query('SELECT * FROM deployment_ownership_audit').all();
-        const roles = f.sqlite.query('SELECT * FROM member_role_audit').all();
-        const member = f.sqlite.query('SELECT role, role_revision FROM members WHERE id=?').get(ADMIN);
-        const revision = operation === 'ownership transfer'
-          ? String((f.sqlite.query('SELECT revision FROM deployment_ownership').get() as { revision: number }).revision)
-          : '0';
-        armed = true;
-        const response = await send(f, {
-          method: 'POST', sql: /unused/, name: operation,
-          path: operation === 'ownership transfer' ? '/api/ownership/transfer' : `/api/members/${ADMIN}/role`,
-          body: { member_id: ADMIN, expected_revision: revision, ...(operation === 'member role' ? { role: 'member' } : {}) },
-        }, '583231');
-        expect(fired).toBe(true);
+        expect(landed).toBe(true);
         expect(response.status).toBe(409);
         expect(await response.json() as Record<string, unknown>).toEqual({ error: 'revision_conflict' });
-        expect(snapshot(f)).toEqual(before);
-        expect(f.sqlite.query('SELECT * FROM deployment_ownership').all()).toEqual(ownership);
-        expect(f.sqlite.query('SELECT * FROM deployment_ownership_audit').all()).toEqual(audit);
-        expect(f.sqlite.query('SELECT * FROM member_role_audit').all()).toEqual(roles);
-        expect(f.sqlite.query('SELECT role, role_revision FROM members WHERE id=?').get(ADMIN)).toEqual(member);
+        unchanged();
+        expect(f.sqlite.query('SELECT role FROM members WHERE id=?').get(ADMIN)).toEqual({ role: 'admin' });
       } finally { f.sqlite.close(); }
     });
   }
   for (const operation of operations) {
     for (const change of ['demotion', 'revocation'] as const) {
       it(`${operation.name}: ${change} just before the write refuses without changing state`, async () => {
-        let armed = false;
-        let fired = false;
-        const f = await setup((sql, sqlite) => {
-          if (!armed || !operation.sql.test(sql)) return;
-          armed = false;
-          fired = true;
-          sqlite.run(change === 'demotion' ? "UPDATE members SET role='member', role_revision=role_revision+1 WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [ADMIN]);
+        const { f, response, unchanged, landed } = await raced({
+          prepare: f => { if (operation.seed) f.sqlite.exec(operation.seed); },
+          request: f => send(f, operation),
+          change: f => f.sqlite.run(change === 'demotion' ? "UPDATE members SET role='member', role_revision=role_revision+1 WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [ADMIN]),
         });
         try {
-          if (operation.seed) f.sqlite.exec(operation.seed);
-          const before = snapshot(f);
-          armed = true;
-          const response = await send(f, operation);
-          expect(fired).toBe(true);
+          expect(landed).toBe(true);
           expect(response.status).toBe(403);
           expect(await response.json() as Record<string, unknown>).toEqual(operation.path === '/api/harness/dispatch'
             ? { error: 'fresh_needs_admin' }
             : { error: 'not_admin', reason: 'this action is for an admin' });
-          expect(snapshot(f)).toEqual(before);
+          unchanged();
           expect(f.sqlite.query('SELECT role, revoked_at FROM members WHERE id=?').get(ADMIN)).toMatchObject(change === 'demotion' ? { role: 'member' } : { revoked_at: 1 });
         } finally { f.sqlite.close(); }
       });
@@ -214,48 +218,40 @@ describe('live authority at administrative writes', () => {
 
   for (const fault of ['read', 'delete'] as const) {
     it(`backup cleanup ${fault} failure preserves the terminal admin refusal and surfaces cleanup failure`, async () => {
-      let armed = false;
-      let demoted = false;
-      const f = await setup((sql, sqlite) => {
-        if (armed && /INSERT INTO backups/.test(sql)) {
-          armed = false;
-          demoted = true;
-          sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]);
-        }
-        if (demoted && fault === 'read' && /SELECT 1 FROM backups WHERE key/.test(sql)) throw new Error('fixture cleanup read failure');
-      });
       const log = console.log;
       const events: string[] = [];
+      console.log = line => { events.push(String(line)); };
       try {
-        if (fault === 'delete') f.bucket.delete = async () => { throw new Error('fixture cleanup delete failure'); };
-        console.log = line => { events.push(String(line)); };
-        armed = true;
-        const response = await send(f, operations.find(operation => operation.name === 'backup')!);
-        expect(demoted).toBe(true);
-        expect(response.status).toBe(403);
-        expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
-        expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);
-        expect(events.map(line => JSON.parse(line) as { kind: string })).toContainEqual(expect.objectContaining({ kind: 'backup_publication_cleanup_failed' }));
-      } finally { console.log = log; f.sqlite.close(); }
+        const { f, response, landed } = await raced({
+          request: f => send(f, operations.find(operation => operation.name === 'backup')!),
+          change: f => f.sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]),
+          fault: f => {
+            if (fault === 'read') f.env.MYCO_DB = failingStatement(f.env.MYCO_DB, 'storage.backupObjectRegistered').store;
+            else f.bucket.delete = async () => { throw new Error('fixture cleanup delete failure'); };
+          },
+        });
+        try {
+          expect(landed).toBe(true);
+          expect(response.status).toBe(403);
+          expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
+          expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);
+          expect(events.map(line => JSON.parse(line) as { kind: string })).toContainEqual(expect.objectContaining({ kind: 'backup_publication_cleanup_failed' }));
+        } finally { f.sqlite.close(); }
+      } finally { console.log = log; }
     });
   }
 
   for (const change of ['demotion', 'revocation'] as const) {
     it(`ordinary dispatch refuses ${change} instead of using cached admin timeout and ceiling`, async () => {
-      let armed = false;
-      const f = await setup((sql, sqlite) => {
-        if (!armed || !/INSERT INTO agent_runs/.test(sql)) return;
-        armed = false;
-        sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [ADMIN]);
+      const { f, response, unchanged, landed } = await raced({
+        request: f => send(f, { ...operations.find(value => value.name === 'dispatch')!, body: { task: TASK, projectId: 'proj_1', timeoutSeconds: 123 } }),
+        change: f => f.sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [ADMIN]),
       });
       try {
-        const before = snapshot(f);
-        armed = true;
-        const response = await send(f, { ...operations.find(value => value.name === 'dispatch')!, body: { task: TASK, projectId: 'proj_1', timeoutSeconds: 123 } });
-        expect(armed).toBe(false);
+        expect(landed).toBe(true);
         expect(response.status).toBe(403);
         expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
-        expect(snapshot(f)).toEqual(before);
+        unchanged();
       } finally { f.sqlite.close(); }
     });
   }

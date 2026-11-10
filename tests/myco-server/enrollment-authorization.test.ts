@@ -5,6 +5,7 @@ import { EnrollmentAuthorizationError, issueEnrollmentAuthority } from '@myco-se
 import { PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { changingAt, counting } from './helpers/store-faults.js';
 
 const NOW = Date.now();
 const MEMBERS = {
@@ -16,8 +17,8 @@ type Issuer = keyof typeof MEMBERS;
 type Target = 'new' | Issuer;
 type RequestedRole = 'omitted' | 'member' | 'admin';
 
-function rig(onSql?: (sql: string, sqlite: ReturnType<typeof sqliteEnv>['sqlite']) => void) {
-  const e = sqliteEnv(onSql === undefined ? {} : { onSql });
+function rig() {
+  const e = sqliteEnv();
   e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_1', revision = 1 WHERE id = 1");
   e.sqlite.run("UPDATE members SET github_id = '770001', role = 'member' WHERE id = 'mem_machine_2'");
   e.sqlite.run("UPDATE members SET github_id = '770003', role = 'admin' WHERE id = 'mem_machine_3'");
@@ -38,6 +39,8 @@ function rig(onSql?: (sql: string, sqlite: ReturnType<typeof sqliteEnv>['sqlite'
   const counts = () => ({ invitations: count('enrollment_authorities'), credentials: count('member_credentials'), claims: count('machine_claims') });
   return { e, env, server, invite, join, counts, close: () => e.sqlite.close() };
 }
+
+type Rig = ReturnType<typeof rig>;
 
 const json = async (response: Response) => (await response.json()) as Record<string, unknown>;
 
@@ -159,23 +162,6 @@ describe('enrollment resulting-authority policy', () => {
 });
 
 describe('enrollment authority stays live through redemption', () => {
-  for (const target of ['issuer', 'recipient'] as const) {
-    it(`refuses a ${target} revocation at the invitation INSERT`, async () => {
-      let changed = false;
-      const r = rig((sql, sqlite) => {
-        if (!changed && /INSERT INTO enrollment_authorities/i.test(sql)) {
-          changed = true;
-          sqlite.run('UPDATE members SET revoked_at = ? WHERE id = ?', [NOW, MEMBERS[target === 'issuer' ? 'admin' : 'member'].id]);
-        }
-      });
-      try {
-        const before = r.counts();
-        expect((await r.invite('admin', target === 'issuer' ? 'new' : 'member', 'member')).status).toBe(403);
-        expect(changed).toBe(true);
-        expect(r.counts()).toEqual(before);
-      } finally { r.close(); }
-    });
-  }
   const changes: Array<{ name: string; issuer: Issuer; target: Target; role: RequestedRole; change: (r: ReturnType<typeof rig>) => void }> = [
     { name: 'admin issuer downgraded to member', issuer: 'admin', target: 'new', role: 'member', change: r => r.e.sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'") },
     { name: 'admin issuer revoked', issuer: 'admin', target: 'new', role: 'member', change: r => r.e.sqlite.run("UPDATE members SET revoked_at = ? WHERE id = 'mem_machine_3'", [NOW]) },
@@ -199,103 +185,76 @@ describe('enrollment authority stays live through redemption', () => {
     });
   }
 
-  it('guards issuer authority at the insertion statement after the HTTP preflight', async () => {
-    let changed = false;
-    const r = rig((sql, sqlite) => {
-      if (!changed && /INSERT INTO enrollment_authorities/i.test(sql)) {
-        changed = true;
-        sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'");
-      }
-    });
+  /** An invitation or a join made once per point of its request, on a fresh Deployment each time, with `change` landing just before that call. */
+  async function atEveryPoint(
+    request: (r: Rig) => Promise<Response>, change: (r: Rig) => void, prepare: (r: Rig) => Promise<void> = async () => {},
+  ): Promise<Array<{ at: number; r: Rig; response: Response; before: ReturnType<Rig['counts']>; committed: boolean }>> {
+    const counted = rig();
+    let total = 0;
     try {
+      await prepare(counted);
+      const db = counted.env.db;
+      const counter = counting(db);
+      counted.env.db = counter.store;
+      await request(counted);
+      total = counter.calls();
+    } finally { counted.close(); }
+    expect(total).toBeGreaterThan(1);
+    const outcomes = [];
+    for (let at = 1; at <= total; at++) {
+      const r = rig();
+      await prepare(r);
       const before = r.counts();
-      const response = await r.invite('admin', 'new', 'member');
-      expect(changed).toBe(true);
-      expect(response.status).toBe(403);
-      expect(r.counts()).toEqual(before);
-    } finally { r.close(); }
-  });
+      let committed = false;
+      r.env.db = changingAt(r.env.db, at, () => { committed = JSON.stringify(r.counts()) !== JSON.stringify(before); change(r); }).store;
+      outcomes.push({ at, r, response: await request(r), before, committed });
+    }
+    return outcomes;
+  }
 
-  it('guards target authority at the insertion statement after the HTTP preflight', async () => {
-    let changed = false;
-    const r = rig((sql, sqlite) => {
-      if (!changed && /INSERT INTO enrollment_authorities/i.test(sql)) {
-        changed = true;
-        sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'");
-      }
-    });
-    try {
-      const before = r.counts();
-      const response = await r.invite('admin', 'member', 'member');
-      expect(changed).toBe(true);
-      expect(response.status).toBe(403);
-      expect(r.counts()).toEqual(before);
-    } finally { r.close(); }
-  });
+  const raced: Array<{ name: string; issuer: Issuer; target: Target; role: RequestedRole; change: (r: Rig) => void }> = [
+    { name: 'the issuer is revoked', issuer: 'admin', target: 'new', role: 'member', change: r => r.e.sqlite.run('UPDATE members SET revoked_at = ? WHERE id = ?', [NOW, MEMBERS.admin.id]) },
+    { name: 'the recipient is revoked', issuer: 'admin', target: 'member', role: 'member', change: r => r.e.sqlite.run('UPDATE members SET revoked_at = ? WHERE id = ?', [NOW, MEMBERS.member.id]) },
+    { name: 'the admin issuer is downgraded', issuer: 'admin', target: 'new', role: 'member', change: r => r.e.sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'") },
+    { name: 'the recipient is promoted to admin', issuer: 'admin', target: 'member', role: 'member', change: r => r.e.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'") },
+    { name: 'ownership moves away from the issuer', issuer: 'owner', target: 'new', role: 'admin', change: r => r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_3', revision = revision + 1 WHERE id = 1") },
+  ];
 
-  it('guards ownership at the insertion statement after the HTTP preflight', async () => {
-    let changed = false;
-    const r = rig((sql, sqlite) => {
-      if (!changed && /INSERT INTO enrollment_authorities/i.test(sql)) {
-        changed = true;
-        sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_3', revision = revision + 1 WHERE id = 1");
-      }
-    });
-    try {
-      const before = r.counts();
-      const response = await r.invite('owner', 'new', 'admin');
-      expect(changed).toBe(true);
-      expect(response.status).toBe(403);
-      expect(r.counts()).toEqual(before);
-    } finally { r.close(); }
-  });
-
-  it('guards issuer authority inside the join batch after the invitation read', async () => {
-    let mutateOnBatch = false;
-    let changed = false;
-    const r = rig((sql, sqlite) => {
-      if (mutateOnBatch && !changed && /INSERT OR IGNORE INTO members/i.test(sql)) {
-        changed = true;
-        sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_3'");
-      }
-    });
-    try {
-      const invitation = await r.invite('admin', 'new', 'member');
-      expect(invitation.status).toBe(201);
-      const key = (await json(invitation)).key as string;
-      mutateOnBatch = true;
-      await refusedJoin(r, key, 'race_join_issuer');
-      expect(changed).toBe(true);
-    } finally { r.close(); }
-  });
-
-  for (const scenario of [
-    {
-      name: 'target promotion', issuer: 'admin', target: 'member', role: 'member', machineId: 'race_join_target',
-      change: (r: ReturnType<typeof rig>) => r.e.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_2'"),
-    },
-    {
-      name: 'owner transfer', issuer: 'owner', target: 'new', role: 'admin', machineId: 'race_join_owner',
-      change: (r: ReturnType<typeof rig>) => r.e.sqlite.run("UPDATE deployment_ownership SET member_id = 'mem_machine_3', revision = revision + 1 WHERE id = 1"),
-    },
-  ] as const) {
-    it(`guards ${scenario.name} inside the join batch after the invitation read`, async () => {
-      let mutateOnBatch = false;
-      let changed = false;
-      const r = rig(sql => {
-        if (mutateOnBatch && !changed && /INSERT OR IGNORE INTO members/i.test(sql)) {
-          changed = true;
-          scenario.change(r);
-        }
-      });
+  for (const scenario of raced) {
+    it(`refuses the invitation wherever it races ${scenario.name} before it stores`, async () => {
+      const outcomes = await atEveryPoint(r => r.invite(scenario.issuer, scenario.target, scenario.role), scenario.change);
       try {
+        for (const { at, r, response, before, committed } of outcomes) {
+          if (committed) { expect({ at, status: response.status }).toEqual({ at, status: 201 }); continue; }
+          expect({ at, status: response.status, refused: response.status >= 400 && response.status < 500, counts: r.counts() })
+            .toEqual({ at, status: response.status, refused: true, counts: before });
+        }
+        // Landing just before the invitation stores, past every read of the request, the insert itself refuses it.
+        const last = outcomes.filter(outcome => !outcome.committed).at(-1)!;
+        expect({ at: last.at, status: last.response.status }).toEqual({ at: last.at, status: 403 });
+      } finally { for (const { r } of outcomes) r.close(); }
+    });
+  }
+
+  for (const scenario of raced.filter(each => each.name !== 'the recipient is revoked' && each.name !== 'the issuer is revoked')) {
+    it(`refuses the join wherever it races ${scenario.name} before it stores, and leaves key and identity untouched`, async () => {
+      let key = '';
+      const invited = async (r: Rig) => {
         const invitation = await r.invite(scenario.issuer, scenario.target, scenario.role);
         expect(invitation.status).toBe(201);
-        const key = (await json(invitation)).key as string;
-        mutateOnBatch = true;
-        await refusedJoin(r, key, scenario.machineId);
-        expect(changed).toBe(true);
-      } finally { r.close(); }
+        key = (await json(invitation)).key as string;
+      };
+      const outcomes = await atEveryPoint(r => r.join(key, 'race_join'), scenario.change, invited);
+      try {
+        for (const { at, r, response, before, committed } of outcomes) {
+          const answer = await json(response);
+          if (committed) { expect({ at, joined: answer.joined }).toEqual({ at, joined: true }); continue; }
+          expect({ at, answer, counts: r.counts() }).toEqual({ at, answer: expect.objectContaining({ joined: false, code: 'enrollment_revoked' }), counts: before });
+          expect({ at, used: r.e.sqlite.query('SELECT used_at FROM enrollment_authorities WHERE used_at IS NOT NULL').all() }).toEqual({ at, used: [] });
+          expect({ at, claims: r.e.sqlite.query("SELECT member_id FROM machine_claims WHERE machine_id = 'race_join'").all() }).toEqual({ at, claims: [] });
+        }
+        expect(outcomes.some(outcome => !outcome.committed)).toBe(true);
+      } finally { for (const { r } of outcomes) r.close(); }
     });
   }
 });

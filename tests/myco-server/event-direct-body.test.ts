@@ -6,13 +6,15 @@ import { EVENT_INLINE_PAYLOAD_BYTES } from '@myco-server-worker/ingest/event-pay
 import { bodyCapReason, EVENT_BODY_CAP_NEXT_CALL, MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
-import { envelope, memberPost, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { envelope, journaled, memberPost, registeredObject, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { changingAt, counting, dying, failingAt } from './helpers/store-faults.js';
 import { tombstoneSession } from './helpers/session-deletion.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const member = (e: ReturnType<typeof sqliteEnv>) => issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
 const scalar = <T,>(e: ReturnType<typeof sqliteEnv>, sql: string, ...params: Array<string | number>) => e.sqlite.query(sql).get(...params) as T;
 const count = (e: ReturnType<typeof sqliteEnv>, table: string) => (scalar<{ n: number }>(e, `SELECT COUNT(*) AS n FROM ${table}`)).n;
+const held = (e: ReturnType<typeof sqliteEnv>, eventId: string) => scalar<{ n: number }>(e, 'SELECT COUNT(*) AS n FROM events WHERE event_id=?', eventId).n;
 
 /** A prompt payload whose serialized JSON is exactly `bytes` long. */
 function promptOf(bytes: number, promptId: string): Record<string, unknown> {
@@ -21,6 +23,22 @@ function promptOf(bytes: number, promptId: string): Record<string, unknown> {
 }
 const stored = (e: ReturnType<typeof sqliteEnv>, eventId: string) => scalar<{ payload_format: string; payload: string }>(e, 'SELECT payload_format,payload FROM events WHERE event_id=?', eventId);
 const post = async (e: ReturnType<typeof sqliteEnv>, token: string, over: Record<string, unknown>) => worker.fetch(memberPost(token, envelope(over)), e.env);
+/** Stored objects no blob row registers. */
+const unregistered = (e: ReturnType<typeof sqliteEnv>) => {
+  const registered = new Set((e.sqlite.query('SELECT project_id, key FROM blobs').all() as { project_id: string; key: string }[]).map(row => registeredObject(e.sqlite, row.project_id, row.key)));
+  return [...e.bucket.objects.keys()].filter(key => !registered.has(key)).sort();
+};
+/** The calls one oversized event's intake makes, counted on its own Deployment. */
+async function intakeCalls(): Promise<number> {
+  const e = sqliteEnv();
+  try {
+    const t = await member(e);
+    const counter = counting(e.env.MYCO_DB);
+    e.env.MYCO_DB = counter.store;
+    expect(await json(await post(e, t.token, { eventId: uuid(30), payload: promptOf(EVENT_INLINE_PAYLOAD_BYTES + 1, uuid(31)) }))).toEqual({ persisted: true, projected: true });
+    return counter.calls();
+  } finally { e.sqlite.close(); }
+}
 
 describe('direct object-store intake of an event payload', () => {
   it('holds a payload at the ceiling inline and one byte over in the object store, each reading back byte for byte', async () => {
@@ -77,28 +95,67 @@ describe('direct object-store intake of an event payload', () => {
     expect(await eventContent(e.serverEnv, 'proj_1', uuid(15))).toBe(JSON.stringify(payload));
   });
 
-  it('never stores the event and journals its object when the commit dies, and answers retryable when the authority was lost', async () => {
-    const payload = promptOf(EVENT_INLINE_PAYLOAD_BYTES + 1, uuid(7));
-    let dropReservation = false;
-    const e = sqliteEnv({ onSql: (sql, sqlite) => { if (dropReservation && /^\s*INSERT INTO events/.test(sql)) { dropReservation = false; sqlite.run('DELETE FROM blob_reservations'); } } });
-    const t = await member(e);
-    const originalBatch = e.db.batch.bind(e.db);
-    let failing = true;
-    e.db.batch = async (statements: Parameters<typeof originalBatch>[0]) => {
-      if (failing && statements.length > 8) { failing = false; throw new Error('the commit died'); }
-      return originalBatch(statements);
-    };
-    const died = await post(e, t.token, { eventId: uuid(16), payload });
-    expect(died.status).toBe(503);
-    expect(count(e, 'events')).toBe(0);
-    expect(count(e, 'blob_reservations')).toBe(0);
-    expect(count(e, 'object_releases')).toBe(1);
+  it('never stores the event and journals its object wherever a store call fails, and a retry stores it', async () => {
+    const total = await intakeCalls();
+    const e = sqliteEnv();
+    try {
+      const t = await member(e);
+      const db = e.env.MYCO_DB;
+      for (let at = 1; at <= total; at++) {
+        const event = { eventId: uuid(100 + at), payload: promptOf(EVENT_INLINE_PAYLOAD_BYTES + at, uuid(200 + at)) };
+        e.env.MYCO_DB = failingAt(db, at, 'before').store;
+        const failed = await post(e, t.token, event);
+        e.env.MYCO_DB = db;
+        expect({ at, status: failed.status, events: held(e, event.eventId), reservations: count(e, 'blob_reservations') }).toEqual({ at, status: 503, events: 0, reservations: 0 });
+        // Every object the failed intake put is journaled for release at once, never left for a sweep to find.
+        expect({ at, stray: unregistered(e).filter(key => !journaled(e.sqlite).includes(key)) }).toEqual({ at, stray: [] });
+        await drainObjectReleases(e.serverEnv, Date.now());
+        expect({ at, left: unregistered(e) }).toEqual({ at, left: [] });
+        expect({ at, retry: await json(await post(e, t.token, event)) }).toEqual({ at, retry: { persisted: true, projected: true } });
+      }
+    } finally { e.sqlite.close(); }
+  });
 
-    dropReservation = true;
-    const lost = await post(e, t.token, { eventId: uuid(17), payload: promptOf(EVENT_INLINE_PAYLOAD_BYTES + 2, uuid(8)) });
-    expect(lost.status).toBe(503);
-    expect(count(e, 'events')).toBe(0);
-    expect(await json(await post(e, t.token, { eventId: uuid(17), payload: promptOf(EVENT_INLINE_PAYLOAD_BYTES + 2, uuid(8)) }))).toEqual({ persisted: true, projected: true });
+  it('keeps a stored event whole and leaves no stray object once its authority expires, wherever the process ends', async () => {
+    const total = await intakeCalls();
+    const e = sqliteEnv();
+    try {
+      const t = await member(e);
+      const db = e.env.MYCO_DB;
+      for (const when of ['before', 'after'] as const) for (let at = 1; at <= total; at++) {
+        const payload = promptOf(EVENT_INLINE_PAYLOAD_BYTES + at + (when === 'after' ? total : 0), uuid(300 + at));
+        const eventId = uuid(when === 'after' ? 500 + at : 400 + at);
+        e.env.MYCO_DB = dying(db, at, when).store;
+        await post(e, t.token, { eventId, payload });
+        e.env.MYCO_DB = db;
+        await drainObjectReleases(e.serverEnv, Date.now() + BLOB_RESERVATION_TTL_MS + 1);
+        if (held(e, eventId) > 0) expect({ at, when, content: await eventContent(e.serverEnv, 'proj_1', eventId) }).toEqual({ at, when, content: JSON.stringify(payload) });
+        expect({ at, when, left: unregistered(e), reservations: count(e, 'blob_reservations') }).toEqual({ at, when, left: [], reservations: 0 });
+        expect({ at, when, retry: await json(await post(e, t.token, { eventId, payload })) }).toEqual({ at, when, retry: expect.objectContaining({ persisted: true }) });
+      }
+    } finally { e.sqlite.close(); }
+  });
+
+  it('answers retryable and stores nothing when its object authority is lost before the commit, wherever that lands', async () => {
+    const total = await intakeCalls();
+    const e = sqliteEnv();
+    try {
+      const t = await member(e);
+      const db = e.env.MYCO_DB;
+      for (let at = 1; at <= total; at++) {
+        const event = { eventId: uuid(600 + at), payload: promptOf(EVENT_INLINE_PAYLOAD_BYTES + at, uuid(700 + at)) };
+        let reserved = false;
+        e.env.MYCO_DB = changingAt(db, at, () => {
+          reserved = count(e, 'blob_reservations') > 0 && held(e, event.eventId) === 0;
+          e.sqlite.run('DELETE FROM blob_reservations');
+        }).store;
+        const answer = await post(e, t.token, event);
+        e.env.MYCO_DB = db;
+        if (!reserved) { expect({ at, status: answer.status }).toEqual({ at, status: 200 }); continue; }
+        expect({ at, status: answer.status, events: held(e, event.eventId) }).toEqual({ at, status: 503, events: 0 });
+        expect({ at, retry: await json(await post(e, t.token, event)) }).toEqual({ at, retry: { persisted: true, projected: true } });
+      }
+    } finally { e.sqlite.close(); }
   });
 
   it('releases a stored body through the session deletion job, and leaves an identical body another session still proves', async () => {

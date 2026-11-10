@@ -6,6 +6,7 @@ import { ENROLLMENT_RETENTION_MS, reclaimFinishedAuthorities } from '@myco-serve
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { changingAt, counting, failingStatement } from './helpers/store-faults.js';
 
 const NOW = Date.now();
 const OWNER = 'mem_machine_1';
@@ -13,8 +14,8 @@ const MEMBER = 'mem_machine_2';
 const ADMIN = 'mem_machine_3';
 const json = async (r: Response): Promise<Record<string, any>> => await r.json() as Record<string, any>;
 
-function rig(onSql?: NonNullable<Parameters<typeof sqliteEnv>[0]>['onSql']) {
-  const e = sqliteEnv({ onSql });
+function rig() {
+  const e = sqliteEnv();
   e.sqlite.run(`UPDATE deployment_ownership SET member_id = '${OWNER}', revision = 1 WHERE id = 1`);
   e.sqlite.run(`UPDATE members SET role = 'member', github_id = '770001' WHERE id = '${MEMBER}'`);
   e.sqlite.run(`UPDATE members SET role = 'admin', github_id = '770003' WHERE id = '${ADMIN}'`);
@@ -31,6 +32,39 @@ function rig(onSql?: NonNullable<Parameters<typeof sqliteEnv>[0]>['onSql']) {
   const advance = (ms = 5000) => { now += ms; };
   const count = () => (e.sqlite.query('SELECT COUNT(*) AS n FROM member_credentials').get() as { n: number }).n;
   return { e, env, post, start, poll, decide, advance, count, now: () => now, source: (value: string) => { source = value; } };
+}
+
+type Rig = ReturnType<typeof rig>;
+
+/**
+ * A decision made once per point of its request, on a fresh device request each time, with `change` landing just before
+ * that call: before authentication, between it and the write, or after the decision stored. `decided` says whether the
+ * decision was already stored when the change landed.
+ */
+async function decisionAtEveryPoint(
+  decision: 'approve' | 'deny', who: string, change: (r: Rig) => void,
+  check: (outcome: { at: number; r: Rig; start: Record<string, any>; status: number; decided: boolean }) => Promise<void>,
+): Promise<void> {
+  const decided = (r: Rig) => (r.e.sqlite.query('SELECT decision FROM device_requests').get() as { decision: string | null }).decision !== null;
+  const decide = async (r: Rig, wrap: (db: Rig['env']['db']) => Rig['env']['db']) => {
+    const start = await r.start();
+    const db = r.env.db;
+    r.env.db = wrap(db);
+    try { return { start, status: (await r.decide(start.user_code, decision, who)).status }; } finally { r.env.db = db; }
+  };
+  const counted = rig();
+  let calls = () => 0;
+  try { await decide(counted, (db) => { const counter = counting(db); calls = counter.calls; return counter.store; }); } finally { counted.e.sqlite.close(); }
+  const total = calls();
+  expect(total).toBeGreaterThan(2);
+  for (let at = 1; at <= total; at++) {
+    const r = rig();
+    try {
+      let landedDecided = false;
+      const { start, status } = await decide(r, (db) => changingAt(db, at, () => { landedDecided = decided(r); change(r); }).store);
+      await check({ at, r, start, status, decided: landedDecided });
+    } finally { r.e.sqlite.close(); }
+  }
 }
 
 describe('device authorization', () => {
@@ -186,23 +220,25 @@ describe('device authorization', () => {
     } finally { r.e.sqlite.close(); }
   });
 
-  it('approval rechecks live authority at its insert, including admin demotion and member revocation', async () => {
-    for (const owner of [false, true]) {
-      let armed = false;
-      const r = rig((sql, sqlite) => {
-        if (!armed || !sql.includes('INSERT INTO enrollment_authorities')) return;
-        armed = false;
-        if (owner) sqlite.run(`UPDATE members SET role = 'member' WHERE id = '${ADMIN}'`);
-        else sqlite.run(`UPDATE members SET revoked_at = ${NOW} WHERE id = '${MEMBER}'`);
+  it('approval rechecks live authority wherever an admin demotion or member revocation lands, and never grants authority the approver lost', async () => {
+    for (const demoted of [false, true]) {
+      await decisionAtEveryPoint('approve', demoted ? '770003' : '770001', (r) => {
+        if (demoted) r.e.sqlite.run(`UPDATE members SET role = 'member' WHERE id = '${ADMIN}'`);
+        else r.e.sqlite.run(`UPDATE members SET revoked_at = ${NOW} WHERE id = '${MEMBER}'`);
+      }, async ({ at, r, start, status, decided }) => {
+        const label = { at, demoted };
+        if (decided) { expect({ ...label, status }).toEqual({ ...label, status: 200 }); return; }
+        if (status === 200) {
+          // Demoted before the approval read its authority: the device joins with the authority the approver still holds.
+          expect({ ...label, joined: await r.poll(start.device_code) }).toEqual({ ...label, joined: expect.objectContaining({ joined: true, memberId: ADMIN, role: 'member' }) });
+          return;
+        }
+        expect({ ...label, status, refused: status >= 400 && status < 500 }).toEqual({ ...label, status, refused: true });
+        expect({ ...label, decision: r.e.sqlite.query('SELECT decision FROM device_requests').get() }).toEqual({ ...label, decision: { decision: null } });
+        expect({ ...label, poll: await r.poll(start.device_code) }).toEqual({ ...label, poll: { error: 'authorization_pending' } });
+        expect({ ...label, authority: await r.e.serverEnv.db.prepare('SELECT id FROM enrollment_authorities WHERE key_hash = ?').bind(await sha256Hex(start.device_code)).first() })
+          .toEqual({ ...label, authority: null });
       });
-      try {
-        const start = await r.start();
-        armed = true;
-        expect((await r.decide(start.user_code, 'approve', owner ? '770003' : '770001')).status).toBe(409);
-        expect(r.e.sqlite.query('SELECT decision FROM device_requests').get()).toEqual({ decision: null });
-        expect(await r.poll(start.device_code)).toEqual({ error: 'authorization_pending' });
-        expect(await r.e.serverEnv.db.prepare('SELECT id FROM enrollment_authorities WHERE key_hash = ?').bind(await sha256Hex(start.device_code)).first()).toBeNull();
-      } finally { r.e.sqlite.close(); }
     }
   });
   it('caps concurrent pending starts per trusted source before insert and applies a tighter start window', async () => {
@@ -283,12 +319,13 @@ describe('device authorization', () => {
 
   it('a failed audit write rolls approval and denial back with the decision', async () => {
     for (const decision of ['approve', 'deny'] as const) {
-      let armed = false;
-      const r = rig(sql => { if (armed && sql.includes('INSERT INTO device_decision_audit')) throw new Error('audit unavailable'); });
+      const r = rig();
       try {
         const start = await r.start();
-        armed = true;
+        const audit = failingStatement(r.env.db, 'device.decisionAudit');
+        r.env.db = audit.store;
         expect((await r.decide(start.user_code, decision)).status).toBe(503);
+        expect(audit.failures()).toBe(1);
         expect(r.e.sqlite.query('SELECT decision FROM device_requests').get()).toEqual({ decision: null });
         expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM device_decision_audit').get()).toEqual({ n: 0 });
         expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM enrollment_authorities').get()).toEqual({ n: 0 });
@@ -296,20 +333,13 @@ describe('device authorization', () => {
     }
   });
 
-  it('denial rechecks live member authority after dashboard authentication', async () => {
-    let armed = false;
-    const r = rig((sql, sqlite) => {
-      if (!armed || !sql.includes('d.decision IS NULL AND d.expires_at>?2')) return;
-      armed = false;
-      sqlite.run(`UPDATE members SET revoked_at = ${NOW} WHERE id = '${MEMBER}'`);
+  it('denial rechecks live member authority wherever a revocation lands', async () => {
+    await decisionAtEveryPoint('deny', '770001', (r) => r.e.sqlite.run(`UPDATE members SET revoked_at = ${NOW} WHERE id = '${MEMBER}'`), async ({ at, r, status, decided }) => {
+      if (decided) { expect({ at, status }).toEqual({ at, status: 200 }); return; }
+      expect({ at, status, refused: status >= 400 && status < 500 }).toEqual({ at, status, refused: true });
+      expect({ at, decision: r.e.sqlite.query('SELECT decision FROM device_requests').get() }).toEqual({ at, decision: { decision: null } });
+      expect({ at, audit: r.e.sqlite.query('SELECT COUNT(*) AS n FROM device_decision_audit').get() }).toEqual({ at, audit: { n: 0 } });
     });
-    try {
-      const start = await r.start();
-      armed = true;
-      expect((await r.decide(start.user_code, 'deny')).status).toBe(409);
-      expect(r.e.sqlite.query('SELECT decision FROM device_requests').get()).toEqual({ decision: null });
-      expect(r.e.sqlite.query('SELECT COUNT(*) AS n FROM device_decision_audit').get()).toEqual({ n: 0 });
-    } finally { r.e.sqlite.close(); }
   });
 
 });
