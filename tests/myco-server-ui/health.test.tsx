@@ -390,7 +390,8 @@ describe('Health', () => {
     const list = await screen.findByRole('group', { name: 'Backups' });
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const alert = await screen.findByText(/older format this release can’t restore/);
-    expect(alert.textContent).toContain('Restore it on a separate server running Myco 2.0.0-alpha.23, take a backup there');
+    expect(alert.textContent).toContain('Myco 2.0.0-alpha.23 was the last release that read it');
+    expect(alert.textContent).toContain('recover from a complete recovery copy with myco server restore');
     expect(alert.textContent).not.toContain('server sentence');
     expect(screen.queryByRole('dialog')).toBeNull();
   });

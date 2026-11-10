@@ -204,9 +204,8 @@ export class BackupApplyError extends Error {
   }
 }
 /**
- * A backup holding content in the format before session documents. Nothing is restored from it: a separate Deployment
- * running the last release that reads that format restores it, and a backup taken there restores here as another
- * Deployment's backup.
+ * A backup holding content in the format before session documents. Nothing is restored from it: a backup taken after
+ * the format change restores, or a complete recovery artifact, which carries the stored bytes.
  */
 export class BackupFormatRetiredError extends Error {
   readonly code = 'artifact_format_retired';
@@ -214,8 +213,7 @@ export class BackupFormatRetiredError extends Error {
   readonly restoresOn = LAST_RELEASE_RESTORING_RETIRED_FORMAT;
   constructor(readonly counts: Readonly<Record<string, number>>) {
     const held = Object.entries(counts).map(([table, rows]) => `${rows} ${table}`).join(', ');
-    const release = LAST_RELEASE_RESTORING_RETIRED_FORMAT === null ? 'the last release before this one' : `Myco ${LAST_RELEASE_RESTORING_RETIRED_FORMAT}, the last release that reads it`;
-    super(`artifact_format_retired: this backup holds content in the format before session documents (${held} rows), which this release does not restore, so nothing was restored from it. Restore it on a separate Deployment running ${release}, take a backup there and download it (Health > Backups > Download), then upload it here with POST /api/backups/restore-upload and body { artifact: <the downloaded text>, allowForeignLineage: true }`);
+    super(`artifact_format_retired: this backup holds content in the format before session documents (${held} rows), which this release does not restore, so nothing was restored from it. Restore a backup taken after the format change, or recover the Deployment from a complete recovery artifact with \`myco server restore --from <directory>\`, which carries the stored bytes`);
     this.name = 'BackupFormatRetiredError';
   }
 }
