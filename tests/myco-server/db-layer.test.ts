@@ -4,127 +4,131 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript-v6';
 import { boundaryInventory, boundarySites, boundaryViolations, changeCountInventory, changeCountSites, changeCountViolations, gatedSites, staleStoreAllowances } from './helpers/db-boundary.js';
 
-const PENDING: ReadonlyMap<string, number> = new Map([
-  ['api/runs.ts', 4],
-  ['auth/authorization.ts', 3],
-  ['auth/device.ts', 21],
-  ['auth/grants.ts', 22],
-  ['auth/identity-link.ts', 2],
-  ['auth/members-admin.ts', 10],
-  ['auth/tokens.ts', 13],
-  ['content/document-reader.ts', 9],
-  ['content/session-pages.ts', 12],
-  ['content/session-turns.ts', 14],
-  ['content/tool-statistics.ts', 15],
-  ['core/activity.ts', 3],
-  ['core/archive-bundle.ts', 44],
-  ['core/attempt-accounting.ts', 6],
-  ['core/backup.ts', 57],
-  ['core/blob-objects.ts', 1],
-  ['core/budget-estimates.ts', 3],
-  ['core/canopy.ts', 2],
-  ['core/content-budget.ts', 3],
-  ['core/context-writes.ts', 4],
-  ['core/embedding/policy.ts', 1],
-  ['core/event-content-restore.ts', 6],
-  ['core/event-content.ts', 13],
-  ['core/extraction-acks.ts', 2],
-  ['core/first-owner.ts', 6],
-  ['core/harness.ts', 2],
-  ['core/injection.ts', 2],
-  ['core/object-release.ts', 13],
-  ['core/ownership.ts', 8],
-  ['core/pulled-stages.ts', 4],
-  ['core/raw-archive.ts', 23],
-  ['core/raw-backfill.ts', 19],
-  ['core/raw-claims.ts', 23],
-  ['core/raw-provenance.ts', 5],
-  ['core/recall.ts', 2],
-  ['core/recovered-tenant.ts', 18],
-  ['core/recovery-forget.ts', 4],
-  ['core/recovery-schema.ts', 3],
-  ['core/registered-content.ts', 6],
-  ['core/relational-snapshot.ts', 17],
-  ['core/remotes.ts', 6],
-  ['core/repositories.ts', 2],
-  ['core/restore-authorization.ts', 6],
-  ['core/restore-rows.ts', 7],
-  ['core/run-write-store.ts', 2],
-  ['core/runner-updates.ts', 2],
-  ['core/scheduled-tasks.ts', 1],
-  ['core/session-artifacts.ts', 8],
-  ['core/settings.ts', 4],
-  ['core/sql-statements.ts', 2],
-  ['core/task-catalogue.ts', 1],
-  ['core/turn-card-prompt.ts', 1],
-  ['core/write-guard-store.ts', 4],
-  ['ingest/document-admission.ts', 2],
-  ['ingest/document-batch.ts', 57],
-  ['ingest/document-restore.ts', 23],
-  ['ingest/document-summaries.ts', 33],
-  ['ingest/events.ts', 25],
-  ['ingest/live-credential.ts', 4],
-  ['ingest/parse.ts', 3],
-  ['ingest/projections.ts', 48],
-  ['ingest/projects.ts', 2],
-  ['ingest/publish.ts', 5],
-  ['ingest/session-edits.ts', 2],
-  ['ingest/turns.ts', 6],
-  ['ingest/uncaptured.ts', 8],
-  ['mcp/definitions.ts', 1],
-  ['platform/bun/env.ts', 1],
-  ['read/blobs.ts', 2],
-  ['read/canopy.ts', 2],
-  ['read/capture.ts', 9],
-  ['read/catalog/activity.ts', 2],
-  ['read/catalog/children.ts', 2],
-  ['read/catalog/embedding.ts', 4],
-  ['read/catalog/hook-placement.ts', 7],
-  ['read/catalog/injection-served-items.ts', 2],
-  ['read/catalog/injection.ts', 4],
-  ['read/catalog/lineage.ts', 4],
-  ['read/catalog/plans.ts', 9],
-  ['read/catalog/processed.ts', 2],
-  ['read/catalog/search-index.ts', 4],
-  ['read/catalog/search.ts', 13],
-  ['read/catalog/session-activity.ts', 5],
-  ['read/catalog/sessions.ts', 32],
-  ['read/catalog/shared.ts', 1],
-  ['read/catalog/turns.ts', 3],
-  ['read/credentials.ts', 2],
-  ['read/document-catalog.ts', 10],
-  ['read/legacy-history.ts', 8],
-  ['read/repository-requirements.ts', 2],
-  ['read/run-outcome.ts', 2],
-  ['read/runs.ts', 11],
-  ['read/scope.ts', 2],
-  ['read/session-artifacts.ts', 2],
-  ['read/session-files.ts', 4],
-  ['read/task-descriptions.ts', 1],
-  ['routes.ts', 4],
+/**
+ * Files still allowed raw SQL or direct store calls. The coordinator owns this set: a lane only removes a file once it
+ * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
+ */
+const PENDING: ReadonlySet<string> = new Set([
+  'api/runs.ts',
+  'auth/authorization.ts',
+  'auth/device.ts',
+  'auth/grants.ts',
+  'auth/identity-link.ts',
+  'auth/members-admin.ts',
+  'auth/tokens.ts',
+  'content/document-reader.ts',
+  'content/session-pages.ts',
+  'content/session-turns.ts',
+  'content/tool-statistics.ts',
+  'core/activity.ts',
+  'core/archive-bundle.ts',
+  'core/attempt-accounting.ts',
+  'core/backup.ts',
+  'core/blob-objects.ts',
+  'core/budget-estimates.ts',
+  'core/canopy.ts',
+  'core/content-budget.ts',
+  'core/context-writes.ts',
+  'core/embedding/policy.ts',
+  'core/event-content-restore.ts',
+  'core/event-content.ts',
+  'core/extraction-acks.ts',
+  'core/first-owner.ts',
+  'core/harness.ts',
+  'core/injection.ts',
+  'core/object-release.ts',
+  'core/ownership.ts',
+  'core/pulled-stages.ts',
+  'core/raw-archive.ts',
+  'core/raw-backfill.ts',
+  'core/raw-claims.ts',
+  'core/raw-provenance.ts',
+  'core/recall.ts',
+  'core/recovered-tenant.ts',
+  'core/recovery-forget.ts',
+  'core/recovery-schema.ts',
+  'core/registered-content.ts',
+  'core/relational-snapshot.ts',
+  'core/remotes.ts',
+  'core/repositories.ts',
+  'core/restore-authorization.ts',
+  'core/restore-rows.ts',
+  'core/run-write-store.ts',
+  'core/runner-updates.ts',
+  'core/scheduled-tasks.ts',
+  'core/session-artifacts.ts',
+  'core/settings.ts',
+  'core/sql-statements.ts',
+  'core/task-catalogue.ts',
+  'core/turn-card-prompt.ts',
+  'core/write-guard-store.ts',
+  'ingest/document-admission.ts',
+  'ingest/document-batch.ts',
+  'ingest/document-restore.ts',
+  'ingest/document-summaries.ts',
+  'ingest/events.ts',
+  'ingest/live-credential.ts',
+  'ingest/parse.ts',
+  'ingest/projections.ts',
+  'ingest/projects.ts',
+  'ingest/publish.ts',
+  'ingest/session-edits.ts',
+  'ingest/turns.ts',
+  'ingest/uncaptured.ts',
+  'mcp/definitions.ts',
+  'platform/bun/env.ts',
+  'read/blobs.ts',
+  'read/canopy.ts',
+  'read/capture.ts',
+  'read/catalog/activity.ts',
+  'read/catalog/children.ts',
+  'read/catalog/embedding.ts',
+  'read/catalog/hook-placement.ts',
+  'read/catalog/injection-served-items.ts',
+  'read/catalog/injection.ts',
+  'read/catalog/lineage.ts',
+  'read/catalog/plans.ts',
+  'read/catalog/processed.ts',
+  'read/catalog/search-index.ts',
+  'read/catalog/search.ts',
+  'read/catalog/session-activity.ts',
+  'read/catalog/sessions.ts',
+  'read/catalog/shared.ts',
+  'read/catalog/turns.ts',
+  'read/credentials.ts',
+  'read/document-catalog.ts',
+  'read/legacy-history.ts',
+  'read/repository-requirements.ts',
+  'read/run-outcome.ts',
+  'read/runs.ts',
+  'read/scope.ts',
+  'read/session-artifacts.ts',
+  'read/session-files.ts',
+  'read/task-descriptions.ts',
+  'routes.ts',
   // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
-  ['db/meta/budget-estimates.ts', 3], // A restore's guard is composed from the columns of the rows it replaces.
-  ['db/runs/attribution.ts', 1], // Learning completion passes companions core still composes.
-  ['db/runs/change.ts', 2], // A run update's column set varies with the caller; its companions are core statements.
-  ['db/storage/cleanup.ts', 1], // A page commits core/archive-bundle statements.
+  'db/meta/budget-estimates.ts', // A restore's guard is composed from the columns of the rows it replaces.
+  'db/runs/attribution.ts', // Learning completion passes companions core still composes.
+  'db/runs/change.ts', // A run update's column set varies with the caller; its companions are core statements.
+  'db/storage/cleanup.ts', // A page commits core/archive-bundle statements.
 ]);
 
-/** Reads of a statement's change count awaiting their slice: decide from RETURNING or an in-batch assertion, then lower the count. */
-const PENDING_CHANGE_COUNTS: ReadonlyMap<string, number> = new Map([
-  ['api/member-projects.ts', 3],
-  ['core/archive-bundle.ts', 2],
-  ['core/backup.ts', 1],
-  ['core/object-release.ts', 3],
-  ['core/raw-claims.ts', 1],
-  ['core/recovery-forget.ts', 1],
-  ['core/remotes.ts', 1],
-  ['ingest/uncaptured.ts', 1],
+/** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
+const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
+  'api/member-projects.ts',
+  'core/archive-bundle.ts',
+  'core/backup.ts',
+  'core/object-release.ts',
+  'core/raw-claims.ts',
+  'core/recovery-forget.ts',
+  'core/remotes.ts',
+  'ingest/uncaptured.ts',
 ]);
 
 const source = (text: string) => ts.createSourceFile('core/example.ts', text, ts.ScriptTarget.Latest, true);
 const inventory = (text: string) => new Map([['core/example.ts', boundarySites(source(text))]]);
 
-it('keeps SQL producers and store execution inside db, with exact temporary exceptions', () => {
+it('keeps SQL producers and store execution inside db, with a shrinking set of temporary exceptions', () => {
   const root = fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url));
   expect(boundaryViolations(boundaryInventory(root), PENDING)).toEqual([]);
 });
@@ -138,8 +142,8 @@ it('counts direct store calls inside db but not SQL text, and leaves allowed and
   expect(gatedSites('db/runs/example.ts', sites).map(site => site.kind)).toEqual(['prepare', 'batch']);
   expect(gatedSites('db/kernel/commit.ts', sites)).toEqual([]);
   expect(gatedSites('db/schema-v117.ts', sites)).toEqual([]);
-  expect(boundaryViolations(new Map([['db/runs/example.ts', gatedSites('db/runs/example.ts', sites)]]), new Map())).toEqual([
-    'db/runs/example.ts: 2 new direct store calls; use a kernel definition and commit',
+  expect(boundaryViolations(new Map([['db/runs/example.ts', gatedSites('db/runs/example.ts', sites)]]), new Set())).toEqual([
+    'db/runs/example.ts: direct store calls at line 1 (prepare), line 1 (batch); use a kernel definition and commit',
   ]);
 });
 
@@ -167,7 +171,7 @@ it('counts a call compiling a Bound outside db under a known name or by its sign
   expect(boundarySites(file, program.getTypeChecker()).map(site => site.line)).toEqual([10, 12, 13, 14]);
 });
 
-it('keeps change-count reads to the store adapters, with exact temporary exceptions', () => {
+it('keeps change-count reads to the store adapters, with a shrinking set of temporary exceptions', () => {
   const root = fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url));
   expect(changeCountViolations(changeCountInventory(root), PENDING_CHANGE_COUNTS)).toEqual([]);
 });
@@ -185,9 +189,14 @@ it('catches the ordinary spellings of a change-count read, and leaves unrelated 
     return { results: [], meta: { changes: 0 } };
   `));
   expect(sites.map(site => site.line)).toEqual([3, 4, 5, 6, 7]);
-  const grown = new Map([['core/example.ts', sites]]);
-  expect(changeCountViolations(grown, new Map())).toEqual(['core/example.ts: 5 new .meta.changes reads; decide the outcome from a RETURNING row or an in-batch assertion']);
-  expect(changeCountViolations(grown, new Map([['core/example.ts', 4]]))[0]).toContain('5 .meta.changes reads, expected exactly 4');
+  const reads = new Map([['core/example.ts', sites]]);
+  expect(changeCountViolations(reads, new Set())).toEqual([
+    'core/example.ts: .meta.changes reads at line 3 (changes), line 4 (changes), line 5 (changes), line 6 (changes), line 7 (changes); decide the outcome from a RETURNING row or an in-batch assertion',
+  ]);
+  expect(changeCountViolations(reads, new Set(['core/example.ts']))).toEqual([]);
+  expect(changeCountViolations(new Map([['core/example.ts', []]]), new Set(['core/example.ts']))).toEqual([
+    'core/example.ts: no .meta.changes reads left; remove it from PENDING_CHANGE_COUNTS',
+  ]);
 });
 
 it('catches a change-count read through an alias of the metadata by its type', () => {
@@ -206,16 +215,18 @@ it('catches a change-count read through an alias of the metadata by its type', (
   expect(changeCountSites(file, program.getTypeChecker()).map(site => site.line)).toEqual([5]);
 });
 
-it('catches a new prepare call, growth, stale counts and exported SQL fragments', () => {
+it('fails a raw site in a file outside the set, and a listed file with no site left, but not a listed file that keeps some', () => {
   const call = 'db.prepare(sql);';
-  expect(boundaryViolations(inventory(call), new Map())).toEqual([
-    'core/example.ts: 1 new boundary sites; move SQL and store execution into db/',
+  expect(boundaryViolations(inventory(call), new Set())).toEqual([
+    'core/example.ts: boundary sites at line 1 (prepare); move SQL and store execution into db/',
   ]);
-  const pending = new Map([['core/example.ts', 1]]);
-  expect(boundaryViolations(inventory(call + call), pending)[0]).toContain('2 boundary sites, expected exactly 1');
-  expect(boundaryViolations(inventory(''), pending)[0]).toContain('0 boundary sites, expected exactly 1');
-  expect(boundaryViolations(inventory(''), new Map([['core/example.ts', 0]]))).toHaveLength(1);
-  expect(boundaryViolations(inventory('export const fragment = `SELECT id FROM sessions WHERE project_id = ?`;'), new Map())[0]).toContain('1 new boundary sites');
+  const listed = new Set(['core/example.ts']);
+  expect(boundaryViolations(inventory(call + call), listed)).toEqual([]);
+  expect(boundaryViolations(inventory(''), listed)).toEqual(['core/example.ts: no boundary sites left; remove it from PENDING']);
+  expect(boundaryViolations(new Map(), new Set(['core/deleted.ts']))).toEqual(['core/deleted.ts: no boundary sites left; remove it from PENDING']);
+  expect(boundaryViolations(inventory('export const fragment = `SELECT id FROM sessions WHERE project_id = ?`;'), new Set())).toEqual([
+    'core/example.ts: boundary sites at line 1 (sql); move SQL and store execution into db/',
+  ]);
 });
 
 it('counts store batches, exec and template producers while ignoring comments and RegExp exec', () => {

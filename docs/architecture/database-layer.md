@@ -66,12 +66,12 @@ for reads and adds no separate `.first()` execution path.
 `tests/myco-server/db-layer.test.ts` uses an AST to count prepare calls, store batch/exec
 calls, and SQL-producing string/template literals outside `db/`. Comments and RegExp
 exec calls are excluded. Store aliases are recognized through their types. One temporary
-`PENDING` map holds exact per-file counts: new files, growth, and drops without lowering
-or removing an entry fail. Counts cannot detect replacement of old SQL with new SQL at
-the same count; SQL review remains necessary.
+`PENDING` set lists the files still allowed raw sites, and `PENDING_CHANGE_COUNTS` those
+still reading `.meta.changes`. A file outside a set with any site fails, naming each site;
+a listed file with none left fails until it is removed, so the sets only shrink. A listed
+file can still gain sites, so SQL review remains necessary.
 
 Named infrastructure exceptions cover native adapters, native startup/migration,
 platform maintenance adapters, and the recovery Durable Object's separate coordination
 SQL. Schema and migration emission remain owned by `db/`. There is no blanket platform
-exclusion. The coordinator regenerates literal counts from the current tree as families
-move; generation scripts stay in scratch.
+exclusion. The coordinator owns the sets; a slice only removes the files it migrates.
