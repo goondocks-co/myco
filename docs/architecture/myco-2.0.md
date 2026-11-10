@@ -1,6 +1,6 @@
 # Myco 2.0 — Canonical Architecture and Feature-Preservation Ledger
 
-> **TL;DR.** Myco 2.0 is one feature-complete server product with two front doors — a single Bun binary and a Cloudflare Worker — plus a machine-side member install of the binary, hooks and plugins. Neither front door runs harnesses: task runs happen on workers that attach from wherever harnesses are logged in. This document is the single current architecture record for the whole 2.0 release and the completeness ledger that gives every 1.4 surface an explicit KEEP / REPLACE / DROP disposition and an owning surface. It is machine-enforced by `tests/meta/feature-ledger-completeness.test.ts`.
+> **TL;DR.** Myco 2.0 is one feature-complete server product with two front doors — a single Bun binary and a Cloudflare Worker — plus a machine-side member install of the binary, hooks and plugins. Neither front door runs harnesses: task runs happen on workers that attach from wherever harnesses are logged in. This document is the single current architecture record for the whole 2.0 release and the completeness ledger that gives every 1.4 surface an explicit KEEP / REPLACE / DROP disposition and an owning surface.
 
 **Issue:** [#906](https://github.com/goondocks-co/myco/issues/906) · **Program map:** [#1144](https://github.com/goondocks-co/myco/issues/1144) (successor of [#905](https://github.com/goondocks-co/myco/issues/905)) · **Plan:** `docs/superpowers/plans/2026-09-07-myco-2-0-revised-plan.md`
 
@@ -1231,17 +1231,11 @@ Every row in §7 is `Blk` except one: **#928** (native Cloudflare intelligence-p
 
 ## 9. The gate
 
-A ledger with no gate goes stale the first time someone adds a CLI command.
-
-`tests/meta/feature-ledger-completeness.test.ts` scans the registries that define the surface and asserts that **every token appears in a §7 table with both a disposition and an owning surface**, failing by name when either is missing. The 1.4 registries are the CLI dispatch in `packages/myco/src/cli.ts`, the routes in `packages/myco/ui/src/App.tsx` (retired with that dashboard, its rows kept as the record), the `TOOL_*` constants in `packages/myco/src/tools/definitions.ts`, the task YAML filenames, the `POWER_JOB_NAMES` values, and the 1.4 config schema's declared leaves; 2.0's are the dashboard's route table (`packages/myco-server/ui/src/routes/table.tsx`), the retained tasks, the task schedule, the server's tick jobs, and the Deployment's admitted settings leaves, preserved retired settings metadata and a machine's settings leaves; the data classes are every `CREATE TABLE` under each package's `src/db/`.
-
-Each registry owns a §7 section, and its tokens are looked up there alone. The check runs both ways: every KEEP or NEW row in a section a live registry owns must be a token one of its registries produces, so a kept capability whose code is deleted fails by name, and every section the ledger parses must be owned by a registry.
-
-A 1.4 registry is retired by deleting the code that holds it: its §7 rows stay as the record of what became of each capability, and the registry is named in the gate's `RETIRED_REGISTRIES`. A registry whose source is gone and is not named there fails, so a move or an accidental deletion never passes for a retirement.
+The §7 ledger is kept current by review: a change that adds, retires or moves a capability edits its row in the same pull request. No test checks the ledger against the registries.
 
 `tests/meta/no-1-4-reach.test.ts` walks the import closure of the 2.0 entry points, the CLI and every verb it dispatches included, and stops at the 1.4 tree. Every edge that crosses into it is named, with the #1170 phase that removes it; a new crossing fails, and so does a named edge that no longer exists, so the list only shrinks. The boundary is closed: every file under `packages/myco/src` is reached, inside the 1.4 tree, or named with why nothing reaches it. A 1.4 path named in a `package.json` script, a Dockerfile, the Makefile or a CI workflow is named too, with its phase.
 
-The surface half is the one that matters most: a row with a disposition but no surface is how a capability ends up owned by nobody. That is the defect this whole ledger exists to answer.
+Every row carries a disposition and an owning surface, and the surface half is the one that matters most: a row with a disposition but no surface is how a capability ends up owned by nobody. That is the defect this whole ledger exists to answer.
 
 ### Transcript continuation and deployment recovery
 

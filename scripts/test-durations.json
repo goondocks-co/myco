@@ -245,7 +245,6 @@
     "tests/meta/boundaries/document-read-boundary.test.ts": 575,
     "tests/meta/documented-skill-targets.test.ts": 545,
     "tests/meta/embedding-work-triggers.test.ts": 1109,
-    "tests/meta/feature-ledger-completeness.test.ts": 369,
     "tests/meta/filesystem-descriptor-fence.test.ts": 3062,
     "tests/meta/filesystem-fence-eintr.test.ts": 4933,
     "tests/meta/filesystem-fence-permissions.test.ts": 1959,

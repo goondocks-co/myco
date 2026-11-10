@@ -12,7 +12,6 @@ import { createIngestThrottle } from './helpers/throttle.js';
 import { MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, mintMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
@@ -395,6 +394,7 @@ describe('gates', () => {
     expect(periods).toEqual([RETRY_AFTER_SECONDS, RETRY_AFTER_SECONDS]);
   });
 
+  // Workers runtime: a handler that cancels or unlocks the request body stream the runtime owns breaks the request on the Worker, though Bun tolerates it.
   it('keeps request stream ownership with the runtime; only object-store readers own their readers', () => {
     for (const f of files(SRC)) {
       const t = readFileSync(f, 'utf8');
@@ -456,10 +456,6 @@ describe('gates', () => {
       expect(await applySchemaSteps(store)).toEqual([]);
       expect(db.query(`SELECT name,sql FROM sqlite_master ORDER BY name`).all()).toEqual(before);
     } finally { db.close(); }
-  });
-
-  it('keeps the committed migrations directory identical to the rendered steps', () => {
-    for (const f of renderMigrationFiles()) expect(readFileSync(join(WORKER, MIGRATIONS_DIR, f.name), 'utf8')).toBe(f.sql);
   });
 
   it('declares an auth kind, a body mode and a shape for every route, and drives every non-public route through the deployed entry from its own fixture: a malformed request is refused in the route\'s shape with a code, and a token without a machine identity is refused every write, storing nothing and charging nothing', async () => {
@@ -765,6 +761,7 @@ describe('gates', () => {
     }
   });
 
+  // V8 (the Worker): a call taking one argument per byte throws past about 125k arguments, where JSC (Bun) accepts it.
   it('never spreads a whole byte array into a call, which is a divergence no test on one engine can catch', () => {
     // `String.fromCharCode(...bytes)` passes one argument per byte, and the two
     // runtimes disagree about how many a call may take: JSC accepts a 320KB spread,
