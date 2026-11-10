@@ -193,8 +193,8 @@ const plans_planInSession = (db: RelationalStore, scope: ReadScope, sessionId: s
   planInSession(db, scope.projectId, sessionId, planKey);
 
 export {
-  type plans_PlanListItem, type plans_ProjectPlanRow, type plans_PlanAcrossRow, type plans_ProjectPlanSummary, type plans_ProjectPlanOptions,
-  type plans_SessionPlanRow, plans_WRITABLE_PLAN_STATUSES, plans_PLAN_STATUS_MESSAGE, plans_ACROSS_CURSOR_REFUSAL, plans_progressOf, plans_pageProjectPlans,
+  type plans_PlanListItem, type plans_ProjectPlanRow, type plans_PlanAcrossRow, type plans_ProjectPlanSummary,
+  plans_WRITABLE_PLAN_STATUSES, plans_PLAN_STATUS_MESSAGE, plans_ACROSS_CURSOR_REFUSAL, plans_progressOf, plans_pageProjectPlans,
   plans_pageSessionPlans,
   plans_decodeAcrossCursor, plans_pagePlansAcross, plans_planTotals, plans_getPlan, plans_planInSession,
 };

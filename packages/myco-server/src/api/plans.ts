@@ -6,8 +6,8 @@
  * Project's plans as one list: what is in progress, what someone abandoned, and what
  * a session produced weeks ago.
  *
- * All three callers read through `read/plans.ts`, so a plan's progress, its tags
- * and its administrative stamp are derived in one place. The status write is NOT
+ * All three callers read through `read/catalog/plans.ts`: a list carries a plan's
+ * metadata, preview, progress and tags, and only a plan's own read carries its body. The status write is NOT
  * here: a plan's status is set through the session route that already owns it, so
  * there is one write path for a plan's status and this surface stays a read.
  *

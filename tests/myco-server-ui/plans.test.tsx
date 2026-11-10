@@ -34,10 +34,15 @@ const MEMBERS = { members: [
 ] };
 const KEY = '11111111-2222-4333-8444-555555555555';
 
+/** A plan as the lists answer it: metadata, a preview and progress, never the body. */
 const plan = (over: Record<string, unknown> = {}) => ({
   projectId: MYCO, planKey: KEY, sessionId: 's1', promptId: 'p1', title: 'Myco’s work as outcomes', status: 'in_progress',
-  content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line', blobKey: null, objectKey: null, originPath: 'docs/plans/work-outcomes.md',
+  originPath: 'docs/plans/work-outcomes.md', preview: '# Myco’s work as outcomes - [x] Group runs by task - [ ] Fold index upkeep into one line',
   progress: '1/2', updatedBy: null, createdAt: NOW - 3 * HOUR, updatedAt: NOW - HOUR, tags: ['ui'], ...over,
+});
+/** The same plan as its own read answers it, with its body. */
+const planDetail = (over: Record<string, unknown> = {}) => plan({
+  content: '# Myco’s work as outcomes\n\n- [x] Group runs by task\n- [ ] Fold index upkeep into one line', blobKey: null, objectKey: null, ...over,
 });
 const board = (plans: unknown[], cursor: string | null = null, totals?: Record<string, number>) => Response.json({ plans, cursor, hasMore: cursor !== null, maxPage: 200, ...(totals === undefined ? {} : { totals }) });
 const EMPTY = () => board([]);
@@ -92,6 +97,15 @@ const column = (status: string) => document.querySelector(`[data-plan-column="${
 const rawIdsInPage = (): string[] => rawIdsIn(document.body, ['[data-testid="location"]']);
 
 describe('the plans board', () => {
+  it('shows no progress for a plan whose progress Myco is still counting, rather than an empty task list', async () => {
+    server(base(columns('', { in_progress: () => board([plan({ progress: null, preview: null })]) })));
+    mount('/knowledge/plans');
+    await waitFor(() => expect(document.querySelectorAll('[data-plan]')).toHaveLength(1));
+    expect(within(column('in_progress')).getByRole('link', { name: 'Myco’s work as outcomes' })).toBeTruthy();
+    expect(within(column('in_progress')).queryByRole('meter', { name: 'Plan items done' })).toBeNull();
+    expect(column('in_progress').textContent).not.toContain('items done');
+  });
+
   it('lays out every status as a column, each plan leading to its page and to the session that wrote it', async () => {
     const totals = { in_progress: 3, active: 1, completed: 12, abandoned: 1 };
     const { requested } = server(base(columns('', {
@@ -184,7 +198,7 @@ it('pages a column on its cursor, keeping the column’s count', async () => {
 });
 
 describe('a plan’s page', () => {
-  const onePlan = (over: Record<string, unknown> = {}) => Response.json({ plan: plan(over), projectId: MYCO });
+  const onePlan = (over: Record<string, unknown> = {}) => Response.json({ plan: planDetail(over), projectId: MYCO });
   const PLAN = `/api/projects/${MYCO}/plans/${KEY}`;
   const sessionAnswer = () => Response.json({
     session: { projectId: MYCO, sessionId: 's1', agent: 'claude-code', title: 'Work outcomes counted per task', label: 's1', summary: null, startedAt: NOW - 4 * HOUR, firstReceivedAt: NOW - 4 * HOUR, lastReceivedAt: NOW - 3 * HOUR, endedAt: NOW - 3 * HOUR, memberId: null, memberLabel: null, runtimeLabel: null, branch: null, originPath: null, parentSessionId: null, parentReason: null, endedBy: null, endedByLabel: null },
@@ -246,7 +260,7 @@ describe('a plan’s page', () => {
     const { sent } = server(base({
       [PLAN]: () => onePlan({ status }),
       [`/api/projects/${MYCO}/sessions/s1`]: sessionAnswer,
-      [`/api/projects/${MYCO}/sessions/s1/plans/${KEY}/status`]: () => { status = 'completed'; return Response.json({ plan: plan({ status }) }); },
+      [`/api/projects/${MYCO}/sessions/s1/plans/${KEY}/status`]: () => { status = 'completed'; return Response.json({ plan: planDetail({ status }) }); },
     }));
     mount(planPagePath(MYCO, { planKey: KEY }));
     fireEvent.click(await screen.findByRole('combobox', { name: /^Plan\ status(?::|$)/ }));

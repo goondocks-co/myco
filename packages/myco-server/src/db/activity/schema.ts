@@ -115,6 +115,3 @@ export function projectActivitySchemaStatements(): string[] {
       SELECT '${ACTIVITY_PROJECTION}','${source.phase}',NOT EXISTS(SELECT 1 FROM ${source.table})`),
   ];
 }
-
-/** The tables the step builds triggers on. */
-export const ACTIVITY_SOURCE_TABLES = [...Object.values(SOURCES).map(source => source.table), 'session_tombstones'] as const;

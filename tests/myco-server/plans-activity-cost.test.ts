@@ -8,6 +8,8 @@ import {
   plans_pageSessionPlans as pageSessionPlans,
 } from '@myco-server-worker/read/catalog/plans.js';
 import { activity_activityFeed as activityFeed } from '@myco-server-worker/read/catalog/activity.js';
+import { session_activity_sessionEdges as sessionEdges } from '@myco-server-worker/read/catalog/session-activity.js';
+import { encodeCursor } from '@myco-server-worker/read/scope.js';
 import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
 import { d1TwoScale, eachUnit, expectTwoScale, type CostCase } from './helpers/two-scale.js';
 
@@ -33,6 +35,12 @@ async function setup(db: RelationalStore): Promise<void> {
   // The session a member writes plans into, and a session with three plans newer than any history.
   await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
     VALUES('proj_w','writer','machine','credential',?1,?1),('proj_a','target','machine','credential',?1,?1)`).bind(NOW).run();
+  // The target session continues another, launched two children and is continued by two sessions.
+  await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,launch_parent_session_id,parent_session_id)
+    VALUES('proj_a','root','machine','credential',?1,?1,NULL,NULL),('proj_a','child-1','machine','credential',?1+1,?1+1,'target',NULL),
+      ('proj_a','child-2','machine','credential',?1+2,?1+2,'target',NULL),('proj_a','cont-1','machine','credential',?1+3,?1+3,NULL,'target'),
+      ('proj_a','cont-2','machine','credential',?1+4,?1+4,NULL,'target')`).bind(NOW).run();
+  await db.prepare("UPDATE sessions SET parent_session_id='root',parent_reason='resume' WHERE project_id='proj_a' AND session_id='target'").run();
   for (const n of [1, 2, 3]) {
     await db.prepare(`INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
       VALUES('proj_a',?1,'target',?1,'machine','Target','- [x] a','h','active',?2,?2,'credential',?2)`).bind(`target-${n}`, NOW + n).run();
@@ -45,8 +53,9 @@ async function grow(db: RelationalStore, from: number, to: number): Promise<void
       SELECT ?3,'plan-'||i,'history-'||i,'e-'||i,'machine','History '||i,'- [x] one'||char(10)||'- [ ] two','h',
         CASE i%4 WHEN 0 THEN 'abandoned' WHEN 1 THEN 'completed' WHEN 2 THEN 'in_progress' ELSE 'active' END,?4-i,?4-i,'credential',?4 FROM n`, project, NOW - 1_000);
   }
-  await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
-    SELECT 'proj_a','history-'||i,'machine','credential',?3-i,?3-i FROM n`, NOW - 1_000);
+  // History sessions have parents of their own: other sessions' lineage grows, the target's does not.
+  await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,launch_parent_session_id,parent_session_id)
+    SELECT 'proj_a','history-'||i,'machine','credential',?3-i,?3-i,'history-'||(i/10),'history-'||(i/7) FROM n`, NOW - 1_000);
   await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at,completed_at)
     SELECT 'proj_a','run-'||i,'agent','extract-curate','completed',?3-i,?3-i,?3-i FROM n`, NOW - 1_000);
   await eachUnit(db, from, to, `INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,created_at)
@@ -76,6 +85,13 @@ const CASES: CostCase[] = [
         await twoPages(cursor => pagePlansAcross(db, set, { limit: PAGE, ...(status === undefined ? {} : { status }), ...(cursor === undefined ? {} : { cursor }) }));
       }
     }
+  } },
+  { name: "a session's related sessions: every kind, one kind, and a later page", run: async (db) => {
+    const all = await sessionEdges(db, A, 'target', { limit: 3 });
+    expect(all.map(row => row.id)).toEqual(['continued_by:cont-2', 'continued_by:cont-1', 'child:child-2', 'child:child-1']);
+    for (const type of ['child_session', 'continuation'] as const) expect((await sessionEdges(db, A, 'target', { type })).length).toBeGreaterThan(0);
+    const last = all[2]!;
+    expect((await sessionEdges(db, A, 'target', { limit: 3, cursor: encodeCursor(last.at, last.id) })).map(row => row.id)).toEqual(['child:child-1', 'continues:root']);
   } },
   { name: 'activity feed, first page', run: async (db) => {
     const feed = (await activityFeed(db, A, { limit: PAGE }))!;

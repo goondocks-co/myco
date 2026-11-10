@@ -31,7 +31,7 @@ export interface PlanListRow {
 /** The key a page starts after: the edit instant and the plan, and across Projects the Project between them. */
 export interface PlanPageKey { updatedAt: number; projectId?: string; planKey: string }
 
-export const PLAN_LIST_COLUMNS = `p.project_id,p.plan_key,p.session_id,p.prompt_id,p.title,p.status,p.origin_path,p.updated_by,p.created_at,p.updated_at,
+const PLAN_LIST_COLUMNS = `p.project_id,p.plan_key,p.session_id,p.prompt_id,p.title,p.status,p.origin_path,p.updated_by,p.created_at,p.updated_at,
   m.preview,m.progress_done,m.progress_total`;
 const FROM = (index: string) => `FROM plans p INDEXED BY ${index} LEFT JOIN plan_metadata m ON m.project_id=p.project_id AND m.plan_key=p.plan_key`;
 const SHOWN = notTombstonedSql('p');

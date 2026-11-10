@@ -14,7 +14,7 @@ const PLAN_METADATA_PROJECTION = 'plan_metadata';
 const PLAN_METADATA_PHASE = 'planMetadata';
 
 /** How many characters of a plan's opening its preview keeps. */
-export const PLAN_PREVIEW_CHARS = 240;
+const PLAN_PREVIEW_CHARS = 240;
 /** The body characters a preview is cut from, before whitespace is folded and the preview trimmed. */
 const PREVIEW_SOURCE_CHARS = PLAN_PREVIEW_CHARS * 2;
 
