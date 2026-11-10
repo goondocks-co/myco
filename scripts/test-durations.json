@@ -602,6 +602,8 @@
     "tests/myco-server/repositories.test.ts": 1725,
     "tests/myco-server/restore-authority.test.ts": 1265,
     "tests/myco-server/restore-continuation.test.ts": 2268,
+    "tests/myco-server/restore-job-pacing.test.ts": 12000,
+    "tests/myco-server/restore-job.test.ts": 15000,
     "tests/myco-server/review-permissions.test.ts": 1150,
     "tests/myco-server/routes.test.ts": 9,
     "tests/myco-server/run-admission-corrections.test.ts": 2185,

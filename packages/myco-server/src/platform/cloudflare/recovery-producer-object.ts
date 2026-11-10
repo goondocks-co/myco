@@ -1,4 +1,4 @@
-import { readRecoveryForget } from '../../core/recovery-forget.js';
+import { readRecoveryForget } from '../../db/recovery/forget-commands.js';
 import { SCHEDULED_BY } from '../../core/recovery-admission.js';
 /**
  * The hosted recovery producer's checkpoint authority: one Durable Object holding every durable fact of one attempt

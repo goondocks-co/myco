@@ -4,11 +4,10 @@
  * revoked, keeping their attribution; F keeps its own owner, and only F's owner re-admits a person. The preview says
  * so. A same-lineage replacement restore inserts the same rows as they are.
  */
+import { restoreStoredBackup } from './helpers/stored-restore.js';
 import { describe, expect, it } from 'bun:test';
-import {
-  BACKUP_TABLES, backupArtifact, createBackup, deploymentId, FOREIGN_AUTHORITY_NOTICE, FOREIGN_AUTHORITY_TABLES,
-  previewRestore, restoreArtifact, restoreBackup,
-} from '@myco-server-worker/core/backup.js';
+import { BACKUP_TABLES, backupArtifact, createBackup, deploymentId, FOREIGN_AUTHORITY_NOTICE, FOREIGN_AUTHORITY_TABLES, previewRestore } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import { authenticateServerMemberToken, releasedRunCredential } from '@myco-server-worker/auth/tokens.js';
 import { authenticateGrant } from '@myco-server-worker/auth/grants.js';
 import { authenticateRunner } from '@myco-server-worker/auth/runners.js';
@@ -129,7 +128,7 @@ describe('foreign-lineage restore of people and access', () => {
       expect(preview.authorityExcluded).toEqual({ tables: [...FOREIGN_AUTHORITY_TABLES], notice: FOREIGN_AUTHORITY_NOTICE });
       expect(preview.authorityExcluded!.notice).toContain('cannot sign in until the owner re-admits them');
 
-      const outcome = (await restoreBackup(f.db, f.bucket, { authorization: { kind: 'recovery' }, id: postFork.id, allowForeignLineage: true, now: NOW }))!;
+      const outcome = (await restoreStoredBackup(f.db, f.bucket, { authorization: { kind: 'recovery' }, id: postFork.id, allowForeignLineage: true, now: NOW }))!;
       expect(outcome.tables.member_credentials?.inserted).toBe(3);
       expect(outcome.tables.deployment_ownership?.skipped).toContain('keeps its own owner');
       expect(liveBearers(f)).toEqual(['member_credentials:cred_f']);
@@ -148,7 +147,7 @@ describe('foreign-lineage restore of people and access', () => {
       const listed = (await listMembers(f.db, NOW)).rows;
       expect(listed.filter((member) => member.awaitingAdmission).map((member) => member.id)).toEqual(['mem_new']);
 
-      const again = (await restoreBackup(f.db, f.bucket, { authorization: { kind: 'recovery' }, id: postFork.id, allowForeignLineage: true, now: NOW + 1 }))!;
+      const again = (await restoreStoredBackup(f.db, f.bucket, { authorization: { kind: 'recovery' }, id: postFork.id, allowForeignLineage: true, now: NOW + 1 }))!;
       expect(again.tables.member_credentials?.inserted).toBe(0);
       expect(await authenticated(f)).toEqual([]);
 
@@ -175,7 +174,7 @@ describe('foreign-lineage restore of people and access', () => {
       const preview = (await previewRestore(replacement.db, replacement.bucket, saved.id))!;
       expect({ foreign: preview.foreignLineage, excluded: preview.authorityExcluded }).toEqual({ foreign: false, excluded: null });
 
-      await restoreBackup(replacement.db, replacement.bucket, { authorization: { kind: 'recovery' }, id: saved.id, now: NOW });
+      await restoreStoredBackup(replacement.db, replacement.bucket, { authorization: { kind: 'recovery' }, id: saved.id, now: NOW });
       const columns = 'id, role, revoked_at, revoked_by';
       expect(replacement.sqlite.query(`SELECT ${columns} FROM members ORDER BY id`).all())
         .toEqual(a.sqlite.query(`SELECT ${columns} FROM members ORDER BY id`).all());

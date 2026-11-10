@@ -1,4 +1,4 @@
-import { issueRecoveryForget } from '../core/recovery-forget.js';
+import { issueRecoveryForget } from '../db/recovery/forget-commands.js';
 import { forbiddenToMember } from '../auth/roles.js';
 /**
  * The hosted recovery producer's owner surface: start one export attempt, and read what it staged.

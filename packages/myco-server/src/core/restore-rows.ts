@@ -56,11 +56,10 @@ function dropDeletedSessionRows(tables: Map<string, Row[]>, deleted: ReadonlySet
   const deletedPlans = new Set((tables.get('plans') ?? []).filter(deletedContent).map(row => identity(row.project_id, row.plan_key)));
   const deletedPrompts = new Set([
     ...(tables.get('event_refs') ?? []).filter(row => deletedContent(row) && row.kind === 'prompt').map(row => identity(row.project_id, row.record_id)),
-    ...['prompt_batches','session_prompts'].flatMap(table => (tables.get(table) ?? []).filter(deletedContent).map(row => identity(row.project_id, row.prompt_id))),
+    ...['session_prompts'].flatMap(table => (tables.get(table) ?? []).filter(deletedContent).map(row => identity(row.project_id, row.prompt_id))),
   ]);
   const deletedReceipts = new Set((tables.get('spore_injections') ?? []).filter(deletedContent).map(row => identity(row.project_id,row.id)));
-  const removedTables = new Set<string>([...DERIVED_TABLES, 'run_reads', 'run_served_material',
-    'prompt_batches', 'responses', 'tool_calls', 'fact_classes', 'prompt_key_owners']);
+  const removedTables = new Set<string>([...DERIVED_TABLES, 'run_reads', 'run_served_material']);
   for (const [table, rows] of tables) {
     if (table === 'session_tombstones') continue;
     tables.set(table, rows.filter(row => {
@@ -124,9 +123,6 @@ export async function excludeDeletedRestoreRows(db: RelationalStore, tables: Map
   dropDeletedSessionRows(tables, deleted);
   const required = new Set([...tables].flatMap(([table, rows]) => table === 'blobs' ? [] : rows.flatMap(row => restoreBlobReferences(table, row)))
     .map(pair => identity(pair.projectId, pair.key)));
-  for (const table of ['prompt_batches','responses','tool_calls']) for (const row of tables.get(table) ?? []) {
-    for (const column of ['blob_key','input_blob_key','output_blob_key']) if (typeof row[column] === 'string') required.add(identity(row.project_id,row[column]));
-  }
   tables.set('blobs', (tables.get('blobs') ?? []).filter(row => required.has(identity(row.project_id, row.key))));
   return guarded;
 }

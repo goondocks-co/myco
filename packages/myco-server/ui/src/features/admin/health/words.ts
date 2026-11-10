@@ -241,6 +241,26 @@ export function countsWords(counts: Record<string, number>): string {
   return parts.length === 0 ? 'It holds no records.' : parts.join(' · ');
 }
 
+/** A restore as its owner reads it: how far it has walked, what it added, or why it stopped and what to do. */
+export function restoreWords(job: { state: 'running' | 'complete' | 'failed'; rowsDone: number; rowsTotal: number; acceptedAt: number;
+  outcome: { tables: Record<string, { inserted: number }> }; failure: { message: string } | null; retrying: { errorClass: string } | null;
+  awaitingDocuments: boolean }): { title: string; detail: string | null } {
+  const added = Object.values(job.outcome.tables).reduce((sum, t) => sum + t.inserted, 0).toLocaleString();
+  const started = backupDate(job.acceptedAt);
+  if (job.state === 'complete') return { title: `Restored: ${added} records added.`, detail: null };
+  if (job.state === 'failed') {
+    return { title: `The restore started ${started} stopped.`, detail: `${job.failure?.message ?? 'It met an error it cannot continue past.'} Records it added stay; restoring the same backup again picks up from them.` };
+  }
+  const percent = job.rowsTotal === 0 ? 0 : Math.min(99, Math.floor((job.rowsDone / job.rowsTotal) * 100));
+  if (job.awaitingDocuments) {
+    return { title: `Restoring: ${percent}% done, ${added} records added so far.`, detail: 'Session transcripts are restored only while this page continues the restore. Continue it to finish.' };
+  }
+  return {
+    title: `Restoring: ${percent}% done, ${added} records added so far.`,
+    detail: job.retrying !== null ? 'Its last step failed and is being tried again; records already added stay.' : 'It continues on the server in small steps; you can leave this page.',
+  };
+}
+
 // ---------- Measures ----------
 
 export const percent = (share: number): string => `${(share * 100).toFixed(share >= 0.1 ? 0 : 1)}%`;

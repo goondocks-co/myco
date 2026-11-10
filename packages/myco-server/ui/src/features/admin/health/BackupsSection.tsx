@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
-import { useBackups, type BackupRow, type RestoreOutcome, type RestorePreview } from '../../../hooks/use-backups';
+import { useBackups, useRestoreJob, type BackupRow, type RestoreJob, type RestorePreview } from '../../../hooks/use-backups';
 import { useForgetUnsettledExport, useRecovery } from '../../../hooks/use-recovery';
 import type { RecoveryProducerStatus, RecoveryStatus } from './wire';
 import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import {
-  BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, retiredFormatWords, sizeLabel, verificationWords, whenLabel,
+  BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, restoreWords, retiredFormatWords, sizeLabel, verificationWords, whenLabel,
 } from './words';
 import { ApiError } from '../../../lib/api';
 
@@ -31,19 +31,27 @@ export function BackupsSection() {
   const [confirming, setConfirming] = useState<{ row: BackupRow; preview: RestorePreview } | null>(null);
   const [adopt, setAdopt] = useState(false);
   const [adoptAsked, setAdoptAsked] = useState(false);
-  const [outcome, setOutcome] = useState<RestoreOutcome | null>(null);
+  const [startedHere, setStartedHere] = useState<RestoreJob | null>(null);
 
   const rows = backups.list.data?.pages.flatMap((page) => page.backups) ?? [];
   const retention = backups.create.data?.retention.recordingErrorClass !== undefined
     ? backups.create.data.retention : backups.list.data?.pages[0]?.retention?.outcome;
   const lastFailure = backups.list.data?.pages[0]?.retention?.lastFailure;
+  const latest = backups.list.data?.pages[0]?.restore ?? null;
+  // The restore started here is followed to its end; one started elsewhere is shown while it runs or after it stopped.
+  const shown = startedHere ?? (latest !== null && latest.state !== 'complete' ? latest : null);
+  const followed = useRestoreJob(shown?.state === 'running' ? shown.id : null).data?.job;
+  const acted = backups.stopRestore.data?.job ?? backups.continueRestore.data?.job;
+  const current = followed?.id === shown?.id && followed !== undefined ? followed : shown;
+  const restore = acted !== undefined && acted.id === current?.id ? acted : current;
   const openRestore = (row: BackupRow) => {
-    setOutcome(null);
+    setStartedHere(null);
     backups.restore.reset();
     backups.preview.mutate(row.id, { onSuccess: (preview) => { setAdopt(false); setAdoptAsked(false); setConfirming({ row, preview }); } });
   };
   const actionError = backups.create.error ?? backups.pin.error ?? backups.preview.error ?? backups.verify.error;
-  const skips = outcome === null ? [] : Object.entries(outcome.tables).filter(([, t]) => t.skipped !== undefined && t.skipped !== 'retired');
+  const skips = restore?.state !== 'complete' ? [] : Object.entries(restore.outcome.tables).filter(([, t]) => t.skipped !== undefined && t.skipped !== 'retired');
+  const restoreSays = restore === null ? null : restoreWords(restore);
 
   return (
     <AdminSection
@@ -106,7 +114,7 @@ export function BackupsSection() {
                     items={[
                       { label: row.pinned === 1 ? 'Unpin' : 'Pin', disabled: !backupPermission.allowed || backups.pin.isPending, onSelect: () => backups.pin.mutate({ id: row.id, pinned: row.pinned !== 1 }) },
                       { label: 'Check this backup', disabled: !backupPermission.allowed || backups.verify.isPending, onSelect: () => backups.verify.mutate(row.id) },
-                      { label: 'Restore…', tone: 'danger', disabled: !backupPermission.allowed || row.verification.detail === 'absent' || backups.preview.isPending || backups.restore.isPending, onSelect: () => openRestore(row) },
+                      { label: 'Restore…', tone: 'danger', disabled: !backupPermission.allowed || row.verification.detail === 'absent' || backups.preview.isPending || backups.restore.isPending || restore?.state === 'running', onSelect: () => openRestore(row) },
                     ]}
                   />
                 </span>
@@ -115,10 +123,20 @@ export function BackupsSection() {
           </RowCard>
         )}
       {backups.list.hasNextPage && <Button variant="ghost" pending={backups.list.isFetchingNextPage} onClick={() => void backups.list.fetchNextPage()}>Show older backups</Button>}
-      {outcome !== null && (
-        <Card className="flex flex-col gap-s1" data-health-restored="">
-          <p className="t-body text-ink">Restored: {Object.values(outcome.tables).reduce((sum, t) => sum + t.inserted, 0).toLocaleString()} records added.</p>
-          {outcome.retiredNotice !== undefined && <p className="t-small text-warn" data-restore-retired="">{outcome.retiredNotice}</p>}
+      {restore !== null && restoreSays !== null && (
+        <Card role="status" className="flex flex-col gap-s1" data-health-restored="" data-restore-state={restore.state}>
+          <p className={cn('t-body', restore.state === 'failed' ? 'text-bad' : 'text-ink')}>{restoreSays.title}</p>
+          {restoreSays.detail !== null && <p className="t-small text-muted" data-restore-detail="">{restoreSays.detail}</p>}
+          {restore.state === 'running' && (
+            <span className="flex flex-wrap gap-s2">
+              {restore.awaitingDocuments && <Button variant="primary" disabled={!backupPermission.allowed || backups.stopRestore.isPending} pending={backups.continueRestore.isPending}
+                onClick={() => backups.continueRestore.mutate(restore.id)}>Continue restore</Button>}
+              <Button variant="ghost" disabled={!backupPermission.allowed || backups.continueRestore.isPending} pending={backups.stopRestore.isPending}
+                onClick={() => backups.stopRestore.mutate(restore.id)}>Stop restore</Button>
+            </span>
+          )}
+          {(backups.continueRestore.error ?? backups.stopRestore.error) !== null && <p role="alert" className="t-small text-bad">{failure(backups.continueRestore.error ?? backups.stopRestore.error)}</p>}
+          {restore.state === 'complete' && restore.outcome.retiredNotice !== undefined && <p className="t-small text-warn" data-restore-retired="">{restore.outcome.retiredNotice}</p>}
           {skips.map(([table, t]) => <p key={table} className="t-small text-warn">{table.replace(/_/g, ' ')}: {t.skipped}</p>)}
         </Card>
       )}
@@ -137,7 +155,7 @@ export function BackupsSection() {
           if (confirming === null) return;
           if (confirming.preview.restore?.allowed !== true) return;
           if (confirming.preview.foreignLineage && !adopt) { setAdoptAsked(true); return; }
-          backups.restore.mutate({ id: confirming.row.id, allowForeignLineage: adopt }, { onSuccess: (result) => { setOutcome(result); setConfirming(null); } });
+          backups.restore.mutate({ id: confirming.row.id, allowForeignLineage: adopt }, { onSuccess: (result) => { setStartedHere(result.job); setConfirming(null); } });
         }}
       >
         {confirming !== null && (

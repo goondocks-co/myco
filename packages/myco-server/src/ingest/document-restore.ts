@@ -96,15 +96,35 @@ async function artifactDocument(env:Pick<ServerEnv,'db'|'blobs'>, tables:Readonl
   return snapshot;
 }
 
-/** Decides each session document the artifact holds, reading the target before anything is written. */
-async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, byTable: ReadonlyMap<string, readonly Row[]>): Promise<DocumentRestorePlan> {
+/** What the plan before any write decided for one session: converted from its snapshot, or merged into its live document. */
+type DocumentDecision = 'convert' | 'merge';
+
+/** Every session document the artifact holds, by key, sorted: the order a restore walks them in. */
+function documentSessionKeys(byTable: ReadonlyMap<string, readonly Row[]>): string[] {
+  return [...new Set((byTable.get('session_documents') ?? []).map((doc) => JSON.stringify([doc.project_id, doc.session_id])))].sort();
+}
+
+/**
+ * Decides each session document the artifact holds, reading the target. `only` limits it to a page of sessions. With
+ * `decided`, the decisions the plan before any write made hold: a session decided for conversion converts while its
+ * live document is still empty (the restored transcripts and events open one), and merges once an earlier pass of the
+ * same restore filled it; a session the first plan left out stays out.
+ */
+async function planDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, byTable: ReadonlyMap<string, readonly Row[]>,
+  page: { only?: ReadonlySet<string>; decided?: ReadonlyMap<string, DocumentDecision> } = {}): Promise<DocumentRestorePlan> {
   const plan: DocumentRestorePlan = { convert: [], merge: [] };
   for (const doc of byTable.get('session_documents') ?? []) {
     if (typeof doc.project_id !== 'string' || typeof doc.session_id !== 'string') throw new Error('artifact_document_identity');
     const ref = { projectId: doc.project_id, sessionId: doc.session_id };
+    const key = JSON.stringify([ref.projectId, ref.sessionId]);
+    if (page.only !== undefined && !page.only.has(key)) continue;
+    const decision = page.decided?.get(key);
+    if (page.decided !== undefined && decision === undefined) continue;
     const snapshot = await artifactDocument(env, byTable, doc);
     if (await isTombstoned(env.db, ref.projectId, ref.sessionId)) continue;
-    (await documentIds(env, ref) === null ? plan.convert : plan.merge).push({ ...ref, snapshot });
+    const held = await documentIds(env, ref);
+    const converts = decision === undefined ? held === null : decision === 'convert' && (held === null || held.size === 0);
+    (converts ? plan.convert : plan.merge).push({ ...ref, snapshot });
   }
   return plan;
 }
@@ -189,15 +209,27 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldD
   });
 }
 
-/** The document side of a restore over this environment, as `core/backup.ts` takes it. */
+/**
+ * The document side of a restore over this environment, as `core/backup.ts` takes it: the whole plan before any
+ * write, then a page of sessions at a time, each page planned again against the documents as they stand.
+ */
 export function restoreDocuments(env: Pick<ServerEnv, 'db' | 'blobs'>): RestoreDocuments {
   return {
+    sessions: documentSessionKeys,
     async plan(byTable) {
       const plan = await planDocumentRestore(env, byTable);
+      const key = (session: HeldDocument) => JSON.stringify([session.projectId, session.sessionId]);
       return {
         summary: { convert: plan.convert.length, merge: plan.merge.length },
-        apply: (now) => applyDocumentRestore(env, plan, now),
+        decisions: [...plan.convert.map((session): [string, string] => [key(session), 'convert']), ...plan.merge.map((session): [string, string] => [key(session), 'merge'])],
       };
+    },
+    async apply(byTable, { after, limit, now, decisions }) {
+      const remaining = documentSessionKeys(byTable).filter((key) => after === null || key > after);
+      const page = remaining.slice(0, limit);
+      if (page.length === 0) return { sessions: 0, last: null };
+      await applyDocumentRestore(env, await planDocumentRestore(env, byTable, { only: new Set(page), decided: new Map(decisions as readonly [string, DocumentDecision][]) }), now);
+      return { sessions: page.length, last: page.length === remaining.length ? null : page.at(-1)! };
     },
   };
 }

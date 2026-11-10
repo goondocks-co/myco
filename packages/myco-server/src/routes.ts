@@ -42,7 +42,7 @@ import {
 import {
   handleBackupArtifact, handleCreateBackup, handleListBackups,
   handleVerifyBackup, handlePinBackup,
-  handleRestoreBackup, handleRestorePreview, handleRestoreUpload,
+  handleContinueRestore, handleStopRestore, handleRestoreBackup, handleRestorePreview, handleRestoreProgress, handleRestoreUpload,
 } from './api/backups.js';
 import { handleForgetUnsettledExport, handleRecoveryExportStatus, handleStartRecoveryExport } from './api/recovery.js';
 import { MAX_UPLOAD_BODY_BYTES } from './core/backup.js';
@@ -305,6 +305,9 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/{backupId}/pin', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/pin$/, auth: 'session', authority: 'admin', handler: handlePinBackup },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/{backupId}/verify', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/verify$/, auth: 'session', authority: 'admin', handler: handleVerifyBackup },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/backups/{backupId}/artifact', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/artifact$/, auth: 'session', authority: 'admin', handler: handleBackupArtifact },
+  { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/backups/restores/{restoreId}', pattern: /^\/api\/backups\/restores\/(?<restoreId>[A-Za-z0-9._-]{1,64})$/, auth: 'session', authority: 'admin', handler: handleRestoreProgress },
+  { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/restores/{restoreId}/stop', pattern: /^\/api\/backups\/restores\/(?<restoreId>[A-Za-z0-9._-]{1,64})\/stop$/, auth: 'session', authority: 'admin', handler: handleStopRestore },
+  { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/restores/{restoreId}/continue', pattern: /^\/api\/backups\/restores\/(?<restoreId>[A-Za-z0-9._-]{1,64})\/continue$/, auth: 'session', authority: 'admin', handler: handleContinueRestore },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/restore-upload', auth: 'session', authority: 'admin', maxBodyBytes: MAX_UPLOAD_BODY_BYTES, handler: handleRestoreUpload },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/kpis', auth: 'session', authority: 'member', handler: handleKpis },
   // Today (#1518): the three lists across Projects, Myco's work over a window, and what needs an administrator.

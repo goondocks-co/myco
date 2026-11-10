@@ -1,5 +1,6 @@
 import type { BlobStore, PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './restore-artifact.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { tombstoneSession } from './session-deletion.js';
 import { sessions_getSession as getSession } from '@myco-server-worker/read/catalog/sessions.js';

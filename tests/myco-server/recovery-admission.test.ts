@@ -10,7 +10,7 @@ import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryA
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { acquireOperatorHold, recoveryHoldRelease, settleOperatorHold } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { SCHEMA_QUERY } from '@myco-server-worker/core/recovery-schema.js';
+import { SCHEMA_QUERY } from '@myco-server-worker/db/recovery/schema-catalogue.js';
 import { admitRecoveryExport } from '@myco-server-worker/core/recovery-admission.js';
 
 const OWNER = { member: { id: 'mem_machine_1' }, now: 1_000 } as never;

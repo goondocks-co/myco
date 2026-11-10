@@ -296,8 +296,8 @@ export const interruptedRestoreOwner: ParityScenario = {
       WHEN NEW.machine_id = ${lit(machineId)} BEGIN SELECT RAISE(ABORT, 'interrupted owner restore'); END`);
     try {
       const failed = await request(target, '/api/backups/restore-upload', target.ownerHeaders(), { artifact });
-      expect(failed.status).toBe(400);
-      expect((await failed.json() as { reason: string }).reason).toContain('interrupted owner restore');
+      expect(failed.status).toBe(409);
+      expect((await failed.json() as { message: string }).message).toContain('interrupted owner restore');
     } finally {
       await target.sql('DROP TRIGGER interrupted_owner_restore');
     }
