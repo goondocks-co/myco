@@ -56,7 +56,7 @@ const SOURCE_PATH = /^(?:\.{1,2}\/)*([\w@./-]+\.(?:[cm]?[jt]sx?))(?:#[\w$.]+)?$/
 const STORE_CALL = /\.(?:exec|run|prepare|query|sql|batch)\(/g;
 const SCENARIO_WRITE_CALL = /\.sql\(/g;
 const SCREEN_WRITE_CALL = /\.(?:sql|run|query|exec|prepare)\(/g;
-const WRITE_KEYWORD = /\b(?:INSERT|UPDATE|DELETE)\b|\bREPLACE\s+INTO\b/i;
+const WRITE_KEYWORD = /\bINSERT\s+(?:OR\s+\w+\s+)?INTO\b|\bUPDATE\s+\w+\s+SET\b|\bDELETE\s+FROM\b|\bREPLACE\s+INTO\b/i;
 
 const RULES = {
   productTable: (name) => ({
