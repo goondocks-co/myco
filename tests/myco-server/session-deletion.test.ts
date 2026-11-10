@@ -17,7 +17,7 @@ import { blobOnlyInDeletedSessions } from '@myco-server-worker/db/raw/resources.
 import { credentialEvents } from '@myco-server-worker/db/credentials/activity.js';
 import { machineActivity } from '@myco-server-worker/read/machines.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { searchWords as searchProject } from './helpers/search-fixture.js';
 import { plans_listProjectPlans as listProjectPlans } from '@myco-server-worker/read/catalog/plans.js';
 import { plans_getPlan as getPlan } from '@myco-server-worker/read/catalog/plans.js';
 import { sessions_getSession as getSession } from '@myco-server-worker/read/catalog/sessions.js';
@@ -97,9 +97,9 @@ describe('accepting a deletion', () => {
     const e = await rig();
     e.sqlite.run(`INSERT INTO turn_cards (project_id, session_id, turn_key, state, input_hash, card, signal, records, covered, last_seq, created_at, carded_at)
       VALUES ('proj_1', ?, 'turn-1', 'carded', 'h', ?, 'high', 1, 0, 1, ?, ?)`, [S, JSON.stringify({ prompt: 'searchcanaryword', response: 'searchcanaryword' }), NOW, NOW]);
-    expect((await searchProject(e.db, SCOPE, { query: 'searchcanaryword', mode: 'fts' })).results.length).toBeGreaterThan(0);
+    expect((await searchProject(e.db, SCOPE, { query: 'searchcanaryword', mode: 'fts' })).hits.length).toBeGreaterThan(0);
     await accept(e);
-    expect((await searchProject(e.db, SCOPE, { query: 'searchcanaryword', mode: 'fts' })).results).toHaveLength(0);
+    expect((await searchProject(e.db, SCOPE, { query: 'searchcanaryword', mode: 'fts' })).hits).toHaveLength(0);
   });
 });
 
@@ -354,7 +354,7 @@ describe('plans past the first page of acceptance', () => {
     expect(await listProjectPlans(e.db, SCOPE)).toEqual([]);
     const remaining = e.sqlite.query('SELECT plan_key FROM plans LIMIT 1').get() as { plan_key: string };
     expect(await getPlan(e.db, SCOPE, remaining.plan_key)).toBeNull();
-    expect((await searchProject(e.db, SCOPE, { query: 'plancanaryword', mode: 'fts' })).results).toHaveLength(0);
+    expect((await searchProject(e.db, SCOPE, { query: 'plancanaryword', mode: 'fts' })).hits).toHaveLength(0);
   });
 });
 
@@ -422,6 +422,7 @@ describe('completion and routes', () => {
       ['document_publication_ready', 'kept by triggers on the document rows'], ['document_publication_contributions', 'kept by triggers on the document rows'],
       ['document_publication_totals', 'kept by triggers on the document rows'], ['run_output_membership', 'a run keeps its output membership'], ['work_window_sessions', 'a run window'],
       ['session_deletion_jobs', 'the job itself'], ['transcript_reread_jobs', 'an owner reread job'],
+      ['search_documents', 'kept by triggers on the records it indexes, and hidden at read once the session is deleted'],
     ]);
     const phased = new Set(DELETION_PHASES.map(phase => phase.table));
     const missing = (e.sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>)

@@ -26,8 +26,9 @@ import { prepareEmbeddingDue } from '../../packages/myco-server/src/db/embedding
 import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/work.js';
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import {
-  search_searchProject as searchProject,
-} from '../../packages/myco-server/src/read/catalog/search.js';
+  searchDeployment,
+} from '../../packages/myco-server/src/core/search.js';
+import type { ServerEnv } from '../../packages/myco-server/src/core/adapters.js';
 import { createBackup, setBackupPinned } from '../../packages/myco-server/src/core/backup.js';
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { indexFixture } from '../myco-server/helpers/vector-index.js';
@@ -257,8 +258,8 @@ it('recovers hosted data, independently wrapped credentials and pinned artifacts
       const vectors = sqliteVectorStore(db);
       expect(await reconcileEmbedding({ db: store, blobs: diskBlobStore(f.paths.blobDir), provider: f.provider, vectors }, 'proj_1', 2000))
         .toEqual({ phase: 'missing', processed: 1 });
-      const search = await searchProject(store, { projectId: 'proj_1' }, { query: 'architecture', mode: 'semantic' }, async () => ({ provider: f.provider, vectors }));
-      expect(search.results.map((row) => row.id)).toEqual(['memory']);
+      const search = await searchDeployment({ db: store, vectors, embeddingProvider: async () => f.provider } as unknown as ServerEnv, { projectId: 'proj_1' }, { query: 'architecture', mode: 'semantic' }, 'member:test');
+      expect(search.hits.map((row) => row.id)).toEqual(['memory']);
     } finally { db.close(); }
     await assertServedAfterStartup(f);
     expect(fs.readFileSync(path.join(f.artifact, 'myco.sqlite'))).toEqual(original);

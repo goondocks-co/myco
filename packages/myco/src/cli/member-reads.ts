@@ -66,7 +66,7 @@ const iso = (ms: number | null | undefined): string => (typeof ms === 'number' &
 const sourceLine = (reader: DeploymentHandle): string => `Deployment: ${reader.serverUrl}  project: ${reader.projectId}`;
 
 interface SearchHit { id: string; type: string; title?: string; preview?: string; score: number }
-interface SearchAnswer { results: SearchHit[]; mode: string; provider_unavailable: boolean }
+interface SearchAnswer { hits: SearchHit[]; mode: string; provider_unavailable: boolean }
 
 async function runSearch(reader: DeploymentHandle, query: string, out: Out, err: Out): Promise<boolean> {
   const answer = await ask(reader, 'search', err, 'myco_search', { query, limit: SEARCH_LIMIT }) as SearchAnswer | null;
@@ -74,8 +74,8 @@ async function runSearch(reader: DeploymentHandle, query: string, out: Out, err:
   out(`=== Search: "${query}" ===`);
   out(sourceLine(reader));
   out(`Mode: ${answer.mode}${answer.provider_unavailable ? ' (semantic search unavailable on this Deployment)' : ''}`);
-  if (answer.results.length === 0) out('  (no results)');
-  for (const hit of answer.results) out(`  [${hit.type}] ${(hit.preview || hit.title || '').slice(0, CONTENT_SNIPPET_CHARS)}`);
+  if (answer.hits.length === 0) out('  (no results)');
+  for (const hit of answer.hits) out(`  [${hit.type}] ${(hit.preview || hit.title || '').slice(0, CONTENT_SNIPPET_CHARS)}`);
   return true;
 }
 
@@ -89,17 +89,17 @@ async function runVectors(reader: DeploymentHandle, query: string, out: Out, err
   out(`Query: "${query}"`);
   out(sourceLine(reader));
   out('');
-  if (answer.results.length === 0) {
+  if (answer.hits.length === 0) {
     out('(no results)');
     return true;
   }
-  const top = answer.results[0].score;
+  const top = answer.hits[0].score;
   out(`Top score: ${top.toFixed(4)}`);
   out(`Default threshold (${VECTORS_RELATIVE_THRESHOLD}x): ${(top * VECTORS_RELATIVE_THRESHOLD).toFixed(4)}`);
   out('');
   out('  Sim     Ratio  Type       ID');
   out('  ------  -----  ---------  ' + '-'.repeat(50));
-  for (const hit of answer.results) {
+  for (const hit of answer.hits) {
     const pass = hit.score >= top * VECTORS_RELATIVE_THRESHOLD ? '✓' : ' ';
     out(`${pass} ${hit.score.toFixed(4)}  ${(top === 0 ? 0 : hit.score / top).toFixed(2)}   ${(hit.type ?? 'unknown').padEnd(9)}  ${hit.id.slice(0, 50)}`);
   }

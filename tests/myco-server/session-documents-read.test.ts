@@ -14,7 +14,7 @@ import {
 import {
   hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
 } from '@myco-server-worker/read/catalog/hook-placement.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { searchWords as searchProject } from './helpers/search-fixture.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 
@@ -115,9 +115,8 @@ test('a published session reads its turns, a turn with its tools and their full 
     const listed = (await listSessionSummaries(db, scope, {}, Date.now())).rows.find((row) => row.sessionId === 'session')!;
     expect([listed.label, listed.promptCount, listed.toolCallCount], name).toEqual(['run the tests', 2, 3]);
     await db.prepare(`UPDATE turn_cards SET state='carded',card='Ran the flaky suite twice' WHERE project_id='project' AND session_id='session' AND turn_key=?`).bind(first).run();
-    const hits = await searchProject(db, scope, { query: 'flaky', type: 'prompt', session_id: 'session' });
-    expect(hits.results.map((hit) => [hit.id, hit.turn?.prompt_id, hit.turn?.preview]), name).toEqual([[first, first, 'run the tests']]);
-    expect((await searchProject(db, scope, { query: 'flaky', type: 'response' })).results.map((hit) => [hit.id, hit.turn?.prompt_id]), name).toEqual([[first, first]]);
+    const hits = await searchProject(db, scope, { query: 'flaky', type: 'card', session_id: 'session', mode: 'fts' });
+    expect(hits.hits.map((hit) => [hit.id, hit.turn?.prompt_id, hit.turn?.preview]), name).toEqual([[first, first, 'run the tests']]);
 
     // Every related session is reached, a page at a time.
     await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,launch_parent_session_id)

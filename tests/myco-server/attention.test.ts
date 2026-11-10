@@ -89,9 +89,8 @@ describe('Needs you', () => {
       sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation) VALUES ('proj_1', ?, 1, 'text/plain', 't', ?, ?)`, [key, storedAt, crypto.randomUUID()]);
       sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, content_hash, status, blob_key, created_at, updated_at, token_id, received_at)
                   VALUES ('proj_1', ?, 's', ?, 'm1', 'h', 'active', ?, 1, 1, 't', 1)`, [crypto.randomUUID(), `ev_${key}`, key]);
-      // A plan naming a blob enqueues it for the index; the queue row is then set to the state under test.
-      sqlite.run(`INSERT INTO search_blob_queue (project_id, blob_key, complete) VALUES ('proj_1', ?, ?)
-                  ON CONFLICT (project_id, blob_key) DO UPDATE SET complete = excluded.complete`, [key, complete]);
+      // A plan naming a stored body waits for the index; a body the index has read is set read.
+      if (complete === 1) sqlite.run(`UPDATE search_blobs SET state = 'indexed' WHERE project_id = 'proj_1' AND blob_key = ?`, [key]);
     };
     // Text stored a moment ago is being indexed, not behind.
     pending('a'.repeat(64), NOW - 5 * MINUTE);
@@ -108,7 +107,7 @@ describe('Needs you', () => {
       kind: 'search_index_behind', tone: 'warn', pendingBlobs: 1, pendingSince: NOW - 5 * MINUTE, failedUpdates: 0, failingSince: null, lastSuccessAt: NOW - HOUR,
     }]);
     // Updates failing after the last success, for longer than the bound, are behind whatever the text queue says.
-    sqlite.run(`UPDATE search_blob_queue SET complete = 1`);
+    sqlite.run(`UPDATE search_blobs SET state = 'indexed'`);
     run('proj_2', 'run_e4', 'embedding-reconcile', 'failed', NOW - 50 * MINUTE);
     expect((await read()).items).toEqual([{
       kind: 'search_index_behind', tone: 'warn', pendingBlobs: 0, pendingSince: null, failedUpdates: 1, failingSince: NOW - 50 * MINUTE, lastSuccessAt: NOW - HOUR,

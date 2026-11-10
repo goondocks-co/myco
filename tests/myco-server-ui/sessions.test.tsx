@@ -273,7 +273,7 @@ describe('the sessions table', () => {
 
   it('searches under the agent, branch and state a link carries, and reads the next matches by cursor', async () => {
     const hit = (id: string, title: string) => ({ id, type: 'session', title, preview: '', score: 1, created_at: NOW - HOUR, session_id: id });
-    const answer = (results: unknown[], cursor: string | null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor, hasMore: cursor !== null });
+    const answer = (results: unknown[], cursor: string | null) => Response.json({ hits: results, mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: cursor });
     const first = '/api/projects/x/search?q=cobalt&type=session&limit=20&status=completed&agent=codex&branch=fix&mode=fts';
     const { requested } = server(base({
       '/api/sessions': () => page([]),
@@ -1396,7 +1396,7 @@ describe('the session reading page', () => {
     const { requested } = server(routes({
       [SPORES]: () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
       [`${SPORES.replace('limit=25', 'limit=25&type=decision')}`]: () => Response.json({ spores: [], total: 0, maxPage: 200 }),
-      ['/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&session_id=s1&mode=fts']: () => Response.json({ results: [], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
+      ['/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&session_id=s1&mode=fts']: () => Response.json({ hits: [], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
     }));
     mount('/p/x/sessions/s1?tab=spores');
     await screen.findByRole('list', { name: 'Spores' });
@@ -1427,7 +1427,7 @@ describe('the session reading page', () => {
       [PLANS]: () => page([plan(), plan({ planKey: 'plan-2', title: null, status: 'active', progress: 'N/A', originPath: null, updatedAt: NOW - 2 * HOUR })], 'next'),
       [`${PLANS}&cursor=next`]: () => page([plan({ planKey: 'plan-3', title: 'Third plan', status: 'completed', progress: '2/2' })]),
       [`${PLANS}&status=completed`]: () => page([plan({ planKey: 'plan-3', title: 'Third plan', status: 'completed', progress: '2/2' })]),
-      ['/api/projects/x/search?q=nothing&type=plan&limit=20&status=completed&session_id=s1&mode=fts']: () => Response.json({ results: [], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
+      ['/api/projects/x/search?q=nothing&type=plan&limit=20&status=completed&session_id=s1&mode=fts']: () => Response.json({ hits: [], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
     }));
     mount('/p/x/sessions/s1?tab=plans');
     await screen.findByRole('list', { name: 'Plans' });
@@ -1456,7 +1456,7 @@ describe('the session reading page', () => {
   it('drops the search and the filter when another tab opens, so neither lands on a list it was not set on', async () => {
     server(routes({
       '/api/projects/x/spores?limit=25&type=gotcha&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
-      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ results: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
+      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ hits: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
       [PLANS]: () => page([plan()]),
     }));
     mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');
@@ -1473,8 +1473,8 @@ describe('the session reading page', () => {
     const SEARCH = '/api/projects/x/search';
     const DISTANT = '00000000-0000-7000-8000-000000000777';
     const turnOf = (promptId: string, preview: string | null = 'Please rename the project card') => ({ prompt_id: promptId, preview, text_chars: preview?.length ?? null, stored: preview === null });
-    const answer = (results: unknown[], cursor: string | null = null) => Response.json({ results, mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor });
-    const hit = (over: Record<string, unknown>) => ({ id: 'h', type: 'prompt', title: 'Prompt', preview: 'cobalt', score: 1, created_at: NOW - 2000, session_id: 's1', ...over });
+    const answer = (results: unknown[], cursor: string | null = null) => Response.json({ hits: results, mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: cursor });
+    const hit = (over: Record<string, unknown>) => ({ id: 'h', type: 'card', title: 'Turn', preview: 'cobalt', score: 1, created_at: NOW - 2000, session_id: 's1', ...over });
     const searchRequests = (requested: string[]) => requested.filter((path) => path.startsWith(`${SEARCH}?`)).map((path) => new URL(path, 'https://s').searchParams);
     const searchBox = () => screen.findByRole('searchbox', { name: 'Search this session' });
     const results = () => screen.findByRole('list', { name: 'Matches' });
@@ -1499,7 +1499,7 @@ describe('the session reading page', () => {
       expect(rows[0]!.querySelector('mark')!.textContent).toBe('cobalt');
       expect(rawIdsInPage()).toEqual([]);
       expect(searchRequests(requested).map((params) => [params.get('type'), params.get('session_id'), params.get('q'), params.get('mode'), params.get('order'), params.get('cursor')]))
-        .toEqual([['prompt', 's1', 'cobalt', 'fts', 'time', null]]);
+        .toEqual([['card', 's1', 'cobalt', 'fts', 'time', null]]);
       expect(requested.some((path) => /\/turns\?.*&turn=/.test(path))).toBe(false);
       fireEvent.click(within(rows[0]!).getByRole('link'));
       await waitFor(() => expect(location()).toBe(`/p/x/sessions/s1?q=cobalt&turn=${DISTANT}`));
@@ -1934,7 +1934,7 @@ describe('the session reading page', () => {
   it('says nothing was recorded in a session without commits or reports, and opens the tab from another with its filter dropped', async () => {
     server(routes({
       '/api/projects/x/spores?limit=25&type=gotcha&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
-      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ results: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 }, cursor: null }),
+      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ hits: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
       [COMMITS]: () => Response.json({ observations: [], release: null }),
     }));
     mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');

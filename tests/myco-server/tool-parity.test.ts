@@ -1,3 +1,4 @@
+import { SEARCH_MAX_LIMIT, SEARCH_QUERY_MAX_CHARS, SEARCH_TYPES, SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
 import { MAX_SPORE_LIMIT } from '@myco-server-worker/core/spores.js';
 import { describe, expect, it } from 'bun:test';
 import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
@@ -17,10 +18,6 @@ import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 const EXCEPTED = PROJECT_PIVOT;
 const RETIRED = 'grove';
 const RETIRED_INTELLIGENCE_WORDING: Partial<Record<ServedTool, { description: string; guidance?: string }>> = {
-  myco_search: {
-    description: `Search project sessions, spores, plans, prompts and responses. Results include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues.`,
-    guidance: `Use to find prior decisions, bugs, plans, sessions and captured conversation text. Follow each result's retrieve hint to fetch its entity; prompt and response hits identify the session and prompt.`,
-  },
   myco_cortex: {
     description: `Retrieve project intelligence. op: "instructions" (default) returns the project's session-start instructions and its project id. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: "canopy_map" returns the project's repository map as markdown, with the commit it was read from. op: "digest" is retired; op: "canopy_entry" is not served by a Deployment.`,
     guidance: `Use op: "instructions" to read the project's standing guidance and learn its project id, op: "notifications" to read pending operator notifications, op: "maintenance_summary" to answer "are any Groves overdue for backup/optimize/integrity?", and op: "projects_activity" to see which projects are still active. Search with myco_search rather than pulling a project summary; there is no digest.`,
@@ -138,10 +135,21 @@ describe('tool parity', () => {
       if (server.name === 'myco_search') {
         const type = frozen.inputSchema.properties.type as { enum: string[] };
         type.enum = type.enum.filter((value) => value !== 'skill');
-        expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual(['session', 'plan', 'spore', 'prompt', 'response', 'all']);
         expect(current.description).not.toContain('skills');
-        // The search's order and cursor, and its session agent and branch filters, are the properties the frozen contract does not carry.
-        for (const added of ['order', 'cursor', 'agent', 'branch']) {
+        // One search operation (#2101 S5c): a conversation's turns are the one kind `card`, a word search ranks a bounded
+        // window of the newest matches and continues into older ones, and the tool states its limits from the server's own.
+        expect((current.inputSchema.properties.type as { enum: string[] }).enum).toEqual([...SEARCH_TYPES, 'all']);
+        expect(current.description).toContain(`ranks the newest ${SEARCH_WINDOW} matches`);
+        expect(current.description).toContain('never counts its matches');
+        expect(current.cortex?.guidance).toContain('card hits identify the session and prompt');
+        current.description = frozen.description;
+        if (frozen.cortex !== undefined && current.cortex !== undefined) current.cortex.guidance = frozen.cortex.guidance;
+        // The query and limit carry the limits the description states.
+        expect(current.inputSchema.properties.query).toMatchObject({ maxLength: SEARCH_QUERY_MAX_CHARS });
+        expect(current.inputSchema.properties.limit).toMatchObject({ type: 'integer', minimum: 1, maximum: SEARCH_MAX_LIMIT });
+        for (const changed of ['type', 'mode', 'limit', 'query']) (current.inputSchema.properties as Record<string, unknown>)[changed] = (frozen.inputSchema.properties as Record<string, unknown>)[changed];
+        // The search's order, cursor and match, and its session agent and branch filters, are the properties the frozen contract does not carry.
+        for (const added of ['order', 'cursor', 'agent', 'branch', 'match']) {
           expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }

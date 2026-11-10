@@ -2,19 +2,21 @@
  * The active spores closest to one just saved, as a learning run needs them to curate: each with what supersede and
  * consolidate ask for, so the run acts in the same pass without a counted full read.
  *
- * Semantic neighbours come first where the Deployment has a provider. A word match over the Project's newest active
- * spores fills the rest, and it alone sees a spore saved moments ago, which has no vector yet.
+ * Semantic neighbours come first where the Deployment has a provider. A word search over the Project's newest active
+ * spores sharing the line's words fills the rest, and it alone sees a spore saved moments ago, which has no vector yet.
  */
 import type { ServerEnv } from './adapters.js';
 import { embedding_semanticSearch as semanticSearch } from '../read/catalog/embedding.js';
 import type { ReadScope } from '../read/scope.js';
-import { resolveSemanticSearch } from './search.js';
+import { resolveSemanticSearch, sporesSharingWords } from './search.js';
 import { SPORE_PREVIEW_CHARS } from './spores.js';
-import { activeSporesMatchingAnyWord, listSporesByIds } from '../db/spores/records.js';
+import { listSporesByIds } from '../db/spores/records.js';
 
 /** The neighbours one save answers with. */
 const NEAR_MATCH_LIMIT = 5;
-/** The longest words of a spore's line a word match reads. */
+/** The newest matching spores a word search ranks. */
+const NEAR_MATCH_WINDOW = 100;
+/** The longest words of a spore's line a word search reads. */
 const MATCH_WORDS = 8;
 /** Words shorter than this name nothing a neighbour would share. */
 const MATCH_WORD_MIN_CHARS = 4;
@@ -40,7 +42,10 @@ function matchWords(line: string): string[] {
 export async function nearSpores(env: ServerEnv, scope: ReadScope, savedId: string, line: string): Promise<NearMatch[]> {
   try {
     const close = (await semanticNeighbours(env, scope, line)).filter((id) => id !== savedId);
-    const ids = [...new Set(close.length < NEAR_MATCH_LIMIT ? [...close, ...await activeSporesMatchingAnyWord(env.db, scope, matchWords(line), savedId, NEAR_MATCH_LIMIT)] : close)].slice(0, NEAR_MATCH_LIMIT);
+    const words = close.length < NEAR_MATCH_LIMIT
+      ? (await sporesSharingWords(env, scope, matchWords(line), { limit: NEAR_MATCH_LIMIT + 1, window: NEAR_MATCH_WINDOW })).filter((id) => id !== savedId)
+      : [];
+    const ids = [...new Set([...close, ...words])].slice(0, NEAR_MATCH_LIMIT);
     const rows = new Map((await listSporesByIds(env.db, scope, ids)).map((row) => [row.id, row]));
     return ids.flatMap((id) => {
       const row = rows.get(id);

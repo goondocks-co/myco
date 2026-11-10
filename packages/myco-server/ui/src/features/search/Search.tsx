@@ -14,8 +14,7 @@ const GROUPS = [
   { type: 'spore', one: 'Spore', many: 'Spores' },
   { type: 'plan', one: 'Plan', many: 'Plans' },
   { type: 'session', one: 'Session', many: 'Sessions' },
-  { type: 'prompt', one: 'Prompt', many: 'Prompts' },
-  { type: 'response', one: 'Reply', many: 'Replies' },
+  { type: 'card', one: 'Turn', many: 'Turns' },
 ] as const;
 
 const TYPE_OPTIONS: readonly SelectOption[] = [
@@ -99,7 +98,11 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
   const [observationType, setObservationType] = useState('all');
   const results = useRef<HTMLDivElement>(null);
   const ready = text.trim() === query && query.length >= SEARCH_MIN_CHARS;
-  const search = useSearch(scope, { query, type, since, observationType: observationType === 'all' ? '' : observationType }, ready);
+  // Older matches, when none of the newest fit: the cursor belongs to the search it was read from.
+  const searched = JSON.stringify([scope, query, type, since, observationType]);
+  const [older, setOlder] = useState<{ searched: string; cursor: string } | null>(null);
+  const cursor = older?.searched === searched ? older.cursor : undefined;
+  const search = useSearch(scope, { query, type, since, observationType: observationType === 'all' ? '' : observationType, cursor }, ready);
   const all = scope === 'all';
 
   useEffect(() => {
@@ -123,7 +126,7 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
     else list[Math.min(next, list.length - 1)]?.focus();
   };
 
-  const shown = (search.data?.results ?? []).filter((hit) => GROUPS.some((group) => group.type === hit.type));
+  const shown = (search.data?.hits ?? []).filter((hit) => GROUPS.some((group) => group.type === hit.type));
   const groups = GROUPS.map((group) => ({ ...group, hits: shown.filter((hit) => hit.type === group.type) })).filter((group) => group.hits.length > 0);
 
   return (
@@ -172,13 +175,14 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
           : search.data === undefined ? (
             <div role="alert" className="flex items-center gap-s3 py-s3 t-small text-bad">
               Search failed.
-              <Button size="sm" onClick={() => void search.refetch()}>Try again</Button>
+              <Button size="sm" onClick={() => { if (cursor !== undefined) setOlder(null); else void search.refetch(); }}>Try again</Button>
             </div>
           )
           : (
             <div className="flex flex-col gap-s4">
               <p role="status" className="t-meta text-muted" data-search-count="">
-                {shown.length === 0 ? 'No results match this search.' : `${shown.length} ${shown.length === 1 ? 'result' : 'results'}`}
+                {shown.length > 0 ? `${shown.length} ${shown.length === 1 ? 'result' : 'results'}`
+                  : search.data.nextCursor ? 'None of the newest matches fit these filters; older ones follow.' : 'No results match this search.'}
                 {!all && search.data.provider_unavailable && ' · Search by meaning is unavailable, so this matched words.'}
               </p>
               {groups.map((group) => (
@@ -196,10 +200,16 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
                   </ul>
                 </section>
               ))}
-              {search.data.results.length >= SEARCH_RESULT_CAP && <p className="t-meta text-muted">{capNote(SEARCH_RESULT_CAP)}</p>}
-              {search.data.coverage.pending_blobs > 0 && (
+              {shown.length === 0 && search.data.nextCursor && (
+                <div>
+                  <Button size="sm" onClick={() => setOlder({ searched, cursor: search.data!.nextCursor! })} data-search-older="">Show more</Button>
+                </div>
+              )}
+              {search.data.hits.length >= SEARCH_RESULT_CAP && <p className="t-meta text-muted">{capNote(SEARCH_RESULT_CAP)}</p>}
+              {search.data.partial && <p className="t-meta text-muted" data-search-partial="">These are the best of the most recent matches; add words to reach older ones.</p>}
+              {(search.data.coverage.state === 'building' || search.data.coverage.pendingBlobs === 'building' || search.data.coverage.pendingBlobs > 0) && (
                 <p className="t-small text-muted">
-                  Indexing {search.data.coverage.pending_blobs} captured bodies. More results will become available.
+                  Search is still reading earlier records. More results will become available.
                 </p>
               )}
             </div>

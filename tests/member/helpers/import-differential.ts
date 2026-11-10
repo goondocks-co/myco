@@ -22,11 +22,12 @@ export function faultAt(inner: MemberRig['fetch'], index: number, kind: ImportFa
 
 const VOLATILE = /(_at|_ms|At|Ms)$|^(id|key|value|generation|revision|envelope_hash|lineage_root|current_id|banked_id|predecessor_id|reference_id|event_id|facts_event_id|.*_event_id|bundle_id|deployment_id|source_id|source_blob_key|source_generation|raw_revision)$|^(created|updated|received|first_received|last_received|ts|time)|token|expires|nonce|lease/i;
 
-/** All server rows as sorted multisets, with generated identities and clock columns omitted. */
+/** All server rows as sorted multisets, with generated identities, clock columns and the derived search index omitted. */
 export function importSnapshot(sqlite: MemberRig['env']['sqlite']): Record<string, string[]> {
   const tables = sqlite.query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'
     AND name NOT LIKE '_cf_%' AND name NOT LIKE '%_fts%'
-    AND name NOT IN ('member_credentials','schema_meta','embedding_versions') ORDER BY name`).all() as Array<{ name: string }>;
+    AND name NOT IN ('member_credentials','schema_meta','embedding_versions',
+      'search_documents','search_blob_refs','search_blobs','search_index_status','search_result_windows') ORDER BY name`).all() as Array<{ name: string }>;
   const out: Record<string, string[]> = {};
   for (const { name } of tables) {
     const rows = sqlite.query(`SELECT * FROM "${name}"`).all() as Array<Record<string, unknown>>;

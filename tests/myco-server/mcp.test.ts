@@ -138,7 +138,7 @@ describe('POST /mcp', () => {
     expect((await call(t1.token, 'myco_nope')).error.data.code).toBe('unknown_tool');
     expect((await call(t1.token, 'myco_search')).error.data.code).toBe('invalid_input');
     expect((await call(t1.token, 'myco_sessions', { op: 'purge' })).error.data.code).toBe('invalid_input');
-    expect((await call(t1.token, 'myco_search', { query: 'anything' })).result).toMatchObject({ results: [], mode: 'fts', provider_unavailable: true });
+    expect((await call(t1.token, 'myco_search', { query: 'anything' })).result).toMatchObject({ hits: [], mode: 'fts', provider_unavailable: true });
     for (const args of [{ query: 'a\u0000b' }, { query: 'a\u0000b', limit: 5 }]) {
       const refused = await call(t1.token, 'myco_search', args);
       expect({ args, code: refused.error?.data?.code, says: /control characters/.test(String(refused.error?.message)) }).toEqual({ args, code: 'invalid_input', says: true });
@@ -517,7 +517,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect({ body: grantGot.body, at: grantGot.body_at }).toEqual({ body: NO_BODY_FOR_GRANT, at: undefined });
     expect((await callAs(grant.key, 'myco_cortex', { op: 'instructions' })).result.content).toBe('the standing guidance');
     const search = await callAs(grant.key, 'myco_search', { query: 'seen' });
-    expect(search.result.results).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);
+    expect(search.result.hits).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);
   });
 
   it('refuses every write, every admin read, myco_agent, an op outside the enum and an empty op exactly as a tool that does not exist', async () => {

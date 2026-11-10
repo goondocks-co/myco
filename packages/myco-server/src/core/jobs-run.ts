@@ -35,9 +35,7 @@ import { pruneTerminalRuns } from '../db/runs/retention.js';
 import { storedSettings } from './settings.js';
 import { releaseRun } from './release.js';
 import { reconcileSearchIndex } from './search-index.js';
-import {
-  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
-} from '../read/catalog/search-index.js';
+import { searchBlobsDue } from '../db/search/blob-index.js';
 import { jobDispatchesAt, SCHEDULE_JOB, STAGING_RETENTION_JOB } from './jobs.js';
 import { runEmbeddingJob } from './embedding/jobs.js';
 import { reclaimFinishedAuthorities } from '../db/identity/authority-retention.js';
@@ -268,7 +266,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   },
   'search-index': async (env, now) => {
     const changed = await reconcileSearchIndex(env.db, env.blobs, now);
-    return { changed, more: changed > 0 && (await pendingSearchBlobs(env.db)) > 0 };
+    return { changed, more: await searchBlobsDue(env.db, now) };
   },
   'agent-run-retention': agentRunRetention,
   'run-body-move': (env, now) => moveRunBodies(env, now),

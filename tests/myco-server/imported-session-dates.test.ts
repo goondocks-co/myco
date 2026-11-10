@@ -24,7 +24,7 @@ import {
   sessions_listSessions as listSessions,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { endSession } from '@myco-server-worker/core/session-end.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { searchWords as searchProject } from './helpers/search-fixture.js';
 import { registerBlob } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
@@ -349,7 +349,7 @@ describe('the dates and state a search filters on', () => {
     return r;
   }
 
-  const ids = (answer: { results: readonly { id: string }[] }) => answer.results.map((x) => x.id);
+  const ids = (answer: { hits: readonly { id: string }[] }) => answer.hits.map((x) => x.id);
 
   it('admits an imported session by the date it is presented at, on the path a project with no provider gets', async () => {
     const r = await searchable();

@@ -15,6 +15,7 @@ import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EX
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from '../core/injection.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
+import { SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS, SEARCH_STOPWORDS, SEARCH_TOOL_LIMIT, SEARCH_TYPES, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS } from '@goondocks/myco-shared/search-types';
 
 /**
  * What the tenancy argument means on the member surface.
@@ -92,7 +93,7 @@ const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEnt
 const definitions: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
-    "description": "Search project sessions, spores, plans, prompts and responses. Results include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues.",
+    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) are ignored; at most ${SEARCH_MAX_TERMS} words and ${SEARCH_QUERY_MAX_CHARS} characters are searched. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -100,7 +101,7 @@ const definitions: readonly ServedToolDefinition[] = [
       "openWorldHint": false
     },
     "cortex": {
-      "guidance": "Use to find prior decisions, bugs, plans, sessions and captured conversation text. Follow each result's retrieve hint to fetch its entity; prompt and response hits identify the session and prompt.",
+      "guidance": "Use to find prior decisions, bugs, plans, sessions and captured conversation text. Follow each result's retrieve hint to fetch its entity; card hits identify the session and prompt.",
       "priority": 20
     },
     "inputSchema": {
@@ -109,28 +110,29 @@ const definitions: readonly ServedToolDefinition[] = [
         "mode": {
           "type": "string",
           "enum": ["auto", "semantic", "fts"],
-          "description": "Auto uses semantic search and falls back to full text only when the provider is unavailable. Use fts to search captured prompt and response bodies."
+          "description": "Auto uses semantic search and falls back to words only when the provider is unavailable. Use fts to search the words of conversation cards and plan bodies."
         },
         "session_id": { "type": "string", "description": "Filter by session ID." },
         "query": {
           "type": "string",
+          "maxLength": SEARCH_QUERY_MAX_CHARS,
           "description": "Natural language search query — describe what you are looking for"
         },
         "type": {
           "type": "string",
-          "enum": [
-            "session",
-            "plan",
-            "spore",
-            "prompt",
-            "response",
-            "all"
-          ],
-          "description": "Filter by entity type (default: all)."
+          "enum": [...SEARCH_TYPES, "all"],
+          "description": "Filter by entity type (default: all). A card is one turn of a conversation."
         },
         "limit": {
-          "type": "number",
-          "description": "Max results (default: 10)"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": SEARCH_MAX_LIMIT,
+          "description": `Max hits, 1–${SEARCH_MAX_LIMIT} (default: ${SEARCH_TOOL_LIMIT})`
+        },
+        "match": {
+          "type": "string",
+          "enum": ["all", "any"],
+          "description": "all (default): a hit holds every word. any: a hit holds at least one, ranked by how many it holds."
         },
         "observation_type": {
           "type": "string",
@@ -179,11 +181,11 @@ const definitions: readonly ServedToolDefinition[] = [
         "order": {
           "type": "string",
           "enum": ["relevance", "time"],
-          "description": "relevance (default) lists the best matches first. time lists the matches of one type oldest first. Both continue by cursor while has_more; a semantic answer is the nearest matches alone, so pass mode fts to page through every match."
+          "description": "relevance (default) ranks the newest matches, best first, and later pages continue into older ones. time lists the matches of one type (spore, plan or card) oldest first. Both continue by nextCursor; a semantic answer is the nearest matches alone, so pass mode fts to page through every match."
         },
         "cursor": {
           "type": "string",
-          "description": "The cursor an earlier answer to the same search returned; the answer then lists the matches after it. Example: {\"query\":\"cobalt\",\"type\":\"spore\",\"mode\":\"fts\",\"cursor\":\"eyJraW5kIjoi...\"}"
+          "description": "The nextCursor an earlier answer to the same search returned; the answer then lists the hits after it. Example: {\"query\":\"cobalt\",\"type\":\"spore\",\"mode\":\"fts\",\"cursor\":\"eyJvIjoi...\"}"
         },
         [PROJECT_PIVOT]: {
           "type": "string",
