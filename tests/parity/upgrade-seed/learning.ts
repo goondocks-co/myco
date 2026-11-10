@@ -6,7 +6,7 @@ import { RUN_AUDIT } from '../../helpers/run-audit.ts';
 import { documentsPublished, lit, memberHeadersFor } from '../harness.ts';
 import { event, setting, type RouteTarget, type SeedTarget } from './requests.ts';
 
-/** A session a member's machine, working as a worker, carded and learned from, acknowledging its prompts. */
+/** A session that searched Myco, which a member's machine, working as a worker, carded and learned from, acknowledging its prompts. */
 export interface LearningSeed { sessionId: string; promptId: string }
 
 type Run = { id: string; task: string; attemptId: string; runToken: string };
@@ -44,6 +44,8 @@ export async function seedLearning(target: SeedTarget, stamp: number): Promise<L
   await event(target, seed.sessionId, 'session.start', { agent: 'claude-code', branch: 'upgrade', startedAt: at }, at);
   await event(target, seed.sessionId, 'prompt', { promptId: seed.promptId, text: 'Record why the upgrade waits for its migrations.', origin: 'user' }, at + 1);
   await event(target, seed.sessionId, 'response', { responseId: crypto.randomUUID(), promptId: seed.promptId, text: 'Serving before the migrations refuses writes.' }, at + 2);
+  // The session searched Myco while it worked, so its document holds a Myco tool call.
+  await event(target, seed.sessionId, 'tool.use', { toolCallId: crypto.randomUUID(), promptId: seed.promptId, toolName: 'mcp__myco__myco_search', input: { query: 'upgrade order' }, success: true }, at + 2);
   await event(target, seed.sessionId, 'session.end', { endedAt: at + 3 }, at + 3);
   await documentsPublished(target, seed.sessionId);
   for (let claims = 0; claims < 8; claims += 1) {

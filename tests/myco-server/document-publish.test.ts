@@ -513,7 +513,7 @@ test('a backup holding content in the format before session documents is refused
     const before = await db.prepare('SELECT (SELECT COUNT(*) FROM sessions) sessions,(SELECT COUNT(*) FROM session_documents) documents,(SELECT COUNT(*) FROM backup_restore_progress) progress').first();
     const refused = restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
     await expect(refused, name).rejects.toMatchObject({code:'artifact_format_retired',counts:{prompt_batches:2,tool_calls:1,transcript_parser_state_chunks:1}});
-    await expect(restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}}), name).rejects.toThrow(/nothing was restored from it\. Restore it on Myco 2\.0\.0-alpha\.23 or earlier/);
+    await expect(restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}}), name).rejects.toThrow(/nothing was restored from it\. Restore it on a separate Deployment running .+, take a backup there, and restore that backup here with foreign lineage allowed/);
     expect(await db.prepare('SELECT (SELECT COUNT(*) FROM sessions) sessions,(SELECT COUNT(*) FROM session_documents) documents,(SELECT COUNT(*) FROM backup_restore_progress) progress').first(), name).toEqual(before);
     expect(await db.prepare("SELECT session_id FROM sessions WHERE session_id='restored'").first(), name).toBeNull();
   });

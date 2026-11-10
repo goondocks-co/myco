@@ -17,6 +17,7 @@ import { storedDeploymentId, storedSchemaVersion } from '../db/meta/deployment.j
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { restoreDocuments } from '../ingest/document-restore.js';
 import { holdArtifactForRestore, releaseArtifactAfterRestore } from '../db/storage/restore-hold.js';
+import { LAST_RELEASE_RESTORING_RETIRED_FORMAT } from './retired-format-release.js';
 import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
 import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
@@ -203,14 +204,18 @@ export class BackupApplyError extends Error {
   }
 }
 /**
- * A backup holding content in the format before session documents. Nothing is restored from it: the release that read
- * that format restores it, and a backup taken there afterwards carries the content as documents.
+ * A backup holding content in the format before session documents. Nothing is restored from it: a separate Deployment
+ * running the last release that reads that format restores it, and a backup taken there restores here as another
+ * Deployment's backup.
  */
 export class BackupFormatRetiredError extends Error {
   readonly code = 'artifact_format_retired';
+  /** The release that still restores this backup, or null while no release has shipped without it. */
+  readonly restoresOn = LAST_RELEASE_RESTORING_RETIRED_FORMAT;
   constructor(readonly counts: Readonly<Record<string, number>>) {
     const held = Object.entries(counts).map(([table, rows]) => `${rows} ${table}`).join(', ');
-    super(`artifact_format_retired: this backup holds content in the format before session documents (${held} rows), which this release no longer restores, so nothing was restored from it. Restore it on Myco 2.0.0-alpha.23 or earlier and take a new backup there, or restore a newer backup`);
+    const release = LAST_RELEASE_RESTORING_RETIRED_FORMAT === null ? 'the last release before this one' : `Myco ${LAST_RELEASE_RESTORING_RETIRED_FORMAT}, the last release that reads it`;
+    super(`artifact_format_retired: this backup holds content in the format before session documents (${held} rows), which this release does not restore, so nothing was restored from it. Restore it on a separate Deployment running ${release}, take a backup there, and restore that backup here with foreign lineage allowed`);
     this.name = 'BackupFormatRetiredError';
   }
 }
@@ -971,7 +976,6 @@ export async function restoreArtifact(
       outcome.tables[table] = { ...applied, rows: applied.rows + skipped.rows, skipped: skipped.skipped };
     }
   }
-  await releaseArtifactAfterRestore(db, hash);
   await documents?.apply(restoredAt);
   for (const bundle of restoredBundles) {
     const unused = `NOT (${bundleHeld('?', '?')})`;
@@ -991,6 +995,7 @@ export async function restoreArtifact(
       if (bundle.inserted && outcome.tables.archive_bundles) outcome.tables.archive_bundles.inserted--;
     }
   }
+  await releaseArtifactAfterRestore(db, hash);
   return outcome;
 }
 

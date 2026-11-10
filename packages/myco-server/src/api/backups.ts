@@ -95,9 +95,9 @@ export async function handleVerifyBackup(env: ServerEnv, ctx: OwnerContext): Pro
   }
 }
 
-/** A backup in the format before session documents: nothing was restored, and the message names where it still restores. */
+/** A backup in the format before session documents: nothing was restored, and the answer names the release that restores it. */
 const formatRetired = (err: BackupFormatRetiredError): Response =>
-  Response.json({ error: err.code, message: err.message, retiredRows: err.counts }, { status: 409 });
+  Response.json({ error: err.code, message: err.message, retiredRows: err.counts, restoresOn: err.restoresOn }, { status: 409 });
 
 /** What a restore would touch, the authority a foreign-lineage restore lands without, and whether this member may apply its rows. */
 export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

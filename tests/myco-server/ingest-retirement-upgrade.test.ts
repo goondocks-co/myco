@@ -6,13 +6,13 @@ import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { LAST_S2F } from '@myco-server-worker/db/schema-vNEXT-s2f.js';
+import { NEXT_S2F } from '@myco-server-worker/db/schema-vNEXT-s2f.js';
 import { applySchemaSteps } from './helpers/migrate.js';
 
 it('keeps every session\'s presence, end and receipt facts and the Project\'s session count', async () => {
   const sqlite = new Database(':memory:');
   const db = sqliteRelationalStore(sqlite);
-  await applySchemaSteps(db, SCHEMA_STEPS.filter((step) => step.version < LAST_S2F));
+  await applySchemaSteps(db, SCHEMA_STEPS.filter((step) => step.version < NEXT_S2F));
   sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1)");
   sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
     VALUES('proj_1','ended','m','t',1,5,9),('proj_1','open','m','t',2,7,NULL)`);
