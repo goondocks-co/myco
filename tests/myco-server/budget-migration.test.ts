@@ -13,6 +13,7 @@ import { restoreArtifact } from './helpers/restore-artifact.js';
 import { refreshEstimates,estimateForClaim,estimateRefreshDue } from '@myco-server-worker/core/budget-estimates.js';
 import { ESTIMATE_PUBLISH_PAGE } from '@myco-server-worker/core/budget-estimates.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 import { engineAssertions,runTick } from '@myco-server-worker/core/tick.js';
 import { estimateInvalidationStatements } from '@myco-server-worker/db/meta/budget-estimates.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
@@ -308,8 +309,9 @@ it('native migration completion records an inactive budget and returns when inde
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'budget-native-refusal-'));
   const file=path.join(root,'server.sqlite');
   try {
+    const current=schemaSqlite();
+    try {fs.writeFileSync(file,current.serialize());}finally{current.close();}
     const source=new Database(file);
-    for(const step of SCHEMA_STEPS)for(const sql of step.statements)source.exec(sql);
     source.exec('CREATE TABLE idx_attempts_claimed(id INTEGER)');
     source.close();
     expect(migrateOnly(file)).toBe(0);

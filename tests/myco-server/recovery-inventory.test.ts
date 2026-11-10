@@ -9,13 +9,13 @@ import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Database } from 'bun:sqlite';
 import {
   CHECKPOINT_STATEMENT_CHARS, continueInventory, INVENTORY_LIMITS, inventoryObjectOf, newInventoryProgress,
   type InventoryPorts, type InventoryProgress, type RecordedPart,
 } from '@myco-server-worker/core/recovery-inventory.js';
 import { tableColumns } from '@myco-server-worker/core/sql-statements.js';
 import { snapshotObjectFacts } from '@myco/server/recovery-bundle.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 const digestOf = async (bytes: Uint8Array): Promise<string> => {
   const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer);
@@ -69,15 +69,11 @@ const EXPORT = [
 ].join('\n');
 
 it('answers the object set the canonical owner reads back, on the pinned schema', async () => {
-  // The canonical owner reads a real snapshot, so the oracle is built by the pinned migrations and then given the
-  // very rows the export carries.
+  // The canonical owner reads a real snapshot, so the oracle holds the current schema and then the very rows the
+  // export carries.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inventory-oracle-'));
   const file = path.join(root, 'snapshot.sqlite');
-  const migrations = path.resolve(import.meta.dir, '../../packages/myco-server/migrations');
-  const db = new Database(file, { create: true });
-  for (const name of fs.readdirSync(migrations).filter((held) => held.endsWith('.sql')).sort()) {
-    db.exec(fs.readFileSync(path.join(migrations, name), 'utf8'));
-  }
+  const db = schemaSqlite({ foreignKeys: false });
   const definitionOf = (table: string) => (db.prepare('SELECT sql FROM sqlite_master WHERE name = ?').get(table) as { sql: string }).sql;
   const columns = { blobs: tableColumns(definitionOf('blobs'))!, backups: tableColumns(definitionOf('backups'))! };
 
@@ -98,6 +94,7 @@ it('answers the object set the canonical owner reads back, on the pinned schema'
   for (const trigger of triggers) db.exec(`DROP TRIGGER ${trigger.name}`);
   for (const row of rows) db.exec(row);
   for (const trigger of triggers) db.exec(trigger.sql);
+  fs.writeFileSync(file, db.serialize());
   db.close();
   const canonical = snapshotObjectFacts(file);
   fs.rmSync(root, { recursive: true, force: true });

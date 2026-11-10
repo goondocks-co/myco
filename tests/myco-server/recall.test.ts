@@ -1,5 +1,5 @@
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { applySchemaSteps } from './helpers/migrate.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
 import { promptAnswerRetentionStatements } from '@myco-server-worker/db/prompt-answer-retention.js';
 /**
@@ -117,11 +117,11 @@ it('records the first plan nudge and cortex once with projection triggers on bot
   const mf = new Miniflare(convertV4MiniflareOptions({
     modules: true, script: 'export default { fetch() { return new Response(null); } }',
     compatibilityDate: '2026-07-01', d1Databases: ['DB'],
+    resourcePersistencePath: await schemaD1Root(),
   }));
   const native = store();
   try {
     const d1 = await mf.getD1Database('DB');
-    await applySchemaSteps(d1);
     await d1.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,?)')
       .bind(SCOPE.projectId, SCOPE.projectId, NOW).run();
     for (const db of [native.db, d1]) {

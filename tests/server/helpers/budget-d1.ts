@@ -1,18 +1,19 @@
 import { THIN_LEARNING_ADMISSION_SQL } from '@myco-server-worker/db/thin-learning-admission.js';
 import { Database } from 'bun:sqlite';
+import fs from 'node:fs';
 import path from 'node:path';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import type { CommandResult } from '@myco/server/runner.js';
-let image:Uint8Array|undefined;
+import { schemaSqlite } from '../../myco-server/helpers/schema-template.js';
 
+/** The fake D1's database: a private copy of the current schema in memory, or a file that holds one from its first use on. */
 export function budgetD1Database(file=':memory:'):Database {
-  if(file===':memory:'&&image!==undefined)return Database.deserialize(image);
+  if(file===':memory:')return schemaSqlite({foreignKeys:false});
   const db=new Database(file);
-  if(db.query("SELECT name FROM sqlite_master WHERE name='schema_meta'").get()===null) {
-    for(const step of SCHEMA_STEPS)for(const sql of step.statements)db.exec(sql);
-  }
-  if(file===':memory:')image=db.serialize();
-  return db;
+  if(db.query("SELECT name FROM sqlite_master WHERE name='schema_meta'").get()!==null)return db;
+  db.close();
+  const current=schemaSqlite({foreignKeys:false});
+  try {fs.writeFileSync(file,current.serialize());}finally{current.close();}
+  return new Database(file);
 }
 
 /** Admission and budget statements run against SQLite and use Wrangler's single-statement JSON envelope. */

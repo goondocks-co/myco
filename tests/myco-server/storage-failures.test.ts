@@ -1,6 +1,5 @@
 import { memberWriteStore, MemberWriteRefused } from '@myco-server-worker/auth/member-write-store.js';
 import { OBJECT_PUT_IN_FLIGHT_MS } from '@myco-server-worker/constants.js';
-import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
@@ -16,6 +15,7 @@ import { d1StoreMaintenance, D1_QUERY_LIMIT_MS } from '@myco-server-worker/platf
 import { latestOutcome, runMaintenance, type StoreMaintenancePort } from '@myco-server-worker/core/store-maintenance.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { blobPost, count, journaled, registeredObject, sqliteEnv } from './helpers/fixtures.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 function keepOne(e: ReturnType<typeof sqliteEnv>) {
   e.sqlite.run(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by)
@@ -246,10 +246,11 @@ it('B10: reconciliation revisits an uncertain PUT after authority and journal dr
 
 it('B28: hosted integrity reports the tables it checked and keeps a competing run refused during slow work', async () => {
   const e=sqliteEnv();
-  const sqlite=new Database(':memory:');
+  // The checked store holds the current schema, where the check records its outcome, and forty more tables.
+  const sqlite=schemaSqlite();
   try {
     const tables=40;
-    sqlite.run('CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
+    let total=0;
     for(let n=0;n<tables;n++) sqlite.run(`CREATE TABLE sample_${n}(id INTEGER PRIMARY KEY CHECK(id>0))`);
     sqlite.exec('PRAGMA ignore_check_constraints=ON');
     sqlite.run('INSERT INTO sample_0(id) VALUES(-1)');
@@ -262,13 +263,14 @@ it('B28: hosted integrity reports the tables it checked and keeps a competing ru
     const port: StoreMaintenancePort={...actual,run:async(check,report)=>{
       if(report===undefined) throw new Error('progress recorder missing');
       return actual.run(check,async (progress,found)=>{
+        total=progress.totalTables;
         now+=(progress.completedTables-lastCompleted)*D1_QUERY_LIMIT_MS;
         lastCompleted=progress.completedTables;
         await report(progress,found);
         if(progress.completedTables>0 && !competed) {
           competed=true;
           expect(await latestOutcome({...e.serverEnv,db},'integrity')).toMatchObject({
-            state:'running',progress:{totalTables:tables+1,completedTables:progress.completedTables},
+            state:'running',progress:{totalTables:total,completedTables:progress.completedTables},
           });
           expect(await runMaintenance({...e.serverEnv,db,storeMaintenance:port},'integrity','owner',now,{clock:()=>now}))
             .toMatchObject({outcome:'refused',refusal:'already_running'});
@@ -276,7 +278,8 @@ it('B28: hosted integrity reports the tables it checked and keeps a competing ru
       });
     }};
     const result=await runMaintenance({...e.serverEnv,db,storeMaintenance:port},'integrity','owner',now,{clock:()=>now});
-    expect(result).toMatchObject({outcome:'ran',record:{state:'findings',progress:{completedTables:tables+1,totalTables:tables+1}}});
+    expect(total).toBeGreaterThan(tables);
+    expect(result).toMatchObject({outcome:'ran',record:{state:'findings',progress:{completedTables:total,totalTables:total}}});
     if(result.outcome!=='ran') throw new Error('integrity check did not finish');
     expect(result.record.findings).toEqual(expect.arrayContaining([expect.stringContaining('sample_0')]));
     expect(competed).toBe(true);

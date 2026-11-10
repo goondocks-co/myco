@@ -799,7 +799,7 @@
     "tests/server/github-app.test.ts": 350,
     "tests/server/hosted-embedding.test.ts": 4140,
     "tests/server/layout.test.ts": 109,
-    "tests/server/local-artifacts.test.ts": 920,
+    "tests/server/local-artifacts.test.ts": 10000,
     "tests/server/local-backup.test.ts": 1265,
     "tests/server/local-cli-home.test.ts": 781,
     "tests/server/local-deployment.test.ts": 216,
