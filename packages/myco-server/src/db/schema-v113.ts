@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 /**
  * A prompt's catalog row records the page of its owner that holds its record, so a prompt read by name opens that page.
  * The publisher and conversion write it for every prompt on every page they lay out; a document written before this
@@ -8,4 +9,10 @@ export const V113_STATEMENTS: readonly string[] = [
   'ALTER TABLE session_prompts ADD COLUMN page INTEGER',
   'ALTER TABLE session_documents ADD COLUMN locate_after INTEGER',
   `CREATE INDEX IF NOT EXISTS idx_session_prompts_unlocated ON session_prompts (project_id, session_id, generation) WHERE page IS NULL`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V113_REACHES: readonly Reach[] = [
+  ...changing(['session_prompts'], 'A prompt read by name opens the page of its owner that holds its record. The locator backfill finds the prompts it has yet to locate without reading the located ones.'),
+  ...changing(['session_documents'], 'The locator backfill resumes after the last page chunk it read.'),
 ];

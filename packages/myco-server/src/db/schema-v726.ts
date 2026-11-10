@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 /**
  * One unresolved naming failure per member, and the Attention mark that moves with every change to them.
  *
@@ -24,4 +25,10 @@ export const V726_STATEMENTS: readonly string[] = [
     BEGIN DELETE FROM member_naming_failures WHERE member_id=OLD.id; END`,
   ...['INSERT', 'UPDATE', 'DELETE'].map(action => `CREATE TRIGGER IF NOT EXISTS change_mark_attention_naming_${action.toLowerCase()} AFTER ${action} ON member_naming_failures
     BEGIN UPDATE change_marks SET revision=revision+1 WHERE kind='attention'; END`),
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V726_REACHES: readonly Reach[] = [
+  ...changing(['change_marks'], 'The Attention revision exists before its first transition, so an open page has a value to compare.'),
+  ...reaching(['members'], 'A naming failure ends in the commit that names, revokes or removes its member.'),
 ];

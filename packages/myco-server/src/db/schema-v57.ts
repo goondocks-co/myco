@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 import { occurredAt } from './session-dates.js';
 
 /**
@@ -18,4 +19,9 @@ export const V57_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_plans_updated_deployment ON plans (updated_at, plan_key)`,
   `CREATE INDEX IF NOT EXISTS idx_spores_author ON spores (project_id, author)`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_capture ON sessions (last_received_at, machine_id, agent, project_id)`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V57_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_sessions_capture', read: 'capture recency is read per machine and agent across every Project, over a recent window of receipts' },
 ];

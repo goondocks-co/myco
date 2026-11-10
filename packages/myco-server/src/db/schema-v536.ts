@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 const active = (row: 'OLD' | 'NEW'): string => `(${row}.failure IS NULL)`;
 
 /** Queued waits retain their cause; status counts only active rows. */
@@ -15,3 +16,6 @@ export const V536_STATEMENTS: readonly string[] = [
     ];
   }),
 ];
+
+/** Why the step reaches tables earlier steps created. */
+export const V536_REACHES: readonly Reach[] = changing(['publish_queue'], 'Publication waits retain read and parent dependency causes independently of their retry deadline. Independent prompt read retries retain their order through a partial queue index. Active queue contributions replace the existing insertion and removal status counters in the same migration. Status totals of the queue count active events across insertion, removal and terminal-state transitions.');

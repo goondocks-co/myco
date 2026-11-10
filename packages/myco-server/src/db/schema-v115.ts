@@ -1,4 +1,4 @@
-import { retiring, type Retirement } from './schema-step.js';
+import { retiring, type Retirement, reaching, type Reach, changing } from './schema-step.js';
 import { TURN_QUIET_MS } from './schema-v110.js';
 
 /** The `schema-v110` triggers that derived card and learning state from the legacy content tables and the views. */
@@ -39,3 +39,9 @@ export const V115_STATEMENTS: readonly string[] = [
 
 export const V115_RETIRES: readonly Retirement[] = retiring('trigger', V110_LEGACY_TRIGGERS,
   'The publisher becomes the one writer of card and learning state, so the triggers deriving it from the legacy content tables and views go.');
+
+/** Why the step reaches tables earlier steps created. */
+export const V115_REACHES: readonly Reach[] = [
+  ...changing(['turn_cards'], 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows. Card settlement reads the turns waiting for it across every Project without reading settled ones. A card claim reads one session\'s turns due for a model without reading its other cards.'),
+  ...changing(['learning_sessions', 'learning_init_queue', 'session_documents'], 'Learning reads documents: the legacy card triggers go, cards wait for settlement, and every live session and turn gets its learning and card rows.'),
+];

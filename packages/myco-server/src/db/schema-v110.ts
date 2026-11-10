@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 /** An open turn falls due for its card once nothing has been recorded in it for this long. */
@@ -103,4 +104,17 @@ export const V110_STATEMENTS: readonly string[] = [
   publishedTrigger('INSERT'),
   publishedTrigger('UPDATE'),
   `INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('learning_resumed_at', CAST(unixepoch() * 1000 AS TEXT))`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V110_REACHES: readonly Reach[] = [
+  ...changing(['learning_sessions'], 'Each session carries its learning progress, eligibility and last completion. Learning progress columns are indexed where their claim, status and initialization reads seek them.'),
+  ...reaching(['prompt_batches', 'responses', 'tool_calls', 'plans'], 'A record written into a turn makes that turn due for its card in the same statement.'),
+  ...reaching(['session_views'], 'A session becomes due for learning in the batch that publishes its views.'),
+  ...changing(['schema_meta'], 'The Deployment records when whole-session learning resumed.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V110_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_learning_completed', read: 'the learning status line reads the most recent completion across the Deployment' },
 ];

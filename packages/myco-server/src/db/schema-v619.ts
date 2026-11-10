@@ -1,3 +1,4 @@
+import { reaching, type SchemaStep, changing } from './schema-step.js';
 /** Receipt-time quietness and retry deadlines form the indexed learning work queues. */
 const idleMinutes = `COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
@@ -73,6 +74,17 @@ const retryIndexes = [
     WHERE eligible_at IS NOT NULL AND fresh_admitted = 1 AND failures < 4`,
 ].map(sql => [sql]);
 
+const BACKFILL = 'Learning queue metadata backfills in disjoint rowid transactions while preserving cards and coverage.';
+const QUEUES = 'Learning source activity, quiet eligibility and retry deadlines stay in indexed work queues.';
+
 /** Disjoint rowid transactions populate receipt deadlines without rewriting session bodies or cards. */
-export const LEARNING_QUIET_STEPS = [setup, ...backfill, ...indexes, ['DROP TABLE _learning_quiet_range'], ...freshIndexes, ...retryIndexes]
-  .map((statements, index) => ({ version: 619 + index, statements }));
+export const LEARNING_QUIET_STEPS: readonly SchemaStep[] = [
+  { statements: setup, reaches: [
+    ...changing(['learning_sessions'], `${BACKFILL} ${QUEUES}`),
+    ...reaching(['sessions', 'deployment_settings', 'agent_runs'], QUEUES),
+  ] },
+  ...backfill.map((statements) => ({ statements, reaches: changing(['learning_sessions'], BACKFILL) })),
+  ...indexes.map((statements) => ({ statements, reaches: reaching(['learning_sessions'], QUEUES) })),
+  { statements: ['DROP TABLE _learning_quiet_range'] },
+  ...[...freshIndexes, ...retryIndexes].map((statements) => ({ statements, reaches: reaching(['learning_sessions'], QUEUES) })),
+].map((step, index) => ({ version: 619 + index, ...step }));

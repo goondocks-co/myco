@@ -1,16 +1,32 @@
+import { reaching, type Reach, type SchemaStep, type DeploymentIndex, changing } from './schema-step.js';
 export const NEXT_S6_INDEX = 736;
 
 /** The three member credential paths the lineage heads and a member's page read, one build per step: this table holds the Deployment's credential history. */
-export const VNEXT_S6_INDEX_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S6_INDEX_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S6_INDEX, statements: [
     'CREATE INDEX IF NOT EXISTS idx_member_credentials_live_lineage ON member_credentials(lineage_root) WHERE revoked_at IS NULL',
-  ] },
+  ],
+    reaches: reaching(['member_credentials'], 'Lineage heads re-derive from a lineage\'s unrevoked credentials, and a member\'s credential page reads newest lineage first.'),
+    deploymentIndexes: [
+      { index: 'idx_member_credentials_live_lineage', read: 'a lineage head re-derives from the unrevoked credentials of one lineage' },
+    ],
+  },
   { version: NEXT_S6_INDEX + 1, statements: [
     'CREATE INDEX IF NOT EXISTS idx_member_credentials_member_started ON member_credentials(member_id,lineage_started_at,id)',
-  ] },
+  ],
+    reaches: reaching(['member_credentials'], 'Lineage heads re-derive from a lineage\'s unrevoked credentials, and a member\'s credential page reads newest lineage first.'),
+    deploymentIndexes: [
+      { index: 'idx_member_credentials_member_started', read: 'a member\'s credential page reads that member\'s newest lineages first' },
+    ],
+  },
   { version: NEXT_S6_INDEX + 2, statements: [
     "CREATE INDEX IF NOT EXISTS idx_member_credentials_person_lineage ON member_credentials(lineage_root) WHERE member_id<>'mem_harness'",
-  ] },
+  ],
+    reaches: reaching(['member_credentials'], 'Lineage heads re-derive from a lineage\'s unrevoked credentials, and a member\'s credential page reads newest lineage first.'),
+    deploymentIndexes: [
+      { index: 'idx_member_credentials_person_lineage', read: 'a lineage head and its catch-up read one person\'s lineage without walking run credentials' },
+    ],
+  },
 ];
 
 export const NEXT_S6 = 739;
@@ -28,4 +44,18 @@ export const VNEXT_S6_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS credential_lineages_update AFTER UPDATE OF revoked_at,first_used_at,expires_at ON member_credentials\n      WHEN NEW.member_id<>'mem_harness' AND (OLD.revoked_at,OLD.first_used_at,OLD.expires_at) IS NOT (NEW.revoked_at,NEW.first_used_at,NEW.expires_at)\n      BEGIN INSERT INTO credential_lineages(lineage_root,member_id,machine_id,started_at,current_id,banked_id,live_tokens,banked_tokens,live_until)\n  SELECT a.lineage_root,a.member_id,a.machine_id,a.lineage_started_at,\n    (SELECT c.id FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND (c.predecessor_id IS NULL OR c.first_used_at IS NOT NULL) ORDER BY c.issued_at DESC,c.id DESC LIMIT 1),\n    (SELECT c.id FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND c.predecessor_id IS NOT NULL AND c.first_used_at IS NULL ORDER BY c.issued_at DESC,c.id DESC LIMIT 1),\n    (SELECT COUNT(*) FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND 1),\n    (SELECT COUNT(*) FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND c.predecessor_id IS NOT NULL AND c.first_used_at IS NULL),\n    COALESCE((SELECT MAX(c.expires_at) FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND 1),0)\n  FROM (SELECT NEW.lineage_root AS lineage_root) k CROSS JOIN member_credentials a ON a.id=(SELECT f.id FROM member_credentials f INDEXED BY idx_member_credentials_person_lineage WHERE f.lineage_root=k.lineage_root AND f.member_id<>'mem_harness' LIMIT 1)\n  WHERE a.member_id<>'mem_harness'\n  ON CONFLICT(lineage_root) DO UPDATE SET member_id=excluded.member_id,machine_id=excluded.machine_id,started_at=excluded.started_at,current_id=excluded.current_id,banked_id=excluded.banked_id,live_tokens=excluded.live_tokens,banked_tokens=excluded.banked_tokens,live_until=excluded.live_until\n  WHERE (credential_lineages.member_id,credential_lineages.machine_id,credential_lineages.started_at,credential_lineages.current_id,credential_lineages.banked_id,credential_lineages.live_tokens,credential_lineages.banked_tokens,credential_lineages.live_until) IS NOT (excluded.member_id,excluded.machine_id,excluded.started_at,excluded.current_id,excluded.banked_id,excluded.live_tokens,excluded.banked_tokens,excluded.live_until); END",
   "CREATE TRIGGER IF NOT EXISTS credential_lineages_delete AFTER DELETE ON member_credentials WHEN OLD.member_id<>'mem_harness'\n      BEGIN INSERT INTO credential_lineages(lineage_root,member_id,machine_id,started_at,current_id,banked_id,live_tokens,banked_tokens,live_until)\n  SELECT a.lineage_root,a.member_id,a.machine_id,a.lineage_started_at,\n    (SELECT c.id FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND (c.predecessor_id IS NULL OR c.first_used_at IS NOT NULL) ORDER BY c.issued_at DESC,c.id DESC LIMIT 1),\n    (SELECT c.id FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND c.predecessor_id IS NOT NULL AND c.first_used_at IS NULL ORDER BY c.issued_at DESC,c.id DESC LIMIT 1),\n    (SELECT COUNT(*) FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND 1),\n    (SELECT COUNT(*) FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND c.predecessor_id IS NOT NULL AND c.first_used_at IS NULL),\n    COALESCE((SELECT MAX(c.expires_at) FROM member_credentials c INDEXED BY idx_member_credentials_live_lineage\n  WHERE c.lineage_root=a.lineage_root AND c.revoked_at IS NULL AND 1),0)\n  FROM (SELECT OLD.lineage_root AS lineage_root) k CROSS JOIN member_credentials a ON a.id=(SELECT f.id FROM member_credentials f INDEXED BY idx_member_credentials_person_lineage WHERE f.lineage_root=k.lineage_root AND f.member_id<>'mem_harness' LIMIT 1)\n  WHERE a.member_id<>'mem_harness'\n  ON CONFLICT(lineage_root) DO UPDATE SET member_id=excluded.member_id,machine_id=excluded.machine_id,started_at=excluded.started_at,current_id=excluded.current_id,banked_id=excluded.banked_id,live_tokens=excluded.live_tokens,banked_tokens=excluded.banked_tokens,live_until=excluded.live_until\n  WHERE (credential_lineages.member_id,credential_lineages.machine_id,credential_lineages.started_at,credential_lineages.current_id,credential_lineages.banked_id,credential_lineages.live_tokens,credential_lineages.banked_tokens,credential_lineages.live_until) IS NOT (excluded.member_id,excluded.machine_id,excluded.started_at,excluded.current_id,excluded.banked_id,excluded.live_tokens,excluded.banked_tokens,excluded.live_until); DELETE FROM credential_lineages WHERE lineage_root=OLD.lineage_root\n  AND NOT EXISTS (SELECT 1 FROM member_credentials f INDEXED BY idx_member_credentials_person_lineage WHERE f.lineage_root=credential_lineages.lineage_root AND f.member_id<>'mem_harness'); END",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'credential_lineages','credentialLineages',\n      NOT EXISTS(SELECT 1 FROM member_credentials INDEXED BY idx_member_credentials_person_lineage WHERE member_id<>'mem_harness') ON CONFLICT DO NOTHING",
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const VNEXT_S6_REACHES: readonly Reach[] = [
+  ...reaching(['members', 'enrollment_authorities'], 'Member, invitation and head reads page and count by key instead of walking credential or authority history.'),
+  ...reaching(['member_credentials'], 'A person\'s credential change moves the one lineage head it belongs to, and a run credential writes no head.'),
+  ...changing(['projection_catchup'], 'Runtime counts stay building until the catch-up has given every existing lineage its head.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const VNEXT_S6_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_credential_lineages_member_live', read: 'a member\'s runtime count reads only that member\'s live lineage heads' },
+  { index: 'idx_members_created', read: 'the member list pages across the Deployment, oldest member first' },
+  { index: 'idx_enrollment_authorities_open', read: 'the open invitation list pages across the Deployment, newest first' },
 ];

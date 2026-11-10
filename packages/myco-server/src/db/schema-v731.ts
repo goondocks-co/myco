@@ -1,3 +1,4 @@
+import { reaching, type Reach, type SchemaStep, type DeploymentIndex, changing } from './schema-step.js';
 export const V731 = 731;
 
 /**
@@ -22,21 +23,46 @@ export const V731_STATEMENTS: readonly string[] = [
 ];
 
 /** One index build per step, so a build that runs long on hosted storage does not share its step with other work; the served-material build drops the index it replaces. */
-export const V731_INDEX_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const V731_INDEX_STEPS: readonly SchemaStep[] = [
   { version: V731 + 1, statements: [
     "CREATE INDEX IF NOT EXISTS idx_agent_run_events_write ON agent_run_events(project_id,run_id,tool_name) WHERE event_type='run_write'",
-  ] },
+  ],
+    reaches: reaching(['agent_run_events'], 'Whether a run landed a write through a tool is one seek of its landed writes.'),
+  },
   { version: V731 + 2, statements: [
     "CREATE INDEX IF NOT EXISTS idx_run_served_material_session_record ON run_served_material(project_id,run_id,session_id,record_id,served_id)",
   "DROP INDEX IF EXISTS idx_run_served_material_session",
-  ] },
+  ],
+    reaches: reaching(['run_served_material'], 'A prompt\'s serving identity in a session is one keyed probe, and citation checks use the same path. The session and record covering index, built in its own earlier step, serves every statement this prefix served.'),
+  },
   { version: V731 + 3, statements: [
     "CREATE INDEX IF NOT EXISTS idx_agent_runs_body_due ON agent_runs(completed_at,project_id,id) WHERE status IN ('completed','failed','skipped') AND resumable=0 AND instruction IS NOT NULL AND length(CAST(instruction AS BLOB))>=4096",
-  ] },
+  ],
+    reaches: reaching(['agent_runs'], 'The body move seeks settled large bodies without reading the rest of the table.'),
+    deploymentIndexes: [
+      { index: 'idx_agent_runs_body_due', read: 'the body move seeks settled terminal runs with an inline instruction across the Deployment, oldest completion first' },
+    ],
+  },
   { version: V731 + 4, statements: [
     "CREATE INDEX IF NOT EXISTS idx_agent_reports_body_due ON agent_reports(created_at,id) WHERE (details IS NOT NULL AND length(CAST(details AS BLOB))>=4096) OR (audit IS NOT NULL AND length(CAST(audit AS BLOB))>=4096)",
-  ] },
+  ],
+    reaches: reaching(['agent_reports'], 'The body move seeks settled large bodies without reading the rest of the table.'),
+    deploymentIndexes: [
+      { index: 'idx_agent_reports_body_due', read: 'the body move seeks settled reports with an inline body across the Deployment, oldest report first' },
+    ],
+  },
 ];
 
 /** The last of this family's steps. */
 export const V735 = V731 + 4;
+
+/** Why the step reaches tables earlier steps created. */
+export const V731_REACHES: readonly Reach[] = [
+  ...reaching(['agent_run_events', 'agent_run_attempts'], 'An attempt or admitted call changes that run\'s kept counters by one.'),
+  ...changing(['projection_catchup'], 'Run evidence counts remain building until the bounded catch-up has counted every run and attempt.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V731_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_run_body_failures_oldest', read: 'Attention lists the bodies longest stuck across the Deployment, oldest failure first' },
+];

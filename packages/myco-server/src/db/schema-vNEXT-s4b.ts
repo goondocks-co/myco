@@ -1,3 +1,4 @@
+import { reaching, type SchemaStep, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 export const NEXT_S4B = 746;
@@ -6,7 +7,7 @@ export const NEXT_S4B = 746;
  * Lineage edges: one row per source, successor and action with its newest event, written by a trigger on new resolution events and filled for held
  * events by the shared catch-up. Frozen beside the runtime reconcile in db/spores/edges.ts.
  */
-export const VNEXT_S4B_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S4B_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S4B, statements: [
     `CREATE TABLE IF NOT EXISTS spore_resolution_edges(project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id),source_id TEXT NOT NULL,target_id TEXT NOT NULL,action TEXT NOT NULL,last_event_at INTEGER NOT NULL,last_event_id TEXT NOT NULL,
       PRIMARY KEY(project_id,source_id,target_id,action)) WITHOUT ROWID`,
@@ -17,5 +18,10 @@ export const VNEXT_S4B_STEPS: ReadonlyArray<{ version: number; statements: reado
       ON CONFLICT(project_id,source_id,target_id,action) DO UPDATE SET last_event_at=excluded.last_event_at,last_event_id=excluded.last_event_id
       WHERE (excluded.last_event_at,excluded.last_event_id) > (spore_resolution_edges.last_event_at,spore_resolution_edges.last_event_id); END`,
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'spore_resolution_edges','sporeResolutionEdges',NOT EXISTS(SELECT 1 FROM resolution_events) ON CONFLICT DO NOTHING",
-  ] },
+  ],
+    reaches: [
+      ...reaching(['resolution_events'], 'Each new resolution event writes the lineage edge browsing reads.'),
+      ...changing(['projection_catchup'], 'Lineage edges record whether existing resolution events need replaying by the catch-up.'),
+    ],
+  },
 ];

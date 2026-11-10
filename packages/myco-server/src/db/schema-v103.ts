@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 import { IN_FLIGHT_RUN_STATUSES } from './run-statuses.js';
 import { runOriginSql } from './run-context.js';
 
@@ -34,4 +35,11 @@ export const V103_STATEMENTS: readonly string[] = [
   `CREATE TRIGGER IF NOT EXISTS agent_attempt_machine_fixed BEFORE UPDATE OF machine_id ON agent_run_attempts
     WHEN OLD.machine_id IS NOT NULL AND NEW.machine_id IS NOT OLD.machine_id
     BEGIN SELECT RAISE(ABORT,'an attempt keeps its claim machine'); END`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V103_REACHES: readonly Reach[] = [
+  ...changing(['agent_run_attempts'], 'Attempts retain the forecast recorded at claim time. Attempts retain their settled price. Attempts retain their settled price source. Attempts retain their immutable model and harness profile. Known attempt costs retain Deployment-local settlement order. New known costs receive Deployment-local settlement order. Newly known costs receive Deployment-local settlement order. Settlement order remains stable for incremental estimate seeks. Claim time, estimate and profile are immutable attempt evidence. Settled attempt prices and known sources are immutable. Known attempt claim machine attribution is immutable.'),
+  ...changing(['schema_meta'], 'The Deployment records its monotonic settlement sequence.'),
+  ...changing(['agent_runs'], 'Dispatches retain their automatic or manual origin. Live dispatches receive the origin fixed by their persisted actor. Omitted dispatch origins must be classified before queue-head admission. Persisted dispatch origin is immutable.'),
 ];

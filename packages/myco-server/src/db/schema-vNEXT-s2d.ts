@@ -1,4 +1,4 @@
-import { retiring, type SchemaStep } from './schema-step.js';
+import { retiring, type SchemaStep, reaching, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 /** The last schema step of the session deletion and job work; the three index builds before it run one per step. */
@@ -11,13 +11,19 @@ export const NEXT_S2D = 763;
 export const VNEXT_S2D_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S2D - 3, statements: [
     'CREATE INDEX IF NOT EXISTS idx_publication_dependencies_session ON publication_dependencies(project_id,session_id,child_event_id,prerequisite_kind,prerequisite_id)',
-  ] },
+  ],
+    reaches: reaching(['publication_dependencies'], 'A deletion job pages these rows by the session they belong to, and a page must not walk the whole table.'),
+  },
   { version: NEXT_S2D - 2, statements: [
     'CREATE INDEX IF NOT EXISTS idx_spores_prompt ON spores(project_id,prompt_id) WHERE prompt_id IS NOT NULL',
-  ] },
+  ],
+    reaches: reaching(['spores'], 'A deletion job pages these rows by the session they belong to, and a page must not walk the whole table.'),
+  },
   { version: NEXT_S2D - 1, statements: [
     'CREATE INDEX IF NOT EXISTS idx_document_transcript_pins_session ON document_transcript_pins(project_id,session_id,transcript_id)',
-  ] },
+  ],
+    reaches: reaching(['document_transcript_pins'], 'A deletion job pages these rows by the session they belong to, and a page must not walk the whole table.'),
+  },
   { version: NEXT_S2D, statements: [
     `CREATE TABLE IF NOT EXISTS session_deletion_jobs(
       project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),session_id TEXT NOT NULL,
@@ -47,5 +53,15 @@ export const VNEXT_S2D_STEPS: readonly SchemaStep[] = [
     "CREATE TRIGGER IF NOT EXISTS search_revision_plan_session_tombstones_insert AFTER INSERT ON session_tombstones BEGIN UPDATE search_revisions SET revision = revision + 1 WHERE kind = 'plan'; END",
     "CREATE TRIGGER IF NOT EXISTS search_revision_plan_session_tombstones_delete AFTER DELETE ON session_tombstones BEGIN UPDATE search_revisions SET revision = revision + 1 WHERE kind = 'plan'; END",
     'DROP INDEX IF EXISTS idx_session_tombstones_created',
-  ], retires: retiring('index', ['idx_session_tombstones_created'], 'Nothing reads the deletion-window index once the orphan audit replaced its gate.') },
+  ], retires: retiring('index', ['idx_session_tombstones_created'], 'Nothing reads the deletion-window index once the orphan audit replaced its gate.'),
+    reaches: [
+      ...changing(['orphan_sweep_state'], 'The orphan audit keeps the floor it may release from and when its next pass begins beside the cursor it already holds.'),
+      ...reaching(['session_tombstones'], 'Turn cards and plans of a deleted session drop out of a ranked page on its tombstone, so a cursor over them restarts when one is written.'),
+    ],
+    deploymentIndexes: [
+      { index: 'idx_session_deletion_jobs_running', read: 'the deletion job walks running jobs oldest first across every Project' },
+      { index: 'idx_transcript_reread_running', read: 'the reread job walks running jobs oldest first across every Project' },
+      { index: 'idx_transcript_reread_selector', read: 'one reread runs at a time for one selector, which can be a Deployment-wide agent' },
+    ],
+  },
 ];

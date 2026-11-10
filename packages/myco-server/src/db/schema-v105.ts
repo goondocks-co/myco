@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 import { VIEW_MATERIALS } from './view-tables.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
@@ -68,4 +69,25 @@ export const V105_STATEMENTS: readonly string[] = [
       `CREATE INDEX IF NOT EXISTS idx_${table}_identity ON ${table}(project_id,instance_id,canonical_identity)`,
   ),
   `DROP TABLE IF EXISTS _v105_empty`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V105_REACHES: readonly Reach[] = [
+  ...changing(['view_prompts'], 'Empty material storage carries publication identity and sequence. Coverage counterpart admission indexes empty material storage. The writer extension requires empty instance storage.'),
+  ...changing(['view_responses'], 'Empty material storage carries publication identity and sequence. The writer extension requires empty instance storage.'),
+  ...changing(['view_tool_calls'], 'Empty material storage carries publication identity and sequence. Tool assembly persists canonical source order in empty storage. The writer extension requires empty instance storage.'),
+  ...changing(['view_plans'], 'Empty material storage carries publication identity and sequence. Empty plan storage retains the complete logical tag set. The writer extension requires empty instance storage.'),
+  ...changing(['view_checkpoints'], 'Empty checkpoints carry the complete live frontier.'),
+  ...reaching(['view_instances'], 'Build slot admission indexes empty instance storage. Stale generation admission indexes empty instance storage.'),
+  ...reaching(['plan_promotions'], 'Publication admission indexes empty promotion storage.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V105_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_view_active_leases', read: 'view slot admission seeks unexpired build leases across Projects' },
+  { index: 'idx_view_stale', read: 'view staleness admission seeks older executing generations across Projects' },
+  { index: 'idx_view_ready', read: 'view service takes the least recently served ready session across Projects' },
+  { index: 'idx_view_due', read: 'view backoff promotion seeks due attempts across Projects' },
+  { index: 'idx_view_aging', read: 'view priority aging seeks expired recent-capture entries across Projects' },
+  { index: 'idx_view_yielded', read: 'view service resumes the oldest yielded session after ready peers receive service' },
 ];

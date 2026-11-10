@@ -1,4 +1,4 @@
-import { retiring, type Retirement } from './schema-step.js';
+import { retiring, type Retirement, reaching, type Reach, type DeploymentIndex } from './schema-step.js';
 export const V720 = 720;
 
 /**
@@ -57,3 +57,16 @@ export const V720_RETIRES: readonly Retirement[] = retiring('trigger',
   ['embedding_versions', 'embedding_receipts', 'embedding_source_failures', 'processed_resources', 'embedding_hubness_members', 'embedding_cursors']
     .flatMap((table) => ['insert', 'update', 'delete'].map((action) => `${table}_work_${action}`)),
   'Each work trigger is rebuilt with the same body plus the attention mark.');
+
+/** Why the step reaches tables earlier steps created. */
+export const V720_REACHES: readonly Reach[] = [
+  ...reaching(['embedding_passed_over'], 'Switch completion seeks a Project\'s current passed-over membership by model and expiry, never reading expired refusals.'),
+  ...reaching(['embedding_work_state'], 'Scheduling seeks the work rows whose wake time has come without reading every Project.'),
+  ...reaching(['embedding_versions', 'embedding_receipts', 'embedding_source_failures', 'processed_resources', 'embedding_hubness_members', 'embedding_cursors'], 'A work mutation marks its Project for scheduling attention in the statement that dirties its work rows.'),
+  ...reaching(['embedding_models'], 'A model\'s registration, activation, initialization or epoch change re-arms its Project\'s work.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V720_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_embedding_work_wake', read: 'embedding scheduling seeks the work rows whose wake time has come under its models across the Deployment' },
+];

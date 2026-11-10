@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 /** Persistent administrative receipts and indexed attempt history; readiness reports are transient. */
 export const V81_STATEMENTS: readonly string[] = [
   `ALTER TABLE runners ADD COLUMN last_contact_at INTEGER`,
@@ -40,4 +41,12 @@ export const V81_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_runner_attempt_history ON agent_run_attempts(runner_id, claimed_at DESC, attempt_id DESC)`,
   `DROP INDEX IF EXISTS idx_agent_run_attempts_runner`,
   `CREATE INDEX IF NOT EXISTS idx_runner_run_terminal ON agent_runs(leased_runner_id, status, completed_at DESC, id DESC)`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V81_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_fleet_queue', read: 'fleet readiness aggregates the Deployment queue by task and hold over a covering index' },
+  { index: 'idx_fleet_legacy_leases', read: 'legacy fleet inventory starts from currently running member-held leases across the Deployment' },
+  { index: 'idx_runner_attempt_history', read: 'each runner reads its newest persistent attempt across Projects' },
+  { index: 'idx_runner_run_terminal', read: 'each runner reads its newest terminal result across Projects' },
 ];

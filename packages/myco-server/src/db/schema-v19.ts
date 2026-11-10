@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 /** Inline text is indexed by source-table triggers; immutable blob text is indexed in resumable chunks. */
 export const V19_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_prompt_batches_search_blob ON prompt_batches(project_id, blob_key) WHERE blob_key IS NOT NULL`,
@@ -51,4 +52,9 @@ export const V19_STATEMENTS: readonly string[] = [
   `CREATE TRIGGER IF NOT EXISTS plans_search_blob_ai AFTER INSERT ON plans WHEN new.blob_key IS NOT NULL BEGIN INSERT OR IGNORE INTO search_blob_queue(project_id, blob_key) VALUES(new.project_id, new.blob_key); END`,
   `CREATE TRIGGER IF NOT EXISTS plans_search_blob_au AFTER UPDATE OF project_id, blob_key ON plans WHEN new.blob_key IS NOT NULL BEGIN INSERT OR IGNORE INTO search_blob_queue(project_id, blob_key) VALUES(new.project_id, new.blob_key); END`,
   `INSERT OR IGNORE INTO search_blob_queue(project_id, blob_key) SELECT project_id, blob_key FROM plans WHERE blob_key IS NOT NULL`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V19_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_search_blob_pending', read: 'pending search work is ordered across the Deployment by its last attempt' },
 ];

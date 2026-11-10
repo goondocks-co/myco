@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { curationChangeSql } from './curation-changes.js';
 
@@ -40,4 +41,19 @@ export const V693_STATEMENTS: readonly string[] = [
       ((OLD.neighbor_mean IS NULL OR OLD.neighbor_std IS NULL) AND NEW.neighbor_mean IS NOT NULL AND NEW.neighbor_std IS NOT NULL))`:''} BEGIN ${curationChangeSql(`${op === 'DELETE' ? 'OLD' : 'NEW'}.project_id`, `COALESCE((SELECT COALESCE(updated_at,created_at) FROM spores WHERE project_id=${op === 'DELETE' ? 'OLD' : 'NEW'}.project_id AND id=${op === 'DELETE' ? 'OLD' : 'NEW'}.record_id),${op === 'DELETE' ? 'OLD' : 'NEW'}.updated_at)`)} END`),
   `CREATE TABLE IF NOT EXISTS project_settings (project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}) REFERENCES projects(project_id), leaf TEXT NOT NULL, value TEXT NOT NULL,
     updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, PRIMARY KEY(project_id,leaf))`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V693_REACHES: readonly Reach[] = [
+  ...reaching(['spores'], 'Curation discovery seeks a bounded active-spore page after its saved activity and id cursor. Curation source and vector changes advance the durable discovery frontier.'),
+  ...reaching(['project_capabilities'], 'Curation discovery seeks one opted-in Project after its saved Project cursor. Curation source and vector changes advance the durable discovery frontier.'),
+  ...reaching(['agent_runs'], 'Curation admission reads at most its daily ceiling of run entries.'),
+  ...reaching(['resolution_events'], 'A curation decision verifies this run’s lineage events by author and source.'),
+  ...reaching(['embedding_receipts'], 'Curation source and vector changes advance the durable discovery frontier.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V693_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_curation_changes_due', read: 'curation discovery seeks changed Projects across the Deployment' },
+  { index: 'idx_curation_projects', read: 'curation discovery seeks one opted-in Project after its saved cursor across the Deployment' },
 ];

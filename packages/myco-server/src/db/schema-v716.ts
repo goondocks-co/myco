@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 export const V716 = 716;
 
 /**
@@ -32,4 +33,14 @@ export const V716_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS embedding_model_totals_delete AFTER DELETE ON embedding_source_state BEGIN INSERT INTO embedding_model_totals(project_id,model_key,state,n) VALUES(OLD.project_id,OLD.model_key,OLD.state,-1)\n      ON CONFLICT(project_id,model_key,state) DO UPDATE SET n=n-1; END",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'embedding_state','versions',NOT EXISTS(SELECT 1 FROM embedding_versions)",
   "INSERT INTO projection_catchup(projection,phase,done) VALUES('embedding_reset','resetFailures',1),('embedding_reset','resetMembers',1),('embedding_reset','resetReceipts',1)",
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V716_REACHES: readonly Reach[] = [
+  ...changing(['embedding_models'], 'Each Project model carries the epoch a reset advances.'),
+  ...changing(['embedding_provider_holds', 'embedding_source_failures'], 'Receipts, failures and provider holds record the attempt that wrote them, which fences their settlement.'),
+  ...changing(['embedding_receipts'], 'Receipts, failures and provider holds record the attempt that wrote them, which fences their settlement. Receipt mutations move their source between unwritten, journaled, rewriting, ready and unavailable.'),
+  ...changing(['projection_catchup'], 'Each catch-up phase carries the generation a restart advances, which fences page settlement. Source state records whether existing versions need catch-up. Reset retirement phases start finished, with no reset admitted.'),
+  ...reaching(['embedding_versions'], 'Version mutations reconcile the one source key they name under every active model.'),
+  ...reaching(['processed_resources'], 'Plan proof eligibility reconciles only that plan’s source state.'),
 ];

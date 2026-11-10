@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 import { MAX_PAYLOAD_BYTES } from '../ingest/envelope.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { VIEW_MATERIALS } from './view-tables.js';
@@ -129,4 +130,9 @@ export const V100_STATEMENTS: readonly string[] = [
       `CREATE TRIGGER IF NOT EXISTS ${fts}_ad AFTER DELETE ON ${table} BEGIN INSERT INTO ${fts}(${fts}, rowid, ${columns}) VALUES('delete', old.rowid, ${values('old')}); END`,
     ];
   }),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V100_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_view_plans_updated_deployment', read: 'the visible parser plans list spans every Project, most recently updated first' },
 ];
