@@ -7,12 +7,12 @@
  * purpose. And `--dry-run` reports without writing, which is the only way to
  * ask "what would this bring?" of a machine whose archive you have not seen.
  */
-import { describe, expect, it, spyOn } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import fs, { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import * as history from '@myco/member/import.js';
+import { harnessHistory, withHarnessHome } from '../member/helpers/history-fakes.js';
 import { run as login } from '@myco/cli/login.js';
 import { runJoin } from '@myco/cli/member.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
@@ -146,20 +146,27 @@ describe('the join paths', () => {
     execFileSync('git', ['init', '-q'], { cwd: root });
     const rig = unjoinedRig();
     const lines: string[] = [];
-    const deps = { fetch: rig.fetch as typeof fetch, mycoHome: home, cwd: root, machineId: 'machine_person', stdout: (line: string) => lines.push(line), stderr: (line: string) => lines.push(line) };
-    const imported = spyOn(history, 'runImport').mockRejectedValue(new Error('history fixture failed'));
+    harnessHistory(home, root);
+    const restoreHome = withHarnessHome(home);
+    const plans: string[] = [];
+    const deployment = async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname !== '/import/plan') return rig.fetch(request);
+      plans.push(request.url);
+      return new Response('{}', { status: 503 });
+    };
+    const deps = { fetch: deployment as typeof fetch, mycoHome: home, cwd: root, machineId: 'machine_person', stdout: (line: string) => lines.push(line), stderr: (line: string) => lines.push(line) };
     try {
       const invitation = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', ...(verb === 'login' ? { projectId: 'proj_1' } : {}) });
       expect(await login([`https://s/join#${invitation.key}`, '--no-agents', ...(verb === 'login' ? ['--root', root] : [])], deps)).toBe(true);
       if (verb === 'member join') expect(await runJoin(['--new', '--no-agents', '--no-worker'], deps)).not.toBeNull();
-      expect(imported).toHaveBeenCalledTimes(1);
-      expect(imported.mock.calls[0]?.[0]).toMatchObject({ serverUrl: 'https://s', ...(verb === 'member join' ? { project: readRegistryEntry(root, home)!.projectId } : {}) });
+      expect(plans).toHaveLength(1);
       expect(readDeploymentMembership('https://s', home)).not.toBeNull();
       expect(readRegistryEntry(root, home)).not.toBeNull();
-      expect(lines.join('\n')).toContain('Could not import past sessions (history fixture failed)');
+      expect(lines.join('\n')).toContain('Past sessions are still waiting');
       expect(lines.join('\n')).toContain('`myco import` retries them');
     } finally {
-      imported.mockRestore();
+      restoreHome();
       rig.env.sqlite.close();
       fs.rmSync(home, { recursive: true, force: true });
     }
