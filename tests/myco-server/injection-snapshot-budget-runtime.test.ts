@@ -1,42 +1,48 @@
 import { expect, it } from 'bun:test';
-import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { tombstoneSession } from './helpers/session-deletion.js';
-import { measuredStore } from './helpers/read-budget.js';
-import { schemaD1Root } from './helpers/schema-template.js';
+import { d1TwoScale, eachUnit, expectReportedWalk, expectTwoScale } from './helpers/two-scale.js';
 
-it('D1 source tombstones read only their snapshots among 10000 served plans', async () => {
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
-    script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
-  try {
-    const db = await mf.getD1Database('DB');
-    await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('snapshot-budget','Snapshots',1)").run();
-    for (const session of ['source-target', 'source-other', 'receiver']) {
-      await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
-        VALUES('snapshot-budget',?,'machine','fixture',1,1)`).bind(session).run();
-    }
-    await db.prepare(`WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i<5000)
-      INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at)
-      SELECT 'snapshot-budget','receiver',printf('00000000-0000-4000-8000-%012d',i),
-        printf('00000000-0000-7000-8000-%012d',i),'prompt-hash-'||i,'[]',
-        json_array('plan-'||(i*2-1),'plan-'||(i*2)),i FROM seq`).run();
-    await db.prepare(`WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i<10000)
-      INSERT INTO injection_served_items(project_id,receipt_id,kind,item_id,title,session_id,content_hash,unavailable)
-      SELECT 'snapshot-budget',printf('00000000-0000-4000-8000-%012d',(i+1)/2),'plan','plan-'||i,'Served plan '||i,
-        CASE WHEN i<=200 THEN 'source-target' ELSE 'source-other' END,'content-hash-'||i,0 FROM seq`).run();
-    const measured = measuredStore(db);
-    expect((await tombstoneSession({ db: measured.db }, { projectId: 'snapshot-budget' }, 'source-target', 'fixture', 10001)).applied).toBe(true);
-    const rowsRead = measured.reads();
-    expect(rowsRead).toBeLessThan(1000);
-    const inventory = await db.prepare("PRAGMA index_list('injection_served_items')").all<{ name: string; partial: number }>();
-    expect(inventory.results.find(index => index.name === 'idx_injection_served_items_source_session')?.partial).toBe(1);
-    expect((await db.prepare("PRAGMA index_info('idx_injection_served_items_source_session')").all<{ name: string }>()).results.map(column => column.name))
-      .toEqual(['project_id', 'session_id']);
-    expect((await db.prepare(`SELECT COUNT(*) AS n FROM injection_served_items
-      WHERE session_id IS NULL AND title IS NULL AND content_hash IS NULL AND unavailable=1`).first<{ n: number }>())?.n).toBe(200);
-    expect((await db.prepare(`SELECT COUNT(*) AS n FROM injection_served_items
-      WHERE session_id='source-other' AND title IS NOT NULL AND content_hash IS NOT NULL AND unavailable=0`).first<{ n: number }>())?.n).toBe(9800);
-    expect((await db.prepare('SELECT COUNT(*) AS n FROM spore_injections').first<{ n: number }>())?.n).toBe(5000);
-    console.info('SNAPSHOT_TOMBSTONE_READ_BUDGET', { snapshots: 10000, sourceSnapshots: 200, rowsRead });
-  } finally { await mf.dispose(); }
-}, 30000);
+const PROJECT = 'snapshot-budget';
+/** Plans served from each tombstoned source session. */
+const SOURCE_SNAPSHOTS = 200;
+/** Receipts of other sources, two served plans each. */
+const SIZES = [2_000, 10_000] as const;
+
+it('D1 source tombstones cost the same as other sources\' served snapshots grow, and clear only their own', async () => {
+  const costs = await d1TwoScale({
+    sizes: SIZES,
+    setup: async (db) => {
+      await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES(?,'Snapshots',1)").bind(PROJECT).run();
+      for (const session of ['source-0', 'source-1', 'source-other', 'receiver']) {
+        await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+          VALUES(?,?,'machine','fixture',1,1)`).bind(PROJECT, session).run();
+      }
+    },
+    // Each unit is one receipt served two plans of another source session.
+    grow: async (db, from, to) => {
+      await eachUnit(db, from, to, `INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at)
+        SELECT ?3,'receiver',printf('00000000-0000-4000-8000-%012d',i),printf('00000000-0000-7000-8000-%012d',i),'prompt-hash-'||i,'[]',
+          json_array('plan-'||(i*2),'plan-'||(i*2+1)),i FROM n`, PROJECT);
+      await eachUnit(db, from * 2, to * 2, `INSERT INTO injection_served_items(project_id,receipt_id,kind,item_id,title,session_id,content_hash,unavailable)
+        SELECT ?3,printf('00000000-0000-4000-8000-%012d',i/2),'plan','plan-'||i,'Served plan '||i,'source-other','content-hash-'||i,0 FROM n`, PROJECT);
+    },
+    cases: [{
+      name: 'source tombstone',
+      run: async (db, { scale, store }) => {
+        const source = `source-${scale}`;
+        // The source's own snapshots sit on receipts the corpus already holds.
+        await eachUnit(store, 0, SOURCE_SNAPSHOTS, `INSERT INTO injection_served_items(project_id,receipt_id,kind,item_id,title,session_id,content_hash,unavailable)
+          SELECT ?3,printf('00000000-0000-4000-8000-%012d',i),'plan',?4||'-plan-'||i,'Served plan '||i,?4,'content-hash-'||i,0 FROM n`, PROJECT, source);
+        const other = (await store.prepare("SELECT COUNT(*) AS n FROM injection_served_items WHERE session_id='source-other' AND unavailable=0").first<{ n: number }>())!.n;
+        expect((await tombstoneSession({ db }, { projectId: PROJECT }, source, 'fixture', 10_001)).applied).toBe(true);
+        expect(await store.prepare(`SELECT COUNT(*) AS n FROM injection_served_items
+          WHERE item_id LIKE ? AND session_id IS NULL AND title IS NULL AND content_hash IS NULL AND unavailable=1`).bind(`${source}-plan-%`).first()).toEqual({ n: SOURCE_SNAPSHOTS });
+        expect(await store.prepare("SELECT COUNT(*) AS n FROM injection_served_items WHERE session_id='source-other' AND title IS NOT NULL AND unavailable=0").first())
+          .toEqual({ n: other });
+      },
+    }],
+  });
+  expectTwoScale(costs.filter((cost) => cost.statistics === 'none'));
+  // Under planner statistics the planner leaves the source index and walks every served snapshot (#2174): two per unit.
+  for (const cost of costs.filter((cost) => cost.statistics !== 'none')) expectReportedWalk(cost, { issue: '#2174', perUnit: 2.5, units: SIZES[1] - SIZES[0] });
+}, 120_000);

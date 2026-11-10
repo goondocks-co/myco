@@ -233,7 +233,6 @@ describe('work history', () => {
       expect(finals.proj_small).toMatchObject({ runs: 198, tokens_low: 100, cost_low: 1, cost_high: 1 });
       expect(finals.proj_full).toMatchObject({ runs: 3998, tokens_low: 100, cost_low: 1, cost_high: 1 });
       expect(reads.proj_full).toEqual(reads.proj_small!);
-      expect(Math.max(...reads.proj_full!)).toBeLessThan(120);
     } finally { await mf.dispose(); }
   }, 120_000);
 

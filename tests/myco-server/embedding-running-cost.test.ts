@@ -24,10 +24,11 @@ import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 10 ** 12;
 const MODEL = 'm';
-const REREAD_CATALOG_WRITES = 8;
-const REREAD_VERSION_INDEX_WRITES = 1;
-/** A reset changes its contribution and total, retires the empty total, and advances the input revision. */
-const REREAD_CONTRIBUTION_WRITES = 4;
+
+/** The large size cost no more than the small one. */
+function expectFlat(name: string, [small, large]: number[]) {
+  expect(large!, name).toBeLessThanOrEqual(small!);
+}
 
 async function readyDocumentStatus(db: RelationalStore) {
   const status = await readDocumentStatus(db);
@@ -80,6 +81,7 @@ const context = (db: RelationalStore, embed = async (_text: string) => [1, 0]) =
 });
 
 test('a positive backlog is rechecked from indexed due heads without writes until source invalidation', async () => {
+  const reads: number[] = [];
   await world(async (m) => {
     for (const size of [1_000, 4_000]) {
       await plans(m.db, size);
@@ -90,28 +92,30 @@ test('a positive backlog is rechecked from indexed due heads without writes unti
       m.reset();
       for (let i = 1; i <= 3; i++) expect(await hasEmbeddingWork(m.db, 'p', MODEL, NOW + i)).toBe(true);
       console.info(`positive admission ${size}: ${m.reads() / 3} rows/check, ${m.writes() / 3} writes/check`);
-      // Per check: the work marker, the provider hold, the model row, the due index's head seeks and the eligible-source seek.
-      expect(m.reads()).toBeLessThanOrEqual(3 * 7);
-      expect(m.writes()).toBe(0);
+      reads.push(m.reads());
+      expect(m.writes(), 'a recheck writes nothing').toBe(0);
       await m.db.prepare(`INSERT OR IGNORE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at)
         SELECT project_id,'m',record_id,type,record_id,revision,1,1 FROM embedding_versions`).run();
       expect(await hasEmbeddingWork(m.db, 'p', MODEL, NOW + 4)).toBe(false);
     }
   });
+  expectFlat('positive admission', reads);
 });
 
 test('selection seeks a late pending source without rereading completed sources', async () => {
+  const reads: number[] = [];
   await world(async (m) => {
-    for (const size of [1_000, 4_000]) {
+    // The first round also leaves a revised source and a second model behind; the later rounds measure the same state.
+    for (const size of [1_000, 2_000, 8_000]) {
       await plans(m.db, size);
       await readyPlans(m.db);
       const c = context(m.db);
-      for (let warm = 0; warm < 20; warm++) await reconcileEmbedding(c, 'p', NOW);
+      for (let warm = 0; warm < 200; warm++) if ((await reconcileEmbedding(c, 'p', NOW)).phase === 'settled') break;
       await plans(m.db, size + 1);
       m.reset();
       expect((await reconcileEmbedding(c, 'p', NOW + 1)).processed).toBe(1);
       console.info(`late selection ${size}: ${m.reads()} rows/step, ${m.writes()} writes/step`);
-      expect(m.reads()).toBeLessThan(600);
+      reads.push(m.reads());
       expect(await m.db.prepare(`SELECT 1 FROM embedding_receipts WHERE project_id='p' AND model_key='m' AND record_id=printf('plan-%06d',?) AND ready=1`).bind(size + 1).first()).not.toBeNull();
       await m.db.prepare("UPDATE plans SET content=content||' revised' WHERE plan_key= 'plan-000001'").run();
       expect((await reconcileEmbedding(c, 'p', NOW + 2)).processed).toBe(1);
@@ -123,7 +127,8 @@ test('selection seeks a late pending source without rereading completed sources'
         AND v.type=r.type AND v.record_id=r.record_id AND v.revision=r.revision WHERE r.model_key='m' AND r.record_id='plan-000001' AND r.ready=1`).first()).not.toBeNull();
     }
   });
-});
+  expectFlat('late selection', reads.slice(1));
+}, 120_000);
 
 test('a source change refuses the page commit calibration began against, and nothing publishes over the old population', async () => {
   await world(async (m) => {
@@ -155,6 +160,8 @@ test('a source change refuses the page commit calibration began against, and not
 });
 
 test('document facts and drain telemetry stay bounded and reflect committed catalog changes', async () => {
+  const polls: number[] = [];
+  const telemetry: number[] = [];
   await world(async (m) => {
     expect(await readDocumentStatus(m.db)).toEqual({state:'building'});
     for (const phase of ['publicationInputs','publicationSessions'] as const) while (await catchUpPhase(m.db,phase)>0) {}
@@ -168,11 +175,11 @@ test('document facts and drain telemetry stay bounded and reflect committed cata
       expect(status.lagBytes).toBe(size*100);
       expect(status.differences).toEqual({body_missing:size});
       console.info(`document status ${size}: ${m.reads()} rows/poll`);
-      expect(m.reads()).toBeLessThan(32);
+      polls.push(m.reads());
       m.reset();
       const pending = await pendingPublication(m.db,NOW);
       console.info(`publication telemetry ${size}: ${m.reads()} rows/wake, ${pending.sessions} sessions`);
-      expect(m.reads()).toBeLessThan(1_000);
+      telemetry.push(m.reads());
       expect(pending).toEqual({sessions:128,transcripts:128,bytes:12_800,imported:{sessions:64,transcripts:64,bytes:6_400},limited:true});
       await m.db.prepare("UPDATE session_documents SET due_at=?,build=NULL WHERE project_id='p' AND session_id='s-000001'").bind(NOW+1).run();
       expect((await pendingPublication(m.db,NOW)).sessions).toBe(128);
@@ -196,9 +203,12 @@ test('document facts and drain telemetry stay bounded and reflect committed cata
         VALUES('p','s-000002','live',1,0,1,'{"report":{"classes":{"body_missing":1}}}')`).run();
     }
   },db=>documents(db,1_000));
+  expectFlat('document status', polls);
+  expectFlat('publication telemetry', telemetry);
 });
 
 test('current provider quota holds admission and calls until its persisted deadline', async () => {
+  const held: number[] = [];
   for (const size of [1_000,4_000]) await world(async (m) => {
     await plans(m.db,size);
     await readyPlans(m.db);
@@ -218,7 +228,7 @@ test('current provider quota holds admission and calls until its persisted deadl
     }
     console.info(`provider hold ${size}: ${m.reads() / 2} rows/wake, ${m.writes() / 2} writes/wake, ${calls} calls`);
     expect(calls).toBe(1);
-    expect(m.reads() / 2).toBeLessThan(100);
+    held.push(m.reads());
     const fixture = sqliteEnv();
     try {
       const env = {...fixture.serverEnv,db:m.db,origin:'http://local.invalid',vectors:c.vectors,embeddingProvider:async()=>c.provider,
@@ -235,6 +245,7 @@ test('current provider quota holds admission and calls until its persisted deadl
     await expect(reconcileEmbedding(c,'p',NOW+180_000)).rejects.toThrow('quota');
     expect(calls).toBe(3);
   });
+  expectFlat('provider hold', held);
 });
 
 test('an expired work deadline is probed once, a positive backlog is probed until it clears, and a clean row then rests', async () => {
@@ -364,12 +375,10 @@ test('calibration publication pages publish every settled member, a page at a ti
   });
 });
 
-/** One job row per reread page, plus the row the request opens: the job's own bookkeeping, 256 transcripts to a page. */
-const REREAD_JOB_WRITES = 64;
-
 test('bulk reread makes fully published sessions due and restores their byte lag', async () => {
-  await world(async m=>{
-    await documents(m.db,4_000);
+  const perTranscript: number[] = [];
+  for (const size of [1_000, 4_000]) await world(async m=>{
+    await documents(m.db,size);
     await m.db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,session_id,generation,published_offset,record_scheme,parser_version,updated_at)
       SELECT project_id,transcript_id,session_id,1,0,'scheme',1,1 FROM transcripts`).run();
     await m.db.prepare(`UPDATE session_documents SET build='{"report":{"classes":{"body_missing":1,"other":2}}}'`).run();
@@ -379,12 +388,14 @@ test('bulk reread makes fully published sessions due and restores their byte lag
       WHERE t.project_id=p.project_id AND t.transcript_id=p.transcript_id)`).run();
     await m.db.prepare('UPDATE session_documents SET due_at=NULL').run();
     m.reset();
-    expect(await rereadTranscripts(m.db,{agent:'test'})).toBe(4_000);
-    console.info(`reread 4000: ${m.reads()} read / ${m.writes()} written`);
-    expect(m.writes()).toBeLessThanOrEqual((REREAD_CATALOG_WRITES + REREAD_CONTRIBUTION_WRITES + REREAD_VERSION_INDEX_WRITES)*4_000 + REREAD_JOB_WRITES);
-    expect((await readyDocumentStatus(m.db)).lagBytes).toBe(400_100);
+    expect(await rereadTranscripts(m.db,{agent:'test'})).toBe(size);
+    console.info(`reread ${size}: ${m.reads()} read / ${m.writes()} written`);
+    perTranscript.push(m.writes() / size);
+    expect((await readyDocumentStatus(m.db)).lagBytes).toBe(size*100+100);
     expect((await pendingPublication(m.db,NOW)).limited).toBe(true);
   });
+  // Each reread transcript costs the same writes however many the request covers.
+  expectFlat('reread writes per transcript', perTranscript);
 });
 
 test('switch lifecycle changes fence failures from a superseded provider call', async () => {

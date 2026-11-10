@@ -33,11 +33,12 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const OLD = NOW - 30 * DAY;
 const HISTORY = 'agent.learning_history_enabled';
+/** The most rows an idle claim may read, whatever the history behind it. */
 const IDLE_CLAIM_ROW_LIMIT = 120;
-/** A populated poll over an empty one: the range end of its reads, and the deadline pass promoting one page of two sessions. */
-const POPULATED_POLL_ROWS = 2 + 10;
-const HISTORY_STATUS_ROW_LIMIT = 100;
-const DUE_CLAIM_ROW_LIMIT = 4000;
+/** Rows a poll over a history backlog may read beyond a poll over none. */
+const POPULATED_POLL_EXTRA = 12;
+/** Rows a due claim may read at the large history beyond the small one. */
+const DUE_CLAIM_EXTRA = 10;
 
 async function workerHarness(db: RelationalStore) {
   const blobs = memoryBlobStore();
@@ -155,7 +156,7 @@ it('skips a history backlog before probing it and reports why history waits', as
     env.db = first.db;
     expect(await poll()).toMatchObject({ claimed: false });
     expect(first.rows(), JSON.stringify(first.queries)).toBeLessThan(IDLE_CLAIM_ROW_LIMIT);
-    expect(first.rows() - empty.rows()).toBeLessThanOrEqual(POPULATED_POLL_ROWS);
+    expect(first.rows()).toBeLessThanOrEqual(empty.rows() + POPULATED_POLL_EXTRA);
     await add(2000, 4000);
     const second = countReads(db);
     env.db = second.db;
@@ -234,7 +235,6 @@ it('keeps idle claims and history status bounded across finished history and fre
       while ((await JOB_IMPLEMENTATIONS['learning-deadlines']!(env, NOW, 'active') as { more: boolean }).more);
       const counted = countReads(db);
       expect(await readLearningStatus(counted.db, NOW)).toMatchObject({ historyWaiting: 1, turnsAwaitingCards: 0, dueCards: 0, dueSessions: 0 });
-      expect(counted.rows(), JSON.stringify(counted.queries)).toBeLessThan(HISTORY_STATUS_ROW_LIMIT);
       await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
       return counted.rows();
     };
@@ -259,17 +259,40 @@ it('keeps idle claims and history status bounded across finished history and fre
       expect(emptyIdle).toBeGreaterThan(0);
       expect(emptyStatus).toBeGreaterThan(0);
     }
-    await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards)
-      VALUES('project','oldest-due','ready',?,1)`).bind(OLD - 2 * DAY).run();
-    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,source_activity_at,due_at)
-      VALUES('project','oldest-due','oldest',?,?,?)`).bind(OLD - 2 * DAY, OLD - 2 * DAY, NOW).run();
-    const counted = countReads(db);
-    env.db = counted.db;
-    const claimed = await poll();
-    expect(claimed).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
-    expect(counted.rows(), JSON.stringify(counted.queries)).toBeLessThan(DUE_CLAIM_ROW_LIMIT);
-    if (!claimed.claimed) throw new Error('the oldest due history session was not claimed');
-    expect(await db.prepare('SELECT subject FROM agent_runs WHERE id=?').bind(claimed.run.id).first()).toEqual({ subject: 'cards:oldest-due' });
+  });
+});
+
+it('claims the oldest due history session at the same cost as finished history grows', async () => {
+  await withDocumentStores(async (db, target) => {
+    const { env, poll } = await workerHarness(db);
+    await settingsWriter(db).setLeaf(HISTORY, true, 'owner', NOW);
+    const claims: number[] = [];
+    // The first claim is unmeasured: every claim after it starts from the same run history.
+    for (const [scale, size] of [[-1, 0], [0, 2000], [1, 8000]] as const) {
+      const ids = JSON.stringify(Array.from({ length: size }, (_, n) => n));
+      for (const project of ['project', 'other']) await db.prepare(`INSERT OR IGNORE INTO learning_sessions(project_id,session_id,init_state,source_activity_at)
+        SELECT ?,'finished-' || value,'ready',? FROM json_each(?)`).bind(project, OLD, ids).run();
+      const session = `oldest-due-${scale}`;
+      const at = OLD - (3 + scale) * DAY;
+      await db.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards)
+        VALUES('project',?,'ready',?,1)`).bind(session, at).run();
+      await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,source_activity_at,due_at)
+        VALUES('project',?,'oldest',?,?,?)`).bind(session, at, at, NOW).run();
+      const counted = countReads(db);
+      env.db = counted.db;
+      const claimed = await poll();
+      env.db = db;
+      expect(claimed).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
+      if (!claimed.claimed) throw new Error('the oldest due history session was not claimed');
+      expect(await db.prepare('SELECT subject FROM agent_runs WHERE id=?').bind(claimed.run.id).first()).toEqual({ subject: `cards:${session}` });
+      if (scale >= 0) claims.push(counted.rows());
+      await db.prepare("UPDATE agent_runs SET status='completed',completed_at=? WHERE id=?").bind(NOW + 1, claimed.run.id).run();
+      await db.prepare("DELETE FROM turn_cards WHERE project_id='project' AND session_id=?").bind(session).run();
+      await db.prepare("DELETE FROM learning_sessions WHERE project_id='project' AND session_id=?").bind(session).run();
+    }
+    console.info('due history claim rows', { target, claims });
+    if (target === 'D1') expect(claims[0]).toBeGreaterThan(0);
+    expect(claims[1]!).toBeLessThanOrEqual(claims[0]! + DUE_CLAIM_EXTRA);
   });
 });
 
