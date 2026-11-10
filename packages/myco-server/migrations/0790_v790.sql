@@ -18,7 +18,4 @@ CREATE TRIGGER IF NOT EXISTS session_served_items_receipt AFTER INSERT ON spore_
 
 INSERT INTO projection_catchup(projection,phase,done) SELECT 'session_served_items','servedItems',NOT EXISTS(SELECT 1 FROM spore_injections) ON CONFLICT DO NOTHING;
 
-CREATE INDEX IF NOT EXISTS idx_agent_runs_failed_unstarted ON agent_runs(project_id,task,COALESCE(queued_at,completed_at))
-        WHERE status='failed' AND started_at IS NULL;
-
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '790');
