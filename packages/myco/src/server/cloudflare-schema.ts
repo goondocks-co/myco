@@ -2,8 +2,11 @@ import path from 'node:path';
 import { THIN_LEARNING_REMOVAL_VERSION, THIN_LEARNING_PAUSE_VERSION, thinLearningUpgradeAdmission } from '@myco-server-worker/db/thin-learning-admission.js';
 import { budgetMigration,budgetCompletionMessage } from '@myco-server-worker/db/meta/budget-activation.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { migrationFileName } from '@myco-server-worker/db/migrate.js';
 import { cloudflareSchemaVersion, currentTimeTravelBookmark, runCloudflareCommand, queryCloudflareDatabase, runCloudflareStatement, D1_STATEMENT_TIMEOUT_MS, type CloudflareOptions, type DeploymentRecord } from './cloudflare.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
+import { applyMigrationsPaced, isD1Overload, SchemaUpdateStopped, workerSchemaEvidence, type OverloadRetry, type PacedApply, type StopEvidence } from './cloudflare-migration-pacing.js';
 
 interface SchemaOptions extends CloudflareOptions {
   mycoHome?: string;
@@ -16,6 +19,8 @@ interface SchemaOptions extends CloudflareOptions {
   observe?: (event: { phase: 'observed' | 'applying' | 'applied' | 'failed' | 'unconfirmed'; before: number; after: number; reached?: number }) => void;
   /** Resource preparation and recovery-ledger writes run only after admission. */
   prepare?: (record: DeploymentRecord) => Promise<DeploymentRecord>;
+  /** How an overloaded D1 is waited out between migration attempts. */
+  overloadRetry?: OverloadRetry;
 }
 
 /** Admit and apply every hosted migration under the operator lease. */
@@ -23,7 +28,13 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
   let record = options.record;
   if (options.accountId !== record.accountId) throw new Error('schema update refused: selected account does not match the deployment record');
   const database = { ...options, databaseName: record.databaseName };
-  const before = await cloudflareSchemaVersion(database);
+  let before: number;
+  try {
+    before = await cloudflareSchemaVersion(database);
+  } catch (error) {
+    if (!isD1Overload(error)) throw error;
+    throw new Error(`schema update refused: D1 database ${record.databaseName} is overloaded (code 7429) before the update started; nothing was changed. Wait a few minutes for its load to settle, then run: myco server update --target cloudflare`, { cause: error });
+  }
   options.observe?.({ phase: 'observed', before, after: SERVER_SCHEMA_VERSION });
   if (before > SERVER_SCHEMA_VERSION) throw new Error(`schema update refused: D1 schema ${before} is newer than this binary's ${SERVER_SCHEMA_VERSION}`);
   if (options.freshDatabase && before !== 0) throw new Error('fresh D1 provisioning refused: the destination is not empty');
@@ -33,6 +44,9 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
     while (!admitted.done) admitted = admission.next(await queryCloudflareDatabase({ ...database, sql: admitted.value, timeoutMs: D1_STATEMENT_TIMEOUT_MS }) as Record<string, unknown>[]);
   };
   await admitUpgrade(before);
+  const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+  const config = options.configFile === undefined ? '' : ` -c ${quote(path.join(options.configDir, options.configFile))}`;
+  const restoreCommand = (bookmark: string) => `CLOUDFLARE_ACCOUNT_ID=${quote(record.accountId)} npx --no-install wrangler d1 time-travel restore ${quote(record.databaseName)} --bookmark=${bookmark}${config}`;
   if (before < SERVER_SCHEMA_VERSION) {
     if (!options.freshDatabase) {
       let bookmark: string;
@@ -53,10 +67,8 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
     }
     if (!options.freshDatabase) {
       const bookmark = record.schemaUpdates!.at(-1)!.bookmark;
-      const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
       options.report?.(`D1 Time Travel bookmark recorded for schema ${before} -> ${SERVER_SCHEMA_VERSION}: ${bookmark}`);
-      const config = options.configFile === undefined ? '' : ` -c ${quote(path.join(options.configDir, options.configFile))}`;
-      options.report?.(`Database rollback: CLOUDFLARE_ACCOUNT_ID=${quote(record.accountId)} npx --no-install wrangler d1 time-travel restore ${quote(record.databaseName)} --bookmark=${bookmark}${config}`);
+      options.report?.(`Database rollback: ${restoreCommand(bookmark)}`);
       options.report?.('Confirm the restore prompt with y; it cancels in-flight queries and prints an undo bookmark.');
       options.report?.('Schema 83 rollback: an alpha.4 Worker on schema 83 commits prompt marks but reports marked:false, including between migration and Worker upload. Keep a schema-83-compatible Worker or restore the recorded pre-migration database bookmark with the matching Worker; restoring the bookmark also rolls back subsequent writes.');
       options.report?.(record.versionId === null
@@ -67,9 +79,40 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
   record = await options.prepare?.(record) ?? record;
   if (before < SERVER_SCHEMA_VERSION) {
     options.observe?.({ phase: 'applying', before, after: SERVER_SCHEMA_VERSION });
+    const settleReached = async (reached: number) => {
+      options.observe?.({ phase: reached === before ? 'failed' : 'unconfirmed', before, after: SERVER_SCHEMA_VERSION, reached });
+      if (before < THIN_LEARNING_REMOVAL_VERSION && reached >= THIN_LEARNING_PAUSE_VERSION) {
+        await admitUpgrade(reached);
+      }
+    };
+    const served = workerSchemaEvidence(record);
+    const recorded = options.freshDatabase ? undefined : record.schemaUpdates?.at(-1);
+    const evidence: StopEvidence = {
+      ...(served === undefined ? {} : { workerSchema: served.schema, compatible: {
+        bookmark: served.bookmark.bookmark, schema: served.bookmark.schemaBefore, recordedAt: served.bookmark.recordedAt, command: restoreCommand(served.bookmark.bookmark) } }),
+      ...(recorded === undefined ? {} : { current: {
+        bookmark: recorded.bookmark, schema: recorded.schemaBefore, recordedAt: recorded.recordedAt, command: restoreCommand(recorded.bookmark) } }),
+    };
+    let paced: PacedApply;
     try {
-      await runCloudflareCommand(options, ['d1', 'migrations', 'apply', record.databaseName, '--remote']);
+      paced = await applyMigrationsPaced({
+        databaseName: record.databaseName, before, target: SERVER_SCHEMA_VERSION,
+        apply: () => runCloudflareCommand(options, ['d1', 'migrations', 'apply', record.databaseName, '--remote']),
+        liveSchema: () => cloudflareSchemaVersion(database),
+        fileAfter: (version) => {
+          const step = SCHEMA_STEPS.find((candidate) => candidate.version === version + 1);
+          return step === undefined ? undefined : migrationFileName(step);
+        },
+        evidence,
+        ...(options.report === undefined ? {} : { report: options.report }),
+        ...(options.overloadRetry === undefined ? {} : { retry: options.overloadRetry }),
+      });
     } catch (error) {
+      if (error instanceof SchemaUpdateStopped && error.stop.reached !== null) await settleReached(error.stop.reached);
+      throw error;
+    }
+    if (paced.kind === 'failed') {
+      const error = paced.error;
       let reached: number;
       try {
         reached = await cloudflareSchemaVersion(database);
@@ -78,14 +121,13 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
         throw error;
       }
       if (reached !== SERVER_SCHEMA_VERSION) {
-        options.observe?.({ phase: reached === before ? 'failed' : 'unconfirmed', before, after: SERVER_SCHEMA_VERSION, reached });
-        if (before < THIN_LEARNING_REMOVAL_VERSION && reached >= THIN_LEARNING_PAUSE_VERSION) {
-          await admitUpgrade(reached);
-        }
+        await settleReached(reached);
         throw error;
       }
       const detail = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
       options.report?.(`D1 migration apply reported ${detail}; live schema confirmed ${reached} (target ${SERVER_SCHEMA_VERSION}); continuing to the Worker.`);
+    } else if (paced.confirmed !== undefined) {
+      options.report?.(`D1 migration apply reported ${paced.confirmed.detail}; live schema confirmed ${paced.confirmed.reached} (target ${SERVER_SCHEMA_VERSION}); continuing to the Worker.`);
     }
     options.observe?.({ phase: 'applied', before, after: SERVER_SCHEMA_VERSION });
     if (!options.freshDatabase) {

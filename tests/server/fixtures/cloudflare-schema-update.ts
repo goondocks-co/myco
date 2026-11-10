@@ -31,12 +31,15 @@ const state = JSON.parse(fs.readFileSync(process.env.FAKE_STATE, 'utf8'));
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({args, cwd:process.cwd(), account:process.env.CLOUDFLARE_ACCOUNT_ID})+'\\n');
 const out = (value) => console.log(JSON.stringify(value));
 const command = args.slice(0,3).join(' ');
+const save = (next) => fs.writeFileSync(process.env.FAKE_STATE, JSON.stringify(next));
+const OVERLOADED = 'D1 DB is overloaded. Too many resources consumed within a 10 second window. [code: 7429]';
 if (args[0] === '--version') console.log('4.126.0');
 else if (args[0] === 'whoami') console.log('fixture operator');
 else if (command === 'd1 list --json') out(state.fresh ? [] : [{name:'myco-server',uuid:'${OLD_WORKER}'}]);
 else if (command === 'd1 create myco-server') console.log('database_id = "${OLD_WORKER}"');
 else if (command === 'd1 execute myco-server') {
   const statement=args[args.indexOf('--command')+1] ?? '';
+  if(state.readOverloads>0 && statement.includes('sqlite_master')) {save({...state,readOverloads:state.readOverloads-1});console.error(OVERLOADED);process.exit(1);}
   if((state.budgetReadFailure==='stamps'&&statement.startsWith('SELECT key,value'))||(state.budgetReadFailure==='catalogue'&&statement.startsWith('SELECT name,sql'))) {
     console.error('fixture transient completion read');process.exit(1);
   }
@@ -44,7 +47,7 @@ else if (command === 'd1 execute myco-server') {
     if(state.budgetCountFailure==='error') {console.error('fixture count unavailable');process.exit(1);}
     out([{success:true,results:[]}]);process.exit(0);
   }
-  if(!state.destination && /SELECT value FROM schema_meta WHERE key ?= ?'version'/.test(statement)) {out([{success:true,results:[{value:state.schema}]}]);process.exit(0);}
+  if(!state.destination && !state.liveSchema && /SELECT value FROM schema_meta WHERE key ?= ?'version'/.test(statement)) {out([{success:true,results:[{value:state.schema}]}]);process.exit(0);}
   if (state.destination || state.schemaDatabase) {
     const {Database} = require('bun:sqlite');
     const db = new Database(state.destination || state.schemaDatabase);
@@ -78,7 +81,8 @@ else if (command === 'd1 time-travel info') {
   if (!state.fresh && (!gate || gate.bookmark !== state.expectedBookmark || gate.schemaBefore !== Number(state.schema) || gate.schemaAfter !== state.target || gate.workerVersionBefore !== state.workerBefore)) {
     console.error('migration ran before durable recovery point'); process.exit(9);
   }
-  if (state.migrationExit) process.exit(state.migrationExit);
+  if (state.migrationExit) {console.error(state.migrationError ?? 'fixture migration failure');process.exit(state.migrationExit);}
+  if (state.applyOverloads>0) {save({...state,applyOverloads:state.applyOverloads-1});console.error(OVERLOADED);process.exit(1);}
   if (state.destination || state.schemaDatabase) {
     const {Database} = require('bun:sqlite');
     const db = new Database(state.destination || state.schemaDatabase);
@@ -86,7 +90,15 @@ else if (command === 'd1 time-travel info') {
     const current=exists?Number(db.query("SELECT value FROM schema_meta WHERE key='version'").get()?.value ?? 0):0;
     for(const file of fs.readdirSync(state.migrationsRoot).filter(name=>name.endsWith('.json')).sort()) {
       const version=Number(file.split('.')[0]);
-      if(version>current)db.transaction(()=>{for(const statement of JSON.parse(fs.readFileSync(state.migrationsRoot+'/'+file,'utf8')))db.exec(statement);})();
+      const overload=(state.overloadAt??[]).findIndex(entry=>entry.at===version);
+      const applyFile=()=>db.transaction(()=>{for(const statement of JSON.parse(fs.readFileSync(state.migrationsRoot+'/'+file,'utf8')))db.exec(statement);})();
+      if(version>current&&overload>=0) {
+        if(state.overloadAt[overload].commit)applyFile();
+        db.close();
+        save({...state,overloadAt:state.overloadAt.filter((_,index)=>index!==overload),readOverloads:state.overloadAt[overload].reads??0});
+        console.log('Migrations to be applied:');console.error(OVERLOADED);process.exit(1);
+      }
+      if(version>current)applyFile();
     }
     if(!state.destination)fs.writeFileSync(process.env.FAKE_STATE,JSON.stringify({...state,schema:String(state.target)}));
     db.close();
@@ -108,7 +120,7 @@ type Call = { args: string[]; cwd: string; account?: string };
 
 export async function fixture(
   overrides: Record<string, unknown>,
-  run: (f: { home: string; root: string; create: () => Promise<unknown>; state: string; update: () => Promise<unknown>; calls: () => Call[]; reports: string[] }) => Promise<void>,
+  run: (f: { home: string; root: string; create: () => Promise<unknown>; state: string; update: () => Promise<Awaited<ReturnType<typeof updateCloudflareDeployment>>>; calls: () => Call[]; reports: string[]; waits: number[] }) => Promise<void>,
 ) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-update-'));
   const home = path.join(root, 'home');
@@ -143,10 +155,12 @@ export async function fixture(
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
   const reports: string[] = [];
+  const waits: number[] = [];
+  const overloadRetry = { sleep: async (ms: number) => { waits.push(ms); } };
   try {
-    await run({ home, root, state, reports,
-      create: () => createCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line) }),
-      update: () => updateCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line) }),
+    await run({ home, root, state, reports, waits,
+      create: () => createCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line), overloadRetry }),
+      update: () => updateCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line), overloadRetry }),
       calls: () => fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as Call),
     });
   } finally {
