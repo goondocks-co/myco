@@ -91,12 +91,14 @@ else if (command === 'd1 time-travel info') {
     for(const file of fs.readdirSync(state.migrationsRoot).filter(name=>name.endsWith('.json')).sort()) {
       const version=Number(file.split('.')[0]);
       const overload=(state.overloadAt??[]).findIndex(entry=>entry.at===version);
+      const applyFile=()=>db.transaction(()=>{for(const statement of JSON.parse(fs.readFileSync(state.migrationsRoot+'/'+file,'utf8')))db.exec(statement);})();
       if(version>current&&overload>=0) {
+        if(state.overloadAt[overload].commit)applyFile();
         db.close();
         save({...state,overloadAt:state.overloadAt.filter((_,index)=>index!==overload),readOverloads:state.overloadAt[overload].reads??0});
         console.log('Migrations to be applied:');console.error(OVERLOADED);process.exit(1);
       }
-      if(version>current)db.transaction(()=>{for(const statement of JSON.parse(fs.readFileSync(state.migrationsRoot+'/'+file,'utf8')))db.exec(statement);})();
+      if(version>current)applyFile();
     }
     if(!state.destination)fs.writeFileSync(process.env.FAKE_STATE,JSON.stringify({...state,schema:String(state.target)}));
     db.close();

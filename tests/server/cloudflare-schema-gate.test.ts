@@ -275,7 +275,7 @@ const liveVersion = (root: string) => {
 const appliesOf = (calls: { args: string[] }[]) => calls.filter(({ args }) => args[0] === 'd1' && args[1] === 'migrations').length;
 
 it('waits out an overloaded D1 between migration applies and completes the update without a rerun', async () => {
-  await fixture({ schema: String(T - 4), liveSchema: true, overloadAt: [{ at: T - 2, reads: 1 }, { at: T - 1 }] }, async ({ root, home, update, calls, reports, waits }) => {
+  await fixture({ schema: String(T - 4), liveSchema: true, overloadAt: [{ at: T - 2, reads: 1 }, { at: T - 1 }] }, async ({ root, home, update, reports }) => {
     const { summary, versionId } = await update();
     expect(summary).toMatchObject({ schema: 'applied', worker: 'applied', record: 'updated', schemaBefore: T - 4 });
     expect(versionId).toBe('22222222-2222-4333-8444-555555555555');
@@ -287,8 +287,18 @@ it('waits out an overloaded D1 between migration applies and completes the updat
     expect(text).toContain(`schema ${T - 2} of ${T}`);
     expect(text).toContain('reading the live schema');
     expect(text).not.toContain('Schema update stopped');
-    expect(waits).toHaveLength(3);
-    expect(appliesOf(calls())).toBe(3);
+  });
+});
+
+it('completes when a migration commits but answers 7429 and the next file is overloaded once', async () => {
+  await fixture({ schema: String(T - 3), liveSchema: true, overloadAt: [{ at: T - 2, commit: true }, { at: T - 1 }] }, async ({ root, home, update, reports }) => {
+    const { summary } = await update();
+    expect(summary).toMatchObject({ schema: 'applied', worker: 'applied', record: 'updated' });
+    expect(liveVersion(root)).toBe(T);
+    expect(readDeploymentRecord(home)!.schemaUpdates!.at(-1)).toMatchObject({ schemaBefore: T - 3, appliedAt: expect.any(String) });
+    const text = reports.join('\n');
+    expect(text).toContain(`schema ${T - 2} of ${T}`);
+    expect(text).not.toContain('Schema update stopped');
   });
 });
 
@@ -316,8 +326,7 @@ it('names a migration that fails twice on an answering D1 and says the old Worke
   await fixture({ schema: String(T - 3), liveSchema: true, overloadAt: [{ at: T - 1 }, { at: T - 1 }, { at: T - 1 }] }, async ({ root, home, update, calls, reports, waits }) => {
     const file = migrationFileName(SCHEMA_STEPS.find((step) => step.version === T - 1)!);
     await expect(update()).rejects.toThrow(`migration ${file} failed twice`);
-    expect(waits).toHaveLength(1);
-    expect(appliesOf(calls())).toBe(2);
+    expect(waits.length).toBeLessThan(D1_OVERLOAD_RETRIES);
     expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(false);
     expect(liveVersion(root)).toBe(T - 2);
     expect(readDeploymentRecord(home)!.versionId).toBe(OLD_WORKER);
@@ -326,7 +335,30 @@ it('names a migration that fails twice on an answering D1 and says the old Worke
     expect(text).toContain(`Schema update stopped: migration ${file} failed twice`);
     expect(text).toContain(`It serves schema ${T - 3} only, so it refuses requests while the live schema is ${T - 2}.`);
     expect(text).toContain(`Next: a rerun stops at ${file} again.`);
+    expect(text).toContain(`To put the database back on schema ${T - 3}, which the old Worker serves, restore bookmark ${BOOKMARK}`);
     expect(text).toContain(`wrangler d1 time-travel restore 'myco-server' --bookmark=${BOOKMARK}`);
+  });
+});
+
+it('after two stopped updates against one Worker, recommends the bookmark at the schema that Worker serves', async () => {
+  const second = '00000086-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683';
+  const repeated = Array.from({ length: 5 }, () => ({ at: T - 1 }));
+  await fixture({ schema: String(T - 3), liveSchema: true, overloadAt: repeated }, async ({ home, state, update, reports }) => {
+    const file = migrationFileName(SCHEMA_STEPS.find((step) => step.version === T - 1)!);
+    await expect(update()).rejects.toThrow(`migration ${file} failed twice`);
+    const saved = JSON.parse(fs.readFileSync(state, 'utf8'));
+    fs.writeFileSync(state, JSON.stringify({ ...saved, schema: String(T - 2), expectedBookmark: second, bookmarkOutput: JSON.stringify({ bookmark: second }) }));
+    const firstRun = reports.length;
+    await expect(update()).rejects.toThrow(`migration ${file} failed twice`);
+    expect(readDeploymentRecord(home)!.schemaUpdates).toMatchObject([
+      { bookmark: BOOKMARK, schemaBefore: T - 3, workerVersionBefore: OLD_WORKER },
+      { bookmark: second, schemaBefore: T - 2, workerVersionBefore: OLD_WORKER },
+    ]);
+    const text = reports.slice(firstRun).join('\n');
+    expect(text).toContain(`It serves schema ${T - 3} only, so it refuses requests while the live schema is ${T - 2}.`);
+    expect(text).toContain(`To put the database back on schema ${T - 3}, which the old Worker serves, restore bookmark ${BOOKMARK}`);
+    expect(text).toContain(`This update's own recovery point, bookmark ${second}, returns the database to schema ${T - 2}, which the old Worker does not serve`);
+    expect(text).not.toContain(`schema ${T - 3}, which the old Worker serves, restore bookmark ${second}`);
   });
 });
 

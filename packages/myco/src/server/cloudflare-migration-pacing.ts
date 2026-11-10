@@ -8,7 +8,10 @@
  * the files before it applied and the database answering, is a statement over D1's per-query limit: retrying it
  * cannot help, so it stops by name.
  */
+/** D1 Time Travel keeps a database's history this long on the Workers Free plan (30 days on Paid). */
+const TIME_TRAVEL_FREE_RETENTION_MS = 7 * 24 * 60 * 60_000;
 import { CommandFailed } from './runner.js';
+import type { DeploymentRecord } from './cloudflare.js';
 
 /** Waits spent on one update's overloaded database, across migration applies and live-schema reads. */
 export const D1_OVERLOAD_RETRIES = 8;
@@ -29,6 +32,38 @@ export function isD1Overload(error: unknown): error is CommandFailed {
   return error instanceof CommandFailed && OVERLOADED.test(`${error.stdout}\n${error.stderr}`);
 }
 
+/** A recorded Time Travel bookmark and the command that restores the database to it. */
+export interface RecoveryPoint {
+  bookmark: string;
+  /** The schema the database was at when the bookmark was taken. */
+  schema: number;
+  recordedAt: string;
+  command: string;
+}
+
+/** What the record shows of the Worker an update leaves serving, and the recovery points that bear on it. */
+export interface StopEvidence {
+  /** The only schema the recorded Worker serves, when the record shows it. */
+  workerSchema?: number;
+  /** The latest bookmark taken while the database was at `workerSchema` under that Worker. */
+  compatible?: RecoveryPoint;
+  /** This update's own recovery point. */
+  current?: RecoveryPoint;
+}
+
+/**
+ * The schema the recorded Worker serves and the latest bookmark taken at it. The first update attempted against that
+ * Worker started from the schema it was deployed on, since a Worker serves only the schema it was built for; later
+ * attempts against the same Worker may start from a schema an earlier stop left behind.
+ */
+export function workerSchemaEvidence(record: DeploymentRecord): { schema: number; bookmark: { bookmark: string; schemaBefore: number; recordedAt: string } } | undefined {
+  if (record.versionId === null) return undefined;
+  const entries = (record.schemaUpdates ?? []).filter((entry) => entry.workerVersionBefore === record.versionId);
+  const schema = entries[0]?.schemaBefore;
+  if (schema === undefined) return undefined;
+  return { schema, bookmark: entries.filter((entry) => entry.schemaBefore === schema).at(-1)! };
+}
+
 /** Why the update stopped short of its target schema, with what is known of where the database stands. */
 export interface SchemaStop {
   reason: 'overloaded' | 'migration_over_limit';
@@ -42,8 +77,7 @@ export interface SchemaStop {
   /** The file that failed twice, for `migration_over_limit`. */
   migration?: string;
   retries: number;
-  /** The exact command that returns the database to its pre-update recovery point, when one was recorded. */
-  restoreCommand?: string;
+  evidence: StopEvidence;
   detail: string;
 }
 
@@ -77,7 +111,7 @@ export async function applyMigrationsPaced(options: {
   liveSchema: () => Promise<number>;
   /** The migration file Wrangler runs after the one that stamped `version`. */
   fileAfter: (version: number) => string | undefined;
-  restoreCommand?: string;
+  evidence: StopEvidence;
   report?: (line: string) => void;
   retry?: OverloadRetry;
 }): Promise<PacedApply> {
@@ -86,13 +120,13 @@ export async function applyMigrationsPaced(options: {
   let retries = 0;
   let nextDelay = D1_OVERLOAD_BACKOFF_MIN_MS;
   let lastRead = options.before;
-  let lastFailedFile: string | undefined;
+  /** The file that failed with no schema progress, and how many times in a row at this live schema. */
+  let suspect: { file: string; failures: number } | undefined;
   const oneLine = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
   const stop = (reason: SchemaStop['reason'], reached: number | null, error: unknown, migration?: string): never => {
     throw new SchemaUpdateStopped({
       reason, databaseName: options.databaseName, before: options.before, target: options.target, reached, lastRead,
-      retries, detail: oneLine(error), ...(migration === undefined ? {} : { migration }),
-      ...(options.restoreCommand === undefined ? {} : { restoreCommand: options.restoreCommand }),
+      retries, detail: oneLine(error), evidence: options.evidence, ...(migration === undefined ? {} : { migration }),
     }, { cause: error });
   };
   /** One wait before the next attempt; false once the update has spent its waits. */
@@ -133,10 +167,14 @@ export async function applyMigrationsPaced(options: {
       if (live.schema < lastRead || live.schema > options.target) return { kind: 'failed', error };
       const progressed = live.schema > lastRead;
       lastRead = live.schema;
-      const failedFile = `${error.stdout}\n${error.stderr}`.includes(MIGRATIONS_LISTED) ? options.fileAfter(live.schema) : undefined;
-      report(`D1 overloaded (code 7429) applying migrations: schema ${live.schema} of ${options.target}${failedFile === undefined ? '' : `; ${failedFile} did not apply`}.`);
-      if (failedFile !== undefined && failedFile === lastFailedFile && !progressed) return stop('migration_over_limit', live.schema, error, failedFile);
-      lastFailedFile = failedFile;
+      // An attempt that advanced the schema may have ended on a file that committed and still answered 7429, so it says
+      // nothing about the next file. Only an attempt that listed the files and applied none of them failed on the next.
+      const next = options.fileAfter(live.schema);
+      const listed = `${error.stdout}\n${error.stderr}`.includes(MIGRATIONS_LISTED);
+      suspect = progressed || !listed || next === undefined ? undefined
+        : { file: next, failures: suspect?.file === next ? suspect.failures + 1 : 1 };
+      report(`D1 overloaded (code 7429) applying migrations: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`);
+      if (suspect !== undefined && suspect.failures >= 2) return stop('migration_over_limit', live.schema, error, suspect.file);
       if (!(await wait(progressed))) return stop('overloaded', live.schema, error);
     }
   }
@@ -151,7 +189,7 @@ export interface WorkerLeft {
 }
 
 /** The stop, the live schema, the Worker left serving, and the exact next command. */
-export function schemaStopLines(stop: SchemaStop, worker: WorkerLeft): string[] {
+export function schemaStopLines(stop: SchemaStop, worker: WorkerLeft, now = Date.now()): string[] {
   const live = stop.reached === null
     ? `The live schema could not be read while D1 was overloaded; the last read was ${stop.lastRead} of ${stop.target}.`
     : `Live schema ${stop.reached} of ${stop.target} (started at ${stop.before}).`;
@@ -173,9 +211,26 @@ export function schemaStopLines(stop: SchemaStop, worker: WorkerLeft): string[] 
   if (stop.reason === 'overloaded') {
     lines.push('Next: wait a few minutes for D1\'s load to settle, then run: myco server update --target cloudflare');
   } else {
-    lines.push(`Next: a rerun stops at ${stop.migration} again. ${stop.restoreCommand === undefined
-      ? 'Check the live schema with: myco server status --target cloudflare'
-      : `To put the database back on the schema the old Worker serves, restore the bookmark recorded before this update (it discards writes made since): ${stop.restoreCommand}`}`);
+    lines.push(`Next: a rerun stops at ${stop.migration} again. ${recoveryAdvice(stop.evidence, now)}`);
   }
   return lines;
+}
+
+/** How to put the database back on the schema the Worker left serving accepts, claiming only what the record shows. */
+function recoveryAdvice(evidence: StopEvidence, now: number): string {
+  const { workerSchema, compatible, current } = evidence;
+  const parts: string[] = [];
+  if (workerSchema === undefined) {
+    parts.push('The record does not show which schema the old Worker serves, so no recorded bookmark is known to suit it; check the live schema with: myco server status --target cloudflare');
+  } else if (compatible === undefined) {
+    parts.push(`No bookmark is recorded at schema ${workerSchema}, which the old Worker serves; check the live schema with: myco server status --target cloudflare`);
+  } else if (now - Date.parse(compatible.recordedAt) > TIME_TRAVEL_FREE_RETENTION_MS) {
+    parts.push(`Bookmark ${compatible.bookmark} was taken at schema ${workerSchema}, which the old Worker serves, but on ${compatible.recordedAt}, more than 7 days ago; D1 Time Travel keeps 7 days of history on the Workers Free plan and 30 on Paid, so it may be gone. If D1 still holds it, restoring it puts the database back on schema ${workerSchema} and discards writes made since: ${compatible.command}`);
+  } else {
+    parts.push(`To put the database back on schema ${workerSchema}, which the old Worker serves, restore bookmark ${compatible.bookmark}, taken on ${compatible.recordedAt} (it discards writes made since): ${compatible.command}`);
+  }
+  if (current !== undefined && current.bookmark !== compatible?.bookmark) {
+    parts.push(`This update's own recovery point, bookmark ${current.bookmark}, returns the database to schema ${current.schema}${current.schema === workerSchema ? '' : ', which the old Worker does not serve'}: ${current.command}`);
+  }
+  return parts.join(' ');
 }

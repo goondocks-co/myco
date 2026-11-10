@@ -339,14 +339,6 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   return lines;
 }
 
-/**
- * The schema the recorded Worker serves: the starting schema of the first update attempted against it, or this
- * update's starting schema when none was. A Worker serves only the schema it was built for.
- */
-function servedSchema(record: DeploymentRecord, observedBefore: number): number {
-  return record.schemaUpdates?.find((entry) => record.versionId !== null && entry.workerVersionBefore === record.versionId)?.schemaBefore ?? observedBefore;
-}
-
 export const updateCloudflareDeployment = lifecycleOperation('update', async (options: LifecycleOptions, held): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
   const summary: CloudflareUpdateSummary = {
     releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
@@ -420,7 +412,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
       const { stop } = cause;
       summary.schema = stop.reason === 'overloaded' ? 'stopped: D1 overloaded' : 'stopped: a migration exceeds D1 limits';
       if (stop.reached === null) delete summary.schemaReached; else summary.schemaReached = stop.reached;
-      summary.schemaStop = { stop, worker: { release: held.release, versionId: held.versionId, schema: servedSchema(held, stop.before) } };
+      summary.schemaStop = { stop, worker: { release: held.release, versionId: held.versionId, schema: stop.evidence.workerSchema ?? null } };
     }
     for (const line of cloudflareUpdateLines(summary)) options.report?.(line);
     throw cause;

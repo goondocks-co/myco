@@ -6,7 +6,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { migrationFileName } from '@myco-server-worker/db/migrate.js';
 import { cloudflareSchemaVersion, currentTimeTravelBookmark, runCloudflareCommand, queryCloudflareDatabase, runCloudflareStatement, D1_STATEMENT_TIMEOUT_MS, type CloudflareOptions, type DeploymentRecord } from './cloudflare.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
-import { applyMigrationsPaced, isD1Overload, SchemaUpdateStopped, type OverloadRetry, type PacedApply } from './cloudflare-migration-pacing.js';
+import { applyMigrationsPaced, isD1Overload, SchemaUpdateStopped, workerSchemaEvidence, type OverloadRetry, type PacedApply, type StopEvidence } from './cloudflare-migration-pacing.js';
 
 interface SchemaOptions extends CloudflareOptions {
   mycoHome?: string;
@@ -45,7 +45,8 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
   };
   await admitUpgrade(before);
   const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
-  let restoreCommand: string | undefined;
+  const config = options.configFile === undefined ? '' : ` -c ${quote(path.join(options.configDir, options.configFile))}`;
+  const restoreCommand = (bookmark: string) => `CLOUDFLARE_ACCOUNT_ID=${quote(record.accountId)} npx --no-install wrangler d1 time-travel restore ${quote(record.databaseName)} --bookmark=${bookmark}${config}`;
   if (before < SERVER_SCHEMA_VERSION) {
     if (!options.freshDatabase) {
       let bookmark: string;
@@ -67,9 +68,7 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
     if (!options.freshDatabase) {
       const bookmark = record.schemaUpdates!.at(-1)!.bookmark;
       options.report?.(`D1 Time Travel bookmark recorded for schema ${before} -> ${SERVER_SCHEMA_VERSION}: ${bookmark}`);
-      const config = options.configFile === undefined ? '' : ` -c ${quote(path.join(options.configDir, options.configFile))}`;
-      restoreCommand = `CLOUDFLARE_ACCOUNT_ID=${quote(record.accountId)} npx --no-install wrangler d1 time-travel restore ${quote(record.databaseName)} --bookmark=${bookmark}${config}`;
-      options.report?.(`Database rollback: ${restoreCommand}`);
+      options.report?.(`Database rollback: ${restoreCommand(bookmark)}`);
       options.report?.('Confirm the restore prompt with y; it cancels in-flight queries and prints an undo bookmark.');
       options.report?.('Schema 83 rollback: an alpha.4 Worker on schema 83 commits prompt marks but reports marked:false, including between migration and Worker upload. Keep a schema-83-compatible Worker or restore the recorded pre-migration database bookmark with the matching Worker; restoring the bookmark also rolls back subsequent writes.');
       options.report?.(record.versionId === null
@@ -86,6 +85,14 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
         await admitUpgrade(reached);
       }
     };
+    const served = workerSchemaEvidence(record);
+    const recorded = options.freshDatabase ? undefined : record.schemaUpdates?.at(-1);
+    const evidence: StopEvidence = {
+      ...(served === undefined ? {} : { workerSchema: served.schema, compatible: {
+        bookmark: served.bookmark.bookmark, schema: served.bookmark.schemaBefore, recordedAt: served.bookmark.recordedAt, command: restoreCommand(served.bookmark.bookmark) } }),
+      ...(recorded === undefined ? {} : { current: {
+        bookmark: recorded.bookmark, schema: recorded.schemaBefore, recordedAt: recorded.recordedAt, command: restoreCommand(recorded.bookmark) } }),
+    };
     let paced: PacedApply;
     try {
       paced = await applyMigrationsPaced({
@@ -96,7 +103,7 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
           const step = SCHEMA_STEPS.find((candidate) => candidate.version === version + 1);
           return step === undefined ? undefined : migrationFileName(step);
         },
-        ...(restoreCommand === undefined ? {} : { restoreCommand }),
+        evidence,
         ...(options.report === undefined ? {} : { report: options.report }),
         ...(options.overloadRetry === undefined ? {} : { retry: options.overloadRetry }),
       });
