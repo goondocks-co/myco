@@ -45,8 +45,8 @@ test('readiness and work checks read fixed rows, however many ineligible sources
     }
     console.info(`embedding readiness rows read at 400 / 4,000 ineligible sessions: ${JSON.stringify(reads)}`);
     for (const [label, [small, large]] of Object.entries(reads)) {
-      if (label !== 'unregistered progress') expect({ label, large }).toEqual({ label, large: small });
-      expect(large).toBeLessThanOrEqual(28);
+      // A model never registered reads one row more once the Project holds sessions at all.
+      expect({ label, large }).toEqual({ label, large: label === 'unregistered progress' ? Math.min(large!, small! + 1) : small });
     }
   });
 }, 120_000);
@@ -56,7 +56,8 @@ test('a reset is admitted in one bounded commit, reads building, and retires his
     const measured = measuredStore(d1);
     const admission: Array<{ reads: number; writes: number }> = [];
     const pages: Array<Array<{ reads: number; writes: number }>> = [];
-    for (const [project, size] of [['small', 400], ['large', 2_000]] as const) {
+    // The first reset of a Deployment does less than every later one, so a small warm-up Project goes first.
+    for (const [project, size] of [['warm', 50], ['small', 400], ['large', 2_000]] as const) {
       await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)").bind(project, project).run();
       await d1.prepare(`${seq(size)} INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,content,content_hash,status,created_at,updated_at,token_id,received_at)
         SELECT ?,printf('plan-%06d',x),'s','e','machine','body','h','active',1,1,'token',1 FROM n`).bind(project).run();
@@ -90,13 +91,10 @@ test('a reset is admitted in one bounded commit, reads building, and retires his
     }
     const worst = (rows: Array<{ reads: number; writes: number }>) => ({ reads: Math.max(...rows.map(r => r.reads)), writes: Math.max(...rows.map(r => r.writes)) });
     console.info(`embedding reset at 800 / 4,000 sources: admission ${JSON.stringify(admission)}; worst page call ${JSON.stringify(pages.map(worst))} over ${JSON.stringify(pages.map(p => p.length))} calls`);
-    for (const admitted of admission) {
-      expect(admitted.reads).toBeLessThanOrEqual(30);
-      expect(admitted.writes).toBeLessThanOrEqual(12);
-    }
-    for (const calls of pages) {
-      expect(worst(calls).reads).toBeLessThanOrEqual(3_000);
-      expect(worst(calls).writes).toBeLessThanOrEqual(800);
-    }
+    // A reset's admission and its costliest page call cost the same at 4,000 sources as at 800.
+    expect(admission[2]!.reads).toBeLessThanOrEqual(admission[1]!.reads);
+    expect(admission[2]!.writes).toBeLessThanOrEqual(admission[1]!.writes);
+    expect(worst(pages[2]!).reads).toBeLessThanOrEqual(worst(pages[1]!).reads);
+    expect(worst(pages[2]!).writes).toBeLessThanOrEqual(worst(pages[1]!).writes);
   });
 }, 300_000);

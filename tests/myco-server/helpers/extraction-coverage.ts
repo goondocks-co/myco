@@ -13,7 +13,6 @@ const WRITE_BATCH = 200;
 const PROGRESS_EVERY = 1000;
 export const scope = { projectId: 'coverage-budget' };
 export const runId = 'coverage-budget-run';
-export const RECORD_ACK_SEEK = "SELECT 1 FROM extraction_acks WHERE project_id = ? AND record_id = ? AND kind = 'record' LIMIT 1";
 
 async function catalogCapturedPrompts(db: RelationalStore, begin: number, end: number) {
   await db.prepare(`INSERT OR IGNORE INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)

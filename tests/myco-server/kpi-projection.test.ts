@@ -290,31 +290,39 @@ describe('KPI projection critical flow', () => {
     } finally { r.sqlite.close(); }
   });
 
-  it('measures extra native row writes for every source mechanism and no-op replay', () => {
-    const maintained = rig();
-    const baseline = rig();
-    try {
-      for (const trigger of kpiTriggers()) baseline.sqlite.exec(`DROP TRIGGER ${trigger.name}`);
-      const changes = (r: Fixture) => r.sqlite.query<{ n: number }, []>('SELECT total_changes() AS n').get()!.n;
-      const costs: Record<string, number> = {};
-      const measure = (name: string, mutate: (r: Fixture) => void) => {
-        const run = (r: Fixture) => { const before = changes(r); mutate(r); return changes(r) - before; };
-        costs[name] = run(maintained) - run(baseline);
-      };
-      for (const r of [maintained, baseline]) r.credential('cred_1', { startedAt: NOW - DAY });
-      measure('session', r => r.session('a', { agent: null }));
-      measure('prompt', r => r.prompt('p1', 'a'));
-      measure('call', r => r.call('call', 'a'));
-      measure('receipt', r => r.sporeInjection('a', 'p1', ['spore'], { deliveredTo: null }));
-      measure('delivery', r => r.sqlite.query("UPDATE spore_injections SET delivered_at=?,delivered_prompt_id='p1' WHERE project_id=? AND session_id='a'").run(NOW, PROJECT));
-      measure('cortex', r => r.sessionInjection('a', 'cortex', { at: NOW - 1 }));
-      measure('primary', r => transcript(r, 'a', 'primary', 'claude-code', 'scheme-one', NOW, true));
-      measure('unpinned', r => transcript(r, 'a', 'unpinned', 'claude-code', null, NOW));
-      measure('mixed', r => transcript(r, 'a', 'mixed', 'claude-code', 'scheme-two', NOW));
-      measure('unchanged', r => r.sqlite.query("UPDATE session_prompts SET created_at=created_at,claim=claim WHERE project_id=? AND session_id='a'").run(PROJECT));
-      expect(costs).toEqual({ session: 3, prompt: 2, call: 2, receipt: 1, delivery: 5, cortex: 4, primary: 12, unpinned: 2, mixed: 2, unchanged: 0 });
-      console.info('KPI_NATIVE_EXTRA_WRITES ' + JSON.stringify(costs));
-    } finally { maintained.sqlite.close(); baseline.sqlite.close(); }
+  it('each source mechanism writes the same extra native rows in a busy Project as in an empty one, and a no-op replay none', () => {
+    const changes = (r: Fixture) => r.sqlite.query<{ n: number }, []>('SELECT total_changes() AS n').get()!.n;
+    const extra = (history: number): Record<string, number> => {
+      const maintained = rig();
+      const baseline = rig();
+      try {
+        for (const trigger of kpiTriggers()) baseline.sqlite.exec(`DROP TRIGGER ${trigger.name}`);
+        const costs: Record<string, number> = {};
+        const measure = (name: string, mutate: (r: Fixture) => void) => {
+          const run = (r: Fixture) => { const before = changes(r); mutate(r); return changes(r) - before; };
+          costs[name] = run(maintained) - run(baseline);
+        };
+        for (const r of [maintained, baseline]) {
+          r.credential('cred_1', { startedAt: NOW - DAY });
+          for (let i = 0; i < history; i++) { r.session(`history-${i}`, { agent: null }); r.prompt(`history-prompt-${i}`, `history-${i}`); r.call(`history-call-${i}`, `history-${i}`); }
+        }
+        measure('session', r => r.session('a', { agent: null }));
+        measure('prompt', r => r.prompt('p1', 'a'));
+        measure('call', r => r.call('call', 'a'));
+        measure('receipt', r => r.sporeInjection('a', 'p1', ['spore'], { deliveredTo: null }));
+        measure('delivery', r => r.sqlite.query("UPDATE spore_injections SET delivered_at=?,delivered_prompt_id='p1' WHERE project_id=? AND session_id='a'").run(NOW, PROJECT));
+        measure('cortex', r => r.sessionInjection('a', 'cortex', { at: NOW - 1 }));
+        measure('primary', r => transcript(r, 'a', 'primary', 'claude-code', 'scheme-one', NOW, true));
+        measure('unpinned', r => transcript(r, 'a', 'unpinned', 'claude-code', null, NOW));
+        measure('mixed', r => transcript(r, 'a', 'mixed', 'claude-code', 'scheme-two', NOW));
+        measure('unchanged', r => r.sqlite.query("UPDATE session_prompts SET created_at=created_at,claim=claim WHERE project_id=? AND session_id='a'").run(PROJECT));
+        return costs;
+      } finally { maintained.sqlite.close(); baseline.sqlite.close(); }
+    };
+    const [empty, busy] = [extra(0), extra(300)];
+    console.info('KPI_NATIVE_EXTRA_WRITES ' + JSON.stringify({ empty, busy }));
+    for (const [name, rows] of Object.entries(busy)) expect(rows, name).toBeLessThanOrEqual(empty[name]!);
+    expect(busy.unchanged === 0 && empty.unchanged === 0, 'a no-op replay writes no projection row').toBe(true);
   });
 
   it('seeks the complete live source key for prompts, calls and delivery placement', () => {

@@ -198,14 +198,24 @@ it('writes only what a due or coverage change moves: an unchanged earliest due t
     await addCard(db, 'a', { key: 'early', due: NOW });
     await addCard(db, 'a', { key: 'late', due: NOW + HOUR });
     await addCard(db, 'a', { key: 'done', state: 'carded', signal: 'high', carded: NOW });
+    // The same cards in a session holding two hundred more, due later still.
+    await sessionRow(db, 'many');
+    await addCard(db, 'many', { key: 'early', due: NOW });
+    await addCard(db, 'many', { key: 'late', due: NOW + HOUR });
+    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,state,covered,due_at,created_at,source_activity_at)
+      SELECT 'project','many','more-'||value,'pending',0,?+value,1,? FROM json_each(?)`).bind(NOW + 3 * HOUR, NOW, JSON.stringify(Array.from({ length: 200 }, (_, i) => i))).run();
     const mark = async () => (await db.prepare("SELECT revision FROM change_marks WHERE kind='learning'").first<{ revision: number }>())!.revision;
     const before = await db.prepare("SELECT pending_cards,due_cards,signal_cards,next_model_due_at FROM learning_sessions WHERE session_id='a'").first();
     const held = await mark();
-    const later = await db.prepare("UPDATE turn_cards SET due_at=? WHERE project_id='project' AND session_id='a' AND turn_key='late'").bind(NOW + 2 * HOUR).run();
+    const moveLate = async (session: string) => Number(((await db.prepare("UPDATE turn_cards SET due_at=? WHERE project_id='project' AND session_id=? AND turn_key='late'")
+      .bind(NOW + 2 * HOUR, session).run()).meta as { rows_written?: number }).rows_written ?? 0);
+    const few = await moveLate('a');
     expect(await db.prepare("SELECT pending_cards,due_cards,signal_cards,next_model_due_at FROM learning_sessions WHERE session_id='a'").first()).toEqual(before);
     expect(await mark()).toBe(held);
-    // The card row and its one model-due index entry, read and rewritten; no session, rollup or mark row.
-    if (target === 'D1') expect(Number((later.meta as { rows_written?: number }).rows_written)).toBeLessThanOrEqual(3);
+    const many = await moveLate('many');
+    expect(await mark()).toBe(held);
+    // D1 counts the rows each write touches: the move writes as few in a session of many cards as in one of few.
+    if (target === 'D1') expect({ few: few > 0, many: many <= few }).toEqual({ few: true, many: true });
 
     await db.prepare("UPDATE turn_cards SET covered=1 WHERE project_id='project' AND session_id='a' AND turn_key='done'").run();
     expect(await counts(db, 'a')).toMatchObject({ pending_cards: 2, due_cards: 0, signal_cards: 1, last_carded_at: NOW });

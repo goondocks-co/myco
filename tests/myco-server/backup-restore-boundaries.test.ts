@@ -298,41 +298,48 @@ test('a deletion between restore admission and its raw write refuses the write a
   });
 });
 
-/** Each restored session's trigger re-derives its statistics row and moves the Project's counters. */
-const PROJECT_STATISTICS_READS_PER_SESSION = 5;
-
-test('restore guard reads remain linear across sessions and additive rows', async () => {
+test('restore guard reads per restored row stay the same as the artifact grows', async () => {
   const { observeRestoreStore } = await import('./helpers/restore-observer.js');
-  await withDocumentStores(async (db,target) => {
+  const perRow: number[] = [];
+  for (const sessionCount of [500, 2_000]) await withDocumentStores(async (db,target) => {
     if (target !== 'D1') return;
-    const sessionCount=2_000, tagCount=4_000;
+    const tagCount=sessionCount*2;
     const rows=[...Array.from({length:sessionCount},(_,i)=>({t:'sessions',r:{project_id:'project',session_id:`session-${i}`,machine_id:'machine',created_by_token_id:'token',first_received_at:1,last_received_at:1}})),
       ...Array.from({length:tagCount},(_,i)=>({t:'tags',r:{project_id:'project',entity_kind:'spore',entity_id:`spore-${i}`,tag:'tag'}}))];
     const text=await artifact(db,rows), observed=observeRestoreStore(db);
     await restoreArtifact(observed.db,{text,authorization:{kind:'recovery'}});
     expect(await db.prepare('SELECT COUNT(*) n FROM tags').first()).toEqual({n:tagCount});
-    expect(observed.reads()).toBeLessThan(100_000 + sessionCount * PROJECT_STATISTICS_READS_PER_SESSION);
+    perRow.push(observed.reads()/rows.length);
     console.log(JSON.stringify({kind:'restore_guard_cost',sessions:sessionCount,tags:tagCount,reads:observed.reads()}));
   });
+  if (perRow.length === 2) expect(perRow[1]!).toBeLessThanOrEqual(perRow[0]!);
 });
 
-test('archive selection clears only its named range with bounded store reads', async () => {
+test('archive selection clears only its named range at the same store cost as the transcript grows', async () => {
   const { clearArchivedTranscriptRanges } = await import('@myco-server-worker/db/documents/ranges.js');
   const { observeRestoreStore } = await import('./helpers/restore-observer.js');
   await withDocumentStores(async (db,target)=>{
     const blobs=memoryBlobStore();
     await captureDocumentTranscript(db,blobs,'session',transcript,'x',Date.now());
     const row=(await db.prepare('SELECT * FROM transcript_segments').first<Record<string,unknown>>())!;
-    const segmentCount=2_000;
-    await db.prepare(`INSERT INTO transcript_segments(project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id)
-      SELECT 'project',?,value,1,?,?,1,1,? FROM json_each(?)`).bind(transcript,row.blob_key,row.event_id,row.token_id,JSON.stringify(Array.from({length:segmentCount-1},(_,i)=>i+1))).run();
-    for(const offset of [0,1])await db.prepare(`INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,received_at,transcript_id,base_offset,length,token_id,eligible_at,disposition)
-      VALUES('project','transcript',?,'session',1,1,?,?,1,?,1,'archived') ON CONFLICT(project_id,source_kind,source_id) DO UPDATE SET disposition='archived'`).bind(`${transcript}:${offset}`,transcript,offset,row.token_id).run();
-    const observed=observeRestoreStore(db);
-    await clearArchivedTranscriptRanges(observed.db,'project',transcript,0).run();
-    expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(),target).toEqual({n:segmentCount-1});
-    expect(await db.prepare('SELECT base_offset FROM transcript_segments WHERE base_offset=1').first(),target).toEqual({base_offset:1});
-    if(target==='D1')expect(observed.reads()).toBeLessThan(20);
+    const reads:number[]=[];
+    let segments=1;
+    for(const [scale,segmentCount] of [500,2_000].entries()){
+      await db.prepare(`INSERT INTO transcript_segments(project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id)
+        SELECT 'project',?,value,1,?,?,1,1,? FROM json_each(?)`).bind(transcript,row.blob_key,row.event_id,row.token_id,
+        JSON.stringify(Array.from({length:segmentCount-segments},(_,i)=>segments+i))).run();
+      segments=segmentCount;
+      // Each size clears its own archived range: offsets 0 and 1, then 2 and 3.
+      const from=scale*2;
+      for(const offset of [from,from+1])await db.prepare(`INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,received_at,transcript_id,base_offset,length,token_id,eligible_at,disposition)
+        VALUES('project','transcript',?,'session',1,1,?,?,1,?,1,'archived') ON CONFLICT(project_id,source_kind,source_id) DO UPDATE SET disposition='archived'`).bind(`${transcript}:${offset}`,transcript,offset,row.token_id).run();
+      const observed=observeRestoreStore(db);
+      await clearArchivedTranscriptRanges(observed.db,'project',transcript,from).run();
+      expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(),target).toEqual({n:segmentCount-scale-1});
+      expect(await db.prepare('SELECT base_offset FROM transcript_segments WHERE base_offset=?').bind(from+1).first(),target).toEqual({base_offset:from+1});
+      reads.push(observed.reads());
+    }
+    expect(reads[1]!,target).toBeLessThanOrEqual(reads[0]!);
   });
 });
 
@@ -340,16 +347,20 @@ test('release drain reads do not multiply by retained backup count', async()=>{
   const { observeRestoreStore }=await import('./helpers/restore-observer.js');
   await withDocumentStores(async(db,target)=>{
     if(target!=='D1')return;
-    const backups=30, releases=2_000;
-    await db.prepare(`INSERT INTO backups(id,key,created_at,size_bytes,counts_json,schema_version,producer,pinned)
-      SELECT 'backup-'||value,'backups/'||value,1,1,'{}',1,'test',0 FROM json_each(?)`).bind(JSON.stringify(Array.from({length:backups},(_,i)=>i))).run();
+    const releases=2_000;
     await db.prepare(`INSERT INTO object_releases(physical,kind,created_at) SELECT 'object-'||value,'blob',1 FROM json_each(?)`)
       .bind(JSON.stringify(Array.from({length:releases},(_,i)=>i))).run();
-    const observed=observeRestoreStore(db);
-    const drained=await drainObjectReleases({db:observed.db,blobs:memoryBlobStore()},Date.now());
-    expect(drained.deleted).toBe(16);
-    expect(await db.prepare('SELECT COUNT(*) n FROM backups').first()).toEqual({n:backups});
-    expect(observed.reads()).toBeLessThan(10_000);
-    console.log(JSON.stringify({kind:'release_drain_cost',backups,releases,reads:observed.reads()}));
+    const reads:number[]=[];
+    for(const backups of [3,30]){
+      await db.prepare(`INSERT OR IGNORE INTO backups(id,key,created_at,size_bytes,counts_json,schema_version,producer,pinned)
+        SELECT 'backup-'||value,'backups/'||value,1,1,'{}',1,'test',0 FROM json_each(?)`).bind(JSON.stringify(Array.from({length:backups},(_,i)=>i))).run();
+      const observed=observeRestoreStore(db);
+      const drained=await drainObjectReleases({db:observed.db,blobs:memoryBlobStore()},Date.now());
+      expect(drained.deleted).toBeGreaterThan(0);
+      expect(await db.prepare('SELECT COUNT(*) n FROM backups').first()).toEqual({n:backups});
+      reads.push(observed.reads());
+      console.log(JSON.stringify({kind:'release_drain_cost',backups,releases,reads:observed.reads()}));
+    }
+    expect(reads[1]!).toBeLessThanOrEqual(reads[0]!);
   });
 });

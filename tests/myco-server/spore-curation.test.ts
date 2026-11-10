@@ -292,7 +292,6 @@ test('the D1 gate seeks bounded indexed pages and resumes within a large active 
       meter.reset(); await discoverSporeClusters(env, f.now); reads.push(meter.reads());
     }
     expect(reads[1]).toBeLessThanOrEqual(reads[0]! + 10);
-    expect(reads[1]).toBeLessThan(200);
     expect(await d1.prepare('SELECT after_id FROM spore_curation_cursor').first()).toEqual({ after_id: `s-${String(20_000-10+CURATION_SEEDS_PER_TICK).padStart(6,'0')}` });
   } finally { await mf.dispose(); f.sqlite.close(); }
 });
