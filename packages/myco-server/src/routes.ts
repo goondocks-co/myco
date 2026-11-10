@@ -40,7 +40,8 @@ import {
   handleMemberSettings, handleRepairTaskDocument, handleResetSetting, handleSetEmbedding, handlePassedOverSources, handleEmbeddingSwitch, handleStartEmbeddingSwitch, handleEstimateEmbeddingSwitch, handleCancelEmbeddingSwitch, handleResumeEmbeddingSwitch, handleSetSecret, handleSetSetting, handleSetTaskTier, handleSettings,
 } from './api/settings.js';
 import {
-  handleBackupArtifact, handleCreateBackup, handleListBackups, handlePinBackup,
+  handleBackupArtifact, handleCreateBackup, handleListBackups,
+  handleVerifyBackup, handlePinBackup,
   handleRestoreBackup, handleRestorePreview, handleRestoreUpload,
 } from './api/backups.js';
 import { handleForgetUnsettledExport, handleRecoveryExportStatus, handleStartRecoveryExport } from './api/recovery.js';
@@ -302,6 +303,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/{backupId}/restore-preview', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore-preview$/, auth: 'session', authority: 'admin', handler: handleRestorePreview },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/{backupId}/restore', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/restore$/, auth: 'session', authority: 'admin', handler: handleRestoreBackup },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/{backupId}/pin', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/pin$/, auth: 'session', authority: 'admin', handler: handlePinBackup },
+  { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/{backupId}/verify', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/verify$/, auth: 'session', authority: 'admin', handler: handleVerifyBackup },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/backups/{backupId}/artifact', pattern: /^\/api\/backups\/(?<backupId>[A-Za-z0-9._-]{1,64})\/artifact$/, auth: 'session', authority: 'admin', handler: handleBackupArtifact },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/backups/restore-upload', auth: 'session', authority: 'admin', maxBodyBytes: MAX_UPLOAD_BODY_BYTES, handler: handleRestoreUpload },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/kpis', auth: 'session', authority: 'member', handler: handleKpis },

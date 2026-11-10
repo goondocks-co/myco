@@ -359,7 +359,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
   'db/insights/kpi-reconcile.ts#upsertKpi': [{ tables: ['kpi_fact'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#lineageUpsert': [{ tables: ['kpi_lineage'], order: 'unverified' }],
   'db/insights/kpi-reconcile.ts#roll': [{ tables: ['kpi_daily'], order: 'unverified' }],
-  'db/meta/backup-prune.ts#<module>': [{ tables: ['schema_meta'], order: 'arrival-order' }],
+  'db/meta/backup-prune.ts#<module>': [{ tables: ['schema_meta'], order: 'arrival-order' }, { tables: ['schema_meta'], order: 'arrival-order' }],
   'db/schema-v711.ts#<module>': [
     ...Array.from({ length: 4 }, () => ({ tables: ['kpi_daily'], order: 'unverified' as const })),
     ...Array.from({ length: 63 }, () => ({ tables: ['kpi_fact'], order: 'unverified' as const })),
@@ -436,6 +436,7 @@ export const RECONCILED_UPSERTS: Record<string, UpsertDeclaration[]> = {
     { tables: ['project_capabilities'], order: 'unverified' },
   ],
   'db/schema-v710.ts#<module>': [{ tables: ['setting_revisions'], order: 'unverified' }],
+  'db/storage/backup-week-heads.ts#<module>': [{ tables: ['backup_week_heads'], order: 'unverified' }],
   'db/storage/release-queue.ts#<module>': [{ tables: ['blob_release_candidates'], order: 'unverified' }],
   'db/sessions/deletion-phases.ts#phase': [{ tables: ['blob_release_candidates'], order: 'unverified' }],
   'db/documents/reread.ts#<module>': [{ tables: ['transcript_publication'], order: 'unverified' }],

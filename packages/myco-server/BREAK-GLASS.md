@@ -251,6 +251,29 @@ npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
 Deleting the rows is not one of the choices: `events.token_id` references them,
 and the owner API's activity read resolves a token id through this table.
 
+# Break-glass: Duplicate backup key
+
+An update stops with `backups_duplicate_key:<key>` (the store words it `bad JSON path: '$[backups_duplicate_key:<key> see BREAK-GLASS.md section Duplicate backup key]'`) when two rows of `backups` name one stored object. Object keys are unique from this step on, and the check runs before the step changes anything: the schema version is unchanged and the update can be rerun whole.
+
+List the rows for the key the message named:
+
+```bash
+cd packages/myco-server
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "SELECT id, key, created_at, size_bytes, sha256, pinned, producer FROM backups WHERE key = '<key>' ORDER BY created_at DESC, id DESC"
+```
+
+On a self-hosted server, run the same `SELECT` with `sqlite3` against the store's database.
+
+Keep one row: a pinned row if there is one, otherwise the newest. Delete each other row by its `id`:
+
+```bash
+npx wrangler d1 execute myco-server --remote -c wrangler.deploy.toml --command \
+  "DELETE FROM backups WHERE id = '<id of the row to drop>'"
+```
+
+Delete only the row. Both rows name the same object, so the object stays and the row you keep still reads it; do not delete the object from the store. Then rerun the update. If another key is duplicated, the update stops again and names it.
+
 # A note on the retired step-up key
 
 Earlier builds guarded provider settings and credentials with a separate operator-minted key. That mechanism left the product on 2026-08-30 (#1036): a signed-in member changes provider settings and stores credentials directly, and the `step_up_authorities` table sits dormant in existing databases. Nothing here needs minting anymore.

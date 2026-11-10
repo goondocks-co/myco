@@ -19,7 +19,7 @@ const PENDING: ReadonlyMap<string, number> = new Map([
   ['core/activity.ts', 3],
   ['core/archive-bundle.ts', 44],
   ['core/attempt-accounting.ts', 6],
-  ['core/backup.ts', 59],
+  ['core/backup.ts', 57],
   ['core/blob-objects.ts', 1],
   ['core/budget-estimates.ts', 3],
   ['core/canopy.ts', 2],

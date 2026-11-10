@@ -83,12 +83,15 @@ it('answers the object set the canonical owner reads back, on the pinned schema'
 
   // Positional rows, as an export writes them: every column the real schema declares, in its own order.
   const digest = (seed: string) => seed.repeat(64).slice(0, 64);
+  // Columns a later step appends take their defaults: a row from before them is NULL there.
+  const row = (table: keyof typeof columns, values: string[]) =>
+    `INSERT INTO ${table} VALUES(${[...values, ...Array(columns[table].length - values.length).fill('NULL')].join(',')});`;
   const rows = [
     "INSERT INTO projects VALUES('proj_1','Oracle',1789590000000,NULL,NULL);",
-    `INSERT INTO blobs VALUES('proj_1','${digest('a')}',12,'text/plain','mt_1',1789590000000,NULL);`,
-    `INSERT INTO blobs VALUES('proj_1','${digest('b')}',34,'text/plain','mt_1',1789590000001,'${GENERATION}');`,
-    `INSERT INTO backups VALUES('b1','backups/b1.jsonl',1789590000000,56,'{}',41,'myco',0,'${digest('c')}');`,
-    "INSERT INTO backups VALUES('b2','backups/b2.jsonl',1789590000001,78,'{}',41,'myco',0,NULL);",
+    row('blobs', ["'proj_1'", `'${digest('a')}'`, '12', "'text/plain'", "'mt_1'", '1789590000000', 'NULL']),
+    row('blobs', ["'proj_1'", `'${digest('b')}'`, '34', "'text/plain'", "'mt_1'", '1789590000001', `'${GENERATION}'`]),
+    row('backups', ["'b1'", "'backups/b1.jsonl'", '1789590000000', '56', "'{}'", '41', "'myco'", '0', `'${digest('c')}'`]),
+    row('backups', ["'b2'", "'backups/b2.jsonl'", '1789590000001', '78', "'{}'", '41', "'myco'", '0', 'NULL']),
   ];
   // A snapshot imports rows before it creates the schema's triggers, so a row registered before step 42 lands as held.
   const triggers = db.query("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'blobs'").all() as Array<{ name: string; sql: string }>;

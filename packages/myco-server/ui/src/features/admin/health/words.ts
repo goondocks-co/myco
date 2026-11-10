@@ -8,7 +8,7 @@
 import type { StatusResponse } from '../../../lib/api';
 import { clockTime } from '../../today/words';
 import { formatBytes, formatCount, formatRelative, formatUntil } from '../../../lib/format';
-import type { Cadence, MaintenanceCheck, MaintenanceOutcome, RecoveryAvailability, RecoverySchedule, RecoveryProducerStatus, TickReport, JobReport } from './wire';
+import type { BackupVerification, Cadence, MaintenanceCheck, MaintenanceOutcome, RecoveryAvailability, RecoverySchedule, RecoveryProducerStatus, TickReport, JobReport } from './wire';
 
 // ---------- Housekeeping ----------
 
@@ -276,4 +276,13 @@ export function groupedFindings(findings: readonly string[]): Array<{ text: stri
   const counts = new Map<string, number>();
   for (const text of findings) counts.set(text, (counts.get(text) ?? 0) + 1);
   return [...counts].map(([text, count]) => ({ text, count }));
+}
+
+/** What the last recorded check of one backup found, and when; a check says what it saw then, never what the store holds now. */
+export function verificationWords(verification: BackupVerification): string {
+  if (verification.checkedAt === null) return 'not checked yet';
+  const when = backupDate(verification.checkedAt);
+  if (verification.state === 'unverified') return `size matched ${when}, no digest to compare`;
+  if (verification.state === 'verified') return `checked ${when}`;
+  return `check failed ${when}: ${verification.detail === 'absent' ? 'the file was missing' : verification.detail === 'size' ? 'its size differed' : 'its contents differed'}`;
 }

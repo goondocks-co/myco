@@ -238,7 +238,7 @@ describe('versioned schema steps', () => {
         VALUES ('bk_old', 'backups/lineage__1__bk_old.jsonl', 1, 40, '{}', 13, 'mem_1', 1)`);
       const before = sqlite.query<Record<string, unknown>, []>('SELECT * FROM backups').get();
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual(schemaVersionsFrom(41));
-      expect(sqlite.query('SELECT * FROM backups').get()).toEqual({ ...before, sha256: null });
+      expect(sqlite.query('SELECT * FROM backups').get()).toEqual({ ...before, sha256: null, verification_state: null, verification_checked_at: null, verification_detail: null });
       expect(await applySchemaSteps(sqliteD1(sqlite))).toEqual([]);
       const insert = (sha256: string) => sqlite.run(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256)
         VALUES (?, 'backups/lineage__2__bk_new.jsonl', 2, 40, '{}', 41, 'mem_1', 0, ?)`, [`bk_${sha256.length}`, sha256]);
