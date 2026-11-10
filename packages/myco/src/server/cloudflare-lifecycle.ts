@@ -51,6 +51,7 @@ import { renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
+import { schemaStopLines, SchemaUpdateStopped, type OverloadRetry, type SchemaStop, type WorkerLeft } from './cloudflare-migration-pacing.js';
 import { getPluginVersion } from '../version.js';
 import { systemRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
@@ -61,6 +62,8 @@ export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' |
   mycoHome?: string;
   /** Where the lifecycle says where it is, as it gets there. */
   report?: (line: string) => void;
+  /** How an overloaded D1 is waited out between migration attempts. */
+  overloadRetry?: OverloadRetry;
 }
 
 /** Admit the held Deployment's account before a lifecycle command can reach a provider. */
@@ -297,8 +300,11 @@ export interface CloudflareUpdateSummary {
   releaseTarget: string;
   schemaBefore: number | null;
   schemaTarget: number;
-  schema: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'failed: not applied' | 'applied' | 'unchanged';
+  schema: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'failed: not applied' | 'applied' | 'unchanged'
+    | 'stopped: D1 overloaded' | 'stopped: a migration exceeds D1 limits';
   schemaReached?: number;
+  /** Why the schema stopped short, and the Worker the update left serving. */
+  schemaStop?: { stop: SchemaStop; worker: WorkerLeft };
   worker: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied';
   record: 'updated' | 'not updated';
   resources: Array<{ operation: string; state: 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'already exists' }>;
@@ -311,7 +317,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   const resultingRelease = summary.worker === 'applied' ? summary.releaseTarget
     : ['not attempted', 'refused: not applied'].includes(summary.worker) ? summary.releaseBefore ?? 'unknown' : 'unknown';
   const resultingSchema = summary.schema === 'applied' ? summary.schemaTarget
-    : summary.schemaReached ?? (summary.schema === 'attempted; outcome unknown' ? 'unknown' : summary.schemaBefore ?? 'unknown');
+    : summary.schemaReached ?? (summary.schema === 'attempted; outcome unknown' || summary.schemaStop !== undefined ? 'unknown' : summary.schemaBefore ?? 'unknown');
   const lines = [
     `Cloudflare update (releases recorded before update or acknowledged by deploy; schemas observed or acknowledged): from ${summary.releaseBefore ?? 'unknown'}/${summary.schemaBefore ?? 'unknown'} to ${resultingRelease}/${resultingSchema}.`,
     `  Schema: ${summary.schema} (target ${summary.schemaTarget}${summary.schemaReached === undefined ? '' : `; live schema ${summary.schemaReached}`}).`,
@@ -326,6 +332,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   } else if (summary.schema.includes('unknown') || summary.worker.includes('unknown') || summary.resources.some((r) => r.state.includes('unknown'))) {
     lines.push('An attempted change has an unknown outcome; run myco server status --target cloudflare before retrying.');
   }
+  if (summary.schemaStop !== undefined) lines.push(...schemaStopLines(summary.schemaStop.stop, summary.schemaStop.worker));
   if (summary.worker === 'applied' && summary.record === 'not updated') {
     lines.push('The Worker is live; the local record was not updated; rerun myco server update --target cloudflare or check myco server status --target cloudflare.');
   }
@@ -400,6 +407,12 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
   } catch (cause) {
     if (cause instanceof CloudflareAuthenticationError) {
       if (summary.worker === 'attempted; outcome unknown') summary.worker = 'refused: not applied';
+    }
+    if (cause instanceof SchemaUpdateStopped && held !== null) {
+      const { stop } = cause;
+      summary.schema = stop.reason === 'overloaded' ? 'stopped: D1 overloaded' : 'stopped: a migration exceeds D1 limits';
+      if (stop.reached === null) delete summary.schemaReached; else summary.schemaReached = stop.reached;
+      summary.schemaStop = { stop, worker: { release: held.release, versionId: held.versionId, schema: stop.evidence.workerSchema ?? null } };
     }
     for (const line of cloudflareUpdateLines(summary)) options.report?.(line);
     throw cause;

@@ -808,7 +808,7 @@
     "tests/server/cloudflare-recovery-database.test.ts": 35722,
     "tests/server/cloudflare-recovery.test.ts": 61842,
     "tests/server/cloudflare-schema-admission.test.ts": 125611,
-    "tests/server/cloudflare-schema-gate.test.ts": 184111,
+    "tests/server/cloudflare-schema-gate.test.ts": 133375,
     "tests/server/cloudflare-stage.test.ts": 742,
     "tests/server/compose-retired-cli.test.ts": 467,
     "tests/server/deployment-binding-isolation.test.ts": 631,
