@@ -12,7 +12,8 @@ import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { parse as parseYaml } from 'yaml';
 import { DEFAULT_TEST_TIMEOUT_MS, groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
-import { BUILD_JOB_FILES, NIGHTLY_ONLY_FILES } from './ci-scopes.mjs';
+import { BUILD_JOB_FILES, HEAVY_AND_SCALE_SUITES } from './ci-scopes.mjs';
+import { combineJunitReports, infrastructureRetrySummary, retryableInfrastructureFaults } from './infrastructure-faults.mjs';
 import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
@@ -385,7 +386,7 @@ delete process.env.MYCO_TEST_HEADROOM;
 // A file a shard does not run in this CI scope: the build job owns it, or the full run does.
 function leftToAnotherCiJob(file) {
   if (testScope === '') return false;
-  return BUILD_JOB_FILES.includes(file) || (testScope === 'pr' && NIGHTLY_ONLY_FILES.includes(file));
+  return BUILD_JOB_FILES.includes(file) || (testScope === 'pr' && HEAVY_AND_SCALE_SUITES.includes(file));
 }
 
 function isFastExcluded(file) {
@@ -961,8 +962,88 @@ function captureHangDiagnostics(pids, hangFile, heading) {
 }
 
 
+function reportInfrastructureRetry(file, signature) {
+  const line = `${infrastructureRetrySummary(file, signature)}\n`;
+  process.stderr.write(`[run-bun-tests] ${line}`);
+  if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, line);
+}
+
+/** Rerun one file by itself. The caller decides whether this result replaces the phase. */
+async function runFileOnce(file, preloads, isolate, deadlineMs) {
+  const slug = bundleSlug(`retry-${file}`);
+  const reportFile = path.join(RUN_REPORT_DIR, `${slug}.junit.xml`);
+  const teeFile = path.join(RUN_REPORT_DIR, `${slug}.log`);
+  fs.writeFileSync(teeFile, '');
+  const args = [
+    'test',
+    ...preloads.flatMap((preload) => ['--preload', preload]),
+    ...(isolate ? ['--isolate'] : []),
+    '--timeout', String(DEFAULT_TEST_TIMEOUT_MS),
+    '--reporter=junit',
+    `--reporter-outfile=${reportFile}`,
+    file,
+  ];
+  const result = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, `retry ${file}`, { deadlineMs, hangFile: hangPath(slug) });
+  return { ...result, reportFile, teeFile };
+}
+
+/**
+ * When every failure in the phase is an infrastructure fault, rerun each failed file once.
+ * Returns true only when every such rerun passed and the phase artifacts now show that pass.
+ */
+async function rerunInfrastructureFaults(label, phaseFiles, teeFile, reportFile, preloads, isolate, deadlineMs, seenFailure) {
+  let log = '';
+  try { log = fs.readFileSync(teeFile, 'utf8'); } catch { return false; }
+  let junitFailures = [];
+  try { junitFailures = parseFailuresFromJunit(reportFile); } catch { junitFailures = []; }
+  const failures = junitFailures.map((failure) => ({
+    file: failure.file || (phaseFiles.length === 1 ? phaseFiles[0] : ''),
+    message: `${failure.name}\n${failure.message}`,
+  }));
+  if (failures.length === 0) {
+    for (const entry of parseFailuresFromLog(teeFile)) {
+      const located = entry.location?.startsWith(REPO) ? entry.location.slice(REPO.length + 1) : (entry.location ?? '');
+      const file = phaseFiles.find((candidate) => located === candidate || located.endsWith(candidate)) || (phaseFiles.length === 1 ? phaseFiles[0] : '');
+      failures.push({ file, message: entry.name });
+    }
+  }
+  const retry = retryableInfrastructureFaults({ log, failures, files: phaseFiles });
+  if (retry.length === 0 || failures.some((failure) => !failure.file)) return false;
+  const passingLogs = [];
+  const passingReports = [];
+  for (const fault of retry) {
+    if (Date.now() >= deadlineMs) return false;
+    reportInfrastructureRetry(fault.file, fault.signature);
+    const rerun = await runFileOnce(fault.file, preloads, isolate, deadlineMs);
+    let rerunLog = '';
+    let rerunReport = '';
+    try {
+      rerunLog = fs.readFileSync(rerun.teeFile, 'utf8');
+      rerunReport = fs.readFileSync(rerun.reportFile, 'utf8');
+    } catch { return false; }
+    if (rerun.status !== 0 || rerun.wedged || rerun.overBudget || outputHasFailureMarker(rerunLog)) return false;
+    passingLogs.push(rerunLog);
+    passingReports.push(rerunReport);
+  }
+  const failedFiles = new Set(failures.map((failure) => failure.file).filter(Boolean));
+  const retriedFiles = new Set(retry.map((fault) => fault.file));
+  const covered = failedFiles.size > 0 && failedFiles.size === retriedFiles.size && [...failedFiles].every((file) => retriedFiles.has(file));
+  if (!covered || passingReports.length !== retry.length) return false;
+  try {
+    fs.writeFileSync(teeFile, passingLogs.join(''));
+    fs.writeFileSync(reportFile, combineJunitReports(passingReports));
+  } catch (error) {
+    console.error(`[run-bun-tests] FAIL: ${label} infrastructure retry could not replace its report: ${error.message}`);
+    return false;
+  }
+  observedFailure = seenFailure;
+  console.error(`[run-bun-tests] ${label} passed after infrastructure retry`);
+  return true;
+}
+
 async function runPhase(label, extraArgs, preloads, { isolate, files }) {
   if (extraArgs === null || extraArgs.length === 0) return 0;
+    const seenFailure = observedFailure;
     console.log(`\n=== bun test (${label}) ===`);
     const reportFile = reportPath(label);
     const teeFile = logPath(label);
@@ -1010,6 +1091,12 @@ async function runPhase(label, extraArgs, preloads, { isolate, files }) {
     if (overBudget) {
       overBudgetGroups.push({ label, files, hangFile });
       writeOverBudgetJunit(reportFile, label, files);
+    } else if (status !== 0 && !wedged && !evidenceError) {
+      const cleared = await rerunInfrastructureFaults(label, files, teeFile, reportFile, preloads, isolate, deadlineMs, seenFailure);
+      if (cleared) {
+        status = 0;
+        streamFailure = false;
+      }
     }
     const evidence = evaluatePhaseEvidence([{ label, file: reportFile, log: teeFile }]);
     if (status !== 0 || evidence.failures > 0 || evidence.invalid.length > 0) recordObservedFailure();

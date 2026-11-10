@@ -782,6 +782,7 @@
     "tests/runtime/binary-resolution.test.ts": 606,
     "tests/runtime/bundled-path.test.ts": 153,
     "tests/runtime/spawn-detached.test.ts": 165,
+    "tests/scripts/check-test-budget.test.ts": 20000,
     "tests/scripts/check-test-shards.test.ts": 42189,
     "tests/scripts/ensure-deps.test.ts": 4756,
     "tests/scripts/make-dogfood.test.ts": 953,

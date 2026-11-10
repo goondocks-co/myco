@@ -5,14 +5,12 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
 it('rejects duplicate, missing and unexpected inventory entries', () => {
   expect(() => assertCoverage(['b', 'a'], ['a', 'b'], 'fixture')).not.toThrow();
   expect(() => assertCoverage(['a', 'a'], ['a', 'b'], 'fixture')).toThrow('duplicate');
   expect(() => assertCoverage(['a'], ['a', 'b'], 'fixture')).toThrow('coverage');
   expect(() => assertCoverage(['a', 'c'], ['a', 'b'], 'fixture')).toThrow('coverage');
 });
-
 it('refuses eroded work margin and cold-install headroom at their measured boundaries', () => {
   const policy = { cacheMissMs: 200_000, setupMs: 100_000 };
   expect(() => assertJobHeadroom('screens', 15, 300_000, policy)).not.toThrow();
@@ -24,7 +22,6 @@ it('refuses eroded work margin and cold-install headroom at their measured bound
   }
   expect(() => assertJobHeadroom('screens', 0, 1, policy)).toThrow('timeout');
 });
-
 it('measures commands and multi-step work, refusing overruns and preserving child failures', () => {
   const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'job-headroom-'));
   const invoke = (...args: string[]) => spawnSync('node', ['scripts/check-test-shards.mjs', ...args], {
@@ -56,7 +53,6 @@ it('measures commands and multi-step work, refusing overruns and preserving chil
     fs.rmSync(reports, { recursive: true, force: true });
   }
 });
-
 function aptFixture() {
   const action = parse(fs.readFileSync('.github/actions/apt-cache/action.yml', 'utf8'));
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apt-cache-contract-'));
@@ -74,7 +70,6 @@ function aptFixture() {
   });
   return { action, scratch, archives, calls, hit, miss, run, dispose: () => fs.rmSync(scratch, { recursive: true, force: true }) };
 }
-
 it('installs cached apt archives offline and keeps the miss recipe separate', () => {
   const fixture = aptFixture();
   const { action, archives, calls, hit, run } = fixture;
@@ -94,7 +89,6 @@ it('installs cached apt archives offline and keeps the miss recipe separate', ()
     expect(cache.with['restore-keys']).toBeUndefined();
   } finally { fixture.dispose(); }
 });
-
 it('publishes the apt completion marker only after a successful miss', () => {
   const fixture = aptFixture();
   const { archives, miss, run } = fixture;
@@ -106,7 +100,6 @@ it('publishes the apt completion marker only after a successful miss', () => {
     expect(fs.existsSync(path.join(archives, 'complete'))).toBe(true);
   } finally { fixture.dispose(); }
 });
-
 it('keys apt archives on the exact install command as well as the recipe', () => {
   const fixture = aptFixture();
   try {
@@ -124,7 +117,6 @@ it('keys apt archives on the exact install command as well as the recipe', () =>
     expect(key('apt-get install gcc')).not.toBe(key('apt-get install gcc g++'));
   } finally { fixture.dispose(); }
 });
-
 it('audits recorded job measurements against the actual workflow timeouts', () => {
   const workflow = parse(fs.readFileSync('.github/workflows/ci.yml', 'utf8'));
   const jobs = JSON.parse(fs.readFileSync('scripts/test-durations.json', 'utf8')).jobs;
@@ -134,7 +126,6 @@ it('audits recorded job measurements against the actual workflow timeouts', () =
   Reflect.deleteProperty(jobs['hook-startup'], 'measuredMs');
   expect(() => auditJobHeadroom(workflow, jobs)).toThrow('missing positive measured duration');
 });
-
 it('--measure rejects work above the live timeout share', () => {
   const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'measure-overrun-'));
   try {
@@ -147,7 +138,6 @@ it('--measure rejects work above the live timeout share', () => {
     expect(result.stderr).toContain('50%');
   } finally { fs.rmSync(reports, { recursive: true, force: true }); }
 });
-
 it('--measure reports an overrun instead of failing when the run reports timing, and still fails the child', () => {
   const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'measure-report-'));
   try {
@@ -163,7 +153,6 @@ it('--measure reports an overrun instead of failing when the run reports timing,
     expect(failedChild.status).toBe(7);
   } finally { fs.rmSync(reports, { recursive: true, force: true }); }
 });
-
 it.skipIf(!process.env.MYCO_APT_CACHE_TEST_IMAGE)('installs cached dependency upgrades with real Ubuntu apt and no network', () => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'apt-offline-real-'));
   try {
@@ -189,7 +178,6 @@ it.skipIf(!process.env.MYCO_APT_CACHE_TEST_IMAGE)('installs cached dependency up
     expect(result.stdout).not.toMatch(/^Get:/m);
   } finally { fs.rmSync(fixture, { recursive: true, force: true }); }
 }, 65_000);
-
 it('requires the live per-test CI gate even after a failed test step', () => {
   const workflow = parse(fs.readFileSync('.github/workflows/ci.yml', 'utf8'));
   const jobs = JSON.parse(fs.readFileSync('scripts/test-durations.json', 'utf8')).jobs;
