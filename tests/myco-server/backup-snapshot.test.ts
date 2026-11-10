@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { HOSTED_SQL_FUNCTION_ARGUMENT_CEILING, snapshotFunctionBounds, snapshotAdmission, snapshotRefusals, snapshotScenario } from './helpers/backup-snapshot.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 type Outcome = Awaited<ReturnType<typeof snapshotScenario>>;
 function check(result: Outcome, boundary: 'table' | 'page') {
@@ -86,13 +86,9 @@ describe('relational backup snapshot', () => {
             } };` },
           { type: 'ESModule', path: 'snapshot.js', contents: await bundle.outputs[0]!.text() },
         ],
-        compatibilityDate: '2026-07-01', d1Databases: ['DB', 'TARGET'], r2Buckets: ['BUCKET'],
+        compatibilityDate: '2026-07-01', d1Databases: ['DB', 'TARGET'], resourcePersistencePath: await schemaD1Root(['DB', 'TARGET']), r2Buckets: ['BUCKET'],
       }));
       try {
-        for (const name of ['DB', 'TARGET']) {
-          const db = await mf.getD1Database(name);
-          for (const step of SCHEMA_STEPS) await db.batch(step.statements.map((sql) => db.prepare(sql)));
-        }
         const response = await mf.dispatchFetch('http://snapshot/');
         expect({ status: response.status, error: response.status === 200 ? undefined : await response.clone().text() }).toEqual({ status: 200, error: undefined });
         const answer = await response.json() as { admission: Awaited<ReturnType<typeof snapshotAdmission>>; result: Outcome; refusal: Awaited<ReturnType<typeof snapshotRefusals>>; functions: Awaited<ReturnType<typeof snapshotFunctionBounds>> };

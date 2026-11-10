@@ -2,10 +2,10 @@
 import { afterAll, expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { readWorkerFleet, recordWorkerContact } from '@myco-server-worker/core/worker-contacts.js';
 import { pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const OFFER = [{ id: 'codex', authenticated: true }];
@@ -13,10 +13,9 @@ const started: Miniflare[] = [];
 afterAll(async () => { await Promise.all(started.map(mf => mf.dispose())); });
 
 async function costsAt(contacts: number) {
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   started.push(mf);
   const d1 = await mf.getD1Database('DB');
-  for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
   const measured = measuredStore(d1);
   await d1.prepare("INSERT INTO members(id,created_at,role) VALUES('owner',1,'admin')").run();
   const rows = `WITH RECURSIVE s(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM s WHERE x<${contacts})`;
@@ -37,10 +36,9 @@ test('a contact and a fleet read cost the same at ten and at five hundred contac
 }, 60_000);
 
 async function retirementCost(runs: number, headTriggers: boolean) {
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   started.push(mf);
   const d1 = await mf.getD1Database('DB');
-  for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
   const measured = measuredStore(d1);
   await d1.prepare("INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES('proj_1','one',1)").run();
   await d1.prepare("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','a','built-in',1,1)").run();

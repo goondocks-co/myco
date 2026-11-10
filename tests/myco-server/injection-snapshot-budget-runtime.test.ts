@@ -1,16 +1,15 @@
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { tombstoneSession } from './helpers/session-deletion.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 it('D1 source tombstones read only their snapshots among 10000 served plans', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
     script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const db = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
     await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('snapshot-budget','Snapshots',1)").run();
     for (const session of ['source-target', 'source-other', 'receiver']) {
       await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)

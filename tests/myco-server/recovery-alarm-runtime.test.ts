@@ -1,11 +1,11 @@
 import { expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { BUNDLED_WORKER } from '@myco/worker-bundle.generated.js';
 import type { RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 import type { RecoverySchedule } from '@myco-server-worker/core/recovery-schedule.js';
 import type { TelemetryEvent } from '@myco-server-worker/telemetry.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 async function deployment(options: { credential?: boolean; failManifest?: boolean; bundled?: boolean } = {}) {
   const observer = `${import.meta.dir}/helpers/recovery-alarm-observer.ts`;
@@ -26,7 +26,7 @@ async function deployment(options: { credential?: boolean; failManifest?: boolea
     modules: [{ type: 'ESModule', path: 'worker.js', contents: await bundle.outputs[0]!.text() },
       ...(options.bundled ? [{ type: 'ESModule' as const, path: 'product.js', contents: Buffer.from(BUNDLED_WORKER, 'base64').toString('utf8') }] : [])],
     compatibilityDate: '2026-08-01', compatibilityFlags: ['nodejs_compat'],
-    d1Databases: ['MYCO_DB'], r2Buckets: ['BUCKET', 'RECOVERY_BUCKET'],
+    d1Databases: ['MYCO_DB'], resourcePersistencePath: await schemaD1Root(['MYCO_DB']), r2Buckets: ['BUCKET', 'RECOVERY_BUCKET'],
     durableObjects: { CLOCK: { className: 'DeploymentClock', useSQLite: true }, RECOVERY: { className: 'RecoveryProducer', useSQLite: true } },
     bindings: {
       HARNESS_LAUNCH_MODE: 'record', MYCO_RECOVERY_ACCOUNT_ID: 'runtime-account', MYCO_RECOVERY_DATABASE_ID: 'runtime-database',
@@ -39,7 +39,6 @@ async function deployment(options: { credential?: boolean; failManifest?: boolea
   }));
   try {
     const db = await mf.getD1Database('MYCO_DB');
-    for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
     await db.prepare("INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('backup.auto_interval_hours', '6', ?, 'test')").bind(Date.now()).run();
     const read = async (now = Date.now()) => (await (await mf.dispatchFetch(`http://local/test/status?now=${now}`)).json()) as {
       delivered: number; nextWakeAt: number | null; status: RecoveryProducerStatus; schedule: RecoverySchedule; events: TelemetryEvent[]; writes: string[];

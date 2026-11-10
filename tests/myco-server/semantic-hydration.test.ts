@@ -2,7 +2,6 @@ import { significantStatement } from '../../packages/myco-server/src/core/sql-st
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import {
   embedding_semanticHits as semanticHits,
   embedding_semanticSearch as semanticSearch,
@@ -18,6 +17,7 @@ import { selectSporesForPrompt } from '@myco-server-worker/core/injection.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { seededSqlite, sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const SCOPE = { projectId: 'proj_1' };
 const MODEL = 'hydration-model';
@@ -107,12 +107,11 @@ for (const target of ['bun', 'workerd-d1'] as const) {
   test(`${target}: G5 hydration seeks only hits, bounds previews and preserves all eligibility/filter contracts`, async () => {
     const sqlite = seededSqlite();
     const mf = target === 'bun' ? null : new Miniflare(convertV4MiniflareOptions({
-      modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'],
+      modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root(),
     }));
     try {
       const d1 = await mf?.getD1Database('DB');
       if (d1) {
-        for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
         await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','a',0),('proj_2','b',0)").run();
       }
       const measured = d1 ? measuredStore(d1) : null;

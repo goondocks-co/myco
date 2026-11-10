@@ -9,6 +9,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { heldBy } from '@myco-server-worker/core/limits.js';
 import { NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 it('keeps exact queue counts and oldest identities through claim, requeue, deletion and cross-Project keys', async () => {
   const f = await budgetFixture();
@@ -129,18 +130,16 @@ it('rolls back admission counts and queue consumption when a companion write fai
 
 it('settles one same-run claim and preserves every admission fact on refusal on SQLite and D1', async () => {
   const { Miniflare, convertV4MiniflareOptions } = await import('miniflare');
-  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
   const { completeBudgetMigration } = await import('@myco-server-worker/db/meta/budget-activation.js');
   const { claimQueuedRun } = await import('@myco-server-worker/core/worker-claim.js');
   const { PROFILE } = await import('./helpers/budget-fixture.js');
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   const f = await budgetFixture();
   try {
     await settingsWriter(f.db).setLeaf('agent.limits.concurrent_runs', 1, 'mem_worker', f.now);
     const candidate = f.queue('contended', 'manual'), waiting = f.queue('waiting', 'manual');
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
     for (const table of ['members', 'member_credentials', 'projects', 'agents', 'project_capabilities', 'project_settings', 'deployment_settings', 'agent_runs']) {
       for (const row of f.sqlite.query<Record<string,unknown>,[]>(`SELECT * FROM ${table}`).all()) {
         const columns = Object.keys(row);

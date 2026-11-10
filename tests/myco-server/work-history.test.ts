@@ -8,9 +8,9 @@ import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import worker from '@myco-server-worker/index.js';
 import { catchUpProjections, resetProjectionCatchup } from '@myco-server-worker/db/projections/catchup.js';
 import { WORK_TIMELINE_PAGE } from '@myco-server-worker/db/runs/history.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const DAY = 86_400_000;
 const NOW = 1_700_000_000_000;
@@ -198,10 +198,9 @@ describe('work history', () => {
   });
 
   it('moves a spend bound by a seek: settling a cost and retiring runs read the same rows whatever the day holds', async () => {
-    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
     try {
       const d1 = await mf.getD1Database('DB');
-      for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
       const measured = measuredStore(d1);
       await d1.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent_1','a','built-in',1,1)`).run();
       const rollup = (project: string) => d1.prepare(`SELECT runs,tokens_low,tokens_high,cost_low,cost_high,duration_low,duration_high FROM work_daily WHERE project_id=?`).bind(project).first();

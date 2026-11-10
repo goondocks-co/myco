@@ -5,7 +5,6 @@ import { Database } from 'bun:sqlite';
 import { Miniflare,convertV4MiniflareOptions } from 'miniflare';
 import {budgetFixture,PROFILE} from './helpers/budget-fixture.js';
 import {sqliteBudgetMeter,type MeterStatement} from './helpers/budget-meter.js';
-import {SCHEMA_STEPS} from '@myco-server-worker/db/schema.js';
 import {completeBudgetMigration} from '@myco-server-worker/db/meta/budget-activation.js';
 import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
 import {BUDGET_WINDOW_MS} from '@myco-server-worker/core/budget-policy.js';
@@ -14,6 +13,7 @@ import { claimQueuedRun } from '@myco-server-worker/core/worker-claim.js';
 import { workerClaimAdmission, NO_LIMITS } from '@myco-server-worker/db/runs/claim.js';
 import {NO_RUNTIME_CLAIMS} from '@myco-server-worker/auth/tokens.js';
 import type {RelationalStore,PreparedStatement} from '@myco-server-worker/core/adapters.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 type D1=Awaited<ReturnType<Miniflare['getD1Database']>>;
 const TABLES=['projects','agents','members','member_credentials','agent_runs','agent_run_attempts','agent_state','deployment_settings'];
@@ -32,9 +32,8 @@ async function copyToD1(db:Database,d1:D1) {
 
 it('keeps mint, claim and status reads independent of attempt history, inside and outside the window',async()=>{
   const meter=sqliteBudgetMeter();
-  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response(null)}}',compatibilityDate:'2026-07-01',d1Databases:['DB']}));
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response(null)}}',compatibilityDate:'2026-07-01',d1Databases:['DB'], resourcePersistencePath: await schemaD1Root()}));
   const d1=await mf.getD1Database('DB');
-  for(const step of SCHEMA_STEPS)await d1.batch(step.statements.map(sql=>d1.prepare(sql)));
   try {
     for(const live of [0,20]) {
       const measured:Record<string,number[]>={};
@@ -84,9 +83,8 @@ it('keeps mint, claim and status reads independent of attempt history, inside an
 },240_000);
 
 it('keeps the first claim after an idle day and the claim of a retried run at bounded D1 reads',async()=>{
-  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response(null)}}',compatibilityDate:'2026-07-01',d1Databases:['DB']}));
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response(null)}}',compatibilityDate:'2026-07-01',d1Databases:['DB'], resourcePersistencePath: await schemaD1Root()}));
   const d1=await mf.getD1Database('DB');
-  for(const step of SCHEMA_STEPS)await d1.batch(step.statements.map(sql=>d1.prepare(sql)));
   const reads:Record<string,Record<string,number[]>>={};
   try {
     for(const shape of ['overdue','expired','retried'] as const)for(const size of [1,100,1000]) {
@@ -132,9 +130,8 @@ it('keeps the first claim after an idle day and the claim of a retried run at bo
 
 it('seeks only new settlements after warmup with a rare key at one thousand and five thousand attempts on both stores',async()=>{
   const meter=sqliteBudgetMeter();
-  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response(null)}}',compatibilityDate:'2026-07-01',d1Databases:['DB']}));
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default {fetch(){return new Response(null)}}',compatibilityDate:'2026-07-01',d1Databases:['DB'], resourcePersistencePath: await schemaD1Root()}));
   const d1=await mf.getD1Database('DB');
-  for(const step of SCHEMA_STEPS)await d1.batch(step.statements.map(sql=>d1.prepare(sql)));
   try {
     for(const count of [1000,5000]) {
       const f=await budgetFixture();

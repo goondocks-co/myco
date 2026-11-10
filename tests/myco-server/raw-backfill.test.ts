@@ -8,6 +8,7 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import { BACKFILL_PROJECTS, historicalBackfillSql, HISTORICAL_BLOBS, HISTORICAL_EVENTS, HISTORICAL_PLANS, HISTORICAL_TRANSCRIPTS } from './helpers/raw-backfill-fixture.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 const NOW = Date.parse('2026-10-04T12:00:00Z');
 const MAX_PASSES = 3;
@@ -49,9 +50,8 @@ function sourcePageGate(sqlite: Database, pages: number[]): RelationalStore {
 
 describe('bounded raw provenance backfill correction gates', () => {
   it('completes on the current schema after relational content sources are retired', async () => {
-    const sqlite = new Database(':memory:');
+    const sqlite = schemaSqlite({ foreignKeys: false });
     try {
-      for (const step of SCHEMA_STEPS) for (const statement of step.statements) sqlite.exec(statement);
       sqlite.exec("UPDATE raw_provenance_backfill SET source=3,cursor_project='',cursor_id='',complete=0 WHERE id=1");
       expect(await rawBackfill(sqliteD1(sqlite), NOW)).toEqual({ changed: 0, more: false });
       expect(sqlite.query('SELECT complete FROM raw_provenance_backfill WHERE id=1').get()).toEqual({ complete: 1 });

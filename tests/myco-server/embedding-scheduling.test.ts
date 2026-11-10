@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { measuredStore } from './helpers/read-budget.js';
@@ -16,6 +15,7 @@ import { readSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
 import { withEmbeddingStore } from './helpers/embedding-work-store.js';
 import { calibrationPopulation } from '@myco-server-worker/db/embeddings/calibration.js';
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const MODEL = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
 const NOW = 10 ** 12;
@@ -125,11 +125,10 @@ describe('held vector partitions', () => {
 
 test('the idle embedding wake reads the same rows for one Project as for many', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   const f = sqliteEnv(); opened.push(f);
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
     await d1.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','agent','built-in',1,1)").run();
     const measured = measuredStore(d1);
     const env = environment(f.serverEnv, measured.db);

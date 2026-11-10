@@ -1,21 +1,20 @@
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { prepareEmbeddingDue, resetEmbeddingIndex } from '@myco-server-worker/db/embeddings/work.js';
 import { modelProgress, modelReadiness } from '@myco-server-worker/db/embeddings/status.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 10 ** 12;
 const MODEL = 'm';
 
 async function world(run: (d1: Awaited<ReturnType<Miniflare['getD1Database']>>) => Promise<void>) {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
     await d1.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('a','a','built-in',1,1)").run();
     await run(d1);
   } finally { await mf.dispose(); }

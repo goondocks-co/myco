@@ -22,6 +22,7 @@ import { applySchemaSteps } from './helpers/migrate.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { envelope, memberHeaders, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 const NOW = Date.now();
 const SESSION = 'sess-identity';
@@ -351,8 +352,7 @@ describe('schema step 89', () => {
   });
 
   it('holds one encoding of a prompt that has no name: no prompt id exactly when a reason, on both tables', async () => {
-    const sqlite = new Database(':memory:');
-    await applySchemaSteps(sqliteD1(sqlite), SCHEMA_STEPS);
+    const sqlite = schemaSqlite({ foreignKeys: false });
     sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'p', 0)`);
     const receipt = (n: number, promptId: string | null, reason: string | null) => sqlite.run(`INSERT INTO spore_injections (project_id, session_id, prompt_id, scope_reason, prompt_hash, spore_ids, created_at)
       VALUES ('proj_1', 's', ?, ?, ?, '[]', 1)`, [promptId, reason, `h${n}`]);

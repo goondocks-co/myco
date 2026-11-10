@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { createServer } from '@myco-server-worker/pipeline.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { memberHeaders, noOutboundFetch, sqliteEnv } from './helpers/fixtures.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_700_000_000_000;
 const PATH = '/members/credential/revoke';
@@ -16,11 +16,10 @@ for (const target of ['native SQLite', 'Cloudflare D1'] as const) {
       const fixture = sqliteEnv();
       const mf = target === 'Cloudflare D1' ? new Miniflare(convertV4MiniflareOptions({ modules: true,
         script: 'export default { fetch() { return new Response(null); } }',
-        compatibilityDate: '2026-07-01', d1Databases: ['DB'] })) : null;
+        compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() })) : null;
       try {
         const db: RelationalStore = mf === null ? fixture.db : await mf.getD1Database('DB') as unknown as RelationalStore;
         if (mf !== null) {
-          for (const step of SCHEMA_STEPS) await db.batch(step.statements.map((sql) => db.prepare(sql)));
           await db.prepare("INSERT INTO members(id,label,created_at,role) VALUES ('mem_machine_1','one',0,'member'),('mem_machine_2','two',0,'member')").run();
           await db.prepare("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES ('machine_1','mem_machine_1',0),('machine_2','mem_machine_2',0)").run();
         }
