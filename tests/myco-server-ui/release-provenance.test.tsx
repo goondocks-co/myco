@@ -15,7 +15,7 @@ const row = (over: Partial<ReleaseProvenanceRow> = {}): ReleaseProvenanceRow => 
   packageMap: [{ pathGlob: 'packages/myco/', tagPattern: 'refs/tags/myco/v*' }], includeUnknown: true, maxLookups: 50,
   revision: 'rev_1', updatedAt: NOW, updatedBy: 'mem_1',
   credential: { configured: true, purpose: 'Reads release tags and pull requests for this Project. It is not used for code tasks.' },
-  suggestedRepo: 'goondocks-co/myco', problem: null,
+  suggestedRepo: 'goondocks-co/myco', problem: null, building: false, unresolvedStates: 0,
   check: { requestedAt: null, startedAt: NOW - 60_000, finishedAt: NOW - 60_000, status: 'complete', failure: null,
     counts: { checked: 48, changed: 3, unchanged: 43, unknown: 2, unavailable: 0, deferred: 0 }, lookups: 20, lastCompleteAt: NOW - 60_000 },
   ...over,
@@ -68,6 +68,21 @@ describe('release tracking in project settings', () => {
       counts: { checked: 0, changed: 0, unchanged: 0, unknown: 0, unavailable: 1, deferred: 4 } } }).check))
       .toContain('stopped: GitHub rate limit reached. Earlier states are kept.');
     expect(checkSummary(null)).toBe('Not checked yet');
+  });
+
+  it('says while release history is being prepared, and how many older records were kept aside', async () => {
+    globalThis.fetch = (async () => Response.json({ releaseProvenance: row({ building: true, unresolvedStates: 3 }) })) as unknown as typeof fetch;
+    mount(<ReleaseTracking projectId="x" />);
+    expect((await screen.findByTestId('release-building')).textContent).toContain('still being prepared');
+    expect(screen.getByTestId('release-unresolved').textContent).toBe('3 older release records could not be matched to one record and were kept as found');
+  });
+
+  it('shows neither line once history is ready and every record was placed', async () => {
+    globalThis.fetch = (async () => Response.json({ releaseProvenance: row() })) as unknown as typeof fetch;
+    mount(<ReleaseTracking projectId="x" />);
+    await screen.findByTestId('release-check');
+    expect(screen.queryByTestId('release-building')).toBeNull();
+    expect(screen.queryByTestId('release-unresolved')).toBeNull();
   });
 
   it('says when the stored settings cannot be read', async () => {

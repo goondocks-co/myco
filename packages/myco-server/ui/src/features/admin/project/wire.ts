@@ -70,6 +70,10 @@ export interface ReleaseProvenanceRow {
   suggestedRepo: string | null;
   check: ReleaseCheck | null;
   problem: 'stored_settings_unreadable' | null;
+  /** True while release history is still being prepared after an update: no check runs until it finishes. */
+  building: boolean;
+  /** Older release records kept aside because they could not be matched to one record, up to the server's report cap. */
+  unresolvedStates: number;
 }
 
 export interface ReleaseProvenanceAnswer {

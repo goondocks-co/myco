@@ -23,6 +23,8 @@ export const DEPLOYMENT_ACCESS_PATH_INDEXES: ReadonlyMap<string, string> = new M
   ['idx_agent_runs_body_due', 'the body move seeks settled terminal runs with an inline instruction across the Deployment, oldest completion first'],
   ['idx_agent_reports_body_due', 'the body move seeks settled reports with an inline body across the Deployment, oldest report first'],
   ['idx_view_due', 'view backoff promotion seeks due attempts across Projects'],
+  ['idx_release_check_due_head', 'the release reconcile seeks Projects whose check has come due across the Deployment, soonest first'],
+  ['idx_release_propagation_head', 'the release reconcile takes queued session propagation across the Deployment, oldest first'],
   ['idx_view_aging', 'view priority aging seeks expired recent-capture entries across Projects'],
   ['idx_view_yielded', 'view service resumes the oldest yielded session after ready peers receive service'],
 

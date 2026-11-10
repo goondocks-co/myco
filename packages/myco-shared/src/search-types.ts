@@ -62,6 +62,8 @@ export interface ReleaseAnnotation {
   confidence: string;
   ref: string | null;
   checked_at: number;
+  /** Present when the session state this record follows has moved and is still being carried to it: `state` is what it last carried, not yet current. */
+  propagating?: true;
 }
 
 export interface SearchAnswer {

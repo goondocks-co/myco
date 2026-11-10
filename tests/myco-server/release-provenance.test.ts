@@ -184,7 +184,7 @@ describe('the scheduled release check', () => {
   it('classifies every captured commit, carries it to the session spores, and records a complete check', async () => {
     const { r } = await configured();
     const auth: Array<string | null> = [];
-    const changed = await reconcileReleaseProvenance(env(r, REPO, [], auth), 100 * MIN);
+    const { changed } = await reconcileReleaseProvenance(env(r, REPO, [], auth), 100 * MIN);
     expect(changed).toBe(5);
     expect(byRecord(r)).toEqual({ s_merged: 'merged_unreleased', s_nowhere: 'not_on_release_line', s_released: 'released', s_squashed: 'released', s_unpushed: 'unknown' });
     expect(await getReleaseState(r.db, SCOPE, 'spore', 'sp_1')).toMatchObject({ state: 'released', basisRef: 'refs/tags/a/v1.2.0' });
@@ -198,10 +198,10 @@ describe('the scheduled release check', () => {
     const { r } = await configured();
     await reconcileReleaseProvenance(env(r), 100 * MIN);
     const seen: string[] = [];
-    expect(await reconcileReleaseProvenance(env(r, REPO, seen), 101 * MIN)).toBe(0);
+    expect((await reconcileReleaseProvenance(env(r, REPO, seen), 101 * MIN)).changed).toBe(0);
     expect(seen).toEqual([]);
     expect(await r.store.requestCheck(P, 102 * MIN)).toBe(true);
-    expect(await reconcileReleaseProvenance(env(r, REPO, seen), 102 * MIN)).toBe(0);
+    expect((await reconcileReleaseProvenance(env(r, REPO, seen), 102 * MIN)).changed).toBe(0);
     expect(seen.filter((p) => p.startsWith('/compare'))).toEqual([]);
     expect((await r.store.describe(P)).check).toMatchObject({ status: 'complete', counts: { checked: 0 }, lookups: 4 });
   });
@@ -211,7 +211,7 @@ describe('the scheduled release check', () => {
     await reconcileReleaseProvenance(env(r), 100 * MIN);
     const releasedBefore = rows(r).find((x) => x.record_id === 's_released');
     const tagged: Repo = { ...REPO, tags: [...REPO.tags, 'refs/tags/a/v1.3.0'], contains: { ...REPO.contains, 'refs/tags/a/v1.3.0': [A, B] } };
-    const changed = await reconcileReleaseProvenance(env(r, tagged), 200 * MIN);
+    const { changed } = await reconcileReleaseProvenance(env(r, tagged), 200 * MIN);
     expect(changed).toBe(1);
     expect(byRecord(r).s_merged).toBe('released');
     expect(rows(r).find((x) => x.record_id === 's_released')).toEqual(releasedBefore!);
@@ -225,7 +225,7 @@ describe('the scheduled release check', () => {
     const before = rows(r);
     const refused = { ...r.serverEnv, outbound: (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch };
     await r.store.requestCheck(P, 150 * MIN);
-    expect(await reconcileReleaseProvenance(refused, 150 * MIN)).toBe(0);
+    expect((await reconcileReleaseProvenance(refused, 150 * MIN)).changed).toBe(0);
     expect(rows(r)).toEqual(before);
     expect((await r.store.describe(P)).check).toMatchObject({ status: 'unavailable', failure: 'credential_rejected', finishedAt: 150 * MIN, lastCompleteAt: 100 * MIN });
   });
@@ -246,7 +246,7 @@ describe('the scheduled release check', () => {
     const view = await r.store.describe(P);
     await r.store.save(P, settings({ revision: view.revision, credential: undefined, enabled: false }), 'mem_1', 2);
     const seen: string[] = [];
-    expect(await reconcileReleaseProvenance(env(r, REPO, seen), 100 * MIN)).toBe(0);
+    expect((await reconcileReleaseProvenance(env(r, REPO, seen), 100 * MIN)).changed).toBe(0);
     expect(seen).toEqual([]);
 
     const again = await configured();
@@ -352,11 +352,11 @@ describe('one check at a time, for the settings it read', () => {
     const other: string[] = [];
     expect(await checkProject(r.db, r.secrets, fakeGithub(REPO, other), P, 100 * MIN)).toBe(0);
     await r.store.requestCheck(P, 101 * MIN);
-    expect(await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, other) }, 101 * MIN)).toBe(0);
+    expect((await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO, other) }, 101 * MIN)).changed).toBe(0);
     expect(other).toEqual([]);
     github.release();
     expect(await running).toBe(2);
-    expect(r.sqlite.query('SELECT check_run_id AS runId, check_status AS status FROM project_release_provenance').get()).toEqual({ runId: null, status: 'complete' });
+    expect(r.sqlite.query(`SELECT d.lease_id AS leaseId, c.check_status AS status FROM release_check_due d JOIN project_release_provenance c USING (project_id)`).get()).toEqual({ leaseId: null, status: 'complete' });
   });
 
   it('publishes nothing from a check whose settings were saved while it waited on GitHub', async () => {
@@ -375,7 +375,7 @@ describe('one check at a time, for the settings it read', () => {
 
   it('stops a check at its first fenced-out write, even when the check that took over wrote that session at the same instant', async () => {
     const { r, github, running } = await heldCheck();
-    r.sqlite.query('UPDATE project_release_provenance SET check_lease_until = 0').run();
+    r.sqlite.query('UPDATE release_check_due SET lease_until = 0, next_at = 0').run();
     const unmerged: Repo = { ...REPO, contains: { ...REPO.contains, main: [A, M] } };
     await checkProject(r.db, r.secrets, fakeGithub(unmerged), P, 100 * MIN);
     const after = rows(r);
@@ -387,7 +387,7 @@ describe('one check at a time, for the settings it read', () => {
 
   it('lets a lapsed lease be taken over, and fences the check that lost it', async () => {
     const { r, github, running } = await heldCheck();
-    r.sqlite.query('UPDATE project_release_provenance SET check_lease_until = 0').run();
+    r.sqlite.query('UPDATE release_check_due SET lease_until = 0, next_at = 0').run();
     expect(await checkProject(r.db, r.secrets, fakeGithub(REPO), P, 300 * MIN)).toBe(2);
     const after = rows(r);
     github.release();
@@ -407,7 +407,7 @@ describe('the source a session state is classified from', () => {
   const state = (r: ReturnType<typeof rig>, sessionId: string) => r.sqlite.query(
     `SELECT state, basis_kind AS basisKind, json_extract(evidence_json, '$.source') AS source, json_extract(evidence_json, '$.previous') AS previous
      FROM knowledge_release_state WHERE record_id = ?`).get(sessionId) as { state: string; basisKind: string; source: string; previous: string | null };
-  const check = async (r: ReturnType<typeof rig>, at: number) => { await r.store.requestCheck(P, at); return reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, at); };
+  const check = async (r: ReturnType<typeof rig>, at: number) => { await r.store.requestCheck(P, at); return (await reconcileReleaseProvenance({ ...r.serverEnv, outbound: fakeGithub(REPO) }, at)).changed; };
 
   it('never presents a session standing on a released start commit as released, and classifies its end commit when captured under unchanged refs', async () => {
     const r = rig();

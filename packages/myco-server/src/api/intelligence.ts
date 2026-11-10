@@ -20,7 +20,7 @@ import { listSporePage, sporeListWindow } from '../core/spores.js';
 import { getSpore } from '../db/spores/records.js';
 import { listSupersededSporeIds, listSupersedingSporeIds } from '../db/spores/edges.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
-import { canonicalNamespace, listReleaseStates } from '../core/provenance.js';
+import { canonicalNamespace, decodeReleaseStatesCursor, listReleaseStates } from '../core/provenance.js';
 import { decodeCursor } from '../read/scope.js';
 
 /** The largest page this surface serves, whatever a caller asks for. */
@@ -97,12 +97,13 @@ export async function handleProjectReleaseStates(env: ServerEnv, ctx: OwnerConte
   const named = ctx.url.searchParams.get('namespace');
   const namespace = named === null ? undefined : canonicalNamespace(named);
   // A namespace no record carries names no release state.
-  if (namespace === null) return ok({ releaseStates: [] });
-  return ok({
-    releaseStates: await listReleaseStates(env.db, scope, {
-      namespace,
-      state: ctx.url.searchParams.get('state') ?? undefined,
-      limit: clampLimit(ctx.url.searchParams.get('limit')),
-    }),
-  });
+  if (namespace === null) return ok({ releaseStates: [], nextCursor: null });
+  const state = ctx.url.searchParams.get('state') ?? undefined;
+  const rawCursor = ctx.url.searchParams.get('cursor');
+  const cursor = rawCursor === null ? null : decodeReleaseStatesCursor(rawCursor);
+  if (rawCursor !== null && (cursor === null || cursor.namespace !== (namespace ?? null) || cursor.state !== (state ?? null))) {
+    return badRequest('This cursor does not continue this listing, and nothing was read: send the request again without cursor to restart from the newest checked state.');
+  }
+  const { states, nextCursor } = await listReleaseStates(env.db, scope, { namespace, state, limit: clampLimit(ctx.url.searchParams.get('limit')), cursor });
+  return ok({ releaseStates: states, nextCursor });
 }

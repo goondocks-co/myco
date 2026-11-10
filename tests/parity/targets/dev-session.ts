@@ -5,7 +5,7 @@ import os from 'node:os';
 interface Reply { id: string; url?: string; headers?: Record<string, string>; error?: string; results?: Array<{ results: Record<string, unknown>[] }>;records?:unknown[] }
 const COMMAND_TIMEOUT_MS = 120_000;
 
-interface Command { op: 'start' | 'sql' | 'stop' | 'close'|'read-trace'|'alarm'|'embedding'; tag?: string; sql?: string; config?: string; persist?: string; vars?: Record<string, string>;clockName?:string;at?:number;projectId?:string }
+interface Command { op: 'start' | 'sql' | 'stop' | 'close'|'read-trace'|'alarm'|'embedding'|'release'; tag?: string; sql?: string; config?: string; persist?: string; vars?: Record<string, string>;clockName?:string;at?:number;projectId?:string }
 
 /** One Wrangler dev controller per shard; HTTP goes directly to its local workerd listener. */
 export function devSession(serverDir: string) {

@@ -261,7 +261,7 @@ describe('the release check re-embeds only what changed state', () => {
     };
     const check = (repo: Repo, now: number) => {
       const env = { ...f.serverEnv, outbound: fakeGithub(repo) };
-      return store.requestCheck(P, now).then(() => reconcileReleaseProvenance(env, now));
+      return store.requestCheck(P, now).then(() => reconcileReleaseProvenance(env, now)).then((outcome) => outcome.changed);
     };
     const pending = (now: number) => hasEmbeddingWork(f.db, P, provider.modelKey, now);
     const states = () => f.sqlite.query(`SELECT namespace, record_id, state, confidence FROM knowledge_release_state ORDER BY namespace, record_id`).all();

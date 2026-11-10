@@ -42,7 +42,7 @@ const REPOSITORY = {
 const RELEASES = {
   enabled: false, githubRepo: null, productionRefs: [], integrationRefs: [], packageMap: [], includeUnknown: false, maxLookups: 50,
   revision: null, updatedAt: null, updatedBy: null, credential: { configured: false, purpose: 'Reads release tags for this project.' },
-  suggestedRepo: 'goondocks-co/myco', check: null, problem: null,
+  suggestedRepo: 'goondocks-co/myco', check: null, problem: null, building: false, unresolvedStates: 0,
 };
 
 interface Sent { method: string; path: string; body: unknown }

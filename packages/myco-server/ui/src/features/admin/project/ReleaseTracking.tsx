@@ -9,6 +9,9 @@ import { PROJECT_SETTINGS_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
 import type { ReleaseCheck, ReleaseProvenanceRow } from './wire';
 
+/** The server reports kept-aside records exactly up to this many. */
+const UNRESOLVED_REPORT_CAP = 1000;
+
 const lines = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean);
 const MAPPING_SEPARATOR = ' = ';
 
@@ -58,6 +61,11 @@ export function ReleaseTracking({ projectId }: { projectId: string }) {
             {row.problem !== null && (
               <p role="alert" className="t-small text-bad">The stored release tracking settings cannot be read. No check runs until they are saved again.</p>
             )}
+            {row.building && (
+              <p className="t-small text-muted" data-testid="release-building">
+                Release history is still being prepared after an update. Checks start once it finishes; until then nothing is shown as released or not released that was not before.
+              </p>
+            )}
             <Card className="py-s2" data-release-tracking="">
               <dl className="flex flex-col divide-y divide-line">
                 <FactRow term="Tracking">{row.enabled ? 'On' : 'Off'}</FactRow>
@@ -73,6 +81,13 @@ export function ReleaseTracking({ projectId }: { projectId: string }) {
                   <span data-testid="release-credential">{`${row.credential.configured ? 'Stored' : words.none} · ${row.credential.purpose}`}</span>
                 </FactRow>
                 {row.enabled && <FactRow term="Last check"><span data-testid="release-check">{checkSummary(row.check)}</span></FactRow>}
+                {row.unresolvedStates > 0 && (
+                  <FactRow term="Kept aside">
+                    <span data-testid="release-unresolved">
+                      {`${row.unresolvedStates >= UNRESOLVED_REPORT_CAP ? `At least ${UNRESOLVED_REPORT_CAP}` : row.unresolvedStates} older release record${row.unresolvedStates === 1 ? '' : 's'} could not be matched to one record and ${row.unresolvedStates === 1 ? 'was' : 'were'} kept as found`}
+                    </span>
+                  </FactRow>
+                )}
               </dl>
             </Card>
             {actions.check.error && <p role="alert" className="t-small text-bad">{settingsRefusalText(actions.check.error)}</p>}

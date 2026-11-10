@@ -14,6 +14,7 @@ import { authorityRetentionSchemaStatements } from '@myco-server-worker/db/ident
 import { VNEXT_S2C2_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2c2.js';
 import { VNEXT_S7_STEPS } from '@myco-server-worker/db/schema-vNEXT-s7.js';
 import { VNEXT_S8B_STEPS } from '@myco-server-worker/db/schema-steps-backup-retention.js';
+import { VNEXT_S5D_STEPS } from '@myco-server-worker/db/schema-steps-release-provenance.js';
 import { SESSION_LIFECYCLE_EVENTS_INDEX, sessionLifecycleSchema } from '@myco-server-worker/db/documents/lifecycle.js';
 import { publicationPinSchema } from '@myco-server-worker/db/documents/pin-schema.js';
 import { publicationFailureSchema } from '@myco-server-worker/db/documents/failure-head.js';
@@ -136,6 +137,12 @@ const LISTED: readonly Exception[] = [
     return match === null ? [] : [{ step, object: match[1]!, table: match[2]!,
       reason: match[1]!.startsWith('idx_') ? 'Retention and object settlement seek a backup through these orders, and one object has at most one backup.'
         : 'A change to a backup moves its week head and the keep-set generation in the same commit.' }];
+  })),
+  ...VNEXT_S5D_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
+    const match = /^CREATE (?:UNIQUE )?(?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
+    return match === null || match[2]!.startsWith('release_') ? [] : [{ step, object: match[1]!, table: match[2]!,
+      reason: match[1]!.startsWith('idx_') ? 'A release state list walks newest checked first by key, and one current row per record is enforced for every row the catch-up has placed.'
+        : 'A capture, a changed path, or a record naming a classified session moves its one due row, so the reconcile reads due rows instead of history.' }];
   })),
   ...VNEXT_S2C2_STEPS.flatMap(({ version: step, statements }) => statements.flatMap(sql => {
     const match = /^CREATE (?:INDEX|TRIGGER)(?: IF NOT EXISTS)? (\w+).*?\bON (\w+)/s.exec(sql);
@@ -459,6 +466,9 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   }))),
   ...VNEXT_S8B_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO (?:projection_catchup|backup_retention_state)|DROP INDEX|SELECT CASE)/.test(sql)).map(sql => ({
     step, sql, reason: 'Each backup carries a verification state, its week heads are built through the shared catch-up, the upgrade names a duplicate key instead of guessing, and the unique index replaces the non-unique one.'
+  }))),
+  ...VNEXT_S5D_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup)/.test(sql)).map(sql => ({
+    step, sql, reason: 'A release state carries its current key and comparison fields as columns, a Project its work generation, and the catch-up that fills them stays building until every existing row is placed.'
   }))),
   ...VNEXT_S2C2_STEPS.flatMap(({ version: step, statements }) => statements.filter(sql => /^(ALTER TABLE|INSERT INTO projection_catchup|DROP INDEX)/.test(sql)).map(sql => ({
     step, sql, reason: 'The session and uncaptured indexes go once a complete order replaces them, and Project statistics add counter columns and are seeded through the shared catch-up.'

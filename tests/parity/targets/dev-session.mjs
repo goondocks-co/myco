@@ -53,13 +53,14 @@ async function command(message) {
       if(!workers.has(tag)||!observations.has(tag))throw new Error(`No observed Worker for ${tag}`);
       await new Promise(resolve=>setImmediate(resolve));
       process.send({id,records:observations.get(tag).splice(0)});
-    } else if(op==='alarm'||op==='embedding'){
+    } else if(op==='alarm'||op==='embedding'||op==='release'){
       const worker=workers.get(tag),mf=worker?.raw.runtimes.find(runtime=>runtime.mf!==undefined)?.mf;
       if(!mf)throw new Error(`No live clock runtime for ${tag}`);
       if(typeof message.clockName!=='string')throw new Error('The clock name is required');
       const namespace=await mf.getDurableObjectNamespace('CLOCK');
       const clock=namespace.get(namespace.idFromName(message.clockName));
       if(op==='alarm')await clock.observeAlarm(message.at);
+      else if(op==='release')await clock.observeRelease();
       else {if(typeof message.projectId!=='string')throw new Error('Embedding fixture requires a Project');await clock.observeEmbedding(message.projectId);}
       process.send({id});
     } else if (op === 'sql') {
