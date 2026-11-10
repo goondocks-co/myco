@@ -1,10 +1,11 @@
+import { retiring, type SchemaStep } from './schema-step.js';
 export const NEXT_S1C = 772;
 
 /**
  * Stable machine and runner heads, normalized harness reports with their own revision, the scoped machine page and the
  * active-runner name path. Frozen copy of `headSchemaStatements` in db/runners/heads.ts for the head statements.
  */
-export const VNEXT_S1C_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S1C_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S1C, statements: [
     "CREATE INDEX IF NOT EXISTS idx_machine_claims_member_page ON machine_claims(member_id,claimed_at DESC,machine_id)",
     "CREATE INDEX IF NOT EXISTS idx_runners_active_name ON runners(name,id) WHERE state<>'removed'",
@@ -30,5 +31,8 @@ export const VNEXT_S1C_STEPS: ReadonlyArray<{ version: number; statements: reado
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'machine_head','machineHeadContacts',NOT EXISTS(SELECT 1 FROM worker_contacts) ON CONFLICT DO NOTHING",
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'machine_head','machineHeadCaptures',NOT EXISTS(SELECT 1 FROM machine_capture_heads) ON CONFLICT DO NOTHING",
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'runner_head','runnerHeads',NOT EXISTS(SELECT 1 FROM runners) ON CONFLICT DO NOTHING",
+  ], retires: [
+    ...retiring('column', ['machine_harness_reports.harnesses'], 'A harness report is one row per harness, so the column holding every harness goes.'),
+    ...retiring('table', ['machine_harness_reports_prior'], 'The previous harness report table is copied into the per-harness rows and dropped.'),
   ] },
 ];

@@ -1,10 +1,11 @@
+import { retiring, type SchemaStep } from './schema-step.js';
 export const NEXT_S2E = 779;
 
 /**
  * The hot archive path: its index builds alone, and the sweep cursor changes meaning in the next step.
  * The first step's statement is one index over the events table; it is this step's whole work.
  */
-export const VNEXT_S2E_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S2E_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S2E, statements: [
     "CREATE INDEX IF NOT EXISTS idx_events_hot_received ON events(received_at) WHERE payload_format='inline'",
   ] },
@@ -14,7 +15,8 @@ export const VNEXT_S2E_STEPS: ReadonlyArray<{ version: number; statements: reado
     'ALTER TABLE raw_event_archive_state DROP COLUMN cursor_created',
     'ALTER TABLE raw_event_archive_state ADD COLUMN cursor_received INTEGER NOT NULL DEFAULT -1',
     'UPDATE raw_event_archive_state SET cursor_rowid=-1,revision=revision+1 WHERE id=1',
-  ] },
+  ], retires: retiring('column', ['cursor_project', 'cursor_session', 'cursor_created'].map((column) => `raw_event_archive_state.${column}`),
+    'The archive sweep cursor orders hot rows by receipt age alone, so the session columns of the retired walk go.') },
 ];
 
 export const NEXT_S2E_LAST = NEXT_S2E + 1;

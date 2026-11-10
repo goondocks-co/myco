@@ -1,3 +1,4 @@
+import { retiring, type Retirement } from './schema-step.js';
 export const V722 = 722;
 
 /**
@@ -50,4 +51,14 @@ export const V722_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS embedding_calibration_population_delete AFTER DELETE ON embedding_calibration_state BEGIN INSERT INTO embedding_calibration_population(project_id,model_key,epoch,kind,total,covered,member_count,operating,uncovered,departing,stale)\n    VALUES(OLD.project_id,OLD.model_key,OLD.epoch,OLD.kind,-OLD.is_current,-(OLD.is_current=1 AND OLD.rewrites=0),-(OLD.member IS NOT NULL),-(COALESCE(OLD.member,-1) IN (1,2)),-(OLD.status IS 'uncovered'),-(OLD.status IS 'departing'),-(COALESCE(OLD.member,-1) IN (0,1) AND NOT (OLD.is_current=1 AND OLD.rewrites=0)))\n    ON CONFLICT(project_id,model_key,epoch,kind) DO UPDATE SET total=total+excluded.total,covered=covered+excluded.covered,member_count=member_count+excluded.member_count,operating=operating+excluded.operating,uncovered=uncovered+excluded.uncovered,departing=departing+excluded.departing,stale=stale+excluded.stale; DELETE FROM embedding_calibration_population WHERE project_id=OLD.project_id AND model_key=OLD.model_key AND epoch=OLD.epoch AND kind=OLD.kind\n    AND total=0 AND member_count=0; END",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'embedding_calibration','calibrationReceipts',NOT EXISTS(SELECT 1 FROM embedding_receipts WHERE type='spore' AND ready=1)",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'embedding_calibration','calibrationMembers',NOT EXISTS(SELECT 1 FROM embedding_hubness_members)",
+];
+
+export const V722_RETIRES: readonly Retirement[] = [
+  ...retiring('table', ['embedding_hubness_population', 'embedding_hubness_work'],
+    'The population snapshot and the in-flight work table are retired: nothing reads either.'),
+  ...retiring('trigger', ['insert', 'update', 'delete'].map((action) => `embedding_hubness_members_population_${action}`),
+    'The population snapshot they kept is retired.'),
+  ...retiring('trigger', [...['embedding_versions', 'embedding_receipts'].flatMap((table) => ['insert', 'update', 'delete'].map((action) => `${table}_hubness_source_${action}`)),
+    'embedding_hubness_members_work_update'],
+    'Each trigger is rebuilt narrower: it still advances the same revision or dirties the same work.'),
 ];
