@@ -220,7 +220,21 @@ export interface RunDetailAnswer {
   attemptCount: number | null;
   /** The first page of the latest attempt's step log; null for a run with no recorded attempt. */
   steps: RunStepPage | null;
+  /** What the run's task owes before it closes, checked against what is stored now; null for a task held to no rule. */
+  outcomeEvidence: RunCloseEvidence | null;
   projectId: string;
+}
+
+/**
+ * The evidence a run's task owes, as the server reads it now: a closing report, its account where one is owed, and
+ * the row it owed or Myco's agreement with a report that there was nothing to do. A null field is not owed or not checked.
+ */
+export interface RunCloseEvidence {
+  hasReport: boolean;
+  hasAudit: boolean | null;
+  artifactPresent: boolean | null;
+  skipSupported: boolean | null;
+  targetSessionId: string | null;
 }
 
 /** `POST /api/harness/dispatch`, answered 200: a run queued or started, or input that has not moved. */

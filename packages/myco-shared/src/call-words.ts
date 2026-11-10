@@ -7,6 +7,10 @@ const CALL_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   myco_run_learning: { material: 'Read session cards', get: 'Read a raw turn', complete: 'Completed a learning slice' },
   myco_spores: { save: 'Saved a spore', supersede: 'Replaced a spore', obsolete: 'Retired a spore', consolidate: 'Combined spores' },
   myco_search: { '*': 'Searched Myco' },
+  '/runs/claim': { '*': 'Claimed the run' },
+  '/runs/update': { '*': 'Sent its status' },
+  '/runs/report': { '*': 'Reported' },
+  '/runs/embedding-step': { '*': 'Advanced the search index' },
 };
 const labels = new Map(Object.entries(CALL_WORDS).flatMap(([tool, ops]) => Object.entries(ops).map(([op, words]) => [`${tool}/${op}`, words] as const)));
 

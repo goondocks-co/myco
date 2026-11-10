@@ -928,7 +928,7 @@ it('describes a coded stored failure on Today without quoting its error', async 
   server(day({ work: { ...WORK, timeline: RUNS.map((item) => item.status === 'failed'
     ? { ...item, failure: { source: 'error', code: 'machine_unresponsive', cause: prose } } : item) } }));
   mount(`/p/${P_MYCO}`);
-  await waitFor(() => expect(document.body.textContent).toContain('The machine running it stopped responding.'));
+  await waitFor(() => expect(document.body.textContent).toContain('Its time limit passed, so Myco ended it. Whether its machine stopped is not known.'));
   expect(document.body.textContent).not.toContain(prose);
 });
 

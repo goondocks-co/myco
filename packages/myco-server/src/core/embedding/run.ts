@@ -3,6 +3,7 @@ import type { ServerEnv } from '../adapters.js';
 import { HARNESS_AGENT_ID } from '../harness.js';
 import { MISSING_REPORT_LIMIT, type MissingSporeVectors } from '../../db/embeddings/calibration.js';
 import { VECTOR_REWRITE_LIMIT } from './provider.js';
+import { EMBEDDING_REPORT_ACTION } from './task.js';
 
 const EMBEDDING_RUN_STEPS = 16;
 const CLOSE_RESERVE_MS = 45_000;
@@ -29,7 +30,7 @@ function missingWords(missing: MissingSporeVectors | undefined): string[] {
 
 export function embeddingRunReport(result: EmbeddingRunResult) {
   const summary = [`Processed ${result.processed} embedding records; ${result.phase}.`, ...missingWords(result.missing)].join(' ');
-  return { action: 'embedding', summary, details: JSON.stringify(result) };
+  return { action: EMBEDDING_REPORT_ACTION, summary, details: JSON.stringify(result) };
 }
 
 const isMissing = (value: unknown): value is MissingSporeVectors => value !== null && typeof value === 'object'

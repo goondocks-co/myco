@@ -9,6 +9,7 @@ import {
   type ActivityRow, type Coverage, type FilesRead, type RowState,
 } from './activity';
 import { PartLabel } from './OutcomeCard';
+import { groupedCallIds } from './story';
 import type { RunAttempt, RunAudit, RunCall, RunDetailAnswer, RunReport, RunStep } from './wire';
 
 /** How many rows a list shows at first, and how many more each "Show more" adds. */
@@ -129,9 +130,17 @@ function Rows({ rows, noun }: { rows: readonly ActivityRow[]; noun: string }) {
   );
 }
 
+/** The rows "What it did" lists: the runner's steps and every call the story did not group. */
+const ungrouped = (rows: readonly ActivityRow[], grouped: ReadonlySet<number>): ActivityRow[] =>
+  rows.filter((row) => !(row.step === null && row.call !== null && grouped.has(row.call.id)));
+
+const GROUPED_WORDS = 'Myco’s calls are listed, grouped, under “What happened”.';
+
 /** One attempt's list: what its coverage is, then its rows a page at a time with the true total. */
-function AttemptList({ evidence, live }: { evidence: AttemptEvidence; live: boolean }) {
-  const { rows, coverage, steps } = evidence;
+function AttemptList({ evidence, live, grouped }: { evidence: AttemptEvidence; live: boolean; grouped: ReadonlySet<number> }) {
+  const { coverage, steps } = evidence;
+  const rows = ungrouped(evidence.rows, grouped);
+  const hidden = evidence.rows.length - rows.length;
   return (
     <div className="flex flex-col gap-s3" data-attempt-list="">
       <div className="flex flex-col gap-s1 t-small text-muted" data-coverage={coverage.state}>
@@ -139,16 +148,19 @@ function AttemptList({ evidence, live }: { evidence: AttemptEvidence; live: bool
       </div>
       {steps.error != null && <ErrorState error={steps.error} onRetry={steps.refetch} />}
       {evidence.loading ? <LoadingState shape="reading" label="Loading what it did" /> : rows.length === 0 ? (
-        <p className="t-small text-muted" data-activity-none="">{stepsKnown(coverage) ? 'Neither Myco nor the worker recorded a step.' : 'Myco recorded no calls.'}</p>
-      ) : <Rows rows={rows} noun={stepsKnown(coverage) ? 'steps' : 'calls'} />}
+        <p className="t-small text-muted" data-activity-none="">{hidden > 0 ? GROUPED_WORDS : stepsKnown(coverage) ? 'Neither Myco nor the worker recorded a step.' : 'Myco recorded no calls.'}</p>
+      ) : <>
+        <Rows rows={rows} noun={stepsKnown(coverage) ? 'steps' : 'calls'} />
+        {hidden > 0 && <p className="t-small text-muted" data-activity-grouped="">{GROUPED_WORDS}</p>}
+      </>}
     </div>
   );
 }
 
 /** An earlier attempt, read once it is opened. */
-function EarlierAttempt({ projectId, answer, calls, index, live }: { projectId: string; answer: RunDetailAnswer; calls: Loaded<RunCall>; index: number; live: boolean }) {
+function EarlierAttempt({ projectId, answer, calls, index, live, grouped }: { projectId: string; answer: RunDetailAnswer; calls: Loaded<RunCall>; index: number; live: boolean; grouped: ReadonlySet<number> }) {
   const evidence = useAttemptEvidence(projectId, answer, calls, index);
-  return <AttemptList evidence={evidence} live={live} />;
+  return <AttemptList evidence={evidence} live={live} grouped={grouped} />;
 }
 
 /** Why an attempt gave way to the next: a claimed run returns to the queue only when its worker stops checking in. */
@@ -172,15 +184,16 @@ function UnplacedCalls({ rows }: { rows: readonly ActivityRow[] }) {
  */
 export function ActivitySection({ projectId, answer, calls, latest, live }: { projectId: string; answer: RunDetailAnswer; calls: Loaded<RunCall>; latest: AttemptEvidence; live: boolean }) {
   const attempts = answer.attempts;
+  const grouped = useMemo(() => groupedCallIds(calls.rows), [calls.rows]);
   const end = latest.loading ? undefined : count(latest.rows.length, stepsKnown(latest.coverage) ? 'step' : 'call');
-  const unplaced = useMemo(() => attemptActivity(callsByAttempt(calls.rows, attempts).unplaced, [], answer.run.harness), [calls.rows, attempts, answer.run.harness]);
+  const unplaced = useMemo(() => ungrouped(attemptActivity(callsByAttempt(calls.rows, attempts).unplaced, [], answer.run.harness), grouped), [calls.rows, attempts, answer.run.harness, grouped]);
   return (
     <section aria-label="What it did" className="flex flex-col gap-s3" data-run-calls="">
       <PartLabel end={attempts.length > 1 && answer.attemptCount !== null ? count(answer.attemptCount, 'attempt') : end}>What it did</PartLabel>
       {!calls.complete && !calls.pending && <p className="t-small text-muted">Only the first {calls.rows.length.toLocaleString()}{answer.toolCallCoverage.total === null ? ' calls' : ` of the ${count(answer.toolCallCoverage.total, 'call')}`} Myco recorded are loaded.</p>}
       {calls.error != null && <ErrorState error={calls.error} />}
       {unplaced.length > 0 && <UnplacedCalls rows={unplaced} />}
-      {attempts.length <= 1 ? <AttemptList evidence={latest} live={live} /> : (
+      {attempts.length <= 1 ? <AttemptList evidence={latest} live={live} grouped={grouped} /> : (
         <ol className="flex flex-col gap-s4" aria-label="Attempts">
           {answer.attemptCount !== null && answer.attemptCount > attempts.length && <li className="t-small text-muted">Showing the latest {attempts.length.toLocaleString()} of {count(answer.attemptCount, 'attempt')}.</li>}
           {attempts.map((attempt, index) => {
@@ -192,10 +205,10 @@ export function ActivitySection({ projectId, answer, calls, latest, live }: { pr
               <li key={attempt.attemptId} className="flex flex-col gap-s2" data-attempt={last ? 'latest' : 'replaced'}>
                 {last ? <>
                   <h4 className="t-small font-medium text-ink">{heading}</h4>
-                  <AttemptList evidence={latest} live={live} />
+                  <AttemptList evidence={latest} live={live} grouped={grouped} />
                 </> : <>
                   <Disclosure summary={<span>{heading} · replaced</span>}>
-                    <EarlierAttempt projectId={projectId} answer={answer} calls={calls} index={index} live={false} />
+                    <EarlierAttempt projectId={projectId} answer={answer} calls={calls} index={index} live={false} grouped={grouped} />
                   </Disclosure>
                   <p className="t-small text-muted" data-attempt-replaced="">{replacedWords(attempts[index + 1]!)}</p>
                 </>}

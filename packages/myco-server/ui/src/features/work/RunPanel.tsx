@@ -14,6 +14,9 @@ import { ModelSummary, costProvenanceWords } from './ModelSummary';
 import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvidence, useRunCallsOf, type AttemptEvidence } from './RunActivity';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
+import { AskedVersusDid, SourceMark, Tries, WhatHappened } from './RunStory';
+import { inferredEnd, recordedOutputWords, runStory, SOURCE_WORDS, type Source } from './story';
+import { stepsKnown } from './activity';
 import {
   atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, deployWords, fullErrorWords, dollars, fleetWaitWords, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
@@ -52,6 +55,19 @@ function startedKicker(words: string): string {
   return words.startsWith('By ') ? `started by ${words.slice(3)}` : `started ${words.charAt(0).toLowerCase()}${words.slice(1)}`;
 }
 
+const SOURCES: readonly Source[] = ['saw', 'runner', 'agent', 'inferred', 'none'];
+
+/** What each mark beside a claim means. */
+function HowWeKnow() {
+  return (
+    <section aria-label="How we know" className="flex flex-col gap-s2" data-run-marks="">
+      <PartLabel>How we know</PartLabel>
+      <p className="flex flex-wrap gap-s2">{SOURCES.map((source) => <SourceMark key={source} source={source} />)}</p>
+      <p className="t-meta text-muted">“{SOURCE_WORDS.saw}” is written by the server when it happens, on its clock. “{SOURCE_WORDS.runner}” comes from the machine, on its clock. “{SOURCE_WORDS.agent}” is the agent’s own account. “{SOURCE_WORDS.inferred}” is a rule Myco applied, not something it observed. “{SOURCE_WORDS.none}” means no record exists.</p>
+    </section>
+  );
+}
+
 function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
@@ -82,6 +98,10 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const summary = summaryOf(latest, answer.attemptCount);
   const ran = finished || live;
   const fleetWait = run.status === 'queued' ? fleetWaitWords(run) : null;
+  const story = runStory({
+    answer, calls: calls.rows, callsComplete: calls.complete, steps: stepsKnown(latest.coverage) ? latest.steps.rows : null,
+    startedBy: startedBy === null ? null : startedKicker(startedBy), cause: causeOf(answer), memberName: name, now,
+  });
   return (
     <article className="flex flex-col gap-s6" data-run-panel={run.status}>
       <header className="flex flex-col gap-s2">
@@ -130,6 +150,10 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         </div>
       )}
 
+      <Tries answer={answer} projectId={projectId} now={now} />
+      <WhatHappened answer={answer} story={story} />
+      <AskedVersusDid answer={answer} />
+
       {(finished || read.total > 0) && <WhatItRead answer={answer} projectId={projectId} now={now} latest={latest} />}
 
       {finished && (
@@ -143,6 +167,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
       <AgentAccount projectId={projectId} answer={answer} calls={calls} failed={failed} />
       <Instruction answer={answer} />
       <TechnicalDetails answer={answer} startedBy={startedBy} took={took} />
+      <HowWeKnow />
     </article>
   );
 }
@@ -259,7 +284,12 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
       </div>
     );
   }
-  return <p className="t-small text-muted">{run.result === 'unchanged' ? 'Checked and changed nothing.' : 'Nothing'}{run.status === 'failed' ? '; it stopped before writing anything' : ''}.</p>;
+  if (run.result === 'produced' || run.result === 'failed_with_output') {
+    const words = recordedOutputWords(answer);
+    return <p className="t-small text-ink-2" data-run-output="">{words ?? 'Its output is recorded and not listed here.'}{run.result === 'failed_with_output' ? ' It is kept.' : ''}</p>;
+  }
+  if (run.result === 'failed' && kind === null) return <p className="t-small text-muted">No output recorded.</p>;
+  return <p className="t-small text-muted">{run.result === 'unchanged' ? 'Checked and changed nothing' : 'Nothing'}{run.status === 'failed' ? '; it stopped before writing anything' : ''}.</p>;
 }
 
 function tookWords(ms: number): string {
@@ -311,7 +341,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
               <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null)}</p>
               {run.errorCode === 'repository_unprepared'
                 ? run.repositoryFailure?.summary?.trim() && <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{redactSecrets(run.repositoryFailure.summary)}</p>
-                : <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>}
+                : !inferredEnd(run.errorCode) && <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>}
             </div>
           )}
         </div>
