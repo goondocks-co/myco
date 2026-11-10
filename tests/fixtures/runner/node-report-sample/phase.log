@@ -1,0 +1,12 @@
+bun test v1.4.0
+
+::group::tests/example-a.test.ts:
+(pass) keeps the first file [1.00ms]
+::endgroup::
+
+::group::tests/example-b.test.ts:
+(pass) keeps the second file [1.00ms]
+::endgroup::
+
+Ran 2 tests across 2 files. [1200.00ms]
+[run-bun-tests] FINISHED node env isolated 1 in 1500ms (exit 0) (last line: Ran 2 tests across 2 files. [1200.00ms])

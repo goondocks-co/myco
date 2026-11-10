@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="2" time="1.2">
+  <testsuite name="tests/example-a.test.ts" file="tests/example-a.test.ts" tests="1" time="0.25">
+    <testcase name="keeps the first file" classname="" time="0.2" file="tests/example-a.test.ts" line="1" />
+  </testsuite>
+  <testsuite name="tests/example-b.test.ts" file="tests/example-b.test.ts" tests="1" time="0.75">
+    <testsuite name="nested" file="tests/example-b.test.ts" tests="1" time="0.75">
+      <testcase name="keeps the second file" classname="nested" time="0.5" file="tests/example-b.test.ts" line="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>

@@ -1,4 +1,5 @@
-// Refresh: download node artifacts from N green runs, replace node-ci-durations.json runs, then run node scripts/node-test-durations.mjs tests/fixtures/runner/node-ci-durations.json.
+// Refresh: npm run refresh:node-durations
+// Downloads node artifacts from the last N green main runs, replaces node-ci-durations.json runs, then merges weights.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
