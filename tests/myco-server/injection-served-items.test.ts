@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { BACKUP_FORMAT, BACKUP_TABLES, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, BACKUP_TABLES, deploymentId } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import { tombstoneSession } from './helpers/session-deletion.js';
 import { receiptPlans } from '@myco-server-worker/db/context/served-plans.js';
 import { sqliteEnv } from './helpers/fixtures.js';

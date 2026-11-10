@@ -15,7 +15,8 @@ import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { cardWriteStatement, NONE_CARD } from '@myco-server-worker/core/turn-cards.js';
 import { sessionProgressStatement } from '@myco-server-worker/db/learning/progress.js';
 import { commit } from '@myco-server-worker/db/index.js';
-import { createBackup, backupArtifact, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
+import { restoreThroughJob } from './helpers/restore-through-job.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { asOwner, OWNER_ENV, LINKED_SUB } from './helpers/owner.js';
 import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
@@ -218,7 +219,7 @@ test('summary catch-up resumes on the publisher budget and preserves cards in ba
       await db.prepare(`INSERT INTO blobs(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`)
         .bind(...columns.map(column => column === 'generation' ? generation : row[column])).run();
     }
-    await restoreArtifact(db, { text: source.text, blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text: source.text, blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
     expect(await db.prepare(`SELECT files_edited,myco_calls FROM session_documents WHERE session_id='old'`).first(), target).toEqual({ files_edited: 2, myco_calls: 3 });
     expect(await db.prepare(`SELECT headline FROM turn_cards WHERE turn_key=?`).bind(source.turn).first(), target).toEqual({ headline: 'shipped' });
     const rollup = await db.prepare(`SELECT tool_rollup FROM session_prompts WHERE prompt_id=?`).bind(source.turn).first<{ tool_rollup: string }>();

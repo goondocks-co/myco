@@ -130,6 +130,8 @@ export interface BackupsAnswer {
   cursor: string | null;
   /** The last retention pass, and the most recent failure until a pass finishes the work. */
   retention: { at: number; outcome: BackupPruneOutcome; lastFailure?: { at: number; errorClass: string } } | null;
+  /** The latest restore this server accepted, running or ended. */
+  restore: RestoreJob | null;
 }
 
 /** `POST /api/backups/{id}/restore-preview`: what a restore would add and whether this member may apply it. */
@@ -144,11 +146,33 @@ export interface RestorePreview {
   authorityExcluded: { tables: string[]; notice: string } | null;
 }
 
-/** `POST /api/backups/{id}/restore`: what each table took. */
+/** What a restore added, table by table. */
 export interface RestoreOutcome {
   retiredNotice?: string;
   tables: Record<string, { rows: number; inserted: number; skipped?: string }>;
 }
+
+/** `GET /api/backups/restores/{id}`: one restore, walked by the server in bounded steps until it completes or stops. */
+export interface RestoreJob {
+  id: string;
+  /** The catalogued backup the restore reads, or null for an uploaded one. */
+  backupId: string | null;
+  state: 'running' | 'complete' | 'failed';
+  rowsDone: number;
+  rowsTotal: number;
+  acceptedAt: number;
+  completedAt: number | null;
+  outcome: RestoreOutcome;
+  /** Why a stopped restore stopped, in the server's words. */
+  failure: { code: string; message: string } | null;
+  /** The latest step of a running restore failed and is being tried again. */
+  retrying: { errorClass: string; at: number } | null;
+  /** The restore has reached session documents, which are restored only while an admin continues it from this page. */
+  awaitingDocuments: boolean;
+}
+
+/** `POST /api/backups/{id}/restore`: complete with what each table took, or still running (202) with its progress. */
+export type RestoreAnswer = ({ applied: true; job: RestoreJob } & RestoreOutcome) | { applied: false; job: RestoreJob };
 
 /** Which of the store's routine checks. */
 export type MaintenanceCheck = 'optimize' | 'integrity';

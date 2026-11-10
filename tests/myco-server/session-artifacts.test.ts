@@ -11,7 +11,8 @@ import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { tombstoneSession } from './helpers/session-deletion.js';
-import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreThroughJob } from './helpers/restore-through-job.js';
 import { ARTIFACT_ID_REASON, ARTIFACT_URL_REASON, reportSessionArtifact } from '@myco-server-worker/core/session-artifacts.js';
 import { RelationalSnapshotError } from '@myco-server-worker/core/relational-snapshot.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -198,7 +199,7 @@ describe('a session\'s reported artifacts', () => {
     restored.sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES (?, 'p', 1) ON CONFLICT DO NOTHING`, [P]);
     restored.sqlite.run(`INSERT INTO session_tombstones (project_id, session_id, created_at, created_by) VALUES (?, 's_other', 1, 'owner')`, [P]);
     for (let pass = 0; pass < 2; pass++) {
-      await restoreArtifact(restored.db, { text, blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
+      await restoreThroughJob(restored.db, { text, blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
       expect(restored.sqlite.query('SELECT session_id, kind, artifact_id, url FROM session_artifacts').all())
         .toEqual([{ session_id: 's_mine', kind: 'pr', artifact_id: '1931', url: PR }]);
     }
@@ -222,7 +223,7 @@ describe('a session\'s reported artifacts', () => {
       return target;
     };
     const restore = (target: ReturnType<typeof sqliteEnv>, body: string) =>
-      restoreArtifact(target.db, { text: body, blobs: serverEnvFromBindings(target.env).blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
+      restoreThroughJob(target.db, { text: body, blobs: serverEnvFromBindings(target.env).blobs, allowForeignLineage: true, authorization: { kind: 'recovery' } });
     const stored = (target: ReturnType<typeof sqliteEnv>) => target.sqlite.query('SELECT session_id, url FROM session_artifacts').all();
 
     for (const [label, patch] of [

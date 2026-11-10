@@ -5,7 +5,9 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { backupArtifact, createBackup, previewRestore, restoreBackup, setBackupPinned, verifyBackup } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, createBackup, previewRestore, setBackupPinned, verifyBackup } from '@myco-server-worker/core/backup.js';
+import { acceptRestore, advanceRestore, restoreJobProgress, stopRestore } from '@myco-server-worker/core/restore-job.js';
+import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { continueBackupRetention, pruneBackups, releaseRetentionPage, retentionDecision } from '@myco-server-worker/core/backup-retention.js';
 import { acquireRecoveryHold, drainObjectReleases, objectReleaseBacklogged, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
 import { listBackupPage } from '@myco-server-worker/db/storage/backup-list.js';
@@ -58,17 +60,6 @@ describe('the keep rule', () => {
     insert(e, 'older', 3);
     await pruneBackups(e.db, NOW);
     expect(ids(e)).toEqual(['newest', 'verified']);
-    e.sqlite.close();
-  });
-
-  it('never releases a backup a restore is using', async () => {
-    const e = sqliteEnv();
-    retention(e, 1, 0);
-    insert(e, 'newest', 0);
-    insert(e, 'restoring', 1, { sha256: 'a'.repeat(64) });
-    e.sqlite.run("INSERT INTO backup_restore_progress(table_name,artifact_hash,next_row) VALUES('sessions',?,1)", ['a'.repeat(64)]);
-    await pruneBackups(e.db, NOW);
-    expect(ids(e)).toEqual(['newest', 'restoring']);
     e.sqlite.close();
   });
 
@@ -338,23 +329,43 @@ describe('what Health says after a pass', () => {
   });
 });
 
-it('holds a backup only while its restore runs: a finished recount releases it, and a running one keeps it', async () => {
+it('holds a backup only while a restore of it runs, and releases it once that restore completes', async () => {
   const e = sqliteEnv();
   retention(e, 1, 0);
   e.sqlite.run("INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES('proj_bk','proj_bk',1)");
   e.sqlite.run("INSERT OR IGNORE INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_bk','sess_1','m1','mt_seed',1,1)");
+  await bootstrapOwnership(e.db, 'mem_machine_1', 'mem_machine_1', '0', NOW);
   const first = await createBackup(e.db, e.bucket, { producer: 'test', now: NOW - 2 * DAY });
   const second = await createBackup(e.db, e.bucket, { producer: 'test', now: NOW - DAY });
   await createBackup(e.db, e.bucket, { producer: 'test', now: NOW });
-  for (const backup of [first, second]) await restoreBackup(e.db, e.bucket, { authorization: { kind: 'recovery' }, id: backup.id });
-  while ((await catchUpProjections(e.db)).more) { /* a restore rebuilds the heads before retention decides */ }
-  e.sqlite.run("UPDATE backup_restore_progress SET next_row=0 WHERE artifact_hash=? AND table_name GLOB 'extraction-session-counters:*'", [second.sha256]);
+  const accepted = (await acceptRestore(e.serverEnv, second.id, { allowForeignLineage: false, memberId: 'mem_machine_1', now: NOW }))!;
+  while ((await catchUpProjections(e.db)).more) { /* the week heads are current before retention decides */ }
   await pruneBackups(e.db, NOW);
   expect(ids(e).includes(first.id)).toBe(false);
   expect(ids(e).includes(second.id)).toBe(true);
-  e.sqlite.run("UPDATE backup_restore_progress SET next_row=1 WHERE artifact_hash=? AND table_name GLOB 'extraction-session-counters:*'", [second.sha256]);
+
+  while ((await advanceRestore(e.serverEnv, NOW)).more) { /* the tick walks the restore to its end */ }
+  expect((await restoreJobProgress(e.serverEnv, accepted.id))?.state).toBe('complete');
+  while ((await catchUpProjections(e.db)).more) { /* a restore rebuilds the heads before retention decides */ }
   await pruneBackups(e.db, NOW);
   expect(ids(e).includes(second.id)).toBe(false);
+  e.sqlite.close();
+});
+
+it('releases a backup once the restore reading it ends failed', async () => {
+  const e = sqliteEnv();
+  retention(e, 1, 0);
+  e.sqlite.run("INSERT OR IGNORE INTO projects(project_id,name,created_at) VALUES('proj_bk','proj_bk',1)");
+  await bootstrapOwnership(e.db, 'mem_machine_1', 'mem_machine_1', '0', NOW);
+  const older = await createBackup(e.db, e.bucket, { producer: 'test', now: NOW - DAY });
+  await createBackup(e.db, e.bucket, { producer: 'test', now: NOW });
+  const accepted = (await acceptRestore(e.serverEnv, older.id, { allowForeignLineage: false, memberId: 'mem_machine_1', now: NOW }))!;
+  while ((await catchUpProjections(e.db)).more) { /* the week heads are current before retention decides */ }
+  await pruneBackups(e.db, NOW);
+  expect(ids(e).includes(older.id)).toBe(true);
+  expect(await stopRestore(e.serverEnv, accepted.id, NOW)).toMatchObject({ stopped: { state: 'failed', failure: { code: 'stopped' } } });
+  await pruneBackups(e.db, NOW);
+  expect(ids(e).includes(older.id)).toBe(false);
   e.sqlite.close();
 });
 

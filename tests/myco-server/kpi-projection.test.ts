@@ -12,7 +12,8 @@ import {
   type KpiWindow,
 } from '@myco-server-worker/db/insights/kpis.js';
 import { kpis_readKpis as sourceKpis } from './helpers/kpi-oracle.js';
-import { BACKUP_FORMAT, deploymentId, backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, deploymentId, backupArtifact, createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { tombstoneSession } from './helpers/session-deletion.js';
 import { rig, NOW, DAY, PROJECT, OTHER } from './helpers/kpi-fixture.js';

@@ -8,7 +8,8 @@ import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { registerBlob } from './helpers/d1.js';
-import { backupArtifact, createBackup, restoreArtifact, BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, createBackup, BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 

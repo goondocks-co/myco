@@ -2,31 +2,12 @@
  * The backup engine: table dispositions drift-guarded against the DDL, the
  * round trip, the refusal gates, and the retention rule.
  */
+import { restoreStoredBackup } from './helpers/stored-restore.js';
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { Database } from 'bun:sqlite';
-import {
-  BACKUP_FORMAT,
-  BACKUP_TABLES,
-  backupArtifact,
-  BackupIntegrityError,
-  BackupLineageError,
-  BackupSchemaError,
-  BackupTooLargeError,
-  MAX_BACKUP_BYTES,
-  createBackup,
-  deploymentId,
-  EMPTY_ONLY_TABLES,
-  EXCLUDED_TABLES,
-  RETIRED_INPUT_TABLES,
-  RETIRED_TABLES,
-  previewRestore,
-  restoreBackup,
-  restoreArtifact,
-  setBackupPinned,
-  verifyBackup,
-  type BackupIndexRow,
-} from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, BACKUP_TABLES, backupArtifact, BackupIntegrityError, BackupLineageError, BackupSchemaError, BackupTooLargeError, MAX_BACKUP_BYTES, createBackup, deploymentId, EMPTY_ONLY_TABLES, EXCLUDED_TABLES, RETIRED_INPUT_TABLES, RETIRED_TABLES, previewRestore, setBackupPinned, verifyBackup, type BackupIndexRow } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import {
   RelationalSnapshotAdmissionError as BackupAdmissionError,
 } from '@myco-server-worker/core/relational-snapshot.js';
@@ -336,7 +317,7 @@ describe('stored artifact integrity', () => {
     bucket.objects.set(backup.key, { ...original, bytes: sameLengthChange(original.bytes) });
 
     await expect(previewRestore(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
-    await expect(restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(`the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created`);
+    await expect(restoreStoredBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(`the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created`);
     await expect(backupArtifact(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
     expect(sqlite.query(`SELECT verification_state, verification_detail FROM backups WHERE id = ?`).get(backup.id)).toEqual({ verification_state: 'failed', verification_detail: 'sha256' });
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM sessions`).get()).toEqual({ n: 0 });
@@ -349,7 +330,7 @@ describe('stored artifact integrity', () => {
     const read = await backupArtifact(db, bucket, backup.id);
     expect(createHash('sha256').update(read!.text).digest('hex')).toBe(backup.sha256!);
     expect((await previewRestore(db, bucket, backup.id))!.foreignLineage).toBe(false);
-    expect((await restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
+    expect((await restoreStoredBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
   });
 
   it('holds every read to the recorded size, counting delivered bytes rather than the declared size, whether or not the row recorded a digest', async () => {
@@ -365,7 +346,7 @@ describe('stored artifact integrity', () => {
     longer.set(original.bytes);
     for (const declared of [original.size, original.bytes.byteLength - 1]) {
       bucket.objects.set(backup.key, { ...original, bytes: longer.subarray(0, declared === original.size ? longer.byteLength : declared), size: declared });
-      await expect(restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(sizeRefusal);
+      await expect(restoreStoredBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(sizeRefusal);
     }
 
     sqlite.query(`UPDATE backups SET sha256 = NULL WHERE id = ?`).run(backup.id);
@@ -385,7 +366,7 @@ describe('stored artifact integrity', () => {
     const original = bucket.objects.get(backup.key)!;
     expect((await backupArtifact(db, bucket, backup.id))!.text).toBe(new TextDecoder().decode(original.bytes));
     expect((await previewRestore(db, bucket, backup.id))!.foreignLineage).toBe(false);
-    expect((await restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
+    expect((await restoreStoredBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id }))!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
     // No digest exists to hold a same-length change to; the size is the only evidence such a row carries.
     bucket.objects.set(backup.key, { ...original, bytes: sameLengthChange(original.bytes) });
     expect((await previewRestore(db, bucket, backup.id))!.header.producer).toBe('TEST');
@@ -404,18 +385,18 @@ describe('restore', () => {
         VALUES (?, ?, ?, ?, ?, ?, 'copied', 0)`)
       .run(backup.id, backup.key, backup.created_at, backup.size_bytes, backup.counts_json, backup.schema_version);
 
-    await expect(restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(BackupLineageError);
+    await expect(restoreStoredBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(BackupLineageError);
 
     // The target's own row under the same key stays as it is: additive, target wins.
     target.sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_bk', 'THEIRS', 1)`).run();
-    const outcome = await restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
+    const outcome = await restoreStoredBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
     expect(outcome!.tables.sessions).toEqual({ rows: 1, inserted: 1 });
     expect(outcome!.tables.projects!.inserted).toBeLessThan(outcome!.tables.projects!.rows);
     const kept = target.sqlite.query(`SELECT name FROM projects WHERE project_id = 'proj_bk'`).get() as { name: string };
     expect(kept.name).toBe('THEIRS');
     expect((await deploymentId(target.db)) === (await deploymentId(source.db))).toBe(false);
 
-    const again = await restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
+    const again = await restoreStoredBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
     expect(Object.values(again!.tables).every((t) => t.inserted === 0)).toBe(true);
   });
 
@@ -435,10 +416,10 @@ describe('restore', () => {
     source.bucket.objects.set(doctoredKey, { ...source.bucket.objects.get(backup.key)!, bytes: doctoredBytes, size: doctoredBytes.byteLength });
     source.sqlite.query(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned)
         VALUES ('bk_doctored', ?, 1, ?, '{}', 999, 'test', 0)`).run(doctoredKey, doctoredBytes.byteLength);
-    await expect(restoreBackup(source.db, source.bucket, { authorization: { kind: 'recovery' }, id: 'bk_doctored' })).rejects.toThrow(BackupSchemaError);
+    await expect(restoreStoredBackup(source.db, source.bucket, { authorization: { kind: 'recovery' }, id: 'bk_doctored' })).rejects.toThrow(BackupSchemaError);
 
     // agent_reports already holds a row, so its restore is a named skip, never a silent drop.
-    const outcome = await restoreBackup(source.db, source.bucket, { authorization: { kind: 'recovery' }, id: backup.id });
+    const outcome = await restoreStoredBackup(source.db, source.bucket, { authorization: { kind: 'recovery' }, id: backup.id });
     expect(outcome!.tables.agent_reports!.skipped).toContain('insertion-ordered');
     expect(outcome!.tables.agent_reports!.inserted).toBe(0);
   });
@@ -485,7 +466,7 @@ describe('apply refusals', () => {
     const { db, bucket, now } = seeded();
     const header = JSON.stringify({ format: 'myco-backup/1', deploymentId: await deploymentId(db), schemaVersion: 13, createdAt: now, producer: 'test', counts: {} });
     const orphanReport = JSON.stringify({ t: 'agent_reports', r: { project_id: 'proj_bk', run_id: 'run_ghost', agent_id: 'agent_bk', action: 'a', summary: 's', created_at: now } });
-    const { restoreArtifact, BackupApplyError } = await import('@myco-server-worker/core/backup.js');
+    const { BackupApplyError } = await import('@myco-server-worker/core/backup.js');
     await expect(restoreArtifact(db, { authorization: { kind: 'recovery' }, text: `${header}\n${orphanReport}\n` })).rejects.toThrow(BackupApplyError);
     await expect(restoreArtifact(db, { authorization: { kind: 'recovery' }, text: `${header}\n${orphanReport}\n` })).rejects.toThrow(/agent_reports/);
 

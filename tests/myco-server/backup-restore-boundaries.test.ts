@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { backupArtifact, createBackup, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, createBackup, deploymentId } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
+import { restoreThroughJob } from './helpers/restore-through-job.js';
 import { drainSessionDeletions, tombstoneSession } from './helpers/session-deletion.js';
 import { acquireRecoveryHold, drainObjectReleases, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
 import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
@@ -32,7 +34,7 @@ test('a backup and restore keeps an event whose payload lives in the object stor
     const text = await saved(db, blobs);
     await db.batch([db.prepare(`DELETE FROM events WHERE event_id='${uuid(5002)}'`),
       db.prepare(`DELETE FROM registered_content_proofs WHERE source_kind='event' AND source_id='${uuid(5002)}'`)]);
-    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text, blobs, authorization: { kind: 'recovery' } });
     expect(await eventContent({ db, blobs }, 'project', uuid(5002)), target).toBe(JSON.stringify(payload));
   });
 });
@@ -47,7 +49,7 @@ test('restore cannot bring back the raw events or transcripts of an unpublished 
     await tombstoneSession({ db }, { projectId: 'project' }, 'deleted', 'member', Date.now());
     const held = async (table: string) => (await db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE project_id='project' AND session_id='deleted'`).first<{ n: number }>())!.n;
     const before = await held('events');
-    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text, blobs, authorization: { kind: 'recovery' } });
     expect(await held('events'), target).toBe(before);
     await releaseRecoveryHold(db, 'retained', Date.now(), 'closed');
     await drainSessionDeletions({ db }, Date.now());
@@ -63,7 +65,7 @@ test('a missing blob needed only by deleted content does not block unrelated add
     const text = await saved(db, blobs);
     await tombstoneSession({ db }, { projectId: 'project' }, 'deleted', 'member', Date.now());
     await db.prepare("DELETE FROM projects WHERE project_id='other'").run();
-    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text, blobs, authorization: { kind: 'recovery' } });
     expect(await db.prepare("SELECT name FROM projects WHERE project_id='other'").first(), target).toEqual({ name: 'other' });
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
   });
@@ -77,12 +79,12 @@ test('proof content equality admits a different verification time while preservi
     const row = { project_id: 'project', key: bytes!.key, generation: bytes!.generation, source_kind: 'transcript', source_id: 'proof',
       event_id: 'event', envelope_hash: 'envelope', session_id: 'session', digest: bytes!.key, size: bytes!.size, verified_at: 1, durable: 1 };
     const text = await artifact(db, [{ t: 'blobs', r: bytes! }, { t: 'registered_content_proofs', r: row }]);
-    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text, blobs, authorization: { kind: 'recovery' } });
     await db.prepare("UPDATE registered_content_proofs SET verified_at=2 WHERE source_id='proof'").run();
-    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text, blobs, authorization: { kind: 'recovery' } });
     expect(await db.prepare("SELECT verified_at FROM registered_content_proofs WHERE source_id='proof'").first(), target).toEqual({ verified_at: 2 });
     const conflict = await artifact(db, [{ t: 'blobs', r: bytes! }, { t: 'registered_content_proofs', r: { ...row, envelope_hash: 'different' } }]);
-    await expect(restoreArtifact(db, { text: conflict, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow();
+    await expect(restoreThroughJob(db, { text: conflict, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow();
   });
 });
 
@@ -146,11 +148,11 @@ test('restoring a hot transcript range after archival keeps one selected range',
     const coldRows = (await Promise.all(['raw_archive_refs','blobs','registered_content_proofs'].map(async t =>
       (await db.prepare(`SELECT * FROM ${t}`).all<Record<string,unknown>>()).results.map(r => ({t,r}))))).flat();
     const cold = await artifact(db,coldRows);
-    await restoreArtifact(db, { text: snapshot, blobs, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text: snapshot, blobs, authorization: { kind: 'recovery' } });
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
     const columns = Object.keys(hot);
     await db.prepare(`INSERT INTO transcript_segments(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).bind(...columns.map(column=>hot[column])).run();
-    await restoreArtifact(db,{text:cold,blobs,authorization:{kind:'recovery'}});
+    await restoreThroughJob(db,{text:cold,blobs,authorization:{kind:'recovery'}});
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
     expect((await pageSegments(db, { projectId: 'project' }, transcript)).rows.length, target).toBe(1);
   });
@@ -170,9 +172,9 @@ test('a refused restore preserves the prior document and frontier without leavin
       const frontier = await db.prepare('SELECT * FROM transcript_publication').all();
       const session = { t: 'sessions', r: { project_id: 'project', session_id: 'session', machine_id: 'machine', created_by_token_id: 'token', first_received_at: 1, last_received_at: 1 } };
       const invalid = await artifact(db, [session, { t: 'raw_resources', r: { project_id: 'project', kind: 'event', resource_id: 'invalid', reference_id: '', revision: 0.5 } }]);
-      await expect(restoreArtifact(db, { text: invalid, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow('invalid raw provenance revision');
+      await expect(restoreThroughJob(db, { text: invalid, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow('invalid raw provenance revision');
       const retired = await artifact(db, [session, { t: 'prompt_batches', r: { project_id: 'project', session_id: 'session', prompt_id: 'legacy', text: 'retained prompt', created_at: 1 } }]);
-      await expect(restoreArtifact(db, { text: retired, blobs, authorization: { kind: 'recovery' } })).rejects.toMatchObject({ code: 'artifact_format_retired' });
+      await expect(restoreThroughJob(db, { text: retired, blobs, authorization: { kind: 'recovery' } })).rejects.toMatchObject({ code: 'artifact_format_retired' });
       expect((await db.prepare("SELECT * FROM session_documents WHERE session_id='session'").all()).results, target + prior).toEqual(before.results);
       expect((await db.prepare('SELECT * FROM transcript_publication').all()).results, target + prior).toEqual(frontier.results);
     }
@@ -193,7 +195,7 @@ test('restore retains saved knowledge and anonymizes served snapshots when their
       { t: 'spore_injections', r: { project_id: 'project', session_id: 'kept', id: 'receipt', prompt_id: 'kept-prompt', prompt_hash: 'hash', spore_ids: '[]', created_at: 1 } },
       { t: 'injection_served_items', r: { project_id: 'project', receipt_id: 'receipt', kind: 'plan', item_id: 'plan', title: 'deleted title', session_id: 'deleted', content_hash: 'hash', unavailable: 0 } },
     ];
-    await restoreArtifact(db, { text: await artifact(db, rows), blobs: memoryBlobStore(), authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text: await artifact(db, rows), blobs: memoryBlobStore(), authorization: { kind: 'recovery' } });
     expect(await db.prepare("SELECT content,session_id,prompt_id FROM spores WHERE id='knowledge'").first(), target)
       .toEqual({ content: 'retained knowledge', session_id: 'deleted', prompt_id: null });
     expect(await db.prepare("SELECT spore_id FROM resolution_events WHERE id='resolution'").first(), target).toEqual({ spore_id: 'knowledge' });
@@ -211,7 +213,7 @@ test('restore excludes served items through a deleted receiving receipt while re
       { t: 'injection_served_items', r: { project_id: 'project', receipt_id: session, kind: 'plan', item_id: session, title: 'retained title', session_id: 'source', content_hash: 'hash', unavailable: 0 } },
     ]);
     rows.push({ t: 'session_tombstones', r: { project_id: 'project', session_id: 'deleted', created_at: 1, created_by: 'member' } });
-    await restoreArtifact(db, { text: await artifact(db, rows), authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text: await artifact(db, rows), authorization: { kind: 'recovery' } });
     expect((await db.prepare('SELECT receipt_id,title FROM injection_served_items').all()).results, target).toEqual([{ receipt_id: 'kept', title: 'retained title' }]);
     expect((await db.prepare('SELECT id FROM spore_injections').all()).results, target).toEqual([{ id: 'kept' }]);
   });
@@ -230,10 +232,10 @@ test('a deletion between restore admission and its raw write refuses the write a
         await tombstoneSession({ db }, { projectId: 'project' }, 'session', 'member', Date.now());
       }
     });
-    await expect(restoreArtifact(observed.db, { text, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow();
+    await expect(restoreThroughJob(observed.db, { text, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow();
     expect(deleted, target).toBe(true);
     expect(await db.prepare("SELECT COUNT(*) n FROM events WHERE session_id='session'").first(), target).toEqual({ n: 0 });
-    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
+    await restoreThroughJob(db, { text, blobs, authorization: { kind: 'recovery' } });
     expect(await db.prepare("SELECT COUNT(*) n FROM publish_queue WHERE session_id='session'").first(), target).toEqual({ n: 0 });
   });
 });

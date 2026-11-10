@@ -193,41 +193,6 @@ export function assertArchivedContentClosure(snapshot: ReadonlyMap<string, reado
       throw new RelationalSnapshotError('the snapshot of raw_archive_refs lacks verified body or receipt; no artifact was published');
     }
   }
-  for (const tool of snapshot.get('tool_calls') ?? []) {
-    if (tool.input_bundle_id !== null && tool.input_bundle_id !== undefined) {
-      if (typeof tool.input !== 'string' || !Number.isSafeInteger(tool.input_bytes)
-        || (tool.input_bytes as number) <= 2048 || new TextEncoder().encode(tool.input).byteLength > 2048
-        || tool.input_blob_key !== null) {
-        throw new RelationalSnapshotError('the snapshot of tool_calls has an invalid bundled input; no artifact was published');
-      }
-      bundleOf(tool, tool.input_bundle_id, tool.input_bundle_entry);
-      const outcome = events.get(JSON.stringify([tool.project_id, tool.event_id]));
-      if (outcome === undefined || outcome.session_id !== tool.session_id) {
-        throw new RelationalSnapshotError('the snapshot of tool_calls lacks its source event; no artifact was published');
-      }
-      continue;
-    }
-    if (tool.input_blob_key === null || tool.input_blob_key === undefined || typeof tool.input !== 'string'
-      || typeof tool.input_bytes !== 'number' || tool.input_bytes <= 2048) continue;
-    const outcomeEvent = events.get(JSON.stringify([tool.project_id, tool.event_id]));
-    const blob = blobs.get(JSON.stringify([tool.project_id, tool.input_blob_key]));
-    const processed = (snapshot.get('processed_resources') ?? []).find(row => row.project_id === tool.project_id
-      && row.kind === 'tool-input' && row.resource_id === tool.tool_call_id && row.blob_key === tool.input_blob_key
-      && row.classification === 'processed');
-    const inputEvent = processed === undefined ? undefined : events.get(JSON.stringify([tool.project_id, processed.event_id]));
-    const proof = proofs.find(row => row.project_id === tool.project_id && row.key === tool.input_blob_key
-      && row.source_kind === 'tool-input' && row.source_id === tool.tool_call_id
-      && row.event_id === processed?.event_id && row.envelope_hash === inputEvent?.envelope_hash
-      && row.session_id === tool.session_id && row.digest === tool.input_blob_key
-      && row.size === tool.input_bytes && row.durable === 1);
-    if (!Number.isSafeInteger(tool.input_bytes) || typeof tool.input !== 'string' || new TextEncoder().encode(tool.input).byteLength > 2048
-      || outcomeEvent === undefined || outcomeEvent.session_id !== tool.session_id
-      || inputEvent === undefined || inputEvent.session_id !== tool.session_id
-      || processed?.source_token_id !== inputEvent.token_id || blob?.size !== tool.input_bytes
-      || processed === undefined || proof === undefined) {
-      throw new RelationalSnapshotError('the snapshot of tool_calls lacks its exact full input closure; no artifact was published');
-    }
-  }
 }
 
 /** A relationally closed snapshot must also resolve each exact entry in its proved objects. */
@@ -238,14 +203,6 @@ export async function assertBundleObjectClosure(env: ContentStore, snapshot: Rea
     await readBundleEntry(reader,{projectId:event.project_id as string,bundleId:event.bundle_id as number,
       entry:event.bundle_entry as number,kind:'event',resourceId:event.event_id as string,
       eventId:event.event_id as string,envelopeHash:event.envelope_hash as string,tokenId:event.token_id as string});
-  }
-  for (const tool of snapshot.get('tool_calls') ?? []) {
-    if (tool.input_bundle_id === null || tool.input_bundle_id === undefined) continue;
-    const full = await readBundleEntry(reader,{projectId:tool.project_id as string,bundleId:tool.input_bundle_id as number,
-      entry:tool.input_bundle_entry as number,kind:'tool-input',resourceId:tool.tool_call_id as string,
-      tokenId:tool.token_id as string});
-    if (typeof tool.input !== 'string' || !full.startsWith(tool.input)
-      || utf8(full).byteLength !== tool.input_bytes) throw new RelationalSnapshotError('the snapshot of tool_calls has a mismatched bundled input; no artifact was published');
   }
 }
 
@@ -258,7 +215,7 @@ export function assertCaptureClosure(snapshot: ReadonlyMap<string, readonly Row[
     }
   }
   const transcripts = new Set((snapshot.get('transcripts') ?? []).map((row) => identity(row, 'transcript_id')));
-  for (const table of ['transcript_segments', 'transcript_parser_state_chunks']) {
+  for (const table of ['transcript_segments']) {
     if ((snapshot.get(table) ?? []).some((row) => !transcripts.has(identity(row, 'transcript_id')))) {
       throw new RelationalSnapshotError(`the snapshot of ${table} names a missing transcript; no artifact was published`);
     }

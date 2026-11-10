@@ -19,7 +19,8 @@ import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { LEARNING_TOOL } from '@myco-server-worker/core/tool-catalogue.js';
 import { OUTCOME_RUN_LIMIT, OUTCOME_SPORE_LIMIT } from '@myco-server-worker/db/runs/reads.js';
 import { tombstoneSession } from './helpers/session-deletion.js';
-import { createBackup, restoreBackup } from '@myco-server-worker/core/backup.js';
+import { createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreStoredBackup } from './helpers/stored-restore.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { noteRunReads, type ToolContext } from '@myco-server-worker/mcp/context.js';
 import { readWindowFor } from '@myco-server-worker/core/read-window.js';
@@ -370,10 +371,10 @@ describe('retention', () => {
     target.bucket.objects.set(backup.key, source.bucket.objects.get(backup.key)!);
     target.sqlite.query(`INSERT INTO backups (id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256) VALUES (?, ?, ?, ?, ?, ?, 'copied', 0, ?)`)
       .run(backup.id, backup.key, backup.created_at, backup.size_bytes, backup.counts_json, backup.schema_version, backup.sha256);
-    const restored = await restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
+    const restored = await restoreStoredBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true });
     expect(restored!.tables.run_reads).toEqual({ rows: 1, inserted: 1 });
     expect(target.sqlite.query(`SELECT run_id AS runId, session_id AS sessionId, token_id AS tokenId FROM run_reads`).all())
       .toEqual([{ runId: 'run_x', sessionId: 'sess_1', tokenId: harness.tokenId }]);
-    expect((await restoreBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true }))!.tables.run_reads).toEqual({ rows: 1, inserted: 0 });
+    expect((await restoreStoredBackup(target.db, target.bucket, { authorization: { kind: 'recovery' }, id: backup.id, allowForeignLineage: true }))!.tables.run_reads).toEqual({ rows: 1, inserted: 0 });
   });
 });

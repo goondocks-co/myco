@@ -2,6 +2,7 @@ import { classify, emit } from '../telemetry.js';
 import { pinBackup } from '../db/storage/backup-pin.js';
 import { readBackupRow, type BackupVerification, type BackupVerificationDetail } from '../db/storage/backup-list.js';
 import { recordBackupVerification } from '../db/storage/backup-verification.js';
+import { reservedRestoreOffset } from '../db/raw/restore-revisions.js';
 import { resetProjectionCatchup } from '../db/projections/catchup.js';
 import { restoreRunBodyStatement } from '../db/runs/body-restore.js';
 import {
@@ -15,8 +16,6 @@ import { archivedEventMetadata } from '../db/document-tables.js';
 import { estimateInvalidationStatements } from '../db/meta/budget-estimates.js';
 import { storedDeploymentId, storedSchemaVersion } from '../db/meta/deployment.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
-import { restoreDocuments } from '../ingest/document-restore.js';
-import { holdArtifactForRestore, releaseArtifactAfterRestore } from '../db/storage/restore-hold.js';
 import { LAST_RELEASE_RESTORING_RETIRED_FORMAT } from './retired-format-release.js';
 import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
 import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
@@ -25,6 +24,7 @@ import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
 import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
 import { restoreOwnership } from '../db/identity/ownership.js';
+import { restoreTableKey } from '../db/recovery/restore-keys.js';
 import { effectiveRawOwnerSql, reserveRawRestore } from './raw-claims.js';
 /**
  * Deployment backup and restore.
@@ -146,7 +146,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities', 'identity_link_redemptions', 'active_project_count',
   'backup_week_heads', 'backup_retention_state', 'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
-  'backup_restore_progress', 'backup_publications', 'recovery_forget_commands', 'session_deletion_jobs', 'transcript_reread_jobs',
+  'backup_restore_progress', 'restore_jobs', 'backup_publications', 'recovery_forget_commands', 'session_deletion_jobs', 'transcript_reread_jobs',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_settlement_intents', 'object_reconciliation_cursor', 'object_store_reconciliation', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
   'worker_contacts', 'worker_model_catalogs', 'runner_contacts', 'runner_observations', 'runner_model_catalogs', 'runner_update_requests', 'runner_update_reports', 'machine_harness_reports', 'machine_settings_snapshots', 'machine_head', 'runner_head', 'release_check_due', 'release_work_due', 'release_propagation_due',
@@ -174,7 +174,7 @@ interface ForeignAuthorityExclusion {
   notice: string;
 }
 
-interface BackupHeader {
+export interface BackupHeader {
   format: string;
   deploymentId: string;
   schemaVersion: number;
@@ -200,8 +200,9 @@ export interface BackupIndexRow {
 const INDEX_COLUMNS = 'id, key, created_at, size_bytes, counts_json, schema_version, producer, pinned, sha256';
 
 export class BackupApplyError extends Error {
-  constructor(readonly table: string, detail: string) {
-    super(`the artifact could not be applied at ${table}: ${detail}; committed chunks are preserved; retry the same artifact after resolving the error`);
+  /** `cause` is the store error a write met, when the refusal wraps one rather than naming a rule of the restore. */
+  constructor(readonly table: string, detail: string, cause?: unknown) {
+    super(`the artifact could not be applied at ${table}: ${detail}; committed chunks are preserved; retry the same artifact after resolving the error`, cause === undefined ? undefined : { cause });
     this.name = 'BackupApplyError';
   }
 }
@@ -464,14 +465,23 @@ function revokeForeignAuthority(byTable: ReadonlyMap<string, Record<string, unkn
   }
 }
 
-/** What a restore does to session documents, decided before any write: sessions converted, merged and refused. */
+/** What a restore does to session documents, decided before any write: sessions converted and merged. */
 interface DocumentRestoreSummary { convert: number; merge: number }
 /**
- * The document side of a restore: a plan read before any write and atomically published once the rows are restored.
+ * The document side of a restore: a plan read before any write, then each session's documents restored and published
+ * on their own once the rows are restored, a page of sessions at a time in key order.
  */
 export interface RestoreDocuments {
-  plan(byTable: ReadonlyMap<string, readonly Record<string, unknown>[]>): Promise<{
-    summary: DocumentRestoreSummary; apply(now: number): Promise<void>;
+  /** Every session the artifact holds document content for, by key, in the order a restore applies them. */
+  sessions(byTable: ReadonlyMap<string, readonly Record<string, unknown>[]>): string[];
+  /** What the restore will do to each session, decided over the destination before the restore writes anything. */
+  plan(byTable: ReadonlyMap<string, readonly Record<string, unknown>[]>): Promise<{ summary: DocumentRestoreSummary; decisions: [string, string][] }>;
+  /**
+   * Restores the sessions after `after`, at most `limit`, as the plan before any write decided them: how many it
+   * walked, and the last, or null once none remain.
+   */
+  apply(byTable: ReadonlyMap<string, readonly Record<string, unknown>[]>, page: { after: string | null; limit: number; now: number; decisions: readonly [string, string][] }): Promise<{
+    sessions: number; last: string | null;
   }>;
 }
 
@@ -610,31 +620,92 @@ async function restoreTranscriptReference(
   return applied.at(-1)!.results.length;
 }
 
+/** What a restore is asked to apply: the artifact's text and the authority it is applied under. */
+export interface RestoreOptions {
+  text: string;
+  blobs?: BlobStore;
+  allowForeignLineage?: boolean;
+  authorization: RestoreAuthorization;
+  now?: number;
+  documents?: RestoreDocuments;
+}
+
+/** The stages of a restore after its admission, in the order a job walks them. */
+export type RestorePhase = 'start' | 'tables' | 'documents' | 'bundles' | 'done';
+
 /**
- * Apply one artifact: refusal gates first, then additive `INSERT OR IGNORE`
- * per row in bounded batches. Rows the target already holds stay exactly as
- * they are — a restore never overwrites, so the target's revocations and
- * edits always win. A re-run converges: every insert is a no-op the second time.
- * An artifact from another Deployment inserts its authority already revoked
- * (`FOREIGN_AUTHORITY_TABLES`) and leaves this Deployment's owner as it is.
+ * How far a restore has counted the artifact rows a table holds by key: `before` its rows are written, then `after`.
+ * The rows a restore added to a table are the difference, true however often a pass replayed or raced.
  */
-export async function restoreBackup(
-  db: RelationalStore, blobs: BlobStore,
-  opts: { id: string; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number; documents?: RestoreDocuments },
-): Promise<RestoreOutcome | null> {
-  const artifact = await readArtifact(db, blobs, opts.id);
-  if (artifact === null) return null;
-  return restoreArtifact(db, { text: artifact.text, blobs, allowForeignLineage: opts.allowForeignLineage, authorization: opts.authorization, now: opts.now, documents: opts.documents });
+export interface RestoreTally { table: number; stage: 'before' | 'rows' | 'after'; checked: number; before: number; after: number }
+
+/**
+ * Where a restore's next pass begins. `table` is the place in `BACKUP_TABLES` a `tables` pass is at and `row` the
+ * artifact row of that table it starts from; the later phases walk their items in key order after `after`.
+ */
+export interface RestoreCursor {
+  phase: RestorePhase;
+  table: number;
+  row: number;
+  after: string | null;
+  tally: RestoreTally | null;
+  /** The archive bundles the destination held by key before the restore wrote any, once that table was counted. */
+  bundlesBefore: number | null;
+  /** The scheme each restored transcript group is admitted to, decided once before the restore resets projection catch-up. */
+  schemes: [string, PromptIdScheme | null][];
+  /** What the documents plan decided for each session before the restore wrote anything. */
+  documents: [string, string][];
+}
+export const RESTORE_START: RestoreCursor = { phase: 'start', table: 0, row: 0, after: null, tally: null, bundlesBefore: null, schemes: [], documents: [] };
+
+/** Artifact rows one key count reads. */
+const RESTORE_COUNT_PAGE = 200;
+/** Rows one unit of a table that writes each row in its own batch takes before the restore commits where it stands. */
+const RESTORE_ROW_UNIT = 5;
+/** Events one unit writes when any of them is archived. */
+const RESTORE_ARCHIVED_UNIT = 2;
+/** Bundles one unit of a restore's start reads and verifies: two objects each. */
+const RESTORE_VERIFY_UNIT = 4;
+/** The tables whose rows each write in a batch of their own. */
+const PER_ROW_TABLES: ReadonlySet<string> = new Set(['archive_bundles', 'raw_resources', 'events', 'event_refs', 'registered_content_proofs']);
+/** Tables a restore never inserts into: what it reports of them is decided without writing. */
+const UNCOUNTED_TABLES: ReadonlySet<string> = new Set(['raw_provenance_state', 'raw_provenance_backfill', 'deployment_ownership', 'blobs', ...DOCUMENT_ARTIFACT_TABLES]);
+
+type Row = Record<string, unknown>;
+
+/** Everything a pass decides over the artifact and the destination before it writes. */
+interface PreparedRestore {
+  db: RelationalStore;
+  header: BackupHeader;
+  hash: string;
+  foreign: boolean;
+  restoredAt: number;
+  byTable: Map<string, Row[]>;
+  /** Each row's place in its table as the artifact lists it, before any row is left out here. */
+  ordinal: WeakMap<Row, number>;
+  /** Rows each table holds in the artifact, before any row is left out here. */
+  artifactRows: Map<string, number>;
+  admitted: ReturnType<typeof restoreRows>;
+  ownership: Row | undefined;
+  ownerAudit: Row | undefined;
+  documents: RestoreDocuments | undefined;
+  /** The artifact holds session documents only the document side of a restore can place. */
+  documentContent: boolean;
+  /** The documents plan, when this preparation made it. */
+  planned: Awaited<ReturnType<RestoreDocuments['plan']>> | undefined;
+  provenance: Row[];
+  sourceRevision: number;
+  initial: RestoreOutcome;
 }
 
 /**
- * Apply one artifact's text — the path an uploaded artifact shares with a
- * stored one, so both meet the same gates in the same order.
+ * Every gate a restore meets before it writes, read over the artifact and the destination as they stand: lineage,
+ * schema, authority, deleted sessions, retired runs, archive closure, registered blobs and ownership. Bundle objects are
+ * read by the pass that verifies them or writes their events (`bundleVerifier`), never all at once. `plan` also plans
+ * every session's documents.
  */
-export async function restoreArtifact(
-  db: RelationalStore,
-  opts: { text: string; blobs?: BlobStore; allowForeignLineage?: boolean; authorization: RestoreAuthorization; now?: number; documents?: RestoreDocuments },
-): Promise<RestoreOutcome> {
+async function prepareRestore(db: RelationalStore, opts: RestoreOptions, scope: { plan: boolean }): Promise<PreparedRestore> {
+  const { plan } = scope;
   const lines = opts.text.split('\n').filter((l) => l.length > 0);
   const header = JSON.parse(lines[0]!) as BackupHeader;
 
@@ -644,13 +715,17 @@ export async function restoreArtifact(
   if (header.schemaVersion > stamped) throw new BackupSchemaError(header.schemaVersion, stamped);
 
   const restoredAt = opts.now ?? Date.now();
-  const byTable = new Map<string, Record<string, unknown>[]>();
+  const byTable = new Map<string, Row[]>();
+  const ordinal = new WeakMap<Row, number>();
   const admitted = restoreRows(lines.slice(1), header);
   for (const parsed of admitted.rows) {
     const rows = byTable.get(parsed.t) ?? [];
-    rows.push(parsed.t === 'device_requests' ? expireCarriedDeviceRequest(portableRow(parsed.t, parsed.r), restoredAt) : portableRow(parsed.t, parsed.r));
+    const row = parsed.t === 'device_requests' ? expireCarriedDeviceRequest(portableRow(parsed.t, parsed.r), restoredAt) : portableRow(parsed.t, parsed.r);
+    ordinal.set(row, rows.length);
+    rows.push(row);
     byTable.set(parsed.t, rows);
   }
+  const artifactRows = new Map([...byTable].map(([table, rows]) => [table, rows.length]));
   const foreign = header.deploymentId !== live;
   if (foreign) revokeForeignAuthority(byTable, restoredAt);
 
@@ -670,33 +745,14 @@ export async function restoreArtifact(
   }
 
   // Blob rows are never inserted: each must already be registered here, with the bytes its own row names. Checked
-  // before any table is written, so a refused artifact changes nothing.
-  const required = [...byTable].flatMap(([table, rows]) => table === 'blobs' ? [] : rows.flatMap(row => restoreBlobReferences(table, row)));
-  const absent = await unregisteredAmong(db, required);
-  if (absent.length > 0) throw new BackupObjectsMissingError(absent.length);
-  const artifactBundles = byTable.get('archive_bundles') ?? [];
-  if (artifactBundles.length > 0 && opts.blobs === undefined) {
-    throw new BackupApplyError('archive_bundles','bundle objects require a content store for restore verification');
+  // whole at admission, so a refused artifact changes nothing; every later write guards the blobs its own rows name.
+  if (plan) {
+    const required = [...byTable].flatMap(([table, rows]) => table === 'blobs' ? [] : rows.flatMap(row => restoreBlobReferences(table, row)));
+    const absent = await unregisteredAmong(db, required);
+    if (absent.length > 0) throw new BackupObjectsMissingError(absent.length);
   }
-  for (const row of artifactBundles) {
-    const locators: BundleEntryIdentity[] = [];
-    for (const event of byTable.get('events') ?? []) {
-      if (event.project_id !== row.project_id || event.bundle_id !== row.id) continue;
-      locators.push({projectId:row.project_id as string,entry:event.bundle_entry as number,kind:'event',
-        resourceId:event.event_id as string,eventId:event.event_id as string,
-        envelopeHash:event.envelope_hash as string,tokenId:event.token_id as string});
-    }
-    try {
-      const contents = await verifyBundleArtifact({db,blobs:opts.blobs!},row as Parameters<typeof verifyBundleArtifact>[1],
-        byTable.get('registered_content_proofs') ?? [],locators);
-      for(const event of byTable.get('events') ?? []) if(event.project_id===row.project_id&&event.bundle_id===row.id) {
-        const payload=contents.get(String(event.event_id));
-        if(payload===undefined)throw new Error('event_content_reference_invalid');
-        event.payload=archivedEventMetadata(JSON.parse(payload));
-      }
-    } catch (error) {
-      throw new BackupApplyError('archive_bundles',error instanceof Error ? error.message : String(error));
-    }
+  if ((byTable.get('archive_bundles')?.length ?? 0) > 0 && opts.blobs === undefined) {
+    throw new BackupApplyError('archive_bundles', 'bundle objects require a content store for restore verification');
   }
 
   const ownership = byTable.get('deployment_ownership')?.[0];
@@ -707,22 +763,134 @@ export async function restoreArtifact(
   }
 
   const documentContent = (byTable.get('session_chunks')?.length ?? 0) > 0;
-  if (documentContent && opts.blobs === undefined) throw new BackupApplyError('documents', 'document restoration requires a content store');
-  const documentRestorer = opts.documents ?? (documentContent ? restoreDocuments({ db, blobs: opts.blobs! }) : undefined);
-  const documents = documentRestorer === undefined ? undefined : await documentRestorer.plan(byTable);
-  const outcome: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
+  if (documentContent && (opts.blobs === undefined || (plan && opts.documents === undefined))) throw new BackupApplyError('documents', 'document restoration requires a content store');
+  const documents = opts.documents;
+  if (plan) {
+    // Pins must have caught up before a transcript's scheme can be decided; a restore is not accepted until they have.
+    await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
+    await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []);
+  }
+  const planned = plan && documents !== undefined ? await documents.plan(byTable) : undefined;
+  const summary = planned?.summary;
+  const initial: RestoreOutcome = { tables: { ...admitted.tables }, ...(admitted.retiredNotice === undefined ? {} : { retiredNotice: admitted.retiredNotice }),
     ...(retiredRuns.excluded === 0 ? {} : { retiredRunsExcluded: retiredRuns.excluded, retiredNotice: [admitted.retiredNotice, `${retiredRuns.excluded} run${retiredRuns.excluded === 1 ? '' : 's'} this Deployment has removed under retention ${retiredRuns.excluded === 1 ? 'is' : 'are'} left out.`].filter(Boolean).join(' ') }),
-    ...(documents === undefined ? {} : { documents: documents.summary }) };
-  const transcriptParents = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
-  await restoreRecordSchemeDecisions(db, byTable.get('transcripts') ?? []);
-  const decided: RestoreDecisions = { parents: transcriptParents, schemes: await restoreSchemeDecisions(db, byTable.get('transcripts') ?? []) };
-  const hash = await sha256Hex(opts.text);
+    ...(summary === undefined ? {} : { documents: summary }) };
   const provenance = ['raw_provenance_state', 'raw_resources', 'raw_archive_refs', 'raw_claims', 'events', 'blobs', 'transcripts', 'attachments', 'plans'].flatMap((table) => byTable.get(table) ?? []);
   const sourceRevision = provenance.reduce((max, row) => Math.max(max,
     ...['revision','raw_revision','cutoff_revision'].map((key) => typeof row[key] === 'number' ? row[key] as number : 0)), 0);
   if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0) throw new BackupApplyError('raw_claims', 'invalid raw provenance revision');
-  await resetProjectionCatchup(db);
-  const offset = provenance.length === 0 ? 0 : await reserveRawRestore(db, hash, sourceRevision);
+  return { db, header, hash: await sha256Hex(opts.text), foreign, restoredAt, byTable, ordinal, artifactRows, admitted, ownership, ownerAudit,
+    documents, documentContent, planned, provenance, sourceRevision, initial };
+}
+
+/** What an admitted restore will walk: the artifact's identity, its rows, and the outcome it starts from. */
+export interface AdmittedRestore { hash: string; header: BackupHeader; rowsTotal: number; outcome: RestoreOutcome }
+
+/**
+ * Every refusal a restore can meet before it writes, answered without writing: what a job is accepted on. The rows a
+ * job walks are the artifact's rows of the tables it restores, then its sessions, legacy references, documents and
+ * bundles.
+ */
+export async function admitRestore(db: RelationalStore, opts: RestoreOptions): Promise<AdmittedRestore> {
+  const prepared = await prepareRestore(db, opts, { plan: true });
+  return { hash: prepared.hash, header: prepared.header, outcome: prepared.initial, rowsTotal: restoreRowsTotal(prepared) };
+}
+
+function restoreRowsTotal(prepared: PreparedRestore): number {
+  const tables = BACKUP_TABLES.reduce((sum, table) => sum + (prepared.artifactRows.get(table) ?? 0), 0);
+  // A bundle is walked twice: verified before the restore writes, and released at the end if nothing uses it.
+  return tables
+    + (prepared.documents === undefined ? 0 : prepared.documents.sessions(prepared.byTable).length)
+    + 2 * (prepared.byTable.get('archive_bundles')?.length ?? 0);
+}
+
+/**
+ * How a pass is paced by the invocation it runs in: whether the next unit of work may not fit what is left, and where
+ * the restore stands committed after each unit, so a pass that runs out or dies keeps every unit before it.
+ */
+export interface RestorePace {
+  exhausted(): boolean;
+  /** Commits where the restore stands; false when another pass moved the job, and this one stops. */
+  checkpoint(progress: { cursor: RestoreCursor; outcome: RestoreOutcome; walked: number }): Promise<boolean>;
+}
+
+/** One pass of a restore: where it starts, how many artifact rows it may walk, and the outcome of the passes before it. */
+export interface RestorePassRequest {
+  from: RestoreCursor;
+  rows: number;
+  /** The outcome so far; a pass from the start without one begins from the admission's. */
+  outcome?: RestoreOutcome;
+  /** The restore was admitted already, documents planned and refused before any write; a pass need not plan them again. */
+  admitted: boolean;
+  pace?: RestorePace;
+}
+
+/**
+ * What a pass did: where the next begins (`done` once the restore finished), the rows it walked, and the outcome so
+ * far. `awaitingDocuments` when it stopped at a stage that places session documents and was given no document side;
+ * `moved` when another pass moved the job and this one stopped.
+ */
+export interface RestorePassResult { next: RestoreCursor; walked: number; outcome: RestoreOutcome; awaitingDocuments: boolean; moved: boolean }
+
+/**
+ * Walks a restore from `from` for at most `rows` artifact rows, every write committing in a bounded batch, and answers
+ * where the next pass begins. Every pass meets the restore's gates again over the destination as it stands. A pass
+ * that dies leaves every batch it committed in place, and a pass from the same cursor converges: inserts the
+ * destination already holds are no-ops, and an insertion-ordered table resumes from the progress its claim committed.
+ */
+export async function restorePass(db: RelationalStore, opts: RestoreOptions, request: RestorePassRequest): Promise<RestorePassResult> {
+  const prepared = await prepareRestore(db, opts, { plan: request.from.phase === 'start' && !request.admitted });
+  db = prepared.db;
+  const verifyBundles = bundleVerifier(prepared, opts.blobs);
+  const { byTable, hash } = prepared;
+  const outcome: RestoreOutcome = structuredClone(request.outcome ?? prepared.initial);
+  let cursor: RestoreCursor = { ...request.from, schemes: [...request.from.schemes], documents: [...request.from.documents] };
+  let budget = request.rows;
+  let walked = 0;
+  let moved = false;
+  const result = (awaitingDocuments = false): RestorePassResult => ({ next: cursor, walked, outcome, awaitingDocuments, moved });
+  const ready = () => budget > 0 && request.pace?.exhausted() !== true;
+  // Commits where the restore stands after a unit; false when this pass stops: another pass moved the job, or the next unit may not fit.
+  const unitDone = async (): Promise<boolean> => {
+    if (request.pace === undefined) return true;
+    if (!await request.pace.checkpoint({ cursor, outcome, walked })) { moved = true; return false; }
+    return !request.pace.exhausted();
+  };
+  const needsDocuments = (phase: RestorePhase) => prepared.documentContent && prepared.documents === undefined && (phase === 'start' || phase === 'documents');
+  if (needsDocuments(cursor.phase)) return result(true);
+
+  const transcripts = byTable.get('transcripts') ?? [];
+  let offset: number;
+  if (cursor.phase === 'start') {
+    // Every bundle's objects are read and verified before the restore writes anything, a few in each committed unit;
+    // `after` names the last bundle verified.
+    const bundles = [...(byTable.get('archive_bundles') ?? [])].map((row) => [transcriptIdentity(row.project_id, row.id), row] as const)
+      .sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
+    for (;;) {
+      const next = bundles.filter(([key]) => cursor.after === null || key > cursor.after).slice(0, RESTORE_VERIFY_UNIT);
+      if (next.length === 0) break;
+      if (!ready()) return result();
+      await verifyBundles(next.map(([, row]) => row));
+      walked += next.length;
+      budget -= next.length;
+      cursor = { ...cursor, after: next.at(-1)![0] };
+      if (!await unitDone()) return result();
+    }
+    if (!ready()) return result();
+    // Everything decided over the destination as it stood before the restore writes is decided here, and committed
+    // with the cursor before the first table is written.
+    const planned = prepared.planned ?? (prepared.documents === undefined ? undefined : await prepared.documents.plan(byTable));
+    await restoreRecordSchemeDecisions(db, transcripts);
+    const schemes = await restoreSchemeDecisions(db, transcripts);
+    await resetProjectionCatchup(db);
+    offset = prepared.provenance.length === 0 ? 0 : await reserveRawRestore(db, hash, prepared.sourceRevision);
+    cursor = { ...cursor, phase: 'tables', table: 0, row: 0, after: null, schemes: [...schemes], documents: planned?.decisions ?? [] };
+    if (!await unitDone()) return result();
+  } else {
+    const reserved = prepared.provenance.length === 0 ? 0 : await reservedRestoreOffset(db, hash);
+    if (reserved === null) throw new BackupApplyError('raw_claims', 'the restore holds no reserved provenance revision; restore the artifact again');
+    offset = reserved;
+  }
   for (const table of ['raw_resources', 'raw_archive_refs', 'raw_claims', 'events']) {
     for (const row of byTable.get(table) ?? []) {
       if (table === 'raw_resources') row.reference_id = `restore:${hash}:${String(row.reference_id)}`;
@@ -732,271 +900,516 @@ export async function restoreArtifact(
       }
     }
   }
-  const transcriptRows = new Map((byTable.get('transcripts') ?? []).map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row]));
-  const bundles = new Map((byTable.get('archive_bundles') ?? []).map((row) => [transcriptIdentity(row.project_id, row.id), row]));
-  const restoredBundleIds = new Map<string, number>();
-  const restoredBundles: Array<{projectId:string;id:number;archiveKey:string;receiptKey:string;inserted:boolean}> = [];
-  const artifactEvents = new Map((byTable.get('events') ?? []).map(row => [transcriptIdentity(row.project_id, row.event_id), row]));
-  const transcriptSegments = new Map<string, Record<string, unknown>[]>();
+  const decided: RestoreDecisions = {
+    parents: new Map(transcripts.map((row) => [transcriptIdentity(row.project_id, row.transcript_id), row])),
+    schemes: new Map(cursor.schemes),
+  };
+  const context: TablePassContext = { db, prepared, decided, outcome, hash, verifyBundles,
+    transcriptSegments: segmentsByTranscript(byTable), bundles: new Map((byTable.get('archive_bundles') ?? []).map((row) => [transcriptIdentity(row.project_id, row.id), row])),
+    restoredBundleIds: new Map(), keys: new Map() };
+
+  while (cursor.phase === 'tables' && ready()) {
+    const table = BACKUP_TABLES[cursor.table];
+    if (table === undefined) {
+      for (const [name, skipped] of Object.entries(prepared.admitted.tables)) {
+        const applied = outcome.tables[name];
+        if (applied !== undefined && byTable.has(name)) outcome.tables[name] = { ...applied, rows: applied.rows + skipped.rows, skipped: skipped.skipped };
+      }
+      cursor = { ...cursor, phase: 'documents', table: 0, row: 0, after: null, tally: null };
+      if (!await unitDone()) return result();
+      break;
+    }
+    const all = byTable.get(table) ?? [];
+    const counted = all.length > 0 && !UNCOUNTED_TABLES.has(table);
+    const nextTable = { ...cursor, table: cursor.table + 1, row: 0, tally: null };
+    if (counted) {
+      const tally: RestoreTally = cursor.tally?.table === cursor.table ? cursor.tally : { table: cursor.table, stage: 'before', checked: 0, before: 0, after: 0 };
+      if (tally.stage !== 'rows') {
+        const page = all.slice(tally.checked, tally.checked + RESTORE_COUNT_PAGE);
+        const held = page.length === 0 ? 0 : await heldByKey(context, table, page);
+        const next: RestoreTally = tally.stage === 'before'
+          ? { ...tally, before: tally.before + held, checked: tally.checked + page.length }
+          : { ...tally, after: tally.after + held, checked: tally.checked + page.length };
+        if (next.checked < all.length) cursor = { ...cursor, tally: next };
+        else if (next.stage === 'before') cursor = { ...cursor, tally: { ...next, stage: 'rows', checked: 0 } };
+        else {
+          const entry = outcome.tables[table] ?? { rows: all.length, inserted: 0 };
+          outcome.tables[table] = { ...entry, inserted: Math.max(next.after - next.before, 0) };
+          cursor = { ...nextTable, bundlesBefore: table === 'archive_bundles' ? next.before : cursor.bundlesBefore };
+        }
+        if (!await unitDone()) return result();
+        continue;
+      }
+    }
+    const pending = all.filter((row) => (prepared.ordinal.get(row) ?? 0) >= cursor.row);
+    // An archived event writes its bundle's reads and references with it, so a page holding one is smaller.
+    const archived = table === 'events' && pending.slice(0, RESTORE_ROW_UNIT).some((row) => row.payload_format === 'archived');
+    const unit = Math.min(budget, archived ? RESTORE_ARCHIVED_UNIT : PER_ROW_TABLES.has(table) ? RESTORE_ROW_UNIT : RESTORE_CHUNK_ROWS);
+    const taken = await restoreTable(context, table, all, pending, unit);
+    const nextRow = taken < pending.length ? prepared.ordinal.get(pending[taken]!)! : (prepared.artifactRows.get(table) ?? 0);
+    walked += Math.max(nextRow - cursor.row, 0);
+    budget -= taken;
+    cursor = taken < pending.length ? { ...cursor, row: nextRow }
+      : counted ? { ...cursor, row: nextRow, tally: { ...cursor.tally!, stage: 'after', checked: 0 } } : nextTable;
+    if (!await unitDone()) return result();
+  }
+
+  if (needsDocuments(cursor.phase)) return result(true);
+  while (cursor.phase === 'documents' && ready()) {
+    if (prepared.documents === undefined) { cursor = { ...cursor, phase: 'bundles', after: null }; break; }
+    const applied = await prepared.documents.apply(byTable, { after: cursor.after, limit: 1, now: prepared.restoredAt, decisions: cursor.documents });
+    walked += applied.sessions;
+    budget -= Math.max(applied.sessions, 1);
+    cursor = applied.last === null ? { ...cursor, phase: 'bundles', after: null } : { ...cursor, after: applied.last };
+    if (!await unitDone()) return result();
+  }
+
+  while (cursor.phase === 'bundles' && ready()) {
+    const key = [...context.bundles.keys()].sort().find((held) => cursor.after === null || held > cursor.after);
+    if (key === undefined) {
+      if (context.bundles.size > 0 && cursor.bundlesBefore !== null) {
+        const entry = outcome.tables.archive_bundles ?? { rows: context.bundles.size, inserted: 0 };
+        outcome.tables.archive_bundles = { ...entry, inserted: Math.max(await heldByKeyAll(context, 'archive_bundles', [...context.bundles.values()]) - cursor.bundlesBefore, 0) };
+      }
+      // Catch-up may have finished a phase over a table this restore had not filled yet; every phase starts again over
+      // what the restore left, before the restore is done.
+      await resetProjectionCatchup(db);
+      cursor = { ...cursor, phase: 'done', after: null, tally: null, schemes: [], documents: [] };
+      break;
+    }
+    const row = context.bundles.get(key)!;
+    const id = await restoredBundleId(context, key);
+    if (id !== undefined) await releaseUnusedBundle(db, prepared.header, { projectId: row.project_id as string, id, archiveKey: row.archive_key as string, receiptKey: row.receipt_key as string });
+    walked += 1;
+    budget -= 1;
+    cursor = { ...cursor, after: key };
+    if (!await unitDone()) return result();
+  }
+  return result();
+}
+
+/**
+ * Reads and verifies artifact bundles' objects, each at most once a pass, and gives the archived events each one holds
+ * the metadata its body carries. A pass reads only the bundles it verifies before writing or writes events from.
+ */
+function bundleVerifier(prepared: PreparedRestore, blobs: RestoreOptions['blobs']): (bundles: readonly Row[]) => Promise<void> {
+  const verified = new Set<Row>();
+  const held = new Map<string, Row[]>();
+  for (const event of prepared.byTable.get('events') ?? []) {
+    if (event.bundle_id === null || event.bundle_id === undefined) continue;
+    const key = transcriptIdentity(event.project_id, event.bundle_id);
+    const events = held.get(key) ?? [];
+    events.push(event);
+    held.set(key, events);
+  }
+  return async (bundles) => {
+    for (const row of bundles) {
+      if (verified.has(row)) continue;
+      if (blobs === undefined) throw new BackupApplyError('archive_bundles', 'bundle objects require a content store for restore verification');
+      const events = held.get(transcriptIdentity(row.project_id, row.id)) ?? [];
+      const locators: BundleEntryIdentity[] = events.map((event) => ({ projectId: row.project_id as string, entry: event.bundle_entry as number, kind: 'event',
+        resourceId: event.event_id as string, eventId: event.event_id as string, envelopeHash: event.envelope_hash as string, tokenId: event.token_id as string }));
+      try {
+        const contents = await verifyBundleArtifact({ db: prepared.db, blobs }, row as Parameters<typeof verifyBundleArtifact>[1],
+          prepared.byTable.get('registered_content_proofs') ?? [], locators);
+        for (const event of events) {
+          const payload = contents.get(String(event.event_id));
+          if (payload === undefined) throw new Error('event_content_reference_invalid');
+          event.payload = archivedEventMetadata(JSON.parse(payload));
+        }
+      } catch (error) {
+        if (invocationSpent(error)) throw error;
+        throw new BackupApplyError('archive_bundles', error instanceof Error ? error.message : String(error));
+      }
+      verified.add(row);
+    }
+  };
+}
+
+/** Counts the rows of `rows` the destination holds by `table`'s key, a page at a time. */
+async function heldByKeyAll(context: TablePassContext, table: string, rows: readonly Row[]): Promise<number> {
+  let held = 0;
+  for (let at = 0; at < rows.length; at += RESTORE_COUNT_PAGE) held += await heldByKey(context, table, rows.slice(at, at + RESTORE_COUNT_PAGE));
+  return held;
+}
+
+/**
+ * How many of `rows` the destination holds by `table`'s key. An archive bundle is held by its object key, since the
+ * destination numbers the bundles it holds itself. A row of an insertion-ordered table is held only when every column
+ * agrees, since another writer may take the id the artifact's row carries.
+ */
+async function heldByKey(context: TablePassContext, table: string, rows: readonly Row[]): Promise<number> {
+  let keys = context.keys.get(table);
+  if (keys === undefined) {
+    keys = table === 'archive_bundles' ? ['project_id', 'archive_key'] : await restoreTableKey(context.db, table);
+    if (!keys.every((key) => IDENTIFIER.test(key)) || !BACKUP_TABLES.includes(table)) throw new BackupApplyError(table, 'the table has no key a restore can count by');
+    context.keys.set(table, keys);
+  }
+  if (keys.length === 0) return 0;
+  const compared = EMPTY_ONLY_TABLES.has(table) ? [...new Set([...keys, ...rows.flatMap((row) => Object.keys(row))])] : keys;
+  if (!compared.every((column) => IDENTIFIER.test(column))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
+  const held = await context.db.prepare(`SELECT COUNT(*) AS n FROM json_each(?) j WHERE EXISTS (SELECT 1 FROM ${table} t
+      WHERE ${keys.map((key) => `t.${key} = json_extract(j.value, '$.${key}')`).join(' AND ')}
+        ${compared.filter((column) => !keys.includes(column)).map((column) => `AND t.${column} IS json_extract(j.value, '$.${column}')`).join(' ')})`)
+    .bind(JSON.stringify(rows.map((row) => Object.fromEntries(compared.map((column) => [column, row[column] ?? null]))))).first<{ n: number }>();
+  return held?.n ?? 0;
+}
+
+/** What a table's pass reads beside its rows. */
+interface TablePassContext {
+  db: RelationalStore;
+  prepared: PreparedRestore;
+  decided: RestoreDecisions;
+  outcome: RestoreOutcome;
+  hash: string;
+  transcriptSegments: Map<string, Row[]>;
+  bundles: Map<string, Row>;
+  /** The destination id of each artifact bundle, by the artifact's identity for it. */
+  restoredBundleIds: Map<string, number>;
+  /** Reads and verifies the bundles an events page writes from, giving their archived events their metadata. */
+  verifyBundles: (bundles: readonly Row[]) => Promise<void>;
+  /** Each table's key columns, as read once per pass. */
+  keys: Map<string, string[]>;
+}
+
+function segmentsByTranscript(byTable: ReadonlyMap<string, Row[]>): Map<string, Row[]> {
+  const segments = new Map<string, Row[]>();
   for (const row of byTable.get('transcript_segments') ?? []) {
     const identity = transcriptIdentity(row.project_id, row.transcript_id);
-    const segments = transcriptSegments.get(identity) ?? [];
-    segments.push(row);
-    transcriptSegments.set(identity, segments);
+    segments.set(identity, [...segments.get(identity) ?? [], row]);
   }
-  await holdArtifactForRestore(db, hash);
-  for (const table of BACKUP_TABLES) {
-    let rows = byTable.get(table) ?? [];
-    const artifactRowCount = rows.length;
-    if((DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)){
-      outcome.tables[table]={rows:rows.length,inserted:0,skipped:'document restore owns catalog publication'};
-      continue;
+  return segments;
+}
+
+/** The bundle the destination holds under an artifact bundle's object key, as its own row. */
+function heldBundle(db: RelationalStore, row: Row): Promise<Row | null> {
+  return db.prepare(`SELECT * FROM archive_bundles WHERE project_id=? AND archive_key=?`)
+    .bind(row.project_id, row.archive_key).first<Row>();
+}
+
+/**
+ * The destination id of the artifact bundle `key` names, once this pass or an earlier one restored it: read only for
+ * the bundles a unit uses, so a pass's own reads do not grow with the bundles the artifact holds.
+ */
+async function restoredBundleId(context: TablePassContext, key: string): Promise<number | undefined> {
+  const known = context.restoredBundleIds.get(key);
+  if (known !== undefined) return known;
+  const row = context.bundles.get(key);
+  if (row === undefined) return undefined;
+  const held = await heldBundle(context.db, row);
+  if (held === null || !Number.isSafeInteger(held.id)) return undefined;
+  context.restoredBundleIds.set(key, held.id as number);
+  return held.id as number;
+}
+
+/** Removes a restored bundle nothing uses, with its proofs, and releases its objects; true when it removed the bundle. */
+async function releaseUnusedBundle(db: RelationalStore, header: BackupHeader, bundle: { projectId: string; id: number; archiveKey: string; receiptKey: string }): Promise<boolean> {
+  const unused = `NOT (${bundleHeld('?', '?')})`;
+  const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
+  const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
+  const candidates = recordBlobCandidates(db,pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id,archiveKey:bundle.archiveKey}});
+  const results = await db.batch([
+    ...candidates,
+    db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=?
+      AND ((source_kind='bundle' AND source_id=?) OR (source_kind='receipt' AND source_id=?))
+      AND ${unused}`).bind(bundle.projectId,bundle.archiveKey,`bundle:${bundle.archiveKey}`,...guardValues),
+    db.prepare(`DELETE FROM archive_bundles WHERE project_id=? AND id=? AND ${unused} RETURNING id`)
+      .bind(bundle.projectId,bundle.id,...guardValues),
+  ]);
+  if (results[candidates.length+1]!.results.length === 0) return false;
+  await releaseBlobs(db,pairs,header.createdAt);
+  return true;
+}
+
+/**
+ * Restores up to `budget` of a table's `pending` rows (its artifact rows from the cursor on, in artifact order) and
+ * answers how many it took. `all` is every row of the table the destination admits, for the tables whose progress
+ * is committed by position.
+ */
+async function restoreTable(context: TablePassContext, table: string, all: Row[], pending: Row[], budget: number): Promise<number> {
+  const { db, prepared, outcome, decided, hash } = context;
+  const counted = (inserted: number, rows = all.length, extra: { skipped?: string; reused?: number } = {}) => {
+    const held = outcome.tables[table];
+    outcome.tables[table] = { rows, inserted: (held?.inserted ?? 0) + inserted, ...extra };
+  };
+  if ((DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)) {
+    counted(0, all.length, { skipped: 'document restore owns catalog publication' });
+    return pending.length;
+  }
+  if (pending.length === 0) return 0;
+  if (table === 'raw_provenance_state' || table === 'raw_provenance_backfill') {
+    counted(0, all.length, { skipped: 'destination provenance checkpoint owns the restored revision reservation' });
+    return pending.length;
+  }
+  if (table === 'deployment_ownership') {
+    if (prepared.foreign) {
+      counted(0, all.length, { skipped: 'this server keeps its own owner; another server\'s owner is not restored' });
+      return pending.length;
     }
-    if (rows.length === 0) continue;
-    if (table === 'raw_provenance_state' || table === 'raw_provenance_backfill') {
-      outcome.tables[table] = { rows: rows.length, inserted: 0, skipped: 'destination provenance checkpoint owns the restored revision reservation' };
-      continue;
-    }
-    if (table === 'deployment_ownership') {
-      if (foreign) {
-        outcome.tables[table] = { rows: rows.length, inserted: 0, skipped: 'this server keeps its own owner; another server\'s owner is not restored' };
-        continue;
-      }
-      const row = rows[0]!;
-      if (typeof row.member_id === 'string') await restoreOwnership(db, { member_id: row.member_id, revision: Number(row.revision) },
-        { actor_id: ownerAudit!.actor_id as string, created_at: ownerAudit!.created_at as number,
-          previous_member_id: ownerAudit!.previous_member_id as string | null | undefined, operation: ownerAudit!.operation as string | undefined });
-      outcome.tables[table] = { rows: rows.length, inserted: 0 };
-      continue;
-    }
-    if (table === 'blobs') {
-      outcome.tables[table] = { rows: rows.length, inserted: 0, reused: rows.length };
-      continue;
-    }
-    if (table === 'archive_bundles') {
-      let inserted = 0;
-      for (const row of rows) {
-        const columns = Object.keys(row).filter(column => column !== 'id');
-        if (!columns.every(column => IDENTIFIER.test(column)) || !Number.isSafeInteger(row.id)) {
-          throw new BackupApplyError(table, 'a bundle has an invalid identity or column name');
-        }
-        const [,applied] = await db.batch([
-          registeredBlobsGuard(db, [{projectId:row.project_id as string,key:row.archive_key as string},
-            {projectId:row.project_id as string,key:row.receipt_key as string}]),
-          db.prepare(`INSERT OR IGNORE INTO archive_bundles (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING id`)
-            .bind(...columns.map(column => row[column] ?? null)),
-        ]);
-        inserted += applied!.results.length;
-        const held = await db.prepare(`SELECT * FROM archive_bundles WHERE project_id=? AND archive_key=?`)
-          .bind(row.project_id,row.archive_key).first<Record<string,unknown>>();
-        if (held === null || columns.some(column => held[column] !== (row[column] ?? null))
-          || !Number.isSafeInteger(held.id)) throw new BackupApplyError(table, 'a bundle conflicts with the destination');
-        restoredBundleIds.set(transcriptIdentity(row.project_id,row.id),held.id as number);
-        restoredBundles.push({projectId:row.project_id as string,id:held.id as number,
-          archiveKey:row.archive_key as string,receiptKey:row.receipt_key as string,inserted:applied!.results.length>0});
-      }
-      outcome.tables[table] = {rows:rows.length,inserted};
-      continue;
-    }
-    for (const row of rows) {
-      if (!Object.keys(row).every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
-    }
-    if (table === 'raw_resources') {
-      let inserted = 0;
-      for (const row of rows) {
-        const columns = Object.keys(row);
-        const insert = db.prepare(`INSERT OR IGNORE INTO raw_resources (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
-          .bind(...columns.map((column) => row[column] ?? null));
-        try {
-          const identity = transcriptIdentity(row.project_id, row.resource_id);
-          inserted += row.kind === 'transcript'
-            ? await restoreTranscriptReference(db, row, transcriptRows.get(identity), transcriptSegments.get(identity) ?? [], insert)
-            : (await insert.all()).results.length;
-        } catch (error) {
-          if (error instanceof RestoreAuthorizationError) throw error;
-          throw new BackupApplyError(table, error instanceof Error ? error.message : String(error));
-        }
-      }
-      outcome.tables[table] = { rows: rows.length, inserted };
-      continue;
-    }
-    if (table === 'events') {
-      let inserted = 0;
-      for (const row of rows) {
-        try {
-          const references = await restoredCaptureReferences(db, table, row, outcome);
-          if (row.payload_format === 'archived') {
-            const bundle = bundles.get(transcriptIdentity(row.project_id, row.bundle_id));
-            if (bundle === undefined) throw new BackupApplyError(table, 'an archived event lacks its bundle');
-            const restoredId = restoredBundleIds.get(transcriptIdentity(row.project_id,row.bundle_id));
-            if (restoredId === undefined) throw new BackupApplyError(table, 'an archived event lacks its restored bundle');
-            inserted += await restoreArchivedEvent(db, {...row,bundle_id:restoredId}, {...bundle,id:restoredId}, references);
-          } else {
-            const columns = Object.keys(row);
-            const statements = [...references,
-              db.prepare(`INSERT OR IGNORE INTO events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
-                .bind(...columns.map(column => row[column] ?? null))];
-            const applied = await db.batch(statements);
-            inserted += applied.at(-1)!.results.length;
-          }
-        } catch (error) {
-          if (error instanceof RestoreAuthorizationError || error instanceof BackupApplyError) throw error;
-          throw new BackupApplyError(table, error instanceof Error ? error.message : String(error));
-        }
-      }
-      outcome.tables[table] = { rows: rows.length, inserted };
-      continue;
-    }
-    if (table === 'event_refs') {
-      let inserted=0;
-      for(const row of rows) {
-        const result=await db.batch([...await restoredCaptureReferences(db, table, row, outcome),
-          ...contentAssertion(db,'EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND session_id=? AND kind=?)',
-            [row.project_id,row.event_id,row.session_id,row.kind]),eventReferenceStatement(db,row,false)]);
-        inserted+=result.at(-1)!.results.length;
-      }
-      outcome.tables[table]={rows:rows.length,inserted};
-      continue;
-    }
-    if (table === 'processed_resources') {
-      rows = rows.filter(row => row.kind !== 'tool-input');
-      if (rows.length === 0) {
-        outcome.tables[table] = { rows: artifactRowCount, inserted: 0, skipped: 'displayed input restoration owns processed references' };
-        continue;
-      }
-    }
-    if (table === 'registered_content_proofs') {
-      let inserted = 0;
-      for (const row of rows) {
-        const columns = Object.keys(row);
-        const values = columns.filter(column => column !== 'generation');
-        const compared = values.filter(column => column !== 'verified_at');
-        try {
-          const [applied] = await db.batch([db.prepare(`INSERT OR IGNORE INTO registered_content_proofs (${columns.join(', ')})
-            SELECT ${columns.map(column => column === 'generation' ? 'b.generation' : '?').join(', ')}
-            FROM blobs b WHERE b.project_id = ? AND b.key = ? AND b.size = ?
-              AND b.key = ? RETURNING rowid`)
-            .bind(...values.map(column => row[column] ?? null), row.project_id, row.key, row.size, row.digest),
-            db.prepare(`INSERT INTO restore_reference_guard (missing)
-              SELECT 'registered content proof' WHERE NOT EXISTS (
-                SELECT 1 FROM registered_content_proofs p JOIN blobs b
-                  ON b.project_id = p.project_id AND b.key = p.key AND b.generation IS p.generation
-                WHERE ${compared.map(column => `p.${column} IS ?`).join(' AND ')} AND b.size = p.size)`)
-              .bind(...compared.map(column => row[column] ?? null))]);
-          inserted += applied!.results.length;
-        } catch (error) {
-          if (error instanceof RestoreAuthorizationError) throw error;
-          throw new BackupApplyError(table, error instanceof Error ? error.message : String(error));
-        }
-      }
-      outcome.tables[table] = { rows: rows.length, inserted };
-      continue;
-    }
-    const ordered = EMPTY_ONLY_TABLES.has(table);
-    if (ordered && (rows.some((row) => !Number.isSafeInteger(row.id)) || new Set(rows.map((row) => row.id)).size !== rows.length)) {
-      throw new BackupApplyError(table, 'insertion-ordered rows require unique safe integer ids');
-    }
-    const progress = ordered ? await claimRestoreTable(db, table, hash) : null;
-    if (ordered && progress === null) {
-      outcome.tables[table] = { rows: rows.length, inserted: 0, skipped: 'table already holds rows, and its ids are insertion-ordered; restored only into an empty table' };
-      continue;
-    }
-    if (progress !== null) {
-      for (let start = 0; start < progress.next_row; start += RESTORE_CHUNK_ROWS) {
-        const committed = rows.slice(start, Math.min(start + RESTORE_CHUNK_ROWS, progress.next_row));
-        const match = await db.prepare(`SELECT ${restoredRowsMatch(table, committed)} AS matches`)
-          .bind(JSON.stringify(committed)).first<{ matches: number }>();
-        if (match?.matches !== 1) throw new BackupApplyError(table, 'previously restored rows changed; use a fresh destination to recover the complete artifact');
-      }
-    }
+    const row = all[0]!;
+    const audit = prepared.ownerAudit;
+    if (typeof row.member_id === 'string') await restoreOwnership(db, { member_id: row.member_id, revision: Number(row.revision) },
+      { actor_id: audit!.actor_id as string, created_at: audit!.created_at as number,
+        previous_member_id: audit!.previous_member_id as string | null | undefined, operation: audit!.operation as string | undefined });
+    counted(0);
+    return pending.length;
+  }
+  if (table === 'blobs') {
+    counted(0, all.length, { reused: all.length });
+    return pending.length;
+  }
+  const page = pending.slice(0, Math.max(1, Math.floor(Math.min(budget, pending.length))));
+  if (table === 'archive_bundles') {
     let inserted = 0;
-    let at = progress?.next_row ?? 0;
-    while (at < rows.length) {
-      const chunk = rows.slice(at, at + RESTORE_CHUNK_ROWS);
-      const next = at + chunk.length;
-      const guard = ordered
-        ? ` WHERE EXISTS (SELECT 1 FROM backup_restore_progress WHERE ${RESTORE_OWNER})`
-        : '';
-      const references = chunk.flatMap((row) => referencedBlobsOf(table, row));
-      const statements = references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
-      const budgetKeys:Readonly<Record<string,readonly string[]>>={agent_runs:['project_id','id'],agent_run_attempts:['project_id','run_id','attempt_id'],agent_state:['project_id','agent_id','key']};
-      const keys=budgetKeys[table];
-      if(keys!==undefined) {
-        const compared=chunk.map(row=>table==='agent_run_attempts'?attemptRestoreComparison(row):Object.fromEntries(keys.map(key=>[key,row[key]])));
-        const profiledTimes=table==='agent_run_attempts'?chunk.flatMap(row=>row.profile_json!=null&&typeof row.claimed_at==='number'?[row.claimed_at]:[]):[];
-        const restoredFloor=profiledTimes.length===0?undefined:profiledTimes.reduce((floor,time)=>Math.min(floor,time),Infinity);
-        statements.push(...estimateInvalidationStatements(db,{sql:`NOT (${restoredRowsMatch(table,compared,keys)})`,params:[JSON.stringify(compared)]},restoredFloor));
+    for (const row of page) {
+      const columns = Object.keys(row).filter(column => column !== 'id');
+      if (!columns.every(column => IDENTIFIER.test(column)) || !Number.isSafeInteger(row.id)) {
+        throw new BackupApplyError(table, 'a bundle has an invalid identity or column name');
       }
-      const inserts=statements.length;
-      statements.push(...chunk.map((row) => {
-        if (table === 'deployment_ownership_audit') return restoreAuthorityAuditStatement(db, table, row, ownership);
-        if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
-          byTable.get('members')?.find(member => member.id === row.member_id));
-        const restoreOwned = OWNED_ROW_RESTORERS[table];
-        if (restoreOwned !== undefined) return restoreOwned(db, row, decided);
-        const columns = Object.keys(row);
-        return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
-          .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
-      }));
-      if (table === 'raw_archive_refs') statements.push(...chunk.filter(row => row.source_kind === 'transcript' && row.disposition === 'archived' && typeof row.transcript_id === 'string')
-        .map(row => clearArchivedTranscriptRanges(db, row.project_id as string, row.transcript_id as string, row.base_offset as number)));
-      if (table === 'sessions' || table === 'session_tombstones') statements.push(...deletedParentClears(db, chunk));
-      if (ordered) {
-        statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
-          WHERE ${RESTORE_OWNER} RETURNING next_row`)
-          .bind(next, JSON.stringify(chunk), table, hash, at));
-      }
-      let applied;
+      const [,applied] = await db.batch([
+        registeredBlobsGuard(db, [{projectId:row.project_id as string,key:row.archive_key as string},
+          {projectId:row.project_id as string,key:row.receipt_key as string}]),
+        db.prepare(`INSERT OR IGNORE INTO archive_bundles (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING id`)
+          .bind(...columns.map(column => row[column] ?? null)),
+      ]);
+      inserted += applied!.results.length;
+      const held = await heldBundle(db, row);
+      if (held === null || columns.some(column => held[column] !== (row[column] ?? null))
+        || !Number.isSafeInteger(held.id)) throw new BackupApplyError(table, 'a bundle conflicts with the destination');
+      context.restoredBundleIds.set(transcriptIdentity(row.project_id,row.id),held.id as number);
+    }
+    counted(inserted);
+    return page.length;
+  }
+  for (const row of pending) {
+    if (!Object.keys(row).every((c) => IDENTIFIER.test(c))) throw new BackupApplyError(table, 'a row carries a column name outside the store grammar');
+  }
+  if (table === 'raw_resources') {
+    let inserted = 0;
+    for (const row of page) {
+      const columns = Object.keys(row);
+      const insert = db.prepare(`INSERT OR IGNORE INTO raw_resources (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
+        .bind(...columns.map((column) => row[column] ?? null));
       try {
-        applied = table === 'members'
-          ? await restoreMembershipBatch(db, statements, chunk.some(row => row.id !== HARNESS_MEMBER_ID))
-          : await db.batch(statements);
-      } catch (err) {
-        if (err instanceof RestoreAuthorizationError) throw err;
-        const missing = await unregisteredAmong(db, references);
-        if (missing.length > 0) throw new BackupObjectsMissingError(missing.length);
-        throw new BackupApplyError(table, err instanceof Error ? err.message : String(err));
+        const identity = transcriptIdentity(row.project_id, row.resource_id);
+        inserted += row.kind === 'transcript'
+          ? await restoreTranscriptReference(db, row, decided.parents.get(identity), context.transcriptSegments.get(identity) ?? [], insert)
+          : (await insert.all()).results.length;
+      } catch (error) {
+        if (error instanceof RestoreAuthorizationError) throw error;
+        throw restoreRefusal(table, error);
       }
-      for (const result of applied.slice(inserts, inserts + chunk.length)) inserted += result.results.length;
-      if (ordered && applied[inserts + chunk.length]!.results.length === 0) {
-        const current = await readRestoreProgress(db, table);
-        if (current?.artifact_hash !== hash || current.next_row <= at) {
-          throw new BackupApplyError(table, 'the restore no longer owns this table');
+    }
+    counted(inserted);
+    return page.length;
+  }
+  if (table === 'events') {
+    let inserted = 0;
+    await context.verifyBundles(page.flatMap((row) => {
+      const bundle = row.payload_format === 'archived' ? context.bundles.get(transcriptIdentity(row.project_id, row.bundle_id)) : undefined;
+      return bundle === undefined ? [] : [bundle];
+    }));
+    for (const row of page) {
+      try {
+        const references = await restoredCaptureReferences(db, table, row, outcome);
+        if (row.payload_format === 'archived') {
+          const bundle = context.bundles.get(transcriptIdentity(row.project_id, row.bundle_id));
+          if (bundle === undefined) throw new BackupApplyError(table, 'an archived event lacks its bundle');
+          const restoredId = await restoredBundleId(context, transcriptIdentity(row.project_id,row.bundle_id));
+          if (restoredId === undefined) throw new BackupApplyError(table, 'an archived event lacks its restored bundle');
+          inserted += await restoreArchivedEvent(db, {...row,bundle_id:restoredId}, {...bundle,id:restoredId}, references);
+        } else {
+          const columns = Object.keys(row);
+          const statements = [...references,
+            db.prepare(`INSERT OR IGNORE INTO events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) RETURNING rowid`)
+              .bind(...columns.map(column => row[column] ?? null))];
+          const applied = await db.batch(statements);
+          inserted += applied.at(-1)!.results.length;
         }
-        at = current.next_row;
-      } else {
-        at = next;
+      } catch (error) {
+        if (error instanceof RestoreAuthorizationError || error instanceof BackupApplyError) throw error;
+        throw restoreRefusal(table, error);
       }
     }
-    outcome.tables[table] = { rows: artifactRowCount, inserted };
+    counted(inserted);
+    return page.length;
   }
-  for (const [table, skipped] of Object.entries(admitted.tables)) {
-    const applied = outcome.tables[table];
-    if (applied !== undefined && byTable.has(table)) {
-      outcome.tables[table] = { ...applied, rows: applied.rows + skipped.rows, skipped: skipped.skipped };
+  if (table === 'event_refs') {
+    let inserted=0;
+    for(const row of page) {
+      const result=await db.batch([...await restoredCaptureReferences(db, table, row, outcome),
+        ...contentAssertion(db,'EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND session_id=? AND kind=?)',
+          [row.project_id,row.event_id,row.session_id,row.kind]),eventReferenceStatement(db,row,false)]);
+      inserted+=result.at(-1)!.results.length;
+    }
+    counted(inserted);
+    return page.length;
+  }
+  if (table === 'registered_content_proofs') {
+    let inserted = 0;
+    for (const row of page) {
+      const columns = Object.keys(row);
+      const values = columns.filter(column => column !== 'generation');
+      const compared = values.filter(column => column !== 'verified_at');
+      try {
+        const [applied] = await db.batch([db.prepare(`INSERT OR IGNORE INTO registered_content_proofs (${columns.join(', ')})
+          SELECT ${columns.map(column => column === 'generation' ? 'b.generation' : '?').join(', ')}
+          FROM blobs b WHERE b.project_id = ? AND b.key = ? AND b.size = ?
+            AND b.key = ? RETURNING rowid`)
+          .bind(...values.map(column => row[column] ?? null), row.project_id, row.key, row.size, row.digest),
+          db.prepare(`INSERT INTO restore_reference_guard (missing)
+            SELECT 'registered content proof' WHERE NOT EXISTS (
+              SELECT 1 FROM registered_content_proofs p JOIN blobs b
+                ON b.project_id = p.project_id AND b.key = p.key AND b.generation IS p.generation
+              WHERE ${compared.map(column => `p.${column} IS ?`).join(' AND ')} AND b.size = p.size)`)
+            .bind(...compared.map(column => row[column] ?? null))]);
+        inserted += applied!.results.length;
+      } catch (error) {
+        if (error instanceof RestoreAuthorizationError) throw error;
+        throw restoreRefusal(table, error);
+      }
+    }
+    counted(inserted);
+    return page.length;
+  }
+  if (table === 'processed_resources' && pending.every(row => row.kind === 'tool-input')) {
+    counted(0, all.length, { skipped: 'displayed input restoration owns processed references' });
+    return pending.length;
+  }
+  return restoreChunks(context, table, all, pending, budget);
+}
+
+/**
+ * What an insertion-ordered table reports when another write landed in it while the restore was filling it: the
+ * restore leaves the rest of that table out rather than give the artifact's rows other ids, and goes on to the next.
+ */
+const interleavedWrite = (restored: number, rows: number): string =>
+  `another write landed in this table while the restore was filling it, and its ids are insertion-ordered, so ${restored} of ${rows} rows were restored and the rest left out; to restore them all, restore this backup into a Deployment where nothing writes to this table until the restore completes`;
+
+/** The invocation running a pass ran out of what it may spend; the next invocation takes the same unit again. */
+export const invocationSpent = (error: unknown): boolean => /_budget_exhausted\b/.test(error instanceof Error ? error.message : String(error));
+
+/** A store error that names a rule the artifact broke: a constraint, a trigger's refusal or an in-batch refusal. */
+function refusedByStore(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown } | null)?.code;
+  return classify(error) === 'constraint' || /SQLITE_CONSTRAINT|JSON path/i.test(message)
+    || (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT'));
+}
+
+/**
+ * The refusal a write met, named for the table it was writing; any other error (a spent budget, a platform limit, a
+ * lost connection) is thrown as it is, so the job tries the same unit again instead of ending.
+ */
+function restoreRefusal(table: string, error: unknown): Error {
+  if (error instanceof BackupApplyError || error instanceof RestoreAuthorizationError) return error;
+  if (!refusedByStore(error)) return error instanceof Error ? error : new Error(String(error));
+  return new BackupApplyError(table, error instanceof Error ? error.message : String(error), error);
+}
+
+/** The general path: additive inserts in chunks, each chunk one batch; an insertion-ordered table commits its claim's progress in that batch. */
+async function restoreChunks(context: TablePassContext, table: string, all: Row[], pending: Row[], budget: number): Promise<number> {
+  const { db, prepared, outcome, decided, hash } = context;
+  const counted = (inserted: number, extra: { skipped?: string } = {}) => {
+    const held = outcome.tables[table];
+    outcome.tables[table] = { rows: all.length, inserted: (held?.inserted ?? 0) + inserted, ...extra };
+  };
+  const eligible = table === 'processed_resources' ? all.filter(row => row.kind !== 'tool-input') : all;
+  const waiting = new Set(pending);
+  const from = eligible.findIndex((row) => waiting.has(row));
+  const rows = from === -1 ? [] : eligible;
+  const ordered = EMPTY_ONLY_TABLES.has(table);
+  if (ordered && (rows.some((row) => !Number.isSafeInteger(row.id)) || new Set(rows.map((row) => row.id)).size !== rows.length)) {
+    throw new BackupApplyError(table, 'insertion-ordered rows require unique safe integer ids');
+  }
+  const progress = ordered ? await claimRestoreTable(db, table, hash) : null;
+  if (ordered && progress === null) {
+    counted(0, { skipped: 'table already holds rows, and its ids are insertion-ordered; restored only into an empty table' });
+    return pending.length;
+  }
+  if (progress !== null) {
+    // Rows a pass committed before this restore credited them are compared with what the table holds now.
+    for (let start = Math.max(from, 0); start < progress.next_row; start += RESTORE_CHUNK_ROWS) {
+      const committed = rows.slice(start, Math.min(start + RESTORE_CHUNK_ROWS, progress.next_row));
+      const match = await db.prepare(`SELECT ${restoredRowsMatch(table, committed)} AS matches`)
+        .bind(JSON.stringify(committed)).first<{ matches: number }>();
+      if (match?.matches !== 1) {
+        counted(0, { skipped: interleavedWrite(start, rows.length) });
+        return pending.length;
+      }
     }
   }
-  await documents?.apply(restoredAt);
-  for (const bundle of restoredBundles) {
-    const unused = `NOT (${bundleHeld('?', '?')})`;
-    const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
-    const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
-    const candidates = recordBlobCandidates(db,pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id,archiveKey:bundle.archiveKey}});
-    const results = await db.batch([
-      ...candidates,
-      db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=?
-        AND ((source_kind='bundle' AND source_id=?) OR (source_kind='receipt' AND source_id=?))
-        AND ${unused}`).bind(bundle.projectId,bundle.archiveKey,`bundle:${bundle.archiveKey}`,...guardValues),
-      db.prepare(`DELETE FROM archive_bundles WHERE project_id=? AND id=? AND ${unused}`)
-        .bind(bundle.projectId,bundle.id,...guardValues),
-    ]);
-    if (results[candidates.length+1]!.meta.changes > 0) {
-      await releaseBlobs(db,pairs,header.createdAt);
-      if (bundle.inserted && outcome.tables.archive_bundles) outcome.tables.archive_bundles.inserted--;
+  let inserted = 0;
+  let at = progress === null ? Math.max(from, 0) : Math.max(progress.next_row, from);
+  let spent = 0;
+  while (at < rows.length && spent < budget) {
+    const chunk = rows.slice(at, at + RESTORE_CHUNK_ROWS);
+    const next = at + chunk.length;
+    const guard = ordered
+      ? ` WHERE EXISTS (SELECT 1 FROM backup_restore_progress WHERE ${RESTORE_OWNER})`
+      : '';
+    const references = chunk.flatMap((row) => referencedBlobsOf(table, row));
+    const statements = references.length === 0 ? [] : [registeredBlobsGuard(db, references)];
+    const budgetKeys:Readonly<Record<string,readonly string[]>>={agent_runs:['project_id','id'],agent_run_attempts:['project_id','run_id','attempt_id'],agent_state:['project_id','agent_id','key']};
+    const keys=budgetKeys[table];
+    if(keys!==undefined) {
+      const compared=chunk.map(row=>table==='agent_run_attempts'?attemptRestoreComparison(row):Object.fromEntries(keys.map(key=>[key,row[key]])));
+      const profiledTimes=table==='agent_run_attempts'?chunk.flatMap(row=>row.profile_json!=null&&typeof row.claimed_at==='number'?[row.claimed_at]:[]):[];
+      const restoredFloor=profiledTimes.length===0?undefined:profiledTimes.reduce((floor,time)=>Math.min(floor,time),Infinity);
+      statements.push(...estimateInvalidationStatements(db,{sql:`NOT (${restoredRowsMatch(table,compared,keys)})`,params:[JSON.stringify(compared)]},restoredFloor));
+    }
+    const inserts=statements.length;
+    statements.push(...chunk.map((row) => {
+      if (table === 'deployment_ownership_audit') return restoreAuthorityAuditStatement(db, table, row, prepared.ownership);
+      if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
+        prepared.byTable.get('members')?.find(member => member.id === row.member_id));
+      const restoreOwned = OWNED_ROW_RESTORERS[table];
+      if (restoreOwned !== undefined) return restoreOwned(db, row, decided);
+      const columns = Object.keys(row);
+      return db.prepare(`INSERT OR IGNORE INTO ${table} (${columns.join(', ')}) SELECT ${columns.map(() => '?').join(', ')}${guard} RETURNING rowid`)
+        .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
+    }));
+    if (table === 'raw_archive_refs') statements.push(...chunk.filter(row => row.source_kind === 'transcript' && row.disposition === 'archived' && typeof row.transcript_id === 'string')
+      .map(row => clearArchivedTranscriptRanges(db, row.project_id as string, row.transcript_id as string, row.base_offset as number)));
+    if (table === 'sessions' || table === 'session_tombstones') statements.push(...deletedParentClears(db, chunk));
+    if (ordered) {
+      statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
+        WHERE ${RESTORE_OWNER} RETURNING next_row`)
+        .bind(next, JSON.stringify(chunk), table, hash, at));
+    }
+    let applied;
+    try {
+      applied = table === 'members'
+        ? await restoreMembershipBatch(db, statements, chunk.some(row => row.id !== HARNESS_MEMBER_ID))
+        : await db.batch(statements);
+    } catch (err) {
+      if (err instanceof RestoreAuthorizationError) throw err;
+      if (ordered && /backup_restore_rows_match/.test(err instanceof Error ? err.message : String(err))) {
+        counted(inserted, { skipped: interleavedWrite(at, rows.length) });
+        return pending.length;
+      }
+      const missing = await unregisteredAmong(db, references);
+      if (missing.length > 0) throw new BackupObjectsMissingError(missing.length);
+      throw restoreRefusal(table, err);
+    }
+    for (const result of applied.slice(inserts, inserts + chunk.length)) inserted += result.results.length;
+    spent += chunk.length;
+    if (ordered && applied[inserts + chunk.length]!.results.length === 0) {
+      const current = await readRestoreProgress(db, table);
+      if (current?.artifact_hash !== hash || current.next_row <= at) {
+        counted(inserted, { skipped: interleavedWrite(at, rows.length) });
+        return pending.length;
+      }
+      at = current.next_row;
+    } else {
+      at = next;
     }
   }
-  await releaseArtifactAfterRestore(db, hash);
-  return outcome;
+  counted(inserted);
+  if (at >= rows.length) return pending.length;
+  const resume = rows[at]!;
+  const index = pending.indexOf(resume);
+  return index === -1 ? pending.length : index;
 }
 
 /** The deleted-parent clear for every Project a restored `sessions` or `session_tombstones` chunk names, run in the chunk's own batch. */

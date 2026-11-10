@@ -7,7 +7,8 @@ import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { BACKUP_FORMAT, BACKUP_TABLES, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, BACKUP_TABLES } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import {
   lineage_LINEAGE_MAX_NODES as LINEAGE_MAX_NODES,
   lineage_sessionLineage as sessionLineage,

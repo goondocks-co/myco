@@ -25,7 +25,8 @@ import * as plans from '@myco-server-worker/read/catalog/plans.js';
 import { receiptPlans } from '@myco-server-worker/db/context/served-plans.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
 import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
-import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 /** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
 const admit = (projectId: string, sessionId: string) => sessionWriteAdmission({ projectId, machineId: 'machine_1' }, sessionId);
 

@@ -42,6 +42,7 @@ import { reclaimFinishedAuthorities } from '../db/identity/authority-retention.j
 import { transcriptRetention } from '../ingest/retention.js';
 import { advanceSessionDeletions } from '../db/sessions/deletion.js';
 import { advanceRereads } from '../db/documents/reread.js';
+import { advanceRestore } from './restore-job.js';
 import { drainObjectReleases, objectReleaseBacklogged } from './object-release.js';
 import { archivePreparationsPending, reconcileArchivePreparations } from './archive-bundle.js';
 import { recoveryHoldRelease } from './recovery-hold.js';
@@ -281,6 +282,10 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
   'session-titling': titleReadySessions,
   'titling-backfill': backfillTitles,
   'transcript-retention': transcriptRetention,
+  'backup-restore': async (env, now) => {
+    const pass = await advanceRestore(env, now);
+    return { changed: pass.walked, more: pass.more };
+  },
   'session-deletion': async (env, now) => {
     const result = await advanceSessionDeletions(env.db, now, undefined, env.platform?.classifyError);
     if (result.failed > 0 && !result.more) throw new Error('session_deletion_failed');

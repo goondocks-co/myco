@@ -8,7 +8,8 @@ import { issueIdentityLinkAuthority, spendIdentityLinkAuthority, memberByGithubI
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
 import { issueMemberToken } from './helpers/member-token.js';
-import { BACKUP_FORMAT, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import { envelope, memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { schemaSqlite } from './helpers/schema-template.js';

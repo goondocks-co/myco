@@ -44,9 +44,9 @@ export const restoreContinuation: ParityScenario = {
     await target.sql(`CREATE TRIGGER restore_fixture_interruption BEFORE INSERT ON agent_reports
       WHEN NEW.id = 21 BEGIN SELECT RAISE(ABORT, 'restore fixture interruption'); END`);
     try {
-      const failed = await ownerPost<{ reason: string }>(target, '/api/backups/restore-upload', { artifact });
-      expect(failed.status).toBe(400);
-      expect(failed.body.reason).toContain('restore fixture interruption');
+      const failed = await ownerPost<{ error: string; message: string; job: { state: string } }>(target, '/api/backups/restore-upload', { artifact });
+      expect({ status: failed.status, error: failed.body.error, state: failed.body.job.state }).toEqual({ status: 409, error: 'restore_refused', state: 'failed' });
+      expect(failed.body.message).toContain('restore fixture interruption');
       expect(await target.sql(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = 'run_restore'`)).toEqual([{ n: 20 }]);
       expect(await target.sql(`SELECT next_row FROM backup_restore_progress WHERE table_name = 'agent_reports'`)).toEqual([{ next_row: 20 }]);
       await target.sql('DROP TRIGGER restore_fixture_interruption');

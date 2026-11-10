@@ -1,9 +1,9 @@
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchJson, postJson } from '../lib/api';
-import type { BackupsAnswer, BackupVerification, CreateBackupAnswer, RestoreOutcome, RestorePreview } from '../features/admin/health/wire';
+import type { BackupsAnswer, BackupVerification, CreateBackupAnswer, RestoreAnswer, RestoreJob, RestorePreview } from '../features/admin/health/wire';
 import { live } from '../lib/live';
 
-export type { BackupRow, RestoreOutcome, RestorePreview } from '../features/admin/health/wire';
+export type { BackupRow, RestoreJob, RestoreOutcome, RestorePreview } from '../features/admin/health/wire';
 
 /** The Deployment's backups: the paged list, a new one, pinning, checking one, and a restore previewed before it runs. */
 export function useBackups() {
@@ -23,8 +23,26 @@ export function useBackups() {
     preview: useMutation({ mutationFn: (id: string) => postJson<RestorePreview>(`/api/backups/${encodeURIComponent(id)}/restore-preview`, {}) }),
     restore: useMutation({
       mutationFn: (v: { id: string; allowForeignLineage?: boolean }) =>
-        postJson<RestoreOutcome>(`/api/backups/${encodeURIComponent(v.id)}/restore`, v.allowForeignLineage === true ? { allowForeignLineage: true } : {}),
-      onSuccess: invalidate,
+        postJson<RestoreAnswer>(`/api/backups/${encodeURIComponent(v.id)}/restore`, v.allowForeignLineage === true ? { allowForeignLineage: true } : {}),
+      onSettled: invalidate,
+    }),
+    continueRestore: useMutation({
+      mutationFn: (id: string) => postJson<RestoreAnswer>(`/api/backups/restores/${encodeURIComponent(id)}/continue`, {}),
+      onSettled: invalidate,
+    }),
+    stopRestore: useMutation({
+      mutationFn: (id: string) => postJson<{ job: RestoreJob }>(`/api/backups/restores/${encodeURIComponent(id)}/stop`, {}),
+      onSettled: invalidate,
     }),
   };
+}
+
+/** One restore's progress, read again while the server is still walking it. */
+export function useRestoreJob(id: string | null) {
+  return useQuery({
+    queryKey: ['backups', 'restore', id],
+    enabled: id !== null,
+    queryFn: ({ signal }) => fetchJson<{ job: RestoreJob }>(`/api/backups/restores/${encodeURIComponent(id!)}`, signal),
+    ...live({ whileMoving: (data: { job: RestoreJob } | undefined) => data?.job.state === 'running' }),
+  });
 }

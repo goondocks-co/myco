@@ -44,8 +44,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'core/raw-provenance.ts',
   'core/recall.ts',
   'core/recovered-tenant.ts',
-  'core/recovery-forget.ts',
-  'core/recovery-schema.ts',
   'core/registered-content.ts',
   'core/relational-snapshot.ts',
   'core/remotes.ts',
@@ -112,10 +110,8 @@ const PENDING: ReadonlySet<string> = new Set([
 const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
   'api/member-projects.ts',
   'core/archive-bundle.ts',
-  'core/backup.ts',
   'core/object-release.ts',
   'core/raw-claims.ts',
-  'core/recovery-forget.ts',
   'core/remotes.ts',
   'ingest/uncaptured.ts',
 ]);
