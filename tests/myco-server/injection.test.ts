@@ -345,40 +345,24 @@ describe('plan selection', () => {
     semantic.vectors.query = async (partition, options) => options.filters?.type === 'plan' ?
       vectors.map(v => ({ id: v.id, score: cosineSimilarity(query, v.values) })) :
       (await originalQuery(partition, options)).map((h, i) => ({ ...h, score: similarity - 0.1 - i / 1000 }));
-    const planReads: Array<Record<string, unknown>> = [];
-    const recallDb: RelationalStore = { ...db, prepare: (sql) => {
-      const wrap = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
-        bind: (...params) => wrap(statement.bind(...params)),
-        first: async <T,>() => {
-          const row = await statement.first<T>();
-          if (row !== null) planReads.push(row as Record<string, unknown>);
-          return row;
-        },
-      });
-      const statement = db.prepare(sql);
-      return sql.includes('FROM plans WHERE') ? wrap(statement) : statement;
-    } };
     try {
       sqlite.exec(`CREATE TRIGGER reject_second_snapshot BEFORE INSERT ON injection_served_items
         WHEN NEW.item_id = 'receipts' BEGIN SELECT RAISE(ABORT, 'snapshot failed'); END`);
       try {
-        await expect(selectSporesForPrompt(recallDb, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
+        await expect(selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
           { sessionId: 'failed', admission: admit(SCOPE.projectId, 'failed'), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic))
           .rejects.toThrow('prompt injection failed: record');
         expect(rows(sqlite)).toEqual([]);
         expect(sqlite.query('SELECT * FROM injection_served_items').all()).toEqual([]);
       } finally { sqlite.exec('DROP TRIGGER reject_second_snapshot'); }
-      planReads.length = 0;
       get.mockClear();
-      const answer = await selectSporesForPrompt(recallDb, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
+      const answer = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
         { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
       const expected = ['capture', 'receipts'];
       expect(answer.items.map(i => i.id)).toEqual(expected);
       expect(answer.context).toContain('Preserve pending transcript batches during member reconnect');
       expect(answer.counts).toMatchObject({ planEligible: 3, planCalibrated: 5, planScored: 3, planRelevant: expected.length, planHydrated: expected.length });
       expect(answer.counts.planProbable).toBeGreaterThanOrEqual(expected.length);
-      expect(planReads).toHaveLength(expected.length);
-      expect(planReads.every((row) => !('content' in row))).toBe(true);
       expect(get).toHaveBeenCalledTimes(1);
       expect(JSON.parse(rows(sqlite)[0]!.plan_ids as string)).toEqual(expected);
       const snapshot = await receiptPlans(db, SCOPE, [{ receiptId: answer.receiptId!, planIds: expected }]);

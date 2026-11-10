@@ -12,13 +12,15 @@ it('a title-only save retains an administrator status written after its read', a
     const created = await savePlan(f.serverEnv, member, scope, { sessionId: 's', planKey: 'key', content: 'body', title: 'Old' }, 100);
     expect(created.ok).toBe(true);
     if (!created.ok) throw new Error(created.error);
+    // An administrator's status edit lands between the save's read of the plan and its write: on the statement after the read.
+    let read = false;
     let raced = false;
-    const db = sqliteD1(f.sqlite, { onFirst(sql, row) {
-      if (!raced && sql.includes('FROM plans') && row?.plan_key === created.row.planKey) {
+    const db = sqliteD1(f.sqlite, { onSql(sql) {
+      if (read && !raced) {
         raced = true;
         f.sqlite.query("UPDATE plans SET status = 'completed', updated_by = 'admin', updated_at = 150 WHERE plan_key = ?").run(created.row.planKey);
       }
-      return row;
+      if (sql.includes('FROM plans')) read = true;
     } });
     const updated = await savePlan({ ...f.serverEnv, db }, member, scope, { id: created.row.planKey, sessionId: 's', title: 'New' }, 200);
     expect(raced).toBe(true);

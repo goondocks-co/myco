@@ -1,10 +1,11 @@
 import { SEARCH_MAX_LIMIT, SEARCH_QUERY_MAX_CHARS, SEARCH_TYPES, SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
 import { MAX_SPORE_LIMIT } from '@myco-server-worker/core/spores.js';
+import { MAX_PAGE } from '@myco-server-worker/read/scope.js';
 import { describe, expect, it } from 'bun:test';
 import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
 import { isRunTool, isWriteOp, PROJECT_PIVOT, RUN_TOOLS, SERVED_TOOLS, WRITE_OPS, type AnyTool, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
-import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { PLAN_BODY_CALL, TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
@@ -153,6 +154,19 @@ describe('tool parity', () => {
           expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }
+      }
+      if (server.name === 'myco_plans') {
+        const LIST_BEFORE = 'op: \"list\" (default) returns plan summaries.';
+        expect(frozen.description).toContain(LIST_BEFORE);
+        expect(current.description).toContain(`with has_more, the cursor of the next page, and body_call, the call that reads one plan's body: ${PLAN_BODY_CALL}`);
+        expect(current.description).toContain('never its body');
+        expect(current.description).toContain('call myco_search with type \"plan\"');
+        expect(current.description).toContain('List example: {\"op\":\"list\"');
+        current.description = frozen.description;
+        expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string' });
+        delete (current.inputSchema.properties as Record<string, unknown>).cursor;
+        expect(current.inputSchema.properties.limit!.description).toContain(`at most ${MAX_PAGE}`);
+        current.inputSchema.properties.limit!.description = frozen.inputSchema.properties.limit!.description;
       }
       if (server.name === 'myco_spores') {
         // The list pages by cursor with no text filter (#2101 S4a): `search` and `offset` are retired arguments, refused

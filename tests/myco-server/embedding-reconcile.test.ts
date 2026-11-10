@@ -14,7 +14,7 @@ import { hasEmbeddingWork } from '../../packages/myco-server/src/core/embedding/
 import { catchUpProjections } from '../../packages/myco-server/src/db/projections/catchup.js';
 import { modelReadiness } from '../../packages/myco-server/src/db/embeddings/status.js';
 import { tombstoneSession } from './helpers/session-deletion.js';
-import { setPlanStatus } from '../../packages/myco-server/src/read/plans.js';
+import { changePlanStatus } from '@myco-server-worker/core/plans.js';
 
 configureSqliteLibrary();
 const opened: ReturnType<typeof sqliteEnv>[] = [];
@@ -88,14 +88,14 @@ test('rebuilds a recovered empty index without changing source knowledge or anot
     .toEqual({ hubness_model: 'other-model', hubness_count: 4 });
 });
 
-test('plan status writes report their own result and invalidate indexed metadata', async () => {
+test('a plan status edit stamps the plan once and invalidates indexed metadata', async () => {
   const f = fixture();
   f.insert('plans', { project_id: 'p', plan_key: 'plan', session_id: 's', event_id: 'e', machine_id: 'm', title: 'architecture', content: 'a plan', content_hash: 'hash', status: 'active', created_at: 1, updated_at: 1, token_id: 't', received_at: 1 });
   await f.step();
   expect((await f.search('architecture')).hits).toHaveLength(1);
-  expect(await setPlanStatus(f.db, { projectId: 'p' }, 'plan', 'completed', 'operator', 2)).toBe(true);
+  expect(await changePlanStatus({ db: f.db, blobs: f.bucket }, { projectId: 'p' }, 'plan', 'completed', 'operator', 2)).toMatchObject({ status: 'completed', updatedAt: 2 });
   expect((await f.search('architecture')).hits).toEqual([]);
-  expect(await setPlanStatus(f.db, { projectId: 'p' }, 'plan', 'completed', 'operator', 3)).toBe(false);
+  expect(await changePlanStatus({ db: f.db, blobs: f.bucket }, { projectId: 'p' }, 'plan', 'completed', 'operator', 3)).toMatchObject({ status: 'completed', updatedAt: 2 });
   expect((await f.step()).phase).toBe('stale');
   expect((await f.search('architecture')).hits).toHaveLength(1);
 });

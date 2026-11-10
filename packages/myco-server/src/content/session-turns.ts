@@ -57,7 +57,7 @@ interface ToolSummary {
 }
 interface PlanAppearanceRow {
   planKey: string; promptId: string | null; title: string | null; status: string; content: string | null; blobKey: string | null;
-  originPath: string | null; progress: string; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number;
+  originPath: string | null; progress: string | null; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number;
   locator: PageLocator;
 }
 interface AttachmentRow {

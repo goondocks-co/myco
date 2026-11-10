@@ -90,8 +90,9 @@ export const plans: ParityScenario = {
     await documentsPublished(target, session);
     const detail = await owner<{ plans: { planKey: string; status: string; progress: string; promptId: string | null }[] }>(`${base}/turns/${p1}`);
     expect(detail.body.plans.map((p) => [p.planKey, p.status, p.progress, p.promptId])).toEqual([[key, 'completed', '1/2', p1]]);
-    const listed = (await mcp({ op: 'list', session, status: 'all' })) as unknown as { id: string; prompt_id: string | null; progress: string }[];
-    expect(listed.filter((p) => p.id === key).map((p) => [p.prompt_id, p.progress])).toEqual([[p1, '1/2']]);
+    // The tool's list is a page of metadata: progress and a preview, never the body.
+    const listed = (await mcp({ op: 'list', session, status: 'all' })) as unknown as { plans: Record<string, unknown>[]; has_more: boolean };
+    expect(listed.plans.filter((p) => p.id === key).map((p) => [p.prompt_id, p.progress, 'content' in p])).toEqual([[p1, '1/2', false]]);
 
     // A later capture with new content clears the administrator and keeps the status the member set.
     await post(session, 'plan', { planKey: key, title: 'Parity', content: '- [x] one\n- [x] two', originPath: path }, Date.now() + 1_000);

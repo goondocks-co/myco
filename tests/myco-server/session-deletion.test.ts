@@ -18,7 +18,7 @@ import { credentialEvents } from '@myco-server-worker/db/credentials/activity.js
 import { machineActivity } from '@myco-server-worker/read/machines.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { searchWords as searchProject } from './helpers/search-fixture.js';
-import { plans_listProjectPlans as listProjectPlans } from '@myco-server-worker/read/catalog/plans.js';
+import { plans_pageProjectPlans as pageProjectPlans } from '@myco-server-worker/read/catalog/plans.js';
 import { plans_getPlan as getPlan } from '@myco-server-worker/read/catalog/plans.js';
 import { sessions_getSession as getSession } from '@myco-server-worker/read/catalog/sessions.js';
 import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
@@ -67,7 +67,7 @@ describe('accepting a deletion', () => {
     expect(count(e.sqlite, 'plans')).toBe(0);
     expect(count(e.sqlite, 'events')).toBeGreaterThan(0);
     expect(await getSession(e.db, SCOPE, S)).toBeNull();
-    expect(await listProjectPlans(e.db, SCOPE)).toEqual([]);
+    expect((await pageProjectPlans(e.db, SCOPE))!.rows).toEqual([]);
     expect(await projectStatistics(e.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', prompts: 0 });
   });
 
@@ -348,10 +348,10 @@ describe('plans past the first page of acceptance', () => {
   it('are gone from the plan lists and direct reads and search, before any job step', async () => {
     const e = await rig();
     for (let n = 0; n < 135; n += 1) await e.send({ eventId: uuid(1000 + n), kind: 'plan', payload: { planKey: uuid(5000 + n), content: `plancanaryword ${n}`, status: 'active', tags: ['plan'] } });
-    expect((await listProjectPlans(e.db, SCOPE)).length).toBeGreaterThan(0);
+    expect((await pageProjectPlans(e.db, SCOPE))!.rows.length).toBeGreaterThan(0);
     await accept(e);
     expect(count(e.sqlite, 'plans')).toBeGreaterThan(0);
-    expect(await listProjectPlans(e.db, SCOPE)).toEqual([]);
+    expect((await pageProjectPlans(e.db, SCOPE))!.rows).toEqual([]);
     const remaining = e.sqlite.query('SELECT plan_key FROM plans LIMIT 1').get() as { plan_key: string };
     expect(await getPlan(e.db, SCOPE, remaining.plan_key)).toBeNull();
     expect((await searchProject(e.db, SCOPE, { query: 'plancanaryword', mode: 'fts' })).hits).toHaveLength(0);
@@ -423,6 +423,7 @@ describe('completion and routes', () => {
       ['document_publication_totals', 'kept by triggers on the document rows'], ['run_output_membership', 'a run keeps its output membership'], ['work_window_sessions', 'a run window'],
       ['session_deletion_jobs', 'the job itself'], ['transcript_reread_jobs', 'an owner reread job'],
       ['search_documents', 'kept by triggers on the records it indexes, and hidden at read once the session is deleted'],
+      ['project_activity', 'kept by triggers on its sources: the tombstone takes a deleted session and its plans out of the feed'],
     ]);
     const phased = new Set(DELETION_PHASES.map(phase => phase.table));
     const missing = (e.sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>)

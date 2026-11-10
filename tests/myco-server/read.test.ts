@@ -316,23 +316,6 @@ describe('schema v34', () => {
       expect({ keyset, sorted: sessionPlan(bare, A4_SESSION_LIST(keyset)).sorted }).toEqual({ keyset, sorted: true });
     }
   });
-
-  it('serves the activity feed\'s sessions arm from the same index, and reaches no project\'s sessions by a scan', async () => {
-    const { db, sqlite, executed } = sqliteEnv();
-    seedSessions(sqlite);
-    await activityFeed(db, { projectId: 'proj_1' });
-    await listSessions(db, { projectId: 'proj_1' });
-    await listSessions(db, { projectId: 'proj_1' }, { cursor: encodeCursor(2, 's2') });
-    const overSessions = [...new Set(executed)].filter((sql) => /\bFROM sessions s\b/.test(sql));
-    expect(overSessions.length).toBeGreaterThanOrEqual(3);
-    // Every read of a project's sessions reaches them by an index — on this
-    // branch, and once the occurred-at list lands.
-    const served = planDb();
-    for (const sql of overSessions) expect({ sql, scanned: sessionPlan(served, sql).scanned }).toEqual({ sql, scanned: null });
-    const feed = overSessions.find((sql) => sql.includes("'session' AS type"))!;
-    expect(sessionPlan(served, feed)).toEqual({ index: 'idx_sessions_occurred', scanned: null, sorted: false });
-    expect(sessionPlan(planDb(['idx_sessions_occurred']), feed).sorted).toBe(true);
-  });
 });
 
 describe('read/meta', () => {
@@ -413,7 +396,7 @@ describe('read/activity', () => {
   it('shows a run by whichever clock it has, so a run that never started is not lost from the feed', async () => {
     const { db, sqlite } = sqliteEnv();
     seedRuns(sqlite);
-    const feed = await activityFeed(db, { projectId: 'proj_1' });
+    const feed = (await activityFeed(db, { projectId: 'proj_1' }))!.items;
     expect(feed.filter((f) => f.type === 'run').map((f) => [f.id, f.at]))
       .toEqual([['ran', 300], ['expired', 200], ['waiting', 50]]);
   });

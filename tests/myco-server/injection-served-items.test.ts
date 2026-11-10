@@ -24,16 +24,16 @@ function rig() {
 }
 
 describe('receipt plan snapshots', () => {
-  it('keeps receipt order and metadata, uses exact legacy keys, and does not replace unavailable snapshots', async () => {
+  it('keeps receipt order and snapshots, and says a reference with no snapshot is unavailable rather than reading today\'s plan', async () => {
     const fixture = rig();
+    const unavailable = (planKey: string) => ({ planKey, title: null, sessionId: null, contentHash: null, unavailable: true });
     try {
       expect(fixture.sqlite.query('SELECT plan_key FROM plans ORDER BY plan_key').all()).toEqual([{ plan_key: 'legacy' }, { plan_key: 'unavailable' }]);
       expect((await receiptPlans(fixture.db, scope, request)).get('receipt')).toEqual([
         { planKey: 'saved', title: 'Served title', sessionId: 'source', contentHash: 'served-hash', unavailable: false },
-        { planKey: 'legacy', title: 'Live title', sessionId: 'source', contentHash: 'live-hash', unavailable: false },
-        { planKey: 'unavailable', title: null, sessionId: null, contentHash: null, unavailable: true },
+        unavailable('legacy'), unavailable('missing'), unavailable('unavailable'),
       ]);
-      expect((await receiptPlans(fixture.db, { projectId: 'proj_2' }, request)).get('receipt')).toEqual([]);
+      expect((await receiptPlans(fixture.db, { projectId: 'proj_2' }, request)).get('receipt')).toEqual(request[0]!.planIds.map(unavailable));
       expect(await receiptPlans(fixture.db, scope, [])).toEqual(new Map());
     } finally { fixture.sqlite.close(); }
   });

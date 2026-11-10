@@ -185,10 +185,9 @@ it.skipIf(!fs.existsSync(BINARY) && !process.env.CI)('routes one machine and ide
       expect(text).not.toContain(`routing marker ${1 - index}`);
       const plans = await client.callTool({ name: 'myco_plans', arguments: { op: 'list', project: PROJECT } });
       expect(plans.isError).not.toBe(true);
-      const rows = extractStructuredResult(plans);
-      expect(Array.isArray(rows)).toBe(true);
-      if (!Array.isArray(rows)) throw new Error('Expected the Project plans');
-      const loaded = await client.callTool({ name: 'myco_plans', arguments: { op: 'get', project: PROJECT, id: rows[0].id } });
+      const page = extractStructuredResult(plans) as { plans?: { id: string }[]; has_more?: boolean };
+      expect({ listed: Array.isArray(page.plans) && page.plans.length > 0, hasMore: typeof page.has_more }).toEqual({ listed: true, hasMore: 'boolean' });
+      const loaded = await client.callTool({ name: 'myco_plans', arguments: { op: 'get', project: PROJECT, id: page.plans![0]!.id } });
       expect(loaded.isError).not.toBe(true);
       const planText = JSON.stringify(extractStructuredResult(loaded));
       expect(planText).toContain(`routing plan marker ${index}`);

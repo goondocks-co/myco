@@ -33,12 +33,18 @@ export const latestSchemaUpgrade: ParityScenario = {
     }
     expect(problems).toEqual([]);
 
-    // The clock catches up on what the upgrade left to rebuild, as a Deployment's own wakes do after a deploy.
-    const activity = async () => (await owner(target, `/api/projects/${target.projectId}/activity`)).body.stats?.state;
-    for (let wake = 0; wake < 12 && await activity() !== 'ready'; wake += 1) {
+    // The clock catches up on what the upgrade left to rebuild, as a Deployment's own wakes do after a deploy: the Project's
+    // statistics, its activity feed and the search index each say when they are ready.
+    const rebuilt = async () => {
+      const home = (await owner(target, `/api/projects/${target.projectId}/activity`)).body;
+      const search = (await owner(target, `/api/projects/${target.projectId}/search?mode=fts&q=upgrade`)).body;
+      return { stats: home.stats?.state, feed: home.building === false ? 'ready' : 'building', search: search.coverage?.state };
+    };
+    const ready = { stats: 'ready', feed: 'ready', search: 'ready' };
+    for (let wake = 0; wake < 12 && JSON.stringify(await rebuilt()) !== JSON.stringify(ready); wake += 1) {
       expect((await owner(target, '/api/wake', { method: 'POST' })).status).toBe(200);
     }
-    expect(await activity()).toBe('ready');
+    expect(await rebuilt()).toEqual(ready);
     const { observed, ...seeded } = seededDeployment(target.deploymentId);
     expect(await observe(target, seeded)).toEqual(observed);
 

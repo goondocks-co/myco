@@ -6,8 +6,8 @@
  * Project's plans as one list: what is in progress, what someone abandoned, and what
  * a session produced weeks ago.
  *
- * All three callers read through `read/plans.ts`, so a plan's progress, its tags
- * and its administrative stamp are derived in one place. The status write is NOT
+ * All three callers read through `read/catalog/plans.ts`: a list carries a plan's
+ * metadata, preview, progress and tags, and only a plan's own read carries its body. The status write is NOT
  * here: a plan's status is set through the session route that already owns it, so
  * there is one write path for a plan's status and this surface stays a read.
  *
@@ -23,8 +23,11 @@ import {
   plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
   plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
 } from '../read/catalog/plans.js';
-import { decodeCursor } from '../read/scope.js';
 import { MAX_PAGE } from './intelligence.js';
+
+/** The refusal of a cursor this list did not issue. */
+const PROJECT_PLAN_CURSOR_REFUSAL = 'malformed cursor: this list pages by "<instant>:<planKey>" exactly as its last answer returned it in `cursor`. '
+  + 'Nothing was read: request the first page again with the same status and no cursor.';
 
 const clampLimit = (raw: string | null): number => {
   const n = raw === null ? NaN : Number(raw);
@@ -32,7 +35,9 @@ const clampLimit = (raw: string | null): number => {
 };
 
 /**
- * The plans this Project holds, newest edit first, a page at a time (`cursor` names the next), optionally one status.
+ * The plans this Project holds, newest edit first, a page at a time (`cursor` names the next, `hasMore` says one
+ * follows), optionally one status. Each row is the plan's metadata, a preview and its progress; the body is read from
+ * the plan's own route.
  *
  * A status outside the catalogue is refused rather than answered empty: a filter
  * nothing matches and a filter nothing could match read the same on a page, and
@@ -47,13 +52,13 @@ export async function handleProjectPlans(env: ServerEnv, ctx: OwnerContext): Pro
   if (status !== null && !WRITABLE_PLAN_STATUSES.has(status)) return Response.json({ error: 'bad_request', reason: PLAN_STATUS_MESSAGE }, { status: 400 });
 
   const cursor = ctx.url.searchParams.get('cursor');
-  if (cursor !== null && decodeCursor(cursor) === null) return Response.json({ error: 'bad_request', reason: 'malformed cursor' }, { status: 400 });
   const page = await pageProjectPlans(env.db, scope, {
     ...(status === null ? {} : { status }),
     limit: clampLimit(ctx.url.searchParams.get('limit')),
     ...(cursor === null ? {} : { cursor }),
   });
-  return ok({ plans: page.rows, cursor: page.cursor, maxPage: MAX_PAGE });
+  if (page === null) return Response.json({ error: 'bad_request', reason: PROJECT_PLAN_CURSOR_REFUSAL }, { status: 400 });
+  return ok({ plans: page.rows, cursor: page.cursor, hasMore: page.cursor !== null, maxPage: MAX_PAGE });
 }
 
 /** `GET /api/projects/{projectId}/plans/{planKey}`: one plan with its tags. A plan under another Project answers 404, as one that never existed. */

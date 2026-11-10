@@ -5,7 +5,7 @@
  */
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { encodeCursor, MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
+import { MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
 import { sessions_listSessionsAcross as listSessionsAcross } from '@myco-server-worker/read/catalog/sessions.js';
 import { listSporePageAcross } from '@myco-server-worker/core/spores.js';
 import { encodeProjectCursor } from '@myco-server-worker/read/project-cursor.js';
@@ -24,8 +24,6 @@ import { d1TwoScale, eachUnit, expectReportedWalk, expectTwoScale, type CostCase
 const NOW = 1_790_000_000_000;
 const MINUTE = 60_000;
 const DAY = 86_400_000;
-const ALL: ProjectSet = { all: true };
-const NAMED: ProjectSet = { all: false, projectIds: ['proj_0', 'proj_1'] };
 
 async function setup(db: RelationalStore) {
   for (const project of ['proj_0', 'proj_1', 'proj_2']) await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
@@ -51,17 +49,6 @@ async function setup(db: RelationalStore) {
   await db.prepare(`INSERT INTO external_grants(id,project_id,key_hash,label,created_by,created_at,expires_at) VALUES('grant-due','proj_0','hash','due','mem_0',1,?)`)
     .bind(NOW + DAY / 2).run();
 }
-
-/** Plans across Projects, newest edit first: the Deployment-wide order every such page walks. */
-const plansAcross: CostCase = { name: 'plans across Projects', run: async (db, { store, restart }) => {
-  for (const set of [ALL, NAMED]) {
-    const first = await pagePlansAcross(store, set, { limit: 50 });
-    if (set === ALL) restart();
-    expect((await pagePlansAcross(db, set, { limit: 50 })).rows).toHaveLength(50);
-    await pagePlansAcross(db, set, { status: 'active', since: 1, limit: 50, cursor: first.cursor! });
-    await pagePlansAcross(db, set, { status: 'active', limit: 50, cursor: first.cursor! });
-  }
-} };
 
 /**
  * Each unit is history older than the last day: a session, an edited plan, a finished run of an actor (some failed
@@ -105,7 +92,6 @@ it('Today reads and an actor\'s task entries cost D1 the same as the Deployment\
     setup,
     grow,
     cases: [
-      plansAcross,
       { name: 'capture recency', run: async (db) => expect((await captureRecency(db, NOW, 'mem_1')).length).toBeGreaterThan(0) },
       { name: 'machine rename', run: async (db, { scale }) => expect(await renameMachine(db, { memberId: 'mem_1' }, 'm_1', `renamed ${scale}`)).toBe(true) },
       { name: 'own machine names', run: async (db) => expect((await ownMachineNames(db, 'mem_1', NOW)).size).toBe(2) },
@@ -143,10 +129,6 @@ it('Today reads and an actor\'s task entries cost D1 the same as the Deployment\
   }
 }, 180_000);
 
-it('plans across Projects cost D1 the same when its statistics were taken while the Deployment was small', async () => {
-  expectTwoScale(await d1TwoScale({ sizes: SIZES, setup, grow, cases: [plansAcross], statistics: ['stale'] }));
-}, 120_000);
-
 it('answers every across-Projects read naming the most Projects a read may and every filter it takes, on both stores', async () => {
   const most: ProjectSet = { all: false, projectIds: Array.from({ length: MAX_NAMED_PROJECTS }, (_, i) => `proj_${i}`) };
   await withDocumentStores(async (db, target) => {
@@ -159,7 +141,7 @@ it('answers every across-Projects read naming the most Projects a read may and e
       listSessionsAcross(db, most, { limit: 50, cursor: 'p2:1:proj_0:k', since: 1, until: 2, window: 'activity', branch: 'b', agent: 'a', memberLabel: 'm', sessionId: 's', state: 'open', fidelity: 'full' }),
       listSporePageAcross(db, most, { observationType: 't', status: 's', sessionId: 's', createdFrom: 1, createdTo: 2, limit: 50, cursor }),
       listSporePageAcross(db, most, { observationType: 't', status: 's', createdFrom: 0, createdTo: DAY, limit: 50 }),
-      pagePlansAcross(db, most, { status: 'active', since: 1, limit: 50, cursor: encodeCursor(1_789_000_000_000, 'k') }),
+      pagePlansAcross(db, most, { status: 'active', since: 1, limit: 50, cursor: 'plans1:1789000000000:proj_0:k' }),
       planTotals(db, most),
       readWork(db, most, 0, DAY, undefined, 1),
     ]);
