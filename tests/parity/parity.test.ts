@@ -23,6 +23,10 @@ for (const file of [...new Glob('scenarios/*.ts').scanSync({ cwd: import.meta.di
     if (isScenario(value) && !scenarios.includes(value)) scenarios.push(value);
   }
 }
+const repeatedNames = scenarios.map((scenario) => scenario.name).filter((name, index, names) => names.indexOf(name) !== index);
+if (repeatedNames.length > 0) {
+  throw new Error(`Parity scenarios share a name, and weights, shards and the smoke list are keyed by name: ${repeatedNames.join('; ')}. Give each scenario a name of its own.`);
+}
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

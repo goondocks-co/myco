@@ -37,7 +37,7 @@ export const recall: ParityScenario = {
       expect(`cortex ${enabled}: ${res.status}`).toBe(`cortex ${enabled}: 200`);
     };
 
-    interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[]; kind?: string; answerId?: string }
+    interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[]; kind?: string; answerId?: string; machine?: unknown }
     const served = async (sessionId: string, promptId: string, text: string): Promise<Served> => {
       const res = await fetch(`${target.url}/context/prompt`, {
         method: 'POST',
@@ -129,8 +129,9 @@ export const recall: ParityScenario = {
     expect(atStart.context).toContain(target.projectId);
     expect(atStart.context?.endsWith(guidance)).toBe(true);
     expect(atStart.kind).toBe('cortex');
-    expect(await servedAtStart(startSession))
-      .toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'], kind: 'cortex' });
+    // A machine another scenario claimed adds its own settings block; this checks only what recall serves.
+    const { machine: _machine, ...repeated } = await servedAtStart(startSession);
+    expect(repeated).toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'], kind: 'cortex' });
     // A member about to have sessions previews the same block, as often as it asks, and no session is recorded.
     const recorded = async () => (await target.sql(`SELECT COUNT(*) AS n FROM session_injections WHERE project_id = ${lit(target.projectId)}`)) as Array<{ n: number }>;
     const before = await recorded();

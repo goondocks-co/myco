@@ -143,6 +143,20 @@ export async function expectPersisted(res: Response, label: string): Promise<voi
 /** A single-quoted SQL literal; scenario values MUST pass through this on their way into `target.sql`. */
 export const lit = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
+/**
+ * Moves a time column of the matching rows `byMs` into the past, for state no client can reach except by waiting out a
+ * time-to-live. Scenarios age rows through this one helper instead of writing rows themselves.
+ */
+export async function ageRows(target: ParityTarget, options: { table: string; column: string; byMs: number; match: Record<string, string> }): Promise<void> {
+  const { table, column, byMs, match } = options;
+  const names = [table, column, ...Object.keys(match)];
+  if (!names.every((name) => /^\w+$/.test(name)) || !Number.isSafeInteger(byMs) || byMs <= 0) {
+    throw new Error(`ageRows takes plain table and column names and a positive whole number of milliseconds; got ${JSON.stringify({ table, column, byMs, match })}`);
+  }
+  const where = Object.entries(match).map(([name, value]) => `${name} = ${lit(value)}`).join(' AND ');
+  await target.sql(`UPDATE ${table} SET ${column} = ${column} - ${byMs}${where === '' ? '' : ` WHERE ${where}`}`);
+}
+
 /** Polls `read` until `pred` answers true or `ms` elapses; answers the last read either way. */
 export async function waitFor<T>(read: () => Promise<T>, pred: (value: T) => boolean, ms = 45_000): Promise<T> {
   const deadline = Date.now() + ms;

@@ -18,10 +18,15 @@ scenario receives a `ParityTarget`; a paired scenario receives two separately
 booted targets. Create state the way a client does, over HTTP
 (`/events` with `memberHeaders()`, `/mcp`, `/api/*` with `ownerHeaders()`),
 and read store state back through `target.sql('SELECT …')` — every value a
-scenario interpolates into SQL goes through `lit()` from `harness.ts`. Of the
-worker, a scenario imports only `constants`, `hash` and `auth/owner/cookie`;
-`npm run check:test-additions` refuses other imports and new
-`target.sql` writes.
+scenario interpolates into SQL goes through `lit()` from `harness.ts`. A row
+that must be older than a time-to-live is aged with `ageRows()` from
+`harness.ts`, never written directly. Of the worker, a scenario imports only
+`constants`, `hash` and `auth/owner/cookie`; a limit a scenario is about moves
+to `constants.ts`. `npm run check:test-additions` refuses, in the statements a
+change adds, other worker imports and a `target.sql` call whose first string
+argument writes (INSERT, UPDATE, DELETE, REPLACE INTO). It reads only the
+statement's own text: a write held in a variable, a helper or an alias passes
+it, so review still checks for those.
 
 ## Target notes
 

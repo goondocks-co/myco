@@ -1,6 +1,6 @@
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { ageRows, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -62,7 +62,7 @@ export const objectLifecycle: ParityScenario = {
       throw new Error(`deletion of ${sessionId} did not finish`);
     };
     /** Past the upload grace, so a deletion's candidate can decide at once instead of waiting it out. */
-    const age = (key: string) => target.sql(`UPDATE blobs SET received_at = received_at - ${BLOB_RESERVATION_TTL_MS + 1000} WHERE project_id = ${lit(target.projectId)} AND key = ${lit(key)}`);
+    const age = (key: string) => ageRows(target, { table: 'blobs', column: 'received_at', byMs: BLOB_RESERVATION_TTL_MS + 1000, match: { project_id: target.projectId, key } });
     const attached = async (label: string, key: string) => {
       const session = `parity-lifecycle-${label}-${stamp}`;
       await post(session, 'session.start', { agent: 'claude-code', startedAt: stamp });

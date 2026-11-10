@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
 import { ORPHAN_AUDIT_PAGE } from '@myco-server-worker/db/storage/blob-orphan-audit.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { ageRows, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -61,7 +61,7 @@ export const toolBlobRetention: ParityScenario = {
     await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
       SELECT ${lit(target.projectId)}, ${lit(orphan)}, 1, 'text/plain', id, ${stamp - BLOB_RESERVATION_TTL_MS - 1}, ${lit(crypto.randomUUID())} FROM member_credentials ORDER BY issued_at LIMIT 1`);
 
-    await target.sql(`UPDATE blobs SET received_at = received_at - ${BLOB_RESERVATION_TTL_MS + 1000} WHERE project_id = ${lit(target.projectId)} AND key IN (${lit(doomed)})`);
+    await ageRows(target, { table: 'blobs', column: 'received_at', byMs: BLOB_RESERVATION_TTL_MS + 1000, match: { project_id: target.projectId, key: doomed } });
     const tombstone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${deleted}/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',
     });
