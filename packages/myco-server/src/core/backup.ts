@@ -215,7 +215,7 @@ export class BackupFormatRetiredError extends Error {
   constructor(readonly counts: Readonly<Record<string, number>>) {
     const held = Object.entries(counts).map(([table, rows]) => `${rows} ${table}`).join(', ');
     const release = LAST_RELEASE_RESTORING_RETIRED_FORMAT === null ? 'the last release before this one' : `Myco ${LAST_RELEASE_RESTORING_RETIRED_FORMAT}, the last release that reads it`;
-    super(`artifact_format_retired: this backup holds content in the format before session documents (${held} rows), which this release does not restore, so nothing was restored from it. Restore it on a separate Deployment running ${release}, take a backup there, and restore that backup here with foreign lineage allowed`);
+    super(`artifact_format_retired: this backup holds content in the format before session documents (${held} rows), which this release does not restore, so nothing was restored from it. Restore it on a separate Deployment running ${release}, take a backup there and download it (Health > Backups > Download), then upload it here with POST /api/backups/restore-upload and body { artifact: <the downloaded text>, allowForeignLineage: true }`);
     this.name = 'BackupFormatRetiredError';
   }
 }

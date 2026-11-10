@@ -71,11 +71,11 @@ export const BACKUP_ACCESS_COMMAND = 'myco server backup-credential --target clo
 /**
  * What a backup in a format this release no longer restores asks of its owner: restore it on a separate server running
  * the release that still reads it (`restoresOn`, or the release before this one when the answer names none), take a
- * backup there, and restore that backup here as one from another server.
+ * backup there, download it, and upload it here as one from another server.
  */
 export function retiredFormatWords(restoresOn: unknown): string {
   const release = typeof restoresOn === 'string' ? `Myco ${restoresOn}` : 'the release before this one';
-  return `This backup is in an older format this release can’t restore, so nothing was restored. Restore it on a separate server running ${release}, take a backup there, and restore that backup here with the switch for a backup from another server turned on.`;
+  return `This backup is in an older format this release can’t restore, so nothing was restored. Restore it on a separate server running ${release}, take a backup there and download it, then send it to this server’s restore upload API marked as a backup from another server. The recovery guide shows the request.`;
 }
 
 /** What the recovery schedule is doing, in one line an owner can act on. */
