@@ -29,6 +29,14 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 const installer = (name: string) => new SymbiontInstaller(loadManifests().find((m) => m.name === name)!, root, resolvePackageRoot(), false, mycoHome);
+/** Claude Code's installer reading its settings template from a package root that ships `template`. */
+function withSettingsTemplate(template: Record<string, unknown>): SymbiontInstaller {
+  const packageRoot = path.join(root, 'package-with-template');
+  const file = path.join(packageRoot, 'src/symbionts/templates/claude-code/settings.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(template));
+  return new SymbiontInstaller(loadManifests().find((m) => m.name === 'claude-code')!, root, packageRoot, false, mycoHome);
+}
 
 describe('settings ownership recovery and restoration', () => {
   it.each(['codex', 'claude-code'])('rolls back %s ownership when writing user settings fails', (name) => {
@@ -64,28 +72,22 @@ describe('settings ownership recovery and restoration', () => {
     const target = path.join(home, '.claude/settings.json');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, '{"features":{"hooks":false}}');
-    const member = installer('claude-code');
-    const load = spyOn(member, 'loadTemplate').mockReturnValue({ features: { hooks: true } });
-    try {
-      member.installSettings();
-      fs.writeFileSync(target, '{"features":{"hooks":"user edit"}}');
-      member.installSettings();
-      member.uninstallSettings();
-      expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ features: { hooks: false } });
-    } finally { load.mockRestore(); }
+    const member = withSettingsTemplate({ features: { hooks: true } });
+    member.installSettings();
+    fs.writeFileSync(target, '{"features":{"hooks":"user edit"}}');
+    member.installSettings();
+    member.uninstallSettings();
+    expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ features: { hooks: false } });
   });
   it('does not restore array entries the user removed after install', () => {
     const target = path.join(home, '.claude/settings.json');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, '{"permissions":{"allow":["user"]}}');
-    const member = installer('claude-code');
-    const load = spyOn(member, 'loadTemplate').mockReturnValue({ permissions: { allow: ['myco'] } });
-    try {
-      member.installSettings();
-      fs.writeFileSync(target, '{"permissions":{"allow":["myco"]}}');
-      member.uninstallSettings();
-      expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ permissions: { allow: [] } });
-    } finally { load.mockRestore(); }
+    const member = withSettingsTemplate({ permissions: { allow: ['myco'] } });
+    member.installSettings();
+    fs.writeFileSync(target, '{"permissions":{"allow":["myco"]}}');
+    member.uninstallSettings();
+    expect(JSON.parse(fs.readFileSync(target, 'utf8'))).toEqual({ permissions: { allow: [] } });
   });
   it('does not recreate a settings file the user removed after install', () => {
     const target = path.join(home, '.claude/settings.json');
@@ -160,11 +162,8 @@ describe('settings ownership recovery and restoration', () => {
     const original = JSON.stringify(user, null, 2) + '\n';
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, original);
-    const member = installer('claude-code');
-    const template = 'features' in user ? { features: { hooks: true } } : { permissions: { allow: ['Bash(myco *)'] } };
-    const load = spyOn(member, 'loadTemplate').mockReturnValue(template);
-    try { member.installSettings(); member.installSettings(); member.uninstallSettings(); }
-    finally { load.mockRestore(); }
+    const member = withSettingsTemplate('features' in user ? { features: { hooks: true } } : { permissions: { allow: ['Bash(myco *)'] } });
+    member.installSettings(); member.installSettings(); member.uninstallSettings();
     expect(fs.readFileSync(target, 'utf8')).toBe(original);
   });
   it.each(['codex', 'claude-code'])('recovers a truncated %s audit without removing unowned settings', (name) => {
