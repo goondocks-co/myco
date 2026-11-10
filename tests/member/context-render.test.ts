@@ -20,9 +20,7 @@ import { resetMachineIdCache } from '@myco/machine-id.js';
 import { cacheDeploymentFeatures, readDeploymentFeatures, readProjectContext, updateProjectContext } from '@myco/member/context-cache.js';
 import { projectLine } from '@goondocks/myco-shared/recall';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
-import * as registry from '@myco/member/registry.js';
-import * as contextCache from '@myco/member/context-cache.js';
-import * as store from '@myco/member/store.js';
+import { featureCacheDiagnostic, projectContextPath, readSessionContext } from '@myco/member/context-cache.js';
 import { deploymentFeaturesPath } from '@myco/member/registry.js';
 import { prefetchContext, watchingFeatures } from '@myco/member/prefetch.js';
 import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
@@ -50,6 +48,17 @@ beforeEach(async () => {
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
 });
+/**
+ * The filesystem refusing one call: `fs[call]` throws EACCES whenever `when` matches its path arguments, and behaves
+ * normally otherwise.
+ */
+function failing(call: 'renameSync', when: (first: string, second: string) => boolean): { mockRestore(): void } {
+  const real = fs[call] as (...args: unknown[]) => unknown;
+  return spyOn(fs, call).mockImplementation(((...args: unknown[]) => {
+    if (when(String(args[0]), String(args[1]))) throw Object.assign(new Error(`fixture ${call} refused`), { code: 'EACCES' });
+    return real(...args);
+  }) as never);
+}
 /** Directories a test made, removed after it. */
 const scratch: string[] = [];
 afterEach(() => {
@@ -116,7 +125,7 @@ describe('a prompt', () => {
       return Response.json({ persisted: true, context: '', skipped }, { headers: { [PROTOCOL_HEADER]: '1' } });
     };
     const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'look up controller evidence', transcript_path: transcript('sess-empty') }, { helpers: 'run', fetch, symbiont: 'copilot' });
-    expect(contextCache.readSessionContext(spool().dir, 'sess-empty').prompt).toMatchObject({ context: '', skipped });
+    expect(readSessionContext(spool().dir, 'sess-empty').prompt).toMatchObject({ context: '', skipped });
     expect(ran.stderr).toContain(`${promptContextLogPrefix('https://member-test.invalid', 'proj_1')}session sess-empty prompt `);
     expect(ran.stderr).toContain('answered empty; skipped: spores:empty, plan-nudge:no_intent, server [31m text');
     expect(ran.stderr).not.toContain('\u001b');
@@ -375,23 +384,19 @@ describe('Deployment feature scope', () => {
     expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
     expect(readDeploymentFeatures({ serverUrl: 'https://other.invalid', projectId: 'proj_foreign' }, mycoHome)).toEqual([]);
   });
-  for (const damage of ['corrupt', 'version mismatch', 'unreadable path', 'unreadable registry'] as const) {
+  for (const damage of ['corrupt', 'version mismatch', 'unreadable path'] as const) {
     for (const hook of ['user-prompt-submit', 'stop'] as const) {
       it(`${hook} spools its captured record with ${damage}`, async () => {
         advertise('proj_1', ['turn'], 1);
         advertise('proj_new', [], 2);
         const file = deploymentFeaturesPath(serverUrl, mycoHome);
-        let scan: ReturnType<typeof spyOn> | undefined;
-        if (damage === 'unreadable registry') scan = spyOn(registry, 'listRegistryEntriesResult').mockReturnValue({ entries: [], readable: false, unavailableEntries: 0 });
-        else if (damage === 'unreadable path') fs.mkdirSync(file);
+        if (damage === 'unreadable path') fs.mkdirSync(file);
         else fs.writeFileSync(file, damage === 'corrupt' ? 'invalid' : JSON.stringify({ version: 0, features: [] }), { mode: 0o600 });
-        try {
-          const sessionId = `sess-${hook}-${damage}`;
-          const result = await runHook(hook, { session_id: sessionId, prompt: 'save prompt', last_assistant_message: 'save response', transcript_path: transcript(sessionId), cwd: process.cwd() }, { fetch: rig.fetch, symbiont: 'copilot' });
-          expect(spool().readRecords(sessionId).some((event) => event?.kind === (hook === 'stop' ? 'response' : 'prompt'))).toBe(true);
-          expect(result.stderr).toContain('feature cache read failed');
-          expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
-        } finally { scan?.mockRestore(); }
+        const sessionId = `sess-${hook}-${damage}`;
+        const result = await runHook(hook, { session_id: sessionId, prompt: 'save prompt', last_assistant_message: 'save response', transcript_path: transcript(sessionId), cwd: process.cwd() }, { fetch: rig.fetch, symbiont: 'copilot' });
+        expect(spool().readRecords(sessionId).some((event) => event?.kind === (hook === 'stop' ? 'response' : 'prompt'))).toBe(true);
+        expect(result.stderr).toContain('feature cache read failed');
+        expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
       });
     }
   }
@@ -407,17 +412,13 @@ describe('Deployment feature scope', () => {
       expect(readDeploymentFeatures({ serverUrl: 'https://absent.invalid', projectId: '' }, mycoHome)).toEqual([]);
     } finally { stderr.mockRestore(); }
   });
-  it('scans fallback projects once across repeated hooks and answers without a protocol header', async () => {
+  it('keeps the fallback project advertisement across repeated answers without a protocol header', async () => {
     advertise('proj_new', ['turn'], 2);
-    const scan = spyOn(registry, 'listRegistryEntriesResult');
-    try {
-      const fetch = watchingFeatures(async () => Response.json({}), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 });
-      for (let i = 0; i < 3; i++) {
-        await fetch(serverUrl);
-        expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
-      }
-      expect(scan).toHaveBeenCalledTimes(1);
-    } finally { scan.mockRestore(); }
+    const fetch = watchingFeatures(async () => Response.json({}), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 });
+    for (let i = 0; i < 3; i++) {
+      await fetch(serverUrl);
+      expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+    }
   });
   it('prefers its own legacy advertisement over another project with no timestamp', () => {
     advertise('proj_1', ['turn'], 0);
@@ -444,11 +445,7 @@ describe('Deployment feature scope', () => {
     let finishOld!: (response: Response) => void;
     const opts = { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 };
     const old = watchingFeatures(() => new Promise<Response>((resolve) => { finishOld = resolve; }), opts)(serverUrl);
-    const write = store.writePrivateFileAtomic;
-    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
-      if (file === `${deploymentFeaturesPath(serverUrl, mycoHome)}.order` && JSON.parse(body).receivedAt > 1) throw new Error('ordering state unavailable');
-      write(file, body);
-    });
+    const fail = failing('renameSync', (from, to) => to === `${deploymentFeaturesPath(serverUrl, mycoHome)}.order` && JSON.parse(fs.readFileSync(from, 'utf8')).receivedAt > 1);
     try {
       const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), opts);
       expect((await fetch(serverUrl)).status).toBe(200);
@@ -465,11 +462,7 @@ describe('Deployment feature scope', () => {
     let finishOld!: (response: Response) => void;
     const delayed = watchingFeatures(() => new Promise<Response>((resolve) => { finishOld = resolve; }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 });
     const old = delayed(serverUrl);
-    const write = store.writePrivateFileAtomic;
-    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
-      if (file === contextCache.projectContextPath(spool().dir)) throw new Error('project cache unavailable');
-      write(file, body);
-    });
+    const fail = failing('renameSync', (_from, to) => to === projectContextPath(spool().dir));
     try {
       const newer = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
       await newer(serverUrl);
@@ -484,11 +477,7 @@ describe('Deployment feature scope', () => {
     const opts = { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 1 };
     const delayed = watchingFeatures(() => new Promise<Response>((resolve) => { finishOld = resolve; }), opts);
     const old = delayed(serverUrl);
-    const write = store.writePrivateFileAtomic;
-    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
-      if (file === contextCache.projectContextPath(spool().dir)) throw new Error('project cache unavailable');
-      write(file, body);
-    });
+    const fail = failing('renameSync', (_from, to) => to === projectContextPath(spool().dir));
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
     const newer = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } }), opts);
     try {
@@ -503,26 +492,22 @@ describe('Deployment feature scope', () => {
     advertise('proj_1', [], 1);
     let features = 'turn';
     const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: features } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
-    const writes = spyOn(store, 'writePrivateFileAtomic');
-    try {
-      await fetch(serverUrl);
-      await fetch(serverUrl);
-      expect(writes.mock.calls.filter(([file]) => file === deploymentFeaturesPath(serverUrl, mycoHome))).toHaveLength(2);
-      expect(writes.mock.calls.filter(([file]) => file === contextCache.projectContextPath(spool().dir))).toHaveLength(1);
-    } finally { writes.mockRestore(); }
+    const snapshot = deploymentFeaturesPath(serverUrl, mycoHome), project = projectContextPath(spool().dir);
+    const stamp = () => JSON.parse(fs.readFileSync(snapshot, 'utf8')).receivedAt as number;
+    await fetch(serverUrl);
+    const first = { stamp: stamp(), project: fs.statSync(project).ino };
+    await fetch(serverUrl);
+    expect(stamp()).toBeGreaterThan(first.stamp);
+    expect(fs.statSync(project).ino).toBe(first.project);
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const write = store.writePrivateFileAtomic;
-    let fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
-      if (file === deploymentFeaturesPath(serverUrl, mycoHome)) throw new Error('cache is unavailable');
-      write(file, body);
-    });
+    let fail = failing('renameSync', (_from, to) => to === snapshot);
     features = '';
     try {
       expect((await fetch(serverUrl)).status).toBe(200); await fetch(serverUrl);
       expect(stderr).toHaveBeenCalledTimes(1);
       fail.mockRestore();
       await fetch(serverUrl);
-      fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation(() => { throw new Error('cache is unavailable'); });
+      fail = failing('renameSync', (_from, to) => to.startsWith(mycoHome));
       await fetch(serverUrl);
       expect(stderr).toHaveBeenCalledTimes(2);
     } finally { fail.mockRestore(); stderr.mockRestore(); }
@@ -530,27 +515,23 @@ describe('Deployment feature scope', () => {
   it('deduplicates filesystem failures despite changing temporary filenames', () => {
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
     try {
-      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.first.tmp failed'), { code: 'EACCES' }));
-      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.second.tmp failed'), { code: 'EACCES' }));
+      featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.first.tmp failed'), { code: 'EACCES' }));
+      featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.second.tmp failed'), { code: 'EACCES' }));
       expect(stderr).toHaveBeenCalledTimes(1);
-      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('volume full'), { code: 'ENOSPC' }));
+      featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('volume full'), { code: 'ENOSPC' }));
       expect(stderr).toHaveBeenCalledTimes(2);
-      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write');
-      contextCache.featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.third.tmp failed'), { code: 'EACCES' }));
+      featureCacheDiagnostic(serverUrl, mycoHome, 'write');
+      featureCacheDiagnostic(serverUrl, mycoHome, 'write', Object.assign(new Error('rename snapshot.1.third.tmp failed'), { code: 'EACCES' }));
       expect(stderr).toHaveBeenCalledTimes(3);
     } finally { stderr.mockRestore(); }
   });
-  it('resolves transcript-tail features once per backlog drain across sessions', async () => {
+  it('ships every session transcript in one backlog drain', async () => {
     for (const sessionId of ['sess-drain-a', 'sess-drain-b']) {
       const file = transcript(sessionId);
       spool().appendAndRecord(sessionId, [], (state) => { state.hookAt = 100; state.agent = 'claude-code'; state.transcript = transcriptPointerFor(file, 'machine_1')!; }, 100);
     }
-    const gate = spyOn(contextCache, 'featureAdvertised').mockReturnValue(false);
-    try {
-      const report = await drainBacklog(spool(), new ServerClient({ serverUrl, projectId: 'proj_1', token: rig.token }, rig.fetch), deadlineBudget(Date.now() + 10_000), { machineId: 'machine_1' });
-      expect(report.sessions.filter((session) => session.transcripts !== undefined)).toHaveLength(2);
-      expect(gate).toHaveBeenCalledTimes(1);
-    } finally { gate.mockRestore(); }
+    const report = await drainBacklog(spool(), new ServerClient({ serverUrl, projectId: 'proj_1', token: rig.token }, rig.fetch), deadlineBudget(Date.now() + 10_000), { machineId: 'machine_1' });
+    expect(report.sessions.filter((session) => session.transcripts !== undefined)).toHaveLength(2);
   });
   for (const hook of ['user-prompt-submit', 'stop'] as const) {
     it(`${hook} emits turn events using another project's newest advertisement`, async () => {

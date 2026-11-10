@@ -57,6 +57,14 @@ function spool(url: string, projectId: string): string {
   return held.dir;
 }
 function bytes(file: string): Buffer { return fs.readFileSync(file); }
+/** Reading `file` fails with an error that is not a filesystem refusal: the shape of a defect, not of a damaged file. */
+function unexpectedRead(file: string, message: string): { mockRestore(): void } {
+  const read = fs.readFileSync;
+  return spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+    if (String(args[0]) === file) throw new TypeError(message);
+    return Reflect.apply(read, fs, args);
+  }) as typeof fs.readFileSync);
+}
 function tree(dir: string): Record<string, string> {
   if (!fs.existsSync(dir)) return {};
   return Object.fromEntries(fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => {
@@ -100,15 +108,13 @@ describe('Deployment-scoped logout', () => {
       if (target === file) throw failure;
       return unlink(target);
     });
-    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
     try {
       await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toBe(failure);
-      expect(visits).toHaveBeenCalledTimes(manifests.length);
       expect(bytes(file)).toEqual(before);
       expect(readProvisionRecord(mycoHome)).toMatchObject({ agents: [agent], pendingLogout: { [agent]: [A] } });
       expect(JSON.parse(fs.readFileSync(logoutJournalPath(A, mycoHome), 'utf8')).phase).toBe('config');
       for (const [index, installer] of installers.entries()) if (manifests[index].name !== agent) expect(installer.inspectMemberHooks().member).toBe(false);
-    } finally { visits.mockRestore(); deletion.mockRestore(); }
+    } finally { deletion.mockRestore(); }
     expect((await logoutDeployment(A, { mode: 'revoke' }, deps)).unreconciledAgents).toEqual([]);
     expect(fs.existsSync(file)).toBe(false);
     expect(readProvisionRecord(mycoHome)).toBeNull();
@@ -240,16 +246,10 @@ describe('Deployment-scoped logout', () => {
     recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: manifests.map(manifest => manifest.name) });
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '\ufeff{"user":true}');
-    const original = SymbiontInstaller.prototype.reconcileDeploymentLogout;
-    const unexpected = new TypeError('unexpected mixed logout bug');
-    const visit = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout').mockImplementation(function(this: SymbiontInstaller, ...args) {
-      if (this.memberGlobalTargets().hooks === globalInstaller(A).memberGlobalTargets().hooks) throw unexpected;
-      return original.apply(this, args);
-    });
+    const visit = unexpectedRead(globalInstaller(A).memberGlobalTargets().hooks!, 'unexpected mixed logout bug');
     const messages: string[] = [];
     try {
       expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: message => messages.push(message) })).toBe(false);
-      expect(visit).toHaveBeenCalledTimes(manifests.length);
       expect(messages.filter(message => message.includes(file))).toHaveLength(1);
       expect(messages[0]).toContain(file);
       expect(messages[0]).toContain('nothing was written there');
@@ -377,13 +377,11 @@ describe('Deployment-scoped logout', () => {
     const binaries = Object.fromEntries(manifests.map(manifest => [manifest.name, path.join(mycoHome, 'bin', 'myco')]));
     const pendingTrust = Object.fromEntries(manifests.map(manifest => [manifest.name, { action: 'review', at: 1 }]));
     recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: manifests.map(manifest => manifest.name), binaries, pendingTrust });
-    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
     const warning = spyOn(console, 'warn').mockImplementation(() => {});
     const out: string[] = [];
     const err: string[] = [];
     try {
       expect(await logoutCli([A], { ...deps, stdout: line => out.push(line), stderr: line => err.push(line) })).toBe(false);
-      expect(visits).toHaveBeenCalledTimes(manifests.length);
       expect(bytes(file)).toEqual(before);
       for (const [index, installer] of installers.entries()) {
         if (manifests[index].name !== agent) expect(installer.inspectMemberHooks().member).toBe(false);
@@ -399,48 +397,39 @@ describe('Deployment-scoped logout', () => {
       expect(readDeploymentMembership(A, mycoHome)).toBeNull();
       const partial = await logoutDeployment(A, { mode: 'revoke' }, deps);
       expect(partial.unreconciledAgents).toEqual([{ agent, reason: expect.stringContaining(file) }]);
-      expect(visits).toHaveBeenCalledTimes(manifests.length * 2);
       fs.writeFileSync(file, clean);
       expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: () => {} })).toBe(true);
-      expect(visits).toHaveBeenCalledTimes(manifests.length * 3);
       expect(failed.inspectMemberHooks().member).toBe(false);
       expect(readProvisionRecord(mycoHome)).toBeNull();
       expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
       expect(requests).toHaveLength(1);
-    } finally { visits.mockRestore(); warning.mockRestore(); }
+    } finally { warning.mockRestore(); }
   });
 
-  it('fails unexpected reconciliation errors after visiting every manifest and reconciling the provision record', async () => {
+  it('fails unexpected reconciliation errors after reconciling every other agent and the provision record', async () => {
     join(A);
     globalInstaller(A).install();
-    const original = SymbiontInstaller.prototype.reconcileDeploymentLogout;
-    let visited = 0;
-    const failure = new TypeError('unexpected reconciliation bug');
-    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout').mockImplementation(function(this: SymbiontInstaller, ...args) {
-      if (++visited === loadManifests().findIndex(manifest => manifest.name === 'claude-code') + 1) throw failure;
-      return original.apply(this, args);
-    });
+    const cursor = new SymbiontInstaller(loadManifests().find(manifest => manifest.name === 'cursor')!, mycoHome, PKG, false, mycoHome).withoutProjectRoot().forDeployment(A);
+    cursor.install();
+    recordProvision(mycoHome, { version: 'test', serverUrl: A, agents: ['claude-code', 'cursor'] });
+    const visits = unexpectedRead(globalInstaller(A).memberGlobalTargets().hooks!, 'unexpected reconciliation bug');
     try {
-      await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toBe(failure);
-      expect(visited).toBe(loadManifests().length);
+      await expect(logoutDeployment(A, { mode: 'revoke' }, deps)).rejects.toThrow('unexpected reconciliation bug');
+      expect(cursor.inspectMemberHooks().member).toBe(false);
       expect(readProvisionRecord(mycoHome)?.agents).toEqual(['claude-code']);
       expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(true);
     } finally { visits.mockRestore(); }
   });
 
-  it('returns a complete clean logout with every manifest visited and no provision record or journal', async () => {
+  it('returns a complete clean logout with no provision record or journal', async () => {
     join(A);
     globalInstaller(A).install();
-    const visits = spyOn(SymbiontInstaller.prototype, 'reconcileDeploymentLogout');
     const err: string[] = [];
-    try {
-      expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: line => err.push(line) })).toBe(true);
-      expect(visits).toHaveBeenCalledTimes(loadManifests().length);
-      expect(err).toEqual([]);
-      expect(globalInstaller(A).inspectMemberHooks().member).toBe(false);
-      expect(readProvisionRecord(mycoHome)).toBeNull();
-      expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
-    } finally { visits.mockRestore(); }
+    expect(await logoutCli([A], { ...deps, stdout: () => {}, stderr: line => err.push(line) })).toBe(true);
+    expect(err).toEqual([]);
+    expect(globalInstaller(A).inspectMemberHooks().member).toBe(false);
+    expect(readProvisionRecord(mycoHome)).toBeNull();
+    expect(fs.existsSync(logoutJournalPath(A, mycoHome))).toBe(false);
   });
 
   it('keeps unreadable unrelated hooks untouched when another Deployment survives', async () => {

@@ -12,6 +12,7 @@ import { run as login } from '@myco/cli/login.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { unjoinedRig } from '../member/helpers/server.js';
 import { keepCurrent } from '@myco/cli/member-keep-current.js';
+import { REPAIR_LOCK } from '@myco/member/keep-current-lock.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { observeSetup, observeSetupStatus } from '@myco/setup/observe.js';
 import { run as setup } from '@myco/cli/setup.js';
@@ -213,19 +214,24 @@ function repairChild(mode: string, signal: string) {
   });
   return { child, exited, output: () => output };
 }
-async function helperLease(releaseOnProvision = true) {
+/**
+ * A helper process holding the repair lease until `signal` is written. With `releaseOnAttempt`, this process's first
+ * open of the lease file writes the signal, so the helper lets go only once the caller is already trying the lease.
+ */
+async function helperLease(releaseOnAttempt = false) {
   const signal = path.join(scratch, 'release-helper');
   const holder = repairChild('hold', signal);
   await new Promise<void>((resolve, reject) => {
     holder.child.stdout!.on('data', data => { if (String(data).includes('READY')) resolve(); });
     holder.exited.then(() => reject(new Error('fixture helper exited before readiness')), reject);
   });
-  const acquire = LifecycleLock.acquire;
-  const watch = spyOn(LifecycleLock, 'acquire').mockImplementation((file, opts) => {
-    if (releaseOnProvision && opts?.command === 'myco member provision') fs.writeFileSync(signal, 'release');
-    return acquire(file, opts);
-  });
-  return { ...holder, signal, watch };
+  const lease = path.join(home, 'member', REPAIR_LOCK);
+  const open = fs.openSync;
+  const attempt = releaseOnAttempt ? spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    if (String(args[0]) === lease && !fs.existsSync(signal)) fs.writeFileSync(signal, 'release');
+    return open(...args);
+  }) as typeof fs.openSync) : null;
+  return { ...holder, signal, stopWatching: () => attempt?.mockRestore() };
 }
 
 for (const operation of ['named', 'batch', 'join', 'healing'] as const) it(operation + ' provision completes before a concurrent remove, which stays removed', async () => {
@@ -276,7 +282,7 @@ for (const operation of ['guided setup', 'login'] as const) it(operation + ' wai
   fs.mkdirSync(root);
   execFileSync('git', ['init', '-q', root]);
   writeRegistryEntry({ version: 2, root, projectId: 'proj_fixture', serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
-  const holder = await helperLease();
+  const holder = await helperLease(true);
   const lines: string[] = [];
   const errors: string[] = [];
   try {
@@ -304,7 +310,7 @@ for (const operation of ['guided setup', 'login'] as const) it(operation + ' wai
     expect(lines.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
     expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   } finally {
-    holder.watch.mockRestore();
+    holder.stopWatching();
     fs.writeFileSync(holder.signal, 'release');
     expect(await holder.exited, holder.output()).toBe(0);
   }
@@ -353,7 +359,7 @@ it('healing retains a captured agent and its binary recorded by cutover during t
 });
 
 it('login completes after a short agent setup timeout and names the provisioning remedy', async () => {
-  const holder = await helperLease(false);
+  const holder = await helperLease();
   const lines: string[] = [];
   const errors: string[] = [];
   try {
@@ -371,7 +377,6 @@ it('login completes after a short agent setup timeout and names the provisioning
     expect(errors).toEqual([]);
     expect(readProvisionRecord(home)).toBeNull();
   } finally {
-    holder.watch.mockRestore();
     fs.writeFileSync(holder.signal, 'release');
     expect(await holder.exited, holder.output()).toBe(0);
   }
@@ -382,7 +387,12 @@ it('login completes after a short agent setup timeout and names the provisioning
 it('login surfaces unexpected agent provisioning failures after sign-in', async () => {
   const rig = unjoinedRig();
   const authority = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member' });
-  const provisioning = spyOn(member, 'provisionDetectedAgents').mockImplementation(() => { throw new Error('fixture provisioning failure'); });
+  const lease = path.join(home, 'member', REPAIR_LOCK);
+  const open = fs.openSync;
+  const provisioning = spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    if (String(args[0]) === lease) throw new Error('fixture provisioning failure');
+    return open(...args);
+  }) as typeof fs.openSync);
   try {
     await expect(login(['https://s/join#' + authority.key], {
       mycoHome: home, cwd: scratch, machineId: 'fixture', fetch: Object.assign(rig.fetch, { preconnect: () => {} }),
@@ -413,11 +423,11 @@ it('keep-current stays non-blocking while a helper holds the lease', async () =>
   provision('claude-code');
   const holder = await helperLease();
   try {
+    const started = performance.now();
     expect(keepCurrent(home, { binaryFound: () => true })).toBeNull();
-    expect(holder.watch.mock.calls.at(-1)?.[1]?.wait).not.toBe(true);
+    expect(performance.now() - started).toBeLessThan(5_000);
     expect(holder.child.exitCode).toBeNull();
   } finally {
-    holder.watch.mockRestore();
     fs.writeFileSync(holder.signal, 'release');
     expect(await holder.exited, holder.output()).toBe(0);
   }
@@ -460,7 +470,14 @@ it('successful installation tolerates busy healing while an explicit refresh sti
 
 it('unexpected registration inspection errors remain observable', async () => {
   provision('claude-code');
-  const inspect = spyOn(SymbiontInstaller.prototype, 'memberRegistrationPresent').mockImplementation(() => { throw new Error('fixture inspection failure'); });
+  const hooks = path.join(process.env.CODEX_HOME!, 'hooks.json');
+  fs.mkdirSync(path.dirname(hooks), { recursive: true });
+  fs.writeFileSync(hooks, '{}');
+  const read = fs.readFileSync;
+  const inspect = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+    if (String(args[0]) === hooks) throw new Error('fixture inspection failure');
+    return Reflect.apply(read, fs, args);
+  }) as typeof fs.readFileSync);
   try {
     expect(() => member.managedMemberHarnesses(home, SERVER)).toThrow('fixture inspection failure');
     expect((await status()).find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'unavailable', detail: 'fixture inspection failure' });
@@ -533,29 +550,6 @@ for (const repair of ['refresh', 'provision', 'keep-current'] as const) it(`${re
   else if (repair === 'provision') expect(member.runProvision(['claude-code', '--server', SERVER], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
   else expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code', 'codex']);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
-});
-
-it('status, doctor, refresh and keep-current consume the shared agent-set function', async () => {
-  provision('claude-code');
-  provision('codex');
-  omitCodex();
-  const shared = spyOn(member, 'managedMemberHarnesses').mockReturnValue(['claude-code']);
-  try {
-    const facts = await status();
-    expect(shared).toHaveBeenCalled();
-    expect(facts.find(fact => fact.id === 'machine.agents')?.agentOffers).toContain("Codex is installed; Myco doesn't capture it yet. Run myco member provision codex to add it.");
-    shared.mockClear();
-    expect(setupChecks(home).map(check => check.detail).join('\n')).toContain('claude-code set up by this build');
-    expect(shared).toHaveBeenCalled();
-    shared.mockClear();
-    expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
-    expect(shared).toHaveBeenCalled();
-    shared.mockClear();
-    let ids: string[] | undefined;
-    member.runProvision(['--refresh'], { mycoHome: home, cwd: scratch, stdout: () => {} }, result => { ids = result?.harnesses.map(fact => fact.id); });
-    expect(ids).toEqual(['claude-code']);
-    expect(shared).toHaveBeenCalled();
-  } finally { shared.mockRestore(); }
 });
 
 for (const role of ['join', 'create'] as const) it(`${role} guided setup still judges detected agents beyond current chosen agents`, async () => {

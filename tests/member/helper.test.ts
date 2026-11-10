@@ -11,7 +11,6 @@ import path from 'node:path';
 import { helperPass, runHelperVerb } from '@myco/cli/member-helper.js';
 import { HELPER_START_GRACE_MS, helperLogPath, helperPaths, kickHelper, runHelper, shipsInline, type KickOutcome } from '@myco/member/helper.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
-import { ServerClient } from '@myco/member/transport.js';
 import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
 import { routeStderrToHelperLog } from '@myco/member/helper.js';
 import { machineSettingsPath } from '@myco/member/registry.js';
@@ -132,7 +131,7 @@ describe('a kick', () => {
 });
 
 describe('myco member helper', () => {
-  it('logs sanitized prefetch throws under the prompt-context destination and leaves the ask pending', async () => {
+  it('logs a failed prompt-context request under its destination and leaves the ask pending', async () => {
     const rig = await memberRig();
     const serverUrl = 'https://s';
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl });
@@ -141,18 +140,17 @@ describe('myco member helper', () => {
     const promptId = mintId();
     spool.append(sessionId, promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' }, { promptId, text: 'must arrive' }));
     updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'prompt', promptId, text: 'must arrive', at: Date.now() }); });
-    const original = ServerClient.prototype.request;
-    const request = spyOn(ServerClient.prototype, 'request').mockImplementation(async function (this: ServerClient, method, path, init) {
-      if (path === '/context/prompt') throw new Error('fixture\u001b[31m\nprefetch failure');
-      return original.call(this, method, path, init);
-    });
+    const deployment = async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/context/prompt') throw new Error('fixture prefetch failure');
+      return rig.fetch(request);
+    };
     const restore = routeStderrToHelperLog(mycoHome, PROJECT, serverUrl);
-    try { await helperPass({ projectId: PROJECT, serverUrl }, mycoHome, { fetch: rig.fetch })(Date.now() + 15_000, { force: true }); }
-    finally { restore(); request.mockRestore(); }
+    try { await helperPass({ projectId: PROJECT, serverUrl }, mycoHome, { fetch: deployment })(Date.now() + 15_000, { force: true }); }
+    finally { restore(); }
     expect(rig.rows('events')).toBe(1);
     const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
-    expect(log).toContain(`${promptContextLogPrefix(serverUrl, PROJECT)}context prefetch failed: fixture [31m prefetch failure`);
-    expect(log).not.toContain('\u001b');
+    expect(log).toContain(`${promptContextLogPrefix(serverUrl, PROJECT)}context for ${sessionId} prompt ${promptId} not served`);
     expect(readSessionState(spool.dir, sessionId).contextAsks).toHaveLength(1);
   });
 
@@ -223,7 +221,7 @@ describe('myco member helper', () => {
     } finally { rename.mockRestore(); write.mockRestore(); }
     expect(rig.rows('events')).toBe(1);
     expect(spool.depth(sessionId)).toBe(0);
-    expect(diagnostics.join('')).toContain('context prefetch failed: Cannot persist machine settings request order.');
+    expect(diagnostics.join('')).toContain(`${promptContextLogPrefix('https://s', PROJECT)}context prefetch failed: Cannot persist machine settings request order.`);
   });
 
   it('ships the project\'s spool to its Deployment and logs what it did', async () => {

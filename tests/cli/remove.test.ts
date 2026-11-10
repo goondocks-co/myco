@@ -12,7 +12,6 @@ import { installWorkerService, workerServiceUnit } from '@myco/runner/service.js
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { legacyFixtureHome } from '../setup/fixtures/legacy-home.ts';
 import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
-import { LocalVolume } from '@myco/server/local-volume.js';
 import { resolveLocalPaths } from '@myco/server/local.js';
 import { spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -23,7 +22,8 @@ import { retiredVerbMessage } from '@myco/cli/retired-verbs.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { defaultSpec, servicePaths, renderUnit } from '@myco/server/service.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
-import { MemberFileReadRefusal, SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 
 const SERVER = 'https://member.example';
@@ -164,13 +164,20 @@ describe('member-only remove', () => {
     const manifests = loadManifests();
     const installers = manifests.map(manifest => new SymbiontInstaller(manifest, home, resolvePackageRoot(), false, home).withoutProjectRoot().forDeployment(SERVER));
     for (const installer of installers) installer.install();
-    const file = path.join(user, '.claude', 'settings.json');
-    const failure = unexpected ? new TypeError('unexpected uninstall bug') : new MemberFileReadRefusal(file, new SyntaxError('unreadable after preflight'));
-    const original = SymbiontInstaller.prototype.uninstallMemberRegistration;
-    const uninstall = spyOn(SymbiontInstaller.prototype, 'uninstallMemberRegistration').mockImplementation(function(this: SymbiontInstaller) {
-      if (this.memberGlobalTargets().hooks === file) throw failure;
-      return original.call(this);
-    });
+    // The unexpected error fails Claude's own write; the read refusal lands on the agent torn down last, once
+    // teardown has begun and the preflight has read every file.
+    const failing = unexpected ? manifests.findIndex(manifest => manifest.name === 'claude-code')
+      : installers.findLastIndex(installer => installer.memberGlobalTargets().hooks !== undefined && fs.existsSync(installer.memberGlobalTargets().hooks!));
+    const agent = manifests[failing].name;
+    const file = installers[failing].memberGlobalTargets().hooks!;
+    const failure = new TypeError('unexpected uninstall bug');
+    const rename = fs.renameSync;
+    let edited = false;
+    const uninstall = spyOn(fs, 'renameSync').mockImplementation(((...args: Parameters<typeof fs.renameSync>) => {
+      if (unexpected && String(args[1]) === file) throw failure;
+      if (!unexpected && !edited) { edited = true; fs.rmSync(file); fs.mkdirSync(file); }
+      return rename(...args);
+    }) as typeof fs.renameSync);
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
       if (unexpected) await expect(run(['--yes'], deps())).rejects.toBe(failure);
@@ -179,9 +186,9 @@ describe('member-only remove', () => {
         expect(process.exitCode).toBe(1);
       }
       for (const [index, installer] of installers.entries()) {
-        expect(installer.inspectMemberHooks().member).toBe(manifests[index].name === 'claude-code');
+        if (index !== failing) expect(installer.inspectMemberHooks().member, manifests[index].name).toBe(false);
       }
-      expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+      expect(readProvisionRecord(home)?.agents).toEqual([agent]);
       expect(warn.mock.calls.filter(([line]) => String(line).includes(unexpected ? 'unexpected uninstall bug' : file))).toHaveLength(1);
     } finally { warn.mockRestore(); uninstall.mockRestore(); }
   });
@@ -200,18 +207,16 @@ describe('member-only remove', () => {
     platform.commands.length = 0;
     const before = snapshot(root);
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
-    const preflight = spyOn(SymbiontInstaller.prototype, 'assertMemberFilesReadable');
     try {
       await run(purge ? ['--purge', '--yes'] : ['--yes'], deps());
       expect(process.exitCode).toBe(1);
-      expect(new Set(preflight.mock.contexts).size).toBe(manifests.length);
       expect(snapshot(root)).toEqual(before);
       expect(platform.commands).toEqual([]);
       expect(readProvisionRecord(home)?.agents).toEqual(manifests.map(manifest => manifest.name).sort());
       expect(warn.mock.calls.filter(([line]) => String(line).includes(file))).toHaveLength(1);
       expect(warn.mock.calls.flat().join('\n')).toContain('removal aborted');
       expect(fs.existsSync(path.join(home, 'install.json'))).toBe(true);
-    } finally { warn.mockRestore(); preflight.mockRestore(); }
+    } finally { warn.mockRestore(); }
   });
 
   it('reports every typed preflight refusal before throwing an unexpected error without teardown', async () => {
@@ -222,22 +227,26 @@ describe('member-only remove', () => {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, '\ufeff{"user":true}');
     }
-    const original = SymbiontInstaller.prototype.assertMemberFilesReadable;
     const failure = new TypeError('unexpected preflight bug');
-    const inspect = spyOn(SymbiontInstaller.prototype, 'assertMemberFilesReadable').mockImplementation(function(this: SymbiontInstaller) {
-      if (this.memberGlobalTargets().hooks === path.join(user, '.claude', 'settings.json')) throw failure;
-      return original.call(this);
-    });
+    const settings = path.join(user, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    if (!fs.existsSync(settings)) fs.writeFileSync(settings, '{}');
     platform.commands.length = 0;
     const before = snapshot(root);
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await expect(run(['--purge', '--yes'], deps())).rejects.toBe(failure);
+      const read = fs.readFileSync;
+      const inspect = spyOn(fs, 'readFileSync').mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+        if (String(args[0]) === settings) throw failure;
+        return Reflect.apply(read, fs, args);
+      }) as typeof fs.readFileSync);
+      try { await expect(run(['--purge', '--yes'], deps())).rejects.toBe(failure); }
+      finally { inspect.mockRestore(); }
       expect(snapshot(root)).toEqual(before);
       expect(platform.commands).toEqual([]);
       for (const file of files) expect(warn.mock.calls.filter(([line]) => String(line).includes(file))).toHaveLength(1);
       expect(warn.mock.calls.flat().join('\n')).toContain('removal aborted');
-    } finally { inspect.mockRestore(); warn.mockRestore(); }
+    } finally { warn.mockRestore(); }
   });
 
   it('removes registrations despite a truncated internal audit and preserves unowned settings', async () => {
@@ -788,18 +797,22 @@ describe('member-only remove', () => {
   it('keeps lease files until the Deployment lease has closed', async () => {
     installMarker();
     write('server/local/myco.sqlite');
-    const original = LocalVolume.prototype.exclusive;
-    const lease = spyOn(LocalVolume.prototype, 'exclusive').mockImplementation(function(this: LocalVolume, callback: () => unknown) {
-      return original.call(this, () => {
-        const result = callback();
-        expect(fs.existsSync(path.join(home, 'server/local.lock'))).toBe(true);
-        expect(fs.existsSync(path.join(home, 'server/cloudflare.lock'))).toBe(true);
-        expect(fs.existsSync(path.join(home, 'server/local'))).toBe(false);
-        return result;
-      });
-    });
+    // Each lease file, as it is removed, is tried the way another process would take its lease.
+    const removals: Array<{ file: string; held: boolean }> = [];
+    const rm = fs.rmSync;
+    const leases = spyOn(fs, 'rmSync').mockImplementation(((...args: Parameters<typeof fs.rmSync>) => {
+      const file = String(args[0]);
+      if (['local.lock', 'cloudflare.lock'].includes(path.basename(file)) && path.basename(path.dirname(file)) === 'server') {
+        const probe = LifecycleLock.acquire(file, { command: 'fixture other operator' });
+        removals.push({ file: path.basename(file), held: !probe.acquired });
+        if (probe.acquired) probe.lock.release();
+      }
+      return rm(...args);
+    }) as typeof fs.rmSync);
     try { await run(['--purge', '--allow-deployment-loss', '--yes'], deps()); }
-    finally { lease.mockRestore(); }
+    finally { leases.mockRestore(); }
+    expect(removals.map(removal => removal.file).sort()).toEqual(['cloudflare.lock', 'local.lock']);
+    expect(removals.filter(removal => removal.held)).toEqual([]);
     expect(fs.existsSync(home)).toBe(false);
   });
 });

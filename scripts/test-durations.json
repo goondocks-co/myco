@@ -28,7 +28,7 @@
     "tests/cli/login-agents.test.ts": 6527,
     "tests/cli/login-exit.test.ts": 51546,
     "tests/cli/login.test.ts": 2428,
-    "tests/cli/member-binary-current.test.ts": 1871,
+    "tests/cli/member-binary-current.test.ts": 9800,
     "tests/cli/member-connect.test.ts": 2517,
     "tests/cli/member-copy.test.ts": 242,
     "tests/cli/member-home-agreement.test.ts": 2156,

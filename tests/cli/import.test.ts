@@ -12,7 +12,7 @@ import fs, { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import * as history from '@myco/member/import.js';
+import { harnessHistory, withHarnessHome } from '../member/helpers/history-fakes.js';
 import { run as login } from '@myco/cli/login.js';
 import { runJoin } from '@myco/cli/member.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
@@ -139,33 +139,50 @@ describe('the import verb', () => {
 });
 
 describe('the join paths', () => {
-  for (const verb of ['login', 'member join'] as const) it(`a failed import never fails ${verb}`, async () => {
+  // `waiting`: the Deployment answers the import plan 503. `failed`: the plan takes the session, and reading it to ship
+  // throws a defect, not a refusal.
+  for (const verb of ['login', 'member join'] as const) for (const outcome of ['waiting', 'failed'] as const) it(`an import that ${outcome === 'waiting' ? 'is still waiting' : 'fails'} never fails ${verb}`, async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-import-signin-'));
     const root = path.join(home, 'repo');
     fs.mkdirSync(root);
     execFileSync('git', ['init', '-q'], { cwd: root });
     const rig = unjoinedRig();
     const lines: string[] = [];
-    const deps = { fetch: rig.fetch as typeof fetch, mycoHome: home, cwd: root, machineId: 'machine_person', stdout: (line: string) => lines.push(line), stderr: (line: string) => lines.push(line) };
-    const imported = spyOn(history, 'runImport').mockRejectedValue(new Error('history fixture failed'));
+    const history = harnessHistory(home, root);
+    const restoreHome = withHarnessHome(home);
+    const plans: string[] = [];
+    const deployment = async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname !== '/import/plan') return rig.fetch(request);
+      plans.push(request.url);
+      if (outcome === 'waiting') return new Response('{}', { status: 503 });
+      const offered = await request.json() as { candidates: Array<{ transcriptId: string }> };
+      shipping = true;
+      return Response.json({ persisted: true, candidates: offered.candidates.map(candidate => ({ transcriptId: candidate.transcriptId, take: 'from', fromOffset: 0 })) });
+    };
+    let shipping = false;
+    const open = fs.openSync;
+    const reading = spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (shipping && String(args[0]) === history) throw new TypeError('fixture history read failed');
+      return open(...args);
+    }) as typeof fs.openSync);
+    const deps = { fetch: deployment as typeof fetch, mycoHome: home, cwd: root, machineId: 'machine_person', stdout: (line: string) => lines.push(line), stderr: (line: string) => lines.push(line) };
     try {
       const invitation = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', ...(verb === 'login' ? { projectId: 'proj_1' } : {}) });
       expect(await login([`https://s/join#${invitation.key}`, '--no-agents', ...(verb === 'login' ? ['--root', root] : [])], deps)).toBe(true);
       if (verb === 'member join') expect(await runJoin(['--new', '--no-agents', '--no-worker'], deps)).not.toBeNull();
-      expect(imported).toHaveBeenCalledTimes(1);
-      expect(imported.mock.calls[0]?.[0]).toMatchObject({ serverUrl: 'https://s', ...(verb === 'member join' ? { project: readRegistryEntry(root, home)!.projectId } : {}) });
+      expect(plans).toHaveLength(1);
       expect(readDeploymentMembership('https://s', home)).not.toBeNull();
       expect(readRegistryEntry(root, home)).not.toBeNull();
-      expect(lines.join('\n')).toContain('Could not import past sessions (history fixture failed)');
+      expect(lines.join('\n')).toContain(outcome === 'waiting' ? 'Past sessions are still waiting' : 'Could not import past sessions (fixture history read failed)');
       expect(lines.join('\n')).toContain('`myco import` retries them');
     } finally {
-      imported.mockRestore();
+      reading.mockRestore();
+      restoreHome();
       rig.env.sqlite.close();
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
-
-
 });
 
 describe('import stopping details', () => {
