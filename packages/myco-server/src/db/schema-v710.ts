@@ -1,3 +1,4 @@
+import { reaching, type Reach } from './schema-step.js';
 /** Settings revisions outlive configured values and reset receipts. */
 export const V710_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS setting_revisions (
@@ -19,3 +20,6 @@ export const V710_STATEMENTS: readonly string[] = [
         ON CONFLICT(scope,leaf) DO UPDATE SET revision=setting_revisions.revision+1; END`;
   })),
 ];
+
+/** Why the step reaches tables earlier steps created. */
+export const V710_REACHES: readonly Reach[] = reaching(['deployment_settings', 'deployment_setting_resets', 'project_settings', 'project_capabilities'], 'Setting mutations advance the persistent leaf revision in the same transaction.');

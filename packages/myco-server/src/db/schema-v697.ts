@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 /** Committed inventory, revision-bound currency and map-owned evidence retention. */
 export const V697_STATEMENTS: readonly string[] = [
   `ALTER TABLE agent_runs ADD COLUMN repository_files TEXT CHECK(repository_files IS NULL OR json_valid(repository_files))`,
@@ -14,4 +15,11 @@ export const V697_STATEMENTS: readonly string[] = [
       AND NOT EXISTS (SELECT 1 FROM canopy_maps WHERE project_id=NEW.project_id AND source_run_id=NEW.id) BEGIN
       UPDATE agent_runs SET repository_files=NULL WHERE project_id=NEW.project_id AND id=NEW.id;
     END`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V697_REACHES: readonly Reach[] = [
+  ...changing(['agent_runs'], 'Map preparation retains its complete committed file inventory. Terminal map runs release unreferenced repository evidence.'),
+  ...changing(['spore_curation_candidates'], 'Whole-read candidates retain the server currency fact for their revision.'),
+  ...reaching(['canopy_maps'], 'The map owns release of its previous committed inventory.'),
 ];

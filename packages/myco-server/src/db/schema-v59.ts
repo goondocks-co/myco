@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 /**
  * Schema v59: a machine's name belongs to the machine.
  *
@@ -18,4 +19,9 @@ export const V59_STATEMENTS: readonly string[] = [
       WHERE c.machine_id = machine_claims.machine_id AND c.runtime_label IS NOT NULL
       ORDER BY (c.revoked_at IS NULL) DESC, c.issued_at DESC, c.id DESC LIMIT 1)
     WHERE label IS NULL`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V59_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_machine_claims_member', read: 'a machine belongs to a member, not a Project: a viewer\'s own machines are named, and a member\'s page of machines read, by member' },
 ];

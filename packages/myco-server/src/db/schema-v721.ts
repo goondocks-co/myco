@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 export const V721 = 721;
 
 /**
@@ -64,4 +65,19 @@ export const V721_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS search_revision_projects_projects_update AFTER UPDATE OF project_id, archived_at ON projects\n      WHEN (OLD.project_id IS NOT NEW.project_id OR OLD.archived_at IS NOT NEW.archived_at) BEGIN UPDATE search_revisions SET revision = revision + 1 WHERE kind = 'projects'; END",
   "CREATE TRIGGER IF NOT EXISTS search_revision_projects_projects_insert AFTER INSERT ON projects\n      BEGIN UPDATE search_revisions SET revision = revision + 1 WHERE kind = 'projects'; END",
   "CREATE TRIGGER IF NOT EXISTS search_revision_projects_projects_delete AFTER DELETE ON projects\n      BEGIN UPDATE search_revisions SET revision = revision + 1 WHERE kind = 'projects'; END",
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V721_REACHES: readonly Reach[] = [
+  ...reaching(['spores'], 'Spore mutations re-derive the one count fact of the spore key they name. The Deployment-wide spore index is replaced under its own name with the Project after the id. The spore list across Projects orders by the instant, the id and the Project, and walks this index with no sort. A Project\'s spore list, unfiltered or over a window of days, walks its spores newest first by instant and id with no sort. The list of a session\'s spores walks this index newest first by instant and id, with no sort, rebuilt under its own name. The list of a Project\'s spores of one status walks this index newest first by instant and id, with no sort, rebuilt under its own name. The list of a Project\'s spores of one type walks this index newest first by instant and id, with no sort, rebuilt under its own name. The list of one author\'s spores walks this index newest first by instant and id, with no sort, rebuilt under its own name. The spore list across Projects narrowed to one status walks this index newest first by instant, id and Project, with no sort. The spore list across Projects narrowed to one type walks this index newest first by instant, id and Project, with no sort. A change to what ranked search orders, filters or reaches by moves that search revision, which fences search cursors.'),
+  ...changing(['projection_catchup'], 'Spore and plan totals record whether existing rows need counting by the catch-up.'),
+  ...reaching(['plans'], 'Plan mutations re-derive the one count fact of the plan key they name. A change to what ranked search orders, filters or reaches by moves that search revision, which fences search cursors.'),
+  ...reaching(['processed_resources', 'search_blob_chunks', 'sessions', 'session_tombstones', 'turn_cards', 'knowledge_release_state', 'projects'], 'A change to what ranked search orders, filters or reaches by moves that search revision, which fences search cursors.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V721_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_spores_created_deployment', read: 'the spores list spans every Project, newest first' },
+  { index: 'idx_spores_status_deployment', read: 'the spores list across every Project narrowed to one status, newest first' },
+  { index: 'idx_spores_type_deployment', read: 'the spores list across every Project narrowed to one type, newest first' },
 ];

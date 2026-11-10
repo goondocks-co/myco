@@ -1,4 +1,4 @@
-import { retiring } from './schema-step.js';
+import { reaching, retiring, type SchemaStep, changing } from './schema-step.js';
 import { EVENT_REFERENCE_COLUMNS, eventReferenceUpdates } from './event-references.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { documentRecordIdSql, eventPayloadFieldSql, liveDocumentPromptSql, documentPromptUnreadSql, sessionDocumentUnreadSql } from './document-tables.js';
@@ -108,19 +108,23 @@ const backfills = rangeSources.flatMap(source=>Array.from({length:source.parts},
       AND e.project_id=p.project_id AND e.event_id=p.event_id AND e.kind IN (${source.kinds}) AND (e.payload_format='archived' OR p.${source.blob} IS NOT NULL${source.table==='tool_calls'?' OR p.output_blob_key IS NOT NULL':''})`)];
 }));
 
+const RETAINED = 'Retained documents and raw blob holders are required until relational content storage is retired.';
+
 /** Reference backfills use fixed rowid ranges and never rewrite their event sources. */
-export const RETIREMENT_SCHEMA_STEPS = [
-  [documentGuard[0]!,emptyDocuments,...documentGuard.slice(1),clearableStopWake,...referenceSchema,
+export const RETIREMENT_SCHEMA_STEPS: readonly SchemaStep[] = [
+  { statements: [documentGuard[0]!,emptyDocuments,...documentGuard.slice(1),clearableStopWake,...referenceSchema,
     `CREATE TABLE IF NOT EXISTS ${rangeTable} (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID`,
     ...rangeSources.map(({table})=>`INSERT INTO ${rangeTable} SELECT '${table}',COALESCE(MAX(rowid),0) FROM ${table}`)],
-  ...backfills,
-  [
+    reaches: [...reaching(['events'], RETAINED), ...changing(['session_documents'], RETAINED)] },
+  ...backfills.map((statements) => ({ statements, reaches: changing(['event_refs'], RETAINED) })),
+  { statements: [
     `UPDATE raw_provenance_backfill SET source=0,cursor_project='',cursor_id='' WHERE complete=0`,
     'ALTER TABLE transcript_publication ADD COLUMN diagnostic TEXT',
     ...LEGACY_CONTENT_TRIGGERS.map(name=>`DROP TRIGGER IF EXISTS ${name}`),
     ...documentCounters,
     `DROP TABLE ${rangeTable}`,
   ],
-].map((statements,index,steps)=>index===steps.length-1 ? {version:117+index,statements,retires:retiring('trigger',LEGACY_CONTENT_TRIGGERS,
-  'Each read or wrote the relational content tables retired at step 117; the document counters rebuild extraction_acks_session_read_insert to count document prompts.')}
-  : {version:117+index,statements});
+  retires: retiring('trigger',LEGACY_CONTENT_TRIGGERS,
+    'Each read or wrote the relational content tables retired at step 117; the document counters rebuild extraction_acks_session_read_insert to count document prompts.'),
+  reaches: [...reaching(['session_prompts', 'session_documents', 'extraction_acks'], RETAINED), ...changing(['raw_provenance_backfill', 'transcript_publication', 'session_read_facts'], RETAINED)] },
+].map((step, index) => ({ version: 117 + index, ...step }));

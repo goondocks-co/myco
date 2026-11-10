@@ -1,5 +1,5 @@
 import { changed, trigger } from './ddl.js';
-import { retiring, type SchemaStep } from './schema-step.js';
+import { retiring, type SchemaStep, reaching, changing } from './schema-step.js';
 import { LAST_S8B, NEXT_S8B } from './schema-vNEXT-s8b.js';
 import { BACKUP_WEEK_HEADS_PHASE, BACKUP_WEEK_HEADS_PROJECTION } from './storage/backup-week-heads.js';
 
@@ -43,15 +43,31 @@ export const VNEXT_S8B_STEPS: readonly SchemaStep[] = [
     'CREATE TABLE IF NOT EXISTS backup_week_heads(week INTEGER PRIMARY KEY, created_at INTEGER NOT NULL, id TEXT NOT NULL) WITHOUT ROWID',
     'CREATE TABLE IF NOT EXISTS backup_retention_state(slot INTEGER PRIMARY KEY CHECK(slot=1), generation INTEGER NOT NULL DEFAULT 0, backlog INTEGER NOT NULL DEFAULT 0)',
     'INSERT INTO backup_retention_state(slot) VALUES(1) ON CONFLICT DO NOTHING',
+  ],
+    reaches: changing(['backups'], 'Each backup carries a verification state, its week heads are built through the shared catch-up, the upgrade names a duplicate key instead of guessing, and the unique index replaces the non-unique one.'),
+  },
+  { version: NEXT_S8B + 1, statements: ['CREATE INDEX IF NOT EXISTS idx_backups_unpinned ON backups(created_at,id) WHERE pinned=0'], reaches: reaching(['backups'], 'Retention and object settlement seek a backup through these orders, and one object has at most one backup.'), deploymentIndexes: [
+    { index: 'idx_backups_unpinned', read: 'retention seeks the newest unpinned backups and walks its victims oldest first' },
   ] },
-  { version: NEXT_S8B + 1, statements: ['CREATE INDEX IF NOT EXISTS idx_backups_unpinned ON backups(created_at,id) WHERE pinned=0'] },
-  { version: NEXT_S8B + 2, statements: ["CREATE INDEX IF NOT EXISTS idx_backups_verified ON backups(created_at,id) WHERE verification_state='verified'"] },
+  { version: NEXT_S8B + 2, statements: ["CREATE INDEX IF NOT EXISTS idx_backups_verified ON backups(created_at,id) WHERE verification_state='verified'"], reaches: reaching(['backups'], 'Retention and object settlement seek a backup through these orders, and one object has at most one backup.'), deploymentIndexes: [
+    { index: 'idx_backups_verified', read: 'the keep rule seeks the newest verified backup' },
+  ] },
   { version: NEXT_S8B + 3, statements: [
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_backups_key_unique ON backups(key)',
     'DROP INDEX IF EXISTS idx_backups_key',
-  ], retires: retiring('index', ['idx_backups_key'], 'The unique index on the same key replaces it, and object settlement seeks a backup through that one.') },
+  ], retires: retiring('index', ['idx_backups_key'], 'The unique index on the same key replaces it, and object settlement seeks a backup through that one.'),
+    reaches: reaching(['backups'], 'Retention and object settlement seek a backup through these orders, and one object has at most one backup.'),
+    deploymentIndexes: [
+      { index: 'idx_backups_key_unique', read: 'object settlement seeks the backup that registers a physical key, and one object is registered by at most one backup' },
+    ],
+  },
   { version: LAST_S8B, statements: [
     INSERT_TRIGGER.sql, DELETE_TRIGGER.sql, UPDATE_TRIGGER.sql,
     `INSERT INTO projection_catchup(projection,phase,done) SELECT '${BACKUP_WEEK_HEADS_PROJECTION}','${BACKUP_WEEK_HEADS_PHASE}',NOT EXISTS(SELECT 1 FROM backups) ON CONFLICT DO NOTHING`,
-  ] },
+  ],
+    reaches: [
+      ...reaching(['backups'], 'A change to a backup moves its week head and the keep-set generation in the same commit.'),
+      ...changing(['projection_catchup'], 'Each backup carries a verification state, its week heads are built through the shared catch-up, the upgrade names a duplicate key instead of guessing, and the unique index replaces the non-unique one.'),
+    ],
+  },
 ];

@@ -1,3 +1,4 @@
+import { reaching, type SchemaStep, changing } from './schema-step.js';
 /** Quiet deadlines retain an hour of fresh admission and the full idle wait for already historical receipts. */
 const idleMinutes = `COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
   WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
@@ -42,6 +43,12 @@ const backfill = Array.from({ length: PARTS }, (_, part) => [
       : ` AND rowid <= ((SELECT high FROM _learning_quiet_margin_range)/${PARTS})*${part + 1}`}`,
 ]);
 
+const BACKFILL = 'Learning queue metadata backfills in disjoint rowid transactions while preserving cards and coverage.';
+const QUEUES = 'Learning source activity, quiet eligibility and retry deadlines stay in indexed work queues.';
+
 /** Each deadline backfill commits one disjoint rowid range. */
-export const LEARNING_QUIET_MARGIN_STEPS = [setup, ...backfill, ['DROP TABLE _learning_quiet_margin_range']]
-  .map((statements, index) => ({ version: 659 + index, statements }));
+export const LEARNING_QUIET_MARGIN_STEPS: readonly SchemaStep[] = [
+  { statements: setup, reaches: reaching(['learning_sessions', 'sessions', 'deployment_settings'], `${BACKFILL} ${QUEUES}`) },
+  ...backfill.map((statements) => ({ statements, reaches: changing(['learning_sessions'], BACKFILL) })),
+  { statements: ['DROP TABLE _learning_quiet_margin_range'] },
+].map((step, index) => ({ version: 659 + index, ...step }));

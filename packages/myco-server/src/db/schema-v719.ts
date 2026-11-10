@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 /** Run admission and task heads. */
 export const V719 = 719;
 export const V719_STATEMENTS: readonly string[] = [
@@ -27,4 +28,18 @@ export const V719_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS task_runtime_mark_update AFTER UPDATE ON task_runtime WHEN OLD.queued_count IS NOT NEW.queued_count OR OLD.oldest_run_id IS NOT NEW.oldest_run_id OR OLD.oldest_queued_at IS NOT NEW.oldest_queued_at OR OLD.hold_reason IS NOT NEW.hold_reason OR OLD.hold_since IS NOT NEW.hold_since BEGIN UPDATE change_marks SET revision=revision+1 WHERE kind='runs'; END",
   "CREATE TRIGGER IF NOT EXISTS task_runtime_mark_delete AFTER DELETE ON task_runtime BEGIN UPDATE change_marks SET revision=revision+1 WHERE kind='runs'; END",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'run_admission','runs',NOT EXISTS(SELECT 1 FROM agent_runs WHERE status IN ('pending', 'running', 'queued'))"
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V719_REACHES: readonly Reach[] = [
+  ...reaching(['agent_runs'], 'Admission catch-up seeks only in-flight source rows in Project/run order. Named run identities maintain admission contributions and queue heads.'),
+  ...changing(['projection_catchup'], 'Admission readiness changes refresh the runs section. Run admission counts remain building until the bounded run catch-up completes.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V719_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_run_live_id', read: 'dispatch diagnostics exclude a named run across the Deployment' },
+  { index: 'idx_task_due_unclaimed', read: 'worker polls seek any eligible queued identity across the Deployment' },
+  { index: 'idx_task_due_claim', read: 'worker claims seek the task and origin head across Projects' },
+  { index: 'idx_task_runtime_task', read: 'task holds address current Project heads across the Deployment' },
 ];

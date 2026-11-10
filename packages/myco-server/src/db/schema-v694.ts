@@ -1,3 +1,4 @@
+import { reaching, type Reach } from './schema-step.js';
 import { LEARNING_RETRY_KEY } from './run-context.js';
 
 const retry = (field: string) => `json_extract(NEW.run_context, '$.${LEARNING_RETRY_KEY}.${field}')`;
@@ -38,3 +39,6 @@ export const V694_STATEMENTS: readonly string[] = [
       WHERE NEW.task = 'title-summary' AND NEW.attempt_counted = 1 AND project_id = NEW.project_id AND id = NEW.id;
     END`,
 ];
+
+/** Why the step reaches tables earlier steps created. */
+export const V694_REACHES: readonly Reach[] = reaching(['agent_runs'], 'The replacement terminal trigger excludes runner sign-in failures from card backoff. Card retries retain task backoff while runner sign-in failures release their claim reservation. A terminal sign-in failure returns only the retry reservation held by its dispatched attempt.');

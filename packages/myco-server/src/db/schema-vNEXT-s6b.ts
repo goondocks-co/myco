@@ -1,4 +1,4 @@
-import { retiring, type SchemaStep } from './schema-step.js';
+import { retiring, type SchemaStep, reaching, changing } from './schema-step.js';
 /** Placeholder first step of this change; the coordinator assigns the real numbers at merge. */
 export const NEXT_S6B = 752;
 
@@ -9,10 +9,10 @@ export const NEXT_S6B = 752;
  * deadline is not known yet. Each index build has its own transaction.
  */
 export const VNEXT_S6B_STEPS: readonly SchemaStep[] = [
-  { version: NEXT_S6B, statements: ['ALTER TABLE enrollment_authorities ADD COLUMN reclaim_at INTEGER'] },
-  { version: NEXT_S6B + 1, statements: ['ALTER TABLE identity_link_authorities ADD COLUMN reclaim_at INTEGER'] },
-  { version: NEXT_S6B + 2, statements: ['CREATE INDEX IF NOT EXISTS idx_enrollment_authorities_reclaim ON enrollment_authorities(reclaim_at,id)'] },
-  { version: NEXT_S6B + 3, statements: ['CREATE INDEX IF NOT EXISTS idx_identity_link_authorities_reclaim ON identity_link_authorities(reclaim_at,id)'] },
+  { version: NEXT_S6B, statements: ['ALTER TABLE enrollment_authorities ADD COLUMN reclaim_at INTEGER'], reaches: changing(['enrollment_authorities'], 'Authority retention adds its deadline, registers the catch-up, seeds the active Project count, and retires the last unused authority table.') },
+  { version: NEXT_S6B + 1, statements: ['ALTER TABLE identity_link_authorities ADD COLUMN reclaim_at INTEGER'], reaches: changing(['identity_link_authorities'], 'Authority retention adds its deadline, registers the catch-up, seeds the active Project count, and retires the last unused authority table.') },
+  { version: NEXT_S6B + 2, statements: ['CREATE INDEX IF NOT EXISTS idx_enrollment_authorities_reclaim ON enrollment_authorities(reclaim_at,id)'], reaches: reaching(['enrollment_authorities'], 'A due-row deadline moves in the commit that finishes the row, and the job reads it by this index.') },
+  { version: NEXT_S6B + 3, statements: ['CREATE INDEX IF NOT EXISTS idx_identity_link_authorities_reclaim ON identity_link_authorities(reclaim_at,id)'], reaches: reaching(['identity_link_authorities'], 'A due-row deadline moves in the commit that finishes the row, and the job reads it by this index.') },
   { version: NEXT_S6B + 4, statements: [
     "CREATE TRIGGER IF NOT EXISTS enrollment_authorities_reclaim_insert AFTER INSERT ON enrollment_authorities BEGIN UPDATE enrollment_authorities SET reclaim_at=(CASE WHEN NEW.used_at IS NOT NULL OR NEW.revoked_at IS NOT NULL\n  THEN MIN(COALESCE(NEW.used_at,NEW.revoked_at),COALESCE(NEW.revoked_at,NEW.used_at))\n  ELSE NEW.expires_at END+2592000000) WHERE id=NEW.id; END",
     "CREATE TRIGGER IF NOT EXISTS enrollment_authorities_reclaim_update AFTER UPDATE OF used_at,revoked_at,expires_at ON enrollment_authorities WHEN OLD.used_at IS NOT NEW.used_at OR OLD.revoked_at IS NOT NEW.revoked_at OR OLD.expires_at IS NOT NEW.expires_at BEGIN UPDATE enrollment_authorities SET reclaim_at=(CASE WHEN NEW.used_at IS NOT NULL OR NEW.revoked_at IS NOT NULL\n  THEN MIN(COALESCE(NEW.used_at,NEW.revoked_at),COALESCE(NEW.revoked_at,NEW.used_at))\n  ELSE NEW.expires_at END+2592000000) WHERE id=NEW.id; END",
@@ -20,7 +20,12 @@ export const VNEXT_S6B_STEPS: readonly SchemaStep[] = [
     "CREATE TRIGGER IF NOT EXISTS identity_link_authorities_reclaim_update AFTER UPDATE OF used_at,revoked_at,expires_at ON identity_link_authorities WHEN OLD.used_at IS NOT NEW.used_at OR OLD.revoked_at IS NOT NEW.revoked_at OR OLD.expires_at IS NOT NEW.expires_at BEGIN UPDATE identity_link_authorities SET reclaim_at=(CASE WHEN NEW.used_at IS NOT NULL OR NEW.revoked_at IS NOT NULL\n  THEN MIN(COALESCE(NEW.used_at,NEW.revoked_at),COALESCE(NEW.revoked_at,NEW.used_at))\n  ELSE NEW.expires_at END+604800000) WHERE id=NEW.id; END",
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'authority_retention','enrollmentAuthorityDeadlines',\n      NOT EXISTS(SELECT 1 FROM enrollment_authorities WHERE reclaim_at IS NULL) ON CONFLICT DO NOTHING",
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'authority_retention','identityLinkDeadlines',\n      NOT EXISTS(SELECT 1 FROM identity_link_authorities WHERE reclaim_at IS NULL) ON CONFLICT DO NOTHING",
-  ] },
+  ],
+    reaches: [
+      ...reaching(['enrollment_authorities', 'identity_link_authorities'], 'A due-row deadline moves in the commit that finishes the row, and the job reads it by this index.'),
+      ...changing(['projection_catchup'], 'Authority retention adds its deadline, registers the catch-up, seeds the active Project count, and retires the last unused authority table.'),
+    ],
+  },
   { version: NEXT_S6B + 5, statements: [
     `CREATE TABLE IF NOT EXISTS identity_link_redemptions(
       key_hash TEXT PRIMARY KEY,github_id TEXT NOT NULL,outcome TEXT NOT NULL CHECK(outcome IN ('bound','identity_taken','member_linked','member_revoked','link_requires_admin')),
@@ -34,7 +39,9 @@ export const VNEXT_S6B_STEPS: readonly SchemaStep[] = [
     'CREATE TRIGGER IF NOT EXISTS active_project_count_delete AFTER DELETE ON projects WHEN OLD.archived_at IS NULL BEGIN UPDATE active_project_count SET active=active-1 WHERE slot=1; END',
     'CREATE TRIGGER IF NOT EXISTS active_project_count_archive AFTER UPDATE OF archived_at ON projects WHEN OLD.archived_at IS NULL AND NEW.archived_at IS NOT NULL BEGIN UPDATE active_project_count SET active=active-1 WHERE slot=1; END',
     'CREATE TRIGGER IF NOT EXISTS active_project_count_unarchive AFTER UPDATE OF archived_at ON projects WHEN OLD.archived_at IS NOT NULL AND NEW.archived_at IS NULL BEGIN UPDATE active_project_count SET active=active+1 WHERE slot=1; END',
-  ] },
+  ],
+    reaches: reaching(['projects'], 'Every Project write keeps the active count exact, restore included, so the limit never counts.'),
+  },
   { version: NEXT_S6B + 7, statements: ['DROP TABLE IF EXISTS step_up_authorities'],
     retires: retiring('table', ['step_up_authorities'], 'The last unused authority table is retired: nothing reads or writes it.') },
 ];

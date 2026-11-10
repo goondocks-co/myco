@@ -1,4 +1,4 @@
-import { retiring, type SchemaStep } from './schema-step.js';
+import { retiring, type SchemaStep, reaching, changing } from './schema-step.js';
 
 /** Placeholder first step of this change; the coordinator assigns the real number at merge. */
 export const NEXT_S7 = 781;
@@ -59,5 +59,10 @@ export const VNEXT_S7_STEPS: readonly SchemaStep[] = [
       'A changed idle close records a policy generation in the settings commit, and the catch-up rewrites session deadlines in keyed pages instead of this trigger rewriting every session in the write.'),
     ...retiring('trigger', ['learning_session_quiet_insert', 'sessions_learning_quiet', 'learning_source_quiet'],
       'The per-session deadline triggers are rebuilt to follow the policy generation a session has reached, instead of reading the stored setting directly.'),
-  ] },
+  ],
+    reaches: [
+      ...changing(['learning_quiet_policy'], 'Existing deadlines already hold the stored idle close, so the first generation is seeded as active; the triggers that rewrote every session in a settings write go, and the per-row triggers are replaced to follow the generation.'),
+      ...reaching(['learning_sessions', 'sessions'], 'A session\'s activity and new sessions compute their idle-close deadline from the policy generation, so a changed setting rewrites deadlines in pages and never in the write.'),
+    ],
+  },
 ];

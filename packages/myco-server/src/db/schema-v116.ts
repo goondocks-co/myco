@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 /**
@@ -18,4 +19,11 @@ export const V116_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_transcript_publication_failed ON transcript_publication (project_id, failure) WHERE state = 'failed'`,
   `UPDATE session_documents SET due_at = 0 WHERE state = 'live' AND due_at IS NULL AND (project_id, session_id, generation) IN
     (SELECT project_id, session_id, generation FROM transcript_publication WHERE state = 'failed' AND failure IN ('blob_absent', 'receipt_absent'))`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V116_REACHES: readonly Reach[] = [
+  ...changing(['session_pages'], 'A page whose record ids the catalog holds leaves the search for a record, so placing into a wide owner stays bounded.'),
+  ...changing(['transcript_publication'], 'A line too wide for one commit keeps the count of its records already placed, so every pass advances. A resumed line skips its placed records only while the derivation still holds what was placed. Status counts the publications stopped for good without reading the others.'),
+  ...changing(['session_documents'], 'A quiet session whose publication stands stopped on a fault that can clear is due again, so the publisher reads that stop as a fault to retry.'),
 ];

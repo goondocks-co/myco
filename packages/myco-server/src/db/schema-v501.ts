@@ -1,4 +1,4 @@
-import { retiring } from './schema-step.js';
+import { reaching, retiring, type SchemaStep, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { documentFactChange,documentFactDelta,refreshDocumentFacts,updateDocumentMetadata } from './document-facts.js';
 
@@ -43,6 +43,16 @@ const pages=Array.from({length:PARTS},(_,index)=>[
       AND rowid>((SELECT high FROM _document_due_range)/${PARTS})*${index}${index===PARTS-1 ? '' : ` AND rowid<=((SELECT high FROM _document_due_range)/${PARTS})*${index+1}`}`,
 ]);
 /** Due identities enter the ordered queue in disjoint rowid transactions. */
-export const PUBLICATION_QUEUE_STEPS=[setup,...pages,['DROP TABLE _document_due_range']].map((statements,index)=>index===0 ? {version:501,statements,
-  retires:retiring('trigger',['insert','update','delete'].map(operation=>`document_publication_facts_${operation}`),
-    'Each facts trigger is rebuilt to keep the keyed due queue in place of the due totals.')} : {version:501+index,statements});
+const QUEUE = 'Calibration cursors carry their publication revision; publication queue identities enter disjoint rowid ranges, catalog triggers net changed facts and switch lifecycle changes release model holds.';
+export const PUBLICATION_QUEUE_STEPS: readonly SchemaStep[] = [
+  { statements: setup,
+    retires: retiring('trigger', ['insert', 'update', 'delete'].map((operation) => `document_publication_facts_${operation}`),
+      'Each facts trigger is rebuilt to keep the keyed due queue in place of the due totals.'),
+    reaches: [
+      ...reaching(['session_documents', 'transcripts', 'transcript_publication'], QUEUE),
+      ...changing(['embedding_cursors', 'embedding_provider_holds'], QUEUE),
+      ...reaching(['document_publication_facts', 'embedding_switches'], 'Catalog mutations maintain embedding and publication facts atomically.'),
+    ] },
+  ...pages.map((statements) => ({ statements, reaches: changing(['document_due'], QUEUE) })),
+  { statements: ['DROP TABLE _document_due_range'] },
+].map((step, index) => ({ version: 501 + index, ...step }));

@@ -1,3 +1,4 @@
+import { reaching, type Reach } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 export const CAPTURE_RECEIPT_GRAIN_MS = 60_000;
@@ -67,3 +68,6 @@ export const V708_STATEMENTS: readonly string[] = [
       ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY ${receiptMinuteOf('sessions')} DESC,project_id,session_id) AS head_rank
     FROM sessions WHERE machine_id IS NOT NULL) s WHERE s.head_rank=1`),
 ];
+
+/** Why the step reaches tables earlier steps created. */
+export const V708_REACHES: readonly Reach[] = reaching(['sessions'], 'Session mutations maintain the canonical machine and agent receipt head.');

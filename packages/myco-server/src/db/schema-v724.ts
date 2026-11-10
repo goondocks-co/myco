@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 export const V724 = 724;
 
 /**
@@ -39,4 +40,16 @@ export const V724_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS work_window_add AFTER INSERT ON work_window_sessions BEGIN INSERT INTO work_window_totals(project_id,task,span_days,end_day,sessions) VALUES(NEW.project_id,NEW.task,NEW.span_days,NEW.end_day,1)\n  ON CONFLICT(project_id,task,span_days,end_day) DO UPDATE SET sessions=sessions+excluded.sessions; END",
   "CREATE TRIGGER IF NOT EXISTS work_window_remove AFTER DELETE ON work_window_sessions BEGIN INSERT INTO work_window_totals(project_id,task,span_days,end_day,sessions) VALUES(OLD.project_id,OLD.task,OLD.span_days,OLD.end_day,-1)\n  ON CONFLICT(project_id,task,span_days,end_day) DO UPDATE SET sessions=sessions+excluded.sessions; DELETE FROM work_window_totals WHERE project_id=OLD.project_id AND task=OLD.task AND span_days=OLD.span_days AND end_day=OLD.end_day AND sessions<=0; END",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'work_history','workRuns',NOT EXISTS(SELECT 1 FROM agent_runs WHERE task IN ('extract-curate','title-summary','canopy-map','vault-seed') AND NOT status IN ('pending', 'running', 'queued')) ON CONFLICT DO NOTHING",
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V724_REACHES: readonly Reach[] = [
+  ...reaching(['agent_runs'], 'The run list seeks a Project\'s runs, newest first, by task or by effective time. A named run\'s terminal mutation or its output reconciles that run\'s Work history contribution.'),
+  ...reaching(['spores', 'agent_run_events'], 'A named run\'s terminal mutation or its output reconciles that run\'s Work history contribution.'),
+  ...changing(['projection_catchup'], 'Work history remains building until the bounded catch-up has read every terminal run.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V724_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_work_timeline', read: 'the Work timeline across every Project walks newest runs first, Project filtered per row' },
 ];

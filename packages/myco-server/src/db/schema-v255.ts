@@ -1,3 +1,4 @@
+import { builtOn, reaching, type SchemaStep, changing } from './schema-step.js';
 import { SESSION_PATHS_LIMIT } from './document-tables.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
@@ -80,9 +81,17 @@ const STATEMENTS: readonly string[] = [
 /** Each existing-table index build has its own deployment transaction. */
 const indexes = STATEMENTS.filter(sql => sql.startsWith('CREATE INDEX') && !sql.includes('ON session_turn_entries'));
 export const V255_STATEMENTS = STATEMENTS.filter(sql => !indexes.includes(sql) && !sql.startsWith('DROP INDEX'));
-export const UX_SCHEMA_STEPS = [
-  { version: 255, statements: V255_STATEMENTS },
+const SUMMARIES = 'Session outline and file reads use stored summaries and bounded catch-up indexes.';
+const CATALOG = 'Existing documents retain their catalog and catch up summary fields within the publisher budget.';
+export const UX_SCHEMA_STEPS: readonly SchemaStep[] = [
+  { version: 255, statements: V255_STATEMENTS, reaches: [
+    ...changing(['session_prompts', 'turn_cards', 'session_documents'], CATALOG),
+    ...changing(['session_paths'], `${CATALOG} ${SUMMARIES}`),
+  ] },
   ...indexes.map((sql, at) => ({ version: 256 + at, statements: [
     ...(sql.includes('idx_session_prompts_turns ON') ? ['DROP INDEX IF EXISTS idx_session_prompts_turns'] : []), sql,
-  ] })),
+  ], reaches: reaching([builtOn(sql)], sql.includes('idx_session_prompts_turns ON') ? `The ordered turn index is replaced in its own transaction. ${SUMMARIES}` : SUMMARIES),
+  ...(sql.includes('idx_session_documents_rollup ON') ? { deploymentIndexes: [
+    { index: 'idx_session_documents_rollup', read: 'summary catch-up resumes the due document it reached least recently across the Deployment' },
+  ] } : {}) })),
 ];

@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 /** Exact archived content, durable publication evidence and bounded cleanup cursors. */
 export const V75_STATEMENTS: readonly string[] = [
@@ -133,4 +134,9 @@ export const V75_STATEMENTS: readonly string[] = [
         FROM transcript_segments s JOIN blobs b ON b.project_id=s.project_id AND b.key=s.blob_key
         WHERE s.project_id=NEW.project_id AND s.transcript_id=NEW.transcript_id
         ORDER BY s.base_offset DESC LIMIT 1; END`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V75_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_raw_archive_refs_due', read: 'raw archival seeks due hot sources by immutable receipt age across the Deployment' },
 ];

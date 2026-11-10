@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex } from './schema-step.js';
 export const V711 = 711;
 
 export const V711_STATEMENTS: readonly string[] = [
@@ -691,4 +692,23 @@ END`,
 
   `INSERT INTO projection_catchup(projection,phase,done)
     SELECT 'kpi','lineages',NOT EXISTS (SELECT 1 FROM member_credentials INDEXED BY idx_member_credentials_lineage)`
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V711_REACHES: readonly Reach[] = [
+  ...reaching(['session_prompts'], 'Live prompts maintain their measures and receipt placement.'),
+  ...reaching(['session_documents'], 'Document eligibility changes reconcile live prompts, calls and receipt placement.'),
+  ...reaching(['myco_tool_calls'], 'Live Myco calls maintain their count and plan-read contribution.'),
+  ...reaching(['spore_injections'], 'Receipts maintain delivery, served prompts and first-context lineage samples.'),
+  ...reaching(['session_injections'], 'Session records maintain start blocks, served plan nudges and lineage samples.'),
+  ...reaching(['prompt_identity_conflicts'], 'Identity-conflict retention maintains keyed diagnostics.'),
+  ...reaching(['prompt_context_answers'], 'Answer retention and skip evidence maintain duplicate-prompt diagnostics.'),
+  ...reaching(['transcripts'], 'Transcript membership maintains scheme measures and canonical harness attribution.'),
+  ...reaching(['sessions'], 'Session receipt time and credential attribution maintain session and lineage measures.'),
+  ...reaching(['member_credentials'], 'Credential removal retracts its lineage sample evidence.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V711_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_kpi_lineage_started', read: 'KPI lineage samples seek lineages started inside the window (S3a.2 reader)' },
 ];

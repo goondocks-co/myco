@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 /**
  * Schema v79: runners, the Deployment's own execution identities.
  *
@@ -123,4 +124,11 @@ export const V79_STATEMENTS: readonly string[] = [
     WHEN NEW.subject IS NOT OLD.subject OR NEW.runner_name IS NOT OLD.runner_name OR NEW.candidate_hash IS NOT OLD.candidate_hash BEGIN
     SELECT RAISE(ABORT, 'a device request keeps its subject'); END`,
   `ALTER TABLE device_decision_audit ADD COLUMN subject TEXT NOT NULL DEFAULT 'member' CHECK (subject IN ('member', 'runner'))`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V79_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_runner_contacts_seen', read: 'the worker-contact sweep forgets runner observations by age across the Deployment, and a runner names no Project' },
+  { index: 'idx_runner_model_catalogs_received', read: 'Settings reads the model lists runners sent lately, and the lease sweep forgets the rest by age; a runner names no Project' },
+  { index: 'idx_device_requests_candidate', read: 'a runner registration admits each client-generated candidate once across the Deployment, before any runner exists' },
 ];
