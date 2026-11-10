@@ -1,4 +1,3 @@
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { createBackup } from '@myco-server-worker/core/backup.js';
 import { advanceRestore, latestRestore } from '@myco-server-worker/core/restore-job.js';
 import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
@@ -12,7 +11,7 @@ import { TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 
-/** Fixtures for restore jobs: backups to restore, a destination with an owner, a store that dies, and the tick's walk. */
+/** Fixtures for restore jobs: backups to restore, a destination with an owner, and the tick's walk. */
 export const OWNER = 'mem_machine_1';
 export const NOW = 1_800_000_000_000;
 export type Fixture = ReturnType<typeof sqliteEnv>;
@@ -53,38 +52,6 @@ export const restoredRows = (f: Fixture) => ({
   reports: f.sqlite.query(`SELECT id, summary FROM agent_reports WHERE project_id = 'proj_rs' ORDER BY id`).all(),
   events: f.sqlite.query(`SELECT event_id FROM events WHERE project_id = 'proj_rs' ORDER BY event_id`).all(),
 });
-
-/**
- * A store that dies at its `at`-th call: before that call reaches the store, or after it committed but before the
- * caller hears. Every later call fails too, as calls into a process that has ended would.
- */
-export function dying(db: RelationalStore, at: number, when: 'before' | 'after'): { store: RelationalStore; calls: () => number } {
-  let calls = 0;
-  const dead = () => calls >= at;
-  const call = async <T>(run: () => Promise<T>): Promise<T> => {
-    if (dead()) throw new Error('the process ended');
-    calls += 1;
-    if (calls === at && when === 'before') throw new Error('the process ended');
-    const result = await run();
-    if (calls === at && when === 'after') throw new Error('the process ended');
-    return result;
-  };
-  const originals = new WeakMap<PreparedStatement, PreparedStatement>();
-  const wrap = (statement: PreparedStatement): PreparedStatement => {
-    const wrapped: PreparedStatement = {
-      bind: (...values) => wrap(statement.bind(...values)),
-      first: () => call(() => statement.first()),
-      all: () => call(() => statement.all()),
-      run: () => call(() => statement.run()),
-    };
-    originals.set(wrapped, statement);
-    return wrapped;
-  };
-  return {
-    store: { prepare: (sql) => wrap(db.prepare(sql)), batch: (statements) => call(() => db.batch(statements.map((s) => originals.get(s) ?? s))) },
-    calls: () => calls,
-  };
-}
 
 /** Walks the running restore to its end the way the tick does, a bounded pass per wake. */
 export async function tickUntilEnded(f: Fixture, rows: number, now = NOW): Promise<void> {

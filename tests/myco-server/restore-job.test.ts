@@ -13,8 +13,9 @@ import { counters } from './helpers/document-publication.js';
 import { restoreDocuments } from '@myco-server-worker/ingest/document-restore.js';
 import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import {
-  artifactOf, destination, documentBackup, documentDestination, dying, NOW, OWNER, PASS_ROWS, restoredRows, tickUntilEnded, type Fixture,
+  artifactOf, destination, documentBackup, documentDestination, NOW, OWNER, PASS_ROWS, restoredRows, tickUntilEnded, type Fixture,
 } from './helpers/restore-job.js';
+import { dying } from './helpers/store-faults.js';
 
 const HOUR = 3_600_000;
 
