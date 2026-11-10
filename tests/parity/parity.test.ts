@@ -1,104 +1,28 @@
-import { runHeads } from './scenarios/run-heads.ts';
-import { identityProjectWrites } from './scenarios/identity-project-writes.ts';
-import { hookPlacementTick } from './scenarios/hook-placement-tick.ts';
-import { harnessDeploymentActivity } from './scenarios/harness-deployment-activity.ts';
-import { budgetMigrationParity } from './scenarios/budget-migration.ts';
-import { budgetGovernor } from './scenarios/budget-governor.ts';
-import { pulledClaim } from './scenarios/pulled-claim.ts';
-import { learningFlow } from './scenarios/learning-flow.ts';
-import { budgetRestore } from './scenarios/budget-restore.ts';
-import { learningPause } from './scenarios/learning-pause.ts';
-import { extractionCoverage } from './scenarios/extraction-coverage.ts';
-import { hookPlacement } from './scenarios/hook-placement.ts';
-import { runnerSignIn } from './scenarios/runner-sign-in.ts';
-import { setupProgress } from './scenarios/setup-progress.ts';
-import { authSetupRefusals } from './scenarios/auth-setup-refusals.ts';
-import { projectNaming } from './scenarios/project-naming.ts';
-import { deviceLoginFlow, deviceAdmission, deviceForeignLineageHold } from './scenarios/device-login.ts';
-import { runnerIdentity, runnerFleet } from './scenarios/runner-identity.ts';
-import { fleetReadBudget } from './scenarios/fleet-read-budget.ts';
-import { workerWriteCompletion } from './scenarios/worker-write-completion.ts';
-import { liveActorWrites } from './scenarios/live-actor-writes.ts';
-import { repositories } from './scenarios/repositories.ts';
-import { repositoryFailure } from './scenarios/repository-failure.ts';
-import { canopy } from './scenarios/canopy.ts';
+import { Glob } from 'bun';
 import { afterAll, beforeAll, describe, it, test } from 'bun:test';
 import { runScenario, scenarioCoversTarget, type ParityScenario, type ParityTarget } from './harness.ts';
 import { bootSelfhosted } from './targets/selfhosted.ts';
 import { bootCloudflare, stopCloudflareRuntime } from './targets/cloudflare.ts';
-import { backupRestore, restoreContinuation } from './scenarios/backup-restore.ts';
-import { sessionsTitling } from './scenarios/sessions-titling.ts';
-import { sessionTurns } from './scenarios/session-turns.ts';
-import { sessionActivityParity } from './scenarios/session-activity.ts';
-import { sessionLineageParity } from './scenarios/session-lineage.ts';
-import { sessionCommitsParity } from './scenarios/session-commits.ts';
-import { sessionArtifactsParity } from './scenarios/session-artifacts.ts';
-import { plans } from './scenarios/plans.ts';
-import { plansAtScale } from './scenarios/plans-at-scale.ts';
-import { spores, guardedSpores } from './scenarios/spores.ts';
-import { recall } from './scenarios/recall.ts';
-import { receiptSnapshots } from './scenarios/receipt-snapshots.ts';
-import { tick } from './scenarios/tick.ts';
-import { importParity } from './scenarios/import.ts';
-import { legacyImportParity, legacySporeResolution } from './scenarios/legacy-import.ts';
-import { dispatchQueue } from './scenarios/dispatch-queue.ts';
-import { scheduledTasks } from './scenarios/scheduled-tasks.ts';
-import { cortex } from './scenarios/cortex.ts';
-import { replacedRun } from './scenarios/replaced-run.ts';
-import { search } from './scenarios/search.ts';
-import { searchPaging } from './scenarios/search-paging.ts';
-import { grants } from './scenarios/grants.ts';
-import { workerWire } from './scenarios/worker-wire.ts';
-import { codexRecording } from './scenarios/codex-recording.ts';
-import { sessionDocuments } from './scenarios/session-documents.ts';
-import { toolBlobRetention } from './scenarios/tool-blob-retention.ts';
-import { titlingBackfill } from './scenarios/titling-backfill.ts';
-import { titlingIdleRefresh } from './scenarios/titling-idle-refresh.ts';
-import { sessionEnd } from './scenarios/session-end.ts';
-import { projectCounts } from './scenarios/project-counts.ts';
-import { objectLifecycle } from './scenarios/object-lifecycle.ts';
-import { objectStoreOwnership } from './scenarios/object-store-ownership.ts';
-import { tokenRefresh } from './scenarios/token-refresh.ts';
-import { captureVolume } from './scenarios/capture-volume.ts';
-import { eventDirectBody } from './scenarios/event-direct-body.ts';
-import { requestBodies } from './scenarios/request-bodies.ts';
-import { memberSettings } from './scenarios/member-settings.ts';
-import { machineSettings } from './scenarios/machine-settings.ts';
-import { workingNow } from './scenarios/working-now.ts';
-import { uncaptured } from './scenarios/uncaptured.ts';
-import { machines } from './scenarios/machines.ts';
-import { sessionAuthority } from './scenarios/session-authority.ts';
-import { kpiDeliveries } from './scenarios/kpi-deliveries.ts';
-import { today } from './scenarios/today.ts';
-import { sessionCitation } from './scenarios/session-citation.ts';
-import { runReads } from './scenarios/run-reads.ts';
-import { memberDispatch } from './scenarios/member-dispatch.ts';
-import { freshOwnerLink, interruptedRestoreOwner, ownerLifecycle, restoredAuditAuthority } from './scenarios/owner-lifecycle.ts';
-import { restoreAuthorityAdmission, stopAfterDemotion } from './scenarios/owner-review-corrections.ts';
-import { harnessCredentialSlots } from './scenarios/harness-credential-slots.ts';
-import { capabilityHold } from './scenarios/capability-hold.ts';
-import { joinIdentityClaimed } from './scenarios/join-identity-claimed.ts';
-import { memberStatus } from './scenarios/member-status.ts';
-import { credentialRevoke } from './scenarios/credential-revoke.ts';
-import { githubLink } from './scenarios/github-link.ts';
-import { embeddingRevisions } from './scenarios/embedding-revisions.ts';
-import { retiredSchema } from './scenarios/retired-schema.ts';
-import { recallGold } from './scenarios/recall-gold.ts';
-import { embeddingSwitch } from './scenarios/embedding-switch.ts';
-import { modelCatalogs } from './scenarios/model-catalogs.ts';
-import { latestSchemaUpgrade } from './scenarios/latest-schema-upgrade.ts';
-import { twoDeploymentIsolation } from './scenarios/two-deployment-isolation.ts';
-import { rawPrivacy } from './scenarios/raw-privacy.ts';
-import { rawBackfillParity } from './scenarios/raw-backfill.ts';
-import { rawClaimsParity } from './scenarios/raw-claims.ts';
-import { storageCleanupParity } from './scenarios/storage-cleanup.ts';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-shards.mjs';
 import { PARITY_SMOKE_SCENARIOS } from '../../scripts/ci-scopes.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [eventDirectBody, requestBodies, runHeads, hookPlacementTick, harnessDeploymentActivity, budgetMigrationParity, budgetGovernor, pulledClaim, learningFlow, budgetRestore, learningPause, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestSchemaUpgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, identityProjectWrites, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, sessionDocuments, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, objectStoreOwnership, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
+
+function isScenario(value: unknown): value is ParityScenario {
+  return typeof value === 'object' && value !== null && typeof (value as ParityScenario).name === 'string'
+    && typeof (value as ParityScenario).run === 'function';
+}
+
+/** Every scenario any file under `scenarios/` exports: files in path order, and within a file by export name. */
+const scenarios: ParityScenario[] = [];
+for (const file of [...new Glob('scenarios/*.ts').scanSync({ cwd: import.meta.dir })].sort()) {
+  const module: Record<string, unknown> = await import(`./${file}`);
+  for (const value of Object.values(module)) {
+    if (isScenario(value) && !scenarios.includes(value)) scenarios.push(value);
+  }
+}
 
 if (!process.env.MYCO_PARITY) {
   test.skip('parity scenarios (run via npm run test:parity)', () => {});

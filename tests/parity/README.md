@@ -11,13 +11,17 @@ skips — the gate is `MYCO_PARITY=1`).
 
 ## Adding a scenario
 
-Write `scenarios/<feature>.ts` exporting a `ParityScenario` (`harness.ts`),
-add it to the `scenarios` list in `parity.test.ts`. A scenario receives a
-`ParityTarget`; a paired scenario receives two separately booted targets.
-Drive the three surfaces over HTTP
-(`/events` with `memberHeaders()`, `/mcp`, `/api/*` with `ownerHeaders()`)
-and seed or assert store state through `target.sql` — every value a scenario
-interpolates into SQL goes through `lit()` from `harness.ts`.
+Write `scenarios/<feature>.ts` exporting a `ParityScenario` (`harness.ts`);
+`parity.test.ts` runs every scenario a file there exports, so there is no list
+to edit. Give it a weight under `parity` in `scripts/test-durations.json`. A
+scenario receives a `ParityTarget`; a paired scenario receives two separately
+booted targets. Create state the way a client does, over HTTP
+(`/events` with `memberHeaders()`, `/mcp`, `/api/*` with `ownerHeaders()`),
+and read store state back through `target.sql('SELECT …')` — every value a
+scenario interpolates into SQL goes through `lit()` from `harness.ts`. Of the
+worker, a scenario imports only `constants`, `hash` and `auth/owner/cookie`;
+`npm run check:test-additions` refuses other imports and new
+`target.sql` writes.
 
 ## Target notes
 
