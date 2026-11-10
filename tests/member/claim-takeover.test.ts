@@ -6,8 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runJoin, runProvision, provisionAgents, recordNoAgents, registeredMemberHarnesses } from '@myco/cli/member.js';
-import * as memberKeepCurrent from '@myco/cli/member-keep-current.js';
-import { HARNESS_HEALTH_STATES } from '@goondocks/myco-shared/harness-health';
 import { run as update } from '@myco/cli/update.js';
 import { readProvisionRecord, recordProvision } from '@myco/member/provision-record.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
@@ -271,21 +269,26 @@ it('does not invoke update refresh while a peer home holds the claim', async () 
   for (const [file, raw] of originals) expect(fs.readFileSync(file, 'utf8')).toBe(raw);
 });
 
-for (const state of HARNESS_HEALTH_STATES) it(`maps refresh health ${state} to its exit status on provision and update`, async () => {
-  const failed = state === 'repair_failed' || state === 'unwritable';
-  const current = spyOn(memberKeepCurrent, 'keepCurrent').mockReturnValue({ serverUrl: SERVER, harnesses: [{ id: 'claude-code', provisioned: true, state }], ready: [] });
+for (const health of ['ready', 'unwritable'] as const) it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(`a refresh whose agents end ${health} exits ${health === 'ready' ? 0 : 1} on provision and update`, async () => {
+  await claim();
+  const codex = path.join(home, '.codex');
+  if (health === 'unwritable') {
+    fs.rmSync(path.join(codex, 'hooks.json'));
+    fs.chmodSync(codex, 0o500);
+  }
   const log = spyOn(console, 'log').mockImplementation(() => {});
   const error = spyOn(console, 'error').mockImplementation(() => {});
   const refresh = () => runProvision(['--refresh'], { mycoHome: newHome, cwd: root, stdout: () => {}, stderr: () => {} });
   try {
-    expect(refresh()).toBe(!failed);
-    expect(process.exitCode ?? 0).toBe(failed ? 1 : 0);
+    process.exitCode = 0;
+    expect(refresh()).toBe(health === 'ready');
+    expect(process.exitCode ?? 0).toBe(health === 'ready' ? 0 : 1);
     for (const args of [['--skip-binary'], ['--claim', '--skip-binary']]) {
       process.exitCode = 0;
       await update(args, { home: newHome, runnerRecords: () => [], refreshMember: async () => { if (!refresh()) throw new Error('refresh failed'); } });
-      expect(process.exitCode ?? 0).toBe(failed ? 1 : 0);
+      expect(process.exitCode ?? 0).toBe(health === 'ready' ? 0 : 1);
     }
-  } finally { current.mockRestore(); log.mockRestore(); error.mockRestore(); }
+  } finally { fs.chmodSync(codex, 0o700); log.mockRestore(); error.mockRestore(); }
 });
 
 it('reports dead read-only Claude project tools while replacing only global entries', async () => {

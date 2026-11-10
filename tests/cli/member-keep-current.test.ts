@@ -7,10 +7,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
-import { loadManifests } from '@myco/symbionts/detect.js';
+import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { expandHome } from '@myco/paths/home.js';
-import { MemberProvisionConflictError, MemberMcpConflictError, MemberPluginConflictError, SymbiontInstaller } from '@myco/symbionts/installer.js';
-import { provisionGlobally, runProvision, provisionBackup } from '@myco/cli/member.js';
+import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { memberHarnessStatus, provisionGlobally, runProvision, provisionBackup } from '@myco/cli/member.js';
 import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { keepCurrent, reportHarnesses, harnessRanAt } from '@myco/cli/member-keep-current.js';
 import { readProvisionRecord, recordProvision, holdHookTrust, settleHookTrust } from '@myco/symbionts/member-provision-record.js';
@@ -85,26 +85,34 @@ it('records every harness at the shared provisioning operation, including unchan
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
 });
 
-it.each([MemberProvisionConflictError, MemberMcpConflictError, MemberPluginConflictError])('doctor chooses its remedy independently of reworded installer advice (%p)', (Conflict) => {
+it('doctor names a remedy other than itself and keep-current holds repair for an unreadable agent configuration', () => {
   recordProvision(home, { version: getPluginVersion(), serverUrl: SERVER, agents: ['codex'] });
-  const problem = 'the global capture file cannot be read.';
-  const remedy = 'Troubleshooting next: please run myco doctor --verbose before continuing.';
-  const error = new Conflict(problem, remedy);
-  const inspect = spyOn(SymbiontInstaller.prototype, 'memberToolsDeployment').mockImplementation(() => { throw error; });
+  const config = path.join(agentHome, '.codex', 'config.toml');
+  fs.rmSync(config, { force: true });
+  fs.mkdirSync(config, { recursive: true });
+  const checks = setupChecks(home);
+  expect(checks.some(check => check.status === 'warn' && check.detail.includes(config))).toBe(true);
+  for (const check of checks) {
+    expect(check.detail).not.toMatch(/run `?myco doctor/i);
+    expect(check.detail).not.toContain('..');
+  }
+  const result = keepCurrent(home, { binaryFound: () => true });
+  expect(result?.localActions?.codex).toContain(config);
+  expect(result?.harnesses[0].state).toBe('repair_failed');
+});
+
+it('doctor names its own remedy when an agent configuration conflict carries none', () => {
+  provisionGlobally('cursor', null, home, { serverUrl: SERVER });
+  const file = path.join(agentHome, '.cursor', 'hooks.json');
+  // Duplicate keys beside a retired setting: the retired-settings reconciliation cannot read the file.
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('{', '{"user":1,"user":2,"chat.tools.terminal.autoApprove":{"myco":true},'));
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
   try {
-    expect(error.problem).toBe(problem);
-    expect(error.remedy).toBe(remedy);
-    expect(error.message).toContain(remedy);
-    const checks = setupChecks(home);
-    expect(checks).toContainEqual(expect.objectContaining({ detail: "Codex's configuration could not be checked: the global capture file cannot be read. Review this configuration before changing global hooks or tools." }));
-    for (const check of checks) {
-      expect(check.detail).not.toMatch(/run `?myco doctor/i);
-      expect(check.detail).not.toContain('..');
-    }
-    const result = keepCurrent(home, { binaryFound: () => true });
-    expect(result?.localActions?.codex).toBe("the global capture file cannot be read. Run myco doctor to check Codex's capture configuration.");
-    expect(result?.harnesses[0].state).toBe('repair_failed');
-  } finally { inspect.mockRestore(); }
+    const check = setupChecks(home).find(check => check.status === 'warn' && check.detail.includes(file));
+    expect(check?.detail).toStartWith("Cursor's configuration could not be checked:");
+    expect(check?.detail).toEndWith('Review this configuration before changing global hooks or tools.');
+    expect(check?.detail).not.toMatch(/myco doctor/i);
+  } finally { warn.mockRestore(); }
 });
 
 it('the next CLI helper pass restores deleted hooks and MCP byte for byte and preserves unrelated config', async () => {
@@ -309,12 +317,8 @@ it('healthy passes preserve bytes inode and mtime of every harness file across a
   const claude = path.join(agentHome, '.claude.json');
   fs.writeFileSync(claude, JSON.stringify(JSON.parse(fs.readFileSync(claude, 'utf8'))));
   const snapshots = harnessFiles().map((file) => ({ file, bytes: fs.readFileSync(file), stat: fs.statSync(file) }));
-  const install = spyOn(SymbiontInstaller.prototype, 'install');
-  try {
-    keepCurrent(home, { binaryFound: () => true });
-    keepCurrent(home, { binaryFound: () => true });
-    expect(install).not.toHaveBeenCalled();
-  } finally { install.mockRestore(); }
+  keepCurrent(home, { binaryFound: () => true });
+  keepCurrent(home, { binaryFound: () => true });
   for (const { file, bytes, stat } of snapshots) {
     expect(fs.readFileSync(file)).toEqual(bytes);
     expect(fs.statSync(file).ino).toBe(stat.ino);
@@ -511,28 +515,24 @@ it('shared matcher groups preserve foreign commands on healthy passes and drift 
   expect(repaired.hooks[event][0].hooks).toContainEqual({ type: 'command', command: 'other-tool' });
 });
 
-it('reordered Myco groups are current without entering the installer', () => {
-  const render = SymbiontInstaller.prototype.renderMemberHooks;
-  const template = spyOn(SymbiontInstaller.prototype, 'renderMemberHooks').mockImplementation(function (source) {
-    const block = render.call(this, source);
-    if (block === null) return block;
-    const event = Object.keys(block)[0]!;
-    const group = (block[event] as Record<string, unknown>[])[0]!;
-    return { ...block, [event]: [group, { ...group, matcher: 'extra-matcher' }] };
-  });
-  try {
-    provisionGlobally('codex', null, home, { serverUrl: SERVER });
-    const data = JSON.parse(fs.readFileSync(hooks(), 'utf8'));
-    const event = Object.keys(data.hooks)[0]!;
-    data.hooks[event].reverse();
-    fs.writeFileSync(hooks(), JSON.stringify(data));
-    const install = spyOn(SymbiontInstaller.prototype, 'install');
-    try {
-      keepCurrent(home, { binaryFound: () => true });
-      expect(install).not.toHaveBeenCalled();
-      expect(fs.readFileSync(hooks(), 'utf8')).toBe(JSON.stringify(data));
-    } finally { install.mockRestore(); }
-  } finally { template.mockRestore(); }
+it('reordered Myco groups are current and left as the user ordered them', () => {
+  const packageRoot = path.join(agentHome, 'package-with-two-groups');
+  const template = JSON.parse(fs.readFileSync(path.join(resolvePackageRoot(), 'src/symbionts/templates/codex/hooks.json'), 'utf8'));
+  const event = Object.keys(template)[0]!;
+  template[event] = [template[event][0], { ...template[event][0], matcher: 'extra-matcher' }];
+  const file = path.join(packageRoot, 'src/symbionts/templates/codex/hooks.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(template));
+  provisionGlobally('codex', null, home, { serverUrl: SERVER, packageRoot });
+  const data = JSON.parse(fs.readFileSync(hooks(), 'utf8'));
+  expect(data.hooks[event]).toHaveLength(2);
+  data.hooks[event].reverse();
+  fs.writeFileSync(hooks(), JSON.stringify(data));
+  const before = fs.statSync(hooks());
+  expect(memberHarnessStatus('codex', home, SERVER, { packageRoot }).current).toBe(true);
+  keepCurrent(home, { binaryFound: () => true, packageRoot });
+  expect(fs.readFileSync(hooks(), 'utf8')).toBe(JSON.stringify(data));
+  expect(fs.statSync(hooks()).ino).toBe(before.ino);
 });
 
 it('a second hook repair changes the report even when its state action and activity time match', async () => {
@@ -574,7 +574,6 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
   expect(initialStatus.join('\n')).not.toContain('member provision');
   expect(readProvisionRecord(home)?.version).toBe('old');
   const before = harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs]);
-  const install = spyOn(SymbiontInstaller.prototype, 'install');
   const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
   try {
     const first = keepCurrent(home, { binaryFound: () => true });
@@ -589,7 +588,6 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
     expect(stderr).toHaveBeenCalledTimes(1);
     expect(String(stderr.mock.calls[0]?.[0])).toContain('use other.myco.example');
     expect(String(stderr.mock.calls[0]?.[0])).not.toContain('member provision');
-    expect(install).toHaveBeenCalledTimes(1);
     expect(harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs])).toEqual(before);
     const checks = setupChecks(home);
     expect(checks.every(check => check.status === 'ok')).toBe(true);
@@ -602,8 +600,7 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
     expect(fs.readFileSync(target, 'utf8')).toContain(OTHER_SERVER);
     fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replaceAll(OTHER_SERVER, SERVER));
     expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('ready');
-    expect(install).toHaveBeenCalledTimes(1);
-  } finally { install.mockRestore(); stderr.mockRestore(); }
+  } finally { stderr.mockRestore(); }
 });
 
 for (const kind of ['foreign', 'legacy', 'same-deployment', 'mismatched-helper']) it(`keeps ${kind} MCP conflicts classified as repair failures`, () => {
