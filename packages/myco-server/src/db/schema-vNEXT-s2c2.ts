@@ -1,3 +1,4 @@
+import { retiring, type SchemaStep } from './schema-step.js';
 import { occurredAt } from './session-dates.js';
 import { contextPlacementSchemaStatements } from './sessions/placement-schema.js';
 import { projectStatisticsSchemaStatements } from './sessions/statistics-schema.js';
@@ -12,9 +13,10 @@ export const LAST_S2C2 = NEXT_S2C2 + 5;
  * the step that retires the index it replaces. Two rows of `uncaptured_roots` tie on their last miss, so a page of
  * repositories keys on the machine and root as well.
  */
-export const VNEXT_S2C2_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S2C2_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S2C2, statements: [`CREATE INDEX IF NOT EXISTS idx_sessions_occurred_project ON sessions (${occurredAt()}, project_id, session_id)`] },
-  { version: NEXT_S2C2 + 1, statements: ['DROP INDEX IF EXISTS idx_sessions_occurred_deployment'] },
+  { version: NEXT_S2C2 + 1, statements: ['DROP INDEX IF EXISTS idx_sessions_occurred_deployment'],
+    retires: retiring('index', ['idx_sessions_occurred_deployment'], 'idx_sessions_occurred_project orders the same sessions with a complete tuple.') },
   { version: NEXT_S2C2 + 2, statements: [
     'CREATE INDEX IF NOT EXISTS idx_uncaptured_roots_recent ON uncaptured_roots (last_seen_at, machine_id, root_key)',
     'CREATE INDEX IF NOT EXISTS idx_uncaptured_roots_member_recent ON uncaptured_roots (member_id, last_seen_at, machine_id, root_key)',

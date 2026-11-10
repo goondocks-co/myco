@@ -1,3 +1,4 @@
+import { retiring, type Retirement } from './schema-step.js';
 export const V717 = 717;
 export const V717_STATEMENTS: readonly string[] = [
   "ALTER TABLE session_documents ADD COLUMN publication_input_revision INTEGER NOT NULL DEFAULT 0",
@@ -44,3 +45,7 @@ export const V717_STATEMENTS: readonly string[] = [
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'publication','publicationInputs',NOT EXISTS(SELECT 1 FROM transcripts)",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'publication','publicationSessions',NOT EXISTS(SELECT 1 FROM session_documents)",
 ];
+
+export const V717_RETIRES: readonly Retirement[] = retiring('trigger',
+  ['transcripts', 'transcript_publication'].flatMap((table) => ['insert', 'update', 'delete'].map((action) => `${table}_facts_${action}`)),
+  'Each facts trigger is rebuilt to keep the keyed publication contributions as well as the publication facts.');

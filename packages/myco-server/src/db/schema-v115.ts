@@ -1,3 +1,4 @@
+import { retiring, type Retirement } from './schema-step.js';
 import { TURN_QUIET_MS } from './schema-v110.js';
 
 /** The `schema-v110` triggers that derived card and learning state from the legacy content tables and the views. */
@@ -35,3 +36,6 @@ export const V115_STATEMENTS: readonly string[] = [
   `UPDATE session_documents SET titled_user_prompts = user_prompts WHERE state = 'live' AND EXISTS (SELECT 1 FROM sessions s
     WHERE s.project_id = session_documents.project_id AND s.session_id = session_documents.session_id AND s.title IS NOT NULL)`,
 ];
+
+export const V115_RETIRES: readonly Retirement[] = retiring('trigger', V110_LEGACY_TRIGGERS,
+  'The publisher becomes the one writer of card and learning state, so the triggers deriving it from the legacy content tables and views go.');

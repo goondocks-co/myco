@@ -1,3 +1,4 @@
+import { retiring } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { documentFactChange,documentFactDelta,refreshDocumentFacts,updateDocumentMetadata } from './document-facts.js';
 
@@ -42,4 +43,6 @@ const pages=Array.from({length:PARTS},(_,index)=>[
       AND rowid>((SELECT high FROM _document_due_range)/${PARTS})*${index}${index===PARTS-1 ? '' : ` AND rowid<=((SELECT high FROM _document_due_range)/${PARTS})*${index+1}`}`,
 ]);
 /** Due identities enter the ordered queue in disjoint rowid transactions. */
-export const PUBLICATION_QUEUE_STEPS=[setup,...pages,['DROP TABLE _document_due_range']].map((statements,index)=>({version:501+index,statements}));
+export const PUBLICATION_QUEUE_STEPS=[setup,...pages,['DROP TABLE _document_due_range']].map((statements,index)=>index===0 ? {version:501,statements,
+  retires:retiring('trigger',['insert','update','delete'].map(operation=>`document_publication_facts_${operation}`),
+    'Each facts trigger is rebuilt to keep the keyed due queue in place of the due totals.')} : {version:501+index,statements});

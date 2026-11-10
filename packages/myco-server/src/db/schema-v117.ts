@@ -1,3 +1,4 @@
+import { retiring } from './schema-step.js';
 import { EVENT_REFERENCE_COLUMNS, eventReferenceUpdates } from './event-references.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { documentRecordIdSql, eventPayloadFieldSql, liveDocumentPromptSql, documentPromptUnreadSql, sessionDocumentUnreadSql } from './document-tables.js';
@@ -120,4 +121,6 @@ export const RETIREMENT_SCHEMA_STEPS = [
     ...documentCounters,
     `DROP TABLE ${rangeTable}`,
   ],
-].map((statements,index)=>({version:117+index,statements}));
+].map((statements,index,steps)=>index===steps.length-1 ? {version:117+index,statements,retires:retiring('trigger',LEGACY_CONTENT_TRIGGERS,
+  'Each read or wrote the relational content tables retired at step 117; the document counters rebuild extraction_acks_session_read_insert to count document prompts.')}
+  : {version:117+index,statements});

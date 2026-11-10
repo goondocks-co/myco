@@ -1,5 +1,6 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { SCHEMA_STEPS, type SchemaStep } from './schema.js';
+import { SCHEMA_STEPS } from './schema.js';
+import type { SchemaStep } from './schema-step.js';
 
 /** The file name a step is emitted under; migration files are applied in name order and each is recorded once. */
 export function migrationFileName(step: SchemaStep): string {
