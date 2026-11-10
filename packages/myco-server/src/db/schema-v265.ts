@@ -1,3 +1,4 @@
+import { retiring, type Retirement } from './schema-step.js';
 /**
  * The content tables retired at step 117 leave the store in bounded transactions. Their triggers go first, so a
  * delete writes nothing beyond the row it removes; each secondary index goes before the rows it covers; rows leave in
@@ -77,22 +78,33 @@ const SMALL_TABLES = [
   'prompt_key_owners', 'plan_promotions', 'view_publication_material', 'view_legacy_ack_feed', 'view_flip_calibrations', 'learning_init_queue',
   'cutover_progress', 'view_visible', 'view_key_owners', 'view_build_work', 'session_views', 'view_instances',
 ];
-const dropIndexes = (tables: readonly string[]) => tables.flatMap((table) => DROPPED_CONTENT_INDEXES[table]!.map((index) => `DROP INDEX IF EXISTS ${index}`));
-const dropTables = (tables: readonly string[]) => tables.map((table) => `DROP TABLE IF EXISTS ${table}`);
+interface ContentStep { statements: readonly string[]; retires?: readonly Retirement[] }
+const indexesOf = (tables: readonly string[]) => tables.flatMap((table) => DROPPED_CONTENT_INDEXES[table]!);
+const dropIndexes = (indexes: readonly string[]): ContentStep => ({
+  statements: indexes.map((index) => `DROP INDEX IF EXISTS ${index}`),
+  retires: retiring('index', indexes, 'An index of a content table retired at step 117 goes before the rows it covers.'),
+});
+const dropTables = (tables: readonly string[], scratch: readonly string[] = []): ContentStep => ({
+  statements: [...tables, ...scratch].map((table) => `DROP TABLE IF EXISTS ${table}`),
+  retires: retiring('table', tables, 'A content table retired at step 117 leaves the store once its rows are gone.'),
+});
 
-const steps: readonly (readonly string[])[] = [
-  [
-    ...DROPPED_CONTENT_TRIGGERS.map((name) => `DROP TRIGGER IF EXISTS ${name}`),
-    `CREATE TABLE IF NOT EXISTS ${DROP_RANGES_TABLE} (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID`,
-    ...RANGE_SOURCES.map(({ table }) => `INSERT OR IGNORE INTO ${DROP_RANGES_TABLE} SELECT '${table}',COALESCE(MAX(rowid),0) FROM ${table}`),
-  ],
-  ...ONE_INDEX_PER_STEP.flatMap((table) => dropIndexes([table]).map((sql) => [sql])),
-  ...ONE_TABLE_PER_STEP.map((table) => dropIndexes([table])),
-  dropIndexes(Object.keys(DROPPED_CONTENT_INDEXES).filter((table) => !ONE_INDEX_PER_STEP.includes(table) && !ONE_TABLE_PER_STEP.includes(table))),
-  ...RANGE_SOURCES.flatMap(({ table, parts }) => Array.from({ length: parts }, (_, partition) => [`DELETE FROM ${table} WHERE ${range(table, parts, partition)}`])),
+const steps: readonly ContentStep[] = [
+  {
+    statements: [
+      ...DROPPED_CONTENT_TRIGGERS.map((name) => `DROP TRIGGER IF EXISTS ${name}`),
+      `CREATE TABLE IF NOT EXISTS ${DROP_RANGES_TABLE} (source TEXT PRIMARY KEY,high INTEGER NOT NULL) WITHOUT ROWID`,
+      ...RANGE_SOURCES.map(({ table }) => `INSERT OR IGNORE INTO ${DROP_RANGES_TABLE} SELECT '${table}',COALESCE(MAX(rowid),0) FROM ${table}`),
+    ],
+    retires: retiring('trigger', DROPPED_CONTENT_TRIGGERS, 'A trigger on a content table retired at step 117 goes first, so a delete writes nothing beyond the row it removes.'),
+  },
+  ...ONE_INDEX_PER_STEP.flatMap((table) => indexesOf([table]).map((index) => dropIndexes([index]))),
+  ...ONE_TABLE_PER_STEP.map((table) => dropIndexes(indexesOf([table]))),
+  dropIndexes(indexesOf(Object.keys(DROPPED_CONTENT_INDEXES).filter((table) => !ONE_INDEX_PER_STEP.includes(table) && !ONE_TABLE_PER_STEP.includes(table)))),
+  ...RANGE_SOURCES.flatMap(({ table, parts }) => Array.from({ length: parts }, (_, partition) => ({ statements: [`DELETE FROM ${table} WHERE ${range(table, parts, partition)}`] }))),
   ...SEARCH_TABLES.map((table) => dropTables([table])),
   ...EMPTIED_TABLES.map((table) => dropTables([table])),
-  [...dropTables(SMALL_TABLES), `DROP TABLE IF EXISTS ${DROP_RANGES_TABLE}`],
+  dropTables(SMALL_TABLES, [DROP_RANGES_TABLE]),
 ];
 
-export const DROP_CONTENT_SCHEMA_STEPS = steps.map((statements, index) => ({ version: 265 + index, statements }));
+export const DROP_CONTENT_SCHEMA_STEPS = steps.map((step, index) => ({ version: 265 + index, ...step }));

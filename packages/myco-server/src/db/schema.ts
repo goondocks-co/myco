@@ -1,12 +1,13 @@
 import { V723, V723_STATEMENTS } from './schema-v723.js';
+import type { Retirement, SchemaStep } from './schema-step.js';
 import { V727, V727_STATEMENTS } from './schema-v727.js';
 import { SESSION_LIFECYCLE_STEPS } from './schema-v728.js';
 import { CARD_SETTLE_AND_LOCATOR_STEPS } from './schema-vNEXT-s2b2.js';
 import { NEXT_S6, VNEXT_S6_INDEX_STEPS, VNEXT_S6_STATEMENTS } from './schema-vNEXT-s6.js';
 import { V718, V718_STATEMENTS } from './schema-v718.js';
-import { V720, V720_STATEMENTS } from './schema-v720.js';
+import { V720, V720_RETIRES, V720_STATEMENTS } from './schema-v720.js';
 import { V721, V721_STATEMENTS } from './schema-v721.js';
-import { V722, V722_STATEMENTS } from './schema-v722.js';
+import { V722, V722_RETIRES, V722_STATEMENTS } from './schema-v722.js';
 import { V724, V724_STATEMENTS } from './schema-v724.js';
 import { V725, V725_STATEMENTS } from './schema-v725.js';
 import { V726, V726_STATEMENTS } from './schema-v726.js';
@@ -20,7 +21,7 @@ import { VNEXT_S4B2_STEPS } from './schema-vNEXT-s4b2.js';
 import { NEXT_S1C, VNEXT_S1C_STEPS } from './schema-vNEXT-s1c.js';
 import { VNEXT_S2C2_STEPS } from './schema-vNEXT-s2c2.js';
 import { VNEXT_S2E_STEPS } from './schema-vNEXT-s2e.js';
-import { V717, V717_STATEMENTS } from './schema-v717.js';
+import { V717, V717_RETIRES, V717_STATEMENTS } from './schema-v717.js';
 import { V719, V719_STATEMENTS } from './schema-v719.js';
 import { V710_STATEMENTS } from './schema-v710.js';
 import { V711_STATEMENTS } from './schema-v711.js';
@@ -29,7 +30,7 @@ import { V713, V713_STATEMENTS } from './schema-v713.js';
 import { V714, V714_STATEMENTS } from './schema-v714.js';
 import { V715, V715_STATEMENTS } from './schema-v715.js';
 import { V716, V716_STATEMENTS } from './schema-v716.js';
-import { V709_STATEMENTS } from './schema-v709.js';
+import { V709_RETIRES, V709_STATEMENTS } from './schema-v709.js';
 import { V701_STATEMENTS } from './schema-v701.js';
 import { V702_STATEMENTS } from './schema-v702.js';
 import { V703_STATEMENTS } from './schema-v703.js';
@@ -103,7 +104,7 @@ import { V82_STATEMENTS } from './schema-v82.js';
 import { V83_STATEMENTS } from './schema-v83.js';
 import { V84_STATEMENTS } from './schema-v84.js';
 import { V85_STATEMENTS } from './schema-v85.js';
-import { V86_STATEMENTS } from './schema-v86.js';
+import { V86_RETIRES, V86_STATEMENTS } from './schema-v86.js';
 import { V88_STATEMENTS } from './schema-v88.js';
 import { ASK_PROTOCOLS, PROMPT_SCOPE_REASONS } from '@goondocks/myco-shared/prompt-identity';
 import { V87_STATEMENTS } from './schema-v87.js';
@@ -135,18 +136,13 @@ import { V114_STATEMENTS } from './schema-v114.js';
 import { RETIREMENT_SCHEMA_STEPS } from './schema-v117.js';
 import { UX_SCHEMA_STEPS } from './schema-v255.js';
 import { DROP_CONTENT_SCHEMA_STEPS } from './schema-v265.js';
-import { V115_STATEMENTS } from './schema-v115.js';
+import { V115_RETIRES, V115_STATEMENTS } from './schema-v115.js';
 import { V116_STATEMENTS } from './schema-v116.js';
 
 import { projectIdGrammar, PROJECT_ID_GRAMMAR } from './project-id.js';
 
 /** The lifetime byte ceiling steps 1 and 5 write into their credential tables' CHECK, verbatim, so their DDL renders byte for byte as applied. Step 48 drops it from `member_credentials`: capture is never refused for volume (#1416). */
 const RETIRED_CREDENTIAL_BYTE_CEILING = 1_073_741_824;
-
-export interface SchemaStep {
-  version: number;
-  statements: readonly string[];
-}
 
 /** Rows written by ingest under a project; every primary key and index leads with project_id. */
 const V1_STATEMENTS: readonly string[] = [
@@ -1569,8 +1565,14 @@ const V44_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_worker_contacts_seen ON worker_contacts (last_seen_at)`,
 ];
 
-function withStamp(version: number, statements: readonly string[]): SchemaStep {
-  return { version, statements: [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`] };
+function withStamp(version: number, statements: readonly string[], retires?: readonly Retirement[]): SchemaStep {
+  const stamped = [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`];
+  return retires === undefined ? { version, statements: stamped } : { version, statements: stamped, retires };
+}
+
+/** A declared step, stamped with its version and keeping its retirements. */
+function stamp(step: SchemaStep): SchemaStep {
+  return withStamp(step.version, step.statements, step.retires);
 }
 
 /**
@@ -2162,7 +2164,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(83, V83_STATEMENTS),
   withStamp(84, V84_STATEMENTS),
   withStamp(85, V85_STATEMENTS),
-  withStamp(86, V86_STATEMENTS),
+  withStamp(86, V86_STATEMENTS, V86_RETIRES),
   withStamp(87, V87_STATEMENTS),
   withStamp(88, V88_STATEMENTS),
   withStamp(89, V89_STATEMENTS),
@@ -2191,24 +2193,24 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(112, V112_STATEMENTS),
   withStamp(113, V113_STATEMENTS),
   withStamp(114, V114_STATEMENTS),
-  withStamp(115, V115_STATEMENTS),
+  withStamp(115, V115_STATEMENTS, V115_RETIRES),
   withStamp(116, V116_STATEMENTS),
-  ...RETIREMENT_SCHEMA_STEPS.map(({version, statements}) => withStamp(version, statements)),
-  ...UX_SCHEMA_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...DROP_CONTENT_SCHEMA_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...RETIREMENT_SCHEMA_STEPS.map(stamp),
+  ...UX_SCHEMA_STEPS.map(stamp),
+  ...DROP_CONTENT_SCHEMA_STEPS.map(stamp),
   withStamp(465,V465_STATEMENTS),
   withStamp(466,V466_STATEMENTS),
-  ...PUBLICATION_FACT_STEPS.map(step=>withStamp(step.version,step.statements)),
-  ...PUBLICATION_QUEUE_STEPS.map(step=>withStamp(step.version,step.statements)),
+  ...PUBLICATION_FACT_STEPS.map(stamp),
+  ...PUBLICATION_QUEUE_STEPS.map(stamp),
   withStamp(535, V535_STATEMENTS),
   withStamp(536, V536_STATEMENTS),
   withStamp(537, V537_STATEMENTS),
-  ...READ_COST_STEPS.map(step=>withStamp(step.version,step.statements)),
+  ...READ_COST_STEPS.map(stamp),
   withStamp(545, V545_STATEMENTS),
-  ...LEARNING_SOURCE_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...LEARNING_WORK_INDEX_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...LEARNING_QUIET_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...LEARNING_QUIET_MARGIN_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...LEARNING_SOURCE_STEPS.map(stamp),
+  ...LEARNING_WORK_INDEX_STEPS.map(stamp),
+  ...LEARNING_QUIET_STEPS.map(stamp),
+  ...LEARNING_QUIET_MARGIN_STEPS.map(stamp),
   withStamp(693, V693_STATEMENTS),
   withStamp(694, V694_STATEMENTS),
   withStamp(695, V695_STATEMENTS),
@@ -2225,7 +2227,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(706, V706_STATEMENTS),
   withStamp(707, V707_STATEMENTS),
   withStamp(708, V708_STATEMENTS),
-  withStamp(709, V709_STATEMENTS),
+  withStamp(709, V709_STATEMENTS, V709_RETIRES),
   withStamp(710, V710_STATEMENTS),
   withStamp(711, V711_STATEMENTS),
   withStamp(712, V712_STATEMENTS),
@@ -2233,32 +2235,32 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(V714, V714_STATEMENTS),
   withStamp(V715, V715_STATEMENTS),
   withStamp(V716, V716_STATEMENTS),
-  withStamp(V717, V717_STATEMENTS),
+  withStamp(V717, V717_STATEMENTS, V717_RETIRES),
   withStamp(V718, V718_STATEMENTS),
   withStamp(V719, V719_STATEMENTS),
-  withStamp(V720, V720_STATEMENTS),
+  withStamp(V720, V720_STATEMENTS, V720_RETIRES),
   withStamp(V721, V721_STATEMENTS),
-  withStamp(V722, V722_STATEMENTS),
+  withStamp(V722, V722_STATEMENTS, V722_RETIRES),
   withStamp(V723, V723_STATEMENTS),
   withStamp(V724, V724_STATEMENTS),
   withStamp(V725, V725_STATEMENTS),
   withStamp(V726, V726_STATEMENTS),
   withStamp(V727, V727_STATEMENTS),
-  ...SESSION_LIFECYCLE_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...SESSION_LIFECYCLE_STEPS.map(stamp),
   withStamp(V731, V731_STATEMENTS),
-  ...V731_INDEX_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S6_INDEX_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...V731_INDEX_STEPS.map(stamp),
+  ...VNEXT_S6_INDEX_STEPS.map(stamp),
   withStamp(NEXT_S6, VNEXT_S6_STATEMENTS),
-  ...CARD_SETTLE_AND_LOCATOR_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...CARD_SETTLE_AND_LOCATOR_STEPS.map(stamp),
   withStamp(NEXT_S8A2, NEXT_S8A2_STATEMENTS),
-  ...VNEXT_S4B_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S2C_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S6B_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S2D_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S4B2_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S1C_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S2C2_STEPS.map(step => withStamp(step.version, step.statements)),
-  ...VNEXT_S2E_STEPS.map(step => withStamp(step.version, step.statements)),
+  ...VNEXT_S4B_STEPS.map(stamp),
+  ...VNEXT_S2C_STEPS.map(stamp),
+  ...VNEXT_S6B_STEPS.map(stamp),
+  ...VNEXT_S2D_STEPS.map(stamp),
+  ...VNEXT_S4B2_STEPS.map(stamp),
+  ...VNEXT_S1C_STEPS.map(stamp),
+  ...VNEXT_S2C2_STEPS.map(stamp),
+  ...VNEXT_S2E_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

@@ -1,3 +1,4 @@
+import { retiring, type SchemaStep } from './schema-step.js';
 /** Placeholder first step of this change; the coordinator assigns the real numbers at merge. */
 export const NEXT_S6B = 752;
 
@@ -7,7 +8,7 @@ export const NEXT_S6B = 752;
  * An authority's `reclaim_at` is empty until the shared catch-up has derived it, so nothing can reclaim a row whose
  * deadline is not known yet. Each index build has its own transaction.
  */
-export const VNEXT_S6B_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S6B_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S6B, statements: ['ALTER TABLE enrollment_authorities ADD COLUMN reclaim_at INTEGER'] },
   { version: NEXT_S6B + 1, statements: ['ALTER TABLE identity_link_authorities ADD COLUMN reclaim_at INTEGER'] },
   { version: NEXT_S6B + 2, statements: ['CREATE INDEX IF NOT EXISTS idx_enrollment_authorities_reclaim ON enrollment_authorities(reclaim_at,id)'] },
@@ -34,7 +35,8 @@ export const VNEXT_S6B_STEPS: ReadonlyArray<{ version: number; statements: reado
     'CREATE TRIGGER IF NOT EXISTS active_project_count_archive AFTER UPDATE OF archived_at ON projects WHEN OLD.archived_at IS NULL AND NEW.archived_at IS NOT NULL BEGIN UPDATE active_project_count SET active=active-1 WHERE slot=1; END',
     'CREATE TRIGGER IF NOT EXISTS active_project_count_unarchive AFTER UPDATE OF archived_at ON projects WHEN OLD.archived_at IS NOT NULL AND NEW.archived_at IS NULL BEGIN UPDATE active_project_count SET active=active+1 WHERE slot=1; END',
   ] },
-  { version: NEXT_S6B + 7, statements: ['DROP TABLE IF EXISTS step_up_authorities'] },
+  { version: NEXT_S6B + 7, statements: ['DROP TABLE IF EXISTS step_up_authorities'],
+    retires: retiring('table', ['step_up_authorities'], 'The last unused authority table is retired: nothing reads or writes it.') },
 ];
 
 export const LATEST_S6B = NEXT_S6B + VNEXT_S6B_STEPS.length - 1;

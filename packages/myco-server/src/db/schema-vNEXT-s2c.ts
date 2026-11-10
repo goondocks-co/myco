@@ -1,3 +1,4 @@
+import { retiring, type SchemaStep } from './schema-step.js';
 import { changed, trigger } from './ddl.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
@@ -83,10 +84,10 @@ const TITLE_WORK_STATEMENTS: readonly string[] = [
 ];
 
 /** Title work is one keyed row per session and mode, and the four scans it replaces go in steps of their own, once their readers have moved. */
-export const VNEXT_S2C_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S2C_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S2C, statements: TITLE_WORK_STATEMENTS },
-  { version: NEXT_S2C + 1, statements: ['DROP INDEX IF EXISTS idx_sessions_pending_title'] },
-  { version: NEXT_S2C + 2, statements: ['DROP INDEX IF EXISTS idx_sessions_untitled_ended'] },
-  { version: NEXT_S2C + 3, statements: ['DROP INDEX IF EXISTS idx_sessions_untitled_open'] },
-  { version: LAST_S2C, statements: ['DROP INDEX IF EXISTS idx_sessions_titled_recent'] },
+  { version: NEXT_S2C + 1, statements: ['DROP INDEX IF EXISTS idx_sessions_pending_title'], retires: retiring('index', ['idx_sessions_pending_title'], 'Title work\'s own indexes take the place of this titling scan index once its readers read title work.') },
+  { version: NEXT_S2C + 2, statements: ['DROP INDEX IF EXISTS idx_sessions_untitled_ended'], retires: retiring('index', ['idx_sessions_untitled_ended'], 'Title work\'s own indexes take the place of this titling scan index once its readers read title work.') },
+  { version: NEXT_S2C + 3, statements: ['DROP INDEX IF EXISTS idx_sessions_untitled_open'], retires: retiring('index', ['idx_sessions_untitled_open'], 'Title work\'s own indexes take the place of this titling scan index once its readers read title work.') },
+  { version: LAST_S2C, statements: ['DROP INDEX IF EXISTS idx_sessions_titled_recent'], retires: retiring('index', ['idx_sessions_titled_recent'], 'Title work\'s own indexes take the place of this titling scan index once its readers read title work.') },
 ];

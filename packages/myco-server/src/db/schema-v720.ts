@@ -1,3 +1,4 @@
+import { retiring, type Retirement } from './schema-step.js';
 export const V720 = 720;
 
 /**
@@ -51,3 +52,8 @@ export const V720_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS embedding_models_work_insert AFTER INSERT ON embedding_models BEGIN\n      UPDATE embedding_work_state SET revision=revision+1,pending=1,wake_at=NULL WHERE project_id=NEW.project_id;\n      INSERT INTO embedding_work_attention(project_id) VALUES(NEW.project_id) ON CONFLICT DO NOTHING; END",
   "CREATE TRIGGER IF NOT EXISTS embedding_models_work_update AFTER UPDATE OF active,complete,epoch ON embedding_models\n      WHEN OLD.active IS NOT NEW.active OR OLD.complete IS NOT NEW.complete OR OLD.epoch IS NOT NEW.epoch BEGIN\n      UPDATE embedding_work_state SET revision=revision+1,pending=1,wake_at=NULL WHERE project_id=NEW.project_id;\n      INSERT INTO embedding_work_attention(project_id) VALUES(NEW.project_id) ON CONFLICT DO NOTHING; END",
 ];
+
+export const V720_RETIRES: readonly Retirement[] = retiring('trigger',
+  ['embedding_versions', 'embedding_receipts', 'embedding_source_failures', 'processed_resources', 'embedding_hubness_members', 'embedding_cursors']
+    .flatMap((table) => ['insert', 'update', 'delete'].map((action) => `${table}_work_${action}`)),
+  'Each work trigger is rebuilt with the same body plus the attention mark.');

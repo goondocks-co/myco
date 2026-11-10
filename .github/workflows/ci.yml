@@ -55,6 +55,11 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/darwin-release-inputs.mjs
+      - name: Shipped migrations are unchanged and new ones append
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/check-shipped-migrations.mjs
       - uses: ./.github/actions/ci-setup
       - name: Build the Linux SQLite library
         run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64

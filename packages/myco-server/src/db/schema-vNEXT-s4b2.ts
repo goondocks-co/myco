@@ -1,3 +1,4 @@
+import { retiring, type SchemaStep } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 export const NEXT_S4B2 = 764;
@@ -74,7 +75,7 @@ const RETIRED_INDEXES = ['idx_learning_cards_fresh', 'idx_learning_cards_ready',
   'idx_learning_source_pending', 'idx_learning_source_waiting', 'idx_learning_source_activity', 'idx_learning_eligible', 'idx_learning_eligible_all', 'idx_learning_init_pending',
   'idx_turn_cards_due', 'idx_turn_cards_due_all', 'idx_turn_cards_hash'];
 
-export const VNEXT_S4B2_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S4B2_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S4B2, statements: [
     ...['signal_cards INTEGER NOT NULL DEFAULT 0', 'last_carded_at INTEGER', 'next_model_due_at INTEGER', 'counted INTEGER NOT NULL DEFAULT 0',
       'aged INTEGER NOT NULL DEFAULT 0', 'card_promoted_at INTEGER', 'learning_promoted_at INTEGER', 'quiet_generation INTEGER'].map(column => `ALTER TABLE learning_sessions ADD COLUMN ${column}`),
@@ -139,8 +140,9 @@ export const VNEXT_S4B2_STEPS: ReadonlyArray<{ version: number; statements: read
     "INSERT INTO change_marks(kind,revision) VALUES('learning',0) ON CONFLICT(kind) DO NOTHING",
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'learning_counts','learningCounts',NOT EXISTS(SELECT 1 FROM learning_sessions) ON CONFLICT DO NOTHING",
     "INSERT INTO projection_catchup(projection,phase,done) VALUES('learning_quiet_policy','learningQuietPolicy',1) ON CONFLICT DO NOTHING",
-  ] },
-  { version: NEXT_S4B2 + 7, statements: RETIRED_INDEXES.map(index => `DROP INDEX IF EXISTS ${index}`) },
+  ], retires: retiring('trigger', ['turn_cards_pending_count'], 'The keyed contribution triggers count pending cards in its place.') },
+  { version: NEXT_S4B2 + 7, statements: RETIRED_INDEXES.map(index => `DROP INDEX IF EXISTS ${index}`),
+    retires: retiring('index', RETIRED_INDEXES, 'The deadline and ready relations and the Project rollup replace it; nothing reads it.') },
 ];
 
 export const LATEST_S4B2 = NEXT_S4B2 + VNEXT_S4B2_STEPS.length - 1;

@@ -1,3 +1,4 @@
+import { retiring, type SchemaStep } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 /** The last schema step of the session deletion and job work; the three index builds before it run one per step. */
@@ -7,7 +8,7 @@ export const NEXT_S2D = 763;
  * Durable session deletion and bulk reread jobs, the recurring orphan audit that replaces the deletion-window gate, and
  * the two session-keyed paths the deletion pages walk.
  */
-export const VNEXT_S2D_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const VNEXT_S2D_STEPS: readonly SchemaStep[] = [
   { version: NEXT_S2D - 3, statements: [
     'CREATE INDEX IF NOT EXISTS idx_publication_dependencies_session ON publication_dependencies(project_id,session_id,child_event_id,prerequisite_kind,prerequisite_id)',
   ] },
@@ -46,5 +47,5 @@ export const VNEXT_S2D_STEPS: ReadonlyArray<{ version: number; statements: reado
     "CREATE TRIGGER IF NOT EXISTS search_revision_plan_session_tombstones_insert AFTER INSERT ON session_tombstones BEGIN UPDATE search_revisions SET revision = revision + 1 WHERE kind = 'plan'; END",
     "CREATE TRIGGER IF NOT EXISTS search_revision_plan_session_tombstones_delete AFTER DELETE ON session_tombstones BEGIN UPDATE search_revisions SET revision = revision + 1 WHERE kind = 'plan'; END",
     'DROP INDEX IF EXISTS idx_session_tombstones_created',
-  ] },
+  ], retires: retiring('index', ['idx_session_tombstones_created'], 'Nothing reads the deletion-window index once the orphan audit replaced its gate.') },
 ];
