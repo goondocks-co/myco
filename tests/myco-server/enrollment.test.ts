@@ -6,18 +6,15 @@
  * These assert the properties, not the implementation.
  */
 import { describe, it, expect } from 'bun:test';
-import { Database } from 'bun:sqlite';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { ENROLLMENT_KEY_PATTERN, issueEnrollmentAuthority, revokeEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { joinMember } from '@myco-server-worker/auth/join.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 function store() {
-  const sqlite = new Database(':memory:');
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const s of SCHEMA_STEPS.flatMap((x) => x.statements)) sqlite.exec(s);
+  const sqlite = schemaSqlite();
   return { db: sqliteRelationalStore(sqlite), sqlite };
 }
 const NOW = 1_700_000_000_000;

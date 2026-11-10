@@ -9,7 +9,6 @@ import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { measuredStore } from './helpers/read-budget.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { recordRunReads, MAX_RUN_READS, listReports, RUN_REPORTS_LIMIT, type ReportRow } from '@myco-server-worker/db/runs/evidence.js';
 import { pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { runReads, sessionOutcome } from '@myco-server-worker/db/runs/reads.js';
@@ -23,6 +22,7 @@ import { storedAudit } from '@myco-server-worker/core/run-audit.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { WorkerPrincipal } from '@myco-server-worker/core/worker-lease.js';
 import type { StepPage } from '@goondocks/myco-shared/worker-steps';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };
@@ -100,13 +100,12 @@ describe('a run page read by what the run holds now, not its history', () => {
 });
 
 describe('long runs on the hosted store', () => {
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
-  afterAll(() => mf.dispose());
-  let migrated: Promise<Awaited<ReturnType<typeof mf.getD1Database>>> | undefined;
+  let mf: Miniflare | undefined;
+  afterAll(() => mf?.dispose());
+  let migrated: Promise<Awaited<ReturnType<Miniflare['getD1Database']>>> | undefined;
   const database = () => migrated ??= (async () => {
-    const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
-    return d1;
+    mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
+    return mf.getD1Database('DB');
   })();
   const seed = async (steps: number, calls: number, served: number) => {
     const d1 = await database();

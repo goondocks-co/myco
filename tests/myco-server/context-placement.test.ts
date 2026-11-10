@@ -7,9 +7,9 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { deliveriesNotPlaced } from '@myco-server-worker/db/sessions/placement.js';
 import { hookPlacementStatusLine } from '@myco/server/hook-placement-status.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -127,10 +127,9 @@ describe('a delivery\'s placement', () => {
   });
 
   it('reads for a prompt only the deliveries that name it, however many the session holds, on the store the Deployment runs on', async () => {
-    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
     try {
       const d1 = await mf.getD1Database('DB');
-      for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
       await d1.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(P, P).run();
       const measured = measuredStore(d1);
       const session = async (id: string, placements: number) => {

@@ -1,7 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sharedChecks } from '@myco-server-worker/ingest/projections.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import type { CaptureEnvelope } from '@myco-server-worker/ingest/envelope.js';
@@ -12,22 +11,19 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { statementRecorder } from '../helpers/statement-recorder.js';
 import { sqliteBudgetMeter } from './helpers/budget-meter.js';
 import { uuid } from './helpers/fixtures.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const SIZE = 5000;
 const MACHINE_LIMIT = 8;
 
 it('bounds prompt ownership on both stores', async () => {
-  const native = new Database(':memory:');
+  const native = schemaSqlite({ foreignKeys: false });
   const meter = sqliteBudgetMeter();
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
-    script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+    script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) {
-      for (const sql of step.statements) native.exec(sql);
-      await d1.batch(step.statements.map(sql => d1.prepare(sql)));
-    }
     for (const [target, db] of [['native', sqliteRelationalStore(native)], ['D1', d1]] as const) {
       await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('project','Project',1)").run();
       await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1)").run();

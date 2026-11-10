@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { projectForRemote, recordProjectRemote } from '@myco-server-worker/core/remotes.js';
 import { MAX_REMOTE_CHARS, normalizeRemote } from '@goondocks/myco-shared/member-protocol';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 describe('normalizeRemote', () => {
   it('maps every written form of one repository to one name', () => {
@@ -74,9 +74,7 @@ describe('binding a remote to a Project', () => {
   const B = 'proj_two';
 
   function store(): { db: RelationalStore; sqlite: Database } {
-    const sqlite = new Database(':memory:');
-    sqlite.exec('PRAGMA foreign_keys = ON');
-    for (const f of renderMigrationFiles()) sqlite.exec(f.sql);
+    const sqlite = schemaSqlite();
     for (const p of [A, B]) sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(p, p, NOW);
     return { db: sqliteRelationalStore(sqlite), sqlite };
   }

@@ -8,7 +8,6 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import { decodeUncapturedCursor, getUncaptured, listUncaptured } from '@myco-server-worker/db/sessions/uncaptured-roots.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
 import {
   sessions_listSessionSummaries as listSessionSummaries,
@@ -16,6 +15,7 @@ import {
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const DAY = 86_400_000;
@@ -161,10 +161,9 @@ describe('what a Project holds', () => {
   });
 
   it('reads the same rows for one Project however many sessions it holds, on the store the Deployment runs on', async () => {
-    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response(null)}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
     try {
       const d1 = await mf.getD1Database('DB');
-      for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
       const seed = async (project: string, size: number, at: number) => {
         await d1.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
         const ids = JSON.stringify(Array.from({ length: size }, (_, n) => n));

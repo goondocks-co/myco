@@ -1,8 +1,7 @@
-import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { rawMemberResourceSql } from '@myco-server-worker/db/raw/resources.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 
 const OWNED = 'a'.repeat(64);
 const GENERATION = '00000000-0000-4000-8000-000000000001';
@@ -29,17 +28,15 @@ function expectKeySeek(plan: string[]): void {
 }
 
 it('the upload ownership proof seeks the proof key index on native SQLite and D1', async () => {
-  const sqlite = new Database(':memory:');
-  for (const step of SCHEMA_STEPS) for (const sql of step.statements) sqlite.exec(sql);
+  const sqlite = schemaSqlite({ foreignKeys: false });
   for (const sql of SEED) sqlite.exec(sql);
   expectKeySeek((sqlite.query(`EXPLAIN QUERY PLAN ${UPLOAD_PROOF}`).all(...BINDS) as { detail: string }[]).map((row) => row.detail));
   expect(sqlite.query(UPLOAD_PROOF).get(...BINDS)).toEqual({ admitted: 1 });
   sqlite.close();
 
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
     for (const sql of SEED) await d1.prepare(sql).run();
     expectKeySeek((await d1.prepare(`EXPLAIN QUERY PLAN ${UPLOAD_PROOF}`).bind(...BINDS).all<{ detail: string }>()).results.map((row) => row.detail));
     const run = await d1.prepare(UPLOAD_PROOF).bind(...BINDS).all<{ admitted: number }>();

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { authorizeTool } from '@myco-server-worker/auth/mcp-authorization.js';
@@ -14,11 +13,11 @@ import { HARNESS_MEMBER_ID, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/cons
 import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { pruneRevokedCredentials } from '@myco-server-worker/db/credential-retention.js';
 import { catchUpProjections, resetProjectionCatchup } from '@myco-server-worker/db/projections/catchup.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
 import type { ToolContext } from '@myco-server-worker/mcp/context.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 
 const NOW = 1_800_000_000_000;
 const stores = ['native', 'D1'] as const;
@@ -26,15 +25,14 @@ const OWNER = 'mem_owner', ADA = 'mem_ada', LIN = 'mem_lin';
 
 async function withStore<T>(target: typeof stores[number], body: (db: RelationalStore, d1?: ReturnType<Miniflare['getD1Database']> extends Promise<infer D> ? D : never) => Promise<T>): Promise<T> {
   if (target === 'native') {
-    const native = new Database(':memory:');
-    try { const db = sqliteRelationalStore(native); await migrate(db); return await body(db); } finally { native.close(); }
+    const native = schemaSqlite({ foreignKeys: false });
+    try { const db = sqliteRelationalStore(native); await seedStore(db); return await body(db); } finally { native.close(); }
   }
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
-  try { const d1 = await mf.getD1Database('DB'); const db = d1 as unknown as RelationalStore; await migrate(db); return await body(db, d1); } finally { await mf.dispose(); }
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
+  try { const d1 = await mf.getD1Database('DB'); const db = d1 as unknown as RelationalStore; await seedStore(db); return await body(db, d1); } finally { await mf.dispose(); }
 }
 
-async function migrate(db: RelationalStore) {
-  for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
+async function seedStore(db: RelationalStore) {
   await db.prepare("INSERT OR REPLACE INTO schema_meta(key,value) VALUES('deployment_id','deployment')").run();
   await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','one',1)").run();
   await ensureMember(db, OWNER, 1, 'admin');

@@ -4,9 +4,9 @@
  */
 import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { consolidateSpores } from '@myco-server-worker/db/spores/lifecycle.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const SMALL = 200;
 const LARGE = 5_000;
@@ -14,9 +14,8 @@ let mf: Miniflare;
 let measured: ReturnType<typeof measuredStore>;
 
 beforeAll(async () => {
-  mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   const d1 = await mf.getD1Database('DB');
-  for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
   await d1.prepare("INSERT INTO projects (project_id, name, created_at) VALUES ('small', 's', 1), ('large', 'l', 1)").run();
   await d1.prepare("INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('a', 'a', 'built-in', 1, 0)").run();
   const seed = (project: string, size: number) => d1.prepare(`WITH RECURSIVE k(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM k WHERE i < ${size - 1})

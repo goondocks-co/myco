@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'bun:test';
 import { recordCurrent, releaseNow } from './helpers/release-now.js';
-import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
@@ -23,10 +22,10 @@ import { releaseHolders } from '@myco-server-worker/ingest/document-batch.js';
 import { catchUpProjections, catchUpPhase, resetProjectionCatchup, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { readDeploymentStorageUsage, STORAGE_USAGE_PAGE, STORAGE_USAGE_PHASE } from '@myco-server-worker/db/storage/usage.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { latestOutcome, runMaintenance } from '@myco-server-worker/core/store-maintenance.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 
 const GENERATION = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const NOW = 2_000_000_000_000;
@@ -39,8 +38,7 @@ function objectStore() {
   return { objects, blobs: { delete: async (key: string) => { objects.delete(key); } } as unknown as Parameters<typeof drainObjectReleases>[0]['blobs'] };
 }
 
-async function migrate(db: RelationalStore) {
-  for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
+async function seedStore(db: RelationalStore) {
   await db.batch([
     db.prepare(`INSERT INTO members(id,label,created_at) VALUES('member','member',1)`),
     db.prepare(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
@@ -76,11 +74,11 @@ const stores = ['native', 'D1'] as const;
 
 async function withStore<T>(target: typeof stores[number], body: (db: RelationalStore) => Promise<T>): Promise<T> {
   if (target === 'native') {
-    const native = new Database(':memory:');
-    try { const db = sqliteRelationalStore(native); await migrate(db); return await body(db); } finally { native.close(); }
+    const native = schemaSqlite({ foreignKeys: false });
+    try { const db = sqliteRelationalStore(native); await seedStore(db); return await body(db); } finally { native.close(); }
   }
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
-  try { const db = await mf.getD1Database('DB') as unknown as RelationalStore; await migrate(db); return await body(db); } finally { await mf.dispose(); }
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
+  try { const db = await mf.getD1Database('DB') as unknown as RelationalStore; await seedStore(db); return await body(db); } finally { await mf.dispose(); }
 }
 
 /** One seeded generator: the same sequence on both stores, so a store difference reads as a test failure. */

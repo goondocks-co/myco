@@ -1,9 +1,9 @@
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { ORPHAN_AUDIT_REST_MS } from '@myco-server-worker/db/storage/blob-orphan-audit.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const key = (n: number) => n.toString(16).padStart(64, '0');
 const generation = '00000000-0000-4000-8000-000000000001';
@@ -30,11 +30,10 @@ it('workerd D1/R2 sweeps all-held pages, a sparse orphan, and a late orphan behi
         return Response.json({ freed });
       }};` },
     ...[...source].map(([name, contents]) => ({ type: 'ESModule' as const, path: name, contents })),
-  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], r2Buckets: ['BUCKET'] }));
+  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root(), r2Buckets: ['BUCKET'] }));
   try {
     const db = await mf.getD1Database('DB');
     const bucket = await mf.getR2Bucket('BUCKET');
-    for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
     await db.prepare('UPDATE orphan_sweep_state SET armed_at=-1').run();
     await db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','a',0)`).run();
     const held = 24;

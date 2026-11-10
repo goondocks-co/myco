@@ -1,15 +1,14 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { BUNDLED_WORKER } from '@myco/worker-bundle.generated.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { schemaD1Root } from './schema-template.js';
 import type { RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 
 export const SOURCE_READ_AHEAD_BYTES = 1024 * 1024;
 
 export async function streamedRecovery(total: number, partBytes: number, bundled = false) {
-  const persist = fs.mkdtempSync(path.join(os.tmpdir(), 'recovery-stream-'));
+  const persist = await schemaD1Root(['MYCO_DB']);
   const observer = path.join(import.meta.dir, 'recovery-alarm-observer.ts');
   const build = await Bun.build({
     entrypoints: [path.join(import.meta.dir, 'recovery-download-entry.ts')], target: 'browser', format: 'esm',
@@ -76,8 +75,6 @@ export async function streamedRecovery(total: number, partBytes: number, bundled
   }
   try {
     await boot(0);
-    const db = await mf!.getD1Database('MYCO_DB');
-    for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
     await (await mf!.getR2Bucket('BUCKET')).put('backups/fixture.jsonl', sourceObject);
   } catch (error) { await mf!.dispose(); provider.stop(true); throw error; }
   const call = async <T>(route: string): Promise<T> => {

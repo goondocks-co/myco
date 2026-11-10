@@ -1,7 +1,6 @@
 import { statementRecorder } from '../helpers/statement-recorder.js';
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sessionsWithTranscript } from '@myco-server-worker/read/transcript.js';
 import { importedLegacyRows } from '@myco-server-worker/read/legacy-history.js';
 import {
@@ -9,12 +8,12 @@ import {
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { LEGACY_HISTORY_MAX_EVENTS } from '@goondocks/myco-shared/member-protocol';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 it('D1 source proof reads a bounded set of identities independently of retained history size', async () => {
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const db = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
     await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('project','Project',1)").run();
     await db.prepare("INSERT OR IGNORE INTO agents(id,name,created_at) VALUES('user','User',1)").run();
     const seed = async (start: number, end: number) => {

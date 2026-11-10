@@ -6,7 +6,6 @@ import { indexFixture } from './helpers/vector-index.js';
 import { prepareEmbeddingDue, retiringReceipt } from '@myco-server-worker/db/embeddings/work.js';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { machineActivity } from '@myco-server-worker/read/machines.js';
 import {
   plans_pageProjectPlans as pageProjectPlans,
@@ -22,19 +21,21 @@ import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { handleTranscript } from '@myco-server-worker/api/sessions.js';
 import { memoryBlobStore, sqliteEnv } from './helpers/fixtures.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
-const mf = new Miniflare(
-  convertV4MiniflareOptions({
-    modules: true,
-    script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01',
-    d1Databases: ['DB'],
-  }),
-);
+let mf: Miniflare;
 let measured: ReturnType<typeof measuredStore>;
 beforeAll(async () => {
+  mf = new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: 'export default { fetch() { return new Response(null); } }',
+      compatibilityDate: '2026-07-01',
+      d1Databases: ['DB'],
+      resourcePersistencePath: await schemaD1Root(),
+    }),
+  );
   const d1 = await mf.getD1Database('DB');
-  for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
   measured = measuredStore(d1);
   await measured.db.prepare("INSERT INTO members(id,created_at) VALUES('owner',1)").run();
   await measured.db

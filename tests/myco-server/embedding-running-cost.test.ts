@@ -20,6 +20,7 @@ import { measuredStore } from './helpers/read-budget.js';
 import { vectorId, type StoredVector } from '@myco-server-worker/core/embedding/vectors.js';
 import { reconcileHubness, calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
 import { readDocumentStatus, pendingPublication } from '@myco-server-worker/db/documents/status.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 10 ** 12;
 const MODEL = 'm';
@@ -36,10 +37,11 @@ async function readyDocumentStatus(db: RelationalStore) {
 
 async function world(run: (measured: ReturnType<typeof measuredStore>) => Promise<void>, beforeFacts?: (db: RelationalStore) => Promise<void>) {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'], ...(beforeFacts === undefined ? { resourcePersistencePath: await schemaD1Root() } : {}) }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) {
+    // A world seeded before step 467 replays the steps around it; any other starts from the current schema.
+    if (beforeFacts !== undefined) for (const step of SCHEMA_STEPS) {
       if (step.version === 467 && beforeFacts !== undefined) {
         await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('p','p',1)").run();
         await beforeFacts(measuredStore(d1).db);

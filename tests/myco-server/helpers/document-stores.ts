@@ -12,29 +12,41 @@ import { envelope, uuid,recordingLimiter } from './fixtures.js';
 import {serverEnvFromBindings} from '@myco-server-worker/platform/cloudflare/env.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
+import { schemaD1Root, schemaSqlite } from './schema-template.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const storeTargets=new WeakMap<RelationalStore,'native'|'D1'>();
+const storeTargets=new WeakMap<RelationalStore,DocumentTarget>();
 
-export async function withDocumentStores(run: (db: RelationalStore, target: 'native'|'D1', native?: Database) => Promise<void>, through = Infinity): Promise<void> {
-  const native = new Database(':memory:');
-  native.exec('PRAGMA foreign_keys=ON');
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true,
-    script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+type DocumentTarget = 'native'|'D1';
+
+/** Runs `run` on native SQLite, then on D1 through Miniflare: each a private database holding the schema through step `through`, with two projects. */
+export async function withDocumentStores(run: (db: RelationalStore, target: DocumentTarget, native?: Database) => Promise<void>, through = Infinity): Promise<void> {
+  const selected=process.env.MYCO_DOCUMENT_TEST_STORE;
+  if(selected!==undefined&&!['native','D1'].includes(selected))throw new Error('Unknown document test store');
+  const current=through===Infinity;
+  let native:Database|null=null;
+  let mf:Miniflare|null=null;
   try {
-    const stores = [sqliteRelationalStore(native), await mf.getD1Database('DB')];
-    const selected=process.env.MYCO_DOCUMENT_TEST_STORE;
-    if(selected!==undefined&&!['native','D1'].includes(selected))throw new Error('Unknown document test store');
-    for (const [index, db] of stores.entries()) {
-      if(selected!==undefined&&selected!==(index===0?'native':'D1'))continue;
-      storeTargets.set(db,index===0?'native':'D1');
-      for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
+    for (const target of ['native','D1'] as const) {
+      if(selected!==undefined&&selected!==target)continue;
+      let db:RelationalStore;
+      if(target==='native'){
+        native=current?schemaSqlite():new Database(':memory:');
+        if(!current)native.exec('PRAGMA foreign_keys=ON');
+        db=sqliteRelationalStore(native);
+      } else {
+        mf=new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01',
+          d1Databases: ['DB'], ...(current?{resourcePersistencePath:await schemaD1Root()}:{}) }));
+        db=await mf.getD1Database('DB');
+      }
+      storeTargets.set(db,target);
+      if(!current)for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
       for(const project of ['project','other'])await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project,project).run();
-      await run(db, index === 0 ? 'native' : 'D1', index === 0 ? native : undefined);
+      await run(db, target, target==='native'?native!:undefined);
     }
-  } finally { native.close(); await mf.dispose(); }
+  } finally { native?.close(); await mf?.dispose(); }
 }
 
 /** Transcript fixtures use the upload and capture writers on the selected store. */

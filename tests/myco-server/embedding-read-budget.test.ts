@@ -1,6 +1,5 @@
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import {
   runEmbeddingJob,
   embeddingKeepsAwake,
@@ -21,6 +20,7 @@ import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/v
 import { cloudflareEmbeddingProvider, EMBEDDING_MODEL } from '@myco-server-worker/platform/cloudflare/embedding.js';
 import { measuredStore } from './helpers/read-budget.js';
 import type { ServerEnv, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 10 ** 12;
 const MODEL = JSON.stringify(['cloudflare', EMBEDDING_MODEL]);
@@ -50,10 +50,9 @@ async function seedCaughtUp(d1: RelationalStore, size: number) {
 
 test('caught-up D1 embedding wake reads stay constant as the corpus grows, with no recurring source sweep', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
     await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('p','p',1)").run();
     await d1.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','agent','built-in',1,1)").run();
     await d1.prepare("INSERT INTO members(id,label,created_at) VALUES('member','member',1)").run();

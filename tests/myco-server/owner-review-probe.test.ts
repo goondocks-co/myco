@@ -11,6 +11,7 @@ import { issueIdentityLinkAuthority, spendIdentityLinkAuthority } from '@myco-se
 import { revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myco-server-worker/auth/tokens.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { renameMachine } from '@myco-server-worker/auth/enrollment.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -89,9 +90,8 @@ it('schema 73 preserves an established owner with two live admins', () => {
 });
 
 it('two fresh authenticated links produce exactly one linked owner and receipt', async () => {
-  const sqlite = new Database(':memory:');
+  const sqlite = schemaSqlite({ foreignKeys: false });
   try {
-    for (const step of SCHEMA_STEPS) for (const sql of step.statements) sqlite.exec(sql);
     sqlite.run("INSERT INTO members(id,role,created_at) VALUES (?,'admin',0),(?,'admin',0)", [OWNER, ADMIN]);
     const db = sqliteRelationalStore(sqlite);
     const now = Date.now();

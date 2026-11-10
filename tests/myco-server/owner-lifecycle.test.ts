@@ -11,6 +11,7 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { BACKUP_FORMAT, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
 import { envelope, memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -282,9 +283,8 @@ describe('owner bootstrap and migration gates', () => {
   });
 
   it('fresh link rolls back the identity and owner if the ownership receipt fails', async () => {
-    const sqlite = new Database(':memory:');
+    const sqlite = schemaSqlite({ foreignKeys: false });
     try {
-      for (const step of SCHEMA_STEPS) for (const sql of step.statements) sqlite.exec(sql);
       sqlite.run("INSERT INTO members (id,role,created_at) VALUES (?,'admin',0)", [OWNER]);
       sqlite.run("CREATE TRIGGER refuse_first_owner BEFORE INSERT ON deployment_ownership_audit BEGIN SELECT RAISE(ABORT,'receipt failure'); END");
       const db = sqliteRelationalStore(sqlite);
@@ -296,9 +296,8 @@ describe('owner bootstrap and migration gates', () => {
   });
 
   it('an interrupted legacy membership restore keeps link completion pending explicit owner selection', async () => {
-    const sqlite = new Database(':memory:');
+    const sqlite = schemaSqlite({ foreignKeys: false });
     try {
-      for (const step of SCHEMA_STEPS) for (const sql of step.statements) sqlite.exec(sql);
       sqlite.run("CREATE TRIGGER fail_restored_claim BEFORE INSERT ON machine_claims BEGIN SELECT RAISE(ABORT,'restore interrupted'); END");
       const db = sqliteRelationalStore(sqlite);
       const lineage = (await db.prepare("SELECT value FROM schema_meta WHERE key='deployment_id'").first<{ value: string }>())!.value;
