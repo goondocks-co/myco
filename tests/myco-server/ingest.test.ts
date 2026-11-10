@@ -5,6 +5,7 @@ import { ENVELOPE_FIELDS, PRODUCER_FIELDS } from '@myco-server-worker/ingest/env
 import { envelope, sqliteEnv, uuid, PRODUCER } from './helpers/fixtures.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
 import { TOOL_INPUT_PREVIEW_BYTES } from '@myco-server-worker/core/tool-input.js';
+import { counting, failingAt } from './helpers/store-faults.js';
 
 function realDb() {
   const sqlite = seededSqlite();
@@ -38,25 +39,29 @@ describe('ingest', () => {
     } finally { sqlite.close(); }
   });
 
-  it('propagates a replay source lookup failure before preparing oversized tool input', async () => {
-    const fixture = sqliteEnv();
+  it('propagates a store failure anywhere in planning an oversized tool input, having staged nothing', async () => {
+    const event = envelope({ eventId: uuid(73), sessionId: 'replay-lookup-failure', kind: 'tool.failure',
+      producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' },
+      payload: { toolCallId: uuid(74), toolName: 'Read', input: { text: 'x'.repeat(TOOL_INPUT_PREVIEW_BYTES + 1) }, success: false, errorMessage: 'failure', resultReason: 'reported' } });
+    const planned = sqliteEnv();
+    let total = 0;
     try {
-      seedCredential(fixture.sqlite, { id: ctx.tokenId, machineId: ctx.machineId });
-      const failure = new Error('injected replay source lookup failure');
-      const db = { ...fixture.db, prepare(sql: string) {
-        if (sql.includes('SELECT session_id,kind,channel,payload,created_at,producer_adapter,producer_version,envelope_hash')) throw failure;
-        return fixture.db.prepare(sql);
-      } };
-      const event = envelope({ eventId: uuid(73), sessionId: 'replay-lookup-failure', kind: 'tool.failure',
-        producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' },
-        payload: { toolCallId: uuid(74), toolName: 'Read', input: { text: 'x'.repeat(TOOL_INPUT_PREVIEW_BYTES + 1) }, success: false, errorMessage: 'failure', resultReason: 'reported' } });
-      await expect(planEventWrite(db, { ...ctx, writeOrigin: 'server' }, event, fixture.serverEnv)).rejects.toBe(failure);
-      expect(count(fixture.sqlite, 'prepared_archive_bundles')).toBe(0);
-      expect(count(fixture.sqlite, 'archive_bundles')).toBe(0);
-      expect(count(fixture.sqlite, 'events')).toBe(0);
-      expect(fixture.bucket.puts).toEqual([]);
-      expect(fixture.bucket.objects.size).toBe(0);
-    } finally { fixture.sqlite.close(); }
+      seedCredential(planned.sqlite, { id: ctx.tokenId, machineId: ctx.machineId });
+      const counter = counting(planned.db);
+      await planEventWrite(counter.store, { ...ctx, writeOrigin: 'server' }, event, planned.serverEnv);
+      total = counter.calls();
+    } finally { planned.sqlite.close(); }
+    expect(total).toBeGreaterThan(0);
+    for (let at = 1; at <= total; at++) {
+      const fixture = sqliteEnv();
+      try {
+        seedCredential(fixture.sqlite, { id: ctx.tokenId, machineId: ctx.machineId });
+        const failure = new Error(`injected store failure at call ${at}`);
+        await expect(planEventWrite(failingAt(fixture.db, at, 'before', () => failure).store, { ...ctx, writeOrigin: 'server' }, event, fixture.serverEnv)).rejects.toBe(failure);
+        expect({ at, staged: ['prepared_archive_bundles', 'archive_bundles', 'events'].map(table => count(fixture.sqlite, table)) }).toEqual({ at, staged: [0, 0, 0] });
+        expect({ at, puts: fixture.bucket.puts, objects: fixture.bucket.objects.size }).toEqual({ at, puts: [], objects: 0 });
+      } finally { fixture.sqlite.close(); }
+    }
   });
 
   it('reserves the parser\'s adapter for the Deployment: a member claiming it is refused, the parser writing it is stored', async () => {

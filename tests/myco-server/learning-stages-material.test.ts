@@ -3,7 +3,7 @@ import { MATERIAL_CHANGED, MATERIAL_UNREAD } from '@myco-server-worker/core/mate
 import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import { learningMaterialPages } from '@myco-server-worker/core/learning-sessions.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { beforeWriteBatch } from './helpers/prepared.js';
+import { failingStatement } from './helpers/store-faults.js';
 import { uuid } from './helpers/fixtures.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_EXAMPLE } from '@myco-server-worker/core/injection.js';
@@ -97,11 +97,11 @@ it('leaves a page unread when its served record fails, so completion cannot reti
     const first = await run.material();
     expect(first.cards[0]!.continues).toBe(true);
     expect(first.next_page).toBe(2);
-    let failed = 0;
-    run.bindings.MYCO_DB = beforeWriteBatch(db, (sql) => sql.includes('INSERT INTO run_served_material'), async () => { failed += 1; throw new Error('storage down'); }, true);
+    const served = failingStatement(db, 'runs.recordServed', { times: 1, error: () => new Error('storage down') });
+    run.bindings.MYCO_DB = served.store;
     expect(await run.raw('myco_run_learning', { op: 'material', page: 2, revision: first.revision })).toBeUndefined();
     run.bindings.MYCO_DB = db;
-    expect(failed).toBe(1);
+    expect(served.failures()).toBe(1);
     expect(await run.complete('only page 1 arrived')).toMatchObject({ ok: false, code: MATERIAL_UNREAD, next_page: 2 });
     expect(await run.save('A line.')).toMatchObject({ ok: false, code: MATERIAL_UNREAD, next_page: 2 });
     expect((await run.material({ page: 2, revision: first.revision })).page).toBe(2);
