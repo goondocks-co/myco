@@ -16,6 +16,7 @@ import { estimateInvalidationStatements } from '../db/meta/budget-estimates.js';
 import { storedDeploymentId, storedSchemaVersion } from '../db/meta/deployment.js';
 import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreComparison,portableAttemptRow } from './attempt-accounting.js';
 import { restoreDocuments } from '../ingest/document-restore.js';
+import { holdArtifactForRestore, releaseArtifactAfterRestore } from '../db/storage/restore-hold.js';
 import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
 import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
@@ -738,6 +739,7 @@ export async function restoreArtifact(
     segments.push(row);
     transcriptSegments.set(identity, segments);
   }
+  await holdArtifactForRestore(db, hash);
   for (const table of BACKUP_TABLES) {
     let rows = byTable.get(table) ?? [];
     const artifactRowCount = rows.length;
@@ -969,6 +971,7 @@ export async function restoreArtifact(
       outcome.tables[table] = { ...applied, rows: applied.rows + skipped.rows, skipped: skipped.skipped };
     }
   }
+  await releaseArtifactAfterRestore(db, hash);
   await documents?.apply(restoredAt);
   for (const bundle of restoredBundles) {
     const unused = `NOT (${bundleHeld('?', '?')})`;
