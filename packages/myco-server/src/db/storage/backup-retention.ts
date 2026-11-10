@@ -1,7 +1,6 @@
 import { objectJournalSql } from './object-journal.js';
 import { HOLD_OPEN } from './release-queue.js';
 import { BACKUP_WEEK_HEADS_PHASE, BACKUP_WEEK_HEADS_PROJECTION } from './backup-week-heads.js';
-import { RESTORE_HOLD_PHASE } from './restore-hold.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, commit, commitNamed, read, readSet, refusalCode, write, type Bound } from '../index.js';
 
@@ -19,8 +18,8 @@ const keepSet = (daily: string, weekly: string) =>
   `SELECT id FROM (SELECT id FROM backups WHERE pinned=0 ORDER BY created_at DESC,id DESC LIMIT ${daily})
     UNION SELECT id FROM (SELECT id FROM backup_week_heads ORDER BY week DESC LIMIT ${weekly})
     UNION SELECT id FROM (SELECT id FROM backups WHERE verification_state='verified' ORDER BY created_at DESC,id DESC LIMIT 1)`;
-const inUseByRestore = `SELECT artifact_hash FROM backup_restore_progress WHERE NOT (table_name GLOB '${RESTORE_HOLD_PHASE}:*' AND next_row=1)`;
-const notInRestore = (alias: string) => `(${alias}.sha256 IS NULL OR ${alias}.sha256 NOT IN (${inUseByRestore}))`;
+/** A backup a running restore reads stays until that restore completes or fails. */
+const notInRestore = (alias: string) => `NOT EXISTS(SELECT 1 FROM restore_jobs j INDEXED BY idx_restore_jobs_running WHERE j.state='running' AND j.backup_id=${alias}.id)`;
 const releasable = (alias: string, daily: string, weekly: string) =>
   `${alias}.pinned=0 AND ${alias}.id NOT IN (${keepSet(daily, weekly)}) AND ${notInRestore(alias)}`;
 

@@ -14,15 +14,11 @@ import {
   backupArtifact,
   BackupIntegrityError,
   BackupFormatRetiredError,
-  BackupObjectsMissingError,
-  BackupLineageError,
-  BackupSchemaError,
+  invocationSpent,
   BackupTooLargeError,
   assertBackupSize,
   createBackup,
   previewRestore,
-  restoreArtifact,
-  restoreBackup,
   setBackupPinned,
   verifyBackup,
   type BackupIndexRow,
@@ -34,7 +30,12 @@ import { backupPruneStatus, type BackupPruneStatus, type BackupPruneOutcome } fr
 import { pruneBackups } from '../core/backup-retention.js';
 import { BACKUP_LIST_MAX, decodeBackupCursor, listBackupPage, type ListedBackup } from '../db/storage/backup-list.js';
 import { restoreAdmission, RestoreAuthorizationError } from '../core/restore-authorization.js';
-import { RecordSchemeError } from '../ingest/record-scheme.js';
+import { measuredContentEnv, CONTENT_WALL_MS } from '../core/content-budget.js';
+import { WAKE_JOB_BLOB_LIMIT, WAKE_JOB_STATEMENT_LIMIT } from '../core/tick.js';
+import {
+  acceptRestore, acceptUploadedRestore, advanceRestore, latestRestore, restoreFailure, restoreJobProgress, RestoreBackupGoneError, RestoreRunningError, stopRestore,
+  type RestoreFailure, type RestoreJobProgress,
+} from '../core/restore-job.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
 
 /** The dashboard's restore preview, with this caller's permission to apply it. */
@@ -70,6 +71,8 @@ export interface BackupsAnswer {
   backups: ListedBackup[];
   cursor: string | null;
   retention: BackupPruneStatus | null;
+  /** The latest restore this Deployment accepted, running or ended. */
+  restore: RestoreJobProgress | null;
 }
 
 /** One page of the backup index, newest first, each row with the verification last recorded for it. */
@@ -80,7 +83,7 @@ export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Prom
   const limit = limitText === null ? undefined : Number(limitText);
   if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > BACKUP_LIST_MAX)) return badRequest(`limit must be a whole number from 1 to ${BACKUP_LIST_MAX}`);
   const page = await listBackupPage(env.db, { ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }) });
-  return ok({ ...page, retention: await backupPruneStatus(env.db) } satisfies BackupsAnswer);
+  return ok({ ...page, retention: await backupPruneStatus(env.db), restore: await latestRestore(env) } satisfies BackupsAnswer);
 }
 
 /** Reads one artifact, compares it with what its row recorded, and records and answers the verification. */
@@ -122,39 +125,101 @@ export async function handleRestorePreview(env: ServerEnv, ctx: OwnerContext): P
   }
 }
 
-/** Apply one backup. A foreign-lineage artifact is refused unless the body deliberately adopts it. */
-export const handleRestoreBackup = retryablePublicationRestore(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
+
+/** What a restore request answers: the outcome once complete, or the job still running with its progress. */
+export type RestoreAnswer =
+  | ({ applied: true; job: RestoreJobProgress } & RestoreJobProgress['outcome'])
+  | { applied: false; job: RestoreJobProgress };
+
+/** A refusal met before any job was recorded, answered with its named code as the routes always have. */
+function refusedRestore(failure: RestoreFailure): Response {
+  switch (failure.code) {
+    case 'not_owner': case 'not_admin': return Response.json({ error: failure.code }, { status: 403 });
+    case 'owner_pending': return Response.json({ error: failure.code }, { status: 409 });
+    case 'foreign_lineage': case 'newer_schema': case 'objects_missing': case 'artifact_integrity': case 'backup_unavailable':
+      return Response.json({ error: failure.code, message: failure.message }, { status: 409 });
+    case 'restore_refused': case 'artifact_unreadable': return badRequest(failure.message);
+    default: return Response.json({ error: failure.code }, { status: 409 });
+  }
+}
+
+/** A restore that ended failed: its named code, its words, and the job with the rows it restored before it stopped. */
+const failedRestore = (job: RestoreJobProgress): Response =>
+  Response.json({ error: job.failure?.code ?? 'restore_failed', message: job.failure?.message ?? '', job }, { status: 409 });
+
+/** What a restore request may spend: the same allowance the tick gives one wake's jobs. */
+const requestAllowance = (env: ServerEnv): ServerEnv =>
+  measuredContentEnv(env, { statements: WAKE_JOB_STATEMENT_LIMIT, blobCalls: WAKE_JOB_BLOB_LIMIT, wallMs: CONTENT_WALL_MS }).env;
+
+/** The refusals that come before a job exists, by the same codes a stopped job carries. */
+function refusedAcceptance(err: unknown): Response | null {
+  if (err instanceof RestoreRunningError) return Response.json({ error: 'restore_running', message: err.message, restoreId: err.runningId }, { status: 409 });
+  if (err instanceof RestoreBackupGoneError) return Response.json({ error: 'backup_unavailable', message: err.message }, { status: 409 });
+  if (err instanceof PublicationRestoreBuilding) return Response.json({ complete: false, error: err.code, retryable: err.retryable, message: err.message }, { status: 409 });
+  if (err instanceof BackupFormatRetiredError) return formatRetired(err);
+  const failure = restoreFailure(err);
+  return failure === null ? null : refusedRestore(failure);
+}
+
+/**
+ * Walks the restore this request accepted for one bounded pass, then answers it: complete with what each
+ * table took, stopped with its refusal, or still running (202) with its progress, which the tick carries on.
+ */
+async function answerAccepted(env: ServerEnv, accepted: RestoreJobProgress, now: number): Promise<Response> {
+  const measured = requestAllowance(env);
+  try { await advanceRestore(measured, now, undefined, restoreDocuments(measured)); }
+  catch (error) { if (!invocationSpent(error)) throw error; }
+  const job = (await restoreJobProgress(env, accepted.id)) ?? accepted;
+  if (job.state === 'complete') return ok({ applied: true, job, ...job.outcome } satisfies RestoreAnswer);
+  if (job.state === 'failed') return failedRestore(job);
+  await env.wake?.().catch(() => undefined);
+  return Response.json({ applied: false, job } satisfies RestoreAnswer, { status: 202 });
+}
+
+/** Accept a restore of one backup. A foreign-lineage artifact is refused unless the body deliberately adopts it. */
+export async function handleRestoreBackup(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
   if (body === null) return badRequest('body must be a JSON object');
+  let accepted: RestoreJobProgress | null;
   try {
-    const outcome = await restoreBackup(env.db, env.blobs, {
-      id: ctx.params.backupId,
-      allowForeignLineage: body.allowForeignLineage === true,
-      authorization: { kind: 'member', memberId: ctx.member.id },
-      now: ctx.now,
-      documents: restoreDocuments(env),
-    });
-    if (outcome === null) return notFound();
-    return ok({ applied: true, ...outcome });
+    accepted = await acceptRestore(env, ctx.params.backupId, { allowForeignLineage: body.allowForeignLineage === true, memberId: ctx.member.id, now: ctx.now, documents: restoreDocuments(env) });
   } catch (err) {
-    if (err instanceof RecordSchemeError) return Response.json({ error: err.code }, { status: 409 });
-    if (err instanceof RestoreAuthorizationError) return Response.json({ error: err.code }, { status: err.code === 'owner_pending' ? 409 : 403 });
-    if (err instanceof BackupLineageError) {
-      return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
-    }
-    if (err instanceof BackupSchemaError) {
-      return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
-    }
-    if (err instanceof BackupObjectsMissingError) {
-      return Response.json({ error: 'objects_missing', message: err.message }, { status: 409 });
-    }
-    if (err instanceof BackupFormatRetiredError) return formatRetired(err);
-    const refusal = storedArtifactRefusal(err);
+    const refusal = refusedAcceptance(err) ?? storedArtifactRefusal(err);
     if (refusal !== null) return refusal;
-    if (err instanceof BackupApplyError || err instanceof SyntaxError) return badRequest(err.message);
     throw err;
   }
-});
+  if (accepted === null) return notFound();
+  return answerAccepted(env, accepted, ctx.now);
+}
+
+/**
+ * Carries the running restore one bounded pass further from an owner's request, with the document side the tick does
+ * not have: what a restore waiting at session documents needs. Answers as the request that accepted it does.
+ */
+export async function handleContinueRestore(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const job = await restoreJobProgress(env, ctx.params.restoreId);
+  if (job === null) return notFound();
+  if (job.state !== 'running') return Response.json({ error: 'restore_ended', message: `this restore is ${job.state}; there is nothing to continue. Read it with GET /api/backups/restores/${job.id}, or start another restore`, job }, { status: 409 });
+  return answerAccepted(env, job, ctx.now);
+}
+
+/**
+ * Stops a running restore: it ends failed with `stopped`, keeping every row it restored, and its backup is free for
+ * retention again. Each refusal names the call to make next.
+ */
+export async function handleStopRestore(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const answer = await stopRestore(env, ctx.params.restoreId, ctx.now);
+  if ('stopped' in answer) return ok({ job: answer.stopped });
+  if (answer.refused === 'absent') return notFound();
+  if (answer.refused === 'ended') return Response.json({ error: 'restore_ended', message: `this restore is already ${answer.job.state}; there is nothing to stop. Read it with GET /api/backups/restores/${answer.job.id}`, job: answer.job }, { status: 409 });
+  return Response.json({ error: 'restore_moved', message: `a pass moved this restore while it was being stopped; read it with GET /api/backups/restores/${ctx.params.restoreId} and stop it again if it is still running` }, { status: 409 });
+}
+
+/** One restore's progress and outcome, while it runs and after it ends. */
+export async function handleRestoreProgress(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const job = await restoreJobProgress(env, ctx.params.restoreId);
+  return job === null ? notFound() : ok({ job });
+}
 
 /** The artifact itself, for an operator taking a copy off the Deployment. */
 export async function handleBackupArtifact(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
@@ -175,38 +240,27 @@ export async function handleBackupArtifact(env: ServerEnv, ctx: OwnerContext): P
   });
 }
 
-/** Restore an artifact carried in the request itself — the way a backup taken on one Deployment lands on another. */
-export const handleRestoreUpload = retryablePublicationRestore(async (env: ServerEnv, ctx: OwnerContext): Promise<Response> => {
+/**
+ * Restore an artifact carried in the request itself — the way a backup taken on one Deployment lands on another. Its
+ * restore runs as a job exactly as a stored backup's does; the bytes are kept for the job alone, never listed as one of
+ * this Deployment's backups, and released when the job ends.
+ */
+export async function handleRestoreUpload(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const body = await readJsonObject(ctx.request);
   if (body === null || typeof body.artifact !== 'string' || body.artifact.length === 0) {
     return badRequest('body must carry the artifact text');
   }
+  let accepted: RestoreJobProgress;
   try {
     assertBackupSize(body.artifact);
-    const outcome = await restoreArtifact(env.db, { text: body.artifact, blobs: env.blobs, allowForeignLineage: body.allowForeignLineage === true, authorization: { kind: 'member', memberId: ctx.member.id }, now: ctx.now, documents: restoreDocuments(env) });
-    return ok({ applied: true, ...outcome });
+    accepted = await acceptUploadedRestore(env, body.artifact, { allowForeignLineage: body.allowForeignLineage === true, memberId: ctx.member.id, now: ctx.now, documents: restoreDocuments(env) });
   } catch (err) {
-    if (err instanceof RecordSchemeError) return Response.json({ error: err.code }, { status: 409 });
-    if (err instanceof RestoreAuthorizationError) return Response.json({ error: err.code }, { status: err.code === 'owner_pending' ? 409 : 403 });
-    if (err instanceof BackupLineageError) return Response.json({ error: 'foreign_lineage', message: err.message }, { status: 409 });
-    if (err instanceof BackupSchemaError) return Response.json({ error: 'newer_schema', message: err.message }, { status: 409 });
-    if (err instanceof BackupObjectsMissingError) return Response.json({ error: 'objects_missing', message: err.message }, { status: 409 });
-    if (err instanceof BackupFormatRetiredError) return formatRetired(err);
     if (err instanceof BackupTooLargeError) return badRequest('the artifact is past the byte bound this path serves');
-    if (err instanceof BackupApplyError) return badRequest(err.message);
-    if (err instanceof SyntaxError) return badRequest('the artifact is not a backup this server can read');
+    const refusal = refusedAcceptance(err);
+    if (refusal !== null) return refusal;
     throw err;
   }
-});
-
-function retryablePublicationRestore(handler:(env:ServerEnv,ctx:OwnerContext)=>Promise<Response>) {
-  return async (env:ServerEnv,ctx:OwnerContext):Promise<Response>=>{
-    try { return await handler(env,ctx); }
-    catch(error) {
-      if(!(error instanceof PublicationRestoreBuilding))throw error;
-      return Response.json({complete:false,error:error.code,retryable:error.retryable,message:error.message},{status:409});
-    }
-  };
+  return answerAccepted(env, accepted, ctx.now);
 }
 
 /** Pin or unpin one backup; a pinned backup is exempt from retention. */

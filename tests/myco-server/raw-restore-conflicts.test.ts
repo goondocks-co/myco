@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { backupArtifact, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import { rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { claimUnknownRaw, rawClaimPreview } from '@myco-server-worker/core/raw-claims.js';
 import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';

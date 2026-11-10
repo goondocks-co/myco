@@ -53,6 +53,10 @@ const credential = (id: string, machineId: string, runtimeLabel: string | null, 
   id, memberId, machineId, runtimeLabel, expiresAt: NOW + 86_400_000, revokedAt: null, revokedBy: null, bytesWritten: 0,
   lineageRoot: id, lineageStartedAt: NOW - 86_400_000, firstUsedAt: null, live: true, purpose: 'member',
 });
+/** A restore as the server answers it: running, complete or stopped. */
+const restoreJob = (job: { state: 'running' | 'complete' | 'failed'; rowsDone: number; rowsTotal: number; completedAt?: number;
+  outcome: { tables: Record<string, { rows: number; inserted: number; skipped?: string }> }; failure?: { code: string; message: string } }) => ({
+  id: 'rs_1', backupId: 'bk_7f3a9c0e21', acceptedAt: NOW, completedAt: null, failure: null, retrying: null, awaitingDocuments: false, ...job });
 const BACKUP = { id: 'bk_7f3a9c0e21', key: 'backups/1.sqlite', created_at: NOW - 28 * 86_400_000, size_bytes: 48_213_504, counts_json: '{}', schema_version: 57, producer: 'mem_q3Vb8xRk2LmT7wYz', pinned: 0, verification: { state: 'verified', checkedAt: 0, detail: null } };
 
 type Route = (init?: RequestInit) => Response;
@@ -357,7 +361,10 @@ describe('Health', () => {
       '/auth/me': () => Response.json(dashboardMe({ ...ADMIN, owner: true })),
       '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_other', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4, spores: 12, members: 1, skill_records: 40, digest_extracts: 2, cortex_instructions: 1, knowledge_release_state: 3 } }, foreignLineage: true, restore: { allowed: true, reason: null }, tables: { skill_records: { rows: 40, inserted: 0, skipped: 'retired' }, digest_extracts: { rows: 2, inserted: 0, skipped: 'retired' }, cortex_instructions: { rows: 1, inserted: 0, skipped: 'retired' }, knowledge_release_state: { rows: 2, inserted: 0, skipped: 'retired' } }, retiredNotice: retiredBackupNotice({ skill_records: 40, digest_extracts: 2, cortex_instructions: 1 }),
         authorityExcluded: { tables: ['members', 'member_credentials'], notice: 'People from the other server are listed here but cannot sign in until the owner re-admits them.' } }),
-      '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: true, tables: { sessions: { rows: 4, inserted: 4 }, spores: { rows: 12, inserted: 1, skipped: 'newer rows are kept' } } }),
+      '/api/backups/bk_7f3a9c0e21/restore': () => {
+        const tables = { sessions: { rows: 4, inserted: 4 }, spores: { rows: 12, inserted: 1, skipped: 'newer rows are kept' } };
+        return Response.json({ applied: true, tables, job: restoreJob({ state: 'complete', rowsDone: 16, rowsTotal: 16, completedAt: NOW, outcome: { tables } }) });
+      },
     }));
     mount();
     const list = await screen.findByRole('group', { name: 'Backups' });
@@ -380,6 +387,68 @@ describe('Health', () => {
     await waitFor(() => expect(posts.at(-1)).toEqual({ path: '/api/backups/bk_7f3a9c0e21/restore', body: { allowForeignLineage: true } }));
     expect((await screen.findByText(/^Restored: /)).textContent).toBe('Restored: 5 records added.');
     expect(screen.getByText('spores: newer rows are kept')).toBeTruthy();
+  });
+
+  it('follows a restore the server is still walking until it completes, and names a stopped one with what to do', async () => {
+    const preview = () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 40 } }, foreignLineage: false, restore: { allowed: true, reason: null }, authorityExcluded: null });
+    const running = restoreJob({ state: 'running', rowsDone: 10, rowsTotal: 40, outcome: { tables: { sessions: { rows: 40, inserted: 10 } } } });
+    let progress = running;
+    server(routes({
+      '/api/backups/bk_7f3a9c0e21/restore-preview': preview,
+      '/api/backups/bk_7f3a9c0e21/restore': () => Response.json({ applied: false, job: running }, { status: 202 }),
+      '/api/backups/restores/rs_1': () => Response.json({ job: progress }),
+    }));
+    mount();
+    const list = await screen.findByRole('group', { name: 'Backups' });
+    fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Restore' }));
+    expect((await screen.findByText(/^Restoring: /)).textContent).toBe('Restoring: 25% done, 10 records added so far.');
+    expect(screen.getByText(/continues on the server/)).toBeTruthy();
+    cleanup();
+
+    progress = restoreJob({ state: 'failed', rowsDone: 20, rowsTotal: 40, completedAt: NOW, outcome: { tables: { sessions: { rows: 40, inserted: 20 } } },
+      failure: { code: 'backup_unavailable', message: 'the backup this restore reads is no longer stored; the rows it restored stay' } });
+    server(routes({ '/api/backups': () => Response.json({ backups: [BACKUP], restore: progress }) }));
+    mount();
+    const stopped = await screen.findByText(/stopped\.$/);
+    expect(stopped.textContent).toMatch(/^The restore started .+ stopped\.$/);
+    expect(screen.getByText(/no longer stored/).textContent).toContain('restoring the same backup again picks up from them');
+  });
+
+  it('continues a restore waiting at session transcripts only when an admin asks, and shows what it added', async () => {
+    const waiting = restoreJob({ state: 'running', rowsDone: 30, rowsTotal: 40, outcome: { tables: { sessions: { rows: 2, inserted: 2 } } } });
+    const awaiting = { ...waiting, awaitingDocuments: true };
+    const complete = restoreJob({ state: 'complete', rowsDone: 40, rowsTotal: 40, completedAt: NOW, outcome: { tables: { sessions: { rows: 2, inserted: 2 }, prompts: { rows: 3, inserted: 3 } } } });
+    const { posts } = server(routes({
+      '/api/backups': () => Response.json({ backups: [BACKUP], restore: awaiting }),
+      '/api/backups/restores/rs_1': () => Response.json({ job: awaiting }),
+      '/api/backups/restores/rs_1/continue': () => Response.json({ applied: true, job: complete, ...complete.outcome }),
+    }));
+    mount();
+    expect((await screen.findByText(/only while this page continues the restore/)).textContent).toContain('Continue it to finish');
+    expect(posts).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Continue restore' }));
+    await waitFor(() => expect(posts.map((p) => p.path)).toEqual(['/api/backups/restores/rs_1/continue']));
+    expect((await screen.findByText(/^Restored: /)).textContent).toBe('Restored: 5 records added.');
+  });
+
+  it('stops a running restore only when an admin asks, and says the rows it restored stay', async () => {
+    const running = restoreJob({ state: 'running', rowsDone: 10, rowsTotal: 40, outcome: { tables: { sessions: { rows: 40, inserted: 10 } } } });
+    const stopped = restoreJob({ state: 'failed', rowsDone: 10, rowsTotal: 40, completedAt: NOW, outcome: running.outcome,
+      failure: { code: 'stopped', message: 'the restore was stopped by its owner; the rows it restored stay, and restoring the same backup again continues it' } });
+    const { posts } = server(routes({
+      '/api/backups': () => Response.json({ backups: [BACKUP], restore: running }),
+      '/api/backups/restores/rs_1': () => Response.json({ job: running }),
+      '/api/backups/restores/rs_1/stop': () => Response.json({ job: stopped }),
+    }));
+    mount();
+    await screen.findByText(/^Restoring: /);
+    expect(posts).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop restore' }));
+    await waitFor(() => expect(posts.map((p) => p.path)).toEqual(['/api/backups/restores/rs_1/stop']));
+    expect((await screen.findByText(/stopped\.$/)).textContent).toMatch(/^The restore started .+ stopped\.$/);
+    expect(screen.getByText(/stopped by its owner/).textContent).toContain('restoring the same backup again picks up from them');
+    expect(screen.queryByRole('button', { name: 'Stop restore' })).toBeNull();
   });
 
   it('tells the owner how to restore a backup in a format this release no longer restores', async () => {

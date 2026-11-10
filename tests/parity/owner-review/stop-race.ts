@@ -1,4 +1,4 @@
-import { issueRecoveryForget } from '../../../packages/myco-server/src/core/recovery-forget.ts';
+import { issueRecoveryForget } from '../../../packages/myco-server/src/db/recovery/forget-commands.ts';
 import { MemberWriteRefused, memberWriteStore } from '../../../packages/myco-server/src/auth/member-write-store.ts';
 import type { PreparedStatement, RelationalStore } from '../../../packages/myco-server/src/core/adapters.ts';
 

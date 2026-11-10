@@ -4,7 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { Database } from 'bun:sqlite';
 import { expect, it } from 'bun:test';
-import { backupArtifact, BackupApplyError, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { backupArtifact, BackupApplyError, createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreThroughJob } from './helpers/restore-through-job.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 
@@ -93,12 +94,12 @@ it('restores shared bundle entries with destination generations and exact bytes'
     const artifact=await artifactOf(source);
     const generation=randomUUID();
     registerTarget(target,stored.event,generation);
-    const outcome=await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
+    const outcome=await restoreThroughJob(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
     expect(outcome.tables.events?.inserted).toBe(1);
     expect((target.sqlite.query(`SELECT generation FROM registered_content_proofs WHERE project_id=? AND key=?`)
       .get(project,stored.event.bodyKey) as {generation:string}).generation).toBe(generation);
     expect(await eventContent({db:target.db,blobs:target.bucket},project,eventId)).toBe(original);
-    expect((await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}})).tables.events?.inserted).toBe(0);
+    expect((await restoreThroughJob(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}})).tables.events?.inserted).toBe(0);
   } finally {source.sqlite.close();target.sqlite.close();}
 });
 
@@ -121,7 +122,7 @@ it('restores an unadopted preparation for aged release and preserves a destinati
     const destinationExpiry=Date.now()+60_000;
     target.sqlite.query(`INSERT INTO prepared_archive_bundles(preparation_id,project_id,archive_key,expires_at)
       VALUES('prep-conflict',?,?,?)`).run(project,adopted.bodyKey,destinationExpiry);
-    await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,
+    await restoreThroughJob(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,
       authorization:{kind:'recovery'}});
     expect(target.sqlite.query(`SELECT archive_key,expires_at FROM prepared_archive_bundles WHERE preparation_id='prep-conflict'`).get())
       .toEqual({archive_key:adopted.bodyKey,expires_at:destinationExpiry});
@@ -147,7 +148,7 @@ it('maps bundle ids across a populated destination without confusing unrelated r
     target.sqlite.query(`INSERT INTO archive_bundles(project_id,session_id,token_id,event_id,envelope_hash,
       archive_key,receipt_key,digest,size,version,entry_count) VALUES(?,?,?,?,?,?,?,?,?,1,1)`)
       .run('proj_unrelated','other','other','other','other','unrelated','unrelated','unrelated',1);
-    await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
+    await restoreThroughJob(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
     const actual=target.sqlite.query(`SELECT a.id FROM events e JOIN archive_bundles a ON a.project_id=e.project_id AND a.id=e.bundle_id
       WHERE e.project_id=? AND e.event_id=?`).get(project,eventId) as {id:number}|null;
     expect(actual?.id).toBeGreaterThan(stored.event.id);
@@ -167,7 +168,7 @@ it('preserves an existing inline event and releases an unused imported bundle',a
     target.sqlite.query(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,
       created_at,received_at,payload_bytes,raw_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(project,eventId,session,'token','prompt','import',original,envelope,1,1,Buffer.byteLength(original),3);
-    const outcome=await restoreArtifact(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
+    const outcome=await restoreThroughJob(target.db,{blobs:target.bucket,text:artifact,allowForeignLineage:true,authorization:{kind:'recovery'}});
     expect(outcome.tables.events?.inserted).toBe(0);
     expect(outcome.tables.archive_bundles?.inserted).toBe(0);
     expect(target.sqlite.query(`SELECT 1 FROM archive_bundles WHERE project_id=?`).get(project)).toBeNull();
@@ -186,7 +187,7 @@ it('refuses missing bundle or proof closure before restoring any table',async()=
         const parsed=JSON.parse(line) as {t?:string;r?:Record<string,unknown>};
         return parsed.t!==missing || (missing==='registered_content_proofs'&&parsed.r?.key!==stored.event.receiptKey);
       }).join('\n')+'\n';
-      await expect(restoreArtifact(target.db,{blobs:target.bucket,text:altered,allowForeignLineage:true,authorization:{kind:'recovery'}}))
+      await expect(restoreThroughJob(target.db,{blobs:target.bucket,text:altered,allowForeignLineage:true,authorization:{kind:'recovery'}}))
         .rejects.toThrow(BackupApplyError);
       expect(target.sqlite.query(`SELECT 1 FROM projects WHERE project_id=?`).get(project)).toBeNull();
     }
@@ -208,8 +209,8 @@ it('refuses a valid bundle index that names a different logical source',async()=
     const generation=randomUUID();
     registerTarget(target,stored.event,generation);
     registerTarget(target,other,generation);
-    await expect(restoreArtifact(target.db,{blobs:target.bucket,text:altered,allowForeignLineage:true,
-      authorization:{kind:'recovery'}})).rejects.toThrow(BackupApplyError);
+    await expect(restoreThroughJob(target.db,{blobs:target.bucket,text:altered,allowForeignLineage:true,
+      authorization:{kind:'recovery'}})).rejects.toThrow('restore_refused: the artifact could not be applied at archive_bundles');
     expect(target.sqlite.query(`SELECT 1 FROM projects WHERE project_id=?`).get(project)).toBeNull();
 
     source.sqlite.query(`UPDATE events SET bundle_id=? WHERE project_id=? AND event_id=?`)
@@ -288,7 +289,7 @@ it('restores dangling captured event references and reports them without alterin
           VALUES(?,?,?,?,?,?,?)`).bind(project,key,Buffer.byteLength(text),'application/json','token',1,generation).run();
         await blobs.put(blobObjectKey(project,key,generation),new Response(text).body!);
       }
-      const restored = await restoreArtifact(db, { blobs, text: artifact, allowForeignLineage: true, authorization: { kind: 'recovery' } });
+      const restored = await restoreThroughJob(db, { blobs, text: artifact, allowForeignLineage: true, authorization: { kind: 'recovery' } });
       expect(restored.tables.events?.inserted, store).toBe(5);
       expect(restored.danglingEventBlobs?.map(row => row.eventId), store).toContain('plan');
       expect(restored.danglingEventBlobs?.map(row => row.eventId), store).toContain(eventId);

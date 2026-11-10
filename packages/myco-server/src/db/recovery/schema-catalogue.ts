@@ -3,7 +3,8 @@
  * carries, and which virtual tables can be rebuilt. One owner for both targets; the reader that parses a captured
  * schema keeps its own validation.
  */
-import type { RelationalStore } from './adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { read, rows } from '../index.js';
 
 export interface RecoverySchemaObject {
   type: 'table' | 'index' | 'view' | 'trigger';
@@ -18,10 +19,11 @@ export const SCHEMA_QUERY = `SELECT m.type, m.name, m.sql, t.type AS storage FRO
     AND m.name NOT GLOB 'd1_*' AND COALESCE(t.type, '') != 'shadow'
   ORDER BY m.type, m.name`;
 
+const catalogue = read<[], RecoverySchemaObject>({ name: 'recovery.schemaCatalogue', sql: SCHEMA_QUERY });
+
 /** The schema objects a Deployment holds, as one read of its own catalogue. This module issues that read. */
 export async function captureSchema(db: RelationalStore): Promise<RecoverySchemaObject[]> {
-  const { results } = await db.prepare(SCHEMA_QUERY).all<RecoverySchemaObject>();
-  return results.map((row) => ({ type: row.type, name: row.name, sql: row.sql, storage: row.storage }));
+  return (await rows(db, catalogue.bind())).map((row) => ({ type: row.type, name: row.name, sql: row.sql, storage: row.storage }));
 }
 
 export const quoteIdentifier = (name: string): string => '"' + name.replaceAll('"', '""') + '"';

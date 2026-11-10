@@ -1,4 +1,5 @@
-import { backupSnapshot, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { backupSnapshot } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './restore-artifact.js';
 import { ESTIMATE_PUBLISH_PAGE, estimateForClaim, estimateRefreshDue, refreshEstimates } from '@myco-server-worker/core/budget-estimates.js';
 import type { BlobStore, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';

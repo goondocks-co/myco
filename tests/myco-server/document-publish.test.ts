@@ -4,7 +4,8 @@ import {
   readDocumentStatus as publicationStatus,
   readDocumentStatus,
 } from '@myco-server-worker/db/documents/status.js';
-import { BACKUP_FORMAT, deploymentId, restoreArtifact, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, deploymentId, createBackup, backupArtifact } from '@myco-server-worker/core/backup.js';
+import { restoreThroughJob } from './helpers/restore-through-job.js';
 import { PARSER_VERSION, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { documentTurnCollection } from '@myco-server-worker/content/session-turns.js';
 import { blobHeld } from '@myco-server-worker/db/storage/blob-held.js';
@@ -193,7 +194,7 @@ test('a restored session whose prompt was archived publishes the prompt read fro
     const counts: Record<string, number> = {};
     for (const { t } of rows) counts[t] = (counts[t] ?? 0) + 1;
     const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(db), schemaVersion: SCHEMA_STEPS.at(-1)!.version, createdAt: Date.now(), producer: 'test', counts };
-    await restoreArtifact(db, { authorization: { kind: 'recovery' }, blobs, text: [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n' });
+    await restoreThroughJob(db, { authorization: { kind: 'recovery' }, blobs, text: [header, ...rows].map((line) => JSON.stringify(line)).join('\n') + '\n' });
     expect(await one(db, `SELECT payload_format FROM events WHERE event_id=?`, uuid(2)), name).toEqual({ payload_format: 'archived' });
     await publishDocuments({ db, blobs }, Date.now(), limits());
     expect((await db.prepare(`SELECT prompt_id,preview FROM session_prompts WHERE session_id='archived'`).all()).results, name)
@@ -511,7 +512,7 @@ test('a backup holding content in the format before session documents is refused
       counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{})};
     const text = [header,...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
     const before = await db.prepare('SELECT (SELECT COUNT(*) FROM sessions) sessions,(SELECT COUNT(*) FROM session_documents) documents,(SELECT COUNT(*) FROM backup_restore_progress) progress').first();
-    const refused = restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
+    const refused = restoreThroughJob(db, {text,blobs,authorization:{kind:'recovery'}});
     await expect(refused, name).rejects.toMatchObject({code:'artifact_format_retired',counts:{prompt_batches:2,tool_calls:1,transcript_parser_state_chunks:1}});
     expect(await db.prepare('SELECT (SELECT COUNT(*) FROM sessions) sessions,(SELECT COUNT(*) FROM session_documents) documents,(SELECT COUNT(*) FROM backup_restore_progress) progress').first(), name).toEqual(before);
     expect(await db.prepare("SELECT session_id FROM sessions WHERE session_id='restored'").first(), name).toBeNull();
@@ -556,7 +557,7 @@ test('portable backups restore published document bodies and frontiers into dest
         .bind(...columns.map(column=>column==='generation'?generation:row[column])).run();
       blobs.seed(blobObjectKey(String(row.project_id),String(row.key),generation),original);
     }
-    await restoreArtifact(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
+    await restoreThroughJob(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
     expect(await db.prepare('SELECT event_id,output_blob FROM event_refs WHERE event_id=?').bind(source.reference.event_id).first(),name).toEqual(source.reference);
     const metadataDirectory=(await readDirectory(db,'project','metadata-only'))!;
     const metadataChunk=[...metadataDirectory.chunks.values()].find(row=>row.metadata===1)!;
@@ -571,7 +572,7 @@ test('portable backups restore published document bodies and frontiers into dest
     expect(restoredBody===body,name).toBe(true);
     const frontier=await db.prepare(`SELECT published_offset FROM transcript_publication WHERE session_id='portable'`).first();
     expect(frontier,name).not.toBeNull();
-    await restoreArtifact(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
+    await restoreThroughJob(db,{text:source.text,blobs,allowForeignLineage:true,authorization:{kind:'recovery'}});
     expect(await counters(db,'portable'),name).toMatchObject({prompts:1,user_prompts:1,plans:1});
     expect(await db.prepare(`SELECT published_offset FROM transcript_publication WHERE session_id='portable'`).first(),name).toEqual(frontier);
   });

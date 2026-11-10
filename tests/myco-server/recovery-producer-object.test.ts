@@ -7,7 +7,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
  * The Durable Object class runs here against an in-memory SQLite that answers its storage calls the way the object's
  * SQLite storage does. The runtime proof on workerd is `runtime/recovery-producer-runtime.ts`.
  */
-import { issueRecoveryForget } from '@myco-server-worker/core/recovery-forget.js';
+import { issueRecoveryForget } from '@myco-server-worker/db/recovery/forget-commands.js';
 import { MemberWriteRefused } from '@myco-server-worker/auth/member-write-store.js';
 import { afterAll, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';

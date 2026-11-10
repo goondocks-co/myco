@@ -180,6 +180,11 @@ export const SERVER_JOBS: readonly ServerJob[] = [
     converges: 'a Deployment whose owner turned automatic integrity checking on at an interval has had its store checked by its own target\'s integrity and foreign key checks at least once per interval since the last run started, and the findings or the named failure of the latest run are recorded under its run id; a check this target does not support, one that is not configured, and one still running runs nothing',
   },
   {
+    name: 'backup-restore',
+    runsThrough: 'sleep',
+    converges: 'the one running restore walks its artifact from its committed cursor in bounded passes, each committing its writes and then the cursor, until the restore is complete or stops on a named refusal with what it restored so far',
+  },
+  {
     name: 'session-deletion',
     runsThrough: 'sleep',
     onWorkWake: true,

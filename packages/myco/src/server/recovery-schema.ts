@@ -7,7 +7,7 @@ import { z } from 'zod';
 export {
   exportedTables, quoteIdentifier, recoverableVirtualTables, virtualTableRebuilds, SCHEMA_QUERY,
   type RecoverySchemaObject,
-} from '@myco-server-worker/core/recovery-schema.js';
+} from '@myco-server-worker/db/recovery/schema-catalogue.js';
 
 const schemaObject = z.object({
   type: z.enum(['table', 'index', 'view', 'trigger']), name: z.string().min(1), sql: z.string().min(1),

@@ -1,6 +1,6 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-import { LAST_SEARCH } from './db/schema-vNEXT-search.js';
-export const SERVER_SCHEMA_VERSION = LAST_SEARCH;
+import { NEXT_S8C } from './db/schema-vNEXT-s8c.js';
+export const SERVER_SCHEMA_VERSION = NEXT_S8C;
 /** How long a member token lives before it must be refreshed. */
 export { MEMBER_TOKEN_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** How long an unrefreshed credential lineage stays renewable. */

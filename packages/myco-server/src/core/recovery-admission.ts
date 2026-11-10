@@ -9,7 +9,7 @@
  * `env.recovery`. Nothing here calls the clock either — a caller wakes the Deployment if it has a wake.
  */
 import type { ServerEnv } from './adapters.js';
-import { captureSchema, exportedTables, recoverableVirtualTables } from './recovery-schema.js';
+import { captureSchema, exportedTables, recoverableVirtualTables } from '../db/recovery/schema-catalogue.js';
 import { capturedDefinitions, type RecoveryProducerStatus, type TableDefinitions } from './recovery-producer.js';
 import { openHoldForAdmission } from './recovery-hold.js';
 import { within } from './recovery-inventory.js';

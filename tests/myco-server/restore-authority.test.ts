@@ -1,6 +1,7 @@
 import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
-import { BACKUP_FORMAT, createBackup, restoreArtifact } from '@myco-server-worker/core/backup.js';
+import { BACKUP_FORMAT, createBackup } from '@myco-server-worker/core/backup.js';
+import { restoreArtifact } from './helpers/restore-artifact.js';
 import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { RestoreAuthorizationError } from '@myco-server-worker/core/restore-authorization.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
