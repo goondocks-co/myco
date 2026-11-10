@@ -1,8 +1,5 @@
-import type { RelationalStore } from '../core/adapters.js';
-import type { ContextWrite } from '../core/context-writes.js';
 import { NOT_TOMBSTONED_PARAMS } from './session-read-model.js';
-import { write } from './index.js';
-import { prepareBound } from './kernel/statement.js';
+import { read, write, type Bound } from './index.js';
 
 const CONTEXT_ADMISSION_SQL = `(${NOT_TOMBSTONED_PARAMS}) AND (NOT EXISTS (SELECT 1 FROM sessions WHERE project_id = ? AND session_id = ? AND machine_id IS NOT ?))`;
 export interface ContextAdmission {
@@ -29,8 +26,7 @@ const sessionRecord = write<[string, string, string, number, ...ContextAdmission
 });
 
 /** Receipt uniqueness and the stored row use the same admitted identity. */
-export function prepareInjectionReceipt(
-  db: RelationalStore,
+export function injectionReceiptWrite(
   input: {
     project: string;
     session: string;
@@ -45,14 +41,19 @@ export function prepareInjectionReceipt(
     now: number;
   },
   admission: ContextAdmission,
-) {
+): Bound<{ id: string }, 'write'> {
   integerFields([input.askedAt, input.now]);
-  return { statements: [prepareBound(db, injectionReceipt.bind(input.project, input.session, input.id, input.promptId, input.scopeReason, input.protocol, input.askedAt, input.promptHash, JSON.stringify(input.spores), JSON.stringify(input.plans), input.now, ...admission.params, input.project, input.session, input.promptHash, input.promptId))] } satisfies ContextWrite;
+  return injectionReceipt.bind(input.project, input.session, input.id, input.promptId, input.scopeReason, input.protocol, input.askedAt, input.promptHash, JSON.stringify(input.spores), JSON.stringify(input.plans), input.now, ...admission.params, input.project, input.session, input.promptHash, input.promptId);
 }
 
+/** A receipt this session holds for the named prompt under other text: why a receipt for the prompt was not written. */
+const promptHeld = read<[project: string, session: string, prompt: string, hash: string], { held: number }>({ name: 'context.injectionPromptHeld',
+  sql: 'SELECT 1 AS held FROM spore_injections WHERE project_id=?1 AND session_id=?2 AND prompt_id=?3 AND prompt_hash<>?4' });
+export const injectionPromptHeld = (project: string, session: string, prompt: string, hash: string): Bound<{ held: number }, 'read'> =>
+  promptHeld.bind(project, session, prompt, hash);
+
 /** Every prompt answer retains its minted id and admitted diagnostics. */
-export function preparePromptAnswer(
-  db: RelationalStore,
+export function promptAnswerWrite(
   input: {
     project: string;
     session: string;
@@ -71,21 +72,17 @@ export function preparePromptAnswer(
     now: number;
   },
   admission: ContextAdmission,
-) {
+): Bound<{ id: string }, 'write'> {
   integerFields([input.askedAt, input.chars, input.now]);
-  return { statements: [prepareBound(db, promptAnswer.bind(input.project, input.session, input.id, input.promptId, input.scopeReason, input.protocol, input.askedAt, input.receiptId, input.outcome, input.chars, JSON.stringify(input.parts), JSON.stringify(input.skipped), JSON.stringify(input.failures), JSON.stringify(input.selection), input.now, ...admission.params))] } satisfies ContextWrite;
+  return promptAnswer.bind(input.project, input.session, input.id, input.promptId, input.scopeReason, input.protocol, input.askedAt, input.receiptId, input.outcome, input.chars, JSON.stringify(input.parts), JSON.stringify(input.skipped), JSON.stringify(input.failures), JSON.stringify(input.selection), input.now, ...admission.params);
 }
 
 /** A session record is unique within its Project and session, independent of prompt capture. */
-export function prepareSessionRecord(
-  db: RelationalStore,
-  project: string,
-  session: string,
-  kind: string,
-  now: number,
+export function sessionRecordWrite(
+  record: { project: string; session: string; kind: string; now: number },
   admission: ContextAdmission,
-) {
-  integerFields([now]);
-  return { statements: [prepareBound(db, sessionRecord.bind(project, session, kind, now, ...admission.params))] } satisfies ContextWrite;
+): Bound<{ kind: string }, 'write'> {
+  integerFields([record.now]);
+  return sessionRecord.bind(record.project, record.session, record.kind, record.now, ...admission.params);
 }
 

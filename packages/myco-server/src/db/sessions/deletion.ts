@@ -49,7 +49,8 @@ const insertJob = write<[project: string, session: string, phase: string, at: nu
     SELECT ?1,?2,?3,?4,?4 WHERE EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=?1 AND session_id=?2)
     ON CONFLICT(project_id,session_id) DO NOTHING` });
 const maskServedItems = write<[project: string, session: string]>({ name: 'deletion.maskServedItems', sql:
-  'UPDATE injection_served_items SET title=NULL,content_hash=NULL,session_id=NULL,unavailable=1 WHERE project_id=?1 AND session_id=?2' });
+  // Pinned to the source index: under statistics where one source dominates, the planner otherwise walks every snapshot.
+  'UPDATE injection_served_items INDEXED BY idx_injection_served_items_source_session SET title=NULL,content_hash=NULL,session_id=NULL,unavailable=1 WHERE project_id=?1 AND session_id=?2' });
 const removePendingCards = write<[project: string, session: string]>({ name: 'deletion.removePendingCards', sql:
   "DELETE FROM turn_cards WHERE project_id=?1 AND session_id=?2 AND state='pending'" });
 const removeLearning = write<[project: string, session: string]>({ name: 'deletion.removeLearning', sql:

@@ -17,7 +17,7 @@ import {
   plans_progressOf as progressOf,
   type plans_ProjectPlanRow as ProjectPlanRow,
 } from '../read/catalog/plans.js';
-import { receiptPlans } from '../read/catalog/injection-served-items.js';
+import { receiptPlans } from '../db/context/served-plans.js';
 import { promptLocator } from '../db/documents/prompt-locator.js';
 import { locatorRepairPending, TurnLocatorBuilding } from '../db/documents/locators.js';
 import { type DocRecord } from './document.js';
