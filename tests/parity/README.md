@@ -39,6 +39,42 @@ A scenario whose bindings or settings would change what the others observe
 sets `dedicated` and runs against targets booted for it alone. On Cloudflare it
 may name another Worker `main`.
 
+`dedicated.latestSchemaUpgrade` boots a Deployment whose users wrote through
+its routes (`upgrade-seed/`): sessions, a published transcript, an attachment,
+a tombstone, spores recalled into a prompt, plans, Deployment, Project and
+machine settings, a device-signed machine's harness report and uncaptured
+repository, a runner with its catalog and a claimed run, and a backup. Its rows
+are carried (`schema-carry.ts`) into a store built from the steps the newest
+`myco/v*` release tag shipped, and every later step upgrades it: Wrangler's own
+apply on Cloudflare, the self-hosted migrator (`migrateOnly`) natively, then
+budget completion on both. The carry names no table, so a step that adds a
+table, a column or a constraint needs no change to these files.
+
+What it proves is limited to the tables the seed fills and the fields
+`upgrade-seed/` reads back (`observe`). Two rules keep that honest, and the
+carry enforces both:
+
+- A step that changes a table the seed leaves empty (its definition, an
+  index, a trigger, or its rows) refuses the boot, naming the step and the
+  table, unless a step since the release retires that table. Seed it through
+  its route in `upgrade-seed/`.
+- The carry builds the release's rows from the latest writers, so a column
+  only the release holds is filled with defaults. That is accepted when a step
+  since the release declares the column in its `retires`; an undeclared one
+  refuses the boot and says to declare it, with its reason. A row the latest
+  writers wrote that the release's schema refuses (a value a step since the
+  release renames or adds) is left behind with what references it, and named
+  in the boot log; on a table no step since the release changes, it fails the
+  boot, since the carry or the seed is then wrong.
+
+What this scenario does not exercise: a step that narrows a CHECK, NOT NULL or
+UNIQUE over values release-era writers produced, and a step that moves data out
+of a column before dropping it. The carried rows come from the latest writers,
+which never produce the values such a step meets. Each keeps its own unit test,
+seeded at the release's shape beside the step, as
+`storage-schema-upgrade.test.ts`, `harness-report-schema-upgrade.test.ts` and
+`record-scheme.test.ts` do.
+
 The two-Deployment isolation scenario boots two independent front doors on
 each runtime. It asserts distinct database, blob and secret bindings, sweeps
 the current HTTP route and MCP operation registries in both directions with

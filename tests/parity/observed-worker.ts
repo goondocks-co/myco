@@ -6,6 +6,7 @@ import { PARITY_REQUEST_HEADER, PARITY_WORKER_HEADER } from './requests.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {indexFixture} from '../myco-server/helpers/vector-index.ts';
 import {EMBEDDING_CATALOGUE} from '../../packages/myco-shared/src/settings-contract.ts';
+import {wordVector} from './embedding/word-vectors.ts';
 import {serverEnvFromBindings} from '../../packages/myco-server/src/platform/cloudflare/env.ts';
 import {reconcileEmbedding} from '../../packages/myco-server/src/core/embedding/reconcile.ts';
 import {cloudflareEmbeddingLaunch} from '../../packages/myco-server/src/platform/cloudflare/embedding-runtime.ts';
@@ -22,7 +23,7 @@ function fixtureBindings(bindings:CloudflareBindings):CloudflareBindings{
  return {...bindings,VECTORIZE:fixtureVectors,AI:{async run(model,input){
   const size=EMBEDDING_CATALOGUE['workers-ai'].models.find(row=>row.id===model)?.dimensions;
   if(size===undefined||input.text.length!==1)throw new Error('Unknown fixture embedding request');
-  return {data:[Array.from({length:size},(_,index)=>index===0?1:0)]};
+  return {data:[wordVector(input.text[0]!,size)]};
  }}};
 }
 export async function primeObservedEmbedding(env:ServerEnv,projectId:string){

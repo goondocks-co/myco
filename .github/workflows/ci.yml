@@ -330,6 +330,9 @@ jobs:
       MYCO_RUNNER_GROUP_BUDGET_MS: 780000
     steps:
       - uses: actions/checkout@v7
+        # The populated schema upgrade starts where the last release tag left a Deployment.
+        with:
+          fetch-tags: true
       - uses: ./.github/actions/ci-setup
       - run: npm run test:parity
       - if: always()
@@ -352,6 +355,9 @@ jobs:
       MYCO_RUNNER_GROUP_BUDGET_MS: 780000
     steps:
       - uses: actions/checkout@v7
+        # The populated schema upgrade starts where the last release tag left a Deployment.
+        with:
+          fetch-tags: true
       - uses: ./.github/actions/ci-setup
       - run: npm run test:parity
       - if: always()

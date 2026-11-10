@@ -105,9 +105,10 @@ export interface ParityScenario {
   /**
    * A scenario whose bindings or settings would change what the others observe runs against targets booted for it
    * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;
-   * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite.
+   * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite;
+   * `latestSchemaUpgrade` boots a Deployment its users populated at the previous schema, upgraded to the latest.
    */
-  dedicated?: { cloudflare?: { main?: string; latestSchemaUpgrade?: boolean;embeddingFixture?:boolean }; stopRace?: boolean; receiptSnapshots?: boolean; viewWriter?:boolean; pulledStage?: boolean; sqliteVec?: boolean; timeoutMs: number };
+  dedicated?: { cloudflare?: { main?: string; embeddingFixture?:boolean }; latestSchemaUpgrade?: boolean; stopRace?: boolean; receiptSnapshots?: boolean; viewWriter?:boolean; pulledStage?: boolean; sqliteVec?: boolean; timeoutMs: number };
 }
 
 export const MEMBER_ID = 'mem_parity';
