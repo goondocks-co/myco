@@ -256,7 +256,7 @@ it('discards an expired cursor set in a generic paged session read', async () =>
 it('refreshes open conversation search when a session revision changes', async () => {
   let reads = 0;
   const { client, wrapper } = setup(url => {
-    if (url.pathname.endsWith('/search')) { reads++; return Response.json({ results: [], cursor: null, coverage: { pending_blobs: 0 } }); }
+    if (url.pathname.endsWith('/search')) { reads++; return Response.json({ hits: [], coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }); }
     return empty();
   });
   client.setQueryData(['session', 'p', 's'], detail());

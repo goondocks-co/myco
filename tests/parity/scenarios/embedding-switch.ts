@@ -80,8 +80,8 @@ export const embeddingSwitch: ParityScenario = {
       };
       const meaning = async () => {
         const res = await fetch(`${target.url}/api/projects/${projectId}/search?${new URLSearchParams({ q: 'architecture', mode: 'semantic', limit: '10' })}`, { headers: target.ownerHeaders() });
-        const answer = await res.json() as { provider_unavailable: boolean; results: Array<{ id: string }> };
-        return { unavailable: answer.provider_unavailable, ids: answer.results.map((r) => r.id.replace(/^switch-|-\d+$/g, '')).sort() };
+        const answer = await res.json() as { provider_unavailable: boolean; hits: Array<{ id: string }> };
+        return { unavailable: answer.provider_unavailable, ids: answer.hits.map((r) => r.id.replace(/^switch-|-\d+$/g, '')).sort() };
       };
       const storedModel = async () => JSON.parse(String((await target.sql(`SELECT value FROM deployment_settings WHERE leaf = 'embedding.model'`))[0]?.value ?? 'null')) as string | null;
 

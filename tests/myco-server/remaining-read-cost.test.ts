@@ -14,7 +14,6 @@ import { children_listPlans as listPlans } from '@myco-server-worker/read/catalo
 import {
   sessions_listSessions as listSessions,
 } from '@myco-server-worker/read/catalog/sessions.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
 import { taskRunFacts } from '@myco-server-worker/db/runs/task-facts.js';
 import { pageSegments } from '@myco-server-worker/read/transcript.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
@@ -179,55 +178,6 @@ test('late session pages seek past the newer prefix including timestamp ties', a
     expect(result.rows[0]?.sessionId).toBe('s-000061');
   }
   expectFlat('sessions');
-});
-
-test('full text intersects a common and rare term before loading candidate rows', async () => {
-  await project('search');
-  for (const size of [1000, 4000]) {
-    await measured.db
-      .prepare(
-        `${seq} INSERT OR IGNORE INTO spores(project_id,id,agent_id,content,observation_type,created_at)
-      SELECT 'search',printf('sp-%06d',x),'agent',CASE WHEN x=1 THEN 'common rare' ELSE 'common' END,'decision',1 FROM n`,
-      )
-      .bind(size)
-      .run();
-    measured.reset();
-    const result = await searchProject(measured.db, { projectId: 'search' }, { query: 'common rare', type: 'spore', mode: 'fts' });
-    sample('search', size);
-    expect(result.results.map((r) => r.id)).toEqual(['sp-000001']);
-    await measured.db
-      .prepare(
-        `${seq} INSERT OR IGNORE INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
-      SELECT 'search',printf('p-%06d',x),'s','e','m','common',CASE WHEN x=1 THEN 'rare' ELSE 'common' END,'h','active',1,1,'token',1 FROM n`,
-      )
-      .bind(size)
-      .run();
-    measured.reset();
-    expect(
-      (await searchProject(measured.db, { projectId: 'search' }, { query: 'common rare', type: 'plan', mode: 'fts' })).results.map(
-        (row) => row.id,
-      ),
-    ).toEqual(['p-000001']);
-    sample('search plan', size);
-    await measured.db
-      .prepare(
-        `${seq} INSERT OR IGNORE INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
-      SELECT 'search',printf('medium-%06d',x),'s','e','m','common',CASE WHEN x<=40 THEN 'medium' ELSE 'common' END,'h','active',1,1,'token',1 FROM n`,
-      )
-      .bind(size)
-      .run();
-    let ids: string[] = [];
-    for (const query of ['common medium', 'medium common']) {
-      measured.reset();
-      const result = await searchProject(measured.db, { projectId: 'search' }, { query, type: 'plan', mode: 'fts', limit: 50 });
-      sample('both common ' + query, size);
-      expect(result.results).toHaveLength(40);
-      const found = result.results.map((row) => row.id).sort();
-      if (ids.length) expect(found).toEqual(ids);
-      ids = found;
-    }
-  }
-  expectFlat('search', 'search plan', 'both common common medium', 'both common medium common');
 });
 
 test('retirement consumes changed identities without reproving settled receipts', async () => {

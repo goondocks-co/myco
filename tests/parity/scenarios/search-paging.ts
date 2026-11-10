@@ -25,7 +25,7 @@ export const searchPaging: ParityScenario = {
       }), kind);
     };
     const owner = async (extra: Record<string, string>) => {
-      const res = await fetch(`${target.url}/api/projects/${target.projectId}/search?${new URLSearchParams({ q: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', ...extra })}`, { headers: target.ownerHeaders() });
+      const res = await fetch(`${target.url}/api/projects/${target.projectId}/search?${new URLSearchParams({ q: word, type: 'card', session_id: session, mode: 'fts', order: 'time', ...extra })}`, { headers: target.ownerHeaders() });
       return { status: res.status, body: await res.json() as SearchAnswer };
     };
     const mcp = async <T,>(args: Record<string, unknown>): Promise<T> => {
@@ -61,10 +61,10 @@ export const searchPaging: ParityScenario = {
       do {
         const page = await owner(cursor === null ? { limit: String(limit) } : { limit: String(limit), cursor });
         expect(page.status).toBe(200);
-        pages.push(page.body.results);
-        cursor = page.body.cursor;
+        pages.push(page.body.hits);
+        cursor = page.body.nextCursor;
         if (cursor !== null) {
-          expect(page.body.results).toHaveLength(limit);
+          expect(page.body.hits).toHaveLength(limit);
           if (pages.length === 1) await capture();
         }
       } while (cursor !== null);
@@ -81,29 +81,27 @@ export const searchPaging: ParityScenario = {
     expect(wide.results.map((r) => r.id)).toEqual(everyCard);
     expect(wide.pages[1]![0]!.id).toBe(everyCard[100]);
     expect(byPage.pages[1]![0]!.id).toBe(everyCard[PAGE]);
-    // A card answers for its turn's replies too: a reply search lists the same cards in the same order.
-    expect((await owner({ type: 'response', limit: String(PAGE) })).body.results.map((r) => r.id)).toEqual(everyCard.slice(0, PAGE));
-    // Relevance order is keyset paged too: its cursor continues past the page it answered, repeating no match.
+    // Relevance order pages too: its cursor continues past the page it answered, repeating no match.
     const relevant = await owner({ order: 'relevance', limit: '5' });
-    expect(relevant.body.results).toHaveLength(5);
-    expect(relevant.body.cursor).not.toBeNull();
-    const relevantNext = await owner({ order: 'relevance', limit: '5', cursor: relevant.body.cursor! });
-    expect(relevantNext.body.results).toHaveLength(5);
-    expect(new Set([...relevant.body.results, ...relevantNext.body.results].map((r) => r.id)).size).toBe(10);
+    expect(relevant.body.hits).toHaveLength(5);
+    expect(relevant.body.nextCursor).not.toBeNull();
+    const relevantNext = await owner({ order: 'relevance', limit: '5', cursor: relevant.body.nextCursor! });
+    expect(relevantNext.body.hits).toHaveLength(5);
+    expect(new Set([...relevant.body.hits, ...relevantNext.body.hits].map((r) => r.id)).size).toBe(10);
 
     // The MCP tool lists the same matches by the same cursor.
-    const first = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', limit: PAGE });
-    expect(first.results.map((r) => r.id)).toEqual(everyCard.slice(0, PAGE));
-    expect(first.cursor).not.toBeNull();
-    const second = await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', order: 'time', limit: PAGE, cursor: first.cursor });
-    expect(second.results.map((r) => r.id)).toEqual(everyCard.slice(PAGE, 2 * PAGE));
-    expect((await mcp<SearchAnswer>({ query: word, type: 'prompt', session_id: session, mode: 'fts', limit: PAGE })).cursor).not.toBeNull();
+    const first = await mcp<SearchAnswer>({ query: word, type: 'card', session_id: session, mode: 'fts', order: 'time', limit: PAGE });
+    expect(first.hits.map((r) => r.id)).toEqual(everyCard.slice(0, PAGE));
+    expect(first.nextCursor).not.toBeNull();
+    const second = await mcp<SearchAnswer>({ query: word, type: 'card', session_id: session, mode: 'fts', order: 'time', limit: PAGE, cursor: first.nextCursor });
+    expect(second.hits.map((r) => r.id)).toEqual(everyCard.slice(PAGE, 2 * PAGE));
+    expect((await mcp<SearchAnswer>({ query: word, type: 'card', session_id: session, mode: 'fts', limit: PAGE })).nextCursor).not.toBeNull();
 
-    // A cursor the search did not issue is refused, as is a time cursor on relevance order or on another search; a search of several types ranks and continues by its own cursor.
+    // A cursor the search did not issue is refused, as is a time cursor on relevance order or on another search; a search of several kinds ranks and continues by its own cursor.
     expect((await owner({ cursor: 'nonsense' })).status).toBe(400);
-    expect((await owner({ order: 'relevance', cursor: first.cursor! })).status).toBe(400);
-    expect((await owner({ type: 'all', cursor: first.cursor! })).status).toBe(400);
-    expect((await owner({ type: 'response', cursor: first.cursor! })).status).toBe(400);
-    expect((await owner({ type: 'all', order: 'relevance', limit: '1' })).body.cursor).not.toBeNull();
+    expect((await owner({ order: 'relevance', cursor: first.nextCursor! })).status).toBe(400);
+    expect((await owner({ type: 'all', cursor: first.nextCursor! })).status).toBe(400);
+    expect((await owner({ type: 'spore', cursor: first.nextCursor! })).status).toBe(400);
+    expect((await owner({ type: 'all', order: 'relevance', limit: '1' })).body.nextCursor).not.toBeNull();
   },
 };

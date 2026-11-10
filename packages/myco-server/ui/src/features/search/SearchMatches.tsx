@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { EmptyState, ErrorState, ListRow, LoadingState, ShowMore, TypeChip } from '../../design';
+import { Button, EmptyState, ErrorState, ListRow, LoadingState, ShowMore, TypeChip } from '../../design';
 import { SEARCH_MIN_CHARS, searchResultPath, useSearchPages, type SearchFilters, type SearchScope } from '../../hooks/use-search';
 import { ago } from '../knowledge/words';
 
@@ -19,8 +19,10 @@ export interface SearchMatchesProps {
 }
 
 /**
- * What a search box finds: the best matches first, each leading to its own page, and "Show more" reading the next
- * matches until none follow. A search ranks what it finds and never counts it, so the list says how many it shows.
+ * What a search box finds: the best of the newest matches first, each leading to its own page, and "Show more" reading
+ * the next matches, older ones after the newest, until none follow. When none of the newest fit the filters the list
+ * says older ones follow, never that nothing matches. A search ranks what it finds and never counts it, so the list says
+ * how many it shows. The list stays as read until the reader refreshes it.
  */
 export function SearchMatches({ scope, filters, noun, projectName, kind, emptyAction, now }: SearchMatchesProps) {
   const query = filters.query.trim();
@@ -29,10 +31,22 @@ export function SearchMatches({ scope, filters, noun, projectName, kind, emptyAc
   if (!enabled) return <p className="t-small text-muted" data-search-short="">Type at least {SEARCH_MIN_CHARS} characters to search.</p>;
   if (search.isPending) return <LoadingState label={`Searching ${noun}`} count={3} />;
   if (search.error && search.hits.length === 0) return <ErrorState error={search.error} onRetry={search.retry} />;
-  if (search.hits.length === 0) return <EmptyState title={`No ${noun} match “${query}”.`} action={emptyAction} />;
+  if (search.hits.length === 0 && !search.hasMore) return <EmptyState title={`No ${noun} match “${query}”.`} action={emptyAction} />;
+  if (search.hits.length === 0) {
+    return (
+      <div className="flex flex-col gap-s2" data-search-matches={noun} data-search-older="">
+        <p className="t-small text-muted" aria-live="polite">None of the newest {noun} fit these filters; older ones follow.</p>
+        {search.error && <ErrorState error={search.error} onRetry={search.retry} />}
+        <ShowMore shown={0} noun={noun} onMore={search.more} pending={search.isFetchingMore} hasMore />
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col gap-s2" data-search-matches={noun}>
-      <p className="t-small text-muted" aria-live="polite">Best matches first</p>
+      <div className="flex items-center justify-between gap-s2">
+        <p className="t-small text-muted" aria-live="polite">Best matches first; older matches follow</p>
+        <Button size="sm" variant="ghost" onClick={search.refresh} data-search-refresh="">Refresh</Button>
+      </div>
       <ul aria-label={`Matching ${noun}`} className="overflow-hidden rounded-card border border-line bg-surface-1">
         {search.hits.map((hit) => {
           const chip = kind?.(hit) ?? null;

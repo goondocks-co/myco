@@ -27,6 +27,7 @@ import { VNEXT_S8B_STEPS } from './schema-steps-backup-retention.js';
 import { VNEXT_S5D_STEPS } from './schema-steps-release-provenance.js';
 import { VNEXT_S4C_STEPS } from './schema-steps-session-served-items.js';
 import { INGEST_RETIREMENT_STEPS } from './schema-steps-ingest-retirement.js';
+import { VNEXT_SEARCH_STEPS } from './schema-steps-search-documents.js';
 import { V719, V719_STATEMENTS, V719_REACHES, V719_DEPLOYMENT_INDEXES } from './schema-v719.js';
 import { V710_STATEMENTS, V710_REACHES } from './schema-v710.js';
 import { V711_STATEMENTS, V711_REACHES, V711_DEPLOYMENT_INDEXES } from './schema-v711.js';
@@ -2339,6 +2340,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...VNEXT_S5D_STEPS.map(stamp),
   ...VNEXT_S4C_STEPS.map(stamp),
   ...INGEST_RETIREMENT_STEPS.map(stamp),
+  ...VNEXT_SEARCH_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

@@ -37,7 +37,7 @@ import { settingsWriter, switchUnderWay } from '@myco-server-worker/core/setting
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { searchDeployment } from '@myco-server-worker/core/search.js';
 import { EmbeddingUnavailable, VECTOR_DELETE_CONFIRM_MS, workersAiFailure } from '@myco-server-worker/core/embedding/provider.js';
 import type { EmbeddingSwitchStatus } from '@goondocks/myco-shared/settings-contract';
 import { seededSqlite } from './helpers/d1.js';
@@ -190,8 +190,8 @@ async function built(make: () => Target): Promise<Target & { currentKey: string;
 
 /** Search by meaning as the shipped search runs it. */
 async function meaning(env: ServerEnv, query = 'architecture') {
-  const answer = await searchProject(env.db, { projectId: PROJECT }, { query, mode: 'semantic' }, () => resolveSemanticSearch(env));
-  return { unavailable: answer.provider_unavailable, ids: answer.results.map((r) => r.id).sort() };
+  const answer = await searchDeployment(env, { projectId: PROJECT }, { query, mode: 'semantic' }, 'member:test');
+  return { unavailable: answer.provider_unavailable, ids: answer.hits.map((r) => r.id).sort() };
 }
 
 const status = async (t: Target) => (await json(await t.fetch(await asOwner(t.env().db, '/api/embedding/switch')))).switch as EmbeddingSwitchStatus | null;

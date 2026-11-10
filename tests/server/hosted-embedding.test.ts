@@ -7,8 +7,7 @@ import { cloudflareEmbeddingLaunch, type HostedRunLifetime } from '@myco-server-
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { dispatchEmbeddingWork } from '@myco-server-worker/core/embedding/jobs.js';
 import { dispatchPrepared, prepareDispatch } from '@myco-server-worker/core/harness.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
-import { resolveSemanticSearch } from '@myco-server-worker/core/search.js';
+import { searchDeployment } from '@myco-server-worker/core/search.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { runControlClient } from '@goondocks/myco-shared/run-control';
 
@@ -39,9 +38,9 @@ test('hosted launch executes automatic and manual embedding through authenticate
   try {
     expect(await dispatchEmbeddingWork(f.server.env, Date.now())).toBe(1);
     await f.settle();
-    const search = await searchProject(f.server.env.db, { projectId: 'proj_1' }, { query: 'architecture', mode: 'semantic' }, () => resolveSemanticSearch(f.server.env));
-    expect(search.results.map((row) => row.id)).toEqual(['memory']);
-    expect((await searchProject(f.server.env.db, { projectId: 'proj_2' }, { query: 'architecture', mode: 'semantic' }, () => resolveSemanticSearch(f.server.env))).results).toEqual([]);
+    const search = await searchDeployment(f.server.env, { projectId: 'proj_1' }, { query: 'architecture', mode: 'semantic' }, 'member:test');
+    expect(search.hits.map((row) => row.id)).toEqual(['memory']);
+    expect((await searchDeployment(f.server.env, { projectId: 'proj_2' }, { query: 'architecture', mode: 'semantic' }, 'member:test')).hits).toEqual([]);
     const prepared = await prepareDispatch(f.server.env, 'embedding-reconcile', 'proj_1');
     if (!prepared.ok) throw new Error(prepared.refusal);
     await dispatchPrepared(f.server.env, prepared.prepared, { serverUrl: f.server.env.origin!, actor: 'owner' }, Date.now());

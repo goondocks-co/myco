@@ -312,9 +312,9 @@ describe('release state on every surface', () => {
     expect((await mcp('myco_sessions', { op: 'get', id: 's_merged' })).release).toEqual(http.release);
 
     const found = await mcp('myco_search', { query: 'agreement probe', mode: 'fts', type: 'spore' });
-    expect(found.results[0]).toMatchObject({ id: 'sp_1', release: { state: 'merged_unreleased', ref: 'main', checked_at: 100 * MIN } });
+    expect(found.hits[0]).toMatchObject({ id: 'sp_1', release: { state: 'merged_unreleased', ref: 'main', checked_at: 100 * MIN } });
     const httpSearch = await (await worker.fetch(await asOwner(r.db, `/api/projects/${P}/search?q=${encodeURIComponent('agreement probe')}&mode=fts&type=spore`), env)).json() as any;
-    expect(httpSearch.results?.[0]?.release ?? null).toEqual(found.results[0].release);
+    expect(httpSearch.hits?.[0]?.release ?? null).toEqual(found.hits[0].release);
   });
 });
 

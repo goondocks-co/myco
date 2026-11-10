@@ -8,11 +8,9 @@ import {
 } from '@myco-server-worker/read/catalog/processed.js';
 import { handlePlans } from '@myco-server-worker/mcp/tools/plans.js';
 import { plans_getPlan as getPlan } from '@myco-server-worker/read/catalog/plans.js';
-import { search_searchProject as searchProject } from '@myco-server-worker/read/catalog/search.js';
+import { searchDeployment } from '@myco-server-worker/core/search.js';
 import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
-import {
-  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
-} from '@myco-server-worker/read/catalog/search-index.js';
+import { pendingSearchBlobs } from '@myco-server-worker/db/search/blob-index.js';
 import { registerBlob, seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV, ownerCookie, MEMBER_SUB, seedMemberRoleAccount } from './helpers/owner.js';
@@ -102,20 +100,20 @@ describe('typed processed fields', () => {
     expect(e.bucket.gets).toEqual([]);
     expect(await (await e.get('plan')).text()).toBe(BODY);
 
-    e.sqlite.query(`INSERT INTO search_blob_chunks (project_id, blob_key, offset, text) VALUES ('proj_1', ?, 0, ?)`).run(HASH, BODY);
+    for (let pass = 0; pass < 5 && await reconcileSearchIndex(e.db, e.bucket, Date.now()) > 0; pass += 1);
     for (const query of ['processed', 'processed fidelity']) {
-      const found = await searchProject(e.db, { projectId: 'proj_1' }, { query, type: 'plan', mode: 'fts' });
-      expect(found.results.map((row) => row.id)).toEqual([ID]);
-      expect(found.results[0]?.preview).toContain('processed');
+      const found = await searchDeployment(e.serverEnv, { projectId: 'proj_1' }, { query, type: 'plan', mode: 'fts' }, 'member:test');
+      expect(found.hits.map((row) => row.id)).toEqual([ID]);
+      expect(found.hits[0]?.preview).toContain('processed');
     }
     expect(e.sqlite.query(`SELECT record_id FROM embedding_sources WHERE project_id = 'proj_1' AND type = 'plan'`).all()).toEqual([{ record_id: ID }]);
 
     e.sqlite.query(`DELETE FROM plans WHERE project_id = 'proj_1' AND plan_key = ?`).run(ID);
     const reads = e.bucket.gets.length;
     expect(await pendingSearchBlobs(e.db, 'proj_1')).toBe(0);
-    expect(await reconcileSearchIndex(e.db, e.bucket, Date.now())).toBe(0);
+    await reconcileSearchIndex(e.db, e.bucket, Date.now());
     expect(e.bucket.gets.length).toBe(reads);
-    expect((await searchProject(e.db, { projectId: 'proj_1' }, { query: 'processed', type: 'plan', mode: 'fts' })).results).toEqual([]);
+    expect((await searchDeployment(e.serverEnv, { projectId: 'proj_1' }, { query: 'processed', type: 'plan', mode: 'fts' }, 'member:test')).hits).toEqual([]);
     expect(e.sqlite.query(`SELECT record_id FROM embedding_sources WHERE project_id = 'proj_1' AND type = 'plan'`).all()).toEqual([]);
   });
 

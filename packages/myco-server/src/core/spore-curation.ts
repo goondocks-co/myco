@@ -266,11 +266,12 @@ export async function searchCuration(env: ServerEnv, projectId: string, runId: s
     env,
     { projectId },
     { query, type: 'spore', status: 'active', mode: 'semantic', limit: CURATION_SEARCH_RESULTS },
+    `run:${runId}`,
   );
   if (answer.provider_unavailable || answer.mode !== 'semantic')
     return runRefusal({ what: 'curation search', read: true, actual: 'semantic search is unavailable', next: REPORT_NEXT });
-  const held = await sporesWithSourceById(env.db, { projectId }, answer.results.map((result) => result.id));
-  const active = answer.results.flatMap((result) => { const spore = held.get(result.id); return spore?.status === 'active' ? [spore] : []; });
+  const held = await sporesWithSourceById(env.db, { projectId }, answer.hits.map((result) => result.id));
+  const active = answer.hits.flatMap((result) => { const spore = held.get(result.id); return spore?.status === 'active' ? [spore] : []; });
   if (active.length > 0) await addCurationCandidates(env.db, projectId, runId, active);
   return {
     results: active.map((spore) => ({ id: spore.id, revision: spore.revision, type: spore.observationType, agent_line: spore.agentLine })),

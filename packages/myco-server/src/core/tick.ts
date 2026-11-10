@@ -27,9 +27,7 @@ import { drainQueue } from './harness.js';
 import { runScheduledTasks, type ScheduleReport } from './scheduled-tasks.js';
 import { lastActivityAt } from './activity.js';
 import { classify, constraintDetail, emit } from '../telemetry.js';
-import {
-  core_search_index_pendingSearchBlobs as pendingSearchBlobs,
-} from '../read/catalog/search-index.js';
+import { searchBlobsDue } from '../db/search/blob-index.js';
 import { recoveryAttemptDue } from './recovery-schedule.js';
 import { stagingPruneDue } from './staging-retention.js';
 import { holdSettlementDue } from './recovery-hold.js';
@@ -167,7 +165,7 @@ export async function engineAssertions(env: ServerEnv, now: number): Promise<Pow
   if (await deviceReclamationPending(env.db, now)) assertions.push({ name: 'device:pending', maxDepth: 'sleep' });
   if (await storageCleanupPending(env.db)) assertions.push({ name: 'storage-cleanup:pending', maxDepth: 'idle' });
   if (await rawBackfillPending(env.db)) assertions.push({ name: 'raw-provenance:pending', maxDepth: 'sleep' });
-  if (await pendingSearchBlobs(env.db) > 0) assertions.push({ name: 'search:pending', maxDepth: 'active' });
+  if (await searchBlobsDue(env.db, now)) assertions.push({ name: 'search:pending', maxDepth: 'active' });
   const backlog = await pendingPublication(env.db, now);
   if (backlog.sessions > 0 && (backlog.state === 'building' || backlog.sessions > backlog.imported.sessions)) assertions.push({ name: 'transcript:pending', maxDepth: 'active' });
   if (backlog.sessions > 0 && (backlog.state === 'building' || backlog.imported.sessions > 0)) assertions.push({ name: 'import:pending', maxDepth: 'idle' });

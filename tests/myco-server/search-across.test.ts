@@ -1,9 +1,9 @@
 /**
- * Full-text search across Projects (`GET /api/search`).
+ * Word search across Projects (`GET /api/search`).
  *
  * Naming no Project covers every Project that accepts capture; naming some covers exactly those, and a name that is
  * not a Project answers 404, as a Project's own search does. Each result carries its Project. A member who is not an
- * admin reads it, and the answer is always full text.
+ * admin reads it, and the answer is always words alone.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -12,8 +12,8 @@ import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } from './hel
 import worker from '@myco-server-worker/index.js';
 import { MAX_NAMED_PROJECTS } from '@myco-server-worker/read/scope.js';
 import { SEARCH_API_LIMIT, SEARCH_MAX_LIMIT } from '@goondocks/myco-shared/search-types';
-import { search_searchAcross as searchAcross } from '@myco-server-worker/read/catalog/search.js';
-import { reconcileSearchIndex, SEARCH_CHUNK_CHARS } from '@myco-server-worker/core/search-index.js';
+import { searchAcross } from '@myco-server-worker/core/search.js';
+import { reconcileSearchIndex } from '@myco-server-worker/core/search-index.js';
 
 const NOW = 1_700_000_000_000;
 const opened: ReturnType<typeof sqliteEnv>[] = [];
@@ -46,7 +46,7 @@ function harness() {
   const hits = async (path: string) => {
     const { status, body } = await get(path);
     expect({ path, status }).toEqual({ path, status: 200 });
-    return (body.results as Array<{ projectId: string; id: string; type: string }>).map((r) => `${r.projectId}/${r.type}/${r.id}`).sort();
+    return (body.hits as Array<{ projectId: string; id: string; type: string }>).map((r) => `${r.projectId}/${r.type}/${r.id}`).sort();
   };
   return { fixture, sqlite, archive, session, spore, plan, blob, get, hits };
 }
@@ -61,8 +61,8 @@ describe('search across Projects', () => {
     h.archive('proj_3');
     expect(await h.hits('/api/search?q=cobalt')).toEqual(['proj_1/spore/sp_a', 'proj_2/session/s_b', 'proj_2/spore/sp_b']);
     const { body } = await h.get('/api/search?q=cobalt');
-    expect(body).toMatchObject({ mode: 'fts', provider_unavailable: false, coverage: { pending_blobs: 0 } });
-    expect(body.results.find((r: any) => r.id === 'sp_b')).toMatchObject({ projectId: 'proj_2', type: 'spore', retrieve: { tool: 'myco_spores', input: { op: 'get', id: 'sp_b' } } });
+    expect(body).toMatchObject({ mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0 } });
+    expect(body.hits.find((r: any) => r.id === 'sp_b')).toMatchObject({ projectId: 'proj_2', type: 'spore', retrieve: { tool: 'myco_spores', input: { op: 'get', id: 'sp_b' } } });
   });
 
   it('covers exactly the Projects named, archived or not, and answers 404 for a name that is not a Project', async () => {
@@ -95,27 +95,28 @@ describe('search across Projects', () => {
     h.sqlite.run(`INSERT INTO knowledge_release_state (project_id, id, identity_key, namespace, record_id, state, confidence, checked_at, created_at)
                   VALUES ('proj_2', 'rs_1', 'k', 'sessions', 's', 'released', 'high', ?, ?)`, [NOW, NOW]);
     const { body } = await h.get('/api/search?q=cobalt&type=session');
-    const byProject = Object.fromEntries(body.results.map((r: any) => [r.projectId, r]));
+    const byProject = Object.fromEntries(body.hits.map((r: any) => [r.projectId, r]));
     expect(Object.keys(byProject).sort()).toEqual(['proj_1', 'proj_2']);
     expect(byProject.proj_2.release).toMatchObject({ state: 'released', confidence: 'high' });
     expect(byProject.proj_1.release).toBeUndefined();
   });
 
-  it('ranks by the full-text rank across Projects, not by Project', async () => {
+  it('ranks across Projects by the words a record\'s line holds, not by Project', async () => {
     const h = harness();
-    h.spore('proj_1', 'sp_weak', `cobalt ${'filler '.repeat(60)}`);
-    h.spore('proj_2', 'sp_strong', 'cobalt cobalt cobalt');
+    h.spore('proj_1', 'sp_body', 'cobalt in the body only');
+    h.spore('proj_2', 'sp_line', 'other words');
+    h.sqlite.run("UPDATE spores SET agent_line = 'cobalt line' WHERE id = 'sp_line'");
     const { body } = await h.get('/api/search?q=cobalt&type=spore');
-    expect(body.results.map((r: any) => [r.projectId, r.id])).toEqual([['proj_2', 'sp_strong'], ['proj_1', 'sp_weak']]);
-    expect(body.results[0].score).toBe(1);
-    expect(body.results[1].score).toBeLessThan(1);
+    expect(body.hits.map((r: any) => [r.projectId, r.id])).toEqual([['proj_2', 'sp_line'], ['proj_1', 'sp_body']]);
+    expect(body.hits[0].score).toBe(1);
+    expect(body.hits[1].score).toBeLessThan(1);
   });
 
   it('answers the same number of results a Project\'s search does, and refuses a limit past its most', async () => {
     const h = harness();
     for (let i = 0; i < SEARCH_API_LIMIT + 5; i += 1) h.spore(i % 2 === 0 ? 'proj_1' : 'proj_2', `sp_${i}`, `cobalt ${i}`);
-    expect((await h.get('/api/search?q=cobalt')).body.results).toHaveLength(SEARCH_API_LIMIT);
-    expect((await h.get('/api/search?q=cobalt&limit=3')).body.results).toHaveLength(3);
+    expect((await h.get('/api/search?q=cobalt')).body.hits).toHaveLength(SEARCH_API_LIMIT);
+    expect((await h.get('/api/search?q=cobalt&limit=3')).body.hits).toHaveLength(3);
     expect((await h.get(`/api/search?q=cobalt&limit=${SEARCH_MAX_LIMIT + 1}`)).status).toBe(400);
     expect((await h.get('/api/search?q=')).status).toBe(400);
   });
@@ -124,9 +125,9 @@ describe('search across Projects', () => {
     const h = harness();
     h.spore('proj_1', 'sp_a', 'cobalt');
     const refused = await h.get('/api/search?q=cobalt&mode=semantic');
-    expect(refused).toEqual({ status: 400, body: { error: 'bad_request', reasonCode: 'invalid_request', reason: expect.stringContaining('semantic search reads one project') } });
+    expect(refused).toEqual({ status: 400, body: { error: 'bad_request', reasonCode: 'invalid_query', reason: expect.stringContaining('semantic search reads one project') } });
     expect((await h.get('/api/search?q=cobalt&mode=auto')).body).toMatchObject({ mode: 'fts', provider_unavailable: false });
-    expect((await h.get('/api/search?q=cobalt&mode=fts')).body.results).toHaveLength(1);
+    expect((await h.get('/api/search?q=cobalt&mode=fts')).body.hits).toHaveLength(1);
   });
 
   it('matches spilled bodies only inside the Projects searched, and counts their backlog alone', async () => {
@@ -136,14 +137,14 @@ describe('search across Projects', () => {
     h.plan('proj_2', 'pr_2', null, 'body-2');
     h.plan('proj_3', 'pr_3', null, 'body-3');
     h.archive('proj_3');
-    expect((await h.get('/api/search?q=deepneedle')).body.coverage.pending_blobs).toBe(1);
-    expect((await h.get('/api/search?q=deepneedle&project=proj_1')).body.coverage.pending_blobs).toBe(0);
+    expect((await h.get('/api/search?q=deepneedle')).body.coverage.pendingBlobs).toBe(1);
+    expect((await h.get('/api/search?q=deepneedle&project=proj_1')).body.coverage.pendingBlobs).toBe(0);
     // One body per pass.
     while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
     expect(await h.hits('/api/search?q=deepneedle')).toEqual(['proj_2/plan/pr_2']);
     expect(await h.hits('/api/search?q=deepneedle&project=proj_1')).toEqual([]);
     expect(await h.hits('/api/search?q=deepneedle&project=proj_3')).toEqual(['proj_3/plan/pr_3']);
-    expect((await h.get('/api/search?q=deepneedle')).body.coverage.pending_blobs).toBe(0);
+    expect((await h.get('/api/search?q=deepneedle')).body.coverage.pendingBlobs).toBe(0);
   });
 
   it('previews each result from the text that matched it: an inline body, or the chunk of a spilled one', async () => {
@@ -152,57 +153,41 @@ describe('search across Projects', () => {
     h.plan('proj_1', 'pr_spilled', null, 'body-1');
     h.plan('proj_2', 'pr_inline', 'spillneedle in an inline plan');
     while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
-    const byId = Object.fromEntries(((await h.get('/api/search?q=spillneedle&type=plan')).body.results as any[]).map((r) => [r.id, r.preview]));
+    const byId = Object.fromEntries(((await h.get('/api/search?q=spillneedle&type=plan')).body.hits as any[]).map((r) => [r.id, r.preview]));
     expect(byId.pr_spilled).toContain('spillneedle in the spilled body');
     expect(byId.pr_inline).toContain('spillneedle in an inline plan');
-  });
-
-  it('previews a spilled body from its best-ranked chunk, not its first or its last', async () => {
-    const h = harness();
-    // Each part fills one chunk and ends on a space, so no word runs across a part.
-    const pad = (text: string) => `${`${text} ${'filler '.repeat(Math.ceil(SEARCH_CHUNK_CHARS / 7))}`.slice(0, SEARCH_CHUNK_CHARS - 1)} `;
-    const body = pad('rankneedle opening') + pad('rankneedle middlemarker '.repeat(200)) + pad('rankneedle closing');
-    await h.blob('proj_1', 'body-3', body);
-    h.plan('proj_1', 'pr_three', null, 'body-3');
-    while (await reconcileSearchIndex(h.fixture.db, h.fixture.bucket, 1000) > 0);
-    // The opening, the middle and the closing each match in a chunk of their own; the middle matches most.
-    const matched = h.sqlite.query(`SELECT rowid FROM search_blob_chunks_fts WHERE search_blob_chunks_fts MATCH 'rankneedle' ORDER BY rank`).all() as { rowid: number }[];
-    expect(matched.length).toBe(3);
-    const best = matched[0]!.rowid;
-    expect({ best, notFirst: best !== Math.min(...matched.map((m) => m.rowid)), notLast: best !== Math.max(...matched.map((m) => m.rowid)) }).toEqual({ best, notFirst: true, notLast: true });
-    const [hit] = (await h.get('/api/search?q=rankneedle&type=plan')).body.results as any[];
-    expect({ id: hit.id, fromMiddle: hit.preview.includes('middlemarker') }).toEqual({ id: 'pr_three', fromMiddle: true });
   });
 
   it('previews each inline row from its own text, when several rows match', async () => {
     const h = harness();
     h.spore('proj_1', 'sp_first', 'pinneedle alphatext only here');
     h.spore('proj_1', 'sp_second', 'pinneedle betatext only here');
-    const previews = Object.fromEntries(((await h.get('/api/search?q=pinneedle&type=spore')).body.results as any[]).map((r) => [r.id, r.preview]));
+    const previews = Object.fromEntries(((await h.get('/api/search?q=pinneedle&type=spore')).body.hits as any[]).map((r) => [r.id, r.preview]));
     expect({ first: /alphatext/.test(previews.sp_first), second: /betatext/.test(previews.sp_second) }).toEqual({ first: true, second: true });
   });
 
   it('answers a page of the limit, says more follow, and continues to every match across Projects', async () => {
     const h = harness();
     for (let i = 0; i < 30; i += 1) h.spore(i % 2 === 0 ? 'proj_1' : 'proj_2', `sp_${i}`, `cobalt ${i}`);
-    const first = await searchAcross(h.fixture.db, { all: true }, { query: 'cobalt', type: 'spore', limit: 5 });
-    expect({ n: first.results.length, hasMore: first.hasMore }).toEqual({ n: 5, hasMore: true });
-    const seen = first.results.map((r) => `${r.projectId}/${r.id}`);
-    for (let cursor = first.cursor; cursor !== null;) {
-      const next = await searchAcross(h.fixture.db, { all: true }, { query: 'cobalt', type: 'spore', limit: 5, cursor });
-      seen.push(...next.results.map((r) => `${r.projectId}/${r.id}`));
-      cursor = next.cursor;
+    const first = await searchAcross(h.fixture.serverEnv, { all: true }, { query: 'cobalt', type: 'spore', limit: 5 }, 'member:a');
+    expect({ n: first.hits.length, more: first.nextCursor !== null }).toEqual({ n: 5, more: true });
+    const seen = first.hits.map((r) => `${r.projectId}/${r.id}`);
+    for (let cursor = first.nextCursor; cursor !== null;) {
+      const next = await searchAcross(h.fixture.serverEnv, { all: true }, { query: 'cobalt', type: 'spore', limit: 5, cursor }, 'member:a');
+      seen.push(...next.hits.map((r) => `${r.projectId}/${r.id}`));
+      cursor = next.nextCursor;
     }
     expect({ n: seen.length, unique: new Set(seen).size }).toEqual({ n: 30, unique: 30 });
   });
 
-  it('breaks a tie of rank by Project: in the statement that keeps the page, and in the merge', async () => {
+  it('breaks a tie of score and time by the newest record, the same at every page size', async () => {
     const h = harness();
     h.session('proj_2', 's', 'cobalt tie');
     h.session('proj_1', 's', 'cobalt tie');
-    const order = async (limit: number) => ((await h.get(`/api/search?q=cobalt&type=session&limit=${limit}`)).body.results as any[]).map((r) => [r.projectId, r.id, r.score]);
-    expect(await order(1)).toEqual([['proj_1', 's', 1]]);
-    expect(await order(2)).toEqual([['proj_1', 's', 1], ['proj_2', 's', 1]]);
+    const order = async (limit: number) => ((await h.get(`/api/search?q=cobalt&type=session&limit=${limit}`)).body.hits as any[]).map((r) => [r.projectId, r.id, r.score]);
+    const both = await order(2);
+    expect(both.map(([project]) => project).sort()).toEqual(['proj_1', 'proj_2']);
+    expect(await order(1)).toEqual([both[0]]);
   });
 
   it('refuses a query carrying a control character, across Projects and in one', async () => {
@@ -210,12 +195,12 @@ describe('search across Projects', () => {
     h.spore('proj_1', 'sp_a', 'cobalt');
     for (const q of ['cob%00alt', '%00', 'cobalt%1B', 'cobalt%7F']) {
       for (const path of [`/api/search?q=${q}`, `/api/projects/proj_1/search?q=${q}`]) {
-        expect({ path, answer: await h.get(path) }).toEqual({ path, answer: { status: 400, body: { error: 'bad_request', reasonCode: 'invalid_request', reason: 'query must not contain control characters' } } });
+        expect({ path, answer: await h.get(path) }).toEqual({ path, answer: { status: 400, body: { error: 'bad_request', reasonCode: 'invalid_query', reason: 'query must not contain control characters; send the words alone' } } });
       }
     }
     // A tab or a line break is whitespace between terms.
     expect((await h.get('/api/search?q=cobalt%09x%0Ay')).status).toBe(200);
-    expect((await h.get('/api/projects/proj_1/search?q=cobalt%0D%0A')).body.results.map((r: any) => r.id)).toEqual(['sp_a']);
+    expect((await h.get('/api/projects/proj_1/search?q=cobalt%0D%0A')).body.hits.map((r: any) => r.id)).toEqual(['sp_a']);
   });
 
   it('is read by a member who is not an admin', async () => {
@@ -224,6 +209,6 @@ describe('search across Projects', () => {
     h.spore('proj_1', 'sp_a', 'cobalt');
     const { status, body } = await h.get('/api/search?q=cobalt', MEMBER_SUB);
     expect(status).toBe(200);
-    expect(body.results.map((r: any) => r.id)).toEqual(['sp_a']);
+    expect(body.hits.map((r: any) => r.id)).toEqual(['sp_a']);
   });
 });

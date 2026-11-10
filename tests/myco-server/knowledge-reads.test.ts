@@ -155,9 +155,9 @@ describe('search leads a spore with its line', () => {
     const h = harness();
     h.spore('proj_1', 'sp_lined', { content: 'cobalt appears deep in a long body of text', line: 'Cobalt keys expire after a day' });
     h.spore('proj_1', 'sp_plain', { content: 'cobalt without a line' });
-    const previews = Object.fromEntries(((await h.get('/api/search?q=cobalt&type=spore')).body.results as any[]).map((r) => [r.id, r.preview]));
+    const previews = Object.fromEntries(((await h.get('/api/search?q=cobalt&type=spore')).body.hits as any[]).map((r) => [r.id, r.preview]));
     expect(previews).toEqual({ sp_lined: 'Cobalt keys expire after a day', sp_plain: expect.stringContaining('cobalt without a line') });
-    const inProject = Object.fromEntries(((await h.get('/api/projects/proj_1/search?q=cobalt&type=spore&mode=fts')).body.results as any[]).map((r) => [r.id, r.preview]));
+    const inProject = Object.fromEntries(((await h.get('/api/projects/proj_1/search?q=cobalt&type=spore&mode=fts')).body.hits as any[]).map((r) => [r.id, r.preview]));
     expect(inProject.sp_lined).toBe('Cobalt keys expire after a day');
   });
 });

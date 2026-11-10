@@ -86,8 +86,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'read/catalog/lineage.ts',
   'read/catalog/plans.ts',
   'read/catalog/processed.ts',
-  'read/catalog/search-index.ts',
-  'read/catalog/search.ts',
   'read/catalog/session-activity.ts',
   'read/catalog/sessions.ts',
   'read/catalog/shared.ts',
