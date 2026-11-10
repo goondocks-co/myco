@@ -466,6 +466,7 @@
     "tests/myco-server/imported-session-dates.test.ts": 2760,
     "tests/myco-server/ingest-origin.test.ts": 176,
     "tests/myco-server/ingest.test.ts": 2185,
+    "tests/myco-server/injection-served-cost.test.ts": 6000,
     "tests/myco-server/injection-served-items.test.ts": 90,
     "tests/myco-server/injection-snapshot-budget-runtime.test.ts": 5500,
     "tests/myco-server/injection.test.ts": 7918,

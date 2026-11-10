@@ -1,6 +1,6 @@
 import { expect, it } from 'bun:test';
 import { tombstoneSession } from './helpers/session-deletion.js';
-import { d1TwoScale, eachUnit, expectReportedWalk, expectTwoScale } from './helpers/two-scale.js';
+import { d1TwoScale, eachUnit, expectTwoScale } from './helpers/two-scale.js';
 
 const PROJECT = 'snapshot-budget';
 /** Plans served from each tombstoned source session. */
@@ -11,6 +11,7 @@ const SIZES = [2_000, 10_000] as const;
 it('D1 source tombstones cost the same as other sources\' served snapshots grow, and clear only their own', async () => {
   const costs = await d1TwoScale({
     sizes: SIZES,
+    statistics: ['none', 'analyzed', 'stale'],
     setup: async (db) => {
       await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES(?,'Snapshots',1)").bind(PROJECT).run();
       for (const session of ['source-0', 'source-1', 'source-other', 'receiver']) {
@@ -39,10 +40,10 @@ it('D1 source tombstones cost the same as other sources\' served snapshots grow,
           WHERE item_id LIKE ? AND session_id IS NULL AND title IS NULL AND content_hash IS NULL AND unavailable=1`).bind(`${source}-plan-%`).first()).toEqual({ n: SOURCE_SNAPSHOTS });
         expect(await store.prepare("SELECT COUNT(*) AS n FROM injection_served_items WHERE session_id='source-other' AND title IS NOT NULL AND unavailable=0").first())
           .toEqual({ n: other });
+        // Every receipt that served the deleted source's plans is kept.
+        expect(await store.prepare("SELECT COUNT(*) AS n FROM spore_injections WHERE project_id=? AND session_id='receiver'").bind(PROJECT).first()).toEqual({ n: scale === 1 ? SIZES[1] : SIZES[0] });
       },
     }],
   });
-  expectTwoScale(costs.filter((cost) => cost.statistics === 'none'));
-  // Under planner statistics the planner leaves the source index and walks every served snapshot (#2174): two per unit.
-  for (const cost of costs.filter((cost) => cost.statistics !== 'none')) expectReportedWalk(cost, { issue: '#2174', perUnit: 2.5, units: SIZES[1] - SIZES[0] });
+  expectTwoScale(costs);
 }, 120_000);
