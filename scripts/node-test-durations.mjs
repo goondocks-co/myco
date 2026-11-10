@@ -115,7 +115,7 @@ export function testCaseHeadroomBreaches(samples, timeoutFor) {
     assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, `${test.file}: missing declared test timeout: ${test.name}`);
     assert.ok(Number.isFinite(test.milliseconds) && test.milliseconds >= 0, `${source}: missing measured test duration: ${test.name}`);
     if (test.milliseconds > timeoutMs * MAX_TEST_TIMEOUT_SHARE) {
-      breaches.push(`${source}: ${test.file}: ${test.name}: ${test.milliseconds}ms exceeds ${MAX_TEST_TIMEOUT_SHARE * 100}% of its ${timeoutMs}ms test timeout`);
+      breaches.push(`${source}: ${test.file}: ${test.name}: ${test.milliseconds}ms exceeds ${MAX_TEST_TIMEOUT_SHARE * 100}% of its ${timeoutMs}ms test timeout. Split the variants or raise the declared timeout.`);
     }
   }
   return breaches;

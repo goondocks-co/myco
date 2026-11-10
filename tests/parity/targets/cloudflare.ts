@@ -134,12 +134,13 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
 
   let completedSqlCommands = 0;
   let lastSqlProgress = performance.now();
-  const d1 = async (command: string): Promise<string> => {
+  const d1 = async (command: string, params: readonly unknown[] = []): Promise<string> => {
     if (started) {
-      const reply = await runtime.command({ op: 'sql', tag, sql: command });
+      const reply = await runtime.command({ op: 'sql', tag, sql: command, params });
       if (!reply.results) throw new Error('local D1 returned no SQL results');
       return JSON.stringify(reply.results);
     }
+    if (params.length > 0) throw new Error('bound SQL runs only against the live local D1');
     const args = ['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--json', '--command', command];
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -258,8 +259,8 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       ownerHeaders,
       memberHeaders,
       grantHeaders: (key) => ({ ...grantHeadersFor(key), 'cf-connecting-ip': '1.2.3.4' }),
-      sql: async (command) => {
-        const out = await d1(command);
+      sql: async (command, params) => {
+        const out = await d1(command, params);
         const parsed = JSON.parse(out) as Array<{ results: Record<string, unknown>[] }>;
         return parsed[0]?.results ?? [];
       },

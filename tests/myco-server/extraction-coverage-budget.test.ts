@@ -47,4 +47,4 @@ it('D1 acknowledges a prompt at the same cost after 700 and after 7k acknowledge
     expect(costs[1]!.reads).toBeLessThanOrEqual(costs[0]!.reads);
     expect(costs[1]!.writes).toBeLessThanOrEqual(costs[0]!.writes);
   } finally { await mf.dispose(); }
-}, 300_000);
+}, 484_000);

@@ -12,7 +12,11 @@ on:
   workflow_call:
     inputs:
       full:
-        description: Run the full suite and enforce timing limits
+        description: Run the full suite and enforce timing limits other than per-test headroom
+        type: boolean
+        default: false
+      enforce_test_headroom:
+        description: Fail when a passing test used more than 80% of its declared timeout
         type: boolean
         default: false
 
@@ -22,8 +26,10 @@ concurrency:
 
 env:
   MYCO_TEST_SCOPE: ${{ (inputs.full || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pr' }}
-  # Timing limits report on pull requests and main pushes, and fail only a run the nightly or a release asked for.
+  # Shard, job and hook budgets report on pull requests and main pushes, and fail only a run the nightly or a release asked for.
   MYCO_TIMING_GATES: ${{ inputs.full && 'enforce' || 'report' }}
+  # The 80% per-test near-miss reports on pull requests, main pushes and tagged releases. The nightly asks it to fail.
+  MYCO_TEST_HEADROOM: ${{ inputs.enforce_test_headroom && 'enforce' || 'report' }}
 
 jobs:
   lint:

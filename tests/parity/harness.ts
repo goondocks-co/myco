@@ -31,7 +31,7 @@ export interface ParityTarget {
   memberHeaders(extra?: Record<string, string>): Record<string, string>;
   /** Headers a request over an External Agent grant carries: the key alone names the Project, so no Project or protocol header rides with it. */
   grantHeaders(key: string): Record<string, string>;
-  sql(command: string): Promise<Record<string, unknown>[]>;
+  sql(command: string, params?: readonly unknown[]): Promise<Record<string, unknown>[]>;
   /** One wake of the target's own clock: the hosted clock object through the cron floor, the self-hosted wake loop's tick. */
   clockWake(at?:number): Promise<void>;
   clockAlarm?(at?:number):Promise<void>;
@@ -174,12 +174,13 @@ export async function waitFor<T>(read: () => Promise<T>, pred: (value: T) => boo
 
 /** Opens a read/write connection on a self-hosted volume; WAL keeps it safe beside the serving process. */
 export function volumeSql(databasePath: string) {
-  return async (command: string): Promise<Record<string, unknown>[]> => {
+  return async (command: string, params: readonly unknown[] = []): Promise<Record<string, unknown>[]> => {
     const sqlite = new Database(databasePath);
     sqlite.exec('PRAGMA foreign_keys = ON');
     sqlite.exec('PRAGMA busy_timeout = 5000');
     try {
-      return sqlite.query(command).all() as Record<string, unknown>[];
+      const statement = sqlite.query(command);
+      return (params.length === 0 ? statement.all() : statement.all(...params)) as Record<string, unknown>[];
     } finally {
       sqlite.close();
     }

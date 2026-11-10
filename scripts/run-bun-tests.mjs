@@ -380,6 +380,7 @@ const testScope = process.env.MYCO_TEST_SCOPE ?? '';
 if (!['', 'pr', 'full'].includes(testScope)) throw new Error(`Unknown test scope: ${testScope}; expected pr or full`);
 delete process.env.MYCO_TEST_SCOPE;
 delete process.env.MYCO_TIMING_GATES;
+delete process.env.MYCO_TEST_HEADROOM;
 
 // A file a shard does not run in this CI scope: the build job owns it, or the full run does.
 function leftToAnotherCiJob(file) {

@@ -1,7 +1,7 @@
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { Database } from 'bun:sqlite';
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -868,26 +868,48 @@ describe('legacy journey (e)', () => {
     ]) expect(() => parseSetupOptions(args)).toThrow();
   });
 
-  it('resumes after an exception at every observed cutover mutation boundary without duplicated imports', async () => {
-    const captureFlags = flags.filter(flag => flag !== '--no-agents');
-    const initial = await rig({ multi: true, agents: ['claude-code', 'codex'] });
-    expect(await run(captureFlags, initial.deps)).toBe(0);
-    const accepted = initial.calls.filter(call => call.route === '/events' || call.route === '/spores/save').length;
-    for (const [index, boundary] of [...new Set(initial.checkpoints)].entries()) {
-      const fixture = await legacyJourney(path.join(root, `exception-${index}`), { multi: true, agents: ['claude-code', 'codex'] });
-      const bytes = fs.readFileSync(fixture.legacy.vault);
-      let interrupted = false;
-      const deps = { ...fixture.deps, stdout: () => {}, stderr: () => {}, cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: (at: string) => {
-        if (!interrupted && at === boundary) { interrupted = true; throw new DOMException(`interrupted at ${at}`, 'AbortError'); }
-      } } };
-      try {
-        expect({ boundary, code: await run(captureFlags, deps), interrupted }).toMatchObject({ code: 2, interrupted: true });
-        expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
-        expect({ boundary, code: await run(['--yes'], deps) }).toMatchObject({ code: 0 });
-        expect(legacyMigrationState(fixture.legacy.mycoHome).state).toBe('moved');
-        expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toHaveLength(accepted);
-        expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
-      } finally { await fixture.close(); }
+  describe.serial('cutover exception boundaries', () => {
+  const LEGACY_CUTOVER_BOUNDARIES = [
+    'destinations', 'action:1:0', 'action:1:1', 'action:1:2', 'action:3:0', 'action:3:1',
+    'stopped-source:0', 'action:6:0', 'stopped-source:1', 'action:6:1', 'stopped-source:final', 'quiescent',
+    'handover', 'copy', 'vault:proj_legacy_a', 'transcripts:proj_legacy_a', 'vault:proj_legacy_b',
+    'transcripts:proj_legacy_b', 'settings:https://legacy-a.invalid', 'settings:https://legacy-b.invalid',
+  ] as const;
+  let acceptedCaptureCount = 0;
+  beforeAll(async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-boundary-baseline-'));
+    const initial = await legacyJourney(path.join(scratch, 'observed'), { multi: true, agents: ['claude-code', 'codex'] });
+    try {
+      const code = await run(flags.filter(flag => flag !== '--no-agents'), { ...initial.deps, stdout: () => {}, stderr: () => {} });
+      if (code !== 0) throw new Error(`cutover boundary baseline exited ${code}`);
+      acceptedCaptureCount = initial.calls.filter(call => call.route === '/events' || call.route === '/spores/save').length;
+    } finally {
+      await initial.close();
+      fs.rmSync(scratch, { recursive: true, force: true });
     }
+  });
+
+  it('observes every cutover boundary the interruption cases cover', async () => {
+    const fixture = await rig({ multi: true, agents: ['claude-code', 'codex'] });
+    expect(await run(flags.filter(flag => flag !== '--no-agents'), fixture.deps)).toBe(0);
+    expect([...new Set(fixture.checkpoints)]).toEqual([...LEGACY_CUTOVER_BOUNDARIES]);
+  });
+
+  for (const boundary of LEGACY_CUTOVER_BOUNDARIES) it(`resumes after an exception at ${boundary} without duplicated imports`, async () => {
+    const captureFlags = flags.filter(flag => flag !== '--no-agents');
+    const fixture = await legacyJourney(path.join(root, 'exception'), { multi: true, agents: ['claude-code', 'codex'] });
+    closers.push(fixture.close);
+    const bytes = fs.readFileSync(fixture.legacy.vault);
+    let interrupted = false;
+    const deps = { ...fixture.deps, stdout: () => {}, stderr: () => {}, cutoverDeps: { ...fixture.deps.cutoverDeps, onCheckpoint: (at: string) => {
+      if (!interrupted && at === boundary) { interrupted = true; throw new DOMException(`interrupted at ${at}`, 'AbortError'); }
+    } } };
+    expect({ boundary, code: await run(captureFlags, deps), interrupted }).toMatchObject({ code: 2, interrupted: true });
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+    expect({ boundary, code: await run(['--yes'], deps) }).toMatchObject({ code: 0 });
+    expect(legacyMigrationState(fixture.legacy.mycoHome).state).toBe('moved');
+    expect(fixture.calls.filter(call => call.route === '/events' || call.route === '/spores/save')).toHaveLength(acceptedCaptureCount);
+    expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
   }, 60_000);
+  });
 });
