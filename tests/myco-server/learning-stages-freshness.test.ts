@@ -13,8 +13,8 @@ import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { NOW, HOUR, DAY, capture, publish, cardAll, GOTCHAS, EMPTY_CARD, cardWorker, cardRun, plainTurns } from './helpers/learning-stages.ts';
 
-it('admits long-idle and late-received sessions just before source freshness ends', async () => {
-  for (const late of [false, true]) await withDocumentStores(async db => {
+for (const late of [false, true]) it(`admits long-idle and late-received sessions just before source freshness ends (late: ${late})`, async () => {
+  await withDocumentStores(async db => {
     const harness = await cardWorker(db);
     await settingsWriter(db).setLeaf('agent.learning_history_enabled', false, 'owner', NOW);
     await settingsWriter(db).setLeaf('agent.titling_idle_close_minutes', late ? 120 : 1440, 'owner', NOW);
@@ -31,8 +31,8 @@ it('admits long-idle and late-received sessions just before source freshness end
   });
 });
 
-it('keeps pending turns when the document is not live at material read or at the forget write', async () => {
-  for (const mode of ['not-live', 'recovered-before-write', 'changed-after-read']) await withDocumentStores(async db => {
+for (const mode of ['not-live', 'recovered-before-write', 'changed-after-read']) it(`keeps pending turns when the document is not live at material read or at the forget write (mode: ${mode})`, async () => {
+  await withDocumentStores(async db => {
     const changesAfterRead = mode === 'changed-after-read';
     const keys = [uuid(1001), uuid(1002)];
     const run = await cardRun(db, keys.map((id, n) => ({ id, text: 'Keep this pending turn until its document is live', at: 10 + n })));
@@ -68,8 +68,8 @@ it('keeps pending turns when the document is not live at material read or at the
   });
 }, 60_000);
 
-it('retains the shared idle wait for a session received after its source freshness expired', async () => {
-  for (const age of [24, 30]) await withDocumentStores(async db => {
+for (const age of [24, 30]) it(`retains the shared idle wait for a session received after its source freshness expired (age: ${age})`, async () => {
+  await withDocumentStores(async db => {
     const harness = await cardWorker(db);
     const source = NOW - age * HOUR;
     await capture(db, 'past-fresh', [{ id: uuid(1010), text: 'Wait for this historical session to become quiet', at: source }], 'project', NOW);
@@ -114,8 +114,8 @@ it('admits a first fresh learning claim and retains its bounded retries after so
   });
 });
 
-it('refuses card writes retryably if the document leaves live after reading, including at the mutation boundary', async () => {
-  for (const atBatch of [false, true]) await withDocumentStores(async db => {
+for (const atBatch of [false, true]) it(`refuses card writes retryably if the document leaves live after reading, including at the mutation boundary (atBatch: ${atBatch})`, async () => {
+  await withDocumentStores(async db => {
     const turns = plainTurns(2, 1100);
     const run = await cardRun(db, turns);
     const material = await run.readAll();
