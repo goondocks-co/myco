@@ -212,7 +212,7 @@ export const storageCleanupParity: ParityScenario = {
       released=(await target.sql(`SELECT 1 AS held FROM prepared_archive_bundles WHERE preparation_id=${lit(preparationId)}`)).length===0
         &&(await target.sql(`SELECT 1 AS held FROM blobs WHERE project_id=${project} AND key=${lit(abandonedKey)}`)).length===0
         // D1 rejects a LIKE or GLOB pattern longer than 50 bytes. The stored object name contains the key.
-        &&(await target.sql('SELECT 1 AS held FROM object_releases WHERE instr(physical, ?) > 0', [abandonedKey])).length===0;
+        &&(await target.sql(`SELECT 1 AS held FROM object_releases WHERE instr(physical, ${lit(abandonedKey)}) > 0`)).length===0;
       if(released)break;
     }
     expect(released).toBe(true);

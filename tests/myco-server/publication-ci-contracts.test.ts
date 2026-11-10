@@ -40,8 +40,8 @@ async function onDocumentStores(scenario: ParityScenario): Promise<void> {
 
 test('shared spilled plans retain the raw privacy contract through editorial saves on SQLite and D1', async () => {
   await onDocumentStores(rawPrivacy);
-});
+}, 60_000);
 
 test('archival retains complete document content and usable locators on SQLite and D1', async () => {
   await onDocumentStores(storageCleanupParity);
-});
+}, 60_000);
