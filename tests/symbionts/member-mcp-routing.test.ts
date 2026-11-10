@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
-import * as registry from '@myco/member/registry.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,7 +11,7 @@ import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { MemberMcpConflictError, SymbiontInstaller, resolveManagedBinaryPath } from '@myco/symbionts/installer.js';
 import { privateMcpProjects } from '@myco/symbionts/member-mcp-projects.js';
 import { managedBinaryPath } from '@myco/install/managed-binary.js';
-import { REGISTRY_VERSION, writeRegistryEntry, removeRegistryEntry, readRegistryEntry, deploymentPath, registryEntryPath } from '@myco/member/registry.js';
+import { REGISTRY_VERSION, writeRegistryEntry, removeRegistryEntry, readRegistryEntry, deploymentPath, registryEntryPath, readDeploymentMembership, writeDeploymentMembership } from '@myco/member/registry.js';
 import { recordProvision } from '@myco/member/provision-record.js';
 import { settleConnection } from '@myco/cli/member-auto-join.js';
 import { resolveCredential } from '@myco/member/credential.js';
@@ -423,12 +422,13 @@ it('refuses an unavailable binding during the one-Deployment private-scope retir
   installer('claude-code').installMemberMcp();
   removeRegistryEntry(personal, memberHome);
   const before = fs.readFileSync(target('claude-code'), 'utf8');
-  const list = registry.listRegistryEntriesResult;
-  const race = spyOn(registry, 'listRegistryEntriesResult').mockImplementation(home => {
-    const result = list(home);
-    fs.writeFileSync(registryEntryPath(personal, memberHome), '{');
-    return result;
-  });
+  const torn = registryEntryPath(personal, memberHome);
+  const readdir = fs.readdirSync;
+  const race = spyOn(fs, 'readdirSync').mockImplementation(((...args: Parameters<typeof fs.readdirSync>) => {
+    const listed = Reflect.apply(readdir, fs, args);
+    if (String(args[0]) === path.dirname(torn)) fs.writeFileSync(torn, '{');
+    return listed;
+  }) as typeof fs.readdirSync);
   try { expect(() => installer('claude-code', null).installMemberMcp()).toThrow(/project connection.*unavailable/); }
   finally { race.mockRestore(); }
   expect(fs.readFileSync(target('claude-code'), 'utf8')).toBe(before);
@@ -746,8 +746,8 @@ it('reports Cline by the declared one-membership rule and refuses terminal membe
   expect(fact()).toMatchObject({ status: 'warn', reason: 'mcp_cwd_ambiguous' });
   fs.rmSync(deploymentPath('https://personal.example', memberHome));
   bind(personal, 'https://work.example');
-  const held = registry.readDeploymentMembership('https://work.example', memberHome)!;
-  registry.writeDeploymentMembership({ ...held, refreshTerminal: true }, { mycoHome: memberHome });
+  const held = readDeploymentMembership('https://work.example', memberHome)!;
+  writeDeploymentMembership({ ...held, refreshTerminal: true }, { mycoHome: memberHome });
   expect(fact()).toMatchObject({ status: 'warn', reason: 'mcp_cwd_ambiguous' });
   expect(() => clientRootDestination([pathToFileURL(home).href])()).toThrow(/exactly one readable/);
 });
@@ -781,7 +781,7 @@ it('settlement publishes client-roots strategies to all provisioned adapters', a
 it('uses the named home for wholly unconnected roots and refuses roots naming different homes', () => {
   bind(work, 'https://work.example');
   const otherHome = path.join(scratch, 'other-home');
-  registry.writeDeploymentMembership({ serverUrl: 'https://personal.example', token: 'B'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }, { mycoHome: otherHome });
+  writeDeploymentMembership({ serverUrl: 'https://personal.example', token: 'B'.repeat(43), machineId: 'machine', joinedAt: 1, updatedAt: 1 }, { mycoHome: otherHome });
   const env = { ...process.env };
   delete env.MYCO_HOME;
   const pin = path.join(personal, '.myco/runtime.home');

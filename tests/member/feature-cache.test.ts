@@ -9,7 +9,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { beginFeatureRequest, cacheDeploymentFeatures, readDeploymentFeaturesStrict } from '@myco/member/context-cache.js';
 import { deploymentFeaturesPath } from '@myco/member/registry.js';
-import * as store from '@myco/member/store.js';
 
 const SERVER_URL = 'https://features.example';
 const scratches: string[] = [];
@@ -41,11 +40,11 @@ describe('Deployment feature cache order', () => {
     const older = beginFeatureRequest(SERVER_URL, mycoHome);
     const newer = beginFeatureRequest(SERVER_URL, mycoHome);
     const orderFile = `${deploymentFeaturesPath(SERVER_URL, mycoHome)}.order`;
-    const write = store.writePrivateFileAtomic;
-    const fail = spyOn(store, 'writePrivateFileAtomic').mockImplementation((file, body) => {
-      if (file === orderFile) throw new Error('ordering state unavailable');
-      write(file, body);
-    });
+    const rename = fs.renameSync;
+    const fail = spyOn(fs, 'renameSync').mockImplementation(((...args: Parameters<typeof fs.renameSync>) => {
+      if (String(args[1]) === orderFile) throw Object.assign(new Error('ordering state unavailable'), { code: 'EIO' });
+      return rename(...args);
+    }) as typeof fs.renameSync);
     try { expect(() => cacheDeploymentFeatures(SERVER_URL, ['turn'], mycoHome, newer)).toThrow('ordering state unavailable'); }
     finally { fail.mockRestore(); }
     expect(cacheDeploymentFeatures(SERVER_URL, [], mycoHome, older)).toBe(false);
