@@ -1,10 +1,9 @@
 import { statementRecorder } from '../helpers/statement-recorder.js';
 import { expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
@@ -33,7 +32,7 @@ async function verify(db: RelationalStore, target: string) {
 }
 
 it('native equality seeks and counters at 26k captured prompts and 7k production acknowledgements', async () => {
-  const sqlite = new Database(':memory:');
+  const sqlite = schemaSqlite({ foreignKeys: false });
   try {
     const db = sqliteRelationalStore(sqlite);
     await fill(fixtureBatchStore(db));
@@ -43,10 +42,9 @@ it('native equality seeks and counters at 26k captured prompts and 7k production
 
 it('D1 equality seeks and constant-cost ack writes at 26k captured prompts and 7k acknowledgements', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-    compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
     await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('coverage-budget','Coverage',1)").run();
     await ensureAgent(d1, { id: 'coverage', name: 'Coverage', provider: null, model: null, enabled: true }, 1);
     await recordDispatch(d1, scope, { id: runId, agentId: 'coverage', task: 'extract-curate', provider: null, model: null,

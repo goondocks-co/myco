@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { BLOB_REFERENCES } from '@myco-server-worker/core/blob-references.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { decideRecordedBlobs } from '@myco-server-worker/db/storage/release-queue.js';
 import { recordCurrent } from './helpers/release-now.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 
 const P = 'proj_release';
 const OTHER = 'proj_other';
@@ -42,7 +41,6 @@ const holderInserts = [
 ] as const;
 
 async function seed(db: RelationalStore): Promise<string[]> {
-  for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await db.batch([
     db.prepare(`INSERT INTO projects(project_id,name,created_at) VALUES(?,'release',1),(?,'other',1)`).bind(P, OTHER),
     db.prepare(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','agent','built-in',1,1)`),
@@ -115,8 +113,8 @@ async function exercise(db: RelationalStore, extraKeys: string[]) {
 describe('blob release decisions on native SQLite and local D1', () => {
   it('keeps every catalogue holder, open holds, duplicate pairs and physical generations, identically on both stores', async () => {
     const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
-      compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
-    const native = new Database(':memory:');
+      compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
+    const native = schemaSqlite({ foreignKeys: false });
     try {
       const stores = [sqliteRelationalStore(native), await mf.getD1Database('DB') as unknown as RelationalStore];
       const seeded = await Promise.all(stores.map(seed));

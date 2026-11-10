@@ -1,5 +1,4 @@
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
@@ -24,8 +23,8 @@ async function catalogCapturedPrompts(db: RelationalStore, begin: number, end: n
     .bind(scope.projectId, begin, end).run();
 }
 
+/** Seeds the coverage fixture into `db`, a database holding the current schema. */
 export async function fill(db: RelationalStore, prompts = PROMPTS, acks = ACKS) {
-  for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
   await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('coverage-budget','Coverage',1)").run();
   await ensureAgent(db, { id: 'coverage', name: 'Coverage', provider: null, model: null, enabled: true }, 1);
   await recordDispatch(db, scope, { id: runId, agentId: 'coverage', task: 'extract-curate', provider: null, model: null,

@@ -15,6 +15,7 @@ import {
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 
 const LIVE_CHILDREN = 201;
 /** The last schema before step 96 added the launch parent. */
@@ -57,10 +58,9 @@ const liveWithParents = (target: RelationalStore, project: string) => target.pre
   WHERE s.project_id = ? AND s.parent_session_id = 'root' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = s.project_id AND t.session_id = s.session_id)`).bind(project).first<{ n: number }>();
 
 it('restores a schema-95 backup into D1 with deleted sessions out of the parent indexes, and reads a family the same whatever was deleted', async () => {
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
     const target = d1 as unknown as RelationalStore;
     const costs: number[] = [];
     for (const size of [1_000, 4_000]) {
@@ -77,9 +77,8 @@ it('restores a schema-95 backup into D1 with deleted sessions out of the parent 
 }, 120_000);
 
 it('restores a schema-95 backup into a native store with deleted sessions\' own parents cleared and live children\'s kept', async () => {
-  const native = new Database(':memory:');
+  const native = schemaSqlite({ foreignKeys: false });
   try {
-    for (const step of SCHEMA_STEPS) for (const sql of step.statements) native.exec(sql);
     const target = sqliteD1(native);
     const project = 'proj_restore_native';
     await restore(target, project, await oldBackup(project, 1_000));

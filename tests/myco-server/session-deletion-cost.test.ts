@@ -1,9 +1,9 @@
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { advanceSessionDeletions, acceptSessionDeletion, deletionProgress } from '@myco-server-worker/db/sessions/deletion.js';
 import { advanceRereads, requestReread } from '@myco-server-worker/db/documents/reread.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const NOW = 10_000_000_000;
 const seq = (from: number, to: number) => `WITH RECURSIVE n(i) AS (SELECT ${from} UNION ALL SELECT i+1 FROM n WHERE i<${to})`;
@@ -38,10 +38,9 @@ async function measure(db: D1Database, session: string, events: number) {
 }
 
 it('a deletion step and a progress read cost the same whatever the session holds, on D1', async () => {
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const db = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await db.batch(step.statements.map(sql => db.prepare(sql)));
     await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','Project',1)").run();
     const small = await measure(db, 'small', 1_000);
     const large = await measure(db, 'large', 10_000);

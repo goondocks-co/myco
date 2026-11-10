@@ -4,9 +4,9 @@
  */
 import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { listSporePage, listSporePageAcross } from '@myco-server-worker/core/spores.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 const HISTORY = 2_500;
 const AT = 1_700_000_000_000;
@@ -14,9 +14,8 @@ let mf: Miniflare;
 let measured: ReturnType<typeof measuredStore>;
 
 beforeAll(async () => {
-  mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   const d1 = await mf.getD1Database('DB');
-  for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map((sql) => d1.prepare(sql)));
   await d1.batch([
     d1.prepare("INSERT INTO projects (project_id, name, created_at) VALUES ('p', 'p', 1), ('q', 'q', 1)"),
     d1.prepare("INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('a', 'a', 'built-in', 1, 0)"),

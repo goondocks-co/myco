@@ -5,6 +5,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 import {
   lineage_LINEAGE_MAX_NODES as LINEAGE_MAX_NODES,
   lineage_sessionLineage as sessionLineage,
@@ -14,12 +15,13 @@ import { clearDeletedParentsStatement } from '@myco-server-worker/db/sessions/to
 
 let mf: Miniflare;
 
-beforeAll(() => {
+beforeAll(async () => {
   mf = new Miniflare(convertV4MiniflareOptions({
     modules: true,
     script: 'export default {fetch(){return new Response("ok")}}',
     compatibilityDate: '2026-08-01',
     d1Databases: ['DB_UPGRADE', 'DB_COST', 'DB_LAUNCH', 'DB_PARENT'],
+    resourcePersistencePath: await schemaD1Root(['DB_COST', 'DB_LAUNCH', 'DB_PARENT']),
   }));
 });
 
@@ -27,10 +29,9 @@ afterAll(async () => {
   await mf?.dispose();
 });
 
+/** A binding holding the current schema; `DB_UPGRADE` starts empty and replays the upgrade it tests. */
 async function migratedD1(binding: 'DB_COST' | 'DB_LAUNCH' | 'DB_PARENT') {
-  const d1 = await mf.getD1Database(binding);
-  for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
-  return d1;
+  return mf.getD1Database(binding);
 }
 
 it('upgrades populated v95 sessions to a nullable launch parent, clears deleted sessions\' own parents and indexes both parent columns on native and D1', async () => {

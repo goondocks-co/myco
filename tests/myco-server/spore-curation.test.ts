@@ -26,6 +26,7 @@ import { type ToolDefinition } from '@myco-server-worker/mcp/definitions.js';
 import { CURATION_COMPLETE_EXAMPLE, CURATION_CONSOLIDATE_EXAMPLE, CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_SEARCH_LIMIT, CURATION_MATERIAL_BYTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { LEARNING_BACKOFF_MS } from '@myco-server-worker/core/learning-sessions.js';
 import { seedForStage } from '@myco-server-worker/core/budget-policy.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 
 async function fixture(deferred = false) {
   const f = await budgetFixture();
@@ -272,13 +273,11 @@ test('a thrown curation write propagates and leaves retry guidance that a succes
 
 test('the D1 gate seeks bounded indexed pages and resumes within a large active corpus', async () => {
   const { Miniflare, convertV4MiniflareOptions } = await import('miniflare');
-  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
   const { measuredStore } = await import('./helpers/read-budget.js');
   const f = await fixture();
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
     const meter = measuredStore(d1);
     const env = { ...f.env, db: meter.db };
     await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1)").run();
@@ -554,7 +553,6 @@ test('material owned by another open group is terminal for that candidate and do
 
 test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without building or retrying', async () => {
   const {Miniflare,convertV4MiniflareOptions}=await import('miniflare');
-  const {SCHEMA_STEPS}=await import('@myco-server-worker/db/schema.js');
   const {measuredStore}=await import('./helpers/read-budget.js');
   const {ensureMember}=await import('@myco-server-worker/auth/enrollment.js');
   const {issueMemberToken}=await import('./helpers/member-token.js');
@@ -563,10 +561,9 @@ test('a D1 budget-band poll reads at most idle plus 2.1 rows per attempt without
   const {estimateKey}=await import('@myco-server-worker/core/budget-estimates.js');
   const {mutateState} = await import('@myco-server-worker/db/runs/state.js');
   const f=await fixture(), attempts=300;
-  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default { fetch() { return new Response(null); } }',compatibilityDate:'2026-07-01',d1Databases:['DB']}));
+  const mf=new Miniflare(convertV4MiniflareOptions({modules:true,script:'export default { fetch() { return new Response(null); } }',compatibilityDate:'2026-07-01',d1Databases:['DB'], resourcePersistencePath: await schemaD1Root()}));
   try {
     const d1=await mf.getD1Database('DB');
-    for(const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql=>d1.prepare(sql)));
     await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1)").run();
     await d1.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,1)").run();
     const meter=measuredStore(d1), env={...f.env,db:meter.db};
@@ -661,13 +658,11 @@ test('the strong gate offers a lone pair, excludes distribution-typical noise, a
     expect(g.sqlite.query('SELECT COUNT(*) n FROM agent_runs').get()).toEqual({n:0});
   }finally{g.sqlite.close();}
   const { Miniflare, convertV4MiniflareOptions } = await import('miniflare');
-  const { SCHEMA_STEPS } = await import('@myco-server-worker/db/schema.js');
   const { measuredStore } = await import('./helpers/read-budget.js');
   const { statementRecorder } = await import('../helpers/statement-recorder.js');
-  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
     const d1 = await mf.getD1Database('DB');
-    for (const step of SCHEMA_STEPS) await d1.batch(step.statements.map(sql => d1.prepare(sql)));
     await d1.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','p',1)").run();
     await d1.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent','Agent','built-in',1,1)").run();
     await d1.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<3800)

@@ -14,7 +14,6 @@
  */
 import { expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   search_searchAcross as searchAcross,
@@ -23,13 +22,12 @@ import {
 } from '@myco-server-worker/read/catalog/search.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { SearchOptions } from '@goondocks/myco-shared/search-types';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
 
 type Captured = { sql: string; params: unknown[] };
 
 function migrated(): Database {
-  const db = new Database(':memory:');
-  for (const step of SCHEMA_STEPS) for (const sql of step.statements) db.exec(sql);
-  db.exec('PRAGMA foreign_keys = OFF');
+  const db = schemaSqlite({ foreignKeys: false });
   db.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('p', 'p', 1), ('q', 'q', 1);
     INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('a', 'a', 'built-in', 1, 0);
     INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent, branch, title)
