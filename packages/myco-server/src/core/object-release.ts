@@ -23,12 +23,12 @@ import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
 import { BLOB_REFERENCES, referencedBlobValue, type BlobRef } from './blob-references.js';
 import { within } from './recovery-inventory.js';
-import { retentionDecision } from './backup-retention.js';
-import { commitBackupRelease, type RetentionObservation } from '../db/storage/backup-retention.js';
+import { continueBackupRetention, decideBackupCandidates } from './backup-retention.js';
 import { drainAuthorities, dueObjectReleases, acknowledgeRelease, retryRelease, reconcileObjectIntents, releaseWorkDue,
   resetObjectLifecycle, settleObjectIntent } from '../db/storage/object-lifecycle.js';
 import { resetOrphanAudit } from '../db/storage/blob-orphan-audit.js';
 import { reconcileStoredObjects } from '../db/storage/object-reconciliation.js';
+import { retentionBacklogged } from '../db/storage/backup-retention.js';
 import { RELEASE_PAGE, decideRecordedBlobs, releaseCandidatesDue, type ReleaseOutcome } from '../db/storage/release-queue.js';
 import { classify, emit } from '../telemetry.js';
 
@@ -82,16 +82,6 @@ export async function releaseBlobs(db: RelationalStore, pairs: readonly BlobRef[
     outcome.deferred += page.deferred;
   }
   return outcome;
-}
-
-/**
- * Records and decides one revision-bound backup release batch. With no hold open, each unpinned victim's object
- * is journaled with its row removed, and the batch's candidates are cleared. With a hold open the candidates remain
- * for the drain, which asks the retention owner again.
- */
-export async function releaseBackups(db: RelationalStore, ids: readonly string[], victims: ReadonlySet<string>,
-  now: number, observed: RetentionObservation): Promise<ReleaseOutcome> {
-  return commitBackupRelease(db,ids,victims,observed,now);
 }
 
 /** The blobs a row of `table` names through the reference catalogue, as the rows it carries state them. */
@@ -298,7 +288,7 @@ interface DrainReport {
  * 2. delete a page of journaled objects due now, removing each journal row only after the store acknowledged its delete;
  *    a failed delete moves only its own key to a later attempt, so the key behind it is reached;
  * 3. with no hold open, decide a page of recorded release candidates through the same statements a release runs,
- *    asking the retention owner which backups the policy in force lets go of.
+ *    asking the retention owner which backups the policy in force lets go of, and continuing a retention pass that ran out of pages.
  *
  * Its safety does not rest on running alone: a delete issued twice, late, or by a replaced instance names a key no
  * write will produce again, and a journal row is removed by its primary key.
@@ -340,11 +330,8 @@ export async function drainObjectReleases(
   const due = await releaseCandidatesDue(db,now,DRAIN_PAGE);
   if (due.held) return report;
   if (due.blobs.length > 0) report.decided += (await decideRecordedBlobs(db,due.blobs,now)).decided;
-  if (due.backups.length > 0) {
-    const { victims, observed } = await retentionDecision(db);
-    const outcome = await commitBackupRelease(db,due.backups,victims,observed,now);
-    report.decided += due.backups.length - outcome.deferred;
-  }
+  if (due.backups.length > 0) report.decided += await decideBackupCandidates(db,due.backups,now);
+  await continueBackupRetention(db,now);
   return report;
 }
 
@@ -354,8 +341,8 @@ export async function drainObjectReleases(
  */
 export async function objectReleaseBacklogged(db: RelationalStore, now: number, report: DrainReport): Promise<boolean> {
   if (report.unacknowledged > 0) return false;
-  const [due, work] = await Promise.all([releaseCandidatesDue(db,now,1),releaseWorkDue(db,now)]);
-  return work || (!due.held && (due.blobs.length > 0 || due.backups.length > 0));
+  const [due, work, retention] = await Promise.all([releaseCandidatesDue(db,now,1),releaseWorkDue(db,now),retentionBacklogged(db)]);
+  return work || (!due.held && (due.blobs.length > 0 || due.backups.length > 0 || retention));
 }
 
 /**

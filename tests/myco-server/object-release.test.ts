@@ -11,7 +11,8 @@ import {
   resetRecoveryLedger,
 } from '@myco-server-worker/core/object-release.js';
 import { assignRestoreGeneration } from '@myco-server-worker/db/storage/release-queue.js';
-import { createBackup, pruneBackups } from '@myco-server-worker/core/backup.js';
+import { createBackup } from '@myco-server-worker/core/backup.js';
+import { pruneBackups } from '@myco-server-worker/core/backup-retention.js';
 import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
 import { ORPHAN_AUDIT_PAGE } from '@myco-server-worker/db/storage/blob-orphan-audit.js';
 import { OBJECT_WALK_QUARANTINE_MS } from '@myco-server-worker/db/storage/object-reconciliation.js';

@@ -82,7 +82,7 @@ describe('backups on Health', () => {
   it('lists a backup by when it was made, with its size, and downloads, pins and restores it from its menu', async () => {
     const posts: Array<{ path: string; body: unknown }> = [];
     let pinned = 0;
-    const row = () => ({ id: 'bk_7f3a9c0e21', key: 'backups/1.sqlite', created_at: Date.parse('2026-09-01T12:00:00Z'), size_bytes: 3 * 1024 * 1024, counts_json: '{}', schema_version: 57, producer: 'mem_1', pinned, present: true });
+    const row = () => ({ id: 'bk_7f3a9c0e21', key: 'backups/1.sqlite', created_at: Date.parse('2026-09-01T12:00:00Z'), size_bytes: 3 * 1024 * 1024, counts_json: '{}', schema_version: 57, producer: 'mem_1', pinned, verification: { state: 'verified', checkedAt: 0, detail: null } });
     server({
       '/api/backups': () => Response.json({ backups: [row()] }),
       '/api/backups/bk_7f3a9c0e21/pin': (init) => { const body = JSON.parse(String(init!.body)); posts.push({ path: 'pin', body }); pinned = body.pinned ? 1 : 0; return Response.json({ pinned: body.pinned }); },
@@ -97,8 +97,17 @@ describe('backups on Health', () => {
     expect(await within(list).findByText('Pinned')).toBeTruthy();
   });
 
+  it('keeps a retention failure on the page until the work is finished, and says when a backup had no digest to check', async () => {
+    const at = Date.parse('2026-09-01T12:00:00Z');
+    server({ '/api/backups': () => Response.json({ backups: [{ id: 'bk_old', key: 'k', created_at: at, size_bytes: 2048, counts_json: '{}', schema_version: 1, producer: 'm', pinned: 0, verification: { state: 'unverified', checkedAt: at, detail: null } }],
+      cursor: null, retention: { at, outcome: { state: 'pruned', pruned: 16, deferred: 0, remaining: true }, lastFailure: { at, errorClass: 'db' } } }) });
+    mount();
+    expect(await screen.findByText(/Backup retention failed on/)).toBeTruthy();
+    expect(screen.getByText(/size matched .*no digest to compare/)).toBeTruthy();
+  });
+
   it('marks a backup whose file is missing, and offers no download or restore for it', async () => {
-    server({ '/api/backups': () => Response.json({ backups: [{ id: 'bk_old', key: 'k', created_at: 0, size_bytes: 2048, counts_json: '{}', schema_version: 50, producer: 'selfhosted', pinned: 0, present: false }] }) });
+    server({ '/api/backups': () => Response.json({ backups: [{ id: 'bk_old', key: 'k', created_at: 0, size_bytes: 2048, counts_json: '{}', schema_version: 50, producer: 'selfhosted', pinned: 0, verification: { state: 'failed', checkedAt: 0, detail: 'absent' } }] }) });
     mount();
     const list = await screen.findByRole('group', { name: 'Backups' });
     expect(within(list).getByText('File missing')).toBeTruthy();

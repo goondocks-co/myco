@@ -5,10 +5,10 @@ import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.j
 import { expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { backupArtifact, createBackup, pruneBackups, setBackupPinned } from '@myco-server-worker/core/backup.js';
-import { drainObjectReleases, releaseBackups, DRAIN_PAGE } from '@myco-server-worker/core/object-release.js';
+import { backupArtifact, createBackup, setBackupPinned } from '@myco-server-worker/core/backup.js';
+import { pruneBackups, releaseRetentionPage, retentionDecision } from '@myco-server-worker/core/backup-retention.js';
+import { drainObjectReleases, DRAIN_PAGE } from '@myco-server-worker/core/object-release.js';
 import { consumeUpload, reconcileObjectIntents } from '@myco-server-worker/db/storage/object-lifecycle.js';
-import { retentionDecision } from '@myco-server-worker/core/backup-retention.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -142,8 +142,10 @@ it('B9: policy revision, pin and keep-set races abort the whole backup release b
       } else if (race==='pin') await setBackupPinned(e.db,old.id,true);
       else await setBackupPinned(e.db,fresh.id,true);
       let conflict: unknown;
-      try { await releaseBackups(e.db,[...decision.victims],decision.victims,3,decision.observed); }
-      catch(error) { conflict=error; }
+      try {
+        if(!decision.ready) throw new Error('retention is ready after migrations');
+        await releaseRetentionPage(e.db,decision,3);
+      } catch(error) { conflict=error; }
       expect(conflict).toBeInstanceOf(Error);
       let first=true;
       const fault={...e.db,batch:async (statements:Parameters<RelationalStore['batch']>[0])=>{

@@ -58,8 +58,9 @@ describe('the backup routes', () => {
     const id = createdBody.backup.id;
 
     const listed = await worker.fetch(await asOwner(db, '/api/backups'), env);
-    const listedBody = await listed.json() as { backups: Array<{ id: string; present: boolean; pinned: number }> };
-    expect(listedBody.backups.map((b) => ({ id: b.id, present: b.present }))).toEqual([{ id, present: true }]);
+    const listedBody = await listed.json() as { backups: Array<{ id: string; verification: { state: string }; pinned: number }>; cursor: string | null };
+    expect(listedBody.backups.map((b) => ({ id: b.id, state: b.verification.state }))).toEqual([{ id, state: 'verified' }]);
+    expect(listedBody.cursor).toBeNull();
 
     const preview = await worker.fetch(await asOwnerPost(db, `/api/backups/${id}/restore-preview`, {}), env);
     const previewBody = await preview.json() as { foreignLineage: boolean; header: { counts: Record<string, number> } };

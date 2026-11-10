@@ -19,19 +19,19 @@ import {
   BackupTooLargeError,
   assertBackupSize,
   createBackup,
-  listBackups,
   previewRestore,
-  pruneBackups,
   restoreArtifact,
   restoreBackup,
   setBackupPinned,
-  type ListedBackup,
+  verifyBackup,
   type BackupIndexRow,
 } from '../core/backup.js';
 import {
   RelationalSnapshotAdmissionError as BackupAdmissionError,
 } from '../core/relational-snapshot.js';
 import { backupPruneStatus, type BackupPruneStatus, type BackupPruneOutcome } from '../db/meta/backup-prune.js';
+import { pruneBackups } from '../core/backup-retention.js';
+import { BACKUP_LIST_MAX, decodeBackupCursor, listBackupPage, type ListedBackup } from '../db/storage/backup-list.js';
 import { restoreAdmission, RestoreAuthorizationError } from '../core/restore-authorization.js';
 import { RecordSchemeError } from '../ingest/record-scheme.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';
@@ -67,12 +67,31 @@ export interface CreateBackupAnswer {
 
 export interface BackupsAnswer {
   backups: ListedBackup[];
+  cursor: string | null;
   retention: BackupPruneStatus | null;
 }
 
-/** Every backup the index holds, each verified against the object store. */
+/** One page of the backup index, newest first, each row with the verification last recorded for it. */
 export async function handleListBackups(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  return ok({ backups: await listBackups(env.db, env.blobs), retention: await backupPruneStatus(env.db) } satisfies BackupsAnswer);
+  const cursor = ctx.url.searchParams.get('cursor') ?? undefined;
+  if (cursor !== undefined && decodeBackupCursor(cursor) === null) return badRequest('cursor is not one this server issued; omit it to read the newest page');
+  const limitText = ctx.url.searchParams.get('limit');
+  const limit = limitText === null ? undefined : Number(limitText);
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > BACKUP_LIST_MAX)) return badRequest(`limit must be a whole number from 1 to ${BACKUP_LIST_MAX}`);
+  const page = await listBackupPage(env.db, { ...(limit === undefined ? {} : { limit }), ...(cursor === undefined ? {} : { cursor }) });
+  return ok({ ...page, retention: await backupPruneStatus(env.db) } satisfies BackupsAnswer);
+}
+
+/** Reads one artifact, compares it with what its row recorded, and records and answers the verification. */
+export async function handleVerifyBackup(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  try {
+    const verification = await verifyBackup(env.db, env.blobs, ctx.params.backupId, ctx.now);
+    return verification === null ? notFound() : ok({ verification });
+  } catch (err) {
+    const refusal = storedArtifactRefusal(err);
+    if (refusal !== null) return refusal;
+    throw err;
+  }
 }
 
 /** What a restore would touch, the authority a foreign-lineage restore lands without, and whether this member may apply its rows. */

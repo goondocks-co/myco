@@ -1,7 +1,8 @@
 import { classify, emit } from '../telemetry.js';
-import { retentionDecision } from './backup-retention.js';
 import { pinBackup } from '../db/storage/backup-pin.js';
-import { recordBackupPrune, type BackupPruneOutcome } from '../db/meta/backup-prune.js';
+import { readBackupRow, type BackupVerification, type BackupVerificationDetail } from '../db/storage/backup-list.js';
+import { recordBackupVerification } from '../db/storage/backup-verification.js';
+import { EXTRACTION_RECOUNT_PHASE } from '../db/storage/backup-retention.js';
 import { resetProjectionCatchup } from '../db/projections/catchup.js';
 import { restoreRunBodyStatement } from '../db/runs/body-restore.js';
 import {
@@ -42,7 +43,6 @@ import { readStoredObject } from './stored-object.js';
 import {
   publishBackupObject,
   referencedBlobsOf,
-  releaseBackups,
   releaseBlobs,
 } from './object-release.js';
 import {
@@ -73,7 +73,6 @@ export const MAX_UPLOAD_BODY_BYTES = 80 * 1024 * 1024;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Rows per applied batch on restore; one statement per row keeps every statement under the bind-count bound. */
 const RESTORE_CHUNK_ROWS = 20;
-const EXTRACTION_RECOUNT_PHASE = 'extraction-session-counters';
 
 /**
  * Every data table, in an order that satisfies the schema's foreign keys:
@@ -145,7 +144,7 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards'].map(table => `${table}_fts`)]
     .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities', 'identity_link_redemptions', 'active_project_count',
-  'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
+  'backup_week_heads', 'backup_retention_state', 'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress', 'backup_publications', 'recovery_forget_commands', 'session_deletion_jobs', 'transcript_reread_jobs',
   'storage_cleanup_state', 'storage_cleanup_queue', 'storage_cleanup_omissions', 'content_scan_checkpoints', 'raw_archive_state', 'raw_event_archive_state', 'orphan_sweep_state', 'storage_content_guard',
   'object_settlement_intents', 'object_reconciliation_cursor', 'object_store_reconciliation', 'object_releases', 'blob_release_candidates', 'backup_release_candidates', 'recovery_holds', 'restore_reference_guard',
@@ -324,32 +323,31 @@ export async function createBackup(db: RelationalStore, blobs: BlobStore, opts: 
     });
 }
 
-export interface ListedBackup extends BackupIndexRow {
-  /** Whether the named object is actually in the store; an index row whose object vanished renders broken, never healthy. */
-  present: boolean;
-}
-
 /** The instant of the newest backup the index records, or null when it records none. */
 export async function latestBackupAt(db: RelationalStore): Promise<number | null> {
   const row = await db.prepare(`SELECT MAX(created_at) AS at FROM backups`).first<{ at: number | null }>();
   return row?.at ?? null;
 }
 
-/** Every index row, newest first, each verified against the object store. */
-export async function listBackups(db: RelationalStore, blobs: BlobStore, limit = 100): Promise<ListedBackup[]> {
-  const { results } = await db
-    .prepare(`SELECT ${INDEX_COLUMNS}
-        FROM backups ORDER BY created_at DESC, id DESC LIMIT ?`)
-    .bind(limit).all<BackupIndexRow>();
-  const listed: ListedBackup[] = [];
-  for (const row of results) {
-    const head = await blobs.head(row.key);
-    listed.push({ ...row, present: head !== null });
-  }
-  return listed;
-}
 
 const decoder = new TextDecoder();
+
+type StoredArtifactCheck = { detail: null; bytes: Uint8Array<ArrayBuffer> } | { detail: BackupVerificationDetail };
+
+/** One stored artifact against the size and digest its row recorded. A row with no digest is held to its size alone. */
+async function checkStoredArtifact(blobs: BlobStore, row: BackupIndexRow): Promise<StoredArtifactCheck> {
+  const stored = await readStoredObject(blobs, row.key, row.size_bytes);
+  if (stored.kind === 'absent') return { detail: 'absent' };
+  if (stored.kind === 'size_mismatch') return { detail: 'size' };
+  if (row.sha256 !== null && await sha256HexOf(stored.bytes) !== row.sha256) return { detail: 'sha256' };
+  return { detail: null, bytes: stored.bytes };
+}
+
+/** A read that found a bad artifact says so on its row; the read's own refusal stands whether or not this write lands. */
+async function recordFailedCheck(db: RelationalStore, row: BackupIndexRow, detail: BackupVerificationDetail): Promise<void> {
+  try { await recordBackupVerification(db, { id: row.id, key: row.key, state: 'failed', checkedAt: Date.now(), detail }); }
+  catch (error) { emit({ kind: 'backup_verification_record_failed', error_class: classify(error) }); }
+}
 
 /**
  * One stored artifact, held to the evidence its row recorded before any caller
@@ -363,11 +361,13 @@ const readArtifact = async (db: RelationalStore, blobs: BlobStore, id: string): 
     .bind(id).first<BackupIndexRow>();
   if (row === null) return null;
   if (row.size_bytes > MAX_BACKUP_BYTES) throw new BackupTooLargeError(row.size_bytes);
-  const stored = await readStoredObject(blobs, row.key, row.size_bytes);
-  if (stored.kind === 'absent') return null;
-  if (stored.kind === 'size_mismatch') throw new BackupIntegrityError(row.id, 'size');
-  if (row.sha256 !== null && await sha256HexOf(stored.bytes) !== row.sha256) throw new BackupIntegrityError(row.id, 'sha256');
-  return { row, text: decoder.decode(stored.bytes) };
+  const checked = await checkStoredArtifact(blobs, row);
+  if (checked.detail !== null) {
+    await recordFailedCheck(db, row, checked.detail);
+    if (checked.detail === 'absent') return null;
+    throw new BackupIntegrityError(row.id, checked.detail);
+  }
+  return { row, text: decoder.decode(checked.bytes) };
 };
 
 /** Admit every table named by the artifact before any restore write. */
@@ -1023,34 +1023,15 @@ export async function backupArtifact(db: RelationalStore, blobs: BlobStore, id: 
   return readArtifact(db, blobs, id);
 }
 
-function retentionConflict(error: unknown): boolean {
-  return error instanceof Error && (/backup_retention_(?:policy_)?conflict|settings_revision_conflict/.test(error.message)
-    || retentionConflict(error.cause));
-}
-
-/**
- * Prune under one revision-bound policy and catalog observation. A failed decision preserves the index and records
- * a typed failure for the caller and Health. The retention owner names the victims, and the release owner
- * journals each victim's object and removes its row in one transaction, or keeps it recorded while a recovery hold is
- * open.
- */
-
-export async function pruneBackups(db: RelationalStore, now: number): Promise<BackupPruneOutcome> {
-  let outcome: BackupPruneOutcome;
-  try {
-    const { victims, observed } = await retentionDecision(db);
-    const released = await releaseBackups(db, [...victims], victims, now, observed);
-    outcome = { state: 'pruned', pruned: released.released, deferred: released.deferred };
-  } catch (error) {
-    outcome = retentionConflict(error) ? { state: 'changed', reason: 'retention_changed' }
-      : { state: 'failed', errorClass: classify(error) };
-  }
-  try { await recordBackupPrune(db,now,outcome); }
-  catch (error) {
-    outcome = { ...outcome, recordingErrorClass: classify(error) };
-    emit({ kind: 'backup_prune_record_failed', error_class: outcome.recordingErrorClass });
-  }
-  return outcome;
+/** Reads one artifact, compares it with what its row recorded, and records the outcome; null when no such backup exists. */
+export async function verifyBackup(db: RelationalStore, blobs: BlobStore, id: string, now: number): Promise<BackupVerification | null> {
+  const row = await readBackupRow(db, id);
+  if (row === null) return null;
+  if (row.size_bytes > MAX_BACKUP_BYTES) throw new BackupTooLargeError(row.size_bytes);
+  const checked = await checkStoredArtifact(blobs, row);
+  const state = checked.detail !== null ? 'failed' as const : row.sha256 === null ? null : 'verified' as const;
+  const recorded = await recordBackupVerification(db, { id, key: row.key, state, checkedAt: now, detail: checked.detail });
+  return recorded ? { state: state ?? 'unverified', checkedAt: now, detail: checked.detail } : null;
 }
 
 /** Pin or unpin one index row; a pinned backup is exempt from retention and consumes no slot. */

@@ -8,7 +8,7 @@ import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import {
-  BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, whenLabel,
+  BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, verificationWords, whenLabel,
 } from './words';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
@@ -31,15 +31,16 @@ export function BackupsSection() {
   const [adoptAsked, setAdoptAsked] = useState(false);
   const [outcome, setOutcome] = useState<RestoreOutcome | null>(null);
 
-  const rows = backups.list.data?.backups ?? [];
+  const rows = backups.list.data?.pages.flatMap((page) => page.backups) ?? [];
   const retention = backups.create.data?.retention.recordingErrorClass !== undefined
-    ? backups.create.data.retention : backups.list.data?.retention?.outcome;
+    ? backups.create.data.retention : backups.list.data?.pages[0]?.retention?.outcome;
+  const lastFailure = backups.list.data?.pages[0]?.retention?.lastFailure;
   const openRestore = (row: BackupRow) => {
     setOutcome(null);
     backups.restore.reset();
     backups.preview.mutate(row.id, { onSuccess: (preview) => { setAdopt(false); setAdoptAsked(false); setConfirming({ row, preview }); } });
   };
-  const actionError = backups.create.error ?? backups.pin.error ?? backups.preview.error;
+  const actionError = backups.create.error ?? backups.pin.error ?? backups.preview.error ?? backups.verify.error;
   const skips = outcome === null ? [] : Object.entries(outcome.tables).filter(([, t]) => t.skipped !== undefined && t.skipped !== 'retired');
 
   return (
@@ -59,8 +60,20 @@ export function BackupsSection() {
           Backup retention failed. Create a backup to retry retention.
         </Card>
       )}
+      {retention?.state !== 'failed' && lastFailure !== undefined && <Card role="status" className="t-body text-warn" data-backup-retention-last-failure="">
+        Backup retention failed on {backupDate(lastFailure.at)}; it is retrying as it works through older backups.
+      </Card>}
       {retention?.state === 'changed' && <Card role="status" className="t-body text-warn">
         Retention changed while pruning; the next backup decides again.
+      </Card>}
+      {retention?.state === 'deferred' && <Card role="status" className="t-body text-warn" data-backup-retention-deferred="">
+        Backup retention is waiting for the backup index to finish building; no backups are removed until it is ready.
+      </Card>}
+      {retention?.state === 'pruned' && retention.deferred > 0 && <Card role="status" className="t-body text-warn" data-backup-retention-deferred="">
+        {retention.deferred.toLocaleString()} old {retention.deferred === 1 ? 'backup is' : 'backups are'} waiting to be removed until a recovery finishes.
+      </Card>}
+      {retention?.state === 'pruned' && retention.remaining === true && <Card role="status" className="t-body text-muted">
+        More old backups are being removed in the background.
       </Card>}
       {retention?.recordingErrorClass !== undefined && <Card role="status" className="t-body text-warn">
         Backup saved; retention status could not be recorded.
@@ -77,19 +90,21 @@ export function BackupsSection() {
                   <span className="flex flex-wrap items-center gap-s2">
                     <span className="t-body font-medium text-ink">{backupDate(row.created_at)}</span>
                     {row.pinned === 1 && <StatusChip>Pinned</StatusChip>}
-                    {!row.present && <StatusChip tone="bad">File missing</StatusChip>}
+                    {row.verification.detail === 'absent' && <StatusChip tone="bad">File missing</StatusChip>}
+                    {row.verification.state === 'failed' && row.verification.detail !== 'absent' && <StatusChip tone="bad">Check failed</StatusChip>}
                   </span>
-                  <span className="t-small text-muted">{sizeLabel(row.size_bytes)} · schema version {row.schema_version}</span>
+                  <span className="t-small text-muted">{sizeLabel(row.size_bytes)} · schema version {row.schema_version} · {verificationWords(row.verification)}</span>
                 </div>
                 <span className="flex shrink-0 items-center gap-s1">
-                  {row.present && (
+                  {row.verification.detail !== 'absent' && (
                     backupPermission.allowed && <a className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }))} href={`/api/backups/${encodeURIComponent(row.id)}/artifact`} download>Download</a>
                   )}
                   <MoreMenu
                     label={`More for the backup of ${backupDate(row.created_at)}`}
                     items={[
                       { label: row.pinned === 1 ? 'Unpin' : 'Pin', disabled: !backupPermission.allowed || backups.pin.isPending, onSelect: () => backups.pin.mutate({ id: row.id, pinned: row.pinned !== 1 }) },
-                      { label: 'Restore…', tone: 'danger', disabled: !backupPermission.allowed || !row.present || backups.preview.isPending || backups.restore.isPending, onSelect: () => openRestore(row) },
+                      { label: 'Check this backup', disabled: !backupPermission.allowed || backups.verify.isPending, onSelect: () => backups.verify.mutate(row.id) },
+                      { label: 'Restore…', tone: 'danger', disabled: !backupPermission.allowed || row.verification.detail === 'absent' || backups.preview.isPending || backups.restore.isPending, onSelect: () => openRestore(row) },
                     ]}
                   />
                 </span>
@@ -97,6 +112,7 @@ export function BackupsSection() {
             ))}
           </RowCard>
         )}
+      {backups.list.hasNextPage && <Button variant="ghost" pending={backups.list.isFetchingNextPage} onClick={() => void backups.list.fetchNextPage()}>Show older backups</Button>}
       {outcome !== null && (
         <Card className="flex flex-col gap-s1" data-health-restored="">
           <p className="t-body text-ink">Restored: {Object.values(outcome.tables).reduce((sum, t) => sum + t.inserted, 0).toLocaleString()} records added.</p>

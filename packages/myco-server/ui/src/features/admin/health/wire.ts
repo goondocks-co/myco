@@ -103,22 +103,33 @@ export interface BackupRow {
   schema_version: number;
   producer: string;
   pinned: number;
-  /** Whether the artifact is actually in the object store; an index row whose object vanished reads as missing. */
-  present: boolean;
+  /** What the last recorded check found: a recorded check says what it saw then, never what the store holds now. */
+  verification: BackupVerification;
+}
+
+export interface BackupVerification {
+  state: 'unverified' | 'verified' | 'failed';
+  checkedAt: number | null;
+  /** Why a failed check failed: the artifact was absent, its size differed, or its digest differed. */
+  detail: 'absent' | 'size' | 'sha256' | null;
 }
 
 export type BackupPruneOutcome = (
-  | { state: 'pruned'; pruned: number; deferred: number }
+  | { state: 'pruned'; pruned: number; deferred: number; remaining?: true }
+  | { state: 'deferred'; reason: 'building' }
   | { state: 'changed'; reason: 'retention_changed' }
   | { state: 'failed'; errorClass: string }
 ) & { recordingErrorClass?: string };
 export interface CreateBackupAnswer {
-  backup: Omit<BackupRow, 'present'>;
+  backup: Omit<BackupRow, 'verification'>;
   retention: BackupPruneOutcome;
 }
 export interface BackupsAnswer {
   backups: BackupRow[];
-  retention: { at: number; outcome: BackupPruneOutcome } | null;
+  /** Where the next page starts, or null when this page is the last. */
+  cursor: string | null;
+  /** The last retention pass, and the most recent failure until a pass finishes the work. */
+  retention: { at: number; outcome: BackupPruneOutcome; lastFailure?: { at: number; errorClass: string } } | null;
 }
 
 /** `POST /api/backups/{id}/restore-preview`: what a restore would add and whether this member may apply it. */

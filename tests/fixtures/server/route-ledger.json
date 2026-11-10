@@ -105,6 +105,7 @@
   "session:admin POST /api/backups/{backupId}/pin",
   "session:admin POST /api/backups/{backupId}/restore",
   "session:admin POST /api/backups/{backupId}/restore-preview",
+  "session:admin POST /api/backups/{backupId}/verify",
   "session:admin POST /api/device/approve-runner",
   "session:admin POST /api/embedding/switch",
   "session:admin POST /api/embedding/switch/estimate",

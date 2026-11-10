@@ -20,18 +20,18 @@ import {
   EXCLUDED_TABLES,
   RETIRED_INPUT_TABLES,
   RETIRED_TABLES,
-  listBackups,
   previewRestore,
-  pruneBackups,
   restoreBackup,
   restoreArtifact,
   setBackupPinned,
+  verifyBackup,
   type BackupIndexRow,
 } from '@myco-server-worker/core/backup.js';
 import {
   RelationalSnapshotAdmissionError as BackupAdmissionError,
 } from '@myco-server-worker/core/relational-snapshot.js';
-import { retentionVictims } from '@myco-server-worker/core/backup-retention.js';
+import { pruneBackups } from '@myco-server-worker/core/backup-retention.js';
+import { listBackupPage } from '@myco-server-worker/db/storage/backup-list.js';
 import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { renderMigrationFile } from '@myco-server-worker/db/migrate.js';
 import { journaled, sqliteEnv } from './helpers/fixtures.js';
@@ -254,7 +254,7 @@ describe('create, list, preview', () => {
     expect(backup.sha256).toBe(createHash('sha256').update(stored).digest('hex'));
     expect(sqlite.query('SELECT sha256, size_bytes FROM backups WHERE id = ?').get(backup.id))
       .toEqual({ sha256: backup.sha256, size_bytes: stored.byteLength });
-    expect((await listBackups(db, bucket)).map((row) => row.sha256)).toEqual([backup.sha256]);
+    expect((await listBackupPage(db)).backups.map((row) => row.sha256)).toEqual([backup.sha256]);
 
     const sameLengthChange = new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) { const changed = chunk.slice(); changed[0] ^= 1; controller.enqueue(changed); },
@@ -271,7 +271,7 @@ describe('create, list, preview', () => {
       .run('界'.repeat(Math.ceil(MAX_BACKUP_BYTES / 3)));
     await expect(createBackup(db, bucket, { producer: 'test', now })).rejects.toThrow(BackupAdmissionError);
     expect(bucket.objects.size).toBe(0);
-    expect(await listBackups(db, bucket)).toEqual([]);
+    expect((await listBackupPage(db)).backups).toEqual([]);
     sqlite.close();
   });
 
@@ -306,20 +306,20 @@ describe('create, list, preview', () => {
     expect(counts.projects).toBeGreaterThanOrEqual(1);
     expect(counts.sessions).toBe(1);
 
-    const listed = await listBackups(db, bucket);
-    expect(listed.map((l) => ({ id: l.id, present: l.present }))).toEqual([{ id: row.id, present: true }]);
+    const listed = (await listBackupPage(db)).backups;
+    expect(listed.map((l) => ({ id: l.id, state: l.verification.state }))).toEqual([{ id: row.id, state: 'verified' }]);
 
     const preview = await previewRestore(db, bucket, row.id);
     expect({ foreign: preview!.foreignLineage, sessions: preview!.header.counts.sessions }).toEqual({ foreign: false, sessions: 1 });
 
     bucket.objects.delete(row.key);
-    const gone = await listBackups(db, bucket);
-    expect(gone[0]!.present).toBe(false);
+    expect(await verifyBackup(db, bucket, row.id, now + 1)).toEqual({ state: 'failed', checkedAt: now + 1, detail: 'absent' });
+    const gone = (await listBackupPage(db)).backups;
+    expect(gone[0]!.verification).toEqual({ state: 'failed', checkedAt: now + 1, detail: 'absent' });
   });
 });
 
 describe('stored artifact integrity', () => {
-  const isWrite = (sql: string): boolean => /^\s*(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql);
   /** The stored bytes with one ASCII field changed, byte length unchanged. */
   const sameLengthChange = (bytes: Uint8Array): Uint8Array => {
     const changed = new TextEncoder().encode(new TextDecoder().decode(bytes).replace('"producer":"test"', '"producer":"TEST"'));
@@ -328,23 +328,22 @@ describe('stored artifact integrity', () => {
     return changed;
   };
 
-  it('refuses a same-length change to a digest-bearing artifact before preview, restore or download writes anything, and reads it again once intact', async () => {
-    const { db, bucket, sqlite, executed, now } = seeded();
+  it('refuses a same-length change to a digest-bearing artifact, recording only the failed check on its row, and reads it again once intact', async () => {
+    const { db, bucket, sqlite, now } = seeded();
     const backup = await createBackup(db, bucket, { producer: 'test', now });
     const original = bucket.objects.get(backup.key)!;
     sqlite.query(`DELETE FROM sessions WHERE session_id = 'sess_1'`).run();
     bucket.objects.set(backup.key, { ...original, bytes: sameLengthChange(original.bytes) });
 
-    const mark = executed.length;
     await expect(previewRestore(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
     await expect(restoreBackup(db, bucket, { authorization: { kind: 'recovery' }, id: backup.id })).rejects.toThrow(`the stored backup artifact ${backup.id} does not match the SHA-256 digest recorded when it was created`);
     await expect(backupArtifact(db, bucket, backup.id)).rejects.toThrow(BackupIntegrityError);
-    expect(executed.slice(mark).filter(isWrite)).toEqual([]);
+    expect(sqlite.query(`SELECT verification_state, verification_detail FROM backups WHERE id = ?`).get(backup.id)).toEqual({ verification_state: 'failed', verification_detail: 'sha256' });
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM sessions`).get()).toEqual({ n: 0 });
     expect(sqlite.query(`SELECT * FROM backup_restore_progress`).all()).toEqual([]);
     expect(bucket.deletes).toEqual([]);
-    expect((await listBackups(db, bucket)).map((row) => ({ id: row.id, present: row.present, sha256: row.sha256 })))
-      .toEqual([{ id: backup.id, present: true, sha256: backup.sha256 }]);
+    expect((await listBackupPage(db)).backups.map((row) => ({ id: row.id, sha256: row.sha256 })))
+      .toEqual([{ id: backup.id, sha256: backup.sha256 }]);
 
     bucket.objects.set(backup.key, original);
     const read = await backupArtifact(db, bucket, backup.id);
@@ -447,22 +446,6 @@ describe('restore', () => {
 
 describe('retention', () => {
   const DAY = 24 * 60 * 60 * 1000;
-  // A PINNED clock: epoch weeks roll at a fixed weekday, so a wall-clock "now"
-  // makes the bucket layout depend on the day the suite runs.
-  const NOW = 1000 * 7 * DAY + 5 * DAY + DAY / 2;
-  const row = (id: string, ageDays: number, pinned = 0): BackupIndexRow => ({
-    id, key: `backups/${id}.jsonl`, created_at: NOW - ageDays * DAY, size_bytes: 1,
-    counts_json: '{}', schema_version: 13, producer: 'test', pinned, sha256: null,
-  });
-
-  it('keeps the newest keepDaily, one per week for keepWeekly weeks, and pinned rows exempt without consuming a slot', () => {
-    const rows = [row('a', 0), row('b', 1), row('c', 2), row('p', 3, 1), row('d', 9), row('e', 16), row('f', 30), row('g', 31)];
-    const victims = retentionVictims(rows, 2, 3).map((v) => v.id).sort();
-    // a,b kept daily; weeks of a/b, d, e kept weekly (newest each); pinned p never a victim.
-    expect(victims).toEqual(['c', 'f', 'g']);
-    expect(retentionVictims(rows, 0, 0).map((v) => v.id)).not.toContain('p');
-  });
-
   it('prunes through the release owner: the victim\'s object is journaled with its row removed, and the drain deletes it only once the store acknowledges', async () => {
     const { db, bucket, sqlite, now } = seeded();
     await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by)
@@ -473,7 +456,7 @@ describe('retention', () => {
     expect(pruned.state).toBe('pruned');
     if (pruned.state !== 'pruned') throw new Error('backup retention failed');
     expect({ pruned: pruned.pruned, journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ pruned: 1, journal: [old.key], deleted: [] });
-    expect((await listBackups(db, bucket)).map((l) => l.id)).toEqual([fresh.id]);
+    expect((await listBackupPage(db)).backups.map((l) => l.id)).toEqual([fresh.id]);
     expect((await drainObjectReleases({ db, blobs: bucket }, now)).deleted).toBe(1);
     expect({ journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ journal: [], deleted: [old.key] });
 
