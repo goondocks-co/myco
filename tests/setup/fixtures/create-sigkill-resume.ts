@@ -4,28 +4,29 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { NESTED_BUN_TEST_TIMEOUT_ARGS, sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { NESTED_BUN_TEST_TIMEOUT_ARGS, sandboxChildEnv } from '../../../scripts/test-environment.mjs';
 import { peekDeploymentRecord } from '@myco/server/cloudflare.js';
 import { peekLocalPaths, readLocalSecrets } from '@myco/server/local.js';
 import { readDeploymentMembership, readRegistryEntry } from '@myco/member/registry.js';
-import { HOSTED_URL } from './fixtures/owner-deployment.js';
+import { HOSTED_URL } from './owner-deployment.js';
 
-let root: string;
-let project: string;
-beforeEach(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-create-interruption-'));
-  project = path.join(root, 'repo');
-  fs.mkdirSync(project);
-  execFileSync('git', ['init', '-q'], { cwd: project });
-});
-afterEach(() => {
-  fs.rmSync(root, { recursive: true, force: true });
-  process.exitCode = 0;
-});
-
-describe('create journeys across SIGKILL', () => {
-  const repo = fileURLToPath(new globalThis.URL('../../', import.meta.url));
-  for (const target of ['cloudflare', 'local']) for (const boundary of ['create', 'conversion', 'signin', 'owner-mint', 'owner-link', 'machine', 'project', ...(target === 'cloudflare' ? ['cloudflare-login', 'partial-create', 'before-deploy', 'installed'] : ['service'])]) {
+/** Each case interrupts a create journey with SIGKILL at one boundary, resumes it, and checks the result. */
+export function describeCreateSigkillResume(target: 'cloudflare' | 'local', boundaries: readonly string[]): void {
+describe(`${target} create journeys across SIGKILL`, () => {
+  let root: string;
+  let project: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-create-interruption-'));
+    project = path.join(root, 'repo');
+    fs.mkdirSync(project);
+    execFileSync('git', ['init', '-q'], { cwd: project });
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    process.exitCode = 0;
+  });
+  const repo = fileURLToPath(new globalThis.URL('../../../', import.meta.url));
+  for (const boundary of boundaries) {
     it(`${target}: resumes after SIGKILL at ${boundary}`, async () => {
       const childRoot = path.join(root, 'child');
       fs.mkdirSync(childRoot);
@@ -68,4 +69,4 @@ describe('create journeys across SIGKILL', () => {
     }, 90_000);
   }
 });
-
+}
