@@ -11,7 +11,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { lastActivityAt } from '@myco-server-worker/core/activity.js';
 import { pruneTerminalRuns } from '@myco-server-worker/db/runs/retention.js';
 import { sessions_listProjects as listProjects } from '@myco-server-worker/read/catalog/sessions.js';
-import { d1TwoScale, eachUnit, expectReportedWalk, expectTwoScale, type CostCase } from './helpers/two-scale.js';
+import { d1TwoScale, eachUnit, expectTwoScale, type CostCase } from './helpers/two-scale.js';
 
 const PROJECT = 'proj_event_budget';
 const BLOB = await sha256Hex('x');
@@ -24,12 +24,6 @@ const SESSION_START_WRITE_CEILING = 64;
  * rows, and random event ids land in different places among them. A walk of the history grows by thousands.
  */
 const BOUNDED_EXTRA = 10;
-/**
- * A transcript's growth reads one publication contribution row per transcript in the Deployment (#2174): the rows each of
- * these requests may read per unit of history until that read is keyed.
- */
-const REPORTED_WALKS: Record<string, number> = { 'publication-progress UPDATE': 5.5, 'transcript grows after full publish': 5.5, 'transcript grows during directory pass': 1.5 };
-
 async function member(db: RelationalStore) {
   await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?, ?, 1)').bind(PROJECT, PROJECT).run();
   await db.prepare("INSERT INTO members(id,label,created_at) VALUES('member','member',1)").run();
@@ -218,10 +212,7 @@ it('D1 capture writes cost the same as the Deployment\'s history grows, in the c
     cases: cases.map(item => ({ extra: BOUNDED_EXTRA, ...item })),
     warm: true,
   });
-  expectTwoScale(costs.filter(cost => !(cost.name in REPORTED_WALKS)));
-  for (const cost of costs.filter(cost => cost.name in REPORTED_WALKS)) {
-    expectReportedWalk(cost, { issue: '#2174', perUnit: REPORTED_WALKS[cost.name]!, units: SIZES[1] - SIZES[0] });
-  }
+  expectTwoScale(costs);
   for (const start of costs.filter(cost => cost.name === 'session.start')) {
     for (const written of start.writes) expect(written, `session.start rows written (statistics: ${start.statistics})`).toBeLessThanOrEqual(SESSION_START_WRITE_CEILING);
   }

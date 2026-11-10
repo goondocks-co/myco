@@ -92,12 +92,10 @@ async function grow(db: RelationalStore, from: number, to: number) {
 const SIZES = [600, 6_000] as const;
 /**
  * Reads reported for walking what they should seek, with the rows each may read per unit of history until it is keyed:
- * failing outcomes filter on a run's start instant as an expression, so the task index walks every failed run of the
- * task in history (#2174); capture recency reads every machine claim with its member and every unrevoked credential of
- * the Deployment, expired ones too, to name the few machines it shows (#2174).
+ * capture recency reads every machine claim with its member and every unrevoked credential of the Deployment, expired
+ * ones too, to name the few machines it shows (#2174).
  */
 const REPORTED_WALKS: Record<string, { issue: string; perUnit: number }> = {
-  'failing outcomes': { issue: '#2174', perUnit: 0.5 },
   'capture recency': { issue: '#2174', perUnit: 3.5 },
 };
 
