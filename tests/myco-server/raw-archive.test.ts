@@ -55,7 +55,7 @@ it('archives an aged inline event exactly before clearing its stored body', asyn
     for(let pass=0;pass<6&&archived===0;pass+=1) archived=await archiveRawSources(f.serverEnv,NOW,90);
     expect(archived).toBe(1);
     expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='evt_archive'`).get())
-      .toEqual({payload:JSON.stringify({promptId:null,responseId:null,toolCallId:null,blob:null,outputBlob:null}),payload_format:'archived'});
+      .toEqual({payload:JSON.stringify({promptId:null,responseId:null,toolCallId:null,blob:null,outputBlob:null,parentPromptId:null,subagentId:null,phase:null}),payload_format:'archived'});
     expect(await eventContent(f.serverEnv,'proj_1','evt_archive')).toBe(payload);
     expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM raw_archive_refs WHERE source_kind='event'`).get()).toEqual({n:0});
     expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles`).get()).toEqual({n:1});
@@ -114,8 +114,8 @@ it('holds a bundle when a claim changes one entry owner before adoption', async 
     await expect(archiveRawSources(disturbed,NOW,90)).rejects.toThrow();
     expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM events WHERE session_id='s-claim-race' AND payload_format='inline'`).get())
       .toEqual({n:2});
-    expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
-      .toEqual({cursor_project:'',cursor_session:''});
+    expect(f.sqlite.query(`SELECT cursor_received,cursor_rowid FROM raw_event_archive_state WHERE id=1`).get())
+      .toEqual({cursor_received:-1,cursor_rowid:-1});
   } finally {f.sqlite.close();}
 });
 
@@ -184,7 +184,7 @@ it('archives a full session page within the raw job admission budget', async () 
   } finally {f.sqlite.close();}
 });
 
-it('revisits a young event after the bounded session cursor wraps', async () => {
+it('archives an event once it comes due, whatever was archived before it', async () => {
   const f=sqliteEnv();
   try {
     f.sqlite.query(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
@@ -200,7 +200,6 @@ it('revisits a young event after the bounded session cursor wraps', async () => 
     expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(1);
     expect(f.sqlite.query(`SELECT payload_format FROM events WHERE event_id='e-young'`).get())
       .toEqual({payload_format:'inline'});
-    expect(await archiveRawSources(f.serverEnv,NOW+100*86_400_000,90)).toBe(0);
     expect(await archiveRawSources(f.serverEnv,NOW+100*86_400_000,90)).toBe(1);
     expect(await eventContent(f.serverEnv,'proj_1','e-young')).toBe(young);
     expect(await eventContent(f.serverEnv,'proj_1','e-old')).toBe(old);
@@ -341,8 +340,8 @@ it('keeps inline bytes and its cursor when publication lacks a durability acknow
     await expect(archiveRawSources(f.serverEnv,NOW,90)).rejects.toThrow('content_durability_unavailable');
     expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='evt_fault'`).get())
       .toEqual({payload,payload_format:'inline'});
-    expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
-      .toEqual({cursor_project:'',cursor_session:''});
+    expect(f.sqlite.query(`SELECT cursor_received,cursor_rowid FROM raw_event_archive_state WHERE id=1`).get())
+      .toEqual({cursor_received:-1,cursor_rowid:-1});
     expect(f.sqlite.query(`SELECT COUNT(*) AS n FROM archive_bundles`).get()).toEqual({n:0});
   } finally {f.sqlite.close();}
 });
@@ -410,8 +409,8 @@ it('refuses a changed source or a source that crosses the raw age boundary befor
       await expect(archiveRawSources(disturbed,NOW,90)).rejects.toThrow();
       expect(f.sqlite.query(`SELECT payload_format FROM events WHERE event_id='e-guard'`).get())
         .toEqual({payload_format:'inline'});
-      expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
-        .toEqual({cursor_project:'',cursor_session:''});
+      expect(f.sqlite.query(`SELECT cursor_received,cursor_rowid FROM raw_event_archive_state WHERE id=1`).get())
+        .toEqual({cursor_received:-1,cursor_rowid:-1});
     } finally {f.sqlite.close();}
   }
 });
@@ -437,8 +436,8 @@ it('keeps inline event bytes when a prepared receipt loses its registered proof 
     await expect(archiveRawSources(disturbed,NOW,90)).rejects.toThrow();
     expect(f.sqlite.query(`SELECT payload,payload_format FROM events WHERE event_id='e-receipt'`).get())
       .toEqual({payload,payload_format:'inline'});
-    expect(f.sqlite.query(`SELECT cursor_project,cursor_session FROM raw_event_archive_state WHERE id=1`).get())
-      .toEqual({cursor_project:'',cursor_session:''});
+    expect(f.sqlite.query(`SELECT cursor_received,cursor_rowid FROM raw_event_archive_state WHERE id=1`).get())
+      .toEqual({cursor_received:-1,cursor_rowid:-1});
   } finally {f.sqlite.close();}
 });
 
@@ -459,6 +458,18 @@ it('reasserts the learning hold when the document leaves live after segment sele
     }}};
     await expect(archiveRawSources(env,NOW,90)).rejects.toThrow();
     expect(changed).toBe(true);
+    expect(f.sqlite.query("SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'").get()).toEqual({disposition:'hot'});
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments WHERE transcript_id='tx-held'").get()).toEqual({n:1});
+  } finally {f.sqlite.close();}
+});
+
+it('passes by a published segment while its session is being deleted', async () => {
+  const f=await heldSegment(Buffer.byteLength('retained source bytes'));
+  try {
+    publishTranscript(f.sqlite,'tx-held',Buffer.byteLength('retained source bytes'));
+    f.sqlite.run("UPDATE session_documents SET last_record_at=1 WHERE session_id='s-held'");
+    f.sqlite.run("INSERT INTO session_tombstones(project_id,session_id,reason,created_at,created_by) VALUES('proj_1','s-held','asked',1,'owner')");
+    for(let pass=0;pass<3;pass+=1) expect(await archiveRawSources(f.serverEnv,NOW,90)).toBe(0);
     expect(f.sqlite.query("SELECT disposition FROM raw_archive_refs WHERE transcript_id='tx-held'").get()).toEqual({disposition:'hot'});
     expect(f.sqlite.query("SELECT COUNT(*) AS n FROM transcript_segments WHERE transcript_id='tx-held'").get()).toEqual({n:1});
   } finally {f.sqlite.close();}

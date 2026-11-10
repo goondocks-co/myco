@@ -25,7 +25,7 @@ interface RawEventIdentity { source_rowid:number;project_id:string;event_id:stri
 
 const readState=(db:RelationalStore)=>db.prepare(`SELECT phase,cursor_project,cursor_id,cursor_offset,due_received,due_kind,revision
   FROM raw_archive_state WHERE id=1`).first<State>();
-const readRawEventState=(db:RelationalStore)=>db.prepare(`SELECT cursor_project,cursor_session,cursor_created,cursor_rowid,revision
+const readRawEventState=(db:RelationalStore)=>db.prepare(`SELECT '' AS cursor_project,'' AS cursor_session,cursor_received AS cursor_created,cursor_rowid,revision
   FROM raw_event_archive_state WHERE id=1`).first<RawEventState>();
 const parserPending=(t:string)=>`(COALESCE(json_extract(${t}.parser_context,'$.mycoParserUnfinished'),0)=1
   OR COALESCE(json_extract(${t}.parser_context,'$.mycoParserReplyUnfinished'),0)=1
@@ -37,8 +37,8 @@ const stateGuard=(s:State)=>({sql:`EXISTS (SELECT 1 FROM raw_archive_state WHERE
   AND cursor_project=? AND cursor_id=? AND cursor_offset=? AND due_received=? AND due_kind=? AND revision=?)`,
   params:[s.phase,s.cursor_project,s.cursor_id,s.cursor_offset,s.due_received,s.due_kind,s.revision]});
 const rawEventStateGuard=(s:RawEventState)=>({sql:`EXISTS (SELECT 1 FROM raw_event_archive_state WHERE id=1
-  AND cursor_project=? AND cursor_session=? AND cursor_created=? AND cursor_rowid=? AND revision=?)`,
-  params:[s.cursor_project,s.cursor_session,s.cursor_created,s.cursor_rowid,s.revision]});
+  AND cursor_received=? AND cursor_rowid=? AND revision=?)`,
+  params:[s.cursor_created,s.cursor_rowid,s.revision]});
 
 /** The stored leaves keep their observed versions through the archive transaction. */
 export async function policyGuard(db:RelationalStore,days:number):Promise<{sql:string;params:unknown[]}> {
@@ -200,10 +200,9 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
       ...contentAssertion(db,held===null?guard.sql:`${guard.sql} AND ${held.sql}`,
         held===null?guard.params:[...guard.params,...held.params]),
       ...writes,
-      db.prepare(`UPDATE raw_event_archive_state SET cursor_project=?,cursor_session=?,cursor_created=?,
-        cursor_rowid=?,revision=revision+1 WHERE id=1 AND cursor_project=? AND cursor_session=?
-        AND cursor_created=? AND cursor_rowid=? AND revision=?`)
-        .bind(last?.project_id??'',last?.session_id??'',last?.created_at??-1,last?.source_rowid??-1,...guard.params),
+      db.prepare(`UPDATE raw_event_archive_state SET cursor_received=?,cursor_rowid=?,revision=revision+1 WHERE id=1
+        AND cursor_received=? AND cursor_rowid=? AND revision=?`)
+        .bind(last?.created_at??-1,last?.source_rowid??-1,...guard.params),
     ]);
     if(committed.at(-1)?.meta.changes!==1) throw new Error('raw_event_archive_cursor_changed');
   };

@@ -1,3 +1,4 @@
+import { NEXT_S2E_LAST } from '@myco-server-worker/db/schema-vNEXT-s2e.js';
 import { V720 } from '@myco-server-worker/db/schema-v720.js';
 import { V722 } from '@myco-server-worker/db/schema-v722.js';
 import { V717 } from '@myco-server-worker/db/schema-v717.js';
@@ -797,6 +798,8 @@ const SHIPPED_MIGRATION_DIGESTS: Record<string, string> = {
   '0776_v776.sql': 'b5081c998e355d05bdf8750caae94027be3562b42b5da52d137663c989cbe35e',
   '0777_v777.sql': '5b105ec92de98252fa10aa1dc1be3760357f24cac815be6952ca81046c030e67',
   '0778_v778.sql': '6affa85d81bbbdeee5d921b683b43f8f93dc705749eb0a257f6fadbcac805048',
+  '0779_v779.sql': 'b7b83bf7b8e6d2daeb03fbf5533e3867b3de4a596b857bbab4adfbd19ed8bfdd',
+  '0780_v780.sql': 'b2195a99fa30e3a29cc094e6bf212e0358026049a8447404c14e92d6973c3931',
 };
 import { NEXT_S1C } from '@myco-server-worker/db/schema-vNEXT-s1c.js';
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
@@ -1263,6 +1266,7 @@ describe('versioned schema steps', () => {
     // Each is replaced by an index ordering the same rows with a complete tuple.
     const BROWSE_REPLACED_INDEXES = new Set(['idx_sessions_occurred_deployment', 'idx_uncaptured_roots_seen', 'idx_uncaptured_roots_member']);
     const retiredColumnsAt709 = new Set(['agent_runs.repository_files', 'spore_curation_candidates.currency']);
+    const retiredColumnsAtHotArchive = new Set(['raw_event_archive_state.cursor_project', 'raw_event_archive_state.cursor_session', 'raw_event_archive_state.cursor_created']);
     const retiredTriggersAt709 = new Set(['curation_inventory_map_move', 'curation_inventory_map_delete', 'curation_inventory_run_end']);
     const retiredTablesAtS5b = new Set(['embedding_hubness_population', 'embedding_hubness_work']);
     const retiredTablesAtS6b = new Set(['step_up_authorities']);
@@ -1291,7 +1295,7 @@ describe('versioned schema steps', () => {
         }
         expect(after.has(table)).toBe(true);
         for (const [col, type] of cols) {
-          if ((SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`)) || (SCHEMA_STEPS[n]!.version === NEXT_S1C && `${table}.${col}` === 'machine_harness_reports.harnesses')) {
+          if ((SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(`${table}.${col}`)) || (SCHEMA_STEPS[n]!.version === NEXT_S1C && `${table}.${col}` === 'machine_harness_reports.harnesses') || (SCHEMA_STEPS[n]!.version === NEXT_S2E_LAST && retiredColumnsAtHotArchive.has(`${table}.${col}`))) {
             expect(after.get(table)!.has(col)).toBe(false);
           } else expect({ table, col, type: after.get(table)!.get(col) }).toEqual({ table, col, type });
         }
@@ -1353,7 +1357,7 @@ describe('versioned schema steps', () => {
         const droppedColumn = /^ALTER TABLE (\w+) DROP COLUMN (\w+)$/i.exec(s);
         if (droppedColumn !== null) {
           const target = `${droppedColumn[1]}.${droppedColumn[2]}`;
-          expect({ step: n + 1, target, allowed: (SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(target)) || (SCHEMA_STEPS[n]!.version === NEXT_S1C && target === 'machine_harness_reports.harnesses') })
+          expect({ step: n + 1, target, allowed: (SCHEMA_STEPS[n]!.version === 709 && retiredColumnsAt709.has(target)) || (SCHEMA_STEPS[n]!.version === NEXT_S1C && target === 'machine_harness_reports.harnesses') || (SCHEMA_STEPS[n]!.version === NEXT_S2E_LAST && retiredColumnsAtHotArchive.has(target)) })
             .toEqual({ step: n + 1, target, allowed: true });
           continue;
         }

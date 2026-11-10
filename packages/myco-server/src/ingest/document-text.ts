@@ -1,6 +1,7 @@
 import type { ContentStore } from '../core/adapters.js';
 import { blobObjectKey } from '../core/blob-objects.js';
 import { readVerifiedContentText } from '../core/registered-content.js';
+import { contentRegistration } from '../db/storage/content-lifecycle.js';
 
 /** Referenced document bodies and the inline fields they stand for. */
 export const DOCUMENT_TEXT_FIELDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
@@ -10,8 +11,7 @@ export const DOCUMENT_TEXT_FIELDS: Readonly<Record<string, Readonly<Record<strin
 
 /** Registered document text is decoded only from its verified immutable generation. */
 export async function documentText(env: ContentStore, projectId: string, key: string): Promise<string> {
-  const blob = await env.db.prepare('SELECT generation,size FROM blobs WHERE project_id=? AND key=?')
-    .bind(projectId, key).first<{ generation: string | null; size: number }>();
+  const blob = await contentRegistration(env.db, projectId, key);
   if (blob === null) throw new Error('document_event_body_missing');
   return readVerifiedContentText(env, blobObjectKey(projectId, key, blob.generation), blob.size, key);
 }

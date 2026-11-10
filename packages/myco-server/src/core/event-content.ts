@@ -1,7 +1,9 @@
 import { SHA256 } from '@stablelib/sha256';
 import type { PreparedStatement, RelationalStore, ContentStore } from './adapters.js';
 import { prepareArchiveBundle,bundleArchiveStatements,readBundleEntry,type PreparedBundle } from './archive-bundle.js';
-import { type DerivedContentSource, type VerifiedContent } from './registered-content.js';
+import { readVerifiedContentText, type DerivedContentSource, type VerifiedContent } from './registered-content.js';
+import { blobObjectKey } from './blob-objects.js';
+import { storedEvent } from '../db/events/body.js';
 import { TOOL_INPUT_PREVIEW_BYTES } from './tool-input.js';
 
 const CONTENT_SLICE_BYTES = 1024 * 1024;
@@ -169,14 +171,14 @@ export async function prepareArchiveStep(env: Pick<ContentStore,'db'|'blobs'>,ki
     const write=held===null
       ? db.prepare(`INSERT INTO content_scan_checkpoints(project_id,source_kind,resource_id,session_id,event_id,token_id,
           envelope_hash,content_revision,bytes,scanned_bytes,hash_state,preview_bytes,updated_at)
-          SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${guard.sql}`)
+          SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${guard.sql} RETURNING 1 AS stored`)
         .bind(row.project_id,kind,row.resource_id,row.session_id,row.event_id,row.token_id,row.envelope_hash,
           row.content_revision,row.bytes,next,state,prefix,now,...guard.params)
       : db.prepare(`UPDATE content_scan_checkpoints SET scanned_bytes=?,hash_state=?,preview_bytes=?,updated_at=?
           WHERE project_id=? AND source_kind=? AND resource_id=? AND scanned_bytes=? AND content_revision=? AND envelope_hash=?
-          AND ${guard.sql}`)
+          AND ${guard.sql} RETURNING 1 AS stored`)
         .bind(next,state,prefix,now,row.project_id,kind,row.resource_id,at,row.content_revision,row.envelope_hash,...guard.params);
-    if((await write.run()).meta.changes!==1) throw new Error('content_scan_source_changed');
+    if((await write.all()).results.length!==1) throw new Error('content_scan_source_changed');
     return {status:'pending',scanned:next-at};
   } finally {hash.clean();}
 }
@@ -188,13 +190,15 @@ export function eventArchiveStatements(db: RelationalStore, row: ContentRow, arc
   return bundleArchiveStatements(db,archive.bundle);
 }
 
-/** Resolves the exact stored event body; format and integrity failures remain visible. */
+/** Resolves the exact stored event body in any form it has been held in; format and integrity failures remain visible. */
 export async function eventContent(env: Pick<ContentStore,'db'|'blobs'>, projectId: string, eventId: string): Promise<string|null> {
-  const row=await env.db.prepare(`SELECT payload,payload_format,envelope_hash,token_id,bundle_id,bundle_entry
-    FROM events WHERE project_id=? AND event_id=?`).bind(projectId,eventId)
-    .first<{payload:string;payload_format:string;envelope_hash:string;token_id:string;bundle_id:number|null;bundle_entry:number|null}>();
+  const row=await storedEvent(env.db,projectId,eventId);
   if(row===null)return null;
   if(row.payload_format==='inline')return row.payload;
+  if(row.payload_format==='blob'){
+    if(row.body_key===null||row.body_size===null)throw new Error('event_content_reference_invalid');
+    return readVerifiedContentText(env,blobObjectKey(projectId,row.body_key,row.body_generation),row.body_size,row.body_key);
+  }
   if(row.payload_format!=='archived')throw new Error('event_content_format_unsupported');
   if(row.bundle_id===null||row.bundle_entry===null)throw new Error('event_content_reference_invalid');
   return readBundleEntry(env,{projectId,bundleId:row.bundle_id,entry:row.bundle_entry,kind:'event',resourceId:eventId,

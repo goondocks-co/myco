@@ -4,8 +4,8 @@ import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, orderingFields, idFields, PROMPT_ORIGINS, PLAN_STATUSES, MAX_ARRAY_ITEMS, MAX_TIME_MS, PROMPT_REFERENCE_COLUMNS, type Bound, type IdRole } from '@myco-server-worker/ingest/kinds.js';
 import { acceptableProjectName, basenameOf, planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
-import { MAX_PAYLOAD_BYTES, PAYLOAD_CAP_REASON } from '@myco-server-worker/ingest/envelope.js';
-import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
+import { MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
+import { blobCapReason, bodyCapReason, EVENT_BODY_CAP_NEXT_CALL, MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, memberHeaders, memberPost, sqliteEnv, PRODUCER, TEXT_MEDIA_TYPE, uuid } from './helpers/fixtures.js';
@@ -259,7 +259,7 @@ describe('kind catalogue', () => {
     const atCap = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(280), payload: { promptId: uuid(2), text: 'x'.repeat(MAX_PAYLOAD_BYTES - fixed), origin: 'user' } })), e.env));
     expect(atCap).toEqual({ persisted: true, projected: true });
     const over = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(281), payload: { promptId: uuid(282), text: 'x'.repeat(MAX_PAYLOAD_BYTES - fixed + 1), origin: 'user' } })), e.env));
-    expect(over).toEqual({ persisted: false, code: 'invalid_field', reason: PAYLOAD_CAP_REASON });
+    expect(over).toEqual({ persisted: false, code: 'invalid_field', reason: expect.stringMatching(/^payload is \d+ bytes; the limit is 262144 bytes\. Nothing was stored\. Upload/) });
     expect(count(e.sqlite, 'events')).toBe(1);
   });
 
@@ -765,7 +765,7 @@ describe('kind catalogue', () => {
       { name: 'the channel', request: () => post({ channel: 'carrier-pigeon' }), kind: 'ingest_refused', reason: 'channel must be one of cli, http, import', classifier: 'invalid_field' },
       { name: 'a negative createdAt', request: () => post({ createdAt: -1 }), kind: 'ingest_refused', reason: 'createdAt must be a non-negative integer', classifier: 'invalid_field' },
       { name: 'body not JSON', request: () => memberPost(t1.token, '{'), kind: 'ingest_refused', reason: 'body must be JSON', classifier: 'parse' },
-      { name: 'body over the cap', request: () => memberPost(t1.token, '0'.repeat(MAX_BODY_BYTES + 1)), kind: 'ingest_refused', reason: `body exceeds ${MAX_BODY_BYTES} bytes`, classifier: 'body_cap' },
+      { name: 'body over the cap', request: () => memberPost(t1.token, '0'.repeat(MAX_BODY_BYTES + 1)), kind: 'ingest_refused', reason: `${bodyCapReason(MAX_BODY_BYTES + 1, MAX_BODY_BYTES)} ${EVENT_BODY_CAP_NEXT_CALL}`, classifier: 'body_cap' },
       { name: 'absent blob', request: () => post({ kind: 'attachment', payload: { attachmentId: uuid(1102), blob: absent } }), kind: 'ingest_refused', reason: `blob not present: ${absent}`, classifier: 'blob_absent' },
       { name: 'foreign session', request: () => memberPost(t3.token, envelope({ eventId: uuid(1103), payload: { promptId: uuid(1104), text: 'x', origin: 'user' } })), kind: 'ingest_refused', reason: 'machine identity mismatch', classifier: 'identity_mismatch' },
       { name: 'transcript gap', request: () => post({ kind: 'transcript.segment', payload: { transcriptId: tx, baseOffset: seg.byteLength + 1, length: seg.byteLength, blob: segKey } }), kind: 'ingest_refused', reason: 'transcript offset gap', classifier: 'offset_gap' },
@@ -774,7 +774,7 @@ describe('kind catalogue', () => {
       { name: 'machine-less token on /events', request: () => memberPost(anonymous.token, envelope({ eventId: uuid(1105) })), kind: 'ingest_refused', reason: 'token has no machine identity', classifier: 'no_machine_identity' },
       { name: 'machine-less token on /blobs', request: () => new Request(`https://s/blobs/${segKey}`, { method: 'POST', headers: memberHeaders(anonymous.token, { 'content-type': TEXT_MEDIA_TYPE, 'content-length': String(seg.byteLength) }), body: seg }), kind: 'blob_refused', reason: 'token has no machine identity', classifier: 'no_machine_identity' },
       { name: 'content-length', request: () => blob({ 'content-length': 'x' }), kind: 'blob_refused', reason: 'content-length required', classifier: 'content_length' },
-      { name: 'blob cap', request: () => blob({ 'content-length': String(MAX_BLOB_BYTES + 1) }), kind: 'blob_refused', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes`, classifier: 'blob_cap' },
+      { name: 'blob cap', request: () => blob({ 'content-length': String(MAX_BLOB_BYTES + 1) }), kind: 'blob_refused', reason: blobCapReason(MAX_BLOB_BYTES + 1, MAX_BLOB_BYTES), classifier: 'blob_cap' },
       { name: 'media type', request: () => blob({ 'content-type': 'nonsense' }), kind: 'blob_refused', reason: 'invalid content-type', classifier: 'media_type' },
       { name: 'empty body', request: () => blob({}, new Uint8Array(0)), kind: 'blob_refused', reason: 'empty body', classifier: 'empty_body' },
       { name: 'digest mismatch', request: () => blob({}, utf8('other-bytes'), 'd'.repeat(64)), kind: 'blob_refused', reason: 'digest mismatch', classifier: 'digest_mismatch' },

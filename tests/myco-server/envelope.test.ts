@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseEnvelope as parse, MAX_PAYLOAD_BYTES, MAX_ID_CHARS, MAX_PAYLOAD_DEPTH, MAX_PAYLOAD_NODES, PAYLOAD_CAP_REASON, ID_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
+import { parseEnvelope as parse, MAX_PAYLOAD_BYTES, MAX_ID_CHARS, MAX_PAYLOAD_DEPTH, MAX_PAYLOAD_NODES, payloadCapReason, ID_GRAMMAR } from '@myco-server-worker/ingest/envelope.js';
 import { MAX_CLOCK_SKEW_MS } from '@myco-server-worker/constants.js';
 import { envelope, uuid, PRODUCER } from './helpers/fixtures.js';
 
@@ -74,8 +74,9 @@ describe('envelope', () => {
   it('refuses an oversized payload, measured in UTF-8 bytes, naming the blob route', () => {
     const p = parseEnvelope({ ...good, payload: { b: 'x'.repeat(MAX_PAYLOAD_BYTES + 1) } });
     expect(p.ok).toBe(false);
-    if (!p.ok) expect(p.reason).toBe(PAYLOAD_CAP_REASON);
-    expect(PAYLOAD_CAP_REASON).toContain('POST /blobs/{sha256}');
+    const serialized = JSON.stringify({ b: 'x'.repeat(MAX_PAYLOAD_BYTES + 1) });
+    if (!p.ok) expect(p.reason).toBe(payloadCapReason(serialized.length));
+    if (!p.ok) expect(p.reason).toContain('POST /blobs/{sha256}');
     const wide = parseEnvelope({ ...good, payload: '€'.repeat(Math.floor(MAX_PAYLOAD_BYTES / 3) + 10) });
     expect(wide.ok).toBe(false);
   });

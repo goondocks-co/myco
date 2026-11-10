@@ -2,6 +2,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import { readVerifiedContentText } from '../core/registered-content.js';
 import { blobObjectKey } from '../core/blob-objects.js';
 import { readBundleEntry } from '../core/archive-bundle.js';
+import { contentRegistration } from '../db/storage/content-lifecycle.js';
 import { materialRecord } from '../content/document-records.js';
 import type { DocRecord } from '../content/document.js';
 
@@ -26,8 +27,7 @@ export async function legacyRecord(env: Pick<ServerEnv, 'db' | 'blobs'>, project
   for (const [column, field] of BODIES[kind]) {
     const key = row[column];
     if (typeof key !== 'string') continue;
-    const blob = await env.db.prepare(`SELECT generation,size FROM blobs WHERE project_id=? AND key=?`)
-      .bind(projectId,key).first<{generation:string|null;size:number}>();
+    const blob = await contentRegistration(env.db, projectId, key);
     if (blob === null) { classes.push('body_missing'); continue; }
     await read(field, () => readVerifiedContentText(env,blobObjectKey(projectId,key,blob.generation),blob.size,key));
   }

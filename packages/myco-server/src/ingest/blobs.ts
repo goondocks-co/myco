@@ -5,6 +5,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import type { StreamContext } from '../context.js';
 import { BLOB_RESERVATION_TTL_MS, MAX_BLOB_BYTES, RETRY_AFTER_SECONDS } from '../constants.js';
 import { RawResourceReader } from '../core/raw-resources.js';
+import { blobCapReason } from './body.js';
 import { classifyBlobStore, emit, TokenRevokedError, UNAVAILABLE, type Classifier } from '../telemetry.js';
 
 export const MAX_MEDIA_TYPE_CHARS = 128;
@@ -109,7 +110,7 @@ export async function handleBlob(env: ServerEnv, request: Request, ctx: StreamCo
       throw err;
     }
     // The ceiling holds against the size the store recorded, not only against the length the caller declared.
-    if (storedSize > MAX_BLOB_BYTES) return refuse(ctx, `blob exceeds ${MAX_BLOB_BYTES} bytes`, 'blob_cap');
+    if (storedSize > MAX_BLOB_BYTES) return refuse(ctx, blobCapReason(storedSize, MAX_BLOB_BYTES), 'blob_cap');
     const reconciled = await reconcile(storedSize);
     if (reconciled === 'consumed') {
       consumed = true;

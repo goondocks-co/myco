@@ -452,7 +452,7 @@ describe('blob route', () => {
     e.bucket.put = async (objectKey, value, options) => { await put(objectKey, value, options); return { size: MAX_BLOB_BYTES + 1 }; };
     const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
     expect(res.status).toBe(200);
-    expect(await json(res)).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
+    expect(await json(res)).toEqual({ stored: false, code: 'blob_cap', reason: expect.stringContaining('the limit is') });
     expect(count(e.sqlite, 'blobs')).toBe(0);
     expect(reservations(e)).toBe(0);
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
@@ -555,7 +555,7 @@ describe('blob route', () => {
     noType.headers.delete('content-type');
     expect(await json(await worker.fetch(noType, e.env))).toEqual({ stored: false, code: 'media_type', reason: 'invalid content-type' });
     const big = new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(t.token, { 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1) }), body: bytes });
-    expect(await json(await worker.fetch(big, e.env))).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
+    expect(await json(await worker.fetch(big, e.env))).toEqual({ stored: false, code: 'blob_cap', reason: expect.stringContaining('the limit is') });
     expect(e.bucket.puts).toEqual([]);
   });
 
