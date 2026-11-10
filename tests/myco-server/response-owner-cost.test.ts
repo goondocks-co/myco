@@ -28,7 +28,7 @@ it('a response names its prompt\'s owner at the same D1 cost as a Project\'s ses
     },
     cases: [{
       name: 'response admission',
-      // Under statistics a later response reads a few more of the rows earlier ones added, the same at 5,000 sessions as at 40,000.
+      // A later response reads a few more of the rows earlier ones added, the same at 5,000 sessions as at 40,000.
       extra: 16,
       run: async (db, { scale }) => {
         // Each run answers a prompt of a session it holds: the first credential admission is the warm-up's.

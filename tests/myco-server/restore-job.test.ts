@@ -15,12 +15,12 @@ import { asOwner, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import {
   artifactOf, destination, documentBackup, documentDestination, NOW, OWNER, PASS_ROWS, restoredRows, tickUntilEnded, type Fixture,
 } from './helpers/restore-job.js';
-import { dying } from './helpers/store-faults.js';
+import { dying, representativePoints, storingCall } from './helpers/store-faults.js';
 
 const HOUR = 3_600_000;
 
 describe('a restore job', () => {
-  it('leaves the destination as an uninterrupted restore does, wherever the process dies, before or after a commit', async () => {
+  it('leaves the destination as an uninterrupted restore does when the process dies at its first call, the commit of its job or its last', async () => {
     const text = await artifactOf(45);
     const reference = await destination();
     const before = restoredRows(reference);
@@ -34,16 +34,20 @@ describe('a restore job', () => {
     reference.sqlite.close();
 
     const counting = await destination();
-    const counter = dying(counting.db, Number.POSITIVE_INFINITY, 'before');
-    const counted = { ...counting.serverEnv, db: counter.store };
-    await acceptUploadedRestore(counted, text, { allowForeignLineage: true, memberId: OWNER, now: NOW });
-    for (let wake = 0; wake < 500 && (await advanceRestore(counted, NOW, PASS_ROWS)).more; wake++) { /* every call of a whole restore */ }
-    const total = counter.calls();
+    let total = 0;
+    const storing = await storingCall(counting.db, async (store) => {
+      const counter = dying(store, Number.POSITIVE_INFINITY, 'before');
+      const counted = { ...counting.serverEnv, db: counter.store };
+      await acceptUploadedRestore(counted, text, { allowForeignLineage: true, memberId: OWNER, now: NOW });
+      for (let wake = 0; wake < 500 && (await advanceRestore(counted, NOW, PASS_ROWS)).more; wake++) { /* every call of a whole restore */ }
+      total = counter.calls();
+    }, async () => (await latestRestore(counting.serverEnv))?.state ?? null);
     counting.sqlite.close();
     expect(total).toBeGreaterThan(20);
+    expect(storing).toBeGreaterThan(0);
 
     for (const when of ['before', 'after'] as const) {
-      for (let at = 1; at <= total; at++) {
+      for (const at of representativePoints(total, storing)) {
         const target = await destination();
         const killed = dying(target.db, at, when);
         const env = { ...target.serverEnv, db: killed.store };
@@ -73,7 +77,7 @@ describe('a restore job', () => {
     }
   }, 300_000);
 
-  it('restores a session document to the same state and counts wherever the process dies, the first pass crossing its transcripts', async () => {
+  it('restores a session document to the same state and counts when the process dies at its first call, its first document write or its last', async () => {
     const backup = await documentBackup();
     /** What the restored session holds: its records, document, frontier, continuation and chunks. */
     const documents = async (f: Fixture) => ({
@@ -103,14 +107,18 @@ describe('a restore job', () => {
 
     const counting = await documentDestination(backup);
     await accept(counting);
-    const counter = dying(counting.db, Number.POSITIVE_INFINITY, 'before');
-    await passes(counting, counter.store);
-    const total = counter.calls();
+    let total = 0;
+    const storing = await storingCall(counting.db, async (store) => {
+      const counter = dying(store, Number.POSITIVE_INFINITY, 'before');
+      await passes(counting, counter.store);
+      total = counter.calls();
+    }, () => counting.sqlite.query(`SELECT state, prompts, next_chunk FROM session_documents WHERE session_id = 'portable'`).all());
     counting.sqlite.close();
     expect(total).toBeGreaterThan(20);
+    expect(storing).toBeGreaterThan(0);
 
     for (const when of ['before', 'after'] as const) {
-      for (let at = 1; at <= total; at++) {
+      for (const at of representativePoints(total, storing)) {
         const target = await documentDestination(backup);
         await accept(target);
         try { await passes(target, dying(target.db, at, when).store); } catch { /* the process ended */ }

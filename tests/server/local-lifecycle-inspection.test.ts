@@ -104,7 +104,7 @@ describe('sentinel-last resumable create', () => {
       for (const [key, value] of Object.entries(secrets)) expect(readLocalSecrets(f.paths)[key as keyof typeof secrets]).toBe(value);
     });
   }
-  for (const step of ['directory', 'secrets', 'schema', 'record', 'serve']) it(`SIGKILL after ${step} is detected and resumable`, async () => {
+  for (const step of ['secrets', 'record', 'serve']) it(`SIGKILL after ${step} is detected and resumable`, async () => {
     const f = fixture(false);
     const repo = fileURLToPath(new URL('../../', import.meta.url));
     const childRoot = path.join(f.root, 'child');

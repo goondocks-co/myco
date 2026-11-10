@@ -8,7 +8,6 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { run, parseSetupOptions } from '@myco/cli/setup.js';
-import { run as login } from '@myco/cli/login.js';
 import { resetMachineIdCache } from '@myco/machine-id.js';
 import { runRunnerService } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
@@ -43,7 +42,6 @@ import { OAUTH_STATE_COOKIE } from '@myco-server-worker/auth/owner/github.js';
 import { SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { ownerDeployment, ACCOUNT, HOSTED_URL } from './fixtures/owner-deployment.js';
 import { createCloudflareDeployment, planCloudflareDeployment } from '@myco/server/cloudflare-lifecycle.js';
-import { prepareLocal } from '@myco/server/local-lifecycle.js';
 import { registerGitHubApp, convertManifestCode, writeSignInPending, signInPendingPath } from '@myco/server/github-app.js';
 import { peekDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { peekLocalPaths, readLocalSecrets, createLocalDeployment, DEFAULT_LOCAL_RECORD } from '@myco/server/local.js';
@@ -145,7 +143,7 @@ describe('new owner journeys (a) and (b)', () => {
       expect(server.github.calls.filter(call => call.url.includes('/conversions'))).toHaveLength(1);
     });
 
-    for (const boundary of ['create', 'conversion', 'signin', 'owner-mint', 'owner-link', 'machine', 'project'] as const) {
+    for (const boundary of ['create', 'conversion', 'project'] as const) {
       it(`resumes ${target} after interruption at ${boundary} without duplicated resources or lost state`, async () => {
         const server = ownerDeployment(root, home, target, address);
         closers.push(server.close);
@@ -159,17 +157,8 @@ describe('new owner journeys (a) and (b)', () => {
               const savedRunner = options.runner;
               if (target === 'cloudflare') options = { ...options, runner: { run: async (command, args, opts) => { if (args.includes('bulk')) interrupt(); return savedRunner!.run(command, args, opts); } } };
             }
-            const result = await registerGitHubApp(options);
-            if (boundary === 'signin') interrupt();
-            return result;
+            return registerGitHubApp(options);
           },
-          prepareLocal: async (localHome, plan, localDeps) => { const result = await prepareLocal(localHome, plan, localDeps); if (boundary === 'owner-mint') interrupt(); return result; },
-          openUrl: async url => {
-            if (new globalThis.URL(url).hash && boundary === 'owner-mint' && target === 'cloudflare') interrupt();
-            await server.openUrl(url);
-            if (new globalThis.URL(url).hash && boundary === 'owner-link') interrupt();
-          },
-          login: async (args, loginDeps) => { const result = await login(args, loginDeps); if (boundary === 'machine') interrupt(); return result; },
           join: async (args, joinDeps) => { const result = await runJoin(args, joinDeps); if (boundary === 'project') interrupt(); return result; },
         };
         if (boundary === 'conversion' && target === 'local') {

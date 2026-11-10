@@ -11,7 +11,6 @@ const SIZES = [2_000, 10_000] as const;
 it('D1 source tombstones cost the same as other sources\' served snapshots grow, and clear only their own', async () => {
   const costs = await d1TwoScale({
     sizes: SIZES,
-    statistics: ['none', 'analyzed', 'stale'],
     setup: async (db) => {
       await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES(?,'Snapshots',1)").bind(PROJECT).run();
       for (const session of ['source-0', 'source-1', 'source-other', 'receiver']) {

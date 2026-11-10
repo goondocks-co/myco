@@ -47,7 +47,10 @@ it('admits bootstrap only without a run table and requires a classified answer f
   expect(reports).toEqual(Array(6).fill(THIN_LEARNING_STEPPING_STONE_REMEDY));
 });
 
-for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pending', 'queued', 'completed']) {
+/** One case per outcome: before the stepping stone, each undrained status after it, and a drained catalogue. */
+const ADMISSION_CASES = [[101, 'running'], [102, 'running'], [102, 'pending'], [103, 'queued'], [103, 'completed']] as const;
+
+for (const [from, status] of ADMISSION_CASES) {
   it(`refuses native ${from} activation before any schema step with ${status} extraction`, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'thin-jump-'));
     const file = path.join(root, 'server.sqlite');

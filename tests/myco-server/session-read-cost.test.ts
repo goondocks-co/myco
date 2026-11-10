@@ -1,6 +1,6 @@
 /**
  * The session reads a person waits on, and the turn writes a working session makes, cost the same on D1 when a
- * Deployment holds ten times the sessions, with and without planner statistics; and a session's plans page in order.
+ * Deployment holds ten times the sessions; and a session's plans page in order.
  */
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -86,7 +86,7 @@ it('pages, windows and turns a session at the same D1 cost as the Deployment\'s 
   });
   expectTwoScale(costs);
   for (const turn of costs.filter((cost) => cost.name === 'turn start and end')) {
-    expect(Math.min(...turn.writes), `the turn opened and closed (statistics: ${turn.statistics})`).toBeGreaterThan(0);
+    expect(Math.min(...turn.writes), 'the turn opened and closed').toBeGreaterThan(0);
   }
 }, 180_000);
 

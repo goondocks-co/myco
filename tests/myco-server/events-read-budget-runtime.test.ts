@@ -214,6 +214,6 @@ it('D1 capture writes cost the same as the Deployment\'s history grows, in the c
   });
   expectTwoScale(costs);
   for (const start of costs.filter(cost => cost.name === 'session.start')) {
-    for (const written of start.writes) expect(written, `session.start rows written (statistics: ${start.statistics})`).toBeLessThanOrEqual(SESSION_START_WRITE_CEILING);
+    for (const written of start.writes) expect(written, 'session.start rows written').toBeLessThanOrEqual(SESSION_START_WRITE_CEILING);
   }
 }, 300_000);

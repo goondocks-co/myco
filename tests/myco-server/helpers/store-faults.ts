@@ -92,6 +92,16 @@ export function changingAt(db: RelationalStore, at: number, change: () => unknow
 }
 
 /**
+ * The calls a fault test covers instead of every one of `total`: the first call, the call that stores the operation's
+ * effect and the one after it (`storing`, as `storingCall` finds it), and the last. With no storing call, the first, a
+ * middle and the last call.
+ */
+export function representativePoints(total: number, storing = 0): number[] {
+  const points = storing > 0 ? [1, storing, storing + 1, total] : [1, Math.ceil(total / 2), total];
+  return [...new Set(points)].filter((at) => at >= 1 && at <= total).sort((a, b) => a - b);
+}
+
+/**
  * A change swept over every point of a request that can be repeated on one store: the request runs with `change` landing
  * just before its first call, then its second, and so on. `stored` reads, when the change lands, whether the request had
  * already stored its effect; the sweep ends at the first point where it had, or where the request finished before the

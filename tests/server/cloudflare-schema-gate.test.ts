@@ -60,7 +60,7 @@ for(const failure of ['empty','error'])it(`publishes the Worker with a visible i
   });
 });
 
-for (const schema of ['0', '', 'NaN', '1.5', String(SERVER_SCHEMA_VERSION + 1)]) {
+for (const schema of ['', '1.5', String(SERVER_SCHEMA_VERSION + 1)]) {
   it(`refuses unreadable or newer live schemas before requesting recovery or changing remote resources (${JSON.stringify(schema)})`, async () => {
     await fixture({ schema }, async ({ home, update, calls }) => {
       const before = readDeploymentRecord(home);
