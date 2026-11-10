@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import path from 'node:path';
 import ts from 'typescript-v6';
 
-const SRC = path.resolve(import.meta.dir, '../../packages/myco/src');
+const SRC = path.resolve(import.meta.dir, '../../../packages/myco/src');
 const ENTRY = path.join(SRC, 'member/auto-join-hook.ts');
 const REPO = path.resolve(SRC, '../../..');
 const config = ts.readConfigFile(path.join(REPO, 'tsconfig.json'), ts.sys.readFile);

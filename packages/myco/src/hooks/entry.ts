@@ -3,7 +3,7 @@
  *
  * A compiled binary sends `myco hook <name>` here before it loads the rest of the CLI (`entries/dispatch.ts`), so a hook
  * loads its own chunk and nothing else: the preamble, the hook's module and the member seam it runs on. Its import
- * closure is held light by `tests/meta/hook-entry-closure.test.ts`.
+ * closure is held light by `tests/meta/boundaries/hook-entry-closure.test.ts`.
  */
 import { runLaunchPreamble } from '../cli/launch-preamble.js';
 import { recordStartingJob } from '../runtime/spawn-detached.js';

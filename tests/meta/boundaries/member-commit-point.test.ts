@@ -2,10 +2,10 @@ import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript-v6';
-import { sourceProgram } from '../helpers/source-program.js';
+import { sourceProgram } from '../../helpers/source-program.js';
 
 it('hooks cannot import any session-state writer through aliases, namespaces or re-exports', () => {
-  const root = path.resolve(import.meta.dir, '../../packages/myco/src');
+  const root = path.resolve(import.meta.dir, '../../../packages/myco/src');
   const state = path.join(root, 'member/session-state.ts');
   const hooks = fs.readdirSync(path.join(root, 'hooks'), { recursive: true }).map(String)
     .filter(file => file.endsWith('.ts')).map(file => path.join(root, 'hooks', file));
