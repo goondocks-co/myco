@@ -60,7 +60,7 @@ it('reports conflict after a second patch race and never reports that patch appl
   } };
   const result = await settingsWriter(db).setTaskSwitch('title-summary', true, 'loser', 1);
   expect(races).toBe(2);
-  expect(result).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks', revision: 2 } });
+  expect(result).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks', actual: 2, expected: 1, next: expect.stringContaining('If-Match: 2') } });
   expect((await settingsWriter(r.db).leaves())['agent.tasks']?.value).toEqual({ 'canopy-map': { schedule: { enabled: false } } });
 });
 
@@ -77,7 +77,7 @@ it('refuses stale client revisions on both task patch routes and rereads the cur
       expect(await settingsWriter(e.db).setLeaf('agent.tasks', current, 'other', 1)).toEqual({ applied: true });
       const refused = await worker.fetch(stale, env);
       expect(refused.status).toBe(409);
-      expect(await refused.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'agent.tasks', revision: 1 });
+      expect(await refused.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'agent.tasks', actual: 1, expected: 0, next: expect.stringContaining('GET /api/settings') });
       const read = await worker.fetch(await asOwner(e.db, '/api/settings'), env);
       const answer = await read.json() as { leaves: { leaf: string; value: unknown; revision: string }[] };
       expect(answer.leaves.find(row => row.leaf === 'agent.tasks')).toMatchObject({ value: current, revision: '1' });
@@ -86,35 +86,60 @@ it('refuses stale client revisions on both task patch routes and rereads the cur
   }
 });
 
-it('admits every settings route without If-Match while preserving other leaves and task fields', async () => {
+const ROUTES = [
+  ['PUT', '/api/settings/agent.tasks', { value: {} }],
+  ['PATCH', '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }],
+  ['PUT', '/api/titling-backfill', { enabled: true }],
+  ['PUT', '/api/settings/agent.spore_curation.daily_runs', { project_id: 'proj_1', value: 7 }],
+  ['PUT', '/api/projects/proj_1/capabilities/canopy', { enabled: false }],
+  ['PUT', '/api/embedding', { provider: 'workers-ai' }],
+  ['POST', '/api/settings/agent.tasks/repair', {}],
+  ['DELETE', '/api/settings/instructions.template', undefined],
+] as const;
+
+it('refuses every settings write that does not carry the revision it was made against, and names the next call', async () => {
   const e = sqliteEnv();
   try {
     const env = { ...e.env, ...OWNER_ENV };
-    const send = async (method: string, path: string, body?: unknown) => {
-      const request = await asOwnerPost(e.db, path, body);
-      expect(request.headers.has('if-match')).toBe(false);
-      return worker.fetch(new Request(request, { method }), env);
-    };
+    await settingsWriter(e.db).setLeaf('instructions.template', 'kept', 'owner', 1);
+    const before = await settingsWriter(e.db).leaves();
+    for (const [method, path, body] of ROUTES) {
+      const request = new Request(await asOwnerPost(e.db, path, body), { method });
+      request.headers.delete('if-match');
+      const response = await worker.fetch(request, env);
+      const answer = await response.json() as Record<string, unknown>;
+      expect({ path, status: response.status, reason: answer.reason, applied: answer.applied }).toEqual({ path, status: 428, reason: 'revision_required', applied: false });
+      expect(answer.detail).toEqual(expect.stringContaining('nothing was saved'));
+      expect(answer.detail).toEqual(expect.stringContaining('If-Match'));
+      expect(typeof answer.leaf).toBe('string');
+      if (path === '/api/embedding') expect(answer.detail).toEqual(expect.stringContaining('an object of the three embedding revisions'));
+    }
+    expect(await settingsWriter(e.db).leaves()).toEqual(before);
+  } finally { e.sqlite.close(); }
+});
+
+it('admits every settings route with the current revision, keeps other leaves, and refuses the second of two edits made from one read', async () => {
+  const e = sqliteEnv();
+  try {
+    const env = { ...e.env, ...OWNER_ENV };
+    const send = async (method: string, path: string, body?: unknown) => worker.fetch(new Request(await asOwnerPost(e.db, path, body), { method }), env);
     const tasks = { 'title-summary': { reasoningLevel: 'low' }, 'canopy-map': { schedule: { intervalSeconds: 600 } } };
     expect((await send('PUT', '/api/settings/agent.tasks', { value: tasks })).status).toBe(200);
     for (const value of ['first', 'last']) expect((await send('PUT', '/api/settings/instructions.template', { value })).status).toBe(200);
     expect((await settingsWriter(e.db).leaves())['instructions.template']?.value).toBe('last');
     expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toEqual(tasks);
-    const patches = await Promise.all([
-      send('PATCH', '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }),
-      send('PUT', '/api/titling-backfill', { enabled: true }),
+    const edits = await Promise.all([
+      asOwnerPatch(e.db, '/api/settings/agent.tasks', { task: 'title-summary', tier: 'high' }),
+      asOwnerPut(e.db, '/api/titling-backfill', { enabled: true }),
     ]);
-    expect(patches.map(response => response.status)).toEqual([200, 200]);
+    const responses = [await worker.fetch(edits[0], env), await worker.fetch(edits[1], env)];
+    expect(responses.map(response => response.status)).toEqual([200, 409]);
+    expect(await responses[1]!.json()).toMatchObject({ reason: 'conflict', leaf: 'agent.tasks', actual: 2, expected: 1 });
+    expect((await send('PUT', '/api/titling-backfill', { enabled: true })).status).toBe(200);
     expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toEqual({
       ...tasks, 'title-summary': { reasoningLevel: 'high', schedule: { enabled: true } },
     });
-    for (const [method, path, body] of [
-      ['PUT', '/api/settings/agent.spore_curation.daily_runs', { project_id: 'proj_1', value: 7 }],
-      ['PUT', '/api/projects/proj_1/capabilities/canopy', { enabled: false }],
-      ['PUT', '/api/embedding', { provider: 'workers-ai' }],
-      ['POST', '/api/settings/agent.tasks/repair', {}],
-      ['DELETE', '/api/settings/instructions.template', undefined],
-    ] as const) expect({ path, response: (await send(method, path, body)).status }).toEqual({ path, response: 200 });
+    for (const [method, path, body] of ROUTES.slice(3)) expect({ path, response: (await send(method, path, body)).status }).toEqual({ path, response: 200 });
     expect((await settingsWriter(e.db).leaves())['instructions.template']).toBeUndefined();
     expect((await settingsWriter(e.db).leaves())['agent.tasks']?.value).toMatchObject({
       'title-summary': { reasoningLevel: 'high', schedule: { enabled: true } },
@@ -134,7 +159,7 @@ it('refuses malformed supplied If-Match on scalar and embedding settings without
       request.headers.set('if-match', revision);
       const response = await worker.fetch(request, env);
       expect(response.status).toBe(400);
-      expect(await response.json()).toMatchObject({ applied: false, reason: 'malformed', detail: expect.stringContaining('Invalid If-Match') });
+      expect(await response.json()).toMatchObject({ applied: false, reason: 'malformed', detail: expect.stringContaining(path === '/api/embedding' ? 'an object of the three embedding revisions' : 'a whole number') });
     }
     expect(await settingsWriter(e.db).leaves()).toEqual({});
   } finally { e.sqlite.close(); }
@@ -148,7 +173,7 @@ it('keeps a supplied embedding revision map as a precondition', async () => {
     await settingsWriter(e.db, { target: 'cloudflare' }).setEmbedding({ provider: 'workers-ai' }, 'other', 1);
     const response = await worker.fetch(request, { ...e.env, ...OWNER_ENV });
     expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'embedding.provider', revision: 1 });
+    expect(await response.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'embedding.provider', actual: 1, expected: 0, next: expect.stringContaining('If-Match') });
     expect((await settingsWriter(e.db).leaves())['embedding.provider']?.updatedBy).toBe('other');
   } finally { e.sqlite.close(); }
 });
@@ -196,8 +221,8 @@ it('distinguishes reset then the same value at the same timestamp and rejects st
   for (const guard of guards) {
     expect(await r.db.prepare(`SELECT ${guard.sql} AS unchanged`).bind(...guard.params).first()).toEqual({ unchanged: 0 });
   }
-  expect(await writer.setLeaf(leaf, 'stale', 'owner', 1, revision)).toEqual({ applied: false, refusal: { reason: 'conflict', leaf, revision: current } });
-  expect(await writer.resetLeaf(leaf, 'owner', 1, revision)).toMatchObject({ applied: false, refusal: { reason: 'conflict', revision: current } });
+  expect(await writer.setLeaf(leaf, 'stale', 'owner', 1, revision)).toEqual({ applied: false, refusal: { reason: 'conflict', leaf, actual: current, expected: revision, next: expect.stringContaining(`If-Match: ${current}`) } });
+  expect(await writer.resetLeaf(leaf, 'owner', 1, revision)).toMatchObject({ applied: false, refusal: { reason: 'conflict', actual: current, expected: revision } });
   expect((await writer.leaves())[leaf]?.value).toBe('same');
   await writer.resetLeaf(leaf, 'owner', 1);
   const absentRevision = (await settingsRevisions(r.db))[leaf]!;
@@ -295,7 +320,7 @@ it('answers a stale API edit with 409, its current revision, and the current rea
   expect((await worker.fetch(await asOwnerPut(e.db, path, { value: 'winner' }), env)).status).toBe(200);
   const refused = await worker.fetch(stale, env);
   expect(refused.status).toBe(409);
-  expect(await refused.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'instructions.template', revision: 1 });
+  expect(await refused.json()).toEqual({ applied: false, reason: 'conflict', leaf: 'instructions.template', actual: 1, expected: 0, next: expect.stringContaining('If-Match: 1') });
   const current = await worker.fetch(await asOwner(e.db, '/api/settings'), env);
   const answer = await current.json() as { leaves: { leaf: string; value: unknown; revision: string }[] };
   expect(answer.leaves.find(row => row.leaf === 'instructions.template')).toMatchObject({ value: 'winner', revision: '1' });

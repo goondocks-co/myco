@@ -2,7 +2,7 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { allTasksRequireRepository } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from '../core/adapters.js';
 import { admissionForTask, RETAINED_TASKS } from '../core/task-catalogue.js';
-import { capabilityExplicitlyOnSql, capabilityOnSql } from '../core/settings.js';
+import { capabilityExplicitlyOnSql, capabilityOnSql } from '../db/settings/admission.js';
 import { scheduleLeaves, scheduledTasks } from '../core/schedule-rules.js';
 import { projectsDriving, type ProjectSet, type ReadScope } from './scope.js';
 

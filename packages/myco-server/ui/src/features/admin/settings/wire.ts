@@ -8,7 +8,7 @@
  * `tests/myco-server/settings-wire.test.ts` holds each to the server's own
  * under `typecheck:tests`.
  */
-import type { EffectiveSetting, EmbeddingChoices } from '@goondocks/myco-shared/settings-contract';
+import type { EffectiveSetting, EmbeddingChoices, IdleCloseDeadlines } from '@goondocks/myco-shared/settings-contract';
 import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 
 /** `GET /api/settings`: one leaf, what is stored for it, and the effective answer of the policy that acts on it. */
@@ -27,6 +27,8 @@ export type LeafRow = {
   error?: 'invalid_value';
   remedy?: string;
   repair?: 'reset-leaf' | 'clean-document';
+  /** Set on the idle-close leaf: the value configured, the one a rebuild is moving to, and the one learning runs on now. */
+  learningDeadlines?: IdleCloseDeadlines;
 } & EffectiveSetting;
 
 export interface SettingsAnswer {

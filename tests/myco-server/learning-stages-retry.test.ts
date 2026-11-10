@@ -1,3 +1,4 @@
+import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
 import { commitRunUpdate } from '@myco-server-worker/core/release.js';
 import { storedCardFields } from '@goondocks/myco-shared/turn-card';
@@ -67,6 +68,7 @@ it('waits for the shared idle window at card and learning claims, rechecks conta
     expect(await db.prepare(`SELECT ${activeCards.sql} AS due`).bind(...activeCards.params).first()).toEqual({ due: 0 });
     expect(await poll(NOW + HOUR)).toMatchObject({ claimed: false });
     await settingsWriter(db).setLeaf('agent.titling_idle_close_minutes', 5, 'owner', NOW);
+    await catchUpProjections(db, { budget: { calls: 120, wallMs: 60_000 } });
     const idle = NOW + 5 * 60_000;
     expect(await poll(idle - 1)).toMatchObject({ claimed: false });
     harness.env.db = beforeWriteBatch(db, sql => sql.includes('INSERT INTO agent_runs (project_id, id, agent_id, task, status, origin, subject'),

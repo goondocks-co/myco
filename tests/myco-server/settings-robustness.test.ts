@@ -62,7 +62,7 @@ describe('an embedding write that loses a race', () => {
       },
     };
     const result = await settingsWriter(racing, { target: 'cloudflare' }).setEmbedding({ provider: 'workers-ai', model: '@cf/baai/bge-large-en-v1.5' }, 'mem_machine_1', NOW);
-    expect(result).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider', revision: 1 } });
+    expect(result).toEqual({ applied: false, refusal: { reason: 'conflict', leaf: 'embedding.provider', actual: expect.any(Number), expected: expect.any(Number), next: expect.any(String) } });
     expect(e.sqlite.query(`SELECT leaf, value, updated_by FROM deployment_settings WHERE leaf LIKE 'embedding.%' ORDER BY leaf`).all())
       .toEqual([{ leaf: 'embedding.provider', value: '"openrouter"', updated_by: 'mem_other' }]);
   });

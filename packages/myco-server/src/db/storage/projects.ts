@@ -1,5 +1,6 @@
 import { commit, assertion, read, readSet, refusalCode, refusalDetail, write } from '../index.js';
-import { leafOffChecks, settingTexts } from '../../core/settings.js';
+import { settingTexts } from '../../core/settings.js';
+import { leafOffChecks } from '../../db/settings/admission.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { MAX_PROJECTS } from '../../constants.js';
 import { emit } from '../../telemetry.js';

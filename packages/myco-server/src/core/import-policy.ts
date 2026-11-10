@@ -25,7 +25,8 @@
 import type { RelationalStore } from './adapters.js';
 import { refusal, type Refusal } from '../telemetry.js';
 import { IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
-import { leafOffChecks, settingTexts } from './settings.js';
+import { settingTexts } from './settings.js';
+import { leafOffChecks } from '../db/settings/admission.js';
 
 const IMPORT_ENABLED_LEAF = 'import.enabled';
 const IMPORT_WINDOW_DAYS_LEAF = 'import.window_days';

@@ -3,7 +3,7 @@ import { budgetActivation, BUDGET_ENABLED, type BudgetActivation } from '../meta
 import { BUDGET_WINDOW_MS } from '../../core/budget-policy.js';
 import { spentUsdSql as spentSql, spendReadySql } from './admission.js';
 
-import { effectiveBudgetSql } from '../../core/settings.js';
+import { effectiveBudgetSql } from '../../db/settings/admission.js';
 import { RUN_ADMISSION_READY_SQL } from './live.js';
 import { read, readSet } from '../index.js';
 

@@ -3,7 +3,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { commit } from '@myco-server-worker/db/index.js';
 import { sessionProgressStatement } from '@myco-server-worker/db/learning/progress.js';
 import { advanceLearningDeadlines, LEARNING_ADVANCE_PAGE, learningHeadSession, stageHead } from '@myco-server-worker/db/learning/ready.js';
-import { acceptQuietPolicy, readQuietPolicy } from '@myco-server-worker/db/learning/quiet-policy.js';
+import { readQuietPolicy } from '@myco-server-worker/db/learning/quiet-policy.js';
 import { catchUpPhase, catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { readLearningStatus } from '@myco-server-worker/core/learning-sessions.js';
 import { selectPulled } from '@myco-server-worker/core/pulled-stages.js';
@@ -136,22 +136,59 @@ it('ages a session out of the fresh stage after its source window and keeps a re
   });
 });
 
-it('accepts an idle-close policy generation, refuses an older one, rebuilds in keyed pages and activates when complete', async () => {
+const IDLE_CLOSE = 'agent.titling_idle_close_minutes';
+const heldQuiet = (db: RelationalStore) => db.prepare("SELECT quiet_at,quiet_generation FROM learning_sessions WHERE session_id='held'").first();
+
+it('rebuilds a changed idle close through the shared catch-up, in keyed pages, and activates the generation when complete', async () => {
   await withDocumentStores(async db => {
     await db.prepare("INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('project','held','t',1,?)").bind(NOW).run();
     await sessionRow(db, 'held');
-    expect(await readQuietPolicy(db)).toBeNull();
-    expect(await acceptQuietPolicy(db, { generation: 2, minutes: 30, now: NOW })).toBe('recorded');
-    expect(await acceptQuietPolicy(db, { generation: 1, minutes: 5, now: NOW })).toBe('stale');
-    expect(await acceptQuietPolicy(db, { generation: 2, minutes: 30, now: NOW })).toBe('current');
-    expect(await readQuietPolicy(db)).toEqual({ generation: 2, pendingMinutes: 30, effectiveMinutes: null, state: 'building' });
+    const writer = settingsWriter(db);
+    expect(await writer.setLeaf(IDLE_CLOSE, 30, 'owner', NOW)).toEqual({ applied: true });
+    const rebuilding = await readQuietPolicy(db);
+    expect(rebuilding).toMatchObject({ pendingMinutes: 30, effectiveMinutes: 120, state: 'building' });
 
     await catchUpProjections(db, { budget: { calls: 120, wallMs: 60_000 } });
-    expect(await readQuietPolicy(db)).toEqual({ generation: 2, pendingMinutes: null, effectiveMinutes: 30, state: 'active' });
-    expect(await db.prepare("SELECT quiet_at,quiet_generation FROM learning_sessions WHERE session_id='held'").first())
-      .toEqual({ quiet_at: NOW + 30 * 60_000, quiet_generation: 2 });
-    expect(await acceptQuietPolicy(db, { generation: 3, minutes: 90, now: NOW })).toBe('recorded');
-    expect(await readQuietPolicy(db)).toMatchObject({ generation: 3, pendingMinutes: 90, effectiveMinutes: 30, state: 'building' });
+    expect(await readQuietPolicy(db)).toEqual({ generation: rebuilding!.generation, pendingMinutes: null, effectiveMinutes: 30, state: 'active' });
+    expect(await heldQuiet(db)).toEqual({ quiet_at: NOW + 30 * 60_000, quiet_generation: rebuilding!.generation });
+
+    expect(await writer.resetLeaf(IDLE_CLOSE, 'owner', NOW)).toEqual({ applied: true });
+    const reset = await readQuietPolicy(db);
+    expect(reset).toMatchObject({ pendingMinutes: 120, effectiveMinutes: 30, state: 'building' });
+    expect(reset!.generation).toBeGreaterThan(rebuilding!.generation);
+    await catchUpProjections(db, { budget: { calls: 120, wallMs: 60_000 } });
+    expect(await readQuietPolicy(db)).toMatchObject({ effectiveMinutes: 120, state: 'active' });
+    expect(await heldQuiet(db)).toMatchObject({ quiet_at: NOW + 120 * 60_000 });
+  });
+});
+
+it('starts no rebuild when a write leaves the idle-close minutes as they stand', async () => {
+  await withDocumentStores(async db => {
+    const writer = settingsWriter(db);
+    expect(await writer.setLeaf(IDLE_CLOSE, 120, 'owner', NOW)).toEqual({ applied: true });
+    expect(await readQuietPolicy(db)).toMatchObject({ effectiveMinutes: 120, pendingMinutes: null, state: 'active' });
+    expect(await db.prepare("SELECT done FROM projection_catchup WHERE phase='learningQuietPolicy'").first()).toEqual({ done: 1 });
+  });
+});
+
+it('keeps an existing session on the value in effect while a change is moving, gives a new session the new value, and moves both once the walk completes', async () => {
+  await withDocumentStores(async db => {
+    await db.prepare("INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('project','waiting','t',1,?)").bind(NOW).run();
+    await sessionRow(db, 'waiting');
+    expect(await settingsWriter(db).setLeaf(IDLE_CLOSE, 30, 'owner', NOW)).toEqual({ applied: true });
+    const quiet = (session: string) => db.prepare('SELECT quiet_at FROM learning_sessions WHERE session_id=?').bind(session).first();
+    await db.prepare("UPDATE sessions SET last_received_at=? WHERE session_id='waiting'").bind(NOW + 1000).run();
+    expect(await quiet('waiting')).toEqual({ quiet_at: NOW + 1000 + 120 * 60_000 });
+
+    await db.prepare("INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('project','late','t',1,?)").bind(NOW).run();
+    await sessionRow(db, 'late');
+    expect(await quiet('late')).toEqual({ quiet_at: NOW + 30 * 60_000 });
+
+    await catchUpProjections(db, { budget: { calls: 120, wallMs: 60_000 } });
+    expect(await readQuietPolicy(db)).toMatchObject({ effectiveMinutes: 30, state: 'active' });
+    expect(await quiet('waiting')).toEqual({ quiet_at: NOW + 1000 + 30 * 60_000 });
+    await db.prepare("UPDATE sessions SET last_received_at=? WHERE session_id='late'").bind(NOW + 2000).run();
+    expect(await quiet('late')).toEqual({ quiet_at: NOW + 2000 + 30 * 60_000 });
   });
 });
 
@@ -207,17 +244,16 @@ it('does not activate a newer idle-close generation from a stale final page', as
   await withDocumentStores(async db => {
     await db.prepare("INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('project','held','t',1,?)").bind(NOW).run();
     await sessionRow(db, 'held');
-    expect(await acceptQuietPolicy(db, { generation: 1, minutes: 600, now: NOW })).toBe('recorded');
+    expect(await settingsWriter(db).setLeaf(IDLE_CLOSE, 600, 'owner', NOW)).toEqual({ applied: true });
     const raced = beforeWriteBatch(db, sql => sql.includes("SET state='active'"), async () => {
-      expect(await acceptQuietPolicy(db, { generation: 2, minutes: 30, now: NOW })).toBe('recorded');
+      expect(await settingsWriter(db).setLeaf(IDLE_CLOSE, 30, 'owner', NOW)).toEqual({ applied: true });
     }, true);
     await catchUpPhase(raced, 'learningQuietPolicy', NOW);
-    expect(await readQuietPolicy(db)).toEqual({ generation: 2, pendingMinutes: 30, effectiveMinutes: null, state: 'building' });
+    expect(await readQuietPolicy(db)).toMatchObject({ pendingMinutes: 30, effectiveMinutes: 120, state: 'building' });
 
     await catchUpPhase(db, 'learningQuietPolicy', NOW);
-    expect(await readQuietPolicy(db)).toEqual({ generation: 2, pendingMinutes: null, effectiveMinutes: 30, state: 'active' });
-    expect(await db.prepare("SELECT quiet_at,quiet_generation FROM learning_sessions WHERE session_id='held'").first())
-      .toEqual({ quiet_at: NOW + 30 * 60_000, quiet_generation: 2 });
+    expect(await readQuietPolicy(db)).toMatchObject({ pendingMinutes: null, effectiveMinutes: 30, state: 'active' });
+    expect(await heldQuiet(db)).toMatchObject({ quiet_at: NOW + 30 * 60_000 });
   });
 });
 

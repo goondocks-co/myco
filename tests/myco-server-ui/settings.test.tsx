@@ -13,7 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { LEAF_FIELDS, LEAF_GROUPS, groupsOf } from '../../packages/myco-server/ui/src/features/admin/settings/catalogue';
-import { agentListRefusal, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
+import { agentListRefusal, deadlineWords, LeafControl, savedWords, WORKER_AGENTS } from '../../packages/myco-server/ui/src/features/admin/settings/LeafControl';
 import { isRetired } from '../../packages/myco-server/ui/src/features/admin/settings/retired';
 import { effectiveSettings } from '../../packages/myco-server/src/core/settings-policies';
 import { sqliteEnv } from '../myco-server/helpers/fixtures';
@@ -115,7 +115,7 @@ interface Sent { method: string; path: string; body: unknown; headers: Record<st
 const originalFetch = globalThis.fetch;
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 
-function server(routes: Record<string, (init?: RequestInit) => Response>): { sent: Sent[] } {
+function server(routes: Record<string, (init?: RequestInit) => Response | Promise<Response>>): { sent: Sent[] } {
   const sent: Sent[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -127,7 +127,7 @@ function server(routes: Record<string, (init?: RequestInit) => Response>): { sen
   return { sent };
 }
 
-const base = (extra: Record<string, (init?: RequestInit) => Response> = {}) => ({
+const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<Response>> = {}) => ({
   '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
@@ -157,10 +157,9 @@ function Where() {
   return <span data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</span>;
 }
 
-function mount(path: string) {
+function mount(path: string, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const proto = window.HTMLElement.prototype as unknown as { scrollIntoView?: () => void };
   proto.scrollIntoView ??= () => undefined;
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App /><Where /></MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
@@ -504,6 +503,16 @@ describe('Settings, in five sections', () => {
   it('reads Settings again while a switch stands, and stops once it ends', () => {
     expect(settingsMoving({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: BUILDING } } as unknown as Parameters<typeof settingsMoving>[0])).toBe(true);
     expect(settingsMoving({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: null } } as unknown as Parameters<typeof settingsMoving>[0])).toBe(false);
+  });
+
+  it('reads Settings again while a changed quiet time is reaching sessions, and says what is in effect only until it has', () => {
+    const answer = (rebuilding: boolean) => ({ ...leaves(), embedding: { ...HOSTED_CHOICES, switch: null }, leaves: [{ leaf: 'agent.titling_idle_close_minutes', learningDeadlines: { configured: 60, pending: rebuilding ? 60 : null, effective: rebuilding ? 120 : 60, rebuilding } }] }) as unknown as Parameters<typeof settingsMoving>[0];
+    expect(settingsMoving(answer(true))).toBe(true);
+    expect(settingsMoving(answer(false))).toBe(false);
+    const moving = deadlineWords({ configured: 60, pending: 60, effective: 120, rebuilding: true })!;
+    expect(moving).toBe('Sessions Myco hasn’t reached yet still wait 120 minutes. Myco is moving them to 60; new sessions and the ones it has reached already use 60.');
+    expect(deadlineWords({ configured: 60, pending: null, effective: 60, rebuilding: false })).toBeNull();
+    expect(deadlineWords(undefined)).toBeNull();
   });
 
   it('shows a switch that waits for its provider, one that has not moved, and the sources it left out, each saying why', async () => {
@@ -1021,12 +1030,42 @@ describe('Title imported sessions', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
     fireEvent.click(toggle);
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('didn’t turn titling imported sessions on');
+    expect(alert.textContent).toContain('The server refused (503).');
     expect(screen.getByRole('switch', { name: 'Title imported sessions' }).getAttribute('aria-checked')).toBe('false');
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.getByRole('switch', { name: 'Title imported sessions' }).getAttribute('aria-checked')).toBe('true'));
     expect(screen.queryByRole('alert')).toBeNull();
     expect(puts).toBe(2);
+  });
+
+  it('names a stale titling switch and holds Try again until the settings have been read again', async () => {
+    let holding = false;
+    let release = (): void => undefined;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    server(base({
+      '/api/settings': async () => {
+        if (holding) await held;
+        return Response.json(leaves());
+      },
+      '/api/titling-backfill': (init) => init?.method === 'PUT'
+        ? Response.json({ applied: false, reason: 'conflict', leaf: 'agent.tasks', actual: 2, expected: 1, next: 'read again' }, { status: 409 })
+        : Response.json({ ...TITLING, backfillEnabled: false, enabled: false }),
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mount('/settings', client);
+    const toggle = await screen.findByRole('switch', { name: 'Title imported sessions' });
+    await waitFor(() => expect(client.getQueryData(['settings'])).toBeDefined());
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    fireEvent.click(toggle);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('This changed since the page read it.');
+    const again = () => within(screen.getByRole('alert')).getByRole('button', { name: 'Try again' }) as HTMLButtonElement;
+    await waitFor(() => expect(again().disabled).toBe(false));
+    holding = true;
+    void client.invalidateQueries({ queryKey: ['settings'] });
+    await waitFor(() => expect(again().disabled).toBe(true));
+    release();
+    await waitFor(() => expect(again().disabled).toBe(false));
   });
 
   it('words titling in every state, and its schedule', () => {

@@ -6,6 +6,7 @@ import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
 import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS } from '../../helpers/stub-profile-harness.ts';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
 import { lit, MACHINE_ID, MEMBER_ID, type ParityScenario, type ParityTarget, waitFor } from '../harness.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 /** Well under the scenario timeout, so a worker that cannot claim reports rather than hangs. */
 const ATTACH_BOUND_MS = 45_000;
@@ -75,8 +76,8 @@ export const workerWire: ParityScenario = {
     const previous = ((await settings.json()) as { leaves: Array<{ leaf: string; configured: boolean; value: unknown }> }).leaves
       .find((entry) => entry.leaf === credentialLeaf);
     if (previous === undefined) throw new Error(`${target.name}: missing ${credentialLeaf} setting`);
-    const credentialSetting = (method: 'PUT' | 'DELETE', value?: unknown) => fetch(`${target.url}/api/settings/${credentialLeaf}`, {
-      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
+    const credentialSetting = async (method: 'PUT' | 'DELETE', value?: unknown) => fetch(`${target.url}/api/settings/${credentialLeaf}`, {
+      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...await revisionHeaders(target, `/api/settings/${credentialLeaf}`) },
       ...(method === 'PUT' ? { body: JSON.stringify({ value }) } : {}),
     });
 

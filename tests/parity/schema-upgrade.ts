@@ -54,6 +54,7 @@ const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | n
   agent_run_steps: { kind: 'read', outcome: 'ok' },
   session_views: { legacy: 'live' },
   plan_promotions: { state: 'pending' },
+  learning_quiet_policy: { state: 'active' },
   fact_classes: { table_name: 'prompt_batches', class: 'legacy' },
   view_instances: { base: 'full', state: 'live' },
   view_visible: { role: 'live' },

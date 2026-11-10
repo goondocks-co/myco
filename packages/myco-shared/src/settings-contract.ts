@@ -45,6 +45,15 @@ export interface EffectiveSetting {
   storedApplies?: boolean | null;
 }
 
+/** The idle-close minutes learning deadlines run on: what is set, what a rebuild is moving to, and what applies now. */
+export interface IdleCloseDeadlines {
+  configured: number;
+  /** The value a running rebuild is moving to, or null when none is building. */
+  pending: number | null;
+  effective: number;
+  rebuilding: boolean;
+}
+
 /** One embedding model as a target offers it, and why it cannot be chosen now, if it cannot. */
 export interface EmbeddingModelChoice {
   id: string;

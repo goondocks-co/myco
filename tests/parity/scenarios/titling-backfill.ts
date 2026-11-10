@@ -1,6 +1,7 @@
 import { expect } from 'bun:test';
 import { documentsPublished, expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
+import { revisionHeaders } from '../settings-revision.ts';
 
 /**
  * The imported-session backfill (#1203) on both targets: an import brings a
@@ -37,7 +38,7 @@ export const titlingBackfill: ParityScenario = {
     };
     const owner = async (method: string, path: string, body?: unknown) => {
       const res = await fetch(`${target.url}${path}`, {
-        method, headers: { ...target.ownerHeaders(), origin: target.url, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        method, headers: { ...target.ownerHeaders(), origin: target.url, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...(method === 'PUT' && path === '/api/titling-backfill' ? await revisionHeaders(target, path) : {}) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       expect(res.status).toBe(200);

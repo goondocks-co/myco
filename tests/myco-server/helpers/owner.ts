@@ -1,6 +1,7 @@
 import { setCookie, signSession } from '@myco-server-worker/auth/owner/cookie.js';
 import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { settingsRevisions } from '@myco-server-worker/core/settings.js';
 
 /** A session secret at the enforced minimum length, so the fixture exercises the real floor. */
 export const SESSION_SECRET = 'test-session-secret-of-sufficient-length';
@@ -28,6 +29,28 @@ export function seedMemberRoleAccount(sqlite: { query(sql: string): { run(...arg
   sqlite.query(`UPDATE members SET github_id = ?, role = 'member' WHERE id = '${MEMBER_PRINCIPAL.id}'`).run(MEMBER_SUB);
 }
 
+/**
+ * The revision a settings editor read before this write, as the If-Match a settings route requires: read now, so a
+ * test sets its own `if-match` afterwards to act as a stale or malformed editor, and deletes the header to act as a
+ * caller that sends none.
+ */
+export async function settingsRevisionHeaders(db: RelationalStore, path: string, body?: unknown): Promise<Record<string, string>> {
+  const project = (body as { project_id?: unknown } | undefined)?.project_id;
+  const leaf = /^\/api\/settings\/([^/?]+)/.exec(path)?.[1];
+  if (leaf !== undefined) {
+    const revisions = await settingsRevisions(db, typeof project === 'string' ? project : '');
+    return { 'if-match': String(revisions[decodeURIComponent(leaf)] ?? 0) };
+  }
+  if (path === '/api/embedding') {
+    const revisions = await settingsRevisions(db);
+    return { 'if-match': JSON.stringify(Object.fromEntries(['embedding.provider', 'embedding.model', 'embedding.base_url'].map(name => [name, revisions[name] ?? 0]))) };
+  }
+  if (path === '/api/titling-backfill') return { 'if-match': String((await settingsRevisions(db))['agent.tasks'] ?? 0) };
+  const capability = /^\/api\/projects\/([^/]+)\/capabilities\/([^/?]+)/.exec(path);
+  if (capability !== null) return { 'if-match': String((await settingsRevisions(db, `capability:${decodeURIComponent(capability[1]!)}`))[decodeURIComponent(capability[2]!)] ?? 0) };
+  return {};
+}
+
 /** An authenticated owner GET. */
 export const asOwner = async (db: RelationalStore, path: string): Promise<Request> =>
   new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4' } });
@@ -36,7 +59,7 @@ export const asOwner = async (db: RelationalStore, path: string): Promise<Reques
 export const asOwnerPatch = async (db: RelationalStore, path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {
     method: 'PATCH',
-    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json', ...await settingsRevisionHeaders(db, path, body) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -44,7 +67,7 @@ export const asOwnerPatch = async (db: RelationalStore, path: string, body?: unk
 export const asOwnerPut = async (db: RelationalStore, path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {
     method: 'PUT',
-    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json', ...await settingsRevisionHeaders(db, path, body) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -52,6 +75,6 @@ export const asOwnerPut = async (db: RelationalStore, path: string, body?: unkno
 export const asOwnerPost = async (db: RelationalStore, path: string, body?: unknown): Promise<Request> =>
   new Request(`https://s${path}`, {
     method: 'POST',
-    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+    headers: { cookie: await ownerCookie(db), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json', ...await settingsRevisionHeaders(db, path, body) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });

@@ -12,7 +12,7 @@ import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.j
 import type { DispatchLimits } from './limits.js';
 import type { ClaimedInput } from './runs.js';
 import { readProjectSpend } from '../db/runs/admission.js';
-import { capabilityOnSql, projectAcceptsWorkSql } from './settings.js';
+import { capabilityOnSql, projectAcceptsWorkSql } from '../db/settings/admission.js';
 import { admissionForTask } from './task-catalogue.js';
 import { CURATION_STAGE } from './spore-curation.js';
 import { LEARNING_STAGES } from './learning-stages.js';

@@ -5,6 +5,7 @@ import { loadRecallFixture, seedStatements } from '../recall/fixture.ts';
 import { startEmbeddingStub } from '../recall/embedding-stub.ts';
 import { compareToBaseline, describeComparison, mustNotRegressions, withTarget, type Served } from '../recall/score.ts';
 import { readRecallBaseline, writeRecallBaseline } from '../recall/baseline-file.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 /** Steps past which calibration is taken as stuck: one per source, then the hubness pages, with room to spare. */
 const MAX_EMBEDDING_STEPS = 3_000;
@@ -33,7 +34,7 @@ export const recallGold: ParityScenario = {
     const now = Date.now();
     const projectId = target.projectId;
     const owner = async (route: string, method: string, body: unknown) => {
-      const res = await fetch(`${target.url}${route}`, { method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(`${target.url}${route}`, { method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...(route.includes('/capabilities/') ? await revisionHeaders(target, route) : {}) }, body: JSON.stringify(body) });
       expect(`${method} ${route}: ${res.status}`).toBe(`${method} ${route}: 200`);
     };
     const post = async <T,>(route: string, token: string, body: unknown): Promise<T> => {

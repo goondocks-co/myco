@@ -25,6 +25,7 @@ import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
  */
 import { Database } from 'bun:sqlite';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
+import { revisionHeaders } from '../parity/settings-revision.ts';
 import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
@@ -432,12 +433,13 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   await expectOk(await fetch(`${url}/api/enrollment`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ memberId: READER.id, ttlMinutes: 60 }) }), 'add a machine for Lin');
   // Learning and the code map are switched on where Myco's runs are, so a member can start either from Myco's work.
   for (const capability of ['vault_evolution', 'canopy']) {
-    await expectOk(await fetch(`${url}/api/projects/${idOf('myco')}/capabilities/${capability}`, {
-      method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ enabled: true }),
+    const path = `/api/projects/${idOf('myco')}/capabilities/${capability}`;
+    await expectOk(await fetch(`${url}${path}`, {
+      method: 'PUT', headers: { ...ownerHeaders, ...await revisionHeaders({ url, ownerHeaders: () => ownerHeaders }, path) }, body: JSON.stringify({ enabled: true }),
     }), `switch on ${capability}`);
   }
   // Imported sessions are titled, as production has it.
-  await expectOk(await fetch(`${url}/api/titling-backfill`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ enabled: true }) }), 'title imported sessions');
+  await expectOk(await fetch(`${url}/api/titling-backfill`, { method: 'PUT', headers: { ...ownerHeaders, ...await revisionHeaders({ url, ownerHeaders: () => ownerHeaders }, '/api/titling-backfill') }, body: JSON.stringify({ enabled: true }) }), 'title imported sessions');
 
   for (const repository of WAITING_REPOSITORIES) {
     const res = await fetch(`${url}${REPORT_UNCAPTURED_PATH}`, {
@@ -467,7 +469,8 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   if (joined.persisted !== true) throw new Error(`resolve old-site: ${JSON.stringify(joined)}`);
   await expectOk(await fetch(`${url}/api/projects/${String(joined.projectId)}/archive`, { method: 'POST', headers: ownerHeaders }), 'archive old-site');
   // While project creation is kept with admins, prototype has no project to join; creation is handed back after.
-  const creation = (value: boolean) => fetch(`${url}/api/settings/capture.auto_create_projects`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ value }) });
+  const creationPath = '/api/settings/capture.auto_create_projects';
+  const creation = async (value: boolean) => fetch(`${url}${creationPath}`, { method: 'PUT', headers: { ...ownerHeaders, ...await revisionHeaders({ url, ownerHeaders: () => ownerHeaders }, creationPath) }, body: JSON.stringify({ value }) });
   await expectOk(await creation(false), 'keep project creation with admins');
   for (const repository of REFUSED_REPOSITORIES) {
     const refused = await resolve(repository.machine, repository);
@@ -476,7 +479,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   await expectOk(await creation(true), 'let machines create projects again');
 
   // Search reads with Ollama's bge-m3, chosen before anything was built, and a switch to nomic-embed-text is under way.
-  await expectOk(await fetch(`${url}/api/embedding`, { method: 'PUT', headers: ownerHeaders, body: JSON.stringify({ provider: 'ollama', model: 'bge-m3' }) }), 'choose the embedding model');
+  await expectOk(await fetch(`${url}/api/embedding`, { method: 'PUT', headers: { ...ownerHeaders, ...await revisionHeaders({ url, ownerHeaders: () => ownerHeaders }, '/api/embedding') }, body: JSON.stringify({ provider: 'ollama', model: 'bge-m3' }) }), 'choose the embedding model');
   await seedSessionAudit(ctx.databasePath, sessionIds[OUTCOME_SESSION]!, sporeIds[0]!);
   seedEmbeddingSwitch(ctx.databasePath, now);
 

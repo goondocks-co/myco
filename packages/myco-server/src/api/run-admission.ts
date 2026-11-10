@@ -5,7 +5,8 @@ import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runDeadline } from '../core/run-deadline.js';
 export { runDeadline } from '../core/run-deadline.js';
 import { getRun, isTerminalRunStatus, liveRunsOfCredential, runsOfCredential, type HeldRun, type RunRow, type RunCaller } from '../db/runs/lifecycle.js';
-import { projectWorkEnabled, taskWorkEnabled } from '../core/settings.js';
+import { taskWorkEnabled } from '../core/settings.js';
+import { projectWorkEnabled } from '../db/settings/admission.js';
 import { strictName } from '@goondocks/myco-shared/run-text';
 import { decodeRunUpdate, endedAnswer, RUN_UPDATE_FIELDS } from './run-fields.js';
 

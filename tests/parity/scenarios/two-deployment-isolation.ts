@@ -12,6 +12,7 @@ import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
 import { RUN_TOOL_REGISTRY } from '@myco-server-worker/mcp/run-surface.js';
 import { matchRoute, ROUTES, type Route } from '@myco-server-worker/routes.js';
 import { lit, MACHINE_ID, MEMBER_ID, SESSION_SECRET, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 const ROUTE_VALUES: Record<string, string> = {
   projectId: 'proj_parity', sessionId: 'session_isolation', runId: 'run_isolation',
@@ -39,7 +40,7 @@ function sourceIp(): string {
 async function request(target: ParityTarget, method: string, path: string, headers: Record<string, string>, body = '{}'): Promise<Response> {
   return fetch(`${target.url}${path}`, {
     method,
-    headers: { ...headers, origin: target.url, 'cf-connecting-ip': sourceIp(), 'content-type': 'application/json' },
+    headers: { ...headers, origin: target.url, 'cf-connecting-ip': sourceIp(), 'content-type': 'application/json', ...(method === 'PUT' && path.startsWith('/api/settings/') ? await revisionHeaders(target, path) : {}) },
     body: method === 'GET' || method === 'HEAD' ? undefined : body,
   });
 }

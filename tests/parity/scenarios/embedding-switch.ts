@@ -2,6 +2,7 @@ import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { switchVector } from '../embedding-switch/vectors.ts';
+import { revisionHeaders } from '../settings-revision.ts';
 
 const AGENT_ID = 'embedding-switch';
 /** Runs, each with its own credential, the embedding steps rotate across. */
@@ -43,7 +44,7 @@ export const embeddingSwitch: ParityScenario = {
     const projectId = target.projectId;
     const models = MODELS[target.name];
     const owner = async (route: string, method: string, body?: unknown) => fetch(`${target.url}${route}`, {
-      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...(route === '/api/embedding' && method === 'PUT' ? await revisionHeaders(target, route) : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const stub = target.name === 'selfhosted' ? startStub(models.dimensions) : null;
     try {

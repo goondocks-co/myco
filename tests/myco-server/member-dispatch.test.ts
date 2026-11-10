@@ -12,7 +12,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
-import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, PRINCIPAL, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
+import { MEMBER_PRINCIPAL, MEMBER_SUB, OWNER_ENV, PRINCIPAL, ownerCookie, seedMemberRoleAccount, settingsRevisionHeaders } from './helpers/owner.js';
 import { CLOCK_ACTOR, readScheduleFacts } from '@myco-server-worker/core/scheduled-tasks.js';
 import {
   MEMBER_RUNS_PER_DAY_DEFAULT,
@@ -61,7 +61,7 @@ function harness(settings: Record<string, unknown> = {}, opts: { slow?: boolean 
   const send = async (method: string, path: string, sub: string | undefined, body?: unknown) => {
     const res = await worker.fetch(new Request(`https://s${path}`, {
       method,
-      headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json' },
+      headers: { cookie: await ownerCookie(fixture.db, Date.now(), sub), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', 'content-type': 'application/json', ...await settingsRevisionHeaders(fixture.db, path, body) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }), env);
     return { status: res.status, retryAfter: res.headers.get('retry-after'), body: await res.json() as Record<string, any> };

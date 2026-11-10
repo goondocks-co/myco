@@ -1,6 +1,7 @@
 import {expect} from 'bun:test';
 import {lit,MEMBER_ID,type ParityScenario} from '../harness.ts';
 import {offeredHarness} from '../../myco-server/helpers/offered-harness.js';
+import { revisionHeaders } from '../settings-revision.ts';
 
 export const budgetGovernor:ParityScenario={
   name:'budget: a manual first poll bypasses held heads and its priced spend survives worker end',
@@ -9,7 +10,7 @@ export const budgetGovernor:ParityScenario={
     const now=Date.now(),project=lit(target.projectId);
     const headers={...target.ownerHeaders(),origin:target.url,'content-type':'application/json'};
     for(const [leaf,value] of [['agent.budget.daily_usd',1],['agent.harnesses.claude-code.credential','worker-login']] as const) {
-      const response=await fetch(`${target.url}/api/settings/${leaf}`,{method:'PUT',headers,body:JSON.stringify({value})});expect(response.status).toBe(200);
+      const response=await fetch(`${target.url}/api/settings/${leaf}`,{method:'PUT',headers:{...headers,...await revisionHeaders(target,`/api/settings/${leaf}`)},body:JSON.stringify({value})});expect(response.status).toBe(200);
     }
     await target.sql("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Agent','built-in',1,1)");
     await target.sql(`INSERT INTO member_credentials(id,member_id,token_hash,issued_at,expires_at,lineage_root,lineage_started_at)
