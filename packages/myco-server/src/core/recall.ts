@@ -2,8 +2,8 @@ import {
   pruneSelectedPromptAnswers,
   type ExpiredPromptAnswer,
 } from '../db/prompt-answer-retention.js';
-import { commitContextWrite, type ContextCommit } from './context-writes.js';
-import { preparePromptAnswer, prepareSessionRecord } from '../db/context-records.js';
+import { promptAnswerWrite, sessionRecordWrite } from '../db/context-records.js';
+import { rows } from '../db/index.js';
 /**
  * What a session is served: the plan-intent nudge and the session's ranked
  * items at prompt-submit time, and the Project id and the Deployment's
@@ -143,10 +143,9 @@ export async function recordSessionInjection(
   kind: string,
   now: number,
   admission: SessionWriteAdmission,
-  commit:ContextCommit=commitContextWrite,
 ): Promise<SessionRecordWrite> {
-  const [written]=await commit(db,prepareSessionRecord(db,scope.projectId,sessionId,kind,now,admission.admission));
-  if (written!.results.length === 1) return { outcome: 'recorded' };
+  const written = await rows(db, sessionRecordWrite({ project: scope.projectId, session: sessionId, kind, now }, admission.admission));
+  if (written.length === 1) return { outcome: 'recorded' };
   const refusal = await admission.refusal(db);
   return refusal === null ? { outcome: 'repeat' } : { outcome: 'refused', refusal };
 }
@@ -244,17 +243,16 @@ async function recordPromptAnswer(
   selection: InjectionCounts,
   now: number,
   classifyError?: ErrorClassifier,
-  commit:ContextCommit=commitContextWrite,
 ): Promise<PromptContext> {
   const answerId = crypto.randomUUID();
   let unrecorded: ErrorClass;
   try {
-    const [written]=await commit(db,preparePromptAnswer(db,{project:identity.projectId,session:identity.sessionId,id:answerId,promptId:naming.promptId,
+    const written = await rows(db, promptAnswerWrite({project:identity.projectId,session:identity.sessionId,id:answerId,promptId:naming.promptId,
       scopeReason:naming.scopeReason,protocol:naming.askProtocol,askedAt:naming.askedAt,receiptId:answer.receiptId??null,
       outcome:answer.context.length>0?'served':'empty',chars:answer.context.length,
       parts:answer.parts.map(part=>part.kind==='spores'?{kind:part.kind,sporeCount:part.sporeIds.length,planCount:part.planIds.length}:part),
       skipped:answer.skipped,failures,selection,now},admission.admission));
-    if (written!.results.length === 1) return { ...answer, answerId };
+    if (written.length === 1) return { ...answer, answerId };
     const refusal = await admission.refusal(db);
     if (refusal !== null) return { context: '', parts: [], skipped: answer.skipped, refusal };
     unrecorded = 'unknown';
@@ -343,13 +341,12 @@ export async function composePromptContext(
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   classifyError?: ErrorClassifier,
   timings?: ContextTimings,
-  commit:ContextCommit=commitContextWrite,
 ): Promise<PromptContext> {
   const naming: AskNaming = { promptId: input.promptId ?? null, scopeReason: input.scopeReason ?? null, askProtocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null };
   const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: naming.promptId };
   let counts = emptyInjectionCounts();
   let receiptId: string | undefined;
-  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError,commit);
+  if (!capabilityOn) return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
 
   const skipped: RecallSkip[] = [];
   const failures: RecallFailure[] = [];
@@ -362,7 +359,7 @@ export async function composePromptContext(
       prompt: input.text,
       now: input.now,
       admission: input.admission,
-    }, resolveSemantic, timings,commit).catch((error: unknown) => {
+    }, resolveSemantic, timings).catch((error: unknown) => {
       if (error instanceof InjectionFailure) counts = error.counts;
       throw error;
     });
@@ -379,7 +376,7 @@ export async function composePromptContext(
     if (!leaves.planNudge) skipped.push('plan-nudge:off');
     else if (!detectsPlanIntent(input.text)) skipped.push('plan-nudge:no_intent');
     else {
-      const nudge = await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission,commit);
+      const nudge = await recordSessionInjection(db, scope, input.sessionId, 'plan-nudge', input.now, input.admission);
       if (nudge.outcome === 'recorded') return { part: { kind: 'plan-nudge' }, text: PLAN_INTENT_NUDGE };
       skipped.push(nudge.outcome === 'repeat' ? 'plan-nudge:repeat' : 'plan-nudge:unwritable');
     }
@@ -395,7 +392,7 @@ export async function composePromptContext(
     // A receipt whose part the bound dropped never reaches the agent, so no delivery may name it; so too the nudge's record.
     ...(receiptId === undefined || !kept.some((c) => c.part.kind === 'spores') ? {} : { receiptId }),
     ...(kept.some((c) => c.part.kind === 'plan-nudge') ? { sessionRecord: 'plan-nudge' as const } : {}),
-  }, failures, counts, input.now, classifyError,commit);
+  }, failures, counts, input.now, classifyError);
 }
 
 export const SUBAGENT_CORTEX_GUIDANCE = [
@@ -436,7 +433,6 @@ export async function composeSessionContext(
    * recorded carries the session's write admission.
    */
   opts: ({ preview: true } | { preview?: false; admission: SessionWriteAdmission }) & { classifyError?: ErrorClassifier },
-  commit:ContextCommit=commitContextWrite,
 ): Promise<RecallSessionBlock> {
   const recordKind = sessionInjectionKind(input);
   const skipped: RecallSkip[] = [];
@@ -469,7 +465,7 @@ export async function composeSessionContext(
   if (kept.length === 0) return { context: '', parts: [], skipped, kind: recordKind };
 
   if (opts.preview !== true) {
-    const record = await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission,commit);
+    const record = await recordSessionInjection(db, scope, input.sessionId, recordKind, input.now, opts.admission);
     if (record.outcome === 'refused') return { context: '', parts: [], skipped, kind: recordKind, refusal: record.refusal };
     if (record.outcome === 'repeat') return { context: '', parts: [], skipped: [...skipped, 'repeat'], kind: recordKind };
   }

@@ -8,7 +8,7 @@ import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import {
   AGENT_LINE_MAX_CHARS, CURATE_LINE, estimateTokens, INJECTION_BUDGET_TOKENS, INJECTION_MIN_ITEMS, INJECTION_TARGET_ITEMS,
-  injectedPlanIds, injectedSporeIds, injectionLeaves,
+  injectionLeaves,
   itemsWithinBudget, MAX_LINE_TOKENS, MIN_PROMPT_CHARS, renderInjectionContext, selectSporesForPrompt,
   type InjectionItem, type InjectionLeaves,
 } from '@myco-server-worker/core/injection.js';
@@ -18,11 +18,14 @@ import { insertSpore } from '@myco-server-worker/db/spores/records.js';
 
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import { inheritStoreContext } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
 import * as plans from '@myco-server-worker/read/catalog/plans.js';
-import { receiptPlans } from '@myco-server-worker/read/catalog/injection-served-items.js';
+import { receiptPlans } from '@myco-server-worker/db/context/served-plans.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
+import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
+import { BACKUP_FORMAT, deploymentId, restoreArtifact } from '@myco-server-worker/core/backup.js';
 /** The admission a write by this rig's machine carries; a session no machine holds yet is writable. */
 const admit = (projectId: string, sessionId: string) => sessionWriteAdmission({ projectId, machineId: 'machine_1' }, sessionId);
 
@@ -149,7 +152,6 @@ describe('the pool', () => {
     expect(third.items.map((s) => s.id)).toEqual(['c']);
     const fourth = await select(db, { leaves: { enabled: true, maxPerPrompt: 1 }, promptId: 'p4', promptHash: 'h4' });
     expect([fourth.skipped, fourth.items.length]).toEqual(['empty', 0]);
-    expect([...(await injectedSporeIds(db, SCOPE, SESSION))].sort()).toEqual(['a', 'b', 'c']);
   });
 
   it('keeps the exclusion set to its own session', async () => {
@@ -158,7 +160,62 @@ describe('the pool', () => {
     await select(db, { sessionId: 'sess_a' });
     const other = await select(db, { sessionId: 'sess_b' });
     expect(other.items.map((s) => s.id)).toEqual(['only']);
-    expect([...(await injectedSporeIds(db, SCOPE, 'sess_b'))]).toEqual(['only']);
+  });
+});
+
+describe('what a session was served', () => {
+  it('holds receipts written before the membership out of the pool while it is built, and after', async () => {
+    const { db, sqlite } = store();
+    for (const [id, at] of [['a', NOW - 1], ['b', NOW - 2], ['c', NOW - 3]] as const) await insertSpore(db, SCOPE, spore(id, { createdAt: at }));
+    // A store upgraded with a receipt already served `a`: the receipt is held, its membership not yet built.
+    sqlite.query(`INSERT INTO spore_injections (project_id, session_id, id, prompt_id, prompt_hash, spore_ids, plan_ids, created_at)
+      VALUES (?, ?, 'before-upgrade', 'p0', 'h0', '["a"]', '[]', ?)`).run(SCOPE.projectId, SESSION, NOW - 10);
+    sqlite.query(`DELETE FROM session_served_items`).run();
+    sqlite.query(`UPDATE projection_catchup SET done = 0, after_key = '[]', frontier = NULL WHERE projection = 'session_served_items'`).run();
+    const one: InjectionLeaves = { enabled: true, maxPerPrompt: 1 };
+    expect((await select(db, { leaves: one, promptId: 'p1', promptHash: 'h1' })).items.map((s) => s.id)).toEqual(['b']);
+    while (await catchUpPhase(db, 'servedItems') > 0) { /* pages until the receipts are walked */ }
+    expect((await select(db, { leaves: one, promptId: 'p2', promptHash: 'h2' })).items.map((s) => s.id)).toEqual(['c']);
+    expect((await select(db, { leaves: one, promptId: 'p3', promptHash: 'h3' })).skipped).toBe('empty');
+  });
+
+  it('serves nothing a restored receipt served, when a catch-up finishes between the restore\'s reset and its inserts', async () => {
+    const source = store();
+    const target = store();
+    try {
+      for (const { db } of [source, target]) for (const [id, at] of [['a', NOW - 1], ['b', NOW - 2], ['c', NOW - 3]] as const) await insertSpore(db, SCOPE, spore(id, { createdAt: at }));
+      source.sqlite.query(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES(?,?,'machine_1','t',1,1)`).run(SCOPE.projectId, SESSION);
+      const two: InjectionLeaves = { enabled: true, maxPerPrompt: 2 };
+      expect((await select(source.db, { leaves: two, promptId: 'p1', promptHash: 'h1' })).items.map((s) => s.id)).toEqual(['a', 'b']);
+      const tables = ['projects', 'sessions', 'spore_injections'];
+      const body = tables.flatMap((t) => (source.sqlite.query(`SELECT * FROM ${t}`).all() as Record<string, unknown>[]).map((r) => ({ t, r })));
+      const header = { format: BACKUP_FORMAT, deploymentId: await deploymentId(target.db), schemaVersion: 97, createdAt: 2, producer: 'test',
+        counts: Object.fromEntries(tables.map((t) => [t, body.filter((b) => b.t === t).length])) };
+      // The scheduler's catch-up runs once, after the restore restarted it and before the restore's first insert lands.
+      let ran = false;
+      const racing = inheritStoreContext(target.db, {
+        prepare: (sql) => target.db.prepare(sql),
+        batch: async (statements: PreparedStatement[]) => {
+          if (!ran && (target.sqlite.query(`SELECT done FROM projection_catchup WHERE projection = 'session_served_items'`).get() as { done: number } | null)?.done === 0) {
+            ran = true;
+            for (let wake = 0, r = await catchUpProjections(target.db); r.more && wake < 200; r = await catchUpProjections(target.db), wake++) { /* drain */ }
+          }
+          return target.db.batch(statements);
+        },
+      });
+      await restoreArtifact(racing, { authorization: { kind: 'recovery' }, text: [header, ...body].map((r) => JSON.stringify(r)).join('\n') + '\n' });
+      expect(ran).toBe(true);
+      expect((await select(target.db, { leaves: two, promptId: 'p2', promptHash: 'h2' })).items.map((s) => s.id)).toEqual(['c']);
+    } finally { source.sqlite.close(); target.sqlite.close(); }
+  });
+
+  it('records what a receipt served as served in its own session and Project only', async () => {
+    const { db, sqlite } = store();
+    await insertSpore(db, SCOPE, spore('a'));
+    expect((await select(db, { promptId: 'p1', promptHash: 'h1' })).items.map((s) => s.id)).toEqual(['a']);
+    expect(sqlite.query(`SELECT kind, item_id FROM session_served_items WHERE project_id = ? AND session_id = ?`).all(SCOPE.projectId, SESSION))
+      .toEqual([{ kind: 'spore', item_id: 'a' }]);
+    expect(sqlite.query(`SELECT COUNT(*) AS n FROM session_served_items WHERE project_id = ?`).get(OTHER.projectId)).toEqual({ n: 0 });
   });
 });
 
@@ -206,7 +263,6 @@ describe('the record', () => {
     const { db } = store();
     await insertSpore(db, SCOPE, spore('a'));
     await select(db, { promptId: 'p1', promptHash: 'h1' });
-    expect([...(await injectedSporeIds(db, OTHER, SESSION))]).toEqual([]);
     // A record written for one Project does not narrow another Project's pool.
     await insertSpore(db, OTHER, spore('a'));
     const served = await select(db, { scope: OTHER, promptId: 'p1', promptHash: 'h1' });

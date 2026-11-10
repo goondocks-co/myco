@@ -154,10 +154,12 @@ it('completes a staging the materialize command accepts, over a real migrated so
       },
     });
     state.held = parts;
-    let report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxPartsPerStep: 2, maxObjectsPerStep: 1 });
-    for (let step = 0; step < 128 && report.nextInMs !== null; step += 1) {
-      report = await continueAttempt(state, port, { ...PRODUCER_LIMITS, maxPartsPerStep: 2, maxObjectsPerStep: 1 });
-    }
+    const limits = { ...PRODUCER_LIMITS, maxPartsPerStep: 2, maxObjectsPerStep: 1 };
+    // Each step inventories at most two parts or copies one object, so the export's own size and object count bound the
+    // steps a completing attempt takes; the bound only stops a producer that never finishes, whatever the schema adds.
+    const steps = Math.ceil(parts.length / limits.maxPartsPerStep) + Object.keys(sources).length + 4;
+    let report = await continueAttempt(state, port, limits);
+    for (let step = 0; step < steps && report.nextInMs !== null; step += 1) report = await continueAttempt(state, port, limits);
     expect([report.stage, report.error]).toEqual(['complete', undefined]);
 
     // The inventory the export's own rows name is the object set the canonical snapshot reader registers.

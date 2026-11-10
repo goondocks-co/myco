@@ -9,7 +9,7 @@ export const DERIVED_TABLES = [
   'learning_sessions', 'event_refs',
   ...DOCUMENT_SESSION_TABLES,
   'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
-  'transcripts', 'attachments', 'plans', 'spore_injections', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts',
+  'transcripts', 'attachments', 'plans', 'spore_injections', 'session_served_items', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts',
   'extraction_acks', 'turn_cards', 'session_artifacts', 'events',
 ] as const;
 
@@ -54,6 +54,8 @@ const SPECS: ReadonlyArray<readonly [table: string, spec: PhaseSpec]> = [
   ['attachments', { key: ['project_id', 'attachment_id'] }],
   ['session_artifacts', { key: ['project_id', 'id'] }],
   ['spore_injections', { key: ['project_id', 'session_id', 'id'], before: servedItems }],
+  // What the session was served follows its receipts, so the catch-up cannot add a member back from a receipt still held.
+  ['session_served_items', { key: ['project_id', 'session_id', 'kind', 'item_id'] }],
   ['prompt_context_answers', { key: ['project_id', 'session_id', 'id'] }],
   ['session_injections', { key: ['project_id', 'session_id', 'kind'] }],
   ['prompt_identity_conflicts', { key: ['project_id', 'session_id', 'prompt_id', 'source_key', 'source_thread', 'source_record'] }],

@@ -181,6 +181,7 @@ for (const target of ['bun', 'workerd-d1'] as const) {
         return statement;
       } };
       await db.prepare("DELETE FROM spore_injections WHERE project_id='proj_1'").run();
+      await db.prepare("DELETE FROM session_served_items WHERE project_id='proj_1'").run();
       expect(await selectSporesForPrompt(fromOracle, SCOPE, leaves, true, input, async () => semantic(matches))).toEqual({ ...selection, receiptId: expect.any(String) });
       expect(oracleSubstitutions).toBeGreaterThan(0);
       distinguishOracle = true;

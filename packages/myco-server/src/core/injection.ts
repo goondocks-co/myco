@@ -1,6 +1,7 @@
-import { injectionServedIds, injectionPromptHeld } from '../read/catalog/injection.js';
-import { commitContextWrite, type ContextCommit } from './context-writes.js';
-import { prepareInjectionReceipt } from '../db/context-records.js';
+import { injectionPromptHeld } from '../db/context-records.js';
+import { servedAmong } from '../db/context/served-items.js';
+import { commitServedReceipt } from '../db/context/served-receipt.js';
+import { readSet } from '../db/index.js';
 /**
  * What the prompt hook is served: the spores that go into one prompt, and the
  * record of having served them.
@@ -21,11 +22,13 @@ import { prepareInjectionReceipt } from '../db/context-records.js';
  * whatever the caller does. Each row carries a minted id of its own, which the
  * member reports back when the context reaches the agent.
  *
- * **A spore already served is out of the pool as of the last committed
- * record.** The exclusion set is a read, not a constraint: two prompts of one
- * session that arrive together both read the set before either writes, and each
- * may then serve the same spore. A repeated observation is the cost of leaving
- * the prompt hook off a lock.
+ * **A spore or plan already served is out of the pool as of the last committed
+ * record.** Inserting a receipt records each item it served as a member of the
+ * session, and a prompt asks only whether its own candidates are members,
+ * so the check costs the same however long the session. It is a read, not a
+ * constraint: two prompts of one session that arrive together both read before
+ * either writes, and each may then serve the same spore. A repeated observation
+ * is the cost of leaving the prompt hook off a lock.
  *
  * The row names a session and a prompt and holds NO foreign key to either. The
  * prompt hook answers before the prompt event lands on the server, so a record
@@ -272,33 +275,6 @@ export function renderInjectionContext(items: readonly InjectionItem[], more: bo
   return [HEADER, ...items.map(itemLine), curate, more ? `\n${SEARCH_LINE}` : ''].join('');
 }
 
-/** Every id of one column served anywhere in this session. */
-async function servedIds(db: RelationalStore, scope: ReadScope, sessionId: string, column: 'spore_ids' | 'plan_ids'): Promise<Set<string>> {
-  const { results } = await injectionServedIds(db, column)
-    .bind(scope.projectId, sessionId)
-    .all<{ ids: string | null }>();
-  const ids = new Set<string>();
-  for (const row of results) for (const id of parseIds(row.ids ?? '')) ids.add(id);
-  return ids;
-}
-
-/** Every spore served anywhere in this session. */
-export const injectedSporeIds = (db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Set<string>> =>
-  servedIds(db, scope, sessionId, 'spore_ids');
-
-/** Every plan served anywhere in this session. A plan repeated across a session's prompts is the same waste a repeated spore is. */
-export const injectedPlanIds = (db: RelationalStore, scope: ReadScope, sessionId: string): Promise<Set<string>> =>
-  servedIds(db, scope, sessionId, 'plan_ids');
-
-function parseIds(raw: string): string[] {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
 /**
  * The items one prompt is served, and the record of having served them.
  *
@@ -325,10 +301,8 @@ export function selectSporesForPrompt(
   input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   timings?: ContextTimings,
-  commit:ContextCommit=commitContextWrite,
 ): Promise<InjectionSelection> {
-
-  return (bound=>readSporesForPrompt(bound,scope,leaves,capabilityOn,input,resolveSemantic,timings,commit))(db);
+  return readSporesForPrompt(db, scope, leaves, capabilityOn, input, resolveSemantic, timings);
 }
 async function readSporesForPrompt(
   db: RelationalStore,
@@ -338,7 +312,6 @@ async function readSporesForPrompt(
   input: { sessionId: string; promptHash: string; prompt: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   timings?: ContextTimings,
-  commit:ContextCommit=commitContextWrite,
 ): Promise<InjectionSelection> {
   const counts = emptyInjectionCounts();
   const nothing = (skipped: InjectionSkip): InjectionSelection => ({ items: [], context: '', skipped, counts });
@@ -356,12 +329,15 @@ async function readSporesForPrompt(
   const duringCandidate = <T>(operation: 'vector' | 'sql', work: () => Promise<T>): Promise<T> =>
     duringInjection('candidates', counts, work, timings, operation === 'vector' ? 'vector' : 'candidate');
 
-  const [sporeHits, planHits, servedSpores, servedPlans] = await duringInjection('candidates', counts, () => settledAll([
+  const [sporeHits, planHits] = await duringInjection('candidates', counts, () => settledAll([
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'spore', status: 'active' }, observe: (n) => { counts.sporeRawMatches = n.rawMatches; counts.sporeJoined = n.joinedHits; counts.sporeHits = n.filteredHits; }, during: duringCandidate }),
     semanticHits(db, scope, semantic, values, { topK: VECTOR_QUERY_LIMIT, filters: { type: 'plan' }, observe: (n) => { counts.planRawMatches = n.rawMatches; counts.planJoined = n.joinedHits; counts.planHits = n.filteredHits; }, during: duringCandidate }),
-    duringInjection('candidates', counts, () => injectedSporeIds(db, scope, input.sessionId), timings, 'candidate'),
-    duringInjection('candidates', counts, () => injectedPlanIds(db, scope, input.sessionId), timings, 'candidate'),
   ]));
+  // Only the candidates are asked about: what else the session was served cannot change this prompt's selection.
+  const { spores: servedSpores, plans: servedPlans } = await duringInjection('candidates', counts, () => servedAmong(db, {
+    project: scope.projectId, session: input.sessionId,
+    candidates: [...sporeHits.map((h) => ['spore', h.record_id] as const), ...planHits.map((h) => ['plan', h.record_id] as const)],
+  }), timings, 'candidate');
 
   const sporeCandidates = sporeHits.map((s) => ({ id: s.record_id, similarity: s.score, alreadyInjected: servedSpores.has(s.record_id),
     ...(s.neighbor_mean === null || s.neighbor_std === null ? {} : { neighborMean: s.neighbor_mean, neighborStd: s.neighbor_std }),
@@ -423,25 +399,17 @@ async function readSporesForPrompt(
   const receiptId = crypto.randomUUID();
   const promptId = input.promptId ?? null;
   const plansById = new Map(planRows.filter(row => row !== null).map(row => [row.planKey, row]));
-  const receipt=prepareInjectionReceipt(db,{project:scope.projectId,session:input.sessionId,id:receiptId,promptId,
-    scopeReason:input.scopeReason??null,protocol:input.askProtocol??'legacy',askedAt:input.askedAt??null,promptHash:input.promptHash,
-    spores:idsOf('spore'),plans:idsOf('plan'),now:input.now},input.admission.admission);
-  const snapshots = idsOf('plan').map(id => {
-    const plan = plansById.get(id)!;
-    return db.prepare(`INSERT INTO injection_served_items
-        (project_id, receipt_id, kind, item_id, title, session_id, content_hash, unavailable)
-      SELECT ?, ?, 'plan', ?, ?, ?, ?, 0 WHERE EXISTS
-        (SELECT 1 FROM spore_injections WHERE project_id = ? AND session_id = ? AND id = ?)`)
-      .bind(scope.projectId, receiptId, id, plan.title, plan.sessionId, plan.contentHash,
-        scope.projectId, input.sessionId, receiptId);
-  });
-  const [written] = await duringInjection('record', counts, () => commit(db,{...receipt,statements:[...receipt.statements,...snapshots]}));
-  if (written!.results.length !== 1) {
+  // The receipt and each served plan's snapshot commit together; the receipt's insert adds what it served to the session.
+  const written = await duringInjection('record', counts, () => commitServedReceipt(db, { project: scope.projectId, session: input.sessionId, id: receiptId, promptId,
+    scopeReason: input.scopeReason ?? null, protocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null, promptHash: input.promptHash,
+    spores: idsOf('spore'), now: input.now,
+    plans: idsOf('plan').map(id => { const plan = plansById.get(id)!; return { planKey: id, title: plan.title, sessionId: plan.sessionId, contentHash: plan.contentHash }; }),
+  }, input.admission.admission));
+  if (!written) {
     if (await duringInjection('record', counts, () => input.admission.refusal(db)) !== null) return nothing('unwritable');
     // Which rule held the insert back: a receipt for this text already, or one for this prompt id.
-    const named = promptId === null ? null : await duringInjection('record', counts, () => injectionPromptHeld(db)
-      .bind(scope.projectId, input.sessionId, promptId, input.promptHash).first<{ held: number }>());
-    return nothing(named === null ? 'repeat' : 'duplicate_prompt');
+    const named = promptId === null ? [] : (await duringInjection('record', counts, () => readSet(db, injectionPromptHeld(scope.projectId, input.sessionId, promptId, input.promptHash))))[0];
+    return nothing(named.length === 0 ? 'repeat' : 'duplicate_prompt');
   }
 
   return { items: served, context: renderInjectionContext(served, ordered.length > served.length), skipped: null, counts, receiptId };

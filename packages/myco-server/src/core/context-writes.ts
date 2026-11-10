@@ -1,16 +1,10 @@
-import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
+import type { PreparedStatement, RelationalStore } from './adapters.js';
 import {
   materialUpdate,
 } from '../ingest/material-mutation.js';
 import type { Fragment } from '../ingest/projections.js';
 import { deliveredFields, type DeliveredNaming } from '../ingest/prompt-scheme.js';
 
-export interface ContextWrite {
-  statements: readonly PreparedStatement[];
-}
-export type ContextCommit = (db: RelationalStore, write: ContextWrite) => Promise<RunResult[]>;
-export const commitContextWrite: ContextCommit = async (db, write) =>
-  write.statements.length === 1 ? [await write.statements[0]!.run()] : db.batch([...write.statements]);
 const CONTEXT_MATERIAL_COLUMNS = {
   injection:['id','prompt_id','scope_reason','ask_protocol','asked_at','prompt_hash','spore_ids','plan_ids','created_at','delivered_at','delivered_prompt_id','delivered_scope_reason'],
   answer:['id','prompt_id','scope_reason','ask_protocol','asked_at','receipt_id','outcome','context_chars','parts','skipped','failures','selection','created_at','delivered_at','delivered_prompt_id','delivered_scope_reason'],
@@ -54,8 +48,5 @@ export function prepareContextDelivery(
       `UPDATE ${table} SET ${update.update.sql} WHERE project_id=? AND session_id=? AND ${keyColumn}=? AND (${when.sql}) AND (${gate.sql})`,
     )
     .bind(...update.update.params, d.projectId, d.sessionId, d.id, ...when.params, ...gate.params);
-  return {
-    statement,
-    statements: [statement],
-  } satisfies ContextWrite & { statement: PreparedStatement };
+  return { statement } satisfies { statement: PreparedStatement };
 }
