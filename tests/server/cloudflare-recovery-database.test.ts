@@ -11,13 +11,19 @@ import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import type { DeploymentRecord } from '@myco/server/cloudflare.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 import { seedRecoveryBudget, assertRecoveryBudget } from './budget-recovery-fixture.js';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
 
 function fixture(priced=false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-hosted-import-'));
   const databasePath = path.join(root, 'source.sqlite');
+  // A priced source holds the current schema; any other is one step behind it, so recovery migrates what it imports.
+  if (priced) {
+    const current = schemaSqlite({ foreignKeys: false });
+    try { fs.writeFileSync(databasePath, current.serialize()); } finally { current.close(); }
+  }
   const source = new Database(databasePath);
   const destination = new Database(':memory:');
-  for (const step of SCHEMA_STEPS.filter((step) => priced || step.version < SERVER_SCHEMA_VERSION)) source.exec(step.statements.join(';\n'));
+  if (!priced) for (const step of SCHEMA_STEPS.filter((step) => step.version < SERVER_SCHEMA_VERSION)) source.exec(step.statements.join(';\n'));
   const now=Date.now();
   seedRecoveryBudget(source,priced,now);
   source.exec("INSERT INTO schema_meta(key,value) VALUES('fixture_note','durable knowledge')");
@@ -93,7 +99,7 @@ it('refuses an unrelated or incomplete destination before any mutation', async (
   try {
     f.destination.exec('CREATE TABLE unrelated(id INTEGER)');
     await expect(restoreCloudflareDatabase(f.options)).rejects.toThrow('empty destination');
-    f.destination.exec("CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO schema_meta VALUES('version','36')");
+    for (const step of SCHEMA_STEPS.filter((step) => step.version <= 36)) f.destination.exec(step.statements.join(';\n'));
     await expect(restoreCloudflareDatabase(f.options)).rejects.toThrow('no matching completed recovery import');
     expect(f.mutations()).toBe(0);
   } finally { f.cleanup(); }

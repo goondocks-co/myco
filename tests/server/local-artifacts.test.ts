@@ -9,7 +9,6 @@
  * The one thing these tests hold hardest: an absent in-memory child is never evidence that an attempt stopped.
  */
 import { expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +17,8 @@ import {
   type AttemptRecord, type LocalArtifactsOptions,
 } from '@myco/server/local-artifacts.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { DEPLOYMENT_ID_KEY } from '../myco-server/helpers/d1.js';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
 import { resolveLocalPaths } from '@myco/server/local.js';
 import { availabilityOf } from '@myco-server-worker/core/recovery-schedule.js';
 import type { CommandResult, CommandRunner, RunOptions } from '@myco/server/runner.js';
@@ -30,11 +31,11 @@ function deployment() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-artifacts-'));
   const paths = resolveLocalPaths(path.join(home, 'home'));
   fs.mkdirSync(paths.root, { recursive: true });
-  // A volume that names itself, which is all this owner reads from one.
-  const db = new Database(paths.databasePath, { create: true });
+  // A volume holding the current schema that names itself, which is all this owner reads from one.
+  const db = schemaSqlite();
   try {
-    db.exec('CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    db.query('INSERT INTO schema_meta (key, value) VALUES (?, ?)').run('deployment_id', DEPLOYMENT);
+    db.query(`UPDATE schema_meta SET value = ? WHERE key = '${DEPLOYMENT_ID_KEY}'`).run(DEPLOYMENT);
+    fs.writeFileSync(paths.databasePath, db.serialize());
   } finally { db.close(); }
   const root = artifactsRoot(paths, DEPLOYMENT);
   return { home, paths, root, remove: () => fs.rmSync(home, { recursive: true, force: true }) };

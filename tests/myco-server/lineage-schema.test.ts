@@ -5,7 +5,7 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';
-import { schemaD1Root } from './helpers/schema-template.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 import {
   lineage_LINEAGE_MAX_NODES as LINEAGE_MAX_NODES,
   lineage_sessionLineage as sessionLineage,
@@ -36,12 +36,11 @@ async function migratedD1(binding: 'DB_COST' | 'DB_LAUNCH' | 'DB_PARENT') {
 
 it('upgrades populated v95 sessions to a nullable launch parent, clears deleted sessions\' own parents and indexes both parent columns on native and D1', async () => {
   const native = new Database(':memory:');
-  const fresh = new Database(':memory:');
+  const fresh = schemaSqlite();
   try {
     expect(SERVER_SCHEMA_VERSION).toBeGreaterThanOrEqual(96);
     const d1 = await mf.getD1Database('DB_UPGRADE');
     for (const step of SCHEMA_STEPS) {
-      for (const sql of step.statements) fresh.exec(sql);
       if (step.version > 95) continue;
       for (const sql of step.statements) native.exec(sql);
       await d1.batch(step.statements.map(sql => d1.prepare(sql)));

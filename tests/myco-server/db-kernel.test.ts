@@ -9,6 +9,7 @@ import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { excludeDeletedRestoreRows } from '@myco-server-worker/core/restore-rows.js';
 import { containsPattern } from '@myco-server-worker/read/scope.js';
 import { classify } from '@myco-server-worker/telemetry.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 interface Item { id: string; n: number }
 const insert = write<[id: string, n: number], Item>({ name: 'kernelTest.insert', sql: 'INSERT INTO items(id,n) VALUES(?,?) RETURNING id,n' });
@@ -19,8 +20,9 @@ const revision = assertion<[id: string, n: number]>({ name: 'kernelTest.revision
 const pattern = read<[pattern: string], Item>({ name: 'kernelTest.pattern', sql: `SELECT id,n FROM items WHERE id LIKE ? ESCAPE '\'`, like: [1] });
 
 const handles: Database[] = [];
-function fixture() {
-  const sqlite = new Database(':memory:');
+/** A store holding one generic table; `schema` puts it beside the current schema. */
+function fixture(options: { schema?: boolean } = {}) {
+  const sqlite = options.schema === true ? schemaSqlite() : new Database(':memory:');
   handles.push(sqlite);
   sqlite.run('CREATE TABLE items(id TEXT PRIMARY KEY,n INTEGER NOT NULL)');
   sqlite.run("INSERT INTO items VALUES('a',1)");
@@ -80,9 +82,8 @@ it('prepares a reusable Bound through the supplied guards and content meter at e
 });
 
 it('keeps restore frontier assertions and their positional results inside the supplied store', async () => {
-  const { db, sqlite } = fixture();
-  sqlite.run('CREATE TABLE session_tombstones(project_id TEXT,session_id TEXT)');
-  sqlite.run('CREATE TABLE restore_reference_guard(missing TEXT CHECK(missing IS NULL))');
+  const { db, sqlite } = fixture({ schema: true });
+  sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('project','project',1)");
   const context = { marker: 'restore' };
   Object.assign(db, { [RELATIONAL_CONTEXT]: context });
   const restoring = await excludeDeletedRestoreRows(db, new Map());
@@ -90,7 +91,7 @@ it('keeps restore frontier assertions and their positional results inside the su
   const [inserted, revised] = await commit(restoring, insert.bind('b', 2), update.bind('a', 3));
   expect(inserted.results).toEqual([{ id: 'b', n: 2 }]);
   expect(revised.meta.changes).toBe(1);
-  sqlite.run("INSERT INTO session_tombstones VALUES('project','session')");
+  sqlite.run("INSERT INTO session_tombstones(project_id,session_id,created_at,created_by) VALUES('project','session',1,'owner')");
   await expect(commit(restoring, insert.bind('c', 3))).rejects.toThrow('CHECK constraint failed');
   expect(await readSet(db, rows.bind())).toEqual([[{ id: 'a', n: 3 }, { id: 'b', n: 2 }]]);
 });
