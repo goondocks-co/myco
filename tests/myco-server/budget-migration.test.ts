@@ -13,7 +13,7 @@ import { refreshEstimates,estimateForClaim,estimateRefreshDue } from '@myco-serv
 import { ESTIMATE_PUBLISH_PAGE } from '@myco-server-worker/core/budget-estimates.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import { engineAssertions,runTick } from '@myco-server-worker/core/tick.js';
-import { invalidateEstimates } from '@myco-server-worker/db/meta/budget-estimates.js';
+import { estimateInvalidationStatements } from '@myco-server-worker/db/meta/budget-estimates.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
 import worker from '@myco-server-worker/index.js';
 import { asOwner,OWNER_ENV } from './helpers/owner.js';
@@ -148,7 +148,7 @@ it('wakes from deep sleep for an empty estimator refresh and then lifts its prep
     const projects=f.sqlite.query('SELECT project_id FROM projects ORDER BY project_id').all();
     await refreshEstimates(f.db,f.now);
     expect((await runTick(f.serverEnv,f.now)).state).toBe('deep_sleep');
-    await invalidateEstimates(f.db);
+    await f.db.batch(estimateInvalidationStatements(f.db,{sql:'1',params:[]}));
     const wake=await runTick(f.serverEnv,f.now+1);
     expect(wake).toMatchObject({state:'sleep',heldBy:'estimate:due'});
     expect(wake.jobs).toContainEqual(expect.objectContaining({name:'estimate-refresh',failed:null,more:false}));

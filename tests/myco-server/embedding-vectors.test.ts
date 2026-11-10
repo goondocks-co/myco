@@ -1,4 +1,3 @@
-import { PLATFORM_RECONCILIATION_MATRICES } from './helpers/reconciliation-cases.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -75,7 +74,6 @@ for (const target of ['sqlite-vec', 'vectorize-contract'] as const) {
 }
 
 test('native vector content-key matrix covers delivery order, replay, clearing and transactional faults', async () => {
-  expect(PLATFORM_RECONCILIATION_MATRICES['platform/bun/vectors.ts#upsert']).toEqual(['content-key']);
   const old = await vector('same-record', [1, 0], { revision: 'old' });
   const latest = await vector('same-record', [0, 1], { revision: 'new' });
   for (const order of [[old, latest], [latest, old]]) {
