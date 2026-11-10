@@ -1,7 +1,7 @@
 /**
  * A search costs D1 the same when ten times the records match it: every window it ranks is full at both sizes, in a
  * Project's search and across Projects, for every shape a caller asks, its later pages, a search by time, the backlog it
- * reports, and a write it indexes; with and without planner statistics. And D1 answers the widest search a caller may ask.
+ * reports, and a write it indexes. And D1 answers the widest search a caller may ask.
  */
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';

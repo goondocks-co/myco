@@ -86,7 +86,10 @@ it('retains recovery history when migrations fail and when an update is retried'
   });
 });
 
-for (const from of [94, 101, 102, 103]) for (const status of ['running', 'pending', 'queued', 'completed']) it(`admits or refuses hosted ${from} activation before any schema step with ${status} extraction`, async () => {
+/** One case per outcome: before the stepping stone, each undrained status after it, and a drained catalogue. */
+const ADMISSION_CASES = [[101, 'running'], [102, 'running'], [102, 'pending'], [103, 'queued'], [103, 'completed']] as const;
+
+for (const [from, status] of ADMISSION_CASES) it(`admits or refuses hosted ${from} activation before any schema step with ${status} extraction`, async () => {
   await fixture({schema:String(from)}, async ({ root, home, update, calls, reports }) => {
     if (status === 'pending') writeDeploymentRecord({...readDeploymentRecord(home)!,schemaUpdates:[{
       bookmark:BOOKMARK,schemaBefore:from-1,schemaAfter:from,recordedAt:new Date(0).toISOString(),workerVersionBefore:OLD_WORKER,

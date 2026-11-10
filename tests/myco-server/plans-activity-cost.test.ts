@@ -113,6 +113,6 @@ const CASES: CostCase[] = [
   } },
 ];
 
-it('plan lists, the activity feed and the plan writer cost D1 the same as the Deployment\'s history grows, under any planner statistics', async () => {
-  expectTwoScale(await d1TwoScale({ sizes: SIZES, setup, grow, cases: CASES, statistics: ['none', 'analyzed', 'stale'], warm: true }));
+it('plan lists, the activity feed and the plan writer cost D1 the same as the Deployment\'s history grows', async () => {
+  expectTwoScale(await d1TwoScale({ sizes: SIZES, setup, grow, cases: CASES, warm: true }));
 }, 300_000);

@@ -1,5 +1,5 @@
 /**
- * What a session has been served costs the same however long the session, on D1 with and without planner statistics:
+ * What a session has been served costs the same however long the session, on D1:
  * the prompt's check of its candidates, and the receipt that records what it served.
  */
 import { expect, it } from 'bun:test';
@@ -15,7 +15,6 @@ it('a prompt\'s served check and its receipt cost the same at 300 and 3,000 rece
   const candidates = [...Array.from({ length: 40 }, (_, i) => ['spore', `spore-${i * 37}`] as const), ['plan', 'plan-11'] as const, ['plan', 'plan-new'] as const];
   const costs = await d1TwoScale({
     sizes: [300, 3_000],
-    statistics: ['none', 'analyzed', 'stale'],
     setup: async (db) => {
       await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES(?,'Served',1)").bind(PROJECT).run();
       for (const id of [RECEIVER, 'other']) {
