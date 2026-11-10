@@ -193,7 +193,7 @@ test('document restore reports ownership initialization as retryable and retains
     await publishDocuments(env,at+20*MIN,limits());
     const before=(await db.prepare('SELECT * FROM session_chunks ORDER BY chunk_no').all()).results;
     await db.prepare('DELETE FROM document_metadata_ready').run();
-    await expect(applyDocumentRestore(env,{convert:[],merge:[{projectId:'project',sessionId:'restore',rows:[]}],refuse:[]},at+30*MIN))
+    await expect(applyDocumentRestore(env,{convert:[],merge:[{projectId:'project',sessionId:'restore',snapshot:{records:[],states:new Map(),owners:null,plans:new Set(),frontiers:[],chunks:[]}}]},at+30*MIN))
       .rejects.toMatchObject({code:'publication_restore_building',retryable:true});
     expect((await db.prepare('SELECT * FROM session_chunks ORDER BY chunk_no').all()).results,target).toEqual(before);
   });

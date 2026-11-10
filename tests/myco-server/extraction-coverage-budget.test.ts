@@ -1,32 +1,20 @@
 import { expect, it } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
 import { prepareLearningSlice } from './helpers/extraction.js';
-import { fixtureBatchStore } from './helpers/extraction-budget.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { uuid } from './helpers/fixtures.js';
 
-import { PROMPTS, ACKS, scope, runId, fill, seedAcknowledgedHistory, seedCapturedHistory } from './helpers/extraction-coverage.js';
+import { PROMPTS, ACKS, scope, runId, seedAcknowledgedHistory, seedCapturedHistory } from './helpers/extraction-coverage.js';
 
 async function verify(db: RelationalStore, acks = ACKS) {
   expect(await db.prepare('SELECT COUNT(*) AS n FROM session_prompts').first()).toEqual({ n: PROMPTS });
   expect(await db.prepare('SELECT COUNT(*) AS n FROM extraction_acks').first()).toEqual({ n: acks });
-  expect(await db.prepare("SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id=? AND session_id='session'").bind(scope.projectId).first()).toEqual({ n: PROMPTS - acks });
 }
-
-it('native counters at 26k captured prompts and 7k production acknowledgements', async () => {
-  const sqlite = schemaSqlite({ foreignKeys: false });
-  try {
-    const db = sqliteRelationalStore(sqlite);
-    await fill(fixtureBatchStore(db));
-    await verify(db);
-  } finally { sqlite.close(); }
-}, 240_000);
 
 it('D1 acknowledges a prompt at the same cost after 700 and after 7k acknowledgements among 26k captured prompts', async () => {
   const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',

@@ -4,7 +4,7 @@ import { documentsPublished, expectPersisted, lit, memberHeadersFor, type Parity
 
 /** Coverage follows the exact items served over each front door. */
 export const extractionCoverage: ParityScenario = {
-  name: 'extraction coverage: learning completions, late material and counters survive run deletion',
+  name: 'extraction coverage: learning completions, late material and acknowledgements survive run deletion',
   dedicated: { cloudflare: {}, timeoutMs: 180_000 },
   async run(target: ParityTarget) {
     const now = Date.now();
@@ -20,7 +20,7 @@ export const extractionCoverage: ParityScenario = {
     const prompt = (promptId: string, at: number) => capture('prompt', at, { promptId, text: 'Material to extract', origin: 'user' });
     // A session's end is captured, then the wake publishes the prompts an acknowledgement is checked against.
     const complete = async () => { await capture('session.end', now, { endedAt: now }); await documentsPublished(target, session); };
-    const count = async (n: number) => expect(await target.sql(`SELECT eligible_prompts AS n FROM session_read_facts WHERE project_id=${lit(project)} AND session_id=${lit(session)}`)).toEqual([{ n }]);
+    const acknowledged = async (n: number) => expect(await target.sql(`SELECT COUNT(*) AS n FROM extraction_acks WHERE project_id=${lit(project)} AND session_id=${lit(session)} AND kind='record'`)).toEqual([{ n }]);
     await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES('mem_harness','Coverage',${now})`);
     await target.sql(`INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,${now})`);
     const run = async (id: string, ids: string[]) => {
@@ -53,19 +53,19 @@ export const extractionCoverage: ParityScenario = {
     await one({ op: 'material' });
     expect(await one({ op: 'complete', handoff: 'read the remaining cards' })).toEqual({ completed: true, covered: 1 });
     expect(await one({ op: 'complete' })).toMatchObject({ ok: false });
-    await count(1);
+    await acknowledged(1);
     await prompt(hole, now - 2000);
     await complete();
-    await count(2);
+    await acknowledged(1);
     const two = await run('coverage-two', [hole, tied]);
     await two({ op: 'material' });
     expect(await two({ op: 'complete' })).toEqual({ completed: true, covered: 2 });
     expect((await target.sql(`SELECT served_id FROM extraction_acks WHERE project_id=${lit(project)} AND record_id=${lit(hole)}`))[0]!.served_id).toEqual(expect.any(String));
-    await count(0);
+    await acknowledged(3);
     expect((await target.sql('SELECT COUNT(*) AS n FROM session_prompts'))[0]!.n).toBeGreaterThan(0);
     await target.sql(`DELETE FROM agent_runs WHERE project_id=${lit(project)} AND id IN ('coverage-one','coverage-two')`);
     expect(await target.sql('SELECT COUNT(*) AS n FROM extraction_acks')).toEqual([{ n: 3 }]);
     expect(await target.sql('SELECT COUNT(*) AS n FROM run_served_material')).toEqual([{ n: 0 }]);
-    await count(0);
+    await acknowledged(3);
   },
 };

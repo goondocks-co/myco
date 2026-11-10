@@ -382,6 +382,20 @@ describe('Health', () => {
     expect(screen.getByText('spores: newer rows are kept')).toBeTruthy();
   });
 
+  it('tells the owner how to restore a backup in a format this release no longer restores', async () => {
+    server(routes({
+      '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ error: 'artifact_format_retired', message: 'server sentence', retiredRows: { prompt_batches: 2 }, restoresOn: '2.0.0-alpha.23' }, { status: 409 }),
+    }));
+    mount();
+    const list = await screen.findByRole('group', { name: 'Backups' });
+    fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
+    const alert = await screen.findByText(/older format this release can’t restore/);
+    expect(alert.textContent).toContain('Myco 2.0.0-alpha.23 was the last release that read it');
+    expect(alert.textContent).toContain('recover from a complete recovery copy with myco server restore');
+    expect(alert.textContent).not.toContain('server sentence');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('cancels a restore with nothing sent past the preview', async () => {
     const { posts } = server(routes({
       '/api/backups/bk_7f3a9c0e21/restore-preview': () => Response.json({ header: { deploymentId: 'dep_1', schemaVersion: 57, createdAt: BACKUP.created_at, producer: 'x', counts: { sessions: 4 } }, foreignLineage: false, restore: { allowed: true, reason: null }, authorityExcluded: null }),

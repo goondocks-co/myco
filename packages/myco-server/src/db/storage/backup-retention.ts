@@ -1,14 +1,13 @@
 import { objectJournalSql } from './object-journal.js';
 import { HOLD_OPEN } from './release-queue.js';
 import { BACKUP_WEEK_HEADS_PHASE, BACKUP_WEEK_HEADS_PROJECTION } from './backup-week-heads.js';
+import { RESTORE_HOLD_PHASE } from './restore-hold.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, commit, commitNamed, read, readSet, refusalCode, write, type Bound } from '../index.js';
 
 /** One retention decision holds at most this many backups. */
 export const RETENTION_PAGE = 16;
 export const BACKUP_RETENTION_CHANGED = refusalCode('backup_retention_changed');
-/** A restore's session recount keeps one progress row per artifact under this name, `next_row=1` once it has finished. */
-export const EXTRACTION_RECOUNT_PHASE = 'extraction-session-counters';
 
 const headsDone = `COALESCE((SELECT done FROM projection_catchup WHERE projection='${BACKUP_WEEK_HEADS_PROJECTION}' AND phase='${BACKUP_WEEK_HEADS_PHASE}'),0)`;
 
@@ -20,7 +19,7 @@ const keepSet = (daily: string, weekly: string) =>
   `SELECT id FROM (SELECT id FROM backups WHERE pinned=0 ORDER BY created_at DESC,id DESC LIMIT ${daily})
     UNION SELECT id FROM (SELECT id FROM backup_week_heads ORDER BY week DESC LIMIT ${weekly})
     UNION SELECT id FROM (SELECT id FROM backups WHERE verification_state='verified' ORDER BY created_at DESC,id DESC LIMIT 1)`;
-const inUseByRestore = `SELECT artifact_hash FROM backup_restore_progress WHERE NOT (table_name GLOB '${EXTRACTION_RECOUNT_PHASE}:*' AND next_row=1)`;
+const inUseByRestore = `SELECT artifact_hash FROM backup_restore_progress WHERE NOT (table_name GLOB '${RESTORE_HOLD_PHASE}:*' AND next_row=1)`;
 const notInRestore = (alias: string) => `(${alias}.sha256 IS NULL OR ${alias}.sha256 NOT IN (${inUseByRestore}))`;
 const releasable = (alias: string, daily: string, weekly: string) =>
   `${alias}.pinned=0 AND ${alias}.id NOT IN (${keepSet(daily, weekly)}) AND ${notInRestore(alias)}`;

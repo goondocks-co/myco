@@ -64,9 +64,9 @@ const plansAcross: CostCase = { name: 'plans across Projects', run: async (db, {
 } };
 
 /**
- * Each unit is history older than the last day: a session, an edited plan, a finished run of an actor and a grant that
- * ends later; and another member with a machine, a rotated-away credential of one of the fixed machines, and an expired
- * one of the member's own.
+ * Each unit is history older than the last day: a session, an edited plan, a finished run of an actor (some failed
+ * before they started, as queue expiry fails them) and a grant that ends later; and another member with a machine, a
+ * rotated-away credential of one of the fixed machines, and an expired one of the member's own.
  */
 async function grow(db: RelationalStore, from: number, to: number) {
   await eachUnit(db, from, to, `INSERT INTO members(id,label,created_at) SELECT 'member-'||i,'member '||i,1 FROM n`);
@@ -82,7 +82,7 @@ async function grow(db: RelationalStore, from: number, to: number) {
       1,?3-i*?4,'mt_0',1 FROM n`, NOW, MINUTE);
   await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,queued_at,dispatch_spec,origin)
     SELECT 'proj_'||(i%3),'run-'||i,'agent',CASE i%3 WHEN 0 THEN 'extract-curate' WHEN 1 THEN 'canopy-map' ELSE 'embedding-reconcile' END,
-      CASE WHEN i%7=0 THEN 'failed' ELSE 'completed' END,?3-?4-i*?5,?3-?4-i*?5+1,?3-?4-i*?5,
+      CASE WHEN i%7=0 THEN 'failed' ELSE 'completed' END,CASE WHEN i%14=0 THEN NULL ELSE ?3-?4-i*?5 END,?3-?4-i*?5+1,?3-?4-i*?5,
       json_object('actor',CASE i%3 WHEN 2 THEN 'clock' ELSE 'mem_'||(i%3) END),'automatic' FROM n`, NOW, 2 * DAY, MINUTE);
   await eachUnit(db, from, to, `INSERT INTO external_grants(id,project_id,key_hash,label,created_by,created_at,expires_at,revoked_at)
     SELECT 'grant-'||i,'proj_'||(i%3),'hash-'||i,'grant '||i,'mem_0',1,?3+30*?4+i,CASE WHEN i%5=0 THEN 2 END FROM n`, NOW, DAY);
@@ -92,12 +92,10 @@ async function grow(db: RelationalStore, from: number, to: number) {
 const SIZES = [600, 6_000] as const;
 /**
  * Reads reported for walking what they should seek, with the rows each may read per unit of history until it is keyed:
- * failing outcomes filter on a run's start instant as an expression, so the task index walks every failed run of the
- * task in history (#2174); capture recency reads every machine claim with its member and every unrevoked credential of
- * the Deployment, expired ones too, to name the few machines it shows (#2174).
+ * capture recency reads every machine claim with its member and every unrevoked credential of the Deployment, expired
+ * ones too, to name the few machines it shows (#2174).
  */
 const REPORTED_WALKS: Record<string, { issue: string; perUnit: number }> = {
-  'failing outcomes': { issue: '#2174', perUnit: 0.5 },
   'capture recency': { issue: '#2174', perUnit: 3.5 },
 };
 

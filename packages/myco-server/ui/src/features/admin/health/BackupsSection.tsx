@@ -8,15 +8,17 @@ import { cn } from '../../../lib/cn';
 import { HEALTH_ANCHORS, SETTINGS_SECTIONS } from '../../../routes/nav';
 import { AdminSection, RowCard } from '../AdminFrame';
 import {
-  BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, sizeLabel, verificationWords, whenLabel,
+  BACKUP_ACCESS_COMMAND, attemptWords, availableWords, backupDate, cadenceWords, countsWords, latestWords, RECOVERY_UNAVAILABLE_WORDS, retiredFormatWords, sizeLabel, verificationWords, whenLabel,
 } from './words';
+import { ApiError } from '../../../lib/api';
 
 const RECOVERY_PROCEDURE = 'https://github.com/goondocks-co/myco/blob/main/docs/architecture/deployment-recovery.md';
 const BACKUP_SETTINGS = SETTINGS_SECTIONS.find((section) => section.id === 'backups')!.to;
 
-/** Why an action failed, in the server's own words when it gave them. */
-/** A failed request in words chosen by its status, never the server's own sentence. */
-const failure = (error: unknown): string => errorWords(error).title;
+/** A failed request in words chosen by its status or refusal code, never the server's own sentence. */
+const failure = (error: unknown): string => error instanceof ApiError && error.code === 'artifact_format_retired'
+  ? retiredFormatWords(typeof error.body === 'object' && error.body !== null ? Reflect.get(error.body, 'restoresOn') : null)
+  : errorWords(error).title;
 
 /**
  * Backups: the small additive export an admin makes here, each with its
