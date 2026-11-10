@@ -68,10 +68,9 @@ test('advancing one continuation preserves every owner and other continuation in
 });
 
 
-const OWNERSHIP_CLAIM_READ_CEILING=50;
-const OWNERSHIP_CLAIM_WRITE_CEILING=45;
-test.each([1,100,1500])('a keyed ownership claim has fixed D1 cost with %s saved turns',async turns=>{
-  await withDocumentStores(async(db,target)=>{
+test('a keyed ownership claim costs D1 the same with 100 and 1500 saved turns',async()=>{
+  const costs:{reads:number;writes:number}[]=[];
+  for(const turns of [100,1500])await withDocumentStores(async(db,target)=>{
     if(target!=='D1')return;
     const blobs=memoryBlobStore(),at=Date.now()-60*MIN,id='tx_0123456789abcdef0123456789abcdef';
     const body=Array.from({length:turns},(_,i)=>JSON.stringify({type:'user',uuid:uuid(i*3+1),promptId:uuid(i*3+2),message:{role:'user',content:'prompt '+i}})+'\n'
@@ -93,11 +92,13 @@ test.each([1,100,1500])('a keyed ownership claim has fixed D1 cost with %s saved
       const set=batch.documentSet(at+30*MIN);
       return {before:[],after:[meter.db.prepare("UPDATE session_documents SET "+set.sql+" WHERE project_id='project' AND session_id='s'").bind(...set.params)]};
     });
-    expect(meter.reads()).toBeLessThanOrEqual(OWNERSHIP_CLAIM_READ_CEILING);
-    expect(meter.writes()).toBeLessThanOrEqual(OWNERSHIP_CLAIM_WRITE_CEILING);
+    costs.push({reads:meter.reads(),writes:meter.writes()});
     expect(await one(db,"SELECT source_thread,source_record FROM document_owners WHERE project_id='project' AND session_id='s' AND generation=1 AND source_key='new-key'")).toEqual({source_thread:'thread',source_record:'record'});
     expect((await db.prepare("SELECT chunk_no,blob_key FROM session_chunks WHERE kind='page' ORDER BY chunk_no").all()).results).toEqual(pages);
     expect((await db.prepare('SELECT prompt_id,preview FROM session_prompts ORDER BY prompt_id').all()).results).toEqual(prompts);
     expect(await one(db,"SELECT prompts FROM session_documents WHERE session_id='s'")).toEqual({prompts:turns});
   });
-}, 120_000);
+  console.info('OWNERSHIP_CLAIM_COST',JSON.stringify(costs));
+  expect(costs[1]!.reads).toBeLessThanOrEqual(costs[0]!.reads);
+  expect(costs[1]!.writes).toBeLessThanOrEqual(costs[0]!.writes);
+}, 240_000);

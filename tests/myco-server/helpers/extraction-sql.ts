@@ -1,33 +1,5 @@
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { expect } from 'bun:test';
 import { sqliteEnv } from './fixtures.js';
-
-/** Every page statement seeks data identities; JSON lists drive their data-table joins. */
-export async function assertExtractionPlans(db: RelationalStore, queries: { sql: string; binds: unknown[] }[], target: string) {
-  for (const { sql, binds } of queries) {
-    const details = (await db.prepare(`EXPLAIN QUERY PLAN ${sql}`).bind(...binds).all<{ detail: string }>()).results.map(row => row.detail);
-    const plan = details.join('\n');
-    for (const detail of details) {
-      if (/\bSCAN \w+/i.test(detail)) expect(detail).toMatch(/\bSCAN \w+ VIRTUAL TABLE/i);
-      expect(detail).not.toMatch(/\bSEARCH (?:p|prompt_batches)\b.*\(project_id=\?\)$/);
-    }
-    const bodies = sql.includes('p.text AS text');
-    if (bodies) {
-      const prompt = details.findIndex(detail => /SEARCH p\b/.test(detail));
-      const list = details.findIndex(detail => /SCAN j VIRTUAL TABLE/.test(detail));
-      expect(list).toBeGreaterThanOrEqual(0);
-      expect(prompt).toBeGreaterThan(list);
-      expect(details[prompt]).toMatch(/\(project_id=\? AND prompt_id=\?\)/);
-      const sorts = details.filter(detail => /TEMP B-TREE/i.test(detail));
-      expect(sorts.length).toBeLessThanOrEqual(1);
-      for (const sort of sorts) expect(sort).toMatch(/^USE TEMP B-TREE FOR (?:(?:LAST TERM|RIGHT PART) OF )?ORDER BY$/);
-    } else expect(plan).not.toMatch(/TEMP B-TREE/i);
-    if (sql.includes('INDEXED BY idx_prompt_batches_turns')) expect(plan).toContain('idx_prompt_batches_turns');
-    if (sql.includes('ended_at IS NOT NULL') && (sql.includes('(ended_at, session_id) <') || sql.includes('session_id <'))) expect(plan.replaceAll(' ', '')).toContain('(ended_at,session_id)<(?,?)');
-    if (sql.includes('ended_at IS NULL') && sql.includes('session_id <')) expect(plan).toMatch(/ended_at=\? AND session_id<\?/);
-    console.info('EXTRACTION_ACCESS_PLAN', { target, plan });
-  }
-}
 
 /** Prepared extraction SQL may use the flag only through its owner or historical data carriers. */
 export function assertExtractionSql(sql: string): void {

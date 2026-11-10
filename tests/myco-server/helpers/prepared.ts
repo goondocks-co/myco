@@ -12,10 +12,6 @@ export function prepared(outcome: PrepareOutcome): PreparedDispatch {
   return outcome.prepared;
 }
 
-export async function explainReadPlan(db: import('@myco-server-worker/core/adapters.js').RelationalStore, query: {sql:string;binds:readonly unknown[]}): Promise<{id:number;parent:number;detail:string}[]> {
-  return (await db.prepare('EXPLAIN QUERY PLAN '+query.sql).bind(...query.binds).all<{id:number;parent:number;detail:string}>()).results;
-}
-
 export function beforeWriteBatch(db: import('@myco-server-worker/core/adapters.js').RelationalStore, matches:(sql:string)=>boolean, before:()=>Promise<void>, once=false) {
   const statements=new WeakMap<import('@myco-server-worker/core/adapters.js').PreparedStatement,{raw:import('@myco-server-worker/core/adapters.js').PreparedStatement;sql:string}>();
   let armed=true;

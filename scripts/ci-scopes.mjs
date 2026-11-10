@@ -5,8 +5,7 @@
 /** Scale and cost suites: what they prove is how a read or a write grows with data, not what it answers. */
 export const NIGHTLY_ONLY_FILES = [
   'tests/myco-server/budget-read-bound.test.ts',
-  'tests/myco-server/canopy-read-ceilings.test.ts',
-  'tests/myco-server/claim-read-ceilings.test.ts',
+  'tests/myco-server/canopy-capture-cost.test.ts',
   'tests/myco-server/embedding-bounded-cost.test.ts',
   'tests/myco-server/embedding-read-budget.test.ts',
   'tests/myco-server/embedding-running-cost.test.ts',
@@ -14,11 +13,10 @@ export const NIGHTLY_ONLY_FILES = [
   'tests/myco-server/extraction-coverage-budget.test.ts',
   'tests/myco-server/injection-snapshot-budget-runtime.test.ts',
   'tests/myco-server/legacy-history-budget.test.ts',
-  'tests/myco-server/raw-proof-plan.test.ts',
-  'tests/myco-server/read-plans.test.ts',
+  'tests/myco-server/raw-proof-cost.test.ts',
   'tests/myco-server/remaining-read-cost.test.ts',
+  'tests/myco-server/response-owner-cost.test.ts',
   'tests/myco-server/session-long.test.ts',
-  'tests/myco-server/today-read-plans.test.ts',
   'tests/server/cloudflare-backup-streaming.test.ts',
 ];
 

@@ -6,7 +6,6 @@ type D1 = Awaited<ReturnType<Miniflare['getD1Database']>>;
 export function measuredStore(d1: D1) {
   let reads = 0;
   let writes = 0;
-  let historyQueries = 0;
   const originals = new WeakMap<PreparedStatement, ReturnType<D1['prepare']>>();
   const observe = (statement: ReturnType<D1['prepare']>): PreparedStatement => {
     const wrapped: PreparedStatement = {
@@ -34,10 +33,7 @@ export function measuredStore(d1: D1) {
     return wrapped;
   };
   const db: RelationalStore = {
-    prepare: (sql) => {
-      if (/SELECT (?:MAX\()?COALESCE\(queued_at, started_at\)/.test(sql)) historyQueries++;
-      return observe(d1.prepare(sql));
-    },
+    prepare: (sql) => observe(d1.prepare(sql)),
     batch: async (statements) => {
       const results = await d1.batch(statements.map((statement) => {
         const original = originals.get(statement);
@@ -49,5 +45,5 @@ export function measuredStore(d1: D1) {
       return results;
     },
   };
-  return { db, reset: () => { reads = 0; writes = 0; historyQueries = 0; }, reads: () => reads, writes: () => writes, historyQueries: () => historyQueries };
+  return { db, reset: () => { reads = 0; writes = 0; }, reads: () => reads, writes: () => writes };
 }

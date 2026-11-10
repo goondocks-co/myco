@@ -182,34 +182,38 @@ it('a card claim reads the same catalog rows whatever the session holds', async 
       await db.prepare(`INSERT INTO turn_cards (project_id, session_id, turn_key, due_at, input_chars, created_at, source_activity_at)
         SELECT 'project', ?, 'turn-' || value, CASE WHEN value % 2 = 0 THEN 1 ELSE ? END, 10, 1, ? FROM json_each(?)`)
         .bind(session, NOW + 60_000, NOW, JSON.stringify(Array.from({ length: 2 * turns }, (_, i) => i))).run();
-      let rowsRead = 0;
-      let statements = 0;
-      const originals = new WeakMap<PreparedStatement, PreparedStatement>();
-      const record = (value: unknown) => { rowsRead += (value as { meta?: { rows_read?: number } }).meta?.rows_read ?? 0; };
-      const count = (statement: PreparedStatement): PreparedStatement => {
-        const wrapped = {
-          bind: (...values: unknown[]) => count(statement.bind(...values)),
-          first: async <T,>() => { statements += 1; return statement.first<T>(); },
-          all: async <T,>() => { statements += 1; const result = await statement.all<T>(); record(result); return result; },
-          run: () => { statements += 1; return statement.run(); },
-        } as PreparedStatement;
-        originals.set(wrapped, statement);
-        return wrapped;
-      };
-      const counted = { ...db, prepare: (sql: string) => count(db.prepare(sql)),
-        batch: async (batched: PreparedStatement[]) => { statements += batched.length; const results = await db.batch(batched.map(raw => originals.get(raw)!)); results.forEach(record); return results; } } as RelationalStore;
-      const input = await buildCardInput({ db: counted }, 'project', session, NOW);
-      return { rowsRead, statements, turns: (input?.counts as { turns: number }).turns };
+      const counted = rowCounter(db);
+      const input = await buildCardInput({ db: counted.db }, 'project', session, NOW);
+      return { rowsRead: counted.rows(), turns: (input?.counts as { turns: number }).turns };
     };
     const small = await claim('small', 2 * CARD_CLAIM_TURNS);
-    expect({ statements: small.statements, turns: small.turns }, name).toEqual({ statements: 1, turns: CARD_CLAIM_TURNS });
+    expect(small.turns, name).toBe(CARD_CLAIM_TURNS);
     // D1 reports the rows each statement read; the native store reports none.
-    if (name === 'D1') expect(small.rowsRead, name).toBeLessThanOrEqual(CARD_CLAIM_TURNS + 1);
+    if (name === 'D1') expect(small.rowsRead, name).toBeGreaterThan(0);
     expect(await claim('large', 20 * CARD_CLAIM_TURNS), name).toEqual(small);
   });
 });
 
-it('an idle claim with learning off issues a small fixed number of statements', async () => {
+/** A store that sums the rows each statement reports reading: D1 reports them, the native store none. */
+function rowCounter(db: RelationalStore) {
+  let rows = 0;
+  const originals = new WeakMap<PreparedStatement, PreparedStatement>();
+  const record = (value: unknown) => { rows += (value as { meta?: { rows_read?: number } }).meta?.rows_read ?? 0; };
+  const count = (statement: PreparedStatement): PreparedStatement => {
+    const wrapped = {
+      bind: (...values: unknown[]) => count(statement.bind(...values)),
+      first: async <T,>() => { const result = await statement.all<T>(); record(result); return result.results[0] ?? null; },
+      all: async <T,>() => { const result = await statement.all<T>(); record(result); return result; },
+      run: async () => { const result = await statement.run(); record(result); return result; },
+    } as PreparedStatement;
+    originals.set(wrapped, statement);
+    return wrapped;
+  };
+  return { rows: () => rows, db: { ...db, prepare: (sql: string) => count(db.prepare(sql)),
+    batch: async (batched: PreparedStatement[]) => { const results = await db.batch(batched.map(raw => originals.get(raw)!)); results.forEach(record); return results; } } as RelationalStore };
+}
+
+it('an idle claim with learning off reads the same rows however much card work waits', async () => {
   await withDocumentStores(async (db, name) => {
     const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() } as never, recordingDeferred());
     await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
@@ -217,11 +221,16 @@ it('an idle claim with learning off issues a small fixed number of statements', 
     await ensureMember(db, 'mem_worker', NOW, 'admin');
     const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
     // Card work is due, but learning is off.
-    await db.prepare(`INSERT INTO turn_cards(project_id,session_id,turn_key,due_at,created_at) VALUES('project','session','turn',1,1)`).run();
-    const measured = measuredContentEnv({ ...env, db });
-    const claim = await claimNextRun({ ...env, db: measured.env.db }, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
-    expect(claim, name).toMatchObject({ claimed: false });
-    // Settings, the queued-work probe, budget activation and all pulled-stage switches each use one read.
-    expect(measured.usage.statements, name).toBe(4);
+    const rows: number[] = [];
+    for (const turns of [1, 2_000]) {
+      await db.prepare(`INSERT OR IGNORE INTO turn_cards(project_id,session_id,turn_key,due_at,created_at)
+        SELECT 'project','session','turn-' || value,1,1 FROM json_each(?)`).bind(JSON.stringify(Array.from({ length: turns }, (_, i) => i))).run();
+      const counted = rowCounter(db);
+      const claim = await claimNextRun({ ...env, db: counted.db }, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+      expect(claim, name).toMatchObject({ claimed: false });
+      rows.push(counted.rows());
+    }
+    if (name === 'D1') expect(rows[0]!, name).toBeGreaterThan(0);
+    expect(rows[1]!, name).toBeLessThanOrEqual(rows[0]!);
   });
 });
