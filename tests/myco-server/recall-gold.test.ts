@@ -101,15 +101,13 @@ describe('model-relative prompt selection on frozen gold geometry', () => {
     expect(mustNotRegressions(gold.cases, served, gold.precisionRatchet)).toEqual([]);
   }, 30_000);
 
-  it('keeps served spores and plans identical under affine similarity changes', async () => {
+  it.each([[0.3, 0.5], [0, 0.5], [0.6, 0.39], [0.05, 0.3]] as const)('keeps served spores and plans identical under the affine similarity change %p·s+%p', async (a, b) => {
     const baseline = await measure(0, 1);
     expect(baseline.find(a => a.id === 'rp-43')!.items.filter(i => i.kind === 'plan').map(i => i.id))
       .toEqual(['a3b1e332-96a2-56e0-9afa-01876916c3a3']);
     expect(baseline.some(a => a.items.some(i => i.kind === 'spore'))).toBe(true);
-    for (const [a, b] of [[0.3, 0.5], [0, 0.5], [0.6, 0.39], [0.05, 0.3]] as const) {
-      const transformed = await measure(a, b);
-      expect(transformed.map(({ id, items }) => ({ id, items }))).toEqual(baseline.map(({ id, items }) => ({ id, items })));
-    }
+    const transformed = await measure(a, b);
+    expect(transformed.map(({ id, items }) => ({ id, items }))).toEqual(baseline.map(({ id, items }) => ({ id, items })));
   }, 30_000);
 
   it.each([0, 1, 4])('withholds real-vector plans and spores with only %s independent spore candidates', async size => {
