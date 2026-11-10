@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 export const V723 = 723;
 
 export const V723_STATEMENTS: readonly string[] = [
@@ -56,4 +57,17 @@ export const V723_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS document_rebuild_settled AFTER UPDATE OF due_at ON session_documents WHEN NEW.due_at IS NULL\n      BEGIN UPDATE document_rebuild_receipts SET rebuilt=1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id\n        AND from_generation+1=NEW.generation AND rebuilt=0; END",
   "INSERT INTO projection_catchup(projection,phase,done)\n      SELECT 'publication_version','publicationRebuildV6',NOT EXISTS(SELECT 1 FROM transcript_publication p INDEXED BY idx_publication_version JOIN session_documents d\n    ON (d.project_id,d.session_id,d.generation)=(p.project_id,p.session_id,p.generation) WHERE p.parser_version>0 AND p.parser_version<6 AND d.state='live' AND p.state<>'failed') ON CONFLICT DO NOTHING",
   "INSERT INTO projection_catchup(projection,phase,done)\n      SELECT 'publication_version','publicationReopenV6',NOT EXISTS(SELECT 1 FROM transcript_publication p INDEXED BY idx_publication_reopen JOIN session_documents d\n    ON (d.project_id,d.session_id,d.generation)=(p.project_id,p.session_id,p.generation) WHERE p.parser_version>=0 AND p.parser_version<6 AND d.state='live' AND p.state='failed' AND p.failure IN ('event_refused','record_too_large')) ON CONFLICT DO NOTHING"
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V723_REACHES: readonly Reach[] = [
+  ...changing(['session_chunks'], 'Document metadata remains in source blobs with a keyed directory and an explicit chunk class. Publication maintains keyed pin and failure contributions; generation and version seeks bound catch-up and metadata reads.'),
+  ...changing(['projection_catchup'], 'Document metadata remains in source blobs with a keyed directory and an explicit chunk class.'),
+  ...reaching(['transcripts', 'transcript_publication', 'session_documents', 'session_tombstones', 'projects'], 'Publication maintains keyed pin and failure contributions; generation and version seeks bound catch-up and metadata reads.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V723_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_document_failure_visible', read: 'the Deployment failure head selects the newest visible Project failure' },
+  { index: 'idx_publication_version', read: 'version rebuild candidates are ordered across the Deployment' },
 ];

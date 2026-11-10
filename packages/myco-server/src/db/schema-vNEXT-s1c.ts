@@ -1,4 +1,4 @@
-import { retiring, type SchemaStep } from './schema-step.js';
+import { retiring, type SchemaStep, reaching, changing } from './schema-step.js';
 export const NEXT_S1C = 772;
 
 /**
@@ -34,5 +34,16 @@ export const VNEXT_S1C_STEPS: readonly SchemaStep[] = [
   ], retires: [
     ...retiring('column', ['machine_harness_reports.harnesses'], 'A harness report is one row per harness, so the column holding every harness goes.'),
     ...retiring('table', ['machine_harness_reports_prior'], 'The previous harness report table is copied into the per-harness rows and dropped.'),
-  ] },
+  ],
+    reaches: [
+      ...reaching(['machine_claims', 'runners'], 'A member\'s machine page and a runner name lookup seek by key.'),
+      ...changing(['runner_model_catalogs', 'machine_harness_reports', 'projection_catchup'], 'Fleet tables: catalog metadata, the harness report split into per-harness rows, and the head seed phases; no history-sized table is rewritten.'),
+      ...changing(['worker_contacts'], 'Fleet tables: catalog metadata, the harness report split into per-harness rows, and the head seed phases; no history-sized table is rewritten. A contact, capture or runner attempt moves its one head row, so reads no longer walk contacts or attempt history.'),
+      ...reaching(['machine_capture_heads', 'agent_run_attempts', 'agent_runs'], 'A contact, capture or runner attempt moves its one head row, so reads no longer walk contacts or attempt history.'),
+    ],
+    deploymentIndexes: [
+      { index: 'idx_machine_claims_member_page', read: 'a member\'s page of machines is read by member in claim order' },
+      { index: 'idx_runners_active_name', read: 'runners belong to the Deployment: the active fleet and a replacement lookup read by name' },
+    ],
+  },
 ];

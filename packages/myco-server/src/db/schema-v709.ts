@@ -1,4 +1,4 @@
-import { retiring, type Retirement } from './schema-step.js';
+import { retiring, type Retirement, reaching, type Reach, changing } from './schema-step.js';
 /** Knowledge curation carries no repository file inventory or per-member anchor facts. */
 export const V709_STATEMENTS: readonly string[] = [
   'DROP TRIGGER IF EXISTS curation_inventory_map_move',
@@ -14,3 +14,6 @@ export const V709_RETIRES: readonly Retirement[] = [
   ...retiring('column', ['agent_runs.repository_files', 'spore_curation_candidates.currency'],
     'Knowledge curation carries no repository file inventory or per-member anchor facts.'),
 ];
+
+/** Why the step reaches tables earlier steps created. */
+export const V709_REACHES: readonly Reach[] = changing(['agent_runs', 'spore_curation_candidates'], 'Knowledge validity has no stored file-existence facts.');

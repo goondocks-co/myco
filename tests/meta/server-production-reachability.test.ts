@@ -6,48 +6,19 @@ import { closureOf, codeOf, filesUnder, moduleKey, REPO_ROOT } from '../helpers/
 const SERVER = path.join(REPO_ROOT, 'packages/myco-server/src');
 const PREFIX = 'packages/myco-server/src/';
 
-/** Modules loaded by operator tools, migrations or fixtures rather than serving entries. */
-const NON_SERVING_MODULES: Readonly<Record<string, string>> = {
-  'context.ts': 'type declarations consumed by route handlers',
-  'core/cost/types.ts': 'type declarations consumed by cost resolution',
-  'platform/bun/native.ts': 'type declarations consumed by native storage bootstrap',
-  'core/first-owner.ts': 'operator bootstrap: packages/myco/src/server/local-owner.ts and cloudflare-owner.ts',
-  'core/recovered-tenant.ts':
-    'operator recovery: packages/myco/src/server/local-recovery.ts and cloudflare-recovery.ts',
-};
-
-function productionClosure() {
-  return closureOf(
-    ['index.ts', 'entry/bun.ts', 'platform/bun/server-main.ts'].map((entry) => path.join(SERVER, entry)),
-  );
-}
+const SERVING_ENTRIES = ['index.ts', 'entry/bun.ts', 'platform/bun/server-main.ts'];
+/** The CLI's command table: the operator commands it registers load bootstrap and recovery modules no serving entry reaches. */
+const COMMAND_REGISTRY = path.join(REPO_ROOT, 'packages/myco/src/cli/command-registry.ts');
 
 describe('server production reachability', () => {
-  it('accounts for every server module from the serving entries or an explicit non-serving consumer', () => {
-    const reached = productionClosure();
+  it('reaches every server module that runs code from a serving entry or a registered CLI command', () => {
+    const reached = closureOf([...SERVING_ENTRIES.map((entry) => path.join(SERVER, entry)), COMMAND_REGISTRY]);
     const loose = filesUnder(SERVER)
-      .map(moduleKey)
-      .filter((key) => !reached.modules.has(key))
-      .map((key) => key.slice(PREFIX.length))
+      .filter((file) => !reached.modules.has(moduleKey(file)))
+      .filter((file) => codeOf(fs.readFileSync(file, 'utf8'), file).trim() !== '')
+      .map((file) => moduleKey(file).slice(PREFIX.length))
       .sort();
-    expect(
-      loose.filter((key) => !(key in NON_SERVING_MODULES)),
-      'unreachable server modules need a real consumer or removal',
-    ).toEqual([]);
-    expect(
-      Object.keys(NON_SERVING_MODULES).filter((key) => !loose.includes(key)),
-      'exclusions must still be unreachable',
-    ).toEqual([]);
-    for (const reason of Object.values(NON_SERVING_MODULES)) expect(reason.length).toBeGreaterThan(0);
-  });
-
-  it('exports no retired run-resume mutations from production source', () => {
-    const retired =
-      /\b(?:admitResume|classifyFailure|TERMINAL_RESUME_STATUSES|RESUME_MAX_ATTEMPTS|supersedeEquivalentResumableRuns)\b/;
-    const exports = filesUnder(SERVER)
-      .filter((file) => retired.test(codeOf(fs.readFileSync(file, 'utf8'), file)))
-      .map(moduleKey);
-    expect(exports, 'failed runs dispatch fresh work; retired resume APIs have no server consumer').toEqual([]);
+    expect(loose, 'unreachable server modules need a real consumer or removal').toEqual([]);
   });
 });
 

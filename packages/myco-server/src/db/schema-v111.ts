@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { DOCUMENT_EVENT_KINDS, DOCUMENT_PREVIEW_CHARS } from './document-tables.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
@@ -85,4 +86,16 @@ export const V111_STATEMENTS: readonly string[] = [
   `CREATE TRIGGER IF NOT EXISTS transcripts_document_size AFTER UPDATE OF size ON transcripts WHEN NEW.size <> OLD.size BEGIN
     UPDATE session_documents SET due_at = 0
       WHERE project_id = NEW.project_id AND session_id = NEW.session_id AND state = 'live' AND due_at IS NOT 0; END`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V111_REACHES: readonly Reach[] = [
+  ...reaching(['transcripts'], 'A transcript that arrives makes its live session due for publication and opens the document of a session first seen with it. A transcript that grows makes its live session due for publication.'),
+  ...reaching(['events'], 'A member content event is queued for its session\'s document in the statement that inserts it, by ingest and by restore alike, and makes its live session due.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V111_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_session_documents_due', read: 'the publisher takes the sessions whose documents are due across the Deployment, oldest first' },
+  { index: 'idx_retired_objects_at', read: 'superseded document objects retire after their grace across the Deployment, oldest first' },
 ];

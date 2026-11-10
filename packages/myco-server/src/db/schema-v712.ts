@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 export const V712 = 712;
 export const SETUP_OUTPUT_EVENT_INDEX = 'idx_agent_run_events_setup_output';
 export const SETUP_OUTPUT_EVENT_WHERE = "event_type='run_write' AND tool_name IN ('myco_run_sessions','myco_run_map')";
@@ -28,4 +29,20 @@ export const V712_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS change_mark_curation_delete AFTER DELETE ON spore_curation_changes BEGIN UPDATE change_marks SET revision=revision+1 WHERE kind='curation'; END",
   "CREATE TRIGGER IF NOT EXISTS change_mark_curation_update AFTER UPDATE ON spore_curation_changes WHEN OLD.project_id IS NOT NEW.project_id OR OLD.revision IS NOT NEW.revision OR OLD.dirty IS NOT NEW.dirty OR OLD.pending_at IS NOT NEW.pending_at BEGIN UPDATE change_marks SET revision=revision+1 WHERE kind='curation'; END",
   "INSERT INTO projection_catchup(projection,phase,done) SELECT 'passed_over','failures',NOT EXISTS(SELECT 1 FROM embedding_source_failures)"
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V712_REACHES: readonly Reach[] = [
+  ...reaching(['agent_run_events'], 'Setup seeks recorded title and map output without scanning empty run history.'),
+  ...reaching(['spore_curation_work'], 'Today seeks failed curation groups independently of successful groups.'),
+  ...reaching(['embedding_source_failures'], 'Failure mutations maintain current passed-over membership.'),
+  ...reaching(['embedding_versions'], 'Version mutations retract stale passed-over membership.'),
+  ...reaching(['processed_resources'], 'Plan proof eligibility maintains only its source failure memberships.'),
+  ...reaching(['agent_runs', 'plans', 'spore_curation_changes'], 'Source mutations advance the persistent Today mark.'),
+  ...changing(['projection_catchup'], 'Derived readiness and change revisions initialize without changing sources.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V712_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_embedding_passed_over_model', read: 'Health reads current passed-over memberships under its model keys across the Deployment' },
 ];

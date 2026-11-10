@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 import { CURRENT_EMBEDDING_SOURCES } from './embedding-sources.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
@@ -41,4 +42,9 @@ export const V82_STATEMENTS: readonly string[] = [
   ...dirty('processed_resources', undefined, undefined, (operation) => operation === 'INSERT' ? "NEW.kind = 'plan'" : operation === 'DELETE' ? "OLD.kind = 'plan'" : "OLD.kind = 'plan' OR NEW.kind = 'plan'"),
   ...dirty('embedding_hubness_members', "'hubness'"),
   ...dirty('embedding_cursors', "'hubness'", 'UPDATE OF hubness_model,hubness_count,hubness_cursor'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V82_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_agent_runs_task_live', read: 'embedding dispatch checks live runs by task and status across every Project' },
 ];

@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { refreshEmbeddingDue } from './embedding-due.js';
 
@@ -36,4 +37,10 @@ export const V466_STATEMENTS: readonly string[] = [
   ...['INSERT','UPDATE','DELETE'].map(op => `CREATE TRIGGER IF NOT EXISTS processed_resources_due_${op.toLowerCase()} AFTER ${op} ON processed_resources WHEN ${(op === 'INSERT' ? ['NEW'] : op === 'DELETE' ? ['OLD'] : ['OLD','NEW']).map(row=>`${row}.kind='plan'`).join(' OR ')} BEGIN
     ${ (op === 'INSERT' ? ['NEW'] : op === 'DELETE' ? ['OLD'] : ['OLD','NEW']).map(row =>
       refreshEmbeddingDue(row, "'plan'", `${row}.resource_id`)).join(' ')} END`),
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V466_REACHES: readonly Reach[] = [
+  ...reaching(['embedding_versions', 'embedding_receipts', 'embedding_hubness_members', 'deployment_settings', 'deployment_secrets', 'embedding_source_failures', 'processed_resources'], 'Catalog mutations maintain embedding and publication facts atomically.'),
+  ...changing(['schema_meta'], 'Provider configuration changes fence pending provider failures.'),
 ];

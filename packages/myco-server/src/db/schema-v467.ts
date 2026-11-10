@@ -1,3 +1,4 @@
+import { reaching, type SchemaStep, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { documentFactDelta, documentFactsSelect, DOCUMENT_FACT_COLUMNS, refreshDocumentFacts } from './document-facts-v467.js';
 
@@ -38,4 +39,10 @@ const pages = Array.from({length:PARTS},(_,index) => [
     ${documentFactsSelect(`d.rowid>((SELECT high FROM _document_fact_range)/${PARTS})*${index}${index === PARTS-1 ? '' : ` AND d.rowid<=((SELECT high FROM _document_fact_range)/${PARTS})*${index+1}`}`)}`,
 ]);
 
-export const PUBLICATION_FACT_STEPS = [setup,...pages,['DROP TABLE _document_fact_range']].map((statements,index) => ({version:467+index,statements}));
+export const PUBLICATION_FACT_STEPS: readonly SchemaStep[] = [
+  { statements: setup, reaches: reaching(['session_documents', 'transcripts', 'transcript_publication', 'publish_queue', 'retired_objects'],
+    'Catalog mutations maintain embedding and publication facts atomically.') },
+  ...pages.map((statements) => ({ statements, reaches: changing(['document_publication_facts'],
+    'Publication facts initialize from disjoint document rowid ranges, with queue counts and the range boundary captured once.') })),
+  { statements: ['DROP TABLE _document_fact_range'] },
+].map((step, index) => ({ version: 467 + index, ...step }));

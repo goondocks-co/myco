@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 /**
  * Schema v65: the models each machine's worker last listed for each harness it offers.
  *
@@ -17,4 +18,9 @@ export const V65_STATEMENTS: readonly string[] = [
      received_at INTEGER NOT NULL,
      PRIMARY KEY (machine_id, harness))`,
   `CREATE INDEX IF NOT EXISTS idx_worker_model_catalogs_received ON worker_model_catalogs (received_at)`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V65_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_worker_model_catalogs_received', read: 'Settings reads the model lists machines sent lately, and the lease sweep forgets the rest by age; a machine names no Project' },
 ];

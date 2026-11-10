@@ -1,4 +1,4 @@
-import { retiring, type Retirement } from './schema-step.js';
+import { retiring, type Retirement, reaching, type Reach, changing } from './schema-step.js';
 export const V717 = 717;
 export const V717_STATEMENTS: readonly string[] = [
   "ALTER TABLE session_documents ADD COLUMN publication_input_revision INTEGER NOT NULL DEFAULT 0",
@@ -49,3 +49,11 @@ export const V717_STATEMENTS: readonly string[] = [
 export const V717_RETIRES: readonly Retirement[] = retiring('trigger',
   ['transcripts', 'transcript_publication'].flatMap((table) => ['insert', 'update', 'delete'].map((action) => `${table}_facts_${action}`)),
   'Each facts trigger is rebuilt to keep the keyed publication contributions as well as the publication facts.');
+
+/** Why the step reaches tables earlier steps created. */
+export const V717_REACHES: readonly Reach[] = [
+  ...changing(['session_documents'], 'Add the input revision, replace recount triggers and seed bounded contribution catch-up without rewriting source history. Document lifecycle maintains publication revision and contribution activation. Publication facts reconcile named source keys and generation totals.'),
+  ...reaching(['transcripts', 'transcript_publication'], 'Publication facts reconcile named source keys and generation totals. Publication input mutations advance the session concurrency revision.'),
+  ...reaching(['publish_queue', 'session_tombstones'], 'Publication input mutations advance the session concurrency revision.'),
+  ...changing(['projection_catchup'], 'Add the input revision, replace recount triggers and seed bounded contribution catch-up without rewriting source history.'),
+];

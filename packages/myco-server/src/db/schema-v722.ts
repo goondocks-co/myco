@@ -1,4 +1,4 @@
-import { retiring, type Retirement } from './schema-step.js';
+import { retiring, type Retirement, reaching, type Reach, changing } from './schema-step.js';
 export const V722 = 722;
 
 /**
@@ -61,4 +61,13 @@ export const V722_RETIRES: readonly Retirement[] = [
   ...retiring('trigger', [...['embedding_versions', 'embedding_receipts'].flatMap((table) => ['insert', 'update', 'delete'].map((action) => `${table}_hubness_source_${action}`)),
     'embedding_hubness_members_work_update'],
     'Each trigger is rebuilt narrower: it still advances the same revision or dirties the same work.'),
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V722_REACHES: readonly Reach[] = [
+  ...reaching(['embedding_versions', 'embedding_receipts'], 'A spore version or receipt change advances the calibration revision every page commit is fenced by. Receipt, source version and membership changes maintain per-vector calibration state and its population.'),
+  ...reaching(['embedding_hubness_members'], 'A membership change dirties calibration work; moment updates, which commit with the cursor, do not. Calibration reads the lowest and highest moment count of settled members in two seeks. Receipt, source version and membership changes maintain per-vector calibration state and its population.'),
+  ...reaching(['embedding_source_state'], 'Spores being written again are counted from current source state, without reading stale receipts.'),
+  ...changing(['embedding_cursors'], 'The lost-vector probe retains the last write of the vector it stopped at, the order abandoned vectors are walked in.'),
+  ...changing(['projection_catchup'], 'Calibration state is initialized through the shared projection catch-up.'),
 ];

@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 const retiredLeaf = 'cortex.canopy.refresh.background_enabled';
 
 /** Preserve the map refresh switch's stored value and attribution before removal. */
@@ -13,4 +14,10 @@ export const V698_STATEMENTS: readonly string[] = [
     ) THEN 1 ELSE 0 END`,
   `DROP TABLE _v698_guard_retired_settings`,
   `DELETE FROM deployment_settings WHERE leaf='${retiredLeaf}'`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V698_REACHES: readonly Reach[] = [
+  ...changing(['retired_deployment_settings'], 'Retired map refresh preferences retain their exact stored value and attribution.'),
+  ...changing(['deployment_settings'], 'The archived map refresh switch has no active consumer.'),
 ];

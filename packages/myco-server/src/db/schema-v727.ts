@@ -1,3 +1,4 @@
+import { reaching, type Reach, type DeploymentIndex, changing } from './schema-step.js';
 export const V727 = 727;
 
 /**
@@ -22,4 +23,19 @@ export const V727_STATEMENTS: readonly string[] = [
   "CREATE INDEX IF NOT EXISTS idx_object_releases_due ON object_releases((CASE WHEN retry_at=0 THEN created_at ELSE retry_at END),physical)",
   "CREATE INDEX IF NOT EXISTS idx_blob_release_candidates_due ON blob_release_candidates(created_at,project_id,key)",
   "CREATE INDEX IF NOT EXISTS idx_backup_release_candidates_due ON backup_release_candidates(created_at,id)",
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V727_REACHES: readonly Reach[] = [
+  ...reaching(['blobs'], 'A registered blob moves the storage usage counters of its Project and the Deployment for every key the build has reached.'),
+  ...changing(['projection_catchup'], 'Each release key carries when it is next due, and storage usage stays building until the catch-up has counted every registered blob.'),
+  ...changing(['object_releases', 'blob_release_candidates'], 'Each release key carries when it is next due, and storage usage stays building until the catch-up has counted every registered blob. The object-release drain reads its next page of each release queue from this order.'),
+  ...reaching(['backup_release_candidates'], 'The object-release drain reads its next page of each release queue from this order.'),
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V727_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_object_releases_due', read: 'the object-release drain seeks the journal keys due across the Deployment by when each is next attempted' },
+  { index: 'idx_blob_release_candidates_due', read: 'the object-release drain decides recorded blob candidates across the Deployment, in arrival order' },
+  { index: 'idx_backup_release_candidates_due', read: 'the object-release drain decides recorded backup candidates across the Deployment, in arrival order' },
 ];

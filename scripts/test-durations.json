@@ -603,6 +603,7 @@
     "tests/myco-server/run-authority-wait.test.ts": 1415,
     "tests/myco-server/run-calls-api.test.ts": 66,
     "tests/myco-server/run-cancel.test.ts": 97,
+    "tests/myco-server/run-configuration-unpublished.test.ts": 2700,
     "tests/myco-server/run-control-scope.test.ts": 117,
     "tests/myco-server/run-evidence.test.ts": 50000,
     "tests/myco-server/run-fields.test.ts": 128,

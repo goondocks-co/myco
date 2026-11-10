@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 
 const archiveLeaf = 'agent.tasks.extract-curate.schedule';
 const schedule = '$."extract-curate".schedule';
@@ -37,4 +38,13 @@ export const V102_STATEMENTS: readonly string[] = [
     completed_at=(SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key='learning_paused_at'),
     run_context='{"reason":"learning_paused"}',held_by=NULL,dispatch_spec=NULL
     WHERE status='queued' AND task='extract-curate'`,
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V102_REACHES: readonly Reach[] = [
+  ...changing(['retired_deployment_settings'], 'The Deployment retains the original extraction schedule preferences.'),
+  ...changing(['deployment_settings'], 'The extraction enabled preference retains its stored value. The extraction member allowance retains its stored value. The extraction task uses flat preferences.'),
+  ...changing(['schema_meta'], 'The Deployment records its learning pause boundary.'),
+  ...changing(['member_credentials'], 'Queued extraction credentials are revoked at the pause boundary.'),
+  ...changing(['agent_runs'], 'Queued extraction attempts close with their learning pause reason.'),
 ];

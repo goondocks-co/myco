@@ -1,4 +1,4 @@
-import { retiring, type Retirement } from './schema-step.js';
+import { reaching, retiring, type SchemaStep, changing } from './schema-step.js';
 /**
  * The content tables retired at step 117 leave the store in bounded transactions. Their triggers go first, so a
  * delete writes nothing beyond the row it removes; each secondary index goes before the rows it covers; rows leave in
@@ -78,7 +78,8 @@ const SMALL_TABLES = [
   'prompt_key_owners', 'plan_promotions', 'view_publication_material', 'view_legacy_ack_feed', 'view_flip_calibrations', 'learning_init_queue',
   'cutover_progress', 'view_visible', 'view_key_owners', 'view_build_work', 'session_views', 'view_instances',
 ];
-interface ContentStep { statements: readonly string[]; retires?: readonly Retirement[] }
+type ContentStep = Omit<SchemaStep, 'version'>;
+const BOUNDED = 'Retired content storage leaves in bounded transactions: triggers, then indexes, then rowid ranges, then the tables.';
 const indexesOf = (tables: readonly string[]) => tables.flatMap((table) => DROPPED_CONTENT_INDEXES[table]!);
 const dropIndexes = (indexes: readonly string[]): ContentStep => ({
   statements: indexes.map((index) => `DROP INDEX IF EXISTS ${index}`),
@@ -101,10 +102,10 @@ const steps: readonly ContentStep[] = [
   ...ONE_INDEX_PER_STEP.flatMap((table) => indexesOf([table]).map((index) => dropIndexes([index]))),
   ...ONE_TABLE_PER_STEP.map((table) => dropIndexes(indexesOf([table]))),
   dropIndexes(indexesOf(Object.keys(DROPPED_CONTENT_INDEXES).filter((table) => !ONE_INDEX_PER_STEP.includes(table) && !ONE_TABLE_PER_STEP.includes(table)))),
-  ...RANGE_SOURCES.flatMap(({ table, parts }) => Array.from({ length: parts }, (_, partition) => ({ statements: [`DELETE FROM ${table} WHERE ${range(table, parts, partition)}`] }))),
+  ...RANGE_SOURCES.flatMap(({ table, parts }) => Array.from({ length: parts }, (_, partition) => ({ statements: [`DELETE FROM ${table} WHERE ${range(table, parts, partition)}`], reaches: changing([table], BOUNDED) }))),
   ...SEARCH_TABLES.map((table) => dropTables([table])),
   ...EMPTIED_TABLES.map((table) => dropTables([table])),
   dropTables(SMALL_TABLES, [DROP_RANGES_TABLE]),
 ];
 
-export const DROP_CONTENT_SCHEMA_STEPS = steps.map((step, index) => ({ version: 265 + index, ...step }));
+export const DROP_CONTENT_SCHEMA_STEPS: readonly SchemaStep[] = steps.map((step, index) => ({ version: 265 + index, ...step }));

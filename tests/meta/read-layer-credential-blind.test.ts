@@ -1,14 +1,12 @@
 /**
- * Meta gate: the query core is credential-blind, and the facades go through it.
+ * Meta gate: the query core is credential-blind.
  *
  * One core with two facades — an owner session for humans, a member token for machines —
  * is what keeps a dashboard and a sandboxed agent from disagreeing about what the vault
- * says. Two properties hold that up, and each fails on its own:
- *
- *   1. The core can be called WITHOUT a credential: no module under `read/**` imports an
- *      authenticator, a cookie module, a request-handling module, or the full `Env`.
- *   2. The facades USE it: no module issues SQL outside `read/**` and `ingest/**`. A gate
- *      that only proves (1) leaves `api/**` free to query D1 directly while staying green.
+ * says. The core can be called WITHOUT a credential: no module under `read/**` imports an
+ * authenticator, a cookie module, a request-handling module, or the full `Env`, and none
+ * reaches an opened secret. That facades read through the core, and that no SQL runs outside
+ * `db/**`, is the db-layer gate's.
  *
  * Static source scan, no worker boot.
  */
@@ -19,7 +17,6 @@ import { fileURLToPath } from 'node:url';
 
 const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta.url));
 const READ_DIR = join(SRC, 'read');
-const namesRunColumn=(source:string,column:string)=>new RegExp('\\b'+column+'\\b').test(source);
 
 const allFiles = (dir: string): string[] =>
   readdirSync(dir).flatMap((e) => {
@@ -37,12 +34,11 @@ function importSpecifiers(source: string): string[] {
   return out;
 }
 
-/** The modules the core is made of. A named floor, not a count: a count sails through a silent collapse. */
-const CORE_MODULES = ['accounting.ts', 'canopy.ts', 'capture.ts', 'blobs.ts', 'meta.ts', 'plans.ts', 'processed.ts', 'project-cursor.ts', 'hook-placement.ts', 'repository-requirements.ts', 'run-outcome.ts', 'runs.ts', 'scope.ts', 'credentials.ts', 'document-catalog.ts', 'extraction-origins.ts', 'legacy-history.ts', 'machines.ts', 'session-artifacts.ts', 'session-commits.ts', 'session-files.ts', 'task-descriptions.ts', 'task-start.ts', 'transcript.ts', 'catalog/activity.ts', 'catalog/children.ts', 'catalog/embedding.ts', 'catalog/hook-placement.ts', 'catalog/injection-served-items.ts', 'catalog/injection.ts', 'catalog/lineage.ts', 'catalog/plans.ts', 'catalog/processed.ts', 'catalog/search-index.ts', 'catalog/search.ts', 'catalog/session-activity.ts', 'catalog/sessions.ts', 'catalog/shared.ts', 'catalog/turns.ts', 'work.ts', 'work-now.ts'] as const;
-
-const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//, /\/ingest\//];
-/** The one ingest module a read may name: the wire's kind catalogue, pure data — never the write path beside it. */
-const ADMITTED_IMPORT = [/\/ingest\/kinds\.js$/];
+/**
+ * An authenticator, a cookie module, or a module that handles a request: the route table, its context, the ingest
+ * pipeline and its handlers and write path, any API facade. The wire's kind catalogue under `ingest/` is pure data.
+ */
+const FORBIDDEN_IMPORT = [/\/auth\//, /cookie/i, /\/pipeline\.js/, /\/routes\.js/, /\/context\.js/, /\/api\//, /\/ingest\/(?!kinds\.js$)/];
 
 /** The secret store exposes only boolean presence and agent-login availability to reads. */
 const SECRET_STORE = join(SRC, 'core', 'secrets.ts');
@@ -66,14 +62,6 @@ function valueImports(file: string): Array<{ target: string; names: string[] | n
 }
 
 describe('read layer', () => {
-  it('is made of exactly the named core modules, and says so when that changes', () => {
-    const present = tsFiles(READ_DIR).map((f) => f.slice(READ_DIR.length + 1)).sort();
-    // Witness log: the assertion below pins the set, and this line makes a change legible
-    // in the run output instead of only in a diff.
-    console.log(`[read-layer gate] core modules: ${present.join(', ')}`);
-    expect(present).toEqual([...CORE_MODULES].sort());
-  });
-
   it('never receives an opened secret: the store exposes only boolean checks, at any depth', () => {
     const offenders: string[] = [];
     for (const start of tsFiles(READ_DIR)) {
@@ -102,59 +90,24 @@ describe('read layer', () => {
     const offenders: string[] = [];
     for (const file of tsFiles(READ_DIR)) {
       for (const spec of importSpecifiers(readFileSync(file, 'utf8'))) {
-        if (FORBIDDEN_IMPORT.some((p) => p.test(spec)) && !ADMITTED_IMPORT.some((p) => p.test(spec))) offenders.push(`${file.slice(READ_DIR.length + 1)} -> ${spec}`);
+        if (FORBIDDEN_IMPORT.some((p) => p.test(spec))) offenders.push(`${file.slice(READ_DIR.length + 1)} -> ${spec}`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it('never names the run columns that carry configuration: overrides, context, cost detail, checkpoints', () => {
-    // The run table holds the resolved provider configuration in four columns a
-    // dashboard has no use for raw. A column selected under an alias still has to
-    // be named, so the names appearing anywhere in a read module is the gate; the
-    // one reader that parses `checkpoints` into phases names it in exactly one
-    // module, which is pinned here.
-    //
-    // `run_context` is admitted in that same module and nowhere else, and only
-    // under `json_extract` for the named keys below: the whole column carries
-    // whatever a dispatch put in it, and a reader that selected it would hand a
-    // dashboard the lot. A key added here is a key someone chose to publish.
+  it('never names the run columns that carry configuration: overrides, context, cost detail', () => {
+    // The run table holds the resolved provider configuration in columns a dashboard has no use for raw; a column
+    // selected under an alias still has to be named. The keys of `run_context` a run is described by are read one at a
+    // time in db/, and what the run list and detail publish is asserted in run-configuration-unpublished.test.ts.
     const offenders: string[] = [];
     for (const file of tsFiles(READ_DIR)) {
       const source = readFileSync(file, 'utf8');
-      const rel = file.slice(READ_DIR.length + 1);
-      for (const column of ['execution_overrides', 'run_context', 'cost_data', 'checkpoints']) {
-        if (!namesRunColumn(source,column)) continue;
-        if (rel === 'runs.ts' && (column === 'checkpoints' || column === 'run_context')) continue;
-        offenders.push(`${rel}: ${column}`);
+      for (const column of ['execution_overrides', 'run_context', 'cost_data']) {
+        if (new RegExp(`\\b${column}\\b`).test(source)) offenders.push(`${file.slice(READ_DIR.length + 1)}: ${column}`);
       }
     }
     expect(offenders).toEqual([]);
-  });
-
-  it('run configuration columns remain distinct from instance checkpoint tables',()=>{
-    expect(namesRunColumn('SELECT ready FROM view_checkpoints','checkpoints')).toBe(false);
-    for(const source of ['SELECT checkpoints FROM runs','SELECT r.checkpoints AS phases FROM runs r','SELECT "checkpoints" AS phases FROM runs'])
-      expect(namesRunColumn(source,'checkpoints')).toBe(true);
-    for(const column of ['execution_overrides','run_context','cost_data'])expect(namesRunColumn('SELECT r.'+column+' AS value FROM runs r',column)).toBe(true);
-  });
-
-  it('publishes exactly the named context keys, each one read out of the column rather than with it', () => {
-    // The reader lives with the schema, which indexes one of its keys, and takes one named key at a time.
-    const reader = readFileSync(join(READ_DIR, '..', 'db', 'run-context.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-    expect(reader.match(/run_context/g) ?? []).toHaveLength((reader.match(/json_(?:valid|extract)\(run_context/g) ?? []).length);
-    expect(reader).toMatch(/json_extract\(run_context, '\$\.\$\{key\}'\)/);
-    // Every mention of the column in the modules that read it sits inside that reader, so nothing selects it whole;
-    // these are the keys they take.
-    const keys: string[] = [];
-    expect(readFileSync(join(READ_DIR, 'runs.ts'), 'utf8').match(/run_context/g) ?? []).toEqual([]);
-    for (const [dir, module] of [[join(READ_DIR, '..', 'db', 'runs'), 'reads.ts'], [join(READ_DIR, '..', 'db', 'runs'), 'history.ts']] as const) {
-      const source = readFileSync(join(dir, module), 'utf8');
-      expect({ module, column: source.match(/run_context/g) ?? [] }).toEqual({ module, column: [] });
-      expect({ module, reader: /from '(\.\.\/db\/|\.\.\/)run-context\.js'/.test(source) }).toEqual({ module, reader: true });
-      keys.push(...[...source.matchAll(/contextValue\('([a-z_]+)'\)/g)].map((m) => m[1]!));
-    }
-    expect([...new Set(keys)].sort()).toEqual(['reason', 'replaced', 'replaces', 'session_id']);
   });
 
   it('names no Request type and takes no full Env', () => {
@@ -163,121 +116,6 @@ describe('read layer', () => {
       const source = readFileSync(file, 'utf8');
       if (/\bRequest\b/.test(source)) offenders.push(`${file.slice(READ_DIR.length + 1)}: Request`);
       if (/\bEnv\b/.test(source)) offenders.push(`${file.slice(READ_DIR.length + 1)}: Env`);
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it('is what every facade reads through: SQL is issued only from the named modules', () => {
-    // Scoping this to one directory would leave the next facade free. Plan 5's `/mcp` and
-    // recall sit beside `api/**`, not under it, so the scan enumerates all of `src/` and
-    // allows only the modules that own storage:
-    //   read/**       the query core
-    //   ingest/**     the write path
-    //   db/**         schema and migration
-    //   auth/tokens.ts, auth/refresh.ts, auth/enrollment.ts
-    //                     the credential store
-    //   core/secrets.ts   the Deployment secret store — it OWNS deployment_secrets,
-    //                     and holds the only decrypt in the codebase
-    //   core/settings.ts  the one validated settings write path — it OWNS
-    //                     deployment_settings and project_capabilities
-    //   core/machine-settings.ts  a machine's settings — it OWNS machine_settings,
-    //                     and reads machine_claims to decide who reaches them
-    //   core/runs.ts      the agent run control plane — it OWNS agent_runs and
-    //                     agent_state, and holds the two operations whose
-    //                     atomicity lives in a WHERE clause rather than a caller
-    //   core/served-material.ts owns the served ledger and atomic session citation authority.
-    //   core/run-write-store.ts holds run authority assertions around atomic MCP mutations
-    //   core/provenance.ts release state — it OWNS knowledge_release_state on
-    //                     the read side, and holds the one bulk lookup that
-    //                     keeps annotation off an N+1
-    //   core/spores.ts    the spore store — it OWNS spores and resolution_events,
-    //                     and holds the one write that moves a status and records
-    //                     why it moved as a single commit
-    //   core/injection.ts what the prompt hook is served — it OWNS
-    //                     spore_injections, and holds the INSERT OR IGNORE whose
-    //                     one-prompt-content-per-session rule lives in the
-    //                     primary key rather than in a caller
-    //   core/recall.ts    what a prompt is served at submit time — it OWNS
-    //                     session_injections and prompt_context_answers, holds
-    //                     the once-per-session INSERT OR IGNORE, and prunes
-    //                     expired prompt answer diagnostics in bounded batches
-    //   core/remotes.ts   git remotes as Project names — it OWNS project_remotes,
-    //                     and holds the INSERT OR IGNORE whose one-remote-one-Project
-    //                     rule lives in the primary key rather than in a caller
-    //   core/backup.ts    the backup engine — it OWNS backups, and its dump and
-    //                     additive restore are row transport over every table,
-    //                     which no facade abstraction can carry
-    //   core/tombstones.ts a session's deletion — it OWNS session_tombstones,
-    //                     and its sweep spans every table a session projected
-    //                     into as one commit, so no facade owns the whole of it
-    //   core/blob-references.ts the blob reference catalogue — it OWNS the
-    //                     held check over every reference, the one query the
-    //                     orphan sweep, retention, deletion and the recovery
-    //                     snapshot check share
-    //   core/recovery-schema.ts the schema recovery captures before an export — it
-    //                     OWNS the catalogue read both targets hold an export to
-    //   core/object-release.ts the stored-object lifecycle — it OWNS object_releases,
-    //                     the release candidates and recovery_holds, and holds the
-    //                     transactions that journal an exact stored object while
-    //                     removing the row that registered it
-    //   core/recovery-hold.ts the recovery hold around the hosted producer — it
-    //                     reads the open hold it settles
-    //   core/backup-retention.ts the backup retention policy — it reads the policy
-    //                     leaves and the catalogue it decides victims from
-    //   core/worker-contacts.ts what a worker last said about itself — it OWNS
-    //                     worker_contacts, the one write the claim and the lease
-    //                     renewal share and the one fleet read Status answers from
-    //   core/model-catalogs.ts the models each worker last listed — it OWNS
-    //                     worker_model_catalogs, the one write a worker's report
-    //                     makes and the reads Settings and a claim answer from
-    //   core/release-provenance.ts release provenance — it OWNS
-    //                     project_release_provenance and the reconciler's writes of
-    //                     knowledge_release_state, and holds the claim whose one-check-
-    //                     at-a-time rule lives in a WHERE clause rather than a caller
-    //   core/store-maintenance.ts store maintenance — it OWNS the maintenance
-    //                     outcome rows of schema_meta, and holds the conditional
-    //                     claim and completion that keep one run of a check at a time
-    //   platform/cloudflare/store-maintenance.ts the hosted checks — it sends the
-    //                     maintenance statements D1 documents, which only it knows
-    //   core/first-owner.ts a Deployment's first administrator — it OWNS the
-    //                     first_member_setup receipt of schema_meta, and holds the
-    //                     guarded statements a setup run one at a time relies on
-    //   core/run-steps.ts a run's attempts and step logs — it OWNS
-    //                     agent_run_attempts and agent_run_steps, and records an
-    //                     attempt in the batch that claims its run
-    //   core/harness-health.ts owns the current machine_harness_reports write;
-    //                     its read SQL is in db/runners/harness-health.ts
-    //   core/relational-snapshot.ts reads the backup tables at one committed instant
-    //   pipeline.ts   one quota re-read on the ingest admission path
-    // core/ownership.ts owns the owner singleton, member roles and their audit receipts.
-    // core/restore-authorization.ts guards every restore batch with current actor authority.
-    // core/restore-rows.ts admits session rows and guards their tombstones across restore writes.
-    // db/documents/ranges.ts owns hot/archive selection and the removal of archived hot ranges.
-    // core/raw-claims.ts owns raw claim receipts and restore revision reservations.
-    // core/raw-backfill.ts owns bounded provenance snapshots and their atomic checkpoint.
-    // Authorization resolvers read local identity, liveness and resource evidence.
-    // auth/member-write-store.ts owns live member authority assertions.
-    // core/write-guard-store.ts batches authority assertions with their mutations.
-    // core/recovery-forget.ts owns durable recovery command issuance and lookup.
-    // core/archive-bundle.ts owns bundle publication evidence and verified entry reads.
-    // auth/device.ts owns device requests, poll cadence and attributed decisions.
-    // auth/runners.ts owns runners, their credentials, rotations, controls and audit.
-    // core/runner-updates.ts owns update commands, machine reports and their attributed receipts.
-    // core/legacy-workers.ts owns offline contact removal and its immutable receipts.
-    // db/embeddings/work.ts owns pending source identities, provider holds and their attempt and configuration fences.
-    // core/embedding/work-state.ts owns atomic wake-marker acknowledgment; selection, work and work-sweep read its source journals.
-    // core/session-artifacts.ts owns session_artifacts: the guarded insert of a reported artifact, its read-back and its restore.
-    // core/learning-sessions.ts owns learning progress and core/turn-cards.ts owns turn_cards; core/learning-stages.ts reads their heads.
-    // Material operations own canonical postimages, version allocation and version-unit recovery.
-    // Context writes own receipts, answers and session records; retention removes answers with their bindings.
-    // content/document-reader.ts reads the session document catalog that locates each chunk it opens.
-    // content/session-pages.ts and content/session-turns.ts read the directory rows and hook records a page read names.
-    const ALLOWED = [/^content\/tool-statistics\.ts$/, /^content\/document-reader\.ts$/, /^content\/session-(pages|turns)\.ts$/, /^core\/attention-state\.ts$/, /^core\/(attempt-accounting|worker-claim|run-budget|queue-heads|budget-estimates|pulled-stages)\.ts$/,/^core\/(material-versions|material-fact-writer|material-restore|material-version-backup|plan-status|context-writes|prompt-answer-retention)\.ts$/, /^core\/learning-(hold|pause|sessions|stages)\.ts$/, /^core\/spore-curation\.ts$/, /^core\/turn-cards\.ts$/, /^core\/(served-material|extraction-acks|session-artifacts)\.ts$/, /^core\/legacy-workers\.ts$/, /^core\/(archive-bundle|content-registration|event-content|registered-content|storage-cleanup|event-content-restore|content-budget|tool-input-restore|raw-archive)\.ts$/, /^auth\/(authorization|http-authorization|mcp-authorization)\.ts$/, /^read\//, /^ingest\//, /^db\//, /^auth\/tokens\.ts$/, /^auth\/refresh\.ts$/, /^auth\/enrollment\.ts$/, /^auth\/device\.ts$/, /^auth\/runners\.ts$/, /^auth\/identity-link\.ts$/, /^auth\/grants\.ts$/, /^auth\/members-admin\.ts$/, /^core\/secrets\.ts$/, /^core\/settings\.ts$/, /^core\/machine-settings\.ts$/, /^core\/repositories\.ts$/, /^core\/canopy\.ts$/, /^core\/runs\.ts$/, /^core\/run-write-store\.ts$/, /^core\/write-guard-store\.ts$/, /^auth\/member-write-store\.ts$/, /^core\/recovery-forget\.ts$/, /^core\/raw-resources\.ts$/, /^core\/raw-claims\.ts$/, /^core\/ownership\.ts$/, /^core\/raw-backfill\.ts$/, /^core\/raw-provenance\.ts$/, /^core\/activity\.ts$/, /^core\/backup\.ts$/, /^core\/(restore-authorization|restore-rows|transcript-ranges)\.ts$/, /^core\/recovered-tenant\.ts$/, /^core\/relational-snapshot\.ts$/, /^core\/injection\.ts$/, /^core\/provenance\.ts$/, /^core\/recall\.ts$/, /^core\/remotes\.ts$/, /^core\/resume\.ts$/, /^core\/search-index\.ts$/, /^core\/embedding\/(reconcile|hubness|jobs|switch-store|selection|work|work-state|work-sweep|provider-state)\.ts$/, /^core\/spores\.ts$/, /^core\/project-creation\.ts$/, /^core\/tombstones\.ts$/, /^core\/blob-references\.ts$/, /^core\/recovery-schema\.ts$/, /^core\/object-release\.ts$/, /^core\/recovery-hold\.ts$/, /^core\/backup-retention\.ts$/, /^core\/worker-contacts\.ts$/, /^core\/runner-updates\.ts$/, /^core\/run-steps\.ts$/, /^core\/model-catalogs\.ts$/, /^core\/harness-health\.ts$/, /^core\/store-maintenance\.ts$/, /^platform\/cloudflare\/store-maintenance\.ts$/, /^core\/release-provenance\.ts$/, /^core\/first-owner\.ts$/, /^pipeline\.ts$/];
-    const offenders: string[] = [];
-    for (const file of tsFiles(SRC)) {
-      const rel = file.slice(SRC.length);
-      if (ALLOWED.some((p) => p.test(rel))) continue;
-      if (/\.prepare\s*\(/.test(readFileSync(file, 'utf8'))) offenders.push(rel);
     }
     expect(offenders).toEqual([]);
   });

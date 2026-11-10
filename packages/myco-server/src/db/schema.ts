@@ -1,17 +1,17 @@
-import { V723, V723_STATEMENTS } from './schema-v723.js';
-import type { Retirement, SchemaStep } from './schema-step.js';
-import { V727, V727_STATEMENTS } from './schema-v727.js';
+import { V723, V723_STATEMENTS, V723_REACHES, V723_DEPLOYMENT_INDEXES } from './schema-v723.js';
+import type { SchemaStep, DeploymentIndex } from './schema-step.js';
+import { V727, V727_STATEMENTS, V727_REACHES, V727_DEPLOYMENT_INDEXES } from './schema-v727.js';
 import { SESSION_LIFECYCLE_STEPS } from './schema-v728.js';
 import { CARD_SETTLE_AND_LOCATOR_STEPS } from './schema-vNEXT-s2b2.js';
-import { NEXT_S6, VNEXT_S6_INDEX_STEPS, VNEXT_S6_STATEMENTS } from './schema-vNEXT-s6.js';
-import { V718, V718_STATEMENTS } from './schema-v718.js';
-import { V720, V720_RETIRES, V720_STATEMENTS } from './schema-v720.js';
-import { V721, V721_STATEMENTS } from './schema-v721.js';
-import { V722, V722_RETIRES, V722_STATEMENTS } from './schema-v722.js';
-import { V724, V724_STATEMENTS } from './schema-v724.js';
-import { V725, V725_STATEMENTS } from './schema-v725.js';
-import { V726, V726_STATEMENTS } from './schema-v726.js';
-import { V731, V731_INDEX_STEPS, V731_STATEMENTS } from './schema-v731.js';
+import { NEXT_S6, VNEXT_S6_INDEX_STEPS, VNEXT_S6_STATEMENTS, VNEXT_S6_REACHES, VNEXT_S6_DEPLOYMENT_INDEXES } from './schema-vNEXT-s6.js';
+import { V718, V718_STATEMENTS, V718_REACHES, V718_DEPLOYMENT_INDEXES } from './schema-v718.js';
+import { V720, V720_RETIRES, V720_STATEMENTS, V720_REACHES, V720_DEPLOYMENT_INDEXES } from './schema-v720.js';
+import { V721, V721_STATEMENTS, V721_REACHES, V721_DEPLOYMENT_INDEXES } from './schema-v721.js';
+import { V722, V722_RETIRES, V722_STATEMENTS, V722_REACHES } from './schema-v722.js';
+import { V724, V724_STATEMENTS, V724_REACHES, V724_DEPLOYMENT_INDEXES } from './schema-v724.js';
+import { V725, V725_STATEMENTS, V725_REACHES } from './schema-v725.js';
+import { V726, V726_STATEMENTS, V726_REACHES } from './schema-v726.js';
+import { V731, V731_INDEX_STEPS, V731_STATEMENTS, V731_REACHES, V731_DEPLOYMENT_INDEXES } from './schema-v731.js';
 import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from './schema-vNEXT-s8a2.js';
 import { VNEXT_S4B_STEPS } from './schema-vNEXT-s4b.js';
 import { VNEXT_S2C_STEPS } from './schema-vNEXT-s2c.js';
@@ -21,55 +21,55 @@ import { VNEXT_S4B2_STEPS } from './schema-vNEXT-s4b2.js';
 import { NEXT_S1C, VNEXT_S1C_STEPS } from './schema-vNEXT-s1c.js';
 import { VNEXT_S2C2_STEPS } from './schema-vNEXT-s2c2.js';
 import { VNEXT_S2E_STEPS } from './schema-vNEXT-s2e.js';
-import { V717, V717_RETIRES, V717_STATEMENTS } from './schema-v717.js';
+import { V717, V717_RETIRES, V717_STATEMENTS, V717_REACHES } from './schema-v717.js';
 import { VNEXT_S7_STEPS } from './schema-vNEXT-s7.js';
 import { VNEXT_S8B_STEPS } from './schema-steps-backup-retention.js';
 import { VNEXT_S5D_STEPS } from './schema-steps-release-provenance.js';
-import { V719, V719_STATEMENTS } from './schema-v719.js';
-import { V710_STATEMENTS } from './schema-v710.js';
-import { V711_STATEMENTS } from './schema-v711.js';
-import { V712_STATEMENTS } from './schema-v712.js';
-import { V713, V713_STATEMENTS } from './schema-v713.js';
-import { V714, V714_STATEMENTS } from './schema-v714.js';
-import { V715, V715_STATEMENTS } from './schema-v715.js';
-import { V716, V716_STATEMENTS } from './schema-v716.js';
-import { V709_RETIRES, V709_STATEMENTS } from './schema-v709.js';
-import { V701_STATEMENTS } from './schema-v701.js';
-import { V702_STATEMENTS } from './schema-v702.js';
-import { V703_STATEMENTS } from './schema-v703.js';
-import { V704_STATEMENTS } from './schema-v704.js';
-import { V705_STATEMENTS } from './schema-v705.js';
-import { V706_STATEMENTS } from './schema-v706.js';
-import { V707_STATEMENTS } from './schema-v707.js';
-import { V708_STATEMENTS } from './schema-v708.js';
-import { V699_STATEMENTS } from './schema-v699.js';
-import { V700_STATEMENTS } from './schema-v700.js';
-import { V698_STATEMENTS } from './schema-v698.js';
-import { V697_STATEMENTS } from './schema-v697.js';
-import { V696_STATEMENTS } from './schema-v696.js';
-import { V695_STATEMENTS } from './schema-v695.js';
-import { V694_STATEMENTS } from './schema-v694.js';
-import { V693_STATEMENTS } from './schema-v693.js';
+import { V719, V719_STATEMENTS, V719_REACHES, V719_DEPLOYMENT_INDEXES } from './schema-v719.js';
+import { V710_STATEMENTS, V710_REACHES } from './schema-v710.js';
+import { V711_STATEMENTS, V711_REACHES, V711_DEPLOYMENT_INDEXES } from './schema-v711.js';
+import { V712_STATEMENTS, V712_REACHES, V712_DEPLOYMENT_INDEXES } from './schema-v712.js';
+import { V713, V713_STATEMENTS, V713_REACHES, V713_DEPLOYMENT_INDEXES } from './schema-v713.js';
+import { V714, V714_STATEMENTS, V714_REACHES, V714_DEPLOYMENT_INDEXES } from './schema-v714.js';
+import { V715, V715_STATEMENTS, V715_REACHES } from './schema-v715.js';
+import { V716, V716_STATEMENTS, V716_REACHES } from './schema-v716.js';
+import { V709_RETIRES, V709_STATEMENTS, V709_REACHES } from './schema-v709.js';
+import { V701_STATEMENTS, V701_REACHES } from './schema-v701.js';
+import { V702_STATEMENTS, V702_REACHES, V702_DEPLOYMENT_INDEXES } from './schema-v702.js';
+import { V703_STATEMENTS, V703_REACHES } from './schema-v703.js';
+import { V704_STATEMENTS, V704_REACHES } from './schema-v704.js';
+import { V705_STATEMENTS, V705_REACHES } from './schema-v705.js';
+import { V706_STATEMENTS, V706_REACHES, V706_DEPLOYMENT_INDEXES } from './schema-v706.js';
+import { V707_STATEMENTS, V707_REACHES, V707_DEPLOYMENT_INDEXES } from './schema-v707.js';
+import { V708_STATEMENTS, V708_REACHES } from './schema-v708.js';
+import { V699_STATEMENTS, V699_REACHES } from './schema-v699.js';
+import { V700_STATEMENTS, V700_REACHES } from './schema-v700.js';
+import { V698_STATEMENTS, V698_REACHES } from './schema-v698.js';
+import { V697_STATEMENTS, V697_REACHES } from './schema-v697.js';
+import { V696_STATEMENTS, V696_REACHES, V696_DEPLOYMENT_INDEXES } from './schema-v696.js';
+import { V695_STATEMENTS, V695_REACHES } from './schema-v695.js';
+import { V694_STATEMENTS, V694_REACHES } from './schema-v694.js';
+import { V693_STATEMENTS, V693_REACHES, V693_DEPLOYMENT_INDEXES } from './schema-v693.js';
 import { LEARNING_QUIET_MARGIN_STEPS } from './schema-v659.js';
 import { LEARNING_QUIET_STEPS } from './schema-v619.js';
 import { LEARNING_SOURCE_STEPS } from './schema-v546.js';
 import { LEARNING_WORK_INDEX_STEPS } from './schema-v617.js';
 import { READ_COST_STEPS } from './schema-v538.js';
-import { V545_STATEMENTS } from './schema-v545.js';
-import { V537_STATEMENTS } from './schema-v537.js';
-import { V536_STATEMENTS } from './schema-v536.js';
-import { V535_STATEMENTS } from './schema-v535.js';
-import { V465_STATEMENTS } from './schema-v465.js';
+import { V545_STATEMENTS, V545_REACHES } from './schema-v545.js';
+import { V537_STATEMENTS, V537_DEPLOYMENT_INDEXES } from './schema-v537.js';
+import { V536_STATEMENTS, V536_REACHES } from './schema-v536.js';
+import { V535_STATEMENTS, V535_REACHES } from './schema-v535.js';
+import { V465_STATEMENTS, V465_REACHES } from './schema-v465.js';
 import { PUBLICATION_QUEUE_STEPS } from './schema-v501.js';
 import { PUBLICATION_FACT_STEPS } from './schema-v467.js';
-import { V466_STATEMENTS } from './schema-v466.js';
+import { V466_STATEMENTS, V466_REACHES } from './schema-v466.js';
 import { MAX_PAYLOAD_BYTES } from '../ingest/envelope.js';
 import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from '../core/raw-provenance.js';
 import { PROCESSED_FIELDS, processedReferenceSql } from './processed-resources.js';
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';
 import { MEMBER_TOKEN_TTL_MS } from '../constants.js';
-import { V19_STATEMENTS } from './schema-v19.js';
+import { V19_STATEMENTS, V19_DEPLOYMENT_INDEXES } from './schema-v19.js';
 import { embeddingSourcesView, SOURCES_WITH_PRESENTED_SESSION_DATE, V20_STATEMENTS } from './schema-v20.js';
 import { PROVEN_EMBEDDING_SOURCES } from './embedding-sources.js';
 import { occurredAt } from './session-dates.js';
@@ -83,28 +83,28 @@ import { V53_STATEMENTS } from './schema-v53.js';
 import { V54_STATEMENTS } from './schema-v54.js';
 import { V55_STATEMENTS } from './schema-v55.js';
 import { V56_STATEMENTS } from './schema-v56.js';
-import { V57_STATEMENTS } from './schema-v57.js';
+import { V57_STATEMENTS, V57_DEPLOYMENT_INDEXES } from './schema-v57.js';
 import { V58_STATEMENTS } from './schema-v58.js';
-import { V59_STATEMENTS } from './schema-v59.js';
-import { V60_STATEMENTS } from './schema-v60.js';
+import { V59_STATEMENTS, V59_DEPLOYMENT_INDEXES } from './schema-v59.js';
+import { V60_STATEMENTS, V60_DEPLOYMENT_INDEXES } from './schema-v60.js';
 import { V61_STATEMENTS } from './schema-v61.js';
 import { V62_STATEMENTS } from './schema-v62.js';
 import { V63_STATEMENTS } from './schema-v63.js';
 import { V64_STATEMENTS } from './schema-v64.js';
-import { V65_STATEMENTS } from './schema-v65.js';
+import { V65_STATEMENTS, V65_DEPLOYMENT_INDEXES } from './schema-v65.js';
 import { V66_STATEMENTS } from './schema-v66.js';
-import { V67_STATEMENTS } from './schema-v67.js';
+import { V67_STATEMENTS, V67_DEPLOYMENT_INDEXES } from './schema-v67.js';
 import { V68_STATEMENTS } from './schema-v68.js';
 import { V73_STATEMENTS } from './schema-v73.js';
-import { V75_STATEMENTS } from './schema-v75.js';
+import { V75_STATEMENTS, V75_DEPLOYMENT_INDEXES } from './schema-v75.js';
 import { V76_STATEMENTS } from './schema-v76.js';
-import { V77_STATEMENTS } from './schema-v77.js';
+import { V77_STATEMENTS, V77_DEPLOYMENT_INDEXES } from './schema-v77.js';
 import { V78_STATEMENTS } from './schema-v78.js';
-import { V79_STATEMENTS } from './schema-v79.js';
-import { V81_STATEMENTS } from './schema-v81.js';
+import { V79_STATEMENTS, V79_DEPLOYMENT_INDEXES } from './schema-v79.js';
+import { V81_STATEMENTS, V81_DEPLOYMENT_INDEXES } from './schema-v81.js';
 import { V80_STATEMENTS } from './schema-v80.js';
-import { V82_STATEMENTS } from './schema-v82.js';
-import { V83_STATEMENTS } from './schema-v83.js';
+import { V82_STATEMENTS, V82_DEPLOYMENT_INDEXES } from './schema-v82.js';
+import { V83_STATEMENTS, V83_DEPLOYMENT_INDEXES } from './schema-v83.js';
 import { V84_STATEMENTS } from './schema-v84.js';
 import { V85_STATEMENTS } from './schema-v85.js';
 import { V86_RETIRES, V86_STATEMENTS } from './schema-v86.js';
@@ -121,26 +121,26 @@ import { V96_STATEMENTS } from './schema-v96.js';
 import { V97_STATEMENTS } from './schema-v97.js';
 import { V98_STATEMENTS } from './schema-v98.js';
 import { V99_STATEMENTS } from './schema-v99.js';
-import { V100_STATEMENTS } from './schema-v100.js';
-import { V101_STATEMENTS } from './schema-v101.js';
-import { V102_STATEMENTS } from './schema-v102.js';
-import { V103_STATEMENTS } from './schema-v103.js';
+import { V100_STATEMENTS, V100_DEPLOYMENT_INDEXES } from './schema-v100.js';
+import { V101_STATEMENTS, V101_REACHES } from './schema-v101.js';
+import { V102_STATEMENTS, V102_REACHES } from './schema-v102.js';
+import { V103_STATEMENTS, V103_REACHES } from './schema-v103.js';
 import { V104_STATEMENTS } from './schema-v104.js';
-import { V105_STATEMENTS } from './schema-v105.js';
-import { V106_STATEMENTS } from './schema-v106.js';
-import { V107_STATEMENTS } from './schema-v107.js';
-import { V108_STATEMENTS } from './schema-v108.js';
-import { V109_STATEMENTS } from './schema-v109.js';
-import { V110_STATEMENTS } from './schema-v110.js';
-import { V111_STATEMENTS } from './schema-v111.js';
-import { V112_STATEMENTS } from './schema-v112.js';
-import { V113_STATEMENTS } from './schema-v113.js';
-import { V114_STATEMENTS } from './schema-v114.js';
+import { V105_STATEMENTS, V105_REACHES, V105_DEPLOYMENT_INDEXES } from './schema-v105.js';
+import { V106_STATEMENTS, V106_REACHES } from './schema-v106.js';
+import { V107_STATEMENTS, V107_REACHES } from './schema-v107.js';
+import { V108_STATEMENTS, V108_REACHES } from './schema-v108.js';
+import { V109_STATEMENTS, V109_REACHES } from './schema-v109.js';
+import { V110_STATEMENTS, V110_REACHES, V110_DEPLOYMENT_INDEXES } from './schema-v110.js';
+import { V111_STATEMENTS, V111_REACHES, V111_DEPLOYMENT_INDEXES } from './schema-v111.js';
+import { V112_STATEMENTS, V112_REACHES } from './schema-v112.js';
+import { V113_STATEMENTS, V113_REACHES } from './schema-v113.js';
+import { V114_STATEMENTS, V114_REACHES } from './schema-v114.js';
 import { RETIREMENT_SCHEMA_STEPS } from './schema-v117.js';
 import { UX_SCHEMA_STEPS } from './schema-v255.js';
 import { DROP_CONTENT_SCHEMA_STEPS } from './schema-v265.js';
-import { V115_RETIRES, V115_STATEMENTS } from './schema-v115.js';
-import { V116_STATEMENTS } from './schema-v116.js';
+import { V115_RETIRES, V115_STATEMENTS, V115_REACHES } from './schema-v115.js';
+import { V116_STATEMENTS, V116_REACHES } from './schema-v116.js';
 
 import { projectIdGrammar, PROJECT_ID_GRAMMAR } from './project-id.js';
 
@@ -524,6 +524,11 @@ const V5_STATEMENTS: readonly string[] = [
      SELECT CASE WHEN (SELECT COUNT(*) FROM member_credentials)
                     >= (SELECT COUNT(*) FROM member_tokens) THEN 1 ELSE 0 END`,
   `DROP TABLE _v5_guard_backfill_complete`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V5_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_blob_reservations_credential', read: 'a credential spans every Project in its Deployment; the quota admission looks reservations up by credential' },
 ];
 
 
@@ -1037,6 +1042,11 @@ const V7_STATEMENTS: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_release_state_identity ON knowledge_release_state (project_id, identity_key)`,
 ];
 
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V7_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_agent_runs_credential', read: 'the foreign key on a run\'s dispatching credential is checked by credential alone' },
+];
+
 
 /**
  * v8: a member's GitHub identity, and the one-time authority that links it.
@@ -1086,6 +1096,11 @@ const V9_STATEMENTS: readonly string[] = [
      rotated_to   TEXT)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_external_grants_hash ON external_grants (key_hash)`,
   `CREATE INDEX IF NOT EXISTS idx_external_grants_project ON external_grants (project_id, created_at, id)`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V9_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_external_grants_hash', read: 'a grant key authenticates by its hash before any Project is known' },
 ];
 
 /**
@@ -1260,6 +1275,11 @@ const V25_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_external_grants_expiry ON external_grants (expires_at) WHERE revoked_at IS NULL`,
 ];
 
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V25_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_external_grants_expiry', read: 'grant expiry sweeps the Deployment' },
+];
+
 /**
  * v26: a role on every member and on every invite, and an invite that names
  * its Project.
@@ -1392,6 +1412,11 @@ const V32_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_transcripts_backlog ON transcripts (imported_at, last_received_at, transcript_id) WHERE parsed_offset < size`,
 ];
 
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V32_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_transcripts_backlog', read: 'the transcript parse backlog is ordered across the Deployment, live before imported' },
+];
+
 /**
  * Step 33: the lease a worker holds on a run (#1151).
  *
@@ -1408,6 +1433,12 @@ const V33_STATEMENTS: readonly string[] = [
   `ALTER TABLE agent_runs ADD COLUMN lease_expires_at INTEGER`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_claimable ON agent_runs (status, queued_at)`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_lease ON agent_runs (leased_by, lease_expires_at)`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V33_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_agent_runs_claimable', read: 'a worker claims the next queued run across the Deployment, in queue order' },
+  { index: 'idx_agent_runs_lease', read: 'the lease foreign key is checked by credential alone, and worker liveness reads leases by the credential that holds them' },
 ];
 
 /**
@@ -1540,6 +1571,12 @@ const V42_STATEMENTS: readonly string[] = [
      BEGIN SELECT RAISE(ABORT, 'blob rows leave through the release journal'); END`,
 ];
 
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V42_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_blob_reservations_expiry', read: 'the object-release drain consumes expired upload authorities across the Deployment, oldest expiry first' },
+  { index: 'idx_recovery_holds_open', read: 'at most one recovery hold was open in a Deployment, before step 43 gave a hold its holder' },
+];
+
 /**
  * Schema step 44 — what a worker last reported about itself.
  *
@@ -1568,14 +1605,28 @@ const V44_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_worker_contacts_seen ON worker_contacts (last_seen_at)`,
 ];
 
-function withStamp(version: number, statements: readonly string[], retires?: readonly Retirement[]): SchemaStep {
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V44_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_worker_contacts_seen', read: 'the worker-contact sweep forgets Deployment-wide observations by age, and a worker names no Project' },
+];
+
+/** What a step declares beside its statements. */
+type StepDeclarations = Pick<SchemaStep, 'retires' | 'reaches' | 'deploymentIndexes'>;
+
+function withStamp(version: number, statements: readonly string[], declared: StepDeclarations = {}): SchemaStep {
   const stamped = [...statements, `INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '${version}')`];
-  return retires === undefined ? { version, statements: stamped } : { version, statements: stamped, retires };
+  return {
+    version,
+    statements: stamped,
+    ...(declared.retires === undefined ? {} : { retires: declared.retires }),
+    ...(declared.reaches === undefined ? {} : { reaches: declared.reaches }),
+    ...(declared.deploymentIndexes === undefined ? {} : { deploymentIndexes: declared.deploymentIndexes }),
+  };
 }
 
-/** A declared step, stamped with its version and keeping its retirements. */
+/** A declared step, stamped with its version and keeping its declarations. */
 function stamp(step: SchemaStep): SchemaStep {
-  return withStamp(step.version, step.statements, step.retires);
+  return withStamp(step.version, step.statements, step);
 }
 
 /**
@@ -1618,6 +1669,11 @@ const V43_STATEMENTS: readonly string[] = [
   `CREATE TRIGGER IF NOT EXISTS recovery_holds_producer_transition BEFORE UPDATE ON recovery_holds
      WHEN OLD.holder IS 'producer' AND (NEW.holder IS NOT 'producer' OR NEW.released_by IS 'operator')
      BEGIN SELECT RAISE(ABORT, 'a producer recovery hold is never an operator hold'); END`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V43_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_recovery_holds_open_holder', read: 'at most one recovery hold of each holder is open in a Deployment: its own export producer\'s, and an operator backup\'s' },
 ];
 
 /**
@@ -1799,6 +1855,12 @@ const V70_STATEMENTS: readonly string[] = [
      END`,
 ];
 
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V70_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_transcripts_parser_version', read: 'the bounded parser upgrade sweep walks older versions across the Deployment' },
+  { index: 'idx_transcripts_terminal', read: 'terminal transcript outcomes are ordered across the Deployment by lane and receipt' },
+];
+
 /** Machine settings revisions and the values a member last reported caching. */
 const V69_STATEMENTS: readonly string[] = [
   `ALTER TABLE machine_claims ADD COLUMN settings_revision INTEGER NOT NULL DEFAULT 0`,
@@ -1940,6 +2002,12 @@ const V71_STATEMENTS: readonly string[] = [
 const V72_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_machine_claims_claimed ON machine_claims (claimed_at DESC, machine_id ASC)`,
   `CREATE INDEX IF NOT EXISTS idx_member_credentials_machine ON member_credentials (machine_id, issued_at DESC, id DESC)`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+const V72_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_machine_claims_claimed', read: 'machine claims are paged across the Deployment by claim time and id' },
+  { index: 'idx_member_credentials_machine', read: 'a canonical machine summary seeks its credentials by machine and newest issue time' },
 ];
 
 /** Administrative recovery commands retain the authority issued at their relational commit. */
@@ -2086,11 +2154,11 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(2, V2_STATEMENTS),
   withStamp(3, V3_STATEMENTS),
   withStamp(4, V4_STATEMENTS),
-  withStamp(5, V5_STATEMENTS),
+  withStamp(5, V5_STATEMENTS, { deploymentIndexes: V5_DEPLOYMENT_INDEXES }),
   withStamp(6, V6_STATEMENTS),
-  withStamp(7, V7_STATEMENTS),
+  withStamp(7, V7_STATEMENTS, { deploymentIndexes: V7_DEPLOYMENT_INDEXES }),
   withStamp(8, V8_STATEMENTS),
-  withStamp(9, V9_STATEMENTS),
+  withStamp(9, V9_STATEMENTS, { deploymentIndexes: V9_DEPLOYMENT_INDEXES }),
   withStamp(10, V10_STATEMENTS),
   withStamp(11, V11_STATEMENTS),
   withStamp(12, V12_STATEMENTS),
@@ -2100,21 +2168,21 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(16, V16_STATEMENTS),
   withStamp(17, V17_STATEMENTS),
   withStamp(18, V18_STATEMENTS),
-  withStamp(19, V19_STATEMENTS),
+  withStamp(19, V19_STATEMENTS, { deploymentIndexes: V19_DEPLOYMENT_INDEXES }),
   withStamp(20, V20_STATEMENTS),
   withStamp(21, V21_STATEMENTS),
   withStamp(22, V22_STATEMENTS),
   withStamp(23, V23_STATEMENTS),
   withStamp(24, V24_STATEMENTS),
-  withStamp(25, V25_STATEMENTS),
+  withStamp(25, V25_STATEMENTS, { deploymentIndexes: V25_DEPLOYMENT_INDEXES }),
   withStamp(26, V26_STATEMENTS),
   withStamp(27, V27_STATEMENTS),
   withStamp(28, V28_STATEMENTS),
   withStamp(29, V29_STATEMENTS),
   withStamp(30, V30_STATEMENTS),
   withStamp(31, V31_STATEMENTS),
-  withStamp(32, V32_STATEMENTS),
-  withStamp(33, V33_STATEMENTS),
+  withStamp(32, V32_STATEMENTS, { deploymentIndexes: V32_DEPLOYMENT_INDEXES }),
+  withStamp(33, V33_STATEMENTS, { deploymentIndexes: V33_DEPLOYMENT_INDEXES }),
   withStamp(34, V34_STATEMENTS),
   withStamp(35, V35_STATEMENTS),
   withStamp(36, V36_STATEMENTS),
@@ -2123,9 +2191,9 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(39, V39_STATEMENTS),
   withStamp(40, V40_STATEMENTS),
   withStamp(41, V41_STATEMENTS),
-  withStamp(42, V42_STATEMENTS),
-  withStamp(43, V43_STATEMENTS),
-  withStamp(44, V44_STATEMENTS),
+  withStamp(42, V42_STATEMENTS, { deploymentIndexes: V42_DEPLOYMENT_INDEXES }),
+  withStamp(43, V43_STATEMENTS, { deploymentIndexes: V43_DEPLOYMENT_INDEXES }),
+  withStamp(44, V44_STATEMENTS, { deploymentIndexes: V44_DEPLOYMENT_INDEXES }),
   withStamp(45, V45_STATEMENTS),
   withStamp(46, V46_STATEMENTS),
   withStamp(47, V47_STATEMENTS),
@@ -2138,36 +2206,36 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(54, V54_STATEMENTS),
   withStamp(55, V55_STATEMENTS),
   withStamp(56, V56_STATEMENTS),
-  withStamp(57, V57_STATEMENTS),
+  withStamp(57, V57_STATEMENTS, { deploymentIndexes: V57_DEPLOYMENT_INDEXES }),
   withStamp(58, V58_STATEMENTS),
-  withStamp(59, V59_STATEMENTS),
-  withStamp(60, V60_STATEMENTS),
+  withStamp(59, V59_STATEMENTS, { deploymentIndexes: V59_DEPLOYMENT_INDEXES }),
+  withStamp(60, V60_STATEMENTS, { deploymentIndexes: V60_DEPLOYMENT_INDEXES }),
   withStamp(61, V61_STATEMENTS),
   withStamp(62, V62_STATEMENTS),
   withStamp(63, V63_STATEMENTS),
   withStamp(64, V64_STATEMENTS),
-  withStamp(65, V65_STATEMENTS),
+  withStamp(65, V65_STATEMENTS, { deploymentIndexes: V65_DEPLOYMENT_INDEXES }),
   withStamp(66, V66_STATEMENTS),
-  withStamp(67, V67_STATEMENTS),
+  withStamp(67, V67_STATEMENTS, { deploymentIndexes: V67_DEPLOYMENT_INDEXES }),
   withStamp(68, V68_STATEMENTS),
   withStamp(69, V69_STATEMENTS),
-  withStamp(70, V70_STATEMENTS),
+  withStamp(70, V70_STATEMENTS, { deploymentIndexes: V70_DEPLOYMENT_INDEXES }),
   withStamp(71, V71_STATEMENTS.map((statement) => statement.replace(/[ \t]+$/gm, ''))),
-  withStamp(72, V72_STATEMENTS),
+  withStamp(72, V72_STATEMENTS, { deploymentIndexes: V72_DEPLOYMENT_INDEXES }),
   withStamp(73, V73_STATEMENTS),
   withStamp(74, V74_STATEMENTS),
-  withStamp(75, V75_STATEMENTS),
+  withStamp(75, V75_STATEMENTS, { deploymentIndexes: V75_DEPLOYMENT_INDEXES }),
   withStamp(76, V76_STATEMENTS),
-  withStamp(77, V77_STATEMENTS),
+  withStamp(77, V77_STATEMENTS, { deploymentIndexes: V77_DEPLOYMENT_INDEXES }),
   withStamp(78, V78_STATEMENTS),
-  withStamp(79, V79_STATEMENTS),
+  withStamp(79, V79_STATEMENTS, { deploymentIndexes: V79_DEPLOYMENT_INDEXES }),
   withStamp(80, V80_STATEMENTS),
-  withStamp(81, V81_STATEMENTS),
-  withStamp(82, V82_STATEMENTS),
-  withStamp(83, V83_STATEMENTS),
+  withStamp(81, V81_STATEMENTS, { deploymentIndexes: V81_DEPLOYMENT_INDEXES }),
+  withStamp(82, V82_STATEMENTS, { deploymentIndexes: V82_DEPLOYMENT_INDEXES }),
+  withStamp(83, V83_STATEMENTS, { deploymentIndexes: V83_DEPLOYMENT_INDEXES }),
   withStamp(84, V84_STATEMENTS),
   withStamp(85, V85_STATEMENTS),
-  withStamp(86, V86_STATEMENTS, V86_RETIRES),
+  withStamp(86, V86_STATEMENTS, { retires: V86_RETIRES }),
   withStamp(87, V87_STATEMENTS),
   withStamp(88, V88_STATEMENTS),
   withStamp(89, V89_STATEMENTS),
@@ -2181,79 +2249,79 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   withStamp(97, V97_STATEMENTS),
   withStamp(98, V98_STATEMENTS),
   withStamp(99, V99_STATEMENTS),
-  withStamp(100, V100_STATEMENTS),
-  withStamp(101, V101_STATEMENTS),
-  withStamp(102, V102_STATEMENTS),
-  withStamp(103, V103_STATEMENTS),
+  withStamp(100, V100_STATEMENTS, { deploymentIndexes: V100_DEPLOYMENT_INDEXES }),
+  withStamp(101, V101_STATEMENTS, { reaches: V101_REACHES }),
+  withStamp(102, V102_STATEMENTS, { reaches: V102_REACHES }),
+  withStamp(103, V103_STATEMENTS, { reaches: V103_REACHES }),
   withStamp(104, V104_STATEMENTS),
-  withStamp(105, V105_STATEMENTS),
-  withStamp(106, V106_STATEMENTS),
-  withStamp(107, V107_STATEMENTS),
-  withStamp(108, V108_STATEMENTS),
-  withStamp(109, V109_STATEMENTS),
-  withStamp(110, V110_STATEMENTS),
-  withStamp(111, V111_STATEMENTS),
-  withStamp(112, V112_STATEMENTS),
-  withStamp(113, V113_STATEMENTS),
-  withStamp(114, V114_STATEMENTS),
-  withStamp(115, V115_STATEMENTS, V115_RETIRES),
-  withStamp(116, V116_STATEMENTS),
+  withStamp(105, V105_STATEMENTS, { reaches: V105_REACHES, deploymentIndexes: V105_DEPLOYMENT_INDEXES }),
+  withStamp(106, V106_STATEMENTS, { reaches: V106_REACHES }),
+  withStamp(107, V107_STATEMENTS, { reaches: V107_REACHES }),
+  withStamp(108, V108_STATEMENTS, { reaches: V108_REACHES }),
+  withStamp(109, V109_STATEMENTS, { reaches: V109_REACHES }),
+  withStamp(110, V110_STATEMENTS, { reaches: V110_REACHES, deploymentIndexes: V110_DEPLOYMENT_INDEXES }),
+  withStamp(111, V111_STATEMENTS, { reaches: V111_REACHES, deploymentIndexes: V111_DEPLOYMENT_INDEXES }),
+  withStamp(112, V112_STATEMENTS, { reaches: V112_REACHES }),
+  withStamp(113, V113_STATEMENTS, { reaches: V113_REACHES }),
+  withStamp(114, V114_STATEMENTS, { reaches: V114_REACHES }),
+  withStamp(115, V115_STATEMENTS, { retires: V115_RETIRES, reaches: V115_REACHES }),
+  withStamp(116, V116_STATEMENTS, { reaches: V116_REACHES }),
   ...RETIREMENT_SCHEMA_STEPS.map(stamp),
   ...UX_SCHEMA_STEPS.map(stamp),
   ...DROP_CONTENT_SCHEMA_STEPS.map(stamp),
-  withStamp(465,V465_STATEMENTS),
-  withStamp(466,V466_STATEMENTS),
+  withStamp(465, V465_STATEMENTS, { reaches: V465_REACHES }),
+  withStamp(466, V466_STATEMENTS, { reaches: V466_REACHES }),
   ...PUBLICATION_FACT_STEPS.map(stamp),
   ...PUBLICATION_QUEUE_STEPS.map(stamp),
-  withStamp(535, V535_STATEMENTS),
-  withStamp(536, V536_STATEMENTS),
-  withStamp(537, V537_STATEMENTS),
+  withStamp(535, V535_STATEMENTS, { reaches: V535_REACHES }),
+  withStamp(536, V536_STATEMENTS, { reaches: V536_REACHES }),
+  withStamp(537, V537_STATEMENTS, { deploymentIndexes: V537_DEPLOYMENT_INDEXES }),
   ...READ_COST_STEPS.map(stamp),
-  withStamp(545, V545_STATEMENTS),
+  withStamp(545, V545_STATEMENTS, { reaches: V545_REACHES }),
   ...LEARNING_SOURCE_STEPS.map(stamp),
   ...LEARNING_WORK_INDEX_STEPS.map(stamp),
   ...LEARNING_QUIET_STEPS.map(stamp),
   ...LEARNING_QUIET_MARGIN_STEPS.map(stamp),
-  withStamp(693, V693_STATEMENTS),
-  withStamp(694, V694_STATEMENTS),
-  withStamp(695, V695_STATEMENTS),
-  withStamp(696, V696_STATEMENTS),
-  withStamp(697, V697_STATEMENTS),
-  withStamp(698, V698_STATEMENTS),
-  withStamp(699, V699_STATEMENTS),
-  withStamp(700, V700_STATEMENTS),
-  withStamp(701, V701_STATEMENTS),
-  withStamp(702, V702_STATEMENTS),
-  withStamp(703, V703_STATEMENTS),
-  withStamp(704, V704_STATEMENTS),
-  withStamp(705, V705_STATEMENTS),
-  withStamp(706, V706_STATEMENTS),
-  withStamp(707, V707_STATEMENTS),
-  withStamp(708, V708_STATEMENTS),
-  withStamp(709, V709_STATEMENTS, V709_RETIRES),
-  withStamp(710, V710_STATEMENTS),
-  withStamp(711, V711_STATEMENTS),
-  withStamp(712, V712_STATEMENTS),
-  withStamp(V713, V713_STATEMENTS),
-  withStamp(V714, V714_STATEMENTS),
-  withStamp(V715, V715_STATEMENTS),
-  withStamp(V716, V716_STATEMENTS),
-  withStamp(V717, V717_STATEMENTS, V717_RETIRES),
-  withStamp(V718, V718_STATEMENTS),
-  withStamp(V719, V719_STATEMENTS),
-  withStamp(V720, V720_STATEMENTS, V720_RETIRES),
-  withStamp(V721, V721_STATEMENTS),
-  withStamp(V722, V722_STATEMENTS, V722_RETIRES),
-  withStamp(V723, V723_STATEMENTS),
-  withStamp(V724, V724_STATEMENTS),
-  withStamp(V725, V725_STATEMENTS),
-  withStamp(V726, V726_STATEMENTS),
-  withStamp(V727, V727_STATEMENTS),
+  withStamp(693, V693_STATEMENTS, { reaches: V693_REACHES, deploymentIndexes: V693_DEPLOYMENT_INDEXES }),
+  withStamp(694, V694_STATEMENTS, { reaches: V694_REACHES }),
+  withStamp(695, V695_STATEMENTS, { reaches: V695_REACHES }),
+  withStamp(696, V696_STATEMENTS, { reaches: V696_REACHES, deploymentIndexes: V696_DEPLOYMENT_INDEXES }),
+  withStamp(697, V697_STATEMENTS, { reaches: V697_REACHES }),
+  withStamp(698, V698_STATEMENTS, { reaches: V698_REACHES }),
+  withStamp(699, V699_STATEMENTS, { reaches: V699_REACHES }),
+  withStamp(700, V700_STATEMENTS, { reaches: V700_REACHES }),
+  withStamp(701, V701_STATEMENTS, { reaches: V701_REACHES }),
+  withStamp(702, V702_STATEMENTS, { reaches: V702_REACHES, deploymentIndexes: V702_DEPLOYMENT_INDEXES }),
+  withStamp(703, V703_STATEMENTS, { reaches: V703_REACHES }),
+  withStamp(704, V704_STATEMENTS, { reaches: V704_REACHES }),
+  withStamp(705, V705_STATEMENTS, { reaches: V705_REACHES }),
+  withStamp(706, V706_STATEMENTS, { reaches: V706_REACHES, deploymentIndexes: V706_DEPLOYMENT_INDEXES }),
+  withStamp(707, V707_STATEMENTS, { reaches: V707_REACHES, deploymentIndexes: V707_DEPLOYMENT_INDEXES }),
+  withStamp(708, V708_STATEMENTS, { reaches: V708_REACHES }),
+  withStamp(709, V709_STATEMENTS, { retires: V709_RETIRES, reaches: V709_REACHES }),
+  withStamp(710, V710_STATEMENTS, { reaches: V710_REACHES }),
+  withStamp(711, V711_STATEMENTS, { reaches: V711_REACHES, deploymentIndexes: V711_DEPLOYMENT_INDEXES }),
+  withStamp(712, V712_STATEMENTS, { reaches: V712_REACHES, deploymentIndexes: V712_DEPLOYMENT_INDEXES }),
+  withStamp(V713, V713_STATEMENTS, { reaches: V713_REACHES, deploymentIndexes: V713_DEPLOYMENT_INDEXES }),
+  withStamp(V714, V714_STATEMENTS, { reaches: V714_REACHES, deploymentIndexes: V714_DEPLOYMENT_INDEXES }),
+  withStamp(V715, V715_STATEMENTS, { reaches: V715_REACHES }),
+  withStamp(V716, V716_STATEMENTS, { reaches: V716_REACHES }),
+  withStamp(V717, V717_STATEMENTS, { retires: V717_RETIRES, reaches: V717_REACHES }),
+  withStamp(V718, V718_STATEMENTS, { reaches: V718_REACHES, deploymentIndexes: V718_DEPLOYMENT_INDEXES }),
+  withStamp(V719, V719_STATEMENTS, { reaches: V719_REACHES, deploymentIndexes: V719_DEPLOYMENT_INDEXES }),
+  withStamp(V720, V720_STATEMENTS, { retires: V720_RETIRES, reaches: V720_REACHES, deploymentIndexes: V720_DEPLOYMENT_INDEXES }),
+  withStamp(V721, V721_STATEMENTS, { reaches: V721_REACHES, deploymentIndexes: V721_DEPLOYMENT_INDEXES }),
+  withStamp(V722, V722_STATEMENTS, { retires: V722_RETIRES, reaches: V722_REACHES }),
+  withStamp(V723, V723_STATEMENTS, { reaches: V723_REACHES, deploymentIndexes: V723_DEPLOYMENT_INDEXES }),
+  withStamp(V724, V724_STATEMENTS, { reaches: V724_REACHES, deploymentIndexes: V724_DEPLOYMENT_INDEXES }),
+  withStamp(V725, V725_STATEMENTS, { reaches: V725_REACHES }),
+  withStamp(V726, V726_STATEMENTS, { reaches: V726_REACHES }),
+  withStamp(V727, V727_STATEMENTS, { reaches: V727_REACHES, deploymentIndexes: V727_DEPLOYMENT_INDEXES }),
   ...SESSION_LIFECYCLE_STEPS.map(stamp),
-  withStamp(V731, V731_STATEMENTS),
+  withStamp(V731, V731_STATEMENTS, { reaches: V731_REACHES, deploymentIndexes: V731_DEPLOYMENT_INDEXES }),
   ...V731_INDEX_STEPS.map(stamp),
   ...VNEXT_S6_INDEX_STEPS.map(stamp),
-  withStamp(NEXT_S6, VNEXT_S6_STATEMENTS),
+  withStamp(NEXT_S6, VNEXT_S6_STATEMENTS, { reaches: VNEXT_S6_REACHES, deploymentIndexes: VNEXT_S6_DEPLOYMENT_INDEXES }),
   ...CARD_SETTLE_AND_LOCATOR_STEPS.map(stamp),
   withStamp(NEXT_S8A2, NEXT_S8A2_STATEMENTS),
   ...VNEXT_S4B_STEPS.map(stamp),

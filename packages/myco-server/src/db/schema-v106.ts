@@ -1,3 +1,4 @@
+import { reaching, type Reach } from './schema-step.js';
 /** Material tables whose parser rows are classified as the legacy derivation. */
 export const LEGACY_CLASS_TABLES = [
   { table: 'prompt_batches', id: 'prompt_id' },
@@ -77,4 +78,10 @@ export const V106_STATEMENTS: readonly string[] = [
     paused_reason TEXT CHECK(paused_reason IS NULL OR paused_reason='d1_headroom'),database_bytes INTEGER,observed_at INTEGER,
     updated_at INTEGER NOT NULL)`,
   ...legacyClassTriggers(false),
+];
+
+/** Why the step reaches tables earlier steps created. */
+export const V106_REACHES: readonly Reach[] = [
+  ...reaching(['prompt_batches', 'responses', 'tool_calls', 'plans'], 'A parser row is classified as the legacy derivation in the statement that writes it. A change to a row\'s class evidence reclassifies it in the same statement.'),
+  ...reaching(['tags'], 'A tag edit is plan edit evidence and reclassifies the plan. A tag removal is plan edit evidence and reclassifies the plan.'),
 ];

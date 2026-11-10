@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 import { DISPATCH_ACTOR_SQL } from './run-context.js';
 
 /**
@@ -19,4 +20,10 @@ export const V60_STATEMENTS: readonly string[] = [
   `ALTER TABLE sessions ADD COLUMN last_turn_end_at INTEGER`,
   `CREATE INDEX IF NOT EXISTS idx_sessions_working ON sessions (working_since) WHERE working_since IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_agent_runs_actor_entry ON agent_runs (task, ${DISPATCH_ACTOR_SQL}, COALESCE(queued_at, started_at))`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V60_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_sessions_working', read: 'the sessions working now are read across every Project, the open turns alone' },
+  { index: 'idx_agent_runs_actor_entry', read: 'an actor\'s daily ceiling is counted across every Project, by task, actor and instant' },
 ];

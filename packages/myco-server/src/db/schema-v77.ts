@@ -1,3 +1,4 @@
+import type { DeploymentIndex } from './schema-step.js';
 /** Short-lived device requests retain attributed decisions without retaining either code. */
 export const V77_STATEMENTS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS device_requests (
@@ -36,4 +37,13 @@ export const V77_STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS idx_device_decision_audit_member ON device_decision_audit(member_id)`,
   `CREATE TRIGGER IF NOT EXISTS device_decision_audit_immutable BEFORE UPDATE ON device_decision_audit BEGIN
     SELECT RAISE(ABORT, 'device decision audit is immutable'); END`,
+];
+
+/** The indexes this step creates that a Deployment-wide read seeks by, and the read each serves. */
+export const V77_DEPLOYMENT_INDEXES: readonly DeploymentIndex[] = [
+  { index: 'idx_device_requests_pending_expiry', read: 'the enrollment sweep seeks expired undecided requests across the Deployment' },
+  { index: 'idx_device_requests_decided_expiry', read: 'the enrollment sweep seeks decided requests past retention across the Deployment' },
+  { index: 'idx_device_requests_source_pending', read: 'device admission counts live pending requests per trusted source across the Deployment' },
+  { index: 'idx_device_requests_source_created', read: 'device admission bounds starts in a minute per trusted source across the Deployment' },
+  { index: 'idx_device_requests_expiry', read: 'the enrollment sweep reclaims expired device requests across the Deployment, oldest expiry first' },
 ];

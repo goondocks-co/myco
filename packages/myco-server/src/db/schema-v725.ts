@@ -1,3 +1,4 @@
+import { reaching, type Reach, changing } from './schema-step.js';
 export const V725 = 725;
 
 /**
@@ -16,3 +17,6 @@ export const V725_STATEMENTS: readonly string[] = [
   "CREATE TRIGGER IF NOT EXISTS embedding_vector_page_member_update AFTER UPDATE OF page_id ON embedding_hubness_members WHEN OLD.page_id IS NOT NEW.page_id BEGIN\n        UPDATE embedding_vector_pages SET live=live-1 WHERE page_id=OLD.page_id; UPDATE embedding_vector_pages SET live=live+1 WHERE page_id=NEW.page_id; END",
   "CREATE TRIGGER IF NOT EXISTS embedding_vector_page_member_delete AFTER DELETE ON embedding_hubness_members WHEN OLD.page_id IS NOT NULL BEGIN\n        UPDATE embedding_vector_pages SET live=live-1 WHERE page_id=OLD.page_id; END",
 ];
+
+/** Why the step reaches tables earlier steps created. */
+export const V725_REACHES: readonly Reach[] = changing(['embedding_hubness_members'], 'A member names the stored page and frame holding its vector; a row with none still holds its own bytes. Sealing seeks settled members still holding their vectors; releasing seeks stored pages no member names. A member moving on or off a stored page moves the live count that decides when the page is released.');

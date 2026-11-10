@@ -1,3 +1,4 @@
+import { reaching, type SchemaStep, changing } from './schema-step.js';
 /** Placeholder first step of this change; the coordinator assigns the real numbers at merge. */
 export const NEXT_S2B2 = 740;
 
@@ -14,22 +15,34 @@ const PROJECT_ID_GRAMMAR = "project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(p
  * Locator repair is a finite queue seeded by a catch-up over the prompts whose page is unknown or recorded as held by
  * none. The queue row holds its own cursor against one generation, so a rebuilt session restarts the walk.
  */
-export const CARD_SETTLE_AND_LOCATOR_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
-  { version: NEXT_S2B2, statements: ['ALTER TABLE turn_cards ADD COLUMN settle_promoted_at INTEGER'] },
+export const CARD_SETTLE_AND_LOCATOR_STEPS: readonly SchemaStep[] = [
+  { version: NEXT_S2B2, statements: ['ALTER TABLE turn_cards ADD COLUMN settle_promoted_at INTEGER'], reaches: changing(['turn_cards'], 'A pending card records the deadline it was promoted at, the two scan indexes go with their reader, and the locator repair catch-up is registered.') },
   { version: NEXT_S2B2 + 1, statements: [
     `CREATE INDEX IF NOT EXISTS idx_turn_cards_settle_deadline ON turn_cards(settle_at DESC,project_id,session_id,turn_key)
       WHERE state='pending' AND settle_at IS NOT NULL AND settle_promoted_at IS NOT settle_at`,
     'DROP INDEX IF EXISTS idx_turn_cards_settle',
-  ] },
+  ],
+    reaches: reaching(['turn_cards'], 'Card settlement reads its deadlines and its ready order from partial indexes instead of scanning every pending card. A pending card records the deadline it was promoted at, the two scan indexes go with their reader, and the locator repair catch-up is registered.'),
+    deploymentIndexes: [
+      { index: 'idx_turn_cards_settle_deadline', read: 'card settlement promotes the cards whose deadline has passed across every Project' },
+    ],
+  },
   { version: NEXT_S2B2 + 2, statements: [
     `CREATE INDEX IF NOT EXISTS idx_turn_cards_settle_ready ON turn_cards(source_activity_at DESC,project_id,session_id,turn_key,settle_at)
       WHERE state='pending' AND settle_at IS NOT NULL AND settle_promoted_at=settle_at`,
     'DROP INDEX IF EXISTS idx_turn_cards_source_settle',
-  ] },
+  ],
+    reaches: reaching(['turn_cards'], 'Card settlement reads its deadlines and its ready order from partial indexes instead of scanning every pending card. A pending card records the deadline it was promoted at, the two scan indexes go with their reader, and the locator repair catch-up is registered.'),
+    deploymentIndexes: [
+      { index: 'idx_turn_cards_settle_ready', read: 'card settlement reads the ready cards newest source activity first across all Projects' },
+    ],
+  },
   { version: NEXT_S2B2 + 3, statements: [
     'CREATE INDEX IF NOT EXISTS idx_session_prompts_locator_repair ON session_prompts(project_id,session_id,generation,prompt_id) WHERE page IS NULL OR page=-1',
     'DROP INDEX IF EXISTS idx_session_prompts_unlocated',
-  ] },
+  ],
+    reaches: reaching(['session_prompts'], 'Locator repair reads the prompts whose page is unknown or held by none without scanning a document\'s prompts. A pending card records the deadline it was promoted at, the two scan indexes go with their reader, and the locator repair catch-up is registered.'),
+  },
   { version: NEXT_S2B2 + 4, statements: [
     `CREATE TABLE IF NOT EXISTS document_locator_repair(
       project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),session_id TEXT NOT NULL,
@@ -38,7 +51,12 @@ export const CARD_SETTLE_AND_LOCATOR_STEPS: ReadonlyArray<{ version: number; sta
     'CREATE INDEX IF NOT EXISTS idx_document_locator_repair_due ON document_locator_repair(due_at,project_id,session_id)',
     `INSERT INTO projection_catchup(projection,phase,done) SELECT 'document_locators','documentLocators',
       NOT EXISTS(SELECT 1 FROM session_prompts INDEXED BY idx_session_prompts_locator_repair WHERE page IS NULL OR page=-1) ON CONFLICT DO NOTHING`,
-  ] },
+  ],
+    reaches: changing(['projection_catchup'], 'A pending card records the deadline it was promoted at, the two scan indexes go with their reader, and the locator repair catch-up is registered.'),
+    deploymentIndexes: [
+      { index: 'idx_document_locator_repair_due', read: 'prompt locator repair reads the due rows across every Project' },
+    ],
+  },
 ];
 
 export const LATEST_S2B2 = NEXT_S2B2 + CARD_SETTLE_AND_LOCATOR_STEPS.length - 1;

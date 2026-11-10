@@ -1,4 +1,4 @@
-import { retiring, type SchemaStep } from './schema-step.js';
+import { retiring, type SchemaStep, reaching, changing } from './schema-step.js';
 import { PROJECT_ID_GRAMMAR } from './project-id.js';
 
 export const NEXT_S4B2 = 764;
@@ -83,12 +83,20 @@ export const VNEXT_S4B2_STEPS: readonly SchemaStep[] = [
     `ALTER TABLE learning_sessions ADD COLUMN learning_deadline INTEGER GENERATED ALWAYS AS (${LEARNING_DEADLINE}) VIRTUAL`,
     `ALTER TABLE learning_sessions ADD COLUMN card_stage TEXT GENERATED ALWAYS AS (${CARD_STAGE}) VIRTUAL`,
     `ALTER TABLE learning_sessions ADD COLUMN learning_stage TEXT GENERATED ALWAYS AS (${LEARNING_STAGE}) VIRTUAL`,
+  ],
+    reaches: changing(['learning_sessions'], 'A learning session records its counted contributions and deadlines, the old pending trigger is replaced by the keyed contribution triggers, the counting catch-up is registered, and the scheduling indexes with no reader left go.'),
+  },
+  { version: NEXT_S4B2 + 1, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_card_deadline ON learning_sessions(card_deadline DESC,project_id,session_id) WHERE card_deadline IS NOT NULL AND card_promoted_at IS NOT card_deadline'], reaches: reaching(['learning_sessions'], 'Each learning relation is one bounded partial index, built alone in its own step.'), deploymentIndexes: [
+    { index: 'idx_learning_card_deadline', read: 'a deadline pass promotes the sessions whose card deadline has passed across every Project' },
   ] },
-  { version: NEXT_S4B2 + 1, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_card_deadline ON learning_sessions(card_deadline DESC,project_id,session_id) WHERE card_deadline IS NOT NULL AND card_promoted_at IS NOT card_deadline'] },
-  { version: NEXT_S4B2 + 2, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_stage_deadline ON learning_sessions(learning_deadline DESC,project_id,session_id) WHERE learning_deadline IS NOT NULL AND learning_promoted_at IS NOT learning_deadline'] },
-  { version: NEXT_S4B2 + 3, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_card_ready ON learning_sessions(project_id,card_stage,source_activity_at DESC,session_id) WHERE card_stage IS NOT NULL'] },
-  { version: NEXT_S4B2 + 4, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_stage_ready ON learning_sessions(project_id,learning_stage,source_activity_at DESC,session_id) WHERE learning_stage IS NOT NULL'] },
-  { version: NEXT_S4B2 + 5, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_aging ON learning_sessions(source_activity_at) WHERE aged=0 AND source_activity_at IS NOT NULL'] },
+  { version: NEXT_S4B2 + 2, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_stage_deadline ON learning_sessions(learning_deadline DESC,project_id,session_id) WHERE learning_deadline IS NOT NULL AND learning_promoted_at IS NOT learning_deadline'], reaches: reaching(['learning_sessions'], 'Each learning relation is one bounded partial index, built alone in its own step.'), deploymentIndexes: [
+    { index: 'idx_learning_stage_deadline', read: 'a deadline pass promotes the sessions whose learning deadline has passed across every Project' },
+  ] },
+  { version: NEXT_S4B2 + 3, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_card_ready ON learning_sessions(project_id,card_stage,source_activity_at DESC,session_id) WHERE card_stage IS NOT NULL'], reaches: reaching(['learning_sessions'], 'Each learning relation is one bounded partial index, built alone in its own step.') },
+  { version: NEXT_S4B2 + 4, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_stage_ready ON learning_sessions(project_id,learning_stage,source_activity_at DESC,session_id) WHERE learning_stage IS NOT NULL'], reaches: reaching(['learning_sessions'], 'Each learning relation is one bounded partial index, built alone in its own step.') },
+  { version: NEXT_S4B2 + 5, statements: ['CREATE INDEX IF NOT EXISTS idx_learning_aging ON learning_sessions(source_activity_at) WHERE aged=0 AND source_activity_at IS NOT NULL'], reaches: reaching(['learning_sessions'], 'Each learning relation is one bounded partial index, built alone in its own step.'), deploymentIndexes: [
+    { index: 'idx_learning_aging', read: 'a deadline pass ages the sessions past their source freshness across every Project' },
+  ] },
   { version: NEXT_S4B2 + 6, statements: [
     `CREATE TABLE IF NOT EXISTS learning_project_counts(project_id TEXT NOT NULL PRIMARY KEY CHECK (${PROJECT_ID_GRAMMAR}),${COUNT_COLUMNS.map(column => `${column} INTEGER NOT NULL DEFAULT 0`).join(',')}) WITHOUT ROWID`,
     `CREATE TABLE IF NOT EXISTS learning_ready_projects(stage TEXT NOT NULL,project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),ready INTEGER NOT NULL,PRIMARY KEY(stage,project_id)) WITHOUT ROWID`,
@@ -140,7 +148,12 @@ export const VNEXT_S4B2_STEPS: readonly SchemaStep[] = [
     "INSERT INTO change_marks(kind,revision) VALUES('learning',0) ON CONFLICT(kind) DO NOTHING",
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'learning_counts','learningCounts',NOT EXISTS(SELECT 1 FROM learning_sessions) ON CONFLICT DO NOTHING",
     "INSERT INTO projection_catchup(projection,phase,done) VALUES('learning_quiet_policy','learningQuietPolicy',1) ON CONFLICT DO NOTHING",
-  ], retires: retiring('trigger', ['turn_cards_pending_count'], 'The keyed contribution triggers count pending cards in its place.') },
+  ], retires: retiring('trigger', ['turn_cards_pending_count'], 'The keyed contribution triggers count pending cards in its place.'),
+    reaches: [
+      ...reaching(['turn_cards', 'learning_sessions'], 'Each card write moves its session and Project counts in the same statement; deadlines keep their stage summary current.'),
+      ...changing(['change_marks', 'projection_catchup'], 'A learning session records its counted contributions and deadlines, the old pending trigger is replaced by the keyed contribution triggers, the counting catch-up is registered, and the scheduling indexes with no reader left go.'),
+    ],
+  },
   { version: NEXT_S4B2 + 7, statements: RETIRED_INDEXES.map(index => `DROP INDEX IF EXISTS ${index}`),
     retires: retiring('index', RETIRED_INDEXES, 'The deadline and ready relations and the Project rollup replace it; nothing reads it.') },
 ];

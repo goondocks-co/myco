@@ -1,3 +1,4 @@
+import { reaching, type SchemaStep, changing } from './schema-step.js';
 export const V730 = 730;
 
 /**
@@ -5,14 +6,21 @@ export const V730 = 730;
  * the indexes on the other history-sized tables, then the tables, triggers and catch-up phases. Frozen copy of
  * `sessionLifecycleSchema` and `publicationDependencySchema`.
  */
-export const SESSION_LIFECYCLE_STEPS: ReadonlyArray<{ version: number; statements: readonly string[] }> = [
+export const SESSION_LIFECYCLE_STEPS: readonly SchemaStep[] = [
   { version: 728, statements: [
     "CREATE INDEX IF NOT EXISTS idx_events_lifecycle ON events(project_id,session_id,created_at,event_id) WHERE kind IN ('session.start','session.end','prompt','transcript.segment')",
-  ] },
+  ],
+    reaches: reaching(['events'], 'Each lifecycle event applies its own contribution to the keyed facts of its session in the event commit, never recounting history.'),
+  },
   { version: 729, statements: [
     "CREATE INDEX IF NOT EXISTS idx_transcripts_live ON transcripts(project_id,session_id) WHERE imported_at IS NULL",
     "CREATE INDEX IF NOT EXISTS idx_session_prompts_user_instant ON session_prompts(project_id,session_id,generation,created_at DESC) WHERE origin='user'",
-  ] },
+  ],
+    reaches: [
+      ...reaching(['transcripts'], 'A transcript\'s import class moves its session\'s live-transcript count by the keyed delta.'),
+      ...reaching(['session_prompts'], 'The latest user prompt a live document holds is one seek, not a count of the session\'s prompts.'),
+    ],
+  },
   { version: 730, statements: [
     "ALTER TABLE events ADD COLUMN actor TEXT",
     "CREATE TABLE IF NOT EXISTS session_lifecycle_facts(\n      project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),session_id TEXT NOT NULL,\n      end_event_id TEXT,end_at INTEGER,end_actor TEXT,\n      import_end_event_id TEXT,import_end_created_at INTEGER,import_end_at INTEGER,\n      latest_user_prompt_at INTEGER,member_prompt_at INTEGER,\n      live_sources INTEGER NOT NULL DEFAULT 0 CHECK (live_sources IN (0,1)),\n      built INTEGER NOT NULL DEFAULT 0 CHECK (built IN (0,1)),\n      PRIMARY KEY(project_id,session_id)) WITHOUT ROWID",
@@ -35,5 +43,13 @@ export const SESSION_LIFECYCLE_STEPS: ReadonlyArray<{ version: number; statement
     "CREATE TRIGGER IF NOT EXISTS publication_dependency_update AFTER UPDATE OF outcome,inspect_due ON publication_dependencies\n      WHEN OLD.outcome IS NOT NEW.outcome OR OLD.inspect_due IS NOT NEW.inspect_due BEGIN UPDATE publication_dependency_totals SET\n    waiting=waiting+(-1)*(OLD.outcome='waiting'),inspecting=inspecting+(-1)*(OLD.inspect_due IS NOT NULL),cycles=cycles+(-1)*(OLD.outcome='cycle') WHERE slot=1; UPDATE publication_dependency_totals SET\n    waiting=waiting+(1)*(NEW.outcome='waiting'),inspecting=inspecting+(1)*(NEW.inspect_due IS NOT NULL),cycles=cycles+(1)*(NEW.outcome='cycle') WHERE slot=1; END",
     "CREATE TRIGGER IF NOT EXISTS publication_dependency_delete AFTER DELETE ON publication_dependencies BEGIN UPDATE publication_dependency_totals SET\n    waiting=waiting+(-1)*(OLD.outcome='waiting'),inspecting=inspecting+(-1)*(OLD.inspect_due IS NOT NULL),cycles=cycles+(-1)*(OLD.outcome='cycle') WHERE slot=1;\n      UPDATE publish_queue SET retry_at=0 WHERE project_id=OLD.project_id AND session_id=OLD.session_id AND rank=OLD.child_rank AND created_at=OLD.child_created_at AND event_id=OLD.child_event_id\n        AND OLD.holder_event_id IS NOT NULL AND failure IS NULL AND retry_cause IS NOT NULL AND retry_at>0\n        AND NOT EXISTS(SELECT 1 FROM publication_dependencies d WHERE d.project_id=OLD.project_id AND d.child_event_id=OLD.child_event_id AND d.holder_event_id IS NOT NULL); END",
     "INSERT INTO projection_catchup(projection,phase,done) SELECT 'publication_dependencies','publicationDependencies',\n      NOT EXISTS(SELECT 1 FROM publish_queue WHERE retry_cause IS NOT NULL AND failure IS NULL) ON CONFLICT DO NOTHING",
-  ] },
+  ],
+    reaches: [
+      ...changing(['events'], 'Events gain their acting member, the wake continuation and totals row are seeded, and catch-up phases are registered. Each lifecycle event applies its own contribution to the keyed facts of its session in the event commit, never recounting history.'),
+      ...changing(['projection_catchup', 'session_documents'], 'Events gain their acting member, the wake continuation and totals row are seeded, and catch-up phases are registered.'),
+    ],
+    deploymentIndexes: [
+      { index: 'idx_publication_dependencies_inspect', read: 'the publication cycle job seeks dependency inspections whose time has come across the Deployment' },
+    ],
+  },
 ];
