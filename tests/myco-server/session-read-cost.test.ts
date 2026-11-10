@@ -10,7 +10,7 @@ import {
   sessions_listSessionsAcross as listSessionsAcross,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { listSessionArtifacts } from '@myco-server-worker/read/session-artifacts.js';
-import { children_listPlans as listPlans } from '@myco-server-worker/read/catalog/children.js';
+import { plans_pageSessionPlans as listPlans } from '@myco-server-worker/read/catalog/plans.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { schemaSqlite } from './helpers/schema-template.js';
 import { d1TwoScale, eachUnit, expectTwoScale } from './helpers/two-scale.js';

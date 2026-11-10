@@ -46,6 +46,7 @@ import { applyRunUpdate } from '@myco-server-worker/db/runs/change.js';
 import { FAILURE_REASON_KEY } from '@myco-server-worker/db/run-context.js';
 import { issueExternalGrant, revokeExternalGrant } from '@myco-server-worker/auth/grants.js';
 import { externalDefinitions } from '@myco-server-worker/mcp/external.js';
+import { PLAN_BODY_CALL } from '@myco-server-worker/mcp/definitions.js';
 
 import { blobPost, envelope, memberPost, sqliteEnv, TEXT_MEDIA_TYPE, uuid } from '../helpers/fixtures.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
@@ -488,7 +489,8 @@ describe('an External Agent grant reads the same on both stores', () => {
     const listed = await onBoth((t) => t.fetch(over(t, rpc('tools/list'))));
     agreeing(listed, { status: 200, body: JSON.parse(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: externalDefinitions().map((d) => ({ name: d.name, description: d.description, inputSchema: d.inputSchema, annotations: d.annotations })) } })) });
     const read = await onBoth((t) => t.fetch(over(t, rpc('tools/call', { name: 'myco_plans', arguments: { op: 'list' } }))));
-    agreeing(read, { status: 200, body: { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '[]' }], structuredContent: { result: [] } } } });
+    const noPlans = { plans: [], has_more: false, cursor: null, body_call: PLAN_BODY_CALL };
+    agreeing(read, { status: 200, body: { jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(noPlans) }], structuredContent: { result: noPlans } } } });
     // The write the surface serves: the id differs per target, so the agreement
     // read here is what the row says about who wrote it.
     const recorded = new Map<Target, string>();

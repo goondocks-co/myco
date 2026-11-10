@@ -1,11 +1,12 @@
-import type { RelationalStore as activity_import_RelationalStore } from "../../core/adapters.js";
-import type { ReadScope as activity_import_ReadScope } from "../scope.js";
-import { notTombstonedSql as activity_import_notTombstonedSql } from "../../db/session-read-model.js";
-import { sessions_SESSION_OCCURRED_AT, sessions_firstPromptSql, sessions_sessionLabel } from './sessions.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import type { ReadScope } from '../scope.js';
+import { readActivityPage, type ActivityKey } from '../../db/activity/feed.js';
+import { ACTIVITY_KINDS, type ActivityKind } from '../../db/activity/schema.js';
+import { sessions_sessionLabel } from './sessions.js';
 
-/** One line of a project's recent activity: a session that started, a run that ran, a spore that landed. */
+/** One line of a project's recent activity: a session that started, a run that ran, a spore that landed, a plan edited. */
 interface activity_FeedItem {
-  type: 'session' | 'run' | 'spore';
+  type: ActivityKind;
   id: string;
   summary: string;
   at: number;
@@ -13,47 +14,64 @@ interface activity_FeedItem {
   sessionId: string | null;
 }
 
+/** One feed page, newest first: `nextCursor` continues it while `hasMore`; `building` while existing records are still being added. */
+interface activity_FeedPage { items: activity_FeedItem[]; nextCursor: string | null; hasMore: boolean; building: boolean }
+
 const activity_DEFAULT_FEED = 20;
 
 const activity_MAX_FEED = 100;
 
 /**
- * The project's recent activity, newest first, across sessions, runs and active
- * spores in one statement. Each source is bounded to the page before the union
- * so the outer sort never scans a whole table, and the wrapped `SELECT * FROM (…)`
- * shape is what SQLite admits inside a compound select. A session line carries
- * the same label the session list shows; the other sources fill its columns with
- * NULL so the compound select stays uniform.
+ * The prefix naming the feed cursor's encoding: the instant, the kind, then the source. It marks a position, not a
+ * snapshot: unedited records neither repeat nor drop across pages, and a record edited meanwhile moves to the head, where
+ * a fresh first page shows it.
  */
-async function activity_activityFeed(db: activity_import_RelationalStore, scope: activity_import_ReadScope, limit?: number): Promise<activity_FeedItem[]> {
-  const n = limit === undefined || !Number.isSafeInteger(limit) || limit < 1 ? activity_DEFAULT_FEED : Math.min(limit, activity_MAX_FEED);
-  const rows=await (async()=>{
-  const { results } = await db.prepare(`SELECT * FROM (
-        SELECT 'session' AS type, s.session_id AS id, '' AS summary,
-               ${sessions_SESSION_OCCURRED_AT} AS at_ms, s.session_id AS session_id,
-               s.title AS title, ${sessions_firstPromptSql('s')} AS first_prompt, s.agent AS agent
-          FROM sessions s WHERE s.project_id = ? AND ${activity_import_notTombstonedSql('s')} ORDER BY at_ms DESC LIMIT ?)
-      UNION ALL SELECT * FROM (
-        SELECT 'run' AS type, id, COALESCE(task, 'run') || ' — ' || status AS summary,
-               COALESCE(resumed_at, started_at, completed_at, queued_at) AS at_ms, NULL AS session_id, NULL AS title, NULL AS first_prompt, NULL AS agent
-          FROM agent_runs WHERE project_id = ? AND COALESCE(resumed_at, started_at, completed_at, queued_at) IS NOT NULL ORDER BY at_ms DESC LIMIT ?)
-      UNION ALL SELECT * FROM (
-        SELECT 'spore' AS type, id, observation_type || ': ' || substr(content, 1, 80) AS summary,
-               created_at AS at_ms, session_id, NULL AS title, NULL AS first_prompt, NULL AS agent
-          FROM spores WHERE project_id = ? AND status = 'active' ORDER BY at_ms DESC LIMIT ?)
-      ORDER BY at_ms DESC LIMIT ?`).bind(...[scope.projectId,n,scope.projectId,n,scope.projectId,n,n])
-    .all<Record<string, unknown>>();
-  return results;
-  })();
-  return rows.map((r) => ({
-    type: r.type as activity_FeedItem['type'],
-    id: r.id as string,
-    summary: r.type === 'session'
-      ? sessions_sessionLabel((r.title as string | null) ?? null, (r.first_prompt as string | null) ?? null, (r.agent as string | null) ?? null, r.id as string)
-      : r.summary as string,
-    at: r.at_ms as number,
-    sessionId: (r.session_id as string | null) ?? null,
-  }));
+const CURSOR_PREFIX = 'a1:';
+
+/** The refusal of a cursor the feed did not issue. */
+const activity_CURSOR_REFUSAL = `malformed cursor: the activity feed pages by "${CURSOR_PREFIX}<instant>:<kind>:<id>" exactly as its last answer returned it in \`nextCursor\`. `
+  + 'Nothing was read: request the first page again without a cursor.';
+
+const KINDS: ReadonlySet<string> = new Set(ACTIVITY_KINDS);
+
+/** The key of a cursor the feed issued, or null for any other text. */
+function activity_decodeCursor(text: string): ActivityKey | null {
+  if (!text.startsWith(CURSOR_PREFIX)) return null;
+  const body = text.slice(CURSOR_PREFIX.length);
+  const first = body.indexOf(':');
+  const second = first < 0 ? -1 : body.indexOf(':', first + 1);
+  if (first <= 0 || second < 0) return null;
+  const sortAt = Number(body.slice(0, first));
+  const kind = body.slice(first + 1, second);
+  const sourceId = body.slice(second + 1);
+  return Number.isSafeInteger(sortAt) && KINDS.has(kind) && sourceId.length > 0 ? { sortAt, kind, sourceId } : null;
 }
 
-export { activity_MAX_FEED, activity_activityFeed };
+/**
+ * The project's recent activity, newest first, across sessions, runs, active spores and plans, a page at a time; null
+ * for a cursor the feed did not issue. A record edited while a reader pages moves to the head of the feed: a reader
+ * already past it does not see it again, a reader not yet at it does not reach it on later pages, and a fresh first page
+ * shows it. Every unedited record keeps its place, so later pages neither repeat nor drop one. A session's line
+ * carries the label the session list shows; a deleted session and its plans are not listed.
+ */
+async function activity_activityFeed(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<activity_FeedPage | null> {
+  const { limit: requested } = opts;
+  const limit = requested === undefined || !Number.isSafeInteger(requested) || requested < 1 ? activity_DEFAULT_FEED : Math.min(requested, activity_MAX_FEED);
+  const after = opts.cursor === undefined ? null : activity_decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return null;
+  const page = await readActivityPage(db, { projectId: scope.projectId, after, limit });
+  const shown = page.rows.slice(0, limit);
+  const items = shown.map((row): activity_FeedItem => {
+    const label = row.kind === 'session' ? page.sessions.get(row.source_id) : undefined;
+    return {
+      type: row.kind, id: row.source_id, at: row.sort_at, sessionId: row.session_id,
+      summary: row.kind === 'session' ? sessions_sessionLabel(label?.title ?? null, label?.first_prompt ?? null, label?.agent ?? null, row.source_id)
+        : row.preview ?? '',
+    };
+  });
+  const last = shown.at(-1);
+  const more = page.rows.length > limit && last !== undefined;
+  return { items, hasMore: more, nextCursor: more ? `${CURSOR_PREFIX}${last.sort_at}:${last.kind}:${last.source_id}` : null, building: page.building };
+}
+
+export { type activity_FeedItem, type activity_FeedPage, activity_MAX_FEED, activity_CURSOR_REFUSAL, activity_activityFeed };

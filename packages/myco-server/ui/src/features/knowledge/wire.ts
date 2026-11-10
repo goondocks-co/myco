@@ -66,18 +66,18 @@ export interface SporeArticleAnswer {
   supersedes: string[];
 }
 
-/** The fields the board and a plan's page read of a plan. */
-export interface PlanFields {
+/** The fields a plan list reads of a plan: its metadata, a preview of its opening and its progress, never its body. */
+export interface PlanListFields {
   planKey: string;
   sessionId: string;
   promptId: string | null;
   title: string | null;
   status: string;
-  content: string | null;
-  blobKey: string | null;
   originPath: string | null;
-  /** `checked/total` over the plan's task list, or `N/A` when it has none. */
-  progress: string;
+  /** The opening of the plan's body; null for a body stored apart, or while Myco is still reading it. */
+  preview: string | null;
+  /** `checked/total` over the plan's task list, `N/A` when it has none, or null while Myco is still counting it. */
+  progress: string | null;
   /** The member behind its last status change; null when a capture wrote last. */
   updatedBy: string | null;
   createdAt: number;
@@ -85,8 +85,14 @@ export interface PlanFields {
   tags: string[];
 }
 
+/** The fields a plan's page reads: the listed fields and its body, or the stored object holding it. */
+export interface PlanFields extends PlanListFields {
+  content: string | null;
+  blobKey: string | null;
+}
+
 /** A plan listed across Projects. */
-export interface PlanBoardRow extends PlanFields {
+export interface PlanBoardRow extends PlanListFields {
   projectId: string;
 }
 
@@ -107,6 +113,7 @@ export interface PlanPageAnswer {
 
 /** A page of `GET /api/projects/{p}/plans`. */
 export interface ProjectPlanPage {
-  readonly plans: readonly PlanFields[];
+  readonly plans: readonly PlanListFields[];
   readonly cursor: string | null;
+  readonly hasMore: boolean;
 }

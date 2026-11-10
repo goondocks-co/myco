@@ -36,7 +36,7 @@ import {
 import { searchWords as searchProject } from './helpers/search-fixture.js';
 import { projectStatistics } from '@myco-server-worker/db/sessions/statistics.js';
 import {
-  plans_listProjectPlans as listProjectPlans,
+  plans_pageProjectPlans as pageProjectPlans,
 } from '@myco-server-worker/read/catalog/plans.js';
 import { count, envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from './helpers/member-token.js';
@@ -94,10 +94,10 @@ describe('tombstoning a session', () => {
     await populate(send);
     expect(await writeTitle(env.db, SCOPE.projectId, SESSION, 'retentioncanary', 'retentioncanary summary')).toBe(true);
     expect((await searchProject(env.db, SCOPE, { query: 'retentioncanary', mode: 'fts' })).hits).toHaveLength(1);
-    expect((await activityFeed(env.db, SCOPE)).map((item) => item.id)).toContain(SESSION);
+    expect((await activityFeed(env.db, SCOPE))!.items.map((item) => item.id)).toContain(SESSION);
     await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
     expect((await searchProject(env.db, SCOPE, { query: 'retentioncanary', mode: 'fts' })).hits).toHaveLength(0);
-    expect((await activityFeed(env.db, SCOPE)).map((item) => item.id)).not.toContain(SESSION);
+    expect((await activityFeed(env.db, SCOPE))!.items.map((item) => item.id)).not.toContain(SESSION);
     expect(sqlite.query("SELECT COUNT(*) AS n FROM embedding_sources WHERE type='session'").get()).toEqual({ n: 0 });
     expect(await writeTitle(env.db, SCOPE.projectId, SESSION, 'returned', 'returned')).toBe(false);
     expect(await overwriteTitle(env.db, SCOPE.projectId, SESSION, 'returned', 'returned', 'mem_machine_1')).toBe(false);
@@ -208,7 +208,7 @@ describe('a deleted session is absent from every read', () => {
     await populate(send);
     await tombstoneSession(env, SCOPE, SESSION, 'mem_machine_1', NOW);
     expect(await projectStatistics(env.db, SCOPE.projectId, NOW)).toMatchObject({ state: 'ready', sessions: 0, prompts: 0, plans: 0 });
-    expect(await listProjectPlans(env.db, SCOPE)).toEqual([]);
+    expect((await pageProjectPlans(env.db, SCOPE))!.rows).toEqual([]);
   });
 
   it('suppresses only its own Project: the same session id elsewhere is untouched', async () => {

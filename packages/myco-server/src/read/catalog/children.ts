@@ -4,7 +4,6 @@ import { page as children_import_page } from "../scope.js";
 import type { Page as children_import_Page } from "../scope.js";
 import type { ReadScope as children_import_ReadScope } from "../scope.js";
 import { hook_placement_hookPlacementSql, hook_placement_placedHintSql } from './hook-placement.js';
-import { plans_progressOf } from './plans.js';
 import { queryRows } from './shared.js';
 
 /** A child projection read: its table, selected columns, order expression and tie-breaking identity. */
@@ -22,16 +21,11 @@ interface children_ChildQuery<T> {
 /** Paging plus, for the tables that carry one, the prompt whose children the page is narrowed to; `idx_tool_calls_prompt` and `idx_attachments_prompt` serve the narrowed order. */
 interface children_ChildOptions { limit?: number; cursor?: string; promptId?: string }
 
-/** Conditions a child read adds past the session scope, each a SQL term with the values it binds. */
-interface children_ChildFilter { sql: string; params: readonly unknown[] }
 
 function children_childColumns<T>(query: children_ChildQuery<T>): string {
   if (query.promptHint === undefined) return query.columns;
   return `${hook_placement_placedHintSql({ project: `${query.table}.project_id`, session: `${query.table}.session_id`, prompt: `${query.table}.${query.promptHint}` })} AS prompt_id, ${query.columns}`;
 }
-
-/** `planKey` is the plan's identity in this table (its primary key), not a session-scoped id. `createdAt` is the plan's first capture; `orderedAt` carries the `updated_at` this listing pages over. */
-interface children_PlanRow { planKey: string; promptId: string | null; title: string | null; status: string; content: string | null; blobKey: string | null; originPath: string | null; progress: string; updatedBy: string | null; createdAt: number; updatedAt: number; orderedAt: number }
 
 /** `promptId` names the session prompt the attachment's captured hint resolves to; an unplaced attachment carries null. */
 interface children_AttachmentRow { attachmentId: string; promptId: string | null; blobKey: string; mediaType: string; byteSize: number; description: string | null; createdAt: number; orderedAt: number }
@@ -63,24 +57,6 @@ const children_CONTEXT_INJECTION_QUERY: children_ChildQuery<Omit<children_Contex
   map: (r) => ({ kind: r.kind as string, createdAt: r.created_at as number, delivery: (r.delivery as children_ContextInjectionRow['delivery']) ?? null }),
 };
 
-/** Plans order by `updated_at` — the column `idx_plans_session` indexes — and are keyed by `plan_key`. */
-const children_PLAN_QUERY: children_ChildQuery<Omit<children_PlanRow, 'orderedAt'>> = {
-  table: 'plans', index: 'idx_plans_session', columns: 'plan_key, prompt_id, title, status, content, blob_key, origin_path, updated_by, created_at, updated_at', idColumn: 'plan_key', orderColumn: 'updated_at',
-  map: (r) => ({
-    createdAt: r.created_at as number,
-    updatedAt: r.updated_at as number,
-    planKey: r.plan_key as string,
-    promptId: (r.prompt_id as string | null) ?? null,
-    title: (r.title as string | null) ?? null,
-    status: r.status as string,
-    content: (r.content as string | null) ?? null,
-    blobKey: (r.blob_key as string | null) ?? null,
-    originPath: (r.origin_path as string | null) ?? null,
-    progress: plans_progressOf((r.content as string | null) ?? null),
-    updatedBy: (r.updated_by as string | null) ?? null,
-  }),
-};
-
 const children_ATTACHMENT_QUERY: children_ChildQuery<Omit<children_AttachmentRow, 'orderedAt'>> = {
   table: 'attachments', promptHint: 'prompt_id', columns: 'attachment_id, blob_key, media_type, byte_size, description, created_at', idColumn: 'attachment_id', orderColumn: 'created_at',
   map: (r) => ({
@@ -99,16 +75,6 @@ type children_PagingOptions = Pick<children_ChildOptions, 'limit' | 'cursor'>;
 
 const children_listContextInjections = (db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts?: children_PagingOptions) => children_listChildren(db, children_CONTEXT_INJECTION_QUERY, scope, sessionId, opts);
 
-/** A session's plans narrowed to one status; the term leaves `idx_plans_session` serving the scope and the order. */
-interface children_PlanChildOptions extends children_ChildOptions { status?: string }
-
-function children_listPlans(db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts: children_PlanChildOptions = {}) {
-  const { status, ...paging } = opts;
-  const filters: children_ChildFilter[] = [];
-  if (status !== undefined) filters.push({ sql: 'status = ?', params: [status] });
-  return children_listChildren(db, children_PLAN_QUERY, scope, sessionId, paging, filters);
-}
-
 const children_listAttachments = (db: children_import_RelationalStore, scope: children_import_ReadScope, sessionId: string, opts?: children_ChildOptions) => children_listChildren(db, children_ATTACHMENT_QUERY, scope, sessionId, opts);
 
  async function children_listChildren<T>(
@@ -117,7 +83,6 @@ const children_listAttachments = (db: children_import_RelationalStore, scope: ch
   scope: children_import_ReadScope,
   sessionId: string,
   opts: children_ChildOptions = {},
-  filters: readonly children_ChildFilter[] = []
 ): Promise<children_import_Page<T & { orderedAt: number }>> {
   const order = query.orderColumn;
   const k = children_import_keyset(opts, { order, id: query.idColumn, direction: 'ASC' });
@@ -129,7 +94,6 @@ const children_listAttachments = (db: children_import_RelationalStore, scope: ch
     conditions.push(`${query.promptHint ?? 'prompt_id'} = ?`); params.push(opts.promptId);
     if (query.promptHint !== undefined) conditions.push(hook_placement_hookPlacementSql({ project: `${query.table}.project_id`, session: `${query.table}.session_id`, prompt: `${query.table}.${query.promptHint}` }));
   }
-  for (const filter of filters) { conditions.push(filter.sql); params.push(...filter.params); }
   if (k.where !== '') { conditions.push(k.where); params.push(...k.params); }
   const sql = `SELECT ${children_childColumns(query)}, ${order} AS order_at, ${query.idColumn} FROM ${query.table}${query.index === undefined ? '' : ` INDEXED BY ${query.index}`}
                 WHERE ${conditions.join(' AND ')}
@@ -140,4 +104,4 @@ const children_listAttachments = (db: children_import_RelationalStore, scope: ch
   return { rows: paged.rows.map(({ __id, ...rest }) => rest as T & { orderedAt: number }), cursor: paged.cursor };
 }
 
-export { children_listContextInjections, children_listPlans, children_listAttachments };
+export { children_listContextInjections, children_listAttachments };

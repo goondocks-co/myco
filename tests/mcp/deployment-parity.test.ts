@@ -21,7 +21,7 @@ import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { EXTERNAL_TOOLS } from '@myco-server-worker/mcp/external.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
-import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { PLAN_BODY_CALL, TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
 
@@ -97,7 +97,7 @@ describe('the member tool surface over a real Deployment', () => {
     expect({ status: listed.status, names: listed.envelope.result?.map((t: any) => t.name).sort(), stderr: listed.stderr }).toEqual({ status: 0, names: TOOL_DEFINITIONS.map((d) => d.name).sort(), stderr: listed.stderr });
 
     const called = await cli(env, 'call', 'myco_plans', '--input', '{"op":"list"}');
-    expect(called.envelope).toEqual({ ok: true, tool: 'myco_plans', result: [] });
+    expect(called.envelope).toEqual({ ok: true, tool: 'myco_plans', result: { plans: [], has_more: false, cursor: null, body_call: PLAN_BODY_CALL } });
 
     // A write names its Project; the member credential reaches every Project of the Deployment.
     const unnamed = await cli(env, 'call', 'myco_spores', '--input', JSON.stringify({ op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'no project named' }));
@@ -155,7 +155,7 @@ describe('the external read-only surface over a real Deployment', () => {
       const tools = await bot.listTools();
       expect(tools.tools.map((t) => t.name).sort()).toEqual([...EXTERNAL_TOOLS].sort());
       const plans = await bot.callTool({ name: 'myco_plans', arguments: { op: 'list' } });
-      expect((plans.structuredContent as { result: unknown[] }).result).toEqual([]);
+      expect((plans.structuredContent as { result: unknown }).result).toEqual({ plans: [], has_more: false, cursor: null, body_call: PLAN_BODY_CALL });
       const saved = await bot.callTool({ name: 'myco_spores', arguments: { op: 'save', type: 'gotcha', agent_line: 'When using this fixture, retain its evidence.', content: 'the reviewer found it', provenance_kind: 'pr', provenance_ref: 'https://github.com/goondocks/myco/pull/1149' } });
       const sporeId = (saved.structuredContent as { result: { id: string } }).result.id;
       expect(sqlite.query(`SELECT agent_id, author, session_id, provenance_kind FROM spores WHERE id = ?`).get(sporeId))
@@ -169,7 +169,8 @@ describe('the external read-only surface over a real Deployment', () => {
       await expect(bot.callTool({ name: 'myco_plans', arguments: { op: 'list' } })).rejects.toMatchObject({ status: 401 });
       const successor = await connect(rotated!.key);
       try {
-        expect(((await successor.callTool({ name: 'myco_plans', arguments: { op: 'list' } })).structuredContent as { result: unknown[] }).result).toEqual([]);
+        expect(((await successor.callTool({ name: 'myco_plans', arguments: { op: 'list' } })).structuredContent as { result: unknown }).result)
+          .toEqual({ plans: [], has_more: false, cursor: null, body_call: PLAN_BODY_CALL });
       } finally {
         await successor.close().catch(() => undefined);
       }

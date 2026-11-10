@@ -445,6 +445,8 @@
     "tests/myco-server/extraction-coverage.test.ts": 1271,
     "tests/myco-server/failing-outcomes.test.ts": 300,
     "tests/myco-server/ingest-retirement-upgrade.test.ts": 6000,
+    "tests/myco-server/plans-activity-cost.test.ts": 12000,
+    "tests/myco-server/plans-activity.test.ts": 4000,
     "tests/myco-server/restore-hold.test.ts": 3000,
     "tests/myco-server/fleet-correction.test.ts": 56,
     "tests/myco-server/foreign-lineage-authority.test.ts": 1309,

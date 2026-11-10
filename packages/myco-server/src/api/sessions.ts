@@ -12,7 +12,7 @@ import {
   sessions_sessionDurationMs as sessionDurationMs,
   type sessions_SessionFilters as SessionFilters,
 } from '../read/catalog/sessions.js';
-import { activity_activityFeed as activityFeed } from '../read/catalog/activity.js';
+import { activity_activityFeed as activityFeed, activity_CURSOR_REFUSAL as ACTIVITY_CURSOR_REFUSAL } from '../read/catalog/activity.js';
 import {
   SESSION_ACTIVITY_TYPES,
   type session_activity_SessionActivityType as SessionActivityType,
@@ -23,7 +23,6 @@ import { decodeCursor } from '../read/scope.js';
 import {
   children_listAttachments as listAttachments,
   children_listContextInjections as listContextInjections,
-  children_listPlans as listPlans,
 } from '../read/catalog/children.js';
 import { untitledReason } from '../db/sessions/title-work.js';
 import {
@@ -40,6 +39,7 @@ import { titleSession } from '../core/titling.js';
 import { changePlanStatus } from '../core/plans.js';
 import {
   plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
+  plans_pageSessionPlans as listPlans,
   plans_planInSession as planInSession,
   plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
 } from '../read/catalog/plans.js';
@@ -356,17 +356,22 @@ export async function handleSetPlanStatus(env: ServerEnv, ctx: OwnerContext): Pr
   return row === null ? notFound() : ok({ plan: row });
 }
 
-/** The project's home: what it holds, and what happened most recently. */
+/**
+ * The project's home: what it holds, and what happened most recently, a page at a time (`nextCursor` continues it while
+ * `hasMore`). `building` says existing records are still being added to the feed.
+ */
 export async function handleProjectActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
   const rawLimit = ctx.url.searchParams.get('limit');
   if (rawLimit !== null && !/^[0-9]+$/.test(rawLimit)) return badRequest('limit must be a positive integer');
-  const [items, stats] = await Promise.all([
-    activityFeed(env.db, scope, rawLimit === null ? undefined : Number(rawLimit)),
+  const cursor = ctx.url.searchParams.get('cursor');
+  const [feed, stats] = await Promise.all([
+    activityFeed(env.db, scope, { ...(rawLimit === null ? {} : { limit: Number(rawLimit) }), ...(cursor === null ? {} : { cursor }) }),
     projectStatistics(env.db, scope.projectId, ctx.now),
   ]);
-  return ok({ items, stats });
+  if (feed === null) return badRequest(ACTIVITY_CURSOR_REFUSAL);
+  return ok({ ...feed, stats });
 }
 
 /**

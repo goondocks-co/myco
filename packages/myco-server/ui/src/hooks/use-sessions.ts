@@ -133,9 +133,23 @@ export interface PlanRow {
   blobKey: string | null;
   /** The file or the tag the plan came from, as the capture named it. */
   originPath: string | null;
-  progress: string;
+  /** `checked/total`, `N/A` with no task list, or null while Myco is still counting it. */
+  progress: string | null;
   updatedBy: string | null;
   createdAt: number;
+  updatedAt: number;
+  orderedAt: number;
+}
+
+/** A plan as a session's plans tab lists it: its metadata and progress, oldest edit first; its body is on the plan's page. */
+export interface SessionPlanRow {
+  planKey: string;
+  promptId: string | null;
+  title: string | null;
+  status: string;
+  originPath: string | null;
+  preview: string | null;
+  progress: string | null;
   updatedAt: number;
   orderedAt: number;
 }

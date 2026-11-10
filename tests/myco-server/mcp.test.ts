@@ -29,7 +29,7 @@ import { isServedTool, isWriteOp, PROJECT_PIVOT, UNSERVED_OPS } from '@myco-serv
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
-import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { PLAN_BODY_CALL, TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
 import { NO_INSTRUCTIONS_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
 import { NO_BODY_FOR_GRANT, NO_STATUS_MESSAGE, skillBodyLocation } from '@myco-server-worker/mcp/tools/skills.js';
@@ -78,6 +78,9 @@ async function setup() {
   };
   return { ...e, now, t1, t2, call };
 }
+
+/** An empty plan list: one page holding no plan and none after it. */
+const NO_PLANS = { plans: [], has_more: false, cursor: null, body_call: PLAN_BODY_CALL };
 
 describe('POST /mcp', () => {
   it('authenticates projectless discovery without creating a project', async () => {
@@ -249,7 +252,8 @@ describe('POST /mcp', () => {
     expect({ ok: first.ok, id: first.id, logical_key: first.logical_key, status: first.status, tags: first.tags, session: first.session_id }).toEqual({ ok: true, id: await uuidv5('plan', 'proj_1', 'docs/plans/x.md'), logical_key: 'path:docs/plans/x.md', status: 'active', tags: ['t1'], session: 'sess_a' });
 
     const listed = (await call(t1.token, 'myco_plans', { op: 'list' })).result;
-    expect(listed).toEqual([{ id: first.id, title: 'X', status: 'active', progress: '1/2', prompt_id: null, tags: ['t1'], created_at: first.created_at }]);
+    expect(listed).toEqual({ plans: [{ id: first.id, title: 'X', status: 'active', progress: '1/2', prompt_id: null, tags: ['t1'], created_at: first.created_at,
+      updated_at: first.updated_at, preview: '- [x] one - [ ] two' }], has_more: false, cursor: null, body_call: PLAN_BODY_CALL });
 
     expect((await call(t1.token, 'myco_plans', { op: 'save', id: first.id, status: 'in_progress' })).result).toEqual({ ok: false, error: 'session_id is required for op: save' });
     const updated = (await call(t1.token, 'myco_plans', { op: 'save', id: first.id, session_id: 'sess_a', status: 'in_progress' })).result;
@@ -313,7 +317,7 @@ describe('POST /mcp', () => {
     const plan = await call(t1.token, 'myco_plans', { op: 'save', session_id: 'sess_a', plan_key: 'k', content: 'c' });
     expect({ status: plan.status, result: plan.result }).toEqual({ status: 200, result: { ok: false, code: 'project_archived', error: 'this project is archived on the server; unarchive it from the dashboard to resume capture' } });
     expect((await call(t1.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'still editable' })).result.status).toBe('active');
-    expect((await call(t1.token, 'myco_plans', {})).result).toEqual([]);
+    expect((await call(t1.token, 'myco_plans', {})).result).toEqual(NO_PLANS);
   });
 
   it('pivots myco_agent by Project like every other tool, and refuses an argument the tool does not declare before any handler runs', async () => {
@@ -396,7 +400,7 @@ describe('POST /mcp', () => {
     const cortex = await (await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_cortex', arguments: {} })), env)).json() as any;
     expect(JSON.parse(cortex.result.content[0].text)).toEqual(cortex.result.structuredContent.result);
     const plans = await (await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_plans', arguments: {} })), env)).json() as any;
-    expect({ text: plans.result.content[0].text, structured: plans.result.structuredContent }).toEqual({ text: '[]', structured: { result: [] } });
+    expect({ text: plans.result.content[0].text, structured: plans.result.structuredContent }).toEqual({ text: JSON.stringify(NO_PLANS), structured: { result: NO_PLANS } });
   });
 
   it('reads skills and runs in the member-side shapes', async () => {
@@ -431,7 +435,7 @@ describe('POST /mcp', () => {
   it('reads another Project through the tenancy argument without creating one, and answers an unknown Project as absent', async () => {
     const { call, sqlite, t1 } = await setup();
     const before = (sqlite.query(`SELECT COUNT(*) c FROM projects`).get() as any).c;
-    expect((await call(t1.token, 'myco_plans', { project: 'proj_2' })).result).toEqual([]);
+    expect((await call(t1.token, 'myco_plans', { project: 'proj_2' })).result).toEqual(NO_PLANS);
     expect((await call(t1.token, 'myco_plans', { project: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
     expect((await call(t1.token, 'myco_sessions', { project: 'proj_unknown' })).result).toEqual({ ok: false, error: 'Project not found' });
     expect((sqlite.query(`SELECT COUNT(*) c FROM projects`).get() as any).c).toBe(before);
@@ -508,7 +512,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect(spores.result.spores.map((s: any) => 'author' in s)).toEqual([false]);
     expect('author' in (await callAs(grant.key, 'myco_spores', { op: 'get', id: spores.result.spores[0].id })).result).toBe(false);
     expect('author' in (await memberCall('myco_spores', { op: 'get', id: spores.result.spores[0].id })).result).toBe(true);
-    expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
+    expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual(NO_PLANS);
     expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
     expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result.map((s: any) => s.name)).toEqual(SHIPPED_SKILLS.map((s) => s.name));
     // An access key holds no copy of any body, so it is told that rather than
@@ -592,7 +596,7 @@ describe('POST /mcp over an External Agent grant', () => {
     const { env, db, grant, callAs, now, sourceKeys } = await grantSetup();
     const rotated = await rotateExternalGrant(db, { projectId: 'proj_1' }, grant.id, 'mem_machine_1', now);
     expect((await worker.fetch(grantRequest(grant.key, rpc('tools/list')), env)).status).toBe(401);
-    expect((await callAs(rotated!.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
+    expect((await callAs(rotated!.key, 'myco_plans', { op: 'list' })).result).toEqual(NO_PLANS);
     await revokeExternalGrant(db, { projectId: 'proj_1' }, rotated!.id, 'mem_machine_1', now);
     expect((await worker.fetch(grantRequest(rotated!.key, rpc('tools/list')), env)).status).toBe(401);
     expect(sourceKeys).toEqual(['1.2.3.4', '1.2.3.4']);
@@ -616,7 +620,7 @@ describe('POST /mcp over an External Agent grant', () => {
     const capped = await worker.fetch(grantRequest(grant.key, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { pad: 'x'.repeat(MAX_BODY_BYTES) } })), env);
     expect({ status: capped.status, code: ((await capped.json()) as any).error?.data?.code }).toEqual({ status: 400, code: 'body_cap' });
     sqlite.query(`UPDATE projects SET archived_at = 1, archived_by = 'mem_machine_1' WHERE project_id = 'proj_1'`).run();
-    expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual([]);
+    expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual(NO_PLANS);
 
     const lines: string[] = [];
     const original = console.log;

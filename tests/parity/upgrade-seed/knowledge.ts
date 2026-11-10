@@ -53,7 +53,7 @@ export async function observeKnowledge(target: RouteTarget, seed: KnowledgeSeed,
   const current = await owner(target, `${project}/spores/${seed.spores.current}`);
   const sporeList = await owner(target, `${project}/spores`);
   const planBoard = await owner(target, `/api/plans?project=${target.projectId}`);
-  const listed = await mcp(target, 'myco_plans', { op: 'list', session: sessionId, status: 'all' }) as unknown as unknown[];
+  const listed = (await mcp(target, 'myco_plans', { op: 'list', session: sessionId, status: 'all' }) as unknown as { plans: unknown[] }).plans;
   const turn = await owner(target, `${project}/sessions/${seed.served.sessionId}/turns/${seed.served.promptId}`);
   // Full-text search, which reads the store the upgrade carries; the vector index lives outside it.
   const search = await owner(target, `${project}/search?mode=fts&q=${encodeURIComponent(word)}`);

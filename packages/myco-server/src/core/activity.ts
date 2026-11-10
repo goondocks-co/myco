@@ -12,7 +12,8 @@
  * invitations those joins are spending.
  */
 import type { RelationalStore } from './adapters.js';
-import { rows, write, type Bound } from '../db/index.js';
+import { rows, type Bound } from '../db/index.js';
+import { latestActivityAt, stampWrite } from '../db/activity/last-activity.js';
 import { AUTOMATIC_HEADER } from '@goondocks/myco-shared/live-marks';
 
 /**
@@ -40,24 +41,8 @@ export async function stampRequest(db: RelationalStore, now: number): Promise<vo
   await rows(db, stampRequestWrite(now));
 }
 
-const stampRequestDefinition = write<[key: string, value: string, staleBefore: number]>({
-  name: 'activity.stampRequest',
-  sql: `INSERT OR REPLACE INTO schema_meta (key, value) SELECT ?1,?2
-    WHERE NOT EXISTS (SELECT 1 FROM schema_meta WHERE key=?1 AND CAST(value AS INTEGER)>?3)`,
-});
-
 /** The same conditional write, bound for a caller's commit. */
-export const stampRequestWrite = (now: number): Bound<never, 'write'> =>
-  stampRequestDefinition.bind(LAST_REQUEST_KEY, String(now), now - REQUEST_STAMP_INTERVAL_MS);
-
-export const LAST_ACTIVITY_SQL = `SELECT MAX(at) AS at FROM (
-       SELECT MAX(last_received_at) AS at FROM sessions
-       UNION ALL SELECT MAX(started_at) FROM agent_runs
-       UNION ALL SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = ?
-     )`;
+export const stampRequestWrite = (now: number): Bound<never, 'write'> => stampWrite(LAST_REQUEST_KEY, now, now - REQUEST_STAMP_INTERVAL_MS);
 
 /** When the Deployment last saw activity — a capture receipt, a run starting, an owner request, a join — or null when it never has. */
-export async function lastActivityAt(db: RelationalStore): Promise<number | null> {
-  const row = await db.prepare(LAST_ACTIVITY_SQL).bind(LAST_REQUEST_KEY).first<{ at: number | null }>();
-  return row?.at ?? null;
-}
+export const lastActivityAt = (db: RelationalStore): Promise<number | null> => latestActivityAt(db, LAST_REQUEST_KEY);

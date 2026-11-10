@@ -4,10 +4,7 @@ import {
   lineage_sessionLineage as sessionLineage,
   type lineage_SessionLineage as SessionLineage,
 } from '@myco-server-worker/read/catalog/lineage.js';
-import {
-  session_activity_sessionEdges as sessionEdges,
-  type session_activity_SessionActivityRow as SessionActivityRow,
-} from '@myco-server-worker/read/catalog/session-activity.js';
+import { type session_activity_SessionActivityRow as SessionActivityRow } from '@myco-server-worker/read/catalog/session-activity.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
@@ -28,8 +25,6 @@ async function issued(projectId: string, sessionId: string): Promise<Array<{ sql
     },
   } as unknown as RelationalStore;
   await sessionLineage(db, { projectId }, sessionId);
-  await sessionEdges(db, { projectId }, sessionId, { type: 'child_session' });
-  await sessionEdges(db, { projectId }, sessionId, { type: 'continuation' });
   return statements;
 }
 
@@ -103,9 +98,6 @@ export const sessionLineageParity: ParityScenario = {
       const children = await plan(`s.${column} IN (`);
       expect(children).toContain(`SEARCH s USING COVERING INDEX ${index} (project_id=? AND ${column}=?)`);
       expect(children).not.toMatch(/SCAN s\b|TEMP B-TREE/);
-      const edges = await plan(`r.${column} = ?`);
-      expect(edges).toContain(`SEARCH r USING INDEX ${index} (project_id=? AND ${column}=?)`);
-      expect(edges).not.toMatch(/SCAN [rs]\b/);
     }
   },
 };
