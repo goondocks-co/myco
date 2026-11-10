@@ -913,7 +913,9 @@
     "tests/myco-server/event-direct-body.test.ts": 600,
     "tests/myco-server/raw-event-archive-due.test.ts": 4000,
     "tests/myco-server/credential-carry.test.ts": 100,
-    "tests/myco-server/run-report-door.test.ts": 2500
+    "tests/myco-server/run-report-door.test.ts": 2500,
+    "tests/myco-server/secret-display.test.ts": 4000,
+    "tests/meta/boundaries/settings-one-writer.test.ts": 1500
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
