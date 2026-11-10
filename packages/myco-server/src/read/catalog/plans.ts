@@ -1,51 +1,52 @@
-import type { RelationalStore as plans_import_RelationalStore } from "../../core/adapters.js";
-import { PLAN_STATUSES as plans_import_PLAN_STATUSES } from "../../ingest/kinds.js";
-import { notTombstonedSql } from "../../db/session-read-model.js";
-import { clampLimit as plans_import_clampLimit } from "../scope.js";
-import { encodeCursor as plans_import_encodeCursor } from "../scope.js";
-import { inListChunks as plans_import_inListChunks } from "../scope.js";
-import { decodeProjectCursor as plans_import_decodeProjectCursor, encodeProjectCursor as plans_import_encodeProjectCursor } from "../project-cursor.js";
-import { decodeCursor as plans_import_decodeCursor } from "../scope.js";
-import { PLAN_COLUMNS as plans_import_PLAN_COLUMNS, readPlanPage as plans_import_readPlanPage } from "../../db/plans/browse.js";
-import { planStatusTotals as plans_import_planStatusTotals } from "../../db/plans/counts.js";
-import type { Page as plans_import_Page } from "../scope.js";
-import type { ProjectSet as plans_import_ProjectSet } from "../scope.js";
-import type { ReadScope as plans_import_ReadScope } from "../scope.js";
-import type { PreparedStatement as sessions_import_PreparedStatement } from "../../core/adapters.js";
-import { queryRows } from './shared.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { PLAN_STATUSES } from '../../ingest/kinds.js';
+import { clampLimit, decodeCursor, encodeCursor, type Page, type ProjectSet, type ReadScope } from '../scope.js';
+import { readPlanPage, readPlanTags, type PlanListRow, type PlanPageKey } from '../../db/plans/browse.js';
+import { planInSession, readPlanDetail, readPlanSummary } from '../../db/plans/detail.js';
+import { planStatusTotals } from '../../db/plans/counts.js';
 
-/** Status edits affect surviving facts; classified parser rows remain immutable. */
-export function planStatusStatement(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string,
-  status: string, by: string, nowMs: number): sessions_import_PreparedStatement {
-  return db.prepare(`UPDATE plans SET status = ?, updated_by = ?, updated_at = MAX(updated_at + 1, ?) WHERE project_id = ? AND plan_key = ? AND status <> ? RETURNING plan_key`).bind(status, by, nowMs, scope.projectId, planKey, status);
-}
+/** The statuses an administrative edit may write — the catalogue's; the list filter alone admits 'all'. */
+const plans_WRITABLE_PLAN_STATUSES: ReadonlySet<string> = new Set(PLAN_STATUSES);
 
-/** A plan as the project holds it: the projected row plus the tags the same event carried. `promptId` names the prompt the plan came from; `updatedBy` the member behind its last administrative edit, null when a capture event wrote last. */
-interface plans_ProjectPlanRow {
+const plans_PLAN_STATUS_MESSAGE = `status must be one of: ${PLAN_STATUSES.join(', ')}`;
+
+/**
+ * A plan as a list shows it: its metadata, a preview of its opening and the progress of its task list, never its body
+ * (the plan's own read answers that). `progress` is `checked/total`, `N/A` for a plan with no task list or one whose
+ * body is stored apart, and null while Myco is still deriving it for a plan written before it kept progress.
+ */
+interface plans_PlanListItem {
   planKey: string;
   sessionId: string;
   promptId: string | null;
   title: string | null;
   status: string;
-  content: string | null;
-  blobKey: string | null;
-  /** The registered object admitted by this plan's processed-field provenance, or null. */
-  objectKey: string | null;
   originPath: string | null;
-  /** `checked/total` over the plan's task list, or `N/A` when it has none. */
-  progress: string;
+  /** The opening of the plan's body, with line breaks read as spaces; null for a body stored apart or not yet derived. */
+  preview: string | null;
+  progress: string | null;
+  /** The member behind its last administrative edit, null when a capture event wrote last. */
   updatedBy: string | null;
   createdAt: number;
   updatedAt: number;
   tags: string[];
 }
 
-/** The statuses an administrative edit may write — the catalogue's; the list filter alone admits 'all'. */
-const plans_WRITABLE_PLAN_STATUSES: ReadonlySet<string> = new Set(plans_import_PLAN_STATUSES);
+/** A plan listed across Projects, with the Project it belongs to. */
+type plans_PlanAcrossRow = plans_PlanListItem & { projectId: string };
 
-const plans_PLAN_STATUS_MESSAGE = `status must be one of: ${plans_import_PLAN_STATUSES.join(', ')}`;
+/** A plan as the Project holds it, in full: the listed fields plus its body or the object holding it. */
+interface plans_ProjectPlanRow extends plans_PlanListItem {
+  content: string | null;
+  blobKey: string | null;
+  /** The registered object admitted by this plan's processed-field provenance, or null. */
+  objectKey: string | null;
+}
 
-/** `checked/total` over the plan's task list, or `N/A` when it has none; a spilled plan reads as none. */
+/** A plan's bounded metadata, including the content revision and source session. */
+interface plans_ProjectPlanSummary { planKey: string; title: string | null; status: string; sessionId: string; contentHash: string | null }
+
+/** `checked/total` over a plan body's task list, or `N/A` when it has none: what a document's own appearance of a plan shows. */
 function plans_progressOf(content: string | null): string {
   const text = content ?? '';
   const checked = (text.match(/- \[x\]/gi) ?? []).length;
@@ -54,98 +55,111 @@ function plans_progressOf(content: string | null): string {
   return total === 0 ? 'N/A' : `${checked}/${total}`;
 }
 
-const plans_COLUMNS = plans_import_PLAN_COLUMNS;
+/** The stored progress as the list answers it; null until it has been derived. */
+const storedProgress = (done: number | null, total: number | null): string | null =>
+  done === null || total === null ? null : total === 0 ? 'N/A' : `${done}/${total}`;
 
-function plans_toPlan(row: Record<string, unknown>, tags: string[]): plans_ProjectPlanRow {
+function listed(row: PlanListRow, tags: string[]): plans_PlanAcrossRow {
   return {
-    planKey: row.plan_key as string,
-    sessionId: row.session_id as string,
-    promptId: (row.prompt_id as string | null) ?? null,
-    title: (row.title as string | null) ?? null,
-    status: row.status as string,
-    content: (row.content as string | null) ?? null,
-    blobKey: (row.blob_key as string | null) ?? null,
-    objectKey: (row.object_key as string | null) ?? null,
-    originPath: (row.origin_path as string | null) ?? null,
-    progress: plans_progressOf((row.content as string | null) ?? null),
-    updatedBy: (row.updated_by as string | null) ?? null,
-    createdAt: row.created_at as number,
-    updatedAt: row.updated_at as number,
-    tags,
+    projectId: row.project_id, planKey: row.plan_key, sessionId: row.session_id, promptId: row.prompt_id, title: row.title, status: row.status,
+    originPath: row.origin_path, preview: row.preview, progress: storedProgress(row.progress_done, row.progress_total), updatedBy: row.updated_by,
+    createdAt: row.created_at, updatedAt: row.updated_at, tags,
   };
 }
 
-/** The tags of each named plan, keyed by plan key; a plan with none maps to an empty list. */
-async function plans_tagsOf(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKeys: readonly string[]): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>(planKeys.map((k) => [k, []]));
-  // A page of plans names more keys than one statement may bind, so the keys are read in runs.
-  for (const run of plans_import_inListChunks(planKeys)) {
-    const { results } = await db.prepare(`SELECT entity_id, tag FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id IN (${run.map(() => '?').join(', ')}) ORDER BY entity_id, tag`)
-      .bind(scope.projectId, ...run)
-      .all<{ entity_id: string; tag: string }>();
-    for (const r of results) out.get(r.entity_id)?.push(r.tag);
-  }
-  return out;
+/** The listed rows of a page read as `limit` + 1 rows, with their tags in one read, and the last shown row when more follow. */
+async function withTags(db: RelationalStore, rows: readonly PlanListRow[], limit: number): Promise<{ rows: plans_PlanAcrossRow[]; more: boolean }> {
+  const shown = rows.slice(0, limit);
+  const tags = await readPlanTags(db, shown.map(row => ({ projectId: row.project_id, planKey: row.plan_key })));
+  return { rows: shown.map(row => listed(row, tags.get(row.project_id)?.get(row.plan_key) ?? [])), more: rows.length > limit };
 }
 
-/** The tags of each named plan of each Project, keyed by Project and then plan key, every statement in one batch. */
-async function plans_tagsAcross(db: plans_import_RelationalStore, keysByProject: ReadonlyMap<string, readonly string[]>): Promise<Map<string, Map<string, string[]>>> {
-  const out = new Map<string, Map<string, string[]>>();
-  const reads: { projectId: string; statement: ReturnType<plans_import_RelationalStore['prepare']> }[] = [];
-  for (const [projectId, keys] of keysByProject) {
-    out.set(projectId, new Map(keys.map((k) => [k, []])));
-    for (const run of plans_import_inListChunks(keys)) {
-      reads.push({
-        projectId, statement: db.prepare(`SELECT entity_id, tag FROM tags WHERE project_id = ? AND entity_kind = 'plan' AND entity_id IN (${run.map(() => '?').join(', ')}) ORDER BY entity_id, tag`)
-          .bind(projectId, ...run)
-      });
-    }
-  }
-  if (reads.length === 0) return out;
-  const results = await db.batch(reads.map((r) => r.statement));
-  results.forEach((result, i) => {
-    const held = out.get(reads[i]!.projectId)!;
-    for (const r of result.results as { entity_id: string; tag: string }[]) held.get(r.entity_id)?.push(r.tag);
-  });
-  return out;
+const withoutProject = ({ projectId: _projectId, ...row }: plans_PlanAcrossRow): plans_PlanListItem => row;
+const nextInProject = (rows: readonly plans_PlanListItem[], more: boolean): string | null => {
+  const last = rows.at(-1);
+  return more && last !== undefined ? encodeCursor(last.updatedAt, last.planKey) : null;
+};
+
+/** The structured filters of a Project's plan list: a status, or a session (optionally with a status). */
+interface plans_ProjectPlanOptions { status?: string; sessionId?: string; limit?: number; cursor?: string }
+
+/**
+ * One page of the Project's plans, most recently edited first, and the cursor of the next; null for a cursor this list
+ * did not issue. A plan edited while a reader pages moves to the head of the list, which that reader already holds; every
+ * other plan keeps its place, so later pages neither repeat nor drop one.
+ */
+async function plans_pageProjectPlans(db: RelationalStore, scope: ReadScope, opts: plans_ProjectPlanOptions = {}): Promise<Page<plans_PlanListItem> | null> {
+  const limit = clampLimit(opts.limit);
+  const key = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && key === null) return null;
+  const after: PlanPageKey | null = key === null ? null : { updatedAt: key.createdAt, planKey: key.id };
+  const rows = await readPlanPage(db, opts.sessionId === undefined
+    ? { scope: { projectId: scope.projectId }, ...(opts.status === undefined ? {} : { status: opts.status }), after, limit }
+    : { scope: { projectId: scope.projectId, sessionId: opts.sessionId }, order: 'newest', ...(opts.status === undefined ? {} : { status: opts.status }), after, limit });
+  const page = await withTags(db, rows, limit);
+  const items = page.rows.map(withoutProject);
+  return { rows: items, cursor: nextInProject(items, page.more) };
 }
 
-/** The project's plans, most recently updated first; optionally one status or one session. */
-async function plans_listProjectPlans(
-  db: plans_import_RelationalStore,
-  scope: plans_import_ReadScope,
-  opts: { status?: string; sessionId?: string; limit?: number } = {},
-): Promise<plans_ProjectPlanRow[]> {
-  return [...(await plans_pageProjectPlans(db, scope, opts)).rows];
+/** A session's plan as its plans tab lists it, with the edit instant the tab pages over. */
+type plans_SessionPlanRow = plans_PlanListItem & { orderedAt: number };
+
+/**
+ * One page of a session's plans, oldest edit first as the session's timeline reads, and the cursor of the next; an
+ * empty page for a cursor this list did not issue.
+ */
+async function plans_pageSessionPlans(db: RelationalStore, scope: ReadScope, sessionId: string,
+  opts: { status?: string; limit?: number; cursor?: string } = {}): Promise<Page<plans_SessionPlanRow>> {
+  const limit = clampLimit(opts.limit);
+  const key = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && key === null) return { rows: [], cursor: null };
+  const rows = await readPlanPage(db, { scope: { projectId: scope.projectId, sessionId }, order: 'oldest',
+    ...(opts.status === undefined ? {} : { status: opts.status }), after: key === null ? null : { updatedAt: key.createdAt, planKey: key.id }, limit });
+  const page = await withTags(db, rows, limit);
+  const items = page.rows.map(row => ({ ...withoutProject(row), orderedAt: row.updatedAt }));
+  return { rows: items, cursor: nextInProject(items, page.more) };
+}
+
+/** The prefix naming the encoding of the cross-Project plan list's cursor: the edit instant, the Project, then the plan. */
+const ACROSS_CURSOR_PREFIX = 'plans1:';
+const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** The refusal of a cursor the cross-Project plan list did not issue, including one issued before it ordered by Project before plan. */
+const plans_ACROSS_CURSOR_REFUSAL =
+  `malformed cursor: the plan list across Projects pages by "${ACROSS_CURSOR_PREFIX}<instant>:<projectId>:<planKey>" exactly as its last answer returned it in \`cursor\`; `
+  + 'a cursor another list issued, or one issued before this list ordered by edit, Project and then plan, is refused. '
+  + 'Nothing was read: request the first page again with the same filters and no cursor.';
+
+const encodeAcross = (row: plans_PlanAcrossRow) => `${ACROSS_CURSOR_PREFIX}${row.updatedAt}:${row.projectId}:${row.planKey}`;
+
+/** The key of a cursor the cross-Project plan list issued, or null for any other text. */
+function plans_decodeAcrossCursor(text: string): PlanPageKey | null {
+  if (!text.startsWith(ACROSS_CURSOR_PREFIX)) return null;
+  const body = text.slice(ACROSS_CURSOR_PREFIX.length);
+  const first = body.indexOf(':');
+  const second = first < 0 ? -1 : body.indexOf(':', first + 1);
+  if (first <= 0 || second < 0) return null;
+  const updatedAt = Number(body.slice(0, first));
+  const projectId = body.slice(first + 1, second);
+  const planKey = body.slice(second + 1);
+  return Number.isSafeInteger(updatedAt) && PROJECT_ID.test(projectId) && planKey.length > 0 ? { updatedAt, projectId, planKey } : null;
 }
 
 /**
- * One page of the project's plans, most recently updated first, and the cursor of the next. A plan edited while a
- * reader pages moves to the head of the list, which that reader already holds; a refresh reads it there.
+ * One page of every plan in the set's Projects, most recently edited first, optionally a status and a start instant on
+ * the last edit; null for a cursor this list did not issue. Plans order by the edit, the Project and the plan, so plans
+ * of two Projects sharing an instant and a key each keep their own place across a page boundary.
  */
-async function plans_pageProjectPlans(
-  db: plans_import_RelationalStore,
-  scope: plans_import_ReadScope,
-  opts: { status?: string; sessionId?: string; limit?: number; cursor?: string } = {},
-): Promise<plans_import_Page<plans_ProjectPlanRow>> {
-  const listed = await plans_selectPlans(db, { projectId: scope.projectId }, opts);
-  return { cursor: listed.cursor, rows: listed.rows.map(({ projectId: _projectId, ...row }) => row) };
-}
-
-/** A plan of a read across Projects, with the Project it belongs to. */
-type plans_PlanAcrossRow = plans_ProjectPlanRow & { projectId: string };
-
-/**
- * One page of every plan in the set's Projects, most recently updated first, optionally only plans updated at or after a
- * start instant. A plan is keyed by its Project and its key, so the page orders by the update, the key and the Project,
- * and its cursor carries all three.
- */
-async function plans_pagePlansAcross(
-  db: plans_import_RelationalStore,
-  set: plans_import_ProjectSet,
-  opts: { status?: string; since?: number; limit?: number; cursor?: string } = {},
-): Promise<plans_import_Page<plans_PlanAcrossRow>> {
-  return plans_selectPlans(db, set, opts);
+async function plans_pagePlansAcross(db: RelationalStore, set: ProjectSet,
+  opts: { status?: string; since?: number; limit?: number; cursor?: string } = {}): Promise<Page<plans_PlanAcrossRow> | null> {
+  const limit = clampLimit(opts.limit);
+  const after = opts.cursor === undefined ? null : plans_decodeAcrossCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return null;
+  const rows = await readPlanPage(db, { scope: set, ...(opts.status === undefined ? {} : { status: opts.status }),
+    ...(opts.since === undefined ? {} : { since: opts.since }), after, limit });
+  const page = await withTags(db, rows, limit);
+  const last = page.rows.at(-1);
+  return { rows: page.rows, cursor: page.more && last !== undefined ? encodeAcross(last) : null };
 }
 
 /**
@@ -153,53 +167,34 @@ async function plans_pagePlansAcross(
  * and `building` answers until existing plans have been counted. A total under a start instant is not kept: such a
  * list pages with `hasMore` alone.
  */
-const plans_planTotals = plans_import_planStatusTotals;
+const plans_planTotals = planStatusTotals;
 
-/** One plan page from the stored rows `readPlanPage` answers, with each plan's tags, and the cursor of the next page; a cursor this list did not issue reads nothing. */
-async function plans_selectPlans(
-  db: plans_import_RelationalStore,
-  scope: { projectId: string } | plans_import_ProjectSet,
-  opts: { status?: string; sessionId?: string; since?: number; limit?: number; cursor?: string },
-): Promise<plans_import_Page<plans_PlanAcrossRow>> {
-  const across = !('projectId' in scope);
-  const limit = plans_import_clampLimit(opts.limit);
-  const after = opts.cursor === undefined ? null : across ? plans_import_decodeProjectCursor(opts.cursor) : plans_import_decodeCursor(opts.cursor);
-  if (opts.cursor !== undefined && after === null) return { rows: [], cursor: null };
-  const results = await plans_import_readPlanPage(db, { scope, filters: opts, after, limit });
-  const shown = results.slice(0, limit);
-  // Tags are keyed by Project first, so they are read per Project over its keys on the page, in one batch.
-  const keysByProject = new Map<string, string[]>();
-  for (const r of shown) keysByProject.set(r.project_id as string, [...(keysByProject.get(r.project_id as string) ?? []), r.plan_key as string]);
-  const tags = await plans_tagsAcross(db, keysByProject);
-  const rows = shown.map((r) => ({ ...plans_toPlan(r, tags.get(r.project_id as string)?.get(r.plan_key as string) ?? []), projectId: r.project_id as string }));
-  const last = rows[rows.length - 1];
-  const more = results.length > limit && last !== undefined;
-  return { rows, cursor: !more ? null : across
-    ? plans_import_encodeProjectCursor({ createdAt: last.updatedAt, projectId: last.projectId, id: last.planKey })
-    : plans_import_encodeCursor(last.updatedAt, last.planKey) };
-}
-
-/** A plan's bounded metadata, including the content revision and source session. */
-type plans_ProjectPlanSummary = Pick<plans_ProjectPlanRow, 'planKey' | 'title' | 'status' | 'sessionId'> & { contentHash: string | null };
-
-function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string, options: { summary: true }): Promise<plans_ProjectPlanSummary | null>;
-
-function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string): Promise<plans_ProjectPlanRow | null>;
-
- async function plans_getPlan(db: plans_import_RelationalStore, scope: plans_import_ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<plans_ProjectPlanSummary | plans_ProjectPlanRow | null> {
-  const columns = options.summary ? 'plan_key, title, status, session_id, content_hash' : plans_COLUMNS;
-  const row = (await queryRows<Record<string, unknown>>(db,`SELECT ${columns} FROM plans WHERE project_id = ? AND plan_key = ? AND ${notTombstonedSql('plans')}`,[scope.projectId, planKey],'first'))[0] ?? null;
+function plans_getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary: true }): Promise<plans_ProjectPlanSummary | null>;
+function plans_getPlan(db: RelationalStore, scope: ReadScope, planKey: string): Promise<plans_ProjectPlanRow | null>;
+/** One plan in full with its tags, or its bounded summary; null when the Project holds no such plan. */
+async function plans_getPlan(db: RelationalStore, scope: ReadScope, planKey: string, options: { summary?: boolean } = {}): Promise<plans_ProjectPlanSummary | plans_ProjectPlanRow | null> {
+  if (options.summary) {
+    const row = await readPlanSummary(db, scope.projectId, planKey);
+    return row === null ? null : { planKey: row.plan_key, title: row.title, status: row.status, sessionId: row.session_id, contentHash: row.content_hash };
+  }
+  const row = await readPlanDetail(db, scope.projectId, planKey);
   if (row === null) return null;
-  if (options.summary) return { planKey: row.plan_key as string, title: row.title as string | null, status: row.status as string,
-    sessionId: row.session_id as string, contentHash: row.content_hash as string | null };
-  const tags = await plans_tagsOf(db, scope, [planKey]);
-  return plans_toPlan(row, tags.get(planKey) ?? []);
+  const tags = await readPlanTags(db, [{ projectId: scope.projectId, planKey }]);
+  return {
+    planKey: row.plan_key, sessionId: row.session_id, promptId: row.prompt_id, title: row.title, status: row.status, content: row.content,
+    blobKey: row.blob_key, objectKey: row.object_key, originPath: row.origin_path, preview: row.preview,
+    progress: storedProgress(row.progress_done, row.progress_total), updatedBy: row.updated_by, createdAt: row.created_at, updatedAt: row.updated_at,
+    tags: tags.get(scope.projectId)?.get(planKey) ?? [],
+  };
 }
 
 /** True when the plan sits in the session inside the scope. */
- async function plans_planInSession(db: plans_import_RelationalStore, scope: plans_import_ReadScope, sessionId: string, planKey: string): Promise<boolean> {
-  const row = (await queryRows<{ present: number }>(db,`SELECT 1 AS present FROM plans WHERE project_id = ? AND session_id = ? AND plan_key = ? AND ${notTombstonedSql('plans')}`,[scope.projectId, sessionId, planKey],'first'))[0] ?? null;
-  return row !== null;
-}
+const plans_planInSession = (db: RelationalStore, scope: ReadScope, sessionId: string, planKey: string): Promise<boolean> =>
+  planInSession(db, scope.projectId, sessionId, planKey);
 
-export { type plans_ProjectPlanRow, plans_WRITABLE_PLAN_STATUSES, plans_PLAN_STATUS_MESSAGE, plans_progressOf, plans_listProjectPlans, plans_pageProjectPlans, type plans_PlanAcrossRow, plans_pagePlansAcross, plans_planTotals, type plans_ProjectPlanSummary, plans_getPlan, plans_planInSession };
+export {
+  type plans_PlanListItem, type plans_ProjectPlanRow, type plans_PlanAcrossRow, type plans_ProjectPlanSummary, type plans_ProjectPlanOptions,
+  type plans_SessionPlanRow, plans_WRITABLE_PLAN_STATUSES, plans_PLAN_STATUS_MESSAGE, plans_ACROSS_CURSOR_REFUSAL, plans_progressOf, plans_pageProjectPlans,
+  plans_pageSessionPlans,
+  plans_decodeAcrossCursor, plans_pagePlansAcross, plans_planTotals, plans_getPlan, plans_planInSession,
+};

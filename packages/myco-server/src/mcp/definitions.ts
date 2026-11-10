@@ -11,6 +11,7 @@ import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core
  * say whether any of its ops writes.
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
+import { DEFAULT_PAGE, MAX_PAGE } from '../read/scope.js';
 import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '../core/spore-curation-contract.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from '../core/injection.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
@@ -260,7 +261,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_plans",
-    "description": "Manage implementation plans. op: \"list\" (default) returns plan summaries. op: \"get\" returns one plan with content by id. op: \"save\" creates a plan for a session with content and at least one of source_path or plan_key (both allowed — plan_key is the identity, source_path is metadata), or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to \"active\". op: \"delete\" removes a plan by id; cross-machine rows require force_remote: true.",
+    "description": `Manage implementation plans. op: \"list\" (default) returns one page of plan summaries, newest edit first — each with its title, status, a preview of its opening and its task-list progress, never its body — with has_more and the cursor of the next page; pass that cursor back to continue. To find plans by what they say, call myco_search with type \"plan\". op: \"get\" returns one plan with content by id. op: \"save\" creates a plan for a session with content and at least one of source_path or plan_key (both allowed — plan_key is the identity, source_path is metadata), or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to \"active\". op: \"delete\" removes a plan by id; cross-machine rows require force_remote: true. List example: {\"op\":\"list\",\"status\":\"in_progress\",\"limit\":20}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": true,
@@ -336,7 +337,11 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "limit": {
           "type": "number",
-          "description": "Max results for op: \"list\""
+          "description": `Max results for op: \"list\" (default ${DEFAULT_PAGE}, at most ${MAX_PAGE})`
+        },
+        "cursor": {
+          "type": "string",
+          "description": "For op: \"list\": the cursor an earlier list answered; the list continues after it with the same status and session. Example: {\"op\":\"list\",\"status\":\"active\",\"cursor\":\"1762300000000:3f0c\"}"
         },
         "force_remote": {
           "type": "boolean",

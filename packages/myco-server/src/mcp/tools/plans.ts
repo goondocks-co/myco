@@ -10,9 +10,10 @@
 import { changePlanStatus, savePlan } from '../../core/plans.js';
 import {
   plans_getPlan as getPlan,
-  plans_listProjectPlans as listProjectPlans,
+  plans_pageProjectPlans as pageProjectPlans,
   plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
   plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
+  type plans_PlanListItem as PlanListItem,
   type plans_ProjectPlanRow as ProjectPlanRow,
 } from '../../read/catalog/plans.js';
 import type { ReadScope } from '../../read/scope.js';
@@ -24,11 +25,12 @@ interface PlanSummary {
   id: string;
   title: string | null;
   status: string;
-  progress: string;
+  /** `checked/total`, `N/A` with no task list, or null while Myco is still deriving it. */
+  progress: string | null;
   prompt_id: string | null;
   tags: string[];
   created_at: number;
-  content?: string | null;
+  updated_at: number;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
@@ -36,8 +38,9 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v.leng
 export const isPlanStatusOnly = (input: ToolInput): input is ToolInput & { id: string; status: string } => str(input.id) !== undefined && str(input.status) !== undefined
   && str(input.content) === undefined && str(input.title) === undefined && !Array.isArray(input.tags);
 
-function summary(row: ProjectPlanRow): PlanSummary {
-  return { id: row.planKey, title: row.title, status: row.status, progress: row.progress, prompt_id: row.promptId, tags: row.tags, created_at: row.createdAt };
+function summary(row: PlanListItem): PlanSummary {
+  return { id: row.planKey, title: row.title, status: row.status, progress: row.progress, prompt_id: row.promptId, tags: row.tags,
+    created_at: row.createdAt, updated_at: row.updatedAt };
 }
 
 const saved = (row: ProjectPlanRow, logicalKey: string) => ({
@@ -72,13 +75,19 @@ export async function handlePlans(input: ToolInput, ctx: ToolContext): Promise<u
   if (op === 'save') return save(input, ctx, scope);
 
   if (input.id !== undefined && input.session !== undefined) return failure('Pass either id or session, not both');
-  const status = str(input.status);
-  const rows = await listProjectPlans(db, scope, {
-    status: status === undefined || status === 'all' ? undefined : status,
-    sessionId: str(input.session),
-    limit: typeof input.limit === 'number' ? input.limit : undefined,
+  const given = str(input.status);
+  const status = given === undefined || given === 'all' ? undefined : given;
+  const session = str(input.session);
+  const cursor = str(input.cursor);
+  const page = await pageProjectPlans(db, scope, {
+    ...(status === undefined ? {} : { status }),
+    ...(session === undefined ? {} : { sessionId: session }),
+    ...(typeof input.limit === 'number' ? { limit: input.limit } : {}),
+    ...(cursor === undefined ? {} : { cursor }),
   });
-  return rows.map(summary);
+  const filters = { ...(status === undefined ? {} : { status }), ...(session === undefined ? {} : { session }) };
+  if (page === null) return failure(`Not read: cursor ${JSON.stringify(input.cursor)} is not one this list answered. Next call: myco_plans ${JSON.stringify({ op: 'list', ...filters })} to start from the first page.`);
+  return { plans: page.rows.map(row => ({ ...summary(row), preview: row.preview })), has_more: page.cursor !== null, cursor: page.cursor };
 }
 
 async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promise<unknown> {

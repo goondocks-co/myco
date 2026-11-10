@@ -1,5 +1,6 @@
 import { SEARCH_MAX_LIMIT, SEARCH_QUERY_MAX_CHARS, SEARCH_TYPES, SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
 import { MAX_SPORE_LIMIT } from '@myco-server-worker/core/spores.js';
+import { MAX_PAGE } from '@myco-server-worker/read/scope.js';
 import { describe, expect, it } from 'bun:test';
 import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
@@ -153,6 +154,21 @@ describe('tool parity', () => {
           expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }
+      }
+      if (server.name === 'myco_plans') {
+        // The list pages by cursor and answers metadata, never a body (#2101 S9a): `cursor` is added, and the description
+        // and the limit state the page, its bound and the search that finds plans by what they say.
+        const LIST_BEFORE = 'op: \"list\" (default) returns plan summaries.';
+        expect(frozen.description).toContain(LIST_BEFORE);
+        expect(current.description).toContain('with has_more and the cursor of the next page');
+        expect(current.description).toContain('never its body');
+        expect(current.description).toContain('call myco_search with type \"plan\"');
+        expect(current.description).toContain('List example: {\"op\":\"list\"');
+        current.description = frozen.description;
+        expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string' });
+        delete (current.inputSchema.properties as Record<string, unknown>).cursor;
+        expect(current.inputSchema.properties.limit!.description).toContain(`at most ${MAX_PAGE}`);
+        current.inputSchema.properties.limit!.description = frozen.inputSchema.properties.limit!.description;
       }
       if (server.name === 'myco_spores') {
         // The list pages by cursor with no text filter (#2101 S4a): `search` and `offset` are retired arguments, refused

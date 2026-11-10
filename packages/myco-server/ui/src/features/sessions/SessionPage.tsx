@@ -11,7 +11,7 @@ import { useSporePages } from '../../hooks/use-intelligence';
 import { SEARCH_MIN_CHARS, useSearchPages } from '../../hooks/use-search';
 import { useMediaQuery } from '../../hooks/use-media-query';
 import { useIsAdmin } from '../../hooks/use-me';
-import { UNTITLED_REASON_TEXT, useSession, useSessionChildren, type PlanRow, type SessionResponse, type SessionRow, type TurnFilter } from '../../hooks/use-sessions';
+import { UNTITLED_REASON_TEXT, useSession, useSessionChildren, type SessionPlanRow, type SessionResponse, type SessionRow, type TurnFilter } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
 import { sessionHeading } from '../../lib/session-text';
@@ -275,7 +275,7 @@ function SessionSpores({ projectId, sessionId, now }: { projectId: string; sessi
 /** The session's plans, each leading to its own page. */
 function SessionPlans({ projectId, sessionId, now }: { projectId: string; sessionId: string; now: number }) {
   const filters = useSessionEventFilters();
-  const plans = useSessionChildren<PlanRow>(projectId, sessionId, 'plans', filters.type === null ? {} : { status: filters.type });
+  const plans = useSessionChildren<SessionPlanRow>(projectId, sessionId, 'plans', filters.type === null ? {} : { status: filters.type });
   const search = useSessionSearch(projectId, sessionId, 'plan', filters.q, filters.type === null ? {} : { status: filters.type });
   const rows = plans.rows.map((plan): SessionEventRow => ({
     key: plan.planKey,

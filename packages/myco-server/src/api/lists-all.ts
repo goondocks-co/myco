@@ -15,13 +15,15 @@ import {
 } from '../read/catalog/sessions.js';
 import { listSporePageAcross, sporeListWindow, type ListSporesOptions } from '../core/spores.js';
 import {
+  plans_ACROSS_CURSOR_REFUSAL as ACROSS_CURSOR_REFUSAL,
+  plans_decodeAcrossCursor as decodeAcrossCursor,
   plans_pagePlansAcross as pagePlansAcross,
   plans_planTotals as planTotals,
   plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
   plans_WRITABLE_PLAN_STATUSES as WRITABLE_PLAN_STATUSES,
 } from '../read/catalog/plans.js';
 import type { ProjectSet } from '../read/scope.js';
-import { decodeProjectCursor, decodeSessionsAcrossCursor, PROJECT_CURSOR_REFUSAL, SESSIONS_ACROSS_CURSOR_REFUSAL } from '../read/project-cursor.js';
+import { decodeSessionsAcrossCursor, PROJECT_CURSOR_REFUSAL, SESSIONS_ACROSS_CURSOR_REFUSAL } from '../read/project-cursor.js';
 import { MAX_PAGE, OFFSET_REFUSAL } from './intelligence.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
 
@@ -84,7 +86,8 @@ export async function handleSporesAcross(env: ServerEnv, ctx: OwnerContext): Pro
 }
 
 /**
- * `GET /api/plans`: the plan list across Projects, newest edit first, a page at a time with `hasMore`; `status` must be
+ * `GET /api/plans`: the plan list across Projects, newest edit first, a page at a time with `hasMore`, each row the
+ * plan's metadata, a preview and its progress (never its body); `status` must be
  * one the catalogue holds. The first page (no cursor) carries `totals`, how many plans of each status the Projects
  * hold, from the maintained counters (or `counting: 'building'` while existing plans are still being counted); with
  * a start instant there are no totals. A text match is a search (`/api/search`).
@@ -101,7 +104,7 @@ export async function handlePlansAcross(env: ServerEnv, ctx: OwnerContext): Prom
   const since = instantParam(ctx.url, 'since');
   if (since instanceof Response) return since;
   const cursor = ctx.url.searchParams.get('cursor');
-  if (cursor !== null && decodeProjectCursor(cursor) === null) return badRequest(PROJECT_CURSOR_REFUSAL);
+  if (cursor !== null && decodeAcrossCursor(cursor) === null) return badRequest(ACROSS_CURSOR_REFUSAL);
   const [page, totals] = await Promise.all([
     pagePlansAcross(env.db, set, {
       ...(status === null ? {} : { status }),
@@ -111,6 +114,7 @@ export async function handlePlansAcross(env: ServerEnv, ctx: OwnerContext): Prom
     }),
     cursor === null && since === undefined ? planTotals(env.db, set) : Promise.resolve(undefined),
   ]);
+  if (page === null) return badRequest(ACROSS_CURSOR_REFUSAL);
   return ok({
     plans: page.rows, cursor: page.cursor, hasMore: page.cursor !== null, maxPage: MAX_PAGE,
     ...(totals === undefined ? {} : totals.state === 'ready' ? { totals: totals.value } : { counting: 'building' }),

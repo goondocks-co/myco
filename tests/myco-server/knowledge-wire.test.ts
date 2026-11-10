@@ -33,12 +33,14 @@ type SporesAnswer = Omit<SporePage, 'rows'> & { spores: SporePage['rows']; maxPa
 type SporeAnswer = { spore: NonNullable<Awaited<ReturnType<typeof getSpore>>>; supersededBy: string[]; supersedes: string[] };
 /** `GET /api/plans`: the page `handlePlansAcross` sends, `rows` renamed `plans`, with the totals on its first page. */
 type PlanTotals = Awaited<ReturnType<typeof planTotals>>;
-type PlansAnswer = { plans: Awaited<ReturnType<typeof pagePlansAcross>>['rows']; cursor: Awaited<ReturnType<typeof pagePlansAcross>>['cursor']; hasMore: boolean;
+type PlansPage = NonNullable<Awaited<ReturnType<typeof pagePlansAcross>>>;
+type PlansAnswer = { plans: PlansPage['rows']; cursor: PlansPage['cursor']; hasMore: boolean;
   totals?: Extract<PlanTotals, { state: 'ready' }>['value']; counting?: 'building' };
 /** `GET /api/projects/{p}/plans/{planKey}`: the answer `handleProjectPlan` sends. */
 type PlanAnswer = { plan: NonNullable<Awaited<ReturnType<typeof getPlan>>>; projectId: string };
 /** `GET /api/projects/{p}/plans`: the page `handleProjectPlans` sends. */
-type ProjectPlansAnswer = { plans: Awaited<ReturnType<typeof pageProjectPlans>>['rows']; cursor: Awaited<ReturnType<typeof pageProjectPlans>>['cursor'] };
+type ProjectPlansPage = NonNullable<Awaited<ReturnType<typeof pageProjectPlans>>>;
+type ProjectPlansAnswer = { plans: ProjectPlansPage['rows']; cursor: ProjectPlansPage['cursor']; hasMore: boolean };
 
 const SAME: [
   Same<Ui.SporeFacets, SporeFacets>,

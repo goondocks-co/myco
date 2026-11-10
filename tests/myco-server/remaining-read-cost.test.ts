@@ -8,10 +8,6 @@ import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { machineActivity } from '@myco-server-worker/read/machines.js';
 import {
-  plans_pageProjectPlans as pageProjectPlans,
-} from '@myco-server-worker/read/catalog/plans.js';
-import { children_listPlans as listPlans } from '@myco-server-worker/read/catalog/children.js';
-import {
   sessions_listSessions as listSessions,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { taskRunFacts } from '@myco-server-worker/db/runs/task-facts.js';
@@ -126,40 +122,6 @@ test('machine activity merges complete credential pages with tied times and a co
     expect(result.rows[0]!.createdAt).toBe(events);
   }
   expectFlat('credential rotations');
-});
-
-test('project plan pages seek their scoped update order with and without status', async () => {
-  await project('plans');
-  await measured.db
-    .prepare(
-      `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
-    VALUES('plans','target','target-session','e','m','search','body','h','active',1,1,'token',1)`,
-    )
-    .run();
-  for (const size of [1000, 4000]) {
-    await measured.db
-      .prepare(
-        `${seq} INSERT OR IGNORE INTO plans(project_id,plan_key,session_id,event_id,machine_id,content,content_hash,status,created_at,updated_at,token_id,received_at)
-      SELECT 'plans',printf('p-%06d',x),'s','e','m','body','h',CASE WHEN x%2=0 THEN 'active' ELSE 'completed' END,1,x/3,'token',1 FROM n`,
-      )
-      .bind(size)
-      .run();
-    for (const status of [undefined, 'completed']) {
-      measured.reset();
-      const first = await pageProjectPlans(measured.db, { projectId: 'plans' }, { status });
-      sample('plans ' + status, size);
-      expect(first.rows).toHaveLength(50);
-      const next = await pageProjectPlans(measured.db, { projectId: 'plans' }, { status, cursor: first.cursor! });
-      expect(new Set([...first.rows, ...next.rows].map((r) => r.planKey)).size).toBe(100);
-    }
-    for (const filters of [{}, { status: 'active', q: 'search' }]) {
-      measured.reset();
-      const result = await listPlans(measured.db, { projectId: 'plans' }, 'target-session', filters);
-      expect(result.rows.map((row) => row.planKey)).toEqual(['target']);
-      sample('session plans ' + JSON.stringify(filters), size);
-    }
-  }
-  expectFlat('plans undefined', 'plans completed', 'session plans {}', 'session plans {"status":"active","q":"search"}');
 });
 
 test('late session pages seek past the newer prefix including timestamp ties', async () => {

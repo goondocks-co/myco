@@ -179,15 +179,16 @@ export function planStatusTone(status: string): Tone {
 }
 
 /** The checked and total items behind a `checked/total` progress, or null for a plan with no task list. */
-export function progressParts(progress: string): { checked: number; total: number } | null {
+export function progressParts(progress: string | null): { checked: number; total: number } | null {
+  if (progress === null) return null;
   const match = /^(\d+)\/(\d+)$/.exec(progress);
   if (match === null) return null;
   const total = Number(match[2]);
   return total > 0 ? { checked: Number(match[1]), total } : null;
 }
 
-/** A plan's progress in words: "2 of 3 done", or null for a plan with no task list. */
-export function progressWords(progress: string): string | null {
+/** A plan's progress in words: "2 of 3 done", or null for a plan with no task list or progress not yet counted. */
+export function progressWords(progress: string | null): string | null {
   const parts = progressParts(progress);
   return parts === null ? null : `${parts.checked} of ${count(parts.total, 'item')} done`;
 }

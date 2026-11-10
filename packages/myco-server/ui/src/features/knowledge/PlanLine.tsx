@@ -6,7 +6,7 @@ import { ago, planStatusTone, planStatusWord, planTitle, progressWords } from '.
 
 export interface PlanLineProps {
   projectId: string;
-  plan: { planKey: string; title: string | null; status: string; progress: string; updatedAt: number };
+  plan: { planKey: string; title: string | null; status: string; progress: string | null; updatedAt: number };
   now: number;
 }
 

@@ -13,7 +13,7 @@
 import { SERVER_PROTOCOL } from '../constants.js';
 import { utf8, uuidv5 } from '../hash.js';
 import { ingestEvent,type IngestContext,type IngestResult } from '../ingest/events.js';
-import { setPlanStatus } from '../read/plans.js';
+import { writePlanStatus } from '../db/plans/detail.js';
 import {
   plans_getPlan as getPlan,
   plans_PLAN_STATUS_MESSAGE as PLAN_STATUS_MESSAGE,
@@ -106,6 +106,6 @@ export const savePlan=createPlanSave((env,ctx,body)=>ingestEvent(env.db,ctx,body
 
 /** Sets a plan's status as an administrative edit by a member and answers the row as it stands; null when no such plan sits in the scope. */
 export async function changePlanStatus(env: Pick<ServerEnv, 'db' | 'blobs'>, scope: ReadScope, planKey: string, status: string, by: string, nowMs: number): Promise<ProjectPlanRow | null> {
-  await setPlanStatus(env.db, scope, planKey, status, by, nowMs);
+  await writePlanStatus(env.db, { projectId: scope.projectId, planKey, status, by, now: nowMs });
   return getPlan(env.db, scope, planKey);
 }

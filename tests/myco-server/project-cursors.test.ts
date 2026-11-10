@@ -39,7 +39,7 @@ it('pages sessions, plans and credential activity across Projects one row at a t
       VALUES (?, 'shared-event', 'shared', ?, 'prompt', 'cli', '{}', 'h', 50, 50)`, [project, token]);
   }
   const sessions = await walk(cursor => listSessionsAcross(e.db, { all: true }, { limit: 1, fidelity: 'any', ...(cursor === undefined ? {} : { cursor }) }));
-  const plans = await walk(cursor => pagePlansAcross(e.db, { all: true }, { limit: 1, ...(cursor === undefined ? {} : { cursor }) }));
+  const plans = await walk(async cursor => (await pagePlansAcross(e.db, { all: true }, { limit: 1, ...(cursor === undefined ? {} : { cursor }) }))!);
   const events = await walk(cursor => credentialActivity(e.db, token, { limit: 1, ...(cursor === undefined ? {} : { cursor }) }));
   expect({
     sessions: sessions.map(row => `${row.projectId}/${row.sessionId}`),
@@ -62,11 +62,14 @@ it('pages sessions, plans and credential activity across Projects one row at a t
     const first = await get(path);
     const cursor = String(first.body.cursor);
     const next = await get(`${path}&cursor=${encodeURIComponent(cursor)}`);
-    expect({ name, first: first.status, prefixed: cursor.startsWith(name === 'sessions' ? 'p2:' : 'p1:'), next: next.status }).toEqual({ name, first: 200, prefixed: true, next: 200 });
-    for (const old of [encodeCursor(50, 'shared'), encodeCursor(50, 'proj_1:shared'), ...(name === 'sessions' ? ['p1:50:proj_1:shared'] : [])]) {
+    const prefix = { sessions: 'p2:', plans: 'plans1:', activity: 'p1:' }[name]!;
+    expect({ name, first: first.status, prefixed: cursor.startsWith(prefix), next: next.status }).toEqual({ name, first: 200, prefixed: true, next: 200 });
+    // A cursor from before a list's current order, or one another list issued, is refused.
+    const superseded = { sessions: ['p1:50:proj_1:shared'], plans: ['p1:50:proj_1:shared-plan', 'p2:50:proj_1:shared-plan'], activity: [] }[name]!;
+    for (const old of [encodeCursor(50, 'shared'), encodeCursor(50, 'proj_1:shared'), ...superseded]) {
       const refused = await get(`${path}&cursor=${encodeURIComponent(old)}`);
       expect({ name, old, status: refused.status, reason: refused.body.reason }).toEqual({
-        name, old, status: 400, reason: expect.stringContaining('request the first page again without a cursor'),
+        name, old, status: 400, reason: expect.stringContaining('request the first page again'),
       });
     }
   }
