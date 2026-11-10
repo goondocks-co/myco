@@ -85,7 +85,7 @@ import { retiredSchema } from './scenarios/retired-schema.ts';
 import { recallGold } from './scenarios/recall-gold.ts';
 import { embeddingSwitch } from './scenarios/embedding-switch.ts';
 import { modelCatalogs } from './scenarios/model-catalogs.ts';
-import { latestD1Upgrade } from './scenarios/latest-d1-upgrade.ts';
+import { latestSchemaUpgrade } from './scenarios/latest-schema-upgrade.ts';
 import { twoDeploymentIsolation } from './scenarios/two-deployment-isolation.ts';
 import { rawPrivacy } from './scenarios/raw-privacy.ts';
 import { rawBackfillParity } from './scenarios/raw-backfill.ts';
@@ -96,7 +96,7 @@ import { PARITY_PLAN_PREFIX, parseShard, selectShard } from '../../scripts/test-
 import { PARITY_SMOKE_SCENARIOS } from '../../scripts/ci-scopes.mjs';
 import durations from '../../scripts/test-durations.json';
 
-const scenarios = [eventDirectBody, runHeads, hookPlacementTick, harnessDeploymentActivity, budgetMigrationParity, budgetGovernor, pulledClaim, learningFlow, budgetRestore, learningPause, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestD1Upgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, identityProjectWrites, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, sessionDocuments, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, objectStoreOwnership, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
+const scenarios = [eventDirectBody, runHeads, hookPlacementTick, harnessDeploymentActivity, budgetMigrationParity, budgetGovernor, pulledClaim, learningFlow, budgetRestore, learningPause, extractionCoverage, hookPlacement, receiptSnapshots, sessionCitation, runnerSignIn, latestSchemaUpgrade, setupProgress, authSetupRefusals, projectNaming, deviceLoginFlow, deviceAdmission, deviceForeignLineageHold, runnerIdentity, runnerFleet, fleetReadBudget, twoDeploymentIsolation, workerWriteCompletion, liveActorWrites, rawClaimsParity, rawBackfillParity, rawPrivacy, storageCleanupParity, restoreContinuation, identityProjectWrites, repositories, repositoryFailure, canopy, sessionsTitling, sessionTurns, sessionCommitsParity, sessionArtifactsParity, sessionActivityParity, sessionLineageParity, plans, plansAtScale, spores, guardedSpores, recall, backupRestore, tick, dispatchQueue, scheduledTasks, cortex, replacedRun, search, searchPaging, grants, importParity, legacyImportParity, legacySporeResolution, workerWire, codexRecording, sessionDocuments, toolBlobRetention, titlingBackfill, titlingIdleRefresh, sessionEnd, projectCounts, objectLifecycle, objectStoreOwnership, tokenRefresh, credentialRevoke, captureVolume, memberSettings, machineSettings, workingNow, uncaptured, machines, sessionAuthority, harnessCredentialSlots, capabilityHold, joinIdentityClaimed, memberStatus, embeddingRevisions, retiredSchema, githubLink, ownerLifecycle, freshOwnerLink, interruptedRestoreOwner, restoredAuditAuthority, restoreAuthorityAdmission, stopAfterDemotion, kpiDeliveries, today, runReads, memberDispatch, recallGold, embeddingSwitch, modelCatalogs];
 const DEFAULT_SCENARIO_DURATION_MS = 15_000;
 
 if (!process.env.MYCO_PARITY) {
@@ -123,8 +123,8 @@ if (!process.env.MYCO_PARITY) {
     afterAll(stopCloudflareRuntime);
     try { configureSqliteLibrary(); } catch (error) { sqliteVecRefusal = error instanceof Error ? error.message : String(error); }
     const boots = [
-      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ pulledStage:scenario?.dedicated?.pulledStage===true,stopRace: scenario?.dedicated?.stopRace === true, receiptSnapshots: scenario?.dedicated?.receiptSnapshots === true, embeddingFixture:scenario?.dedicated?.cloudflare?.embeddingFixture===true }) },
-      { name: 'cloudflare' as const, boot: (scenario?: ParityScenario) => bootCloudflare(scenario?.dedicated?.cloudflare ?? {}) },
+      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ pulledStage:scenario?.dedicated?.pulledStage===true,stopRace: scenario?.dedicated?.stopRace === true, receiptSnapshots: scenario?.dedicated?.receiptSnapshots === true, embeddingFixture:scenario?.dedicated?.cloudflare?.embeddingFixture===true, latestSchemaUpgrade: scenario?.dedicated?.latestSchemaUpgrade === true }) },
+      { name: 'cloudflare' as const, boot: (scenario?: ParityScenario) => bootCloudflare({ ...scenario?.dedicated?.cloudflare, latestSchemaUpgrade: scenario?.dedicated?.latestSchemaUpgrade === true }) },
     ];
     const shared = selected.filter((scenario) => scenario.dedicated === undefined);
     const dedicated = selected.filter((scenario) => scenario.dedicated !== undefined);

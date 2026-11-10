@@ -1,15 +1,14 @@
 import { budgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
-import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/db/maintenance/store-checks.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createRequire } from 'node:module';
 import {build as buildObservedWorker} from 'esbuild';
-import { Database } from 'bun:sqlite';
-import { renderMigrationFile, renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { devSession } from './dev-session.ts';
-import { assertMigrationMutationDetected, assertUpgradeState, expectedSchema, firstObservableOmission, localD1File, probeForeignKeyAssertion, schemaObjects, seedPreviousSchema, tableRows } from '../schema-upgrade.ts';
+import { localD1File, migrationFilesOf, upgradeSplit } from '../schema-upgrade.ts';
+import { carryToPreviousSchema } from '../schema-carry.ts';
+import { seedDeployment } from '../upgrade-seed/index.ts';
 import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
@@ -92,7 +91,7 @@ export interface CloudflareBootOptions {
   /** The Worker entry, relative to `packages/myco-server`, in place of the shipped `src/index.ts`. */
   main?: string;
   embeddingFixture?:boolean;
-  /** Apply the latest migration to a seeded database at the preceding schema step. */
+  /** Seed the Deployment through its routes, carry its rows to the previous schema, and upgrade it with the latest migration file. */
   latestSchemaUpgrade?: boolean;
 }
 
@@ -112,7 +111,8 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   const telemetry = path.join(root, 'telemetry.ts');
   const originalTelemetry = path.join(SERVER_DIR, 'src', 'telemetry.ts');
   fs.writeFileSync(telemetry, `import { classify as original } from ${JSON.stringify(originalTelemetry)};\nimport { observeHandledException } from ${JSON.stringify(diagnostics)};\nexport * from ${JSON.stringify(originalTelemetry)};\nexport function classify(...args: Parameters<typeof original>) { observeHandledException(args[0]); return original(...args); }\n`);
-  const fixtureSetup=options.embeddingFixture?'import { installObservedEmbeddingFixture } from '+JSON.stringify(observer)+';\ninstallObservedEmbeddingFixture();\n':'';
+  // A Deployment seeded for an upgrade recalls what its members saved, through the fixture's embedding and vector bindings.
+  const fixtureSetup=options.embeddingFixture||options.latestSchemaUpgrade?'import { installObservedEmbeddingFixture } from '+JSON.stringify(observer)+';\ninstallObservedEmbeddingFixture();\n':'';
   fs.writeFileSync(entryPath, fixtureSetup+`import worker from ${JSON.stringify(main)};\nimport { observedWorker } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(main)};\nexport { ObservedDeploymentClock as DeploymentClock, ObservedRecoveryProducer as RecoveryProducer } from ${JSON.stringify(observer)};\nexport default observedWorker(worker);\n`);
   const bundledEntry=path.join(root,'observed-entry.mjs');
   await buildObservedWorker({entryPoints:[entryPath],outfile:bundledEntry,bundle:true,format:'esm',platform:'browser',target:'es2022',external:['cloudflare:workers','node:*'],tsconfig:path.join(SERVER_DIR,'tsconfig.json'),plugins:[{name:'view-read-origins',setup(build){
@@ -174,74 +174,10 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   const runtime = session ??= devSession(SERVER_DIR);
   try {
     await wrangler(['secrets-store', 'secret', 'create', storeId, '--name', 'parity-wrap-key', '--scopes', 'workers', '--value', btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))), '-c', configName, '--persist-to', persistDir]);
-    let upgrade: { version: number; expected: ReturnType<typeof schemaObjects>; expectedRows: Record<string, string>; previousPersist: string; priorFiles: ReturnType<typeof renderMigrationFiles>; latestName: string; step: (typeof SCHEMA_STEPS)[number] } | undefined;
-    if (options.latestSchemaUpgrade) {
-      const files = renderMigrationFiles();
-      const latest = files.at(-1);
-      const latestVersion = latest === undefined ? NaN : Number(/^\d+_v(\d+)\.sql$/.exec(latest.name)?.[1]);
-      const preceding = files.at(-2);
-      const step = SCHEMA_STEPS.at(-1);
-      const previousVersion = SCHEMA_STEPS.at(-2)?.version;
-      if (latest === undefined || preceding === undefined || step === undefined || latestVersion !== step.version
-        || Number(/^\d+_v(\d+)\.sql$/.exec(preceding.name)?.[1]) !== previousVersion
-        || step.statements.length < 2) throw new Error(`unsupported D1 upgrade fixture: expected previous and latest migration with a removable statement; latest is ${latest?.name ?? 'missing'}`);
-      // The previous state arrives as one import, as a fresh store does, with the ledger naming its files, so the apply below applies exactly the latest file.
-      const previousSchema = path.join(root, 'previous-schema.sql');
-      fs.writeFileSync(previousSchema, [...files.slice(0, -1).map((file) => file.sql), migrationLedger(files.slice(0, -1).map((file) => file.name))].join('\n'));
-      await wrangler(['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir, '--file', previousSchema]);
-      const previousFile = localD1File(persistDir);
-      const touched = seedPreviousSchema(previousFile, step.statements, step.version);
-      const previous = new Database(previousFile);
-      const previousRows = tableRows(previous, touched);
-      previous.close();
-      assertUpgradeState(previousFile, previousVersion!, expectedSchema(files.slice(0, -1)), previousRows);
-      const expectedFile = path.join(root, 'expected-upgrade.sqlite');
-      fs.copyFileSync(previousFile, expectedFile);
-      const expectedDb = new Database(expectedFile);
-      let expectedRows: Record<string, string>;
-      try {
-        for (const statement of step.statements) expectedDb.exec(statement);
-        expectedRows = tableRows(expectedDb, touched);
-      } finally { expectedDb.close(); }
-      const previousPersist = path.join(root, 'previous-state');
-      fs.cpSync(persistDir, previousPersist, { recursive: true });
-      upgrade = { version: latestVersion, expected: expectedSchema(files), expectedRows, previousPersist, priorFiles: files.slice(0, -1), latestName: latest.name, step };
-    }
-    if(options.latestSchemaUpgrade) {
-      await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
-    } else {
-      const schemaFile=path.join(root,'fresh-schema.sql');
-      fs.writeFileSync(schemaFile,renderMigrationFiles().map(file=>file.sql).join('\n'));
-      await wrangler(['d1','execute','myco-server','--local','-c',configName,'--persist-to',persistDir,'--file',schemaFile]);
-    }
+    const schemaFile=path.join(root,'fresh-schema.sql');
+    fs.writeFileSync(schemaFile,renderMigrationFiles().map(file=>file.sql).join('\n'));
+    await wrangler(['d1','execute','myco-server','--local','-c',configName,'--persist-to',persistDir,'--file',schemaFile]);
     const databaseFile = localD1File(persistDir);
-    if (upgrade !== undefined) {
-      assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);
-      if ((await workerdSql('PRAGMA foreign_key_check')).length !== 0) throw new Error('upgraded workerd D1 has FK violations');
-      const checked = (await workerdSql(CHECKED_TABLES_SQL)).map((row) => String(row.name));
-      const quickCheck = (JSON.parse(await d1(checked.map(quickCheckSql).join(';\n'))) as Array<{ results: { quick_check: string }[] }>)
-        .flatMap((answer) => answer.results.map((row) => row.quick_check)).filter((text) => text !== 'ok');
-      if (quickCheck.length !== 0) throw new Error(`upgraded workerd D1 failed quick_check: ${JSON.stringify(quickCheck)}`);
-      await probeForeignKeyAssertion(databaseFile, workerdSql);
-      assertUpgradeState(databaseFile, upgrade.version, upgrade.expected, upgrade.expectedRows);
-      // The last statement stamps the version; omission probes cover the step's data and schema work.
-      await firstObservableOmission(upgrade.step.statements.slice(0, -1), async (omittedStatement, index) => {
-        const candidateRoot = path.join(root, `mutated-${index}`);
-        const mutatedPersist = path.join(candidateRoot, 'state');
-        const mutatedDir = path.join(candidateRoot, 'migrations');
-        fs.mkdirSync(mutatedDir, { recursive: true });
-        fs.cpSync(upgrade.previousPersist, mutatedPersist, { recursive: true });
-        for (const file of upgrade.priorFiles) fs.writeFileSync(path.join(mutatedDir, file.name), file.sql);
-        fs.writeFileSync(path.join(mutatedDir, upgrade.latestName), renderMigrationFile({ ...upgrade.step, statements: upgrade.step.statements.filter((_, statementIndex) => statementIndex !== index) }));
-        const mutatedConfig = path.join(candidateRoot, 'wrangler.toml');
-        fs.writeFileSync(mutatedConfig, config.replace(/^migrations_dir = .*$/m, `migrations_dir = ${JSON.stringify(mutatedDir)}`) + configTail);
-        await assertMigrationMutationDetected(
-          omittedStatement,
-          async () => { await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', mutatedConfig, '--persist-to', mutatedPersist]); },
-          () => assertUpgradeState(localD1File(mutatedPersist), upgrade.version, upgrade.expected, upgrade.expectedRows),
-        );
-      });
-    }
 
     const mint = Bun.spawn(['bun', path.join(SERVER_DIR, 'scripts', 'mint-local.ts'), MEMBER_ID, MACHINE_ID, '--rotating', '--print-token'], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
     SPAWNED.add(mint);
@@ -259,25 +195,57 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
     const deploymentId = deploymentRows[0]?.results[0]?.value;
     if (!deploymentId) throw new Error('Cloudflare parity target has no Deployment identity');
 
-    const reply = await runtime.command({ op: 'start', tag, config: configPath, persist: persistDir, vars: {
+    const vars = {
       SESSION_SECRET, GITHUB_CLIENT_ID: 'parity-client', GITHUB_CLIENT_SECRET: 'parity-secret',
       HARNESS_LAUNCH_MODE: 'record', CLOCK_MODE: 'manual',
-    } });
+    };
+    let reply = await runtime.command({ op: 'start', tag, config: configPath, persist: persistDir, vars });
     started = true;
-    const completion=budgetMigration(Date.now());
-    let migration=completion.next();
-    while(!migration.done) {
-      const rows=await workerdSql(migration.value.sql);
-      migration=completion.next(rows);
-    }
-    if(!migration.value.active)throw new Error(`Parity budget preparation refused: ${migration.value.reason}`);
-    if (!reply.url) throw new Error('Wrangler dev provided no local HTTP listener');
-    const url = reply.url;
-    const health = await fetch(url + '/health', { headers: reply.headers, signal: AbortSignal.timeout(10_000), keepalive: false });
-    const healthBody = await health.text();
-    if (!health.ok) throw new Error('Wrangler UserWorker health answered ' + health.status + ': ' + healthBody + '\n' + runtime.runtime().tail);
+    // Budget completion runs after every apply, as the hosted update does.
+    const completeBudget = async () => {
+      const completion=budgetMigration(Date.now());
+      let migration=completion.next();
+      while(!migration.done) {
+        const rows=await workerdSql(migration.value.sql);
+        migration=completion.next(rows);
+      }
+      if(!migration.value.active)throw new Error(`Parity budget preparation refused: ${migration.value.reason}`);
+    };
+    await completeBudget();
+    const listening = async (): Promise<string> => {
+      if (!reply.url) throw new Error('Wrangler dev provided no local HTTP listener');
+      const health = await fetch(reply.url + '/health', { headers: reply.headers, signal: AbortSignal.timeout(10_000), keepalive: false });
+      const healthBody = await health.text();
+      if (!health.ok) throw new Error('Wrangler UserWorker health answered ' + health.status + ': ' + healthBody + '\n' + runtime.runtime().tail);
+      return reply.url;
+    };
+    let url = await listening();
 
     const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: deploymentId, sub: GITHUB_SUB, login: 'parity', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
+    const ownerHeaders = () => ({ cookie, 'cf-connecting-ip': '1.2.3.4' });
+    const memberHeaders = (extra: Record<string, string> = {}) => memberHeadersFor(token, PROJECT_ID, extra);
+    if (options.latestSchemaUpgrade) {
+      // The Deployment's users write at the latest schema; their rows are carried to the last release's schema, which
+      // every later file upgrades through Wrangler's own apply, with Wrangler's ledger naming every released file.
+      await seedDeployment({ url, projectId: PROJECT_ID, deploymentId, sql: workerdSql, ownerHeaders, memberHeaders,
+        primeEmbedding: async (projectId) => { await runtime.command({ op: 'embedding', tag, clockName: CLOCK_NAME, projectId }); } });
+      await runtime.command({ op: 'stop', tag });
+      started = false;
+      const { previous, upgrade } = upgradeSplit();
+      const released = migrationFilesOf(previous);
+      const previousSchema = path.join(root, 'previous-schema.sql');
+      fs.writeFileSync(previousSchema, [...released.map((file) => file.sql), migrationLedger(released.map((file) => file.name))].join('\n'));
+      const previousPersist = path.join(root, 'previous-state');
+      await wrangler(['d1', 'execute', 'myco-server', '--local', '-c', configName, '--persist-to', previousPersist, '--file', previousSchema]);
+      carryToPreviousSchema({ source: databaseFile, previous: localD1File(previousPersist), upgrade });
+      fs.rmSync(path.join(persistDir, 'v3', 'd1'), { recursive: true, force: true });
+      fs.cpSync(path.join(previousPersist, 'v3', 'd1'), path.join(persistDir, 'v3', 'd1'), { recursive: true });
+      await wrangler(['d1', 'migrations', 'apply', 'myco-server', '--local', '-c', configName, '--persist-to', persistDir]);
+      reply = await runtime.command({ op: 'start', tag, config: configPath, persist: persistDir, vars });
+      started = true;
+      url = await listening();
+      await completeBudget();
+    }
     return {
       name: 'cloudflare',
       url,
@@ -286,8 +254,8 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
       bindings: { database: databaseFile, blob: path.join(persistDir, 'v3', 'r2'), secret: path.join(persistDir, 'v3', 'secrets-store', storeId), vector: null },
       memberToken: token,
       projectId: PROJECT_ID,
-      ownerHeaders: () => ({ cookie, 'cf-connecting-ip': '1.2.3.4' }),
-      memberHeaders: (extra = {}) => memberHeadersFor(token, PROJECT_ID, extra),
+      ownerHeaders,
+      memberHeaders,
       grantHeaders: (key) => ({ ...grantHeadersFor(key), 'cf-connecting-ip': '1.2.3.4' }),
       sql: async (command) => {
         const out = await d1(command);

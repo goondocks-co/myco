@@ -1,352 +1,115 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { PROJECT_ID } from './harness.ts';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import type { SchemaStep } from '@myco-server-worker/db/schema-step.js';
+import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 
-export function schemaObjects(db: Database): Array<{ type: string; name: string; sql: string }> {
-  return db.query(`SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name <> 'd1_migrations' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY type, name`).all() as Array<{ type: string; name: string; sql: string }>;
+/**
+ * A populated store at the schema of the last release, made the way a Deployment reaches the next one: the Deployment
+ * runs at the latest schema and its users write through its routes; their rows are carried into a store built from the
+ * steps the last release shipped, which the target upgrades with every step since, as a deploy of this build would.
+ */
+
+const RELEASE_TAGS = 'myco/v*';
+const MIGRATIONS_DIR = 'packages/myco-server/migrations';
+const REPOSITORY = path.resolve(import.meta.dir, '..', '..');
+
+function git(args: readonly string[]): string {
+  const run = Bun.spawnSync(['git', ...args], { cwd: REPOSITORY, stdout: 'pipe', stderr: 'pipe' });
+  if (run.exitCode !== 0) throw new Error(`git ${args.join(' ')} exited ${run.exitCode}: ${run.stderr.toString()}`);
+  return run.stdout.toString();
 }
 
-const RUNNER_SIGN_IN_SCHEMA_VERSION = 88;
-const EMPTY_UPGRADE_INPUTS: Readonly<Record<number, readonly string[]>> = { 105: ['view_instances'], 107: ['view_prompts'] };
-/** Guarded upgrades require converted session documents. */
-const UPGRADE_PRECONDITIONS: Readonly<Record<number, string>> = {
-  117: "UPDATE session_documents SET state='live',generation=COALESCE(generation,1);",
-  114: `UPDATE session_documents SET state = 'live', generation = COALESCE(generation, 1);
-    UPDATE session_prompts SET page = 0 WHERE page IS NULL;
-    DELETE FROM publish_queue;
-    INSERT OR REPLACE INTO transcript_publication (project_id, transcript_id, generation, session_id, published_offset, record_scheme, parser_version, updated_at)
-      SELECT t.project_id, t.transcript_id, d.generation, t.session_id, t.size, 'source-record-v1', 1, 1
-      FROM transcripts t JOIN session_documents d ON d.project_id = t.project_id AND d.session_id = t.session_id;`,
-};
-const UPGRADE_VALUES: Readonly<Record<string, Readonly<Record<string, string | number>>>> = {
-  embedding_source_state: { state: 'rewriting' },
-  run_live: { status: 'queued', origin: 'manual', claimable: 1 },
-  task_due: { origin: 'manual', claimable: 1 },
-  task_runtime: { origin: 'manual' },
-  admission_contribution: { scope: 'fleet' },
-  runners: { id: 'rn_upgrade' },
-  backups: { key: 'backups/upgrade.jsonl', counts_json: '{}' },
-  object_releases: { kind: 'blob' },
-  blobs: { generation: '00000000-0000-4000-8000-000000000001' },
-  object_settlement_intents: { kind: 'backup', physical: 'backups/upgrade-intent.jsonl', expires_at: 1 },
-  object_reconciliation_cursor: { slot: 1, physical: '' },
-  spore_curation_work: { members: '[]' },
-  device_decision_audit: { decision: 'approved' },
-  runner_signin_audit: { choice: 'own' },
-  injection_served_items: { kind: 'plan' },
-  session_artifacts: { kind: 'pr', url: 'https://upgrade.example/1' },
-  runner_observations: { availability: 'ready' },
-  runner_credentials: { id: 'rc_upgrade' },
-  runner_audit: { action: 'registered' },
-  runner_metadata_audit: { action: 'renamed', detail: '{}' },
-  member_role_audit: { previous_role: 'admin' },
-  processed_resources: { kind: 'plan' },
-  embedding_work_state: { kind: 'embedding', scope: '{}' },
-  session_chunks: { kind: 'page', encoding: 'gzip-ndjson', state: 'live' },
-  extraction_acks: { kind: 'record', record_id: 'upgrade_prompt' },
-  prompt_context_answers: { outcome: 'served', prompt_id: 'upgrade_prompt' },
-  legacy_worker_audit: { action: 'forgotten' },
-  runner_update_audit: { action: 'requested', detail: '{}' },
-  agent_run_attempts: { owner_kind: 'runner' },
-  agent_run_steps: { kind: 'read', outcome: 'ok' },
-  session_views: { legacy: 'live' },
-  plan_promotions: { state: 'pending' },
-  learning_quiet_policy: { state: 'active' },
-  fact_classes: { table_name: 'prompt_batches', class: 'legacy' },
-  view_instances: { base: 'full', state: 'live' },
-  view_visible: { role: 'live' },
-  view_content_proofs: { kind: 'prompt' },
-  view_findings: { kind: 'key_reuse' },
-  spore_injections: { prompt_id: 'upgrade_prompt' },
-};
-
-const sqlIdentifier = (name: string): string => `"${name.replaceAll('"', '""')}"`;
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-export class UpgradeStateMismatchError extends Error {}
-export class UnobservableMigrationMutationError extends Error {}
-
-export function expectedSchema(files: ReturnType<typeof renderMigrationFiles>): ReturnType<typeof schemaObjects> {
-  const db = new Database(':memory:');
-  try {
-    for (const file of files) db.exec(file.sql);
-    return schemaObjects(db);
-  } finally { db.close(); }
+/**
+ * The schema version the last release shipped: the highest migration file in the tree of the newest release tag (by
+ * creation date) whose tree holds migration files, so a maintenance tag of a line without them is passed over.
+ */
+function releasedSchemaVersion(): { tag: string; version: number } {
+  const tags = git(['tag', '--list', RELEASE_TAGS, '--sort=-creatordate']).split('\n').map((line) => line.trim()).filter((line) => line !== '');
+  if (tags.length === 0) {
+    throw new Error(`no ${RELEASE_TAGS} release tag in this checkout, so the upgrade cannot start where the last release left a Deployment: fetch tags (git fetch --tags, or fetch-tags: true on actions/checkout)`);
+  }
+  for (const tag of tags) {
+    const listed = Bun.spawnSync(['git', 'ls-tree', '--name-only', `${tag}:${MIGRATIONS_DIR}`], { cwd: REPOSITORY, stdout: 'pipe', stderr: 'pipe' });
+    if (listed.exitCode !== 0) continue;
+    const versions = listed.stdout.toString().split('\n')
+      .map((name) => /^\d+_v(\d+)\.sql$/.exec(name.trim())?.[1]).filter((value): value is string => value !== undefined).map(Number);
+    if (versions.length > 0) return { tag, version: Math.max(...versions) };
+  }
+  throw new Error(`no ${RELEASE_TAGS} release tag holds files under ${MIGRATIONS_DIR}: fetch the release tags of this line`);
 }
 
-export function tableRows(db: Database, tables: string[]): Record<string, string> {
-  return Object.fromEntries(tables.map((table) => {
-    const exists = db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-    if (!exists) return [table, '<absent>'];
-    // A column the store fills from a random default holds a different value on every application; it is compared by
-    // its shape, and every other column by its value.
-    const minted = (db.query(`PRAGMA table_info(${sqlIdentifier(table)})`).all() as Array<{ name: string; dflt_value: string | null }>)
-      .filter((column) => /\brandomblob\(/i.test(column.dflt_value ?? '')).map((column) => column.name);
-    const rows = (db.query(`SELECT * FROM ${sqlIdentifier(table)}`).all() as Record<string, unknown>[]).map((row) => JSON.stringify(Object.fromEntries(Object.entries(row)
-      .map(([name, value]) => [name, minted.includes(name) && typeof value === 'string' && UUID_V4.test(value) ? '<minted uuid v4>' : value])))).sort();
-    return [table, JSON.stringify(rows)];
-  }));
+/**
+ * The steps a Deployment on the last release already holds, and the steps this build adds. When this build adds none
+ * (or predates the tag), the latest step alone is the upgrade, so the scenario still upgrades over populated rows.
+ */
+export function upgradeSplit(): { released: number; previous: SchemaStep[]; upgrade: SchemaStep[] } {
+  const latest = SCHEMA_STEPS.at(-1)!.version;
+  const { version } = releasedSchemaVersion();
+  const released = version < latest ? version : SCHEMA_STEPS.at(-2)!.version;
+  return { released, previous: SCHEMA_STEPS.filter((step) => step.version <= released), upgrade: SCHEMA_STEPS.filter((step) => step.version > released) };
 }
 
-export function assertUpgradeState(databaseFile: string, version: number, expected: ReturnType<typeof schemaObjects>, expectedRows: Record<string, string>): void {
-  const db = new Database(databaseFile);
-  try {
-    const actualVersion = Number((db.query("SELECT value FROM schema_meta WHERE key = 'version'").get() as { value: string }).value);
-    if (actualVersion !== version) throw new UpgradeStateMismatchError(`D1 upgrade fixture expected schema ${version}, got ${actualVersion}`);
-    const applied = Number((db.query('SELECT COUNT(*) AS count FROM d1_migrations').get() as { count: number }).count);
-    if (applied !== SCHEMA_STEPS.filter(step => step.version <= version).length) throw new UpgradeStateMismatchError(`D1 upgrade fixture expected ${version} applied Wrangler migrations, got ${applied}`);
-    const actual = schemaObjects(db);
-    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-      const first = actual.findIndex((item, index) => JSON.stringify(item) !== JSON.stringify(expected[index]));
-      throw new UpgradeStateMismatchError(`D1 upgrade fixture schema objects differ at version ${version}: ${JSON.stringify({ actual: actual[first], expected: expected[first], actualCount: actual.length, expectedCount: expected.length })}`);
+/** The migration files of `steps`. */
+export function migrationFilesOf(steps: readonly SchemaStep[]): ReturnType<typeof renderMigrationFiles> {
+  const versions = new Set(steps.map((step) => step.version));
+  return renderMigrationFiles().filter((file) => versions.has(Number(/^\d+_v(\d+)\.sql$/.exec(file.name)?.[1])));
+}
+
+/**
+ * Applies `steps` as the self-hosted migrator does: foreign keys on, one transaction per step, one statement per call,
+ * so a failing statement fails its step rather than being passed over inside a multi-statement call.
+ */
+export function applySteps(db: Database, steps: readonly SchemaStep[], observe: { beforeStatement?(step: SchemaStep, statement: string): void } = {}): void {
+  db.exec('PRAGMA foreign_keys = ON');
+  for (const step of steps) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const statement of step.statements) {
+        observe.beforeStatement?.(step, statement);
+        db.run(statement);
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      if (db.inTransaction) db.exec('ROLLBACK');
+      throw new Error(`schema step ${step.version} failed: ${(error as Error).message}`, { cause: error });
     }
-    const foreignKeys = db.query('PRAGMA foreign_key_check').all();
-    if (foreignKeys.length !== 0) throw new UpgradeStateMismatchError(`D1 upgrade fixture has FK violations: ${JSON.stringify(foreignKeys)}`);
-    for (const [table, rows] of Object.entries(expectedRows)) {
-      const actualRows = tableRows(db, [table])[table];
-      if (actualRows !== rows) throw new UpgradeStateMismatchError(`D1 upgrade fixture rows differ in ${table}: ${JSON.stringify({ actual: actualRows, expected: rows })}`);
-    }
-    // D1 refuses integrity_check; the closed local D1 file permits the full SQLite check.
-    const integrity = db.query('PRAGMA integrity_check').all();
-    if (JSON.stringify(integrity) !== JSON.stringify([{ integrity_check: 'ok' }])) throw new UpgradeStateMismatchError(`D1 upgrade fixture failed integrity_check: ${JSON.stringify(integrity)}`);
-  } finally { db.close(); }
-}
-
-export async function probeForeignKeyAssertion(databaseFile: string, query: (sql: string) => Promise<Record<string, unknown>[]>): Promise<void> {
-  const db = new Database(databaseFile);
-  try {
-    db.exec(`PRAGMA foreign_keys = OFF; INSERT INTO agent_run_events (project_id, run_id, event_type, recorded_at) VALUES ('proj_parity', 'missing_upgrade_run', 'orphan', 1)`);
-  } finally { db.close(); }
-  try {
-    if ((await query('PRAGMA foreign_key_check')).length === 0) throw new Error('FK orphan mutation escaped workerd foreign_key_check');
-  } finally {
-    const cleanup = new Database(databaseFile);
-    try { cleanup.exec("DELETE FROM agent_run_events WHERE run_id = 'missing_upgrade_run'"); }
-    finally { cleanup.close(); }
   }
 }
 
+/** The schema objects a store holds, without the ledgers and runtime tables that are no part of Myco's schema. */
+export const SCHEMA_OBJECTS_SQL = `SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name <> 'd1_migrations'
+  AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY type, name`;
+
+export type SchemaObject = { type: string; name: string; sql: string };
+
+/** The schema objects of a fresh Deployment at the latest schema: every step, then the budget activation its boot completes. */
+export async function freshSchemaObjects(): Promise<SchemaObject[]> {
+  const db = new Database(':memory:');
+  try {
+    applySteps(db, SCHEMA_STEPS);
+    const activation = await completeBudgetMigration(sqliteRelationalStore(db), Date.now());
+    if (!activation.active) throw new Error(`a fresh store refused budget activation: ${activation.reason}`);
+    return db.query(SCHEMA_OBJECTS_SQL).all() as SchemaObject[];
+  } finally { db.close(); }
+}
+
+/** The schema objects every step declares, before anything a Deployment creates at runtime. */
+export function declaredSchemaObjects(): Set<string> {
+  const db = new Database(':memory:');
+  try {
+    applySteps(db, SCHEMA_STEPS);
+    return new Set((db.query(SCHEMA_OBJECTS_SQL).all() as SchemaObject[]).map((object) => `${object.type}:${object.name}`));
+  } finally { db.close(); }
+}
+
+/** The one local D1 database file under a Wrangler persist directory. */
 export function localD1File(persistDir: string): string {
   const dir = path.join(persistDir, 'v3', 'd1', 'miniflare-D1DatabaseObject');
   const files = fs.readdirSync(dir).filter((name) => name.endsWith('.sqlite') && name !== 'metadata.sqlite');
   if (files.length !== 1) throw new Error(`Cloudflare parity target has ${files.length} local D1 database files`);
   return path.join(dir, files[0]!);
 }
-
-function sqlIdentifiers(statement: string): string[] {
-  const tokens = statement.match(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[(?:[^\]]|\]\])*\]|[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
-  return tokens.flatMap((token) => {
-    if (token.startsWith('--') || token.startsWith('/*') || token.startsWith("'")) return [];
-    if (token.startsWith('"')) return [token.slice(1, -1).replaceAll('""', '"')];
-    if (token.startsWith('`')) return [token.slice(1, -1).replaceAll('``', '`')];
-    if (token.startsWith('[')) return [token.slice(1, -1).replaceAll(']]', ']')];
-    return [token];
-  });
-}
-
-export function referencedExistingTables(db: Database, statements: readonly string[]): string[] {
-  const objects = db.query(`SELECT m.name,m.tbl_name,m.type,m.sql,t.type AS storage FROM sqlite_master m
-    LEFT JOIN pragma_table_list t ON t.schema='main' AND t.name=m.tbl_name
-    WHERE m.type IN ('table','index','trigger')`).all() as Array<{ name: string; tbl_name: string; type: string; sql: string | null; storage: string }>;
-  const definitions = new Map(objects.filter(item => item.type === 'table').map(item => [item.name.toLowerCase(), item]));
-  const sqlName = (value: string) => value.startsWith("'") ? value.slice(1,-1).replaceAll("''", "'")
-    : value.startsWith('"') ? value.slice(1,-1).replaceAll('""','"')
-      : value.startsWith('`') ? value.slice(1,-1).replaceAll('``','`')
-        : value.startsWith('[') ? value.slice(1,-1).replaceAll(']]',']') : value;
-  // Full-text indexes and vocabulary tables resolve to their ordinary content owner.
-  const contentOwner = (name: string, visiting = new Set<string>()): string => {
-    const key = name.toLowerCase(), row = definitions.get(key);
-    if (row?.storage === 'table') return row.name;
-    if (row?.storage !== 'virtual' || visiting.has(key)) throw new Error(`unsupported D1 upgrade fixture content owner ${name}`);
-    visiting.add(key);
-    const sql = row.sql!;
-    const content = /\bUSING\s+fts5\s*\(/i.test(sql)
-      ? /\bcontent\s*=\s*('(?:[^']|'')*'|"(?:[^"]|"")*"|\w+)/i.exec(sql)?.[1] : undefined;
-    const vocabulary = /\bUSING\s+fts5vocab\s*\(([\s\S]*)\)/i.exec(sql)?.[1]
-      ?.match(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[(?:[^\]]|\]\])*\]|\w+/g)?.map(sqlName);
-    const source = content === undefined ? vocabulary?.[vocabulary.length === 3 ? 1 : 0] : sqlName(content);
-    if (source === undefined || source === '' || (vocabulary?.length === 3 && vocabulary[0]!.toLowerCase() !== 'main')) {
-      throw new Error(`unsupported D1 upgrade fixture virtual table ${name}`);
-    }
-    return contentOwner(source, visiting);
-  };
-  const owners = new Map(objects.map((item) => [item.name.toLowerCase(), item.tbl_name]));
-  const tables = new Set<string>();
-  for (const statement of statements) {
-    // Ordinary table definitions consume no existing rows; AS SELECT reads its source.
-    const words = sqlIdentifiers(statement).map(word => word.toUpperCase());
-    if (words[0] === 'CREATE' && words[1] === 'TABLE' && !words.some((word,index) => word === 'AS' && ['SELECT','WITH'].includes(words[index+1] ?? ''))) continue;
-    // A foreign key's target is a parent the statement names, not a table it changes; the seed reaches parents through their children.
-    const resolved = sqlIdentifiers(statement.replace(/\bREFERENCES\s+("[^"]*"|\w+)/gi, '')).map((name) => owners.get(name.toLowerCase()))
-      .filter((owner): owner is string => owner !== undefined && definitions.has(owner.toLowerCase()))
-      .map(owner => contentOwner(owner));
-    if (resolved.length === 0 && /^\s*(?:DROP\s+(?:INDEX|TRIGGER)|ALTER\s+TABLE|UPDATE|DELETE\s+FROM)/i.test(statement)) {
-      throw new Error(`unsupported D1 upgrade fixture: no previous object resolves for ${statement.slice(0, 100)}`);
-    }
-    for (const owner of resolved) {
-      if (owner !== 'schema_meta' && owner !== 'd1_migrations' && !owner.startsWith('_cf_')) tables.add(owner);
-    }
-  }
-  return [...tables];
-}
-
-function omittedObject(statement: string): { kind: string; name: string } | undefined {
-  const tokens = sqlIdentifiers(statement);
-  const words = tokens.map((token) => token.toUpperCase());
-  if (words[0] === 'ALTER' && words[1] === 'TABLE') {
-    const add = words.indexOf('ADD', 3);
-    if (add < 0) return undefined;
-    const column = tokens[add + (words[add + 1] === 'COLUMN' ? 2 : 1)];
-    return column === undefined ? undefined : { kind: 'column', name: column };
-  }
-  if (words[0] !== 'CREATE') return undefined;
-  let index = 1;
-  if (words[index] === 'TEMP' || words[index] === 'TEMPORARY') index += 1;
-  if (words[index] === 'UNIQUE') index += 1;
-  const kind = words[index]?.toLowerCase();
-  if (kind !== 'table' && kind !== 'index' && kind !== 'trigger' && kind !== 'view') return undefined;
-  index += 1;
-  if (words[index] === 'IF' && words[index + 1] === 'NOT' && words[index + 2] === 'EXISTS') index += 3;
-  const name = tokens[index];
-  return name === undefined ? undefined : { kind, name };
-}
-
-export function isLocalMigrationSqlFailure(error: unknown, omittedStatement: string): boolean {
-  if (!(error instanceof Error) || !/^wrangler d1 migrations apply exited [1-9]\d*:/m.test(error.message)) return false;
-  const message = error.message.replace(/\u001b\[[0-9;]*m/g, '');
-  const tokens = sqlIdentifiers(omittedStatement);
-  const words = tokens.map(token => token.toUpperCase());
-  if (words[0] === 'DROP' && words[1] === 'TRIGGER') {
-    const name = tokens[words[2] === 'IF' && words[3] === 'EXISTS' ? 4 : 2];
-    const retained = /\berror in trigger ([^\r\n]+?) after drop column: no such column: [^\r\n]+:\s*SQLITE_ERROR\b/i.exec(message);
-    return name !== undefined && retained !== null && sqlIdentifiers(retained[1]!).join(' ').toLowerCase() === name.toLowerCase();
-  }
-  const omitted = omittedObject(omittedStatement);
-  // The store names the object and then its own code (`no such table: t: SQLITE_ERROR`), in terminal colours.
-  const missing = /\bno such (table|column|index|trigger|view):[ \t]*([^\r\n]+)/i.exec(message);
-  if (omitted === undefined || missing === null) return false;
-  const missingKind = missing[1]!.toLowerCase();
-  if (missingKind !== omitted.kind && !(omitted.kind === 'view' && missingKind === 'table')) return false;
-  // D1 reports where in the statement it met the name (`no such column: c at offset 103`); the name precedes it.
-  const missingName = missing[2]!.replace(/:\s*SQLITE_[A-Z_]+\b.*$/, '').replace(/\s+at offset \d+\s*$/, '').trim().replace(/[.;]$/, '')
-    .replace(/^(?:"(?:main|temp)"|`(?:main|temp)`|\[(?:main|temp)\]|(?:main|temp))\s*\.\s*/i, '').replace(/^(["`\[])(.*)(["`\]])$/, '$2');
-  return missingName.toLowerCase() === omitted.name.toLowerCase();
-}
-
-export async function assertMigrationMutationDetected(omittedStatement: string, apply: () => Promise<void>, verify: () => void): Promise<void> {
-  let migrationError: unknown;
-  try { await apply(); }
-  catch (error) {
-    if (!isLocalMigrationSqlFailure(error, omittedStatement)) throw error;
-    migrationError = error;
-  }
-  try { verify(); }
-  catch (error) {
-    if (error instanceof UpgradeStateMismatchError) return;
-    throw error;
-  }
-  if (migrationError !== undefined) throw migrationError;
-  throw new UnobservableMigrationMutationError('omitted migration statement did not change the seeded fixture');
-}
-
-export async function firstObservableOmission(statements: readonly string[], attempt: (omittedStatement: string, index: number) => Promise<void>): Promise<number> {
-  for (const [index, statement] of statements.entries()) {
-    try {
-      await attempt(statement, index);
-      return index;
-    } catch (error) {
-      if (!(error instanceof UnobservableMigrationMutationError)) throw error;
-    }
-  }
-  throw new Error('no statement of the latest step changes the seeded fixture; seed data it touches');
-}
-
-export function seedReferencedTables(db: Database, statements: readonly string[], includeDescendants = true, emptyTables: ReadonlySet<string> = new Set()): string[] {
-  const seedTable = (table: string, visiting: Set<string>): 'empty' | void => {
-    if (emptyTables.has(table)) return 'empty';
-    if (table.includes('\0')) throw new Error(`unsupported D1 upgrade fixture table ${table}`);
-    if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) return;
-    if ((db.query(`SELECT COUNT(*) AS count FROM ${sqlIdentifier(table)}`).get() as { count: number }).count > 0) return;
-    if (visiting.has(table)) throw new Error(`unsupported D1 upgrade fixture FK cycle at ${table}`);
-    visiting.add(table);
-    const columns = db.query(`PRAGMA table_info(${sqlIdentifier(table)})`).all() as Array<{ name: string; type: string; notnull: number; dflt_value: unknown; pk: number }>;
-    const fks = db.query(`PRAGMA foreign_key_list(${sqlIdentifier(table)})`).all() as Array<{ id: number; table: string; from: string; to: string }>;
-    const values = new Map<string, string | number | null>(Object.entries(UPGRADE_VALUES[table] ?? {}));
-    const optionalParents = new Set<number>();
-    for (const fk of fks) {
-      if (optionalParents.has(fk.id)) continue;
-      if (fk.table === table || seedTable(fk.table, visiting) === 'empty') {
-        const optional = fks.find(part => part.id === fk.id && !values.has(part.from)
-          && columns.some(column => column.name === part.from && !column.notnull && !column.pk));
-        if (optional === undefined) { visiting.delete(table); return 'empty'; }
-        values.set(optional.from, null);
-        optionalParents.add(fk.id);
-        continue;
-      }
-      const parent = db.query(`SELECT * FROM ${sqlIdentifier(fk.table)} LIMIT 1`).get() as Record<string, string | number> | null;
-      if (parent === null) throw new Error(`unsupported D1 upgrade fixture missing FK parent ${fk.table}`);
-      const parentKey = fk.to || (db.query(`PRAGMA table_info(${sqlIdentifier(fk.table)})`).all() as Array<{ name: string; pk: number }>).find((column) => column.pk > 0)?.name;
-      if (parentKey === undefined || parent[parentKey] === undefined) throw new Error(`unsupported D1 upgrade fixture FK ${table}.${fk.from}`);
-      values.set(fk.from, parent[parentKey]);
-    }
-    for (const column of columns.filter((item) => (item.notnull || item.pk) && item.dflt_value === null)) {
-      // Only a lone INTEGER PRIMARY KEY is the rowid, which the store assigns.
-      if (values.has(column.name) || (column.pk && /^INTEGER$/i.test(column.type) && columns.filter((item) => item.pk > 0).length === 1)) continue;
-      const name = column.name;
-      const value = name === 'chunk_index' ? 0 : name === 'project_id' ? PROJECT_ID : name === 'agent_id' ? 'upgrade_agent'
-        : name === 'session_id' ? 'upgrade_session' : name === 'run_id' ? 'upgrade_run'
-          : name === 'status' ? 'completed' : name === 'role' ? 'member'
-            : name === 'state' ? 'draft' : name === 'confidence' ? 'high'
-              : name === 'source' ? 'built-in' : /(?:hash|digest)$/.test(name) ? 'a'.repeat(64)
-                : /INT|REAL|NUMERIC/i.test(column.type) ? 1 : `upgrade_${table}`;
-      values.set(name, value);
-    }
-    const names = [...values.keys()];
-    try {
-      db.query(`INSERT INTO ${sqlIdentifier(table)} (${names.map(sqlIdentifier).join(', ')}) VALUES (${names.map(() => '?').join(', ')})`).run(...[...values.values()]);
-    } catch (error) { throw new Error(`unsupported D1 upgrade fixture cannot seed ${table}: ${String(error)}`); }
-    visiting.delete(table);
-  };
-  const touched = referencedExistingTables(db, statements);
-  for (const table of touched) seedTable(table, new Set());
-  if (!includeDescendants) return touched;
-  const candidateChildren = db.query(`SELECT name FROM pragma_table_list WHERE schema='main' AND type='table'
-    AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name <> 'd1_migrations'`).all() as Array<{ name: string }>;
-  const visited = new Set<string>();
-  const queue = [...touched];
-  while (queue.length > 0) {
-    const parent = queue.shift()!;
-    if (visited.has(parent)) continue;
-    visited.add(parent);
-    for (const { name } of candidateChildren) {
-      const parents = db.query(`PRAGMA foreign_key_list(${sqlIdentifier(name)})`).all() as Array<{ table: string }>;
-      if (!parents.some((fk) => fk.table === parent)) continue;
-      seedTable(name, new Set());
-      queue.push(name);
-    }
-  }
-  return [...visited];
-}
-
-export function seedPreviousSchema(databaseFile: string, statements: readonly string[], version: number): string[] {
-  const db = new Database(databaseFile);
-  try {
-    db.exec('PRAGMA foreign_keys = ON');
-    db.exec(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_parity', 'upgrade project', 1);
-      INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_parity', 'upgrade_session', 'upgrade_machine', 'upgrade_token', 1, 1);
-      INSERT INTO events (project_id, event_id, session_id, token_id, kind, channel, payload, envelope_hash, created_at, received_at, producer_adapter) VALUES ('proj_parity', 'upgrade_event', 'upgrade_session', 'upgrade_token', 'prompt', 'import', '{}', 'upgrade_hash', 1, 1, 'claude');
-      INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('upgrade_agent', 'upgrade', 'built-in', 1, 1);
-      INSERT INTO agent_runs (project_id, id, agent_id, status, started_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_agent', 'completed', 1);
-      INSERT INTO agent_run_events (project_id, run_id, event_type, recorded_at) VALUES ('proj_parity', 'upgrade_run', 'upgrade_child', 1);
-      INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, parsed_offset, parser_version, first_received_at, last_received_at, token_id)
-        VALUES ('proj_parity', 'upgrade_transcript_read', 'upgrade_session', 'upgrade_machine', 'codex', 10, 10, 5, 1, 1, 'upgrade_token'),
-               ('proj_parity', 'upgrade_transcript_unread', 'upgrade_session', 'upgrade_machine', 'codex', 10, 0, 0, 1, 1, 'upgrade_token');`);
-    const touched = [...new Set(['projects', 'sessions', 'events', 'agents', 'agent_runs', 'agent_run_events', 'transcripts', ...seedReferencedTables(db, [...statements, 'SELECT 1 FROM prompt_batches'], version !== RUNNER_SIGN_IN_SCHEMA_VERSION, new Set(EMPTY_UPGRADE_INPUTS[version] ?? []))])];
-    if (UPGRADE_PRECONDITIONS[version] !== undefined) db.exec(UPGRADE_PRECONDITIONS[version]);
-    return touched;
-  } finally { db.close(); }
-}
-
