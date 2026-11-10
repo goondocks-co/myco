@@ -1,4 +1,4 @@
-import type { PreparedStatement } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { Database } from 'bun:sqlite';
 import { registerBlob } from './helpers/d1.js';
 import { describe, it, expect } from 'bun:test';
@@ -13,6 +13,7 @@ import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, journaled, memberHeaders, memberPost, noOutboundFetch, registeredObject, RETIRED_BYTE_CEILING, sqliteEnv } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { GENERATION_GRAMMAR } from '@myco-server-worker/core/blob-objects.js';
+import { changingAt, counting } from './helpers/store-faults.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const bytes = utf8('hello blob');
@@ -33,9 +34,38 @@ const UNAVAILABLE_BODY = { stored: false, code: 'unavailable', reason: 'unavaila
 const storedSum = (e: ReturnType<typeof sqliteEnv>, tokenId: string) =>
   (e.sqlite.query(`SELECT COALESCE(SUM(size),0) s FROM blobs WHERE token_id = ?`).get(tokenId) as { s: number }).s;
 
-let racedKey = '';
 /** Runs the only store deleter until its journal is empty. */
 const drain = async (e: ReturnType<typeof sqliteEnv>) => { while (count(e.sqlite, 'object_releases') > 0) await drainObjectReleases(e.serverEnv, Date.now()); };
+
+/**
+ * An upload sent once per point of its request, on a fresh Deployment each time, with `race` landing just before that
+ * call. `ownStored` says whether this upload had registered its own row when the race landed.
+ */
+async function racedUploads(request: (token: string, key: string) => Request, race: (e: ReturnType<typeof sqliteEnv>, tokenId: string, key: string) => void) {
+  const fresh = async () => {
+    const e = sqliteEnv();
+    return { e, t: await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now()), key: await keyOf(bytes) };
+  };
+  const counted = await fresh();
+  const counter = counting(counted.e.env.MYCO_DB);
+  counted.e.env.MYCO_DB = counter.store;
+  await worker.fetch(request(counted.t.token, counted.key), counted.e.env);
+  counted.e.sqlite.close();
+  const outcomes = [];
+  for (let at = 1; at <= counter.calls(); at++) {
+    const { e, t, key } = await fresh();
+    let ownStored = false;
+    e.env.MYCO_DB = changingAt(e.env.MYCO_DB, at, () => {
+      ownStored = (blobRow(e, key) as { token_id: string } | null)?.token_id === t.tokenId;
+      race(e, t.tokenId, key);
+    }).store;
+    outcomes.push({ at, e, t, key, ownStored, answer: await json(await worker.fetch(request(t.token, key), e.env)) });
+  }
+  expect(outcomes.length).toBeGreaterThan(2);
+  return outcomes;
+}
+const otherWriter = (e: ReturnType<typeof sqliteEnv>, key: string) =>
+  registerBlob(e.sqlite, { projectId: 'proj_1', key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8', tokenId: 'other', receivedAt: 0 });
 /** A request declaring `declared` bytes whose body carries `body`. */
 const declaring = (token: string, key: string, body: Uint8Array<ArrayBuffer>, declared: number) => new Request(`https://s/blobs/${key}`, {
   method: 'POST',
@@ -100,20 +130,27 @@ describe('blob route', () => {
     }
   });
 
-  it('lands a charge that carries the count past any size: another request moving the counter between admission and the charge refuses nothing', async () => {
-    const e = sqliteEnv({
-      onSql: (sql, sqlite) => {
-        if (/^INSERT INTO blobs\b/.test(sql)) sqlite.query(`UPDATE member_credentials SET bytes_written = ?`).run(RETIRED_BYTE_CEILING);
-      },
-    });
-    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    const key = await keyOf(bytes);
-    const res = await worker.fetch(blobPost(t.token, key, bytes), e.env);
-    expect(res.status).toBe(200);
-    expect((await json(res)).stored).toBe(true);
-    expect(count(e.sqlite, 'blobs')).toBe(1);
-    expect(reservations(e)).toBe(0);
-    expect(bytesWritten(e.sqlite, t.tokenId)).toBe(RETIRED_BYTE_CEILING + bytes.byteLength);
+  it('lands a charge that carries the count past any size: another request moving the counter at any point of the upload refuses nothing', async () => {
+    const upload = async (wrap: (db: RelationalStore, e: ReturnType<typeof sqliteEnv>) => RelationalStore) => {
+      const e = sqliteEnv();
+      const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+      e.env.MYCO_DB = wrap(e.env.MYCO_DB, e);
+      return { e, t, res: await worker.fetch(blobPost(t.token, await keyOf(bytes), bytes), e.env) };
+    };
+    let calls = () => 0;
+    const counted = await upload((db) => { const watched = counting(db); calls = watched.calls; return watched.store; });
+    const total = calls();
+    counted.e.sqlite.close();
+    expect(total).toBeGreaterThan(2);
+    for (let at = 1; at <= total; at++) {
+      const { e, t, res } = await upload((db, fixture) =>
+        changingAt(db, at, () => fixture.sqlite.query(`UPDATE member_credentials SET bytes_written = bytes_written + ?`).run(RETIRED_BYTE_CEILING)).store);
+      try {
+        expect({ at, status: res.status, stored: (await json(res)).stored }).toEqual({ at, status: 200, stored: true });
+        expect({ at, blobs: count(e.sqlite, 'blobs'), reservations: reservations(e), charged: bytesWritten(e.sqlite, t.tokenId) })
+          .toEqual({ at, blobs: 1, reservations: 0, charged: RETIRED_BYTE_CEILING + bytes.byteLength });
+      } finally { e.sqlite.close(); }
+    }
   });
 
   it('never takes bytes it did not put: an object already under the content\'s name is left alone, and the upload stores and charges its own', async () => {
@@ -134,27 +171,21 @@ describe('blob route', () => {
     expect(journaled(e.sqlite)).toEqual([]);
   });
 
-  it('answers a duplicate and journals its own bytes when another writer registers the content first, releasing the reconciled reservation uncharged', async () => {
-    let raced = false;
-    const e = sqliteEnv({
-      onSql: (sql, sqlite) => {
-        if (!/^INSERT INTO blobs\b/.test(sql) || raced) return;
-        raced = true;
-        registerBlob(sqlite, { projectId: 'proj_1', key: racedKey, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8', tokenId: 'other', receivedAt: 0 });
-      },
-    });
-    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    const key = await keyOf(bytes);
-    racedKey = key;
-    const res = await worker.fetch(declaring(t.token, key, bytes, 1), e.env);
-    expect(await json(res)).toEqual({ stored: true, duplicate: true, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' });
-    expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
-    expect(reservations(e)).toBe(0);
-    const own = e.bucket.puts[0]!;
-    expect(journaled(e.sqlite)).toEqual([own]);
-    await drain(e);
-    expect(e.bucket.deletes).toEqual([own]);
-    expect(blobRow(e, key)).toEqual({ size: bytes.byteLength, media_type: 'text/plain; charset=utf-8', token_id: 'other' });
+  it('answers a duplicate and journals its own bytes when another writer registers the content first, wherever that lands, releasing its reservation uncharged', async () => {
+    for (const { at, e, t, key, ownStored, answer } of await racedUploads((token, key) => declaring(token, key, bytes, 1), (e, _tokenId, key) => otherWriter(e, key))) {
+      try {
+        if (ownStored) {
+          expect({ at, answer, row: blobRow(e, key) }).toEqual({ at, answer: expect.objectContaining({ stored: true, duplicate: false }), row: expect.objectContaining({ token_id: t.tokenId }) });
+          continue;
+        }
+        expect({ at, answer }).toEqual({ at, answer: { stored: true, duplicate: true, key, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8' } });
+        expect({ at, charged: bytesWritten(e.sqlite, t.tokenId), reservations: reservations(e), journaled: journaled(e.sqlite) })
+          .toEqual({ at, charged: 0, reservations: 0, journaled: [...e.bucket.puts].sort() });
+        await drain(e);
+        expect({ at, deleted: e.bucket.deletes, row: blobRow(e, key) })
+          .toEqual({ at, deleted: e.bucket.puts, row: { size: bytes.byteLength, media_type: 'text/plain; charset=utf-8', token_id: 'other' } });
+      } finally { e.sqlite.close(); }
+    }
   });
 
   it('admits both of two in-flight uploads past the retired ceiling', async () => {
@@ -355,30 +386,22 @@ describe('blob route', () => {
     expect(e.bucket.objects.get(own!)?.bytes).toEqual(bytes);
   });
 
-  it('keeps what another writer registered while this refused upload was in flight: a refusal at reconcile journals only its own generation', async () => {
-    let raced = false;
-    let tokenId = '';
-    const e = sqliteEnv({
-      onSql: (sql, sqlite) => {
-        if (!/^UPDATE blob_reservations SET size/.test(sql) || raced) return;
-        raced = true;
-        registerBlob(sqlite, { projectId: 'proj_1', key: racedKey, size: bytes.byteLength, mediaType: 'text/plain; charset=utf-8', tokenId: 'other', receivedAt: 0 });
-        revokeIn(sqlite, tokenId);
-      },
-    });
-    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    tokenId = t.tokenId;
-    const key = await keyOf(bytes);
-    racedKey = key;
-    const res = await json(await worker.fetch(blobPost(t.token, key, bytes), e.env));
-    expect(res).toEqual(UNAVAILABLE_BODY);
-    const own = e.bucket.puts[0]!;
-    expect(own).not.toBe(registeredObject(e.sqlite, 'proj_1', key));
-    expect(journaled(e.sqlite)).toEqual([own]);
-    await drain(e);
-    expect(e.bucket.deletes).toEqual([own]);
-    expect(blobRow(e, key)).toEqual({ size: bytes.byteLength, media_type: 'text/plain; charset=utf-8', token_id: 'other' });
-    expect(reservations(e)).toBe(0);
+  it('keeps what another writer registered while this upload, refused wherever its credential is revoked, was in flight: it journals only its own generation', async () => {
+    const race = (e: ReturnType<typeof sqliteEnv>, tokenId: string, key: string) => { otherWriter(e, key); revokeIn(e.sqlite, tokenId); };
+    let refusedInFlight = false;
+    for (const { at, e, t, key, ownStored, answer } of await racedUploads((token, key) => blobPost(token, key, bytes), race)) {
+      try {
+        if (ownStored) continue;
+        // Refused, or answered as the other writer's duplicate: never stored as its own.
+        expect({ at, own: answer.stored === true && answer.duplicate === false }).toEqual({ at, own: false });
+        if (e.bucket.puts.length > 0) refusedInFlight = true;
+        expect({ at, journaled: journaled(e.sqlite), reservations: reservations(e) }).toEqual({ at, journaled: [...e.bucket.puts].sort(), reservations: 0 });
+        await drain(e);
+        expect({ at, deleted: e.bucket.deletes, row: blobRow(e, key), charged: bytesWritten(e.sqlite, t.tokenId) })
+          .toEqual({ at, deleted: e.bucket.puts, row: { size: bytes.byteLength, media_type: 'text/plain; charset=utf-8', token_id: 'other' }, charged: 0 });
+      } finally { e.sqlite.close(); }
+    }
+    expect(refusedInFlight).toBe(true);
   });
 
   it('leaves no permanent count on any fault between reserving and recording, and lands past an abandoned reservation', async () => {

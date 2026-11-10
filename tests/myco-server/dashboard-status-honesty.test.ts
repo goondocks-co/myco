@@ -12,6 +12,7 @@ import type { StatusResponse } from '../../packages/myco-server/ui/src/lib/api';
 import type { TaskDescription } from '@myco-server-worker/read/task-descriptions.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { deploymentIdentity } from '@myco-server-worker/auth/authorization.js';
+import { counting, failingAt } from './helpers/store-faults.js';
 
 const context = (aud: string, role: 'admin' | 'member' = 'admin'): OwnerContext => ({
   source: '127.0.0.1',
@@ -24,33 +25,32 @@ const context = (aud: string, role: 'admin' | 'member' = 'admin'): OwnerContext 
 
 describe('dashboard status and scope honesty on both store adapters', () => {
   for (const target of ['native', 'hosted-contract'] as const) {
-    for (const [fact, sql] of [
-      ['schema', /FROM schema_meta/],
-      ['transcriptBacklog', /FROM document_due q/],
-      ['projects', /FROM projects p/],
-      ['workers', /worker_contacts w/],
-      ['capture', /MAX\(last_received_at\)/],
-    ] as const) {
-      it(`finding 6: ${target} preserves independent facts when ${fact} fails`, async () => {
-        const f = sqliteEnv();
-        try {
-          const inner = target === 'native' ? sqliteRelationalStore(f.sqlite) : f.db;
-          const healthy = await (await handleStatus({ ...f.serverEnv, db: inner }, context(await deploymentIdentity(f.db)))).json() as StatusResponse;
-          let injected = false;
-          const db: RelationalStore = { ...inner, prepare: (query) => {
-            if (sql.test(query)) { injected = true; throw new Error('fixture subread failure'); }
-            return inner.prepare(query);
-          } };
-          const body = await (await handleStatus({ ...f.serverEnv, db }, context(await deploymentIdentity(f.db)))).json() as StatusResponse;
-          expect(injected).toBe(true);
-          expect(body.unavailable).toContain(fact);
-          if (fact !== 'schema') expect(body.schema).toEqual({ expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true });
-          if (fact !== 'projects') expect(body.projects).toEqual(healthy.projects);
-          if (fact !== 'transcriptBacklog') expect(body.transcriptBacklog).toEqual(healthy.transcriptBacklog);
-          if (fact !== 'workers') expect(body.workers.available).toBe(true);
-        } finally { f.sqlite.close(); }
-      });
-    }
+    it(`finding 6: ${target} keeps every fact a failed read does not name, wherever one read fails`, async () => {
+      const f = sqliteEnv();
+      try {
+        const inner = target === 'native' ? sqliteRelationalStore(f.sqlite) : f.db;
+        const aud = await deploymentIdentity(f.db);
+        const read = async (db: RelationalStore) => jsonBody<StatusResponse>(await handleStatus({ ...f.serverEnv, db }, context(aud)));
+        const healthy = await read(inner);
+        expect(healthy.unavailable).toEqual([]);
+        const counter = counting(inner);
+        await read(counter.store);
+        expect(counter.calls()).toBeGreaterThan(4);
+        const named = new Set<string>();
+        for (let at = 1; at <= counter.calls(); at++) {
+          const body = await read(failingAt(inner, at, 'before').store);
+          const unavailable = body.unavailable ?? [];
+          for (const fact of unavailable) named.add(fact);
+          const kept = (fact: string) => !unavailable.includes(fact);
+          if (kept('schema')) expect({ at, schema: body.schema }).toEqual({ at, schema: { expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true } });
+          if (kept('projects')) expect({ at, projects: body.projects }).toEqual({ at, projects: healthy.projects });
+          if (kept('transcriptBacklog')) expect({ at, backlog: body.transcriptBacklog }).toEqual({ at, backlog: healthy.transcriptBacklog });
+          if (kept('workers')) expect({ at, workers: body.workers.available }).toEqual({ at, workers: true });
+          if (kept('capture')) expect({ at, capture: body.capture }).toEqual({ at, capture: healthy.capture });
+        }
+        expect([...named]).toEqual(expect.arrayContaining(['schema', 'transcriptBacklog', 'projects', 'workers', 'capture']));
+      } finally { f.sqlite.close(); }
+    });
     it(`finding 7: ${target} member all-project read evaluates mixed switches and excludes archived projects`, async () => {
       const f = sqliteEnv();
       try {
@@ -70,21 +70,30 @@ describe('dashboard status and scope honesty on both store adapters', () => {
         expect((await read()).availabilityNote).toBeNull();
       } finally { f.sqlite.close(); }
     });
-    it(`finding 6: ${target} preserves facts without widening a member's unread machine scope`, async () => {
+    it(`finding 6: ${target} never widens a member's machine scope, wherever one read fails`, async () => {
       const f = sqliteEnv();
       try {
         const inner = target === 'native' ? sqliteRelationalStore(f.sqlite) : f.db;
-        const db: RelationalStore = { ...inner, prepare: (query) => {
-          if (/SELECT machine_id FROM machine_claims WHERE member_id/.test(query)) throw new Error('fixture ownership failure');
-          return inner.prepare(query);
-        } };
-        const body = await (await handleStatus({ ...f.serverEnv, db }, context(await deploymentIdentity(f.db), 'member'))).json() as StatusResponse;
-        expect(body.unavailable).toEqual(expect.arrayContaining(['machines', 'workers', 'capture', 'installedAgents']));
-        expect(body.schema.matches).toBe(true);
-        expect(body.workers.available).toBe(false);
-        expect(body.workers.fleet).toBeNull();
-        expect(body.capture).toEqual([]);
-        expect(body.harnesses).toEqual([]);
+        const aud = await deploymentIdentity(f.db);
+        const read = async (db: RelationalStore) => jsonBody<StatusResponse>(await handleStatus({ ...f.serverEnv, db }, context(aud, 'member')));
+        const healthy = await read(inner);
+        const counter = counting(inner);
+        await read(counter.store);
+        let ownershipFailed = false;
+        for (let at = 1; at <= counter.calls(); at++) {
+          const body = await read(failingAt(inner, at, 'before').store);
+          const unavailable = body.unavailable ?? [];
+          expect({ at, schema: body.schema.matches }).toEqual({ at, schema: !unavailable.includes('schema') });
+          expect({ at, capture: body.capture, harnesses: body.harnesses }).toEqual({
+            at, capture: unavailable.includes('capture') ? [] : healthy.capture, harnesses: unavailable.includes('installedAgents') ? [] : healthy.harnesses,
+          });
+          if (!unavailable.includes('machines')) continue;
+          // Without the member's own machines, nothing scoped to them can be shown.
+          ownershipFailed = true;
+          expect({ at, unavailable }).toEqual({ at, unavailable: expect.arrayContaining(['machines', 'workers', 'capture', 'installedAgents']) });
+          expect({ at, available: body.workers.available, fleet: body.workers.fleet }).toEqual({ at, available: false, fleet: null });
+        }
+        expect(ownershipFailed).toBe(true);
       } finally { f.sqlite.close(); }
     });
     it(`${target} reveals held tools' address only to the machine owner, including admin views`, async () => {
@@ -103,12 +112,12 @@ describe('dashboard status and scope honesty on both store adapters', () => {
         expect(other.harnesses).toContainEqual(expect.objectContaining({ machineId: 'held-machine', state: 'held_elsewhere' }));
         expect(other.harnesses?.find(row => row.machineId === 'held-machine')?.toolsDeployment).toBeUndefined();
         expect(JSON.stringify(other)).not.toContain('personal.example');
-        const denied: RelationalStore = { ...db, prepare: query => {
-          if (/SELECT machine_id FROM machine_claims WHERE member_id/.test(query)) throw new Error('fixture unread ownership');
-          return db.prepare(query);
-        } };
-        const unread = await (await handleStatus({ ...f.serverEnv, db: denied }, admin)).json() as StatusResponse;
-        expect(JSON.stringify(unread)).not.toContain('personal.example');
+        const counter = counting(db);
+        await handleStatus({ ...f.serverEnv, db: counter.store }, admin);
+        for (let at = 1; at <= counter.calls(); at++) {
+          const unread = await (await handleStatus({ ...f.serverEnv, db: failingAt(db, at, 'before').store }, admin)).json() as StatusResponse;
+          expect({ at, revealed: JSON.stringify(unread).includes('personal.example') }).toEqual({ at, revealed: false });
+        }
       } finally { f.sqlite.close(); }
     });
     it(`finding 9: ${target} returns the final receipt timestamp of an ended session`, async () => {

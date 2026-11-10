@@ -109,16 +109,18 @@ describe('an External Agent grant writes as itself', () => {
   });
 
   it('cannot write a plan, and cannot read or write any Project but its own', async () => {
-    const { grant, callAs, executed } = await setup();
+    const { grant, callAs, sqlite } = await setup();
     const plan = await callAs(grant.key, 'myco_plans', { op: 'save', content: '# p', session_id: 's', plan_key: 'k' });
     expect(plan.error).toEqual({ code: -32000, message: 'Unknown tool: myco_plans', data: { code: 'unknown_tool' } });
 
-    const from = executed.length;
+    // A Project that exists and one that does not are refused alike, and neither gains a row.
+    const stored = () => ['projects', 'spores', 'plans'].map((table) => sqlite.query(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    const before = stored();
     for (const projectId of ['proj_2', 'proj_nowhere']) {
       const foreign = await callAs(grant.key, 'myco_spores', { op: 'save', type: 'gotcha', content: 'x', project: projectId });
       expect({ projectId, error: foreign.error }).toEqual({ projectId, error: { code: -32000, message: 'Unknown tool: myco_spores', data: { code: 'unknown_tool' } } });
     }
-    expect(executed.slice(from).filter((sql) => /\bprojects\b/i.test(sql))).toEqual([]);
+    expect(stored()).toEqual(before);
 
     const misnamed = await callAs(grant.key, 'myco_spores', { op: 'save', type: 'gotcha', content: 'in its own project' }, { [PROJECT_HEADER]: 'proj_2' });
     expect((await callAs(grant.key, 'myco_spores', { op: 'get', id: misnamed.result.id })).result.content).toBe('in its own project');

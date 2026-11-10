@@ -5,7 +5,7 @@ import { sessionProgressStatement } from '@myco-server-worker/db/learning/progre
 import { cardWriteStatement, type CardMaterial } from '@myco-server-worker/core/turn-cards.js';
 import { readLearningStatus } from '@myco-server-worker/core/learning-sessions.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { beforeWriteBatch } from './helpers/prepared.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { uuid } from './helpers/fixtures.js';
 import { endLeasedRun } from '@myco-server-worker/core/harness.js';
 import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
@@ -121,11 +121,13 @@ for (const atBatch of [false, true]) it(`refuses card writes retryably if the do
     const material = await run.readAll();
     const pending = (await db.prepare("SELECT turn_key,state,input_hash,card FROM turn_cards ORDER BY turn_key").all()).results;
     const convert = async () => { await db.prepare("UPDATE session_documents SET state='convert' WHERE session_id='long'").run(); };
-    if (atBatch) run.bindings.MYCO_DB = beforeWriteBatch(db, sql => sql.includes("UPDATE turn_cards SET state='carded'"), convert, true);
+    const atWrite = changingAtStatement(db, 'learningCards.write', convert);
+    if (atBatch) run.bindings.MYCO_DB = atWrite.store;
     else await convert();
     const response = await run.harness.request(run.claimed.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision,
       cards: turns.map(turn => ({ turns: [turn.id], signal: 'high', card: EMPTY_CARD })) });
     expect(await response.json()).toMatchObject({ error: { code: -32000, data: { code: 'tool_call_failed' } } });
+    expect(atWrite.landed()).toBe(atBatch);
     const held = await db.prepare("SELECT changes FROM turn_cards WHERE session_id='long' AND turn_key=?").bind(turns[0]!.id).first<{ changes: number }>();
     await commit(db, cardWriteStatement('project', 'long', { turnKey: turns[0]!.id, changes: held!.changes }, {
       value: EMPTY_CARD, signal: 'high', reason: 'model', sharedWith: null, covered: null, runId: run.claimed.run.id, model: 'fake',
@@ -171,9 +173,11 @@ it('retains learning claim deadlines when hash mismatches cover zero, rather tha
         await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' });
         if (timing === 'before-complete' || timing === 'no-due') await mismatch();
         if (timing === 'no-due') await db.prepare("UPDATE learning_sessions SET due_cards=0 WHERE session_id=?").bind(session).run();
-        if (timing === 'at-batch') harness.bindings.MYCO_DB = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'), mismatch, true);
+        const atCompletion = changingAtStatement(db, 'runs.learningCompleted', mismatch);
+        if (timing === 'at-batch') harness.bindings.MYCO_DB = atCompletion.store;
         expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'complete', handoff: 'discard empty handoff' }))
           .toEqual({ completed: true, covered: 0 });
+        expect(atCompletion.landed()).toBe(timing === 'at-batch');
         harness.bindings.MYCO_DB = db;
         expect(await db.prepare("SELECT eligible_at,failures,handoff FROM learning_sessions WHERE session_id=?").bind(session).first())
           .toEqual({ ...held!, handoff: 'retained handoff' });

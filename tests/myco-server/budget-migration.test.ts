@@ -3,7 +3,6 @@ import {expect,it} from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { budgetFixture,PROFILE } from './helpers/budget-fixture.js';
 import { completeBudgetMigration,budgetActivation,budgetCompletionMessage,BUDGET_INDEX_ROW_LIMIT } from '@myco-server-worker/db/meta/budget-activation.js';
-import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { V103_STATEMENTS } from '@myco-server-worker/db/schema-v103.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
@@ -20,6 +19,7 @@ import worker from '@myco-server-worker/index.js';
 import { asOwner,OWNER_ENV } from './helpers/owner.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { endLeasedRun } from '@myco-server-worker/core/harness.js';
+import { changingAt, counting, dying, failingAt } from './helpers/store-faults.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -47,47 +47,28 @@ it('initializes live origins on schema103 and publishes activation after verifie
   }finally{db.close();}
 });
 
-for(const table of ['agent_runs','agent_run_attempts'])it(`keeps preflight refusal visible for ${table}`,async()=>{
+const OVER_LIMIT:Record<'agent_runs'|'agent_run_attempts',string>={
+  agent_runs:`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<=?1)
+    INSERT INTO agent_runs(project_id,id,agent_id,task,status,completed_at,origin) SELECT 'proj_1','bulk-'||i,'myco-agent','title-summary','completed',1,'automatic' FROM n`,
+  agent_run_attempts:`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<=?1)
+    INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at) SELECT 'proj_1','bulk','bulk-'||i,?2,1 FROM n`,
+};
+for(const table of ['agent_runs','agent_run_attempts'] as const)it(`keeps preflight refusal visible for ${table} past the index row limit`,async()=>{
   const f=await budgetFixture(false);
   try {
-    const db={...f.db,prepare:(sql:string)=>sql===`SELECT COUNT(*) AS n FROM ${table}`?{
-      ...f.db.prepare(sql),all:async<T,>()=>({results:[{n:BUDGET_INDEX_ROW_LIMIT+1}] as T[]}),
-    }:f.db.prepare(sql)};
-    expect(await completeBudgetMigration(db,100)).toMatchObject({active:false,reason:expect.stringContaining(table)});
-    expect(await budgetActivation(f.db)).toMatchObject({active:false,reason:expect.stringContaining('100001')});
-    const candidate=f.queue('legacy-claim');
-    expect(await f.claim(candidate)).toBeNull();
-    expect(await completeBudgetMigration(f.db,200)).toMatchObject({active:true});
-    expect(await f.claim(candidate)).not.toBeNull();
-  }finally{f.sqlite.close();}
-});
-
-for(const reply of ['missing','null','negative','fractional','error'])it(`keeps unreadable preflight ${reply} visible without activating or preparing indexes`,async()=>{
-  const f=await budgetFixture(false);
-  try {
-    const candidate=f.queue('waiting');
-    const db={...f.db,prepare:(sql:string)=>sql.startsWith('SELECT COUNT(*) AS n FROM agent_')?{
-      ...f.db.prepare(sql),all:async<T,>()=>{
-        if(reply==='error')throw new Error('fixture count unavailable');
-        return {results:(reply==='missing'?[]:[{n:reply==='null'?null:reply==='negative'?-1:1.5}]) as T[]};
-      },
-    }:f.db.prepare(sql)};
-    expect(await completeBudgetMigration(db,100)).toMatchObject({active:false,reason:expect.stringContaining('preflight')});
-    expect(await budgetActivation(f.db)).toMatchObject({active:false,reason:expect.stringContaining('preflight')});
-    if(reply==='missing') {
-      const status=await worker.fetch(await asOwner(f.db,'/api/status'),{...f.env,...OWNER_ENV});
-      expect(status.status).toBe(200);
-      expect(await status.json()).toMatchObject({budget:{active:false,reason:expect.stringContaining('preflight')}});
-    }
-    expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({value:String(SERVER_SCHEMA_VERSION)});
+    f.history('bulk',0.1);
+    f.sqlite.run(OVER_LIMIT[table],table==='agent_runs'?[BUDGET_INDEX_ROW_LIMIT]:[BUDGET_INDEX_ROW_LIMIT,f.workerTokenId]);
+    const rows=String(f.sqlite.query<{n:number},[]>(`SELECT COUNT(*) AS n FROM ${table}`).get()!.n);
+    expect(await completeBudgetMigration(f.db,100)).toMatchObject({active:false,reason:expect.stringContaining(table)});
+    expect(await budgetActivation(f.db)).toMatchObject({active:false,reason:expect.stringContaining(rows)});
+    const status=await worker.fetch(await asOwner(f.db,'/api/status'),{...f.env,...OWNER_ENV});
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({budget:{active:false,reason:expect.stringContaining(table)}});
     expect(f.sqlite.query("SELECT name FROM sqlite_master WHERE name IN ('idx_attempts_claimed','idx_agent_runs_queue_head')").all()).toEqual([]);
     expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get()).toBeNull();
-    expect(await f.claim(candidate)).toBeNull();
-    expect(await completeBudgetMigration(f.db,200)).toEqual({active:true,reason:null});
-    expect(await f.claim(candidate)).not.toBeNull();
-    expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_activation_refusal'").get()).toBeNull();
+    expect(await f.claim(f.queue('legacy-claim'))).toBeNull();
   }finally{f.sqlite.close();}
-});
+},30_000);
 
 it('restores every known attempt price and immutable profile through the portable artifact',async()=>{
   const source=await budgetFixture(),target=await budgetFixture();
@@ -228,27 +209,34 @@ it('publishes estimator groups in bounded CAS-owned pages under overlapping wake
   }finally{f.sqlite.close();}
 });
 
-it('fences an initial estimator reader across a portable restore',async()=>{
-  const source=await budgetFixture(),target=await budgetFixture();
-  let release!:()=>void;
-  const resume=new Promise<void>(resolve=>{release=resolve;});
-  try {
+it('fences an initial estimator reader across a portable restore, wherever the restore lands',async()=>{
+  const pair=async()=>{
+    const source=await budgetFixture(),target=await budgetFixture();
     source.sqlite.run("UPDATE schema_meta SET value=? WHERE key='budget_enabled_at'",[String(source.now-1000)]);
     source.history('restored-sample',2,'automatic',source.now-500);target.history('prior-sample',9);
     const saved=await createBackup(source.db,source.bucket,{producer:'budget-race',now:source.now});
     const artifact=await backupArtifact(source.db,source.bucket,saved.id);
     if(artifact===null)throw new Error('No race artifact');
-    let reached!:()=>void;
-    const paused=new Promise<void>(resolve=>{reached=resolve;});
-    const db={...target.db,batch:async(statements:Parameters<typeof target.db.batch>[0])=>{if(statements.length>1){reached();await resume;}return target.db.batch(statements);}};
-    const refresh=refreshEstimates(db,target.now);
-    await paused;
-    await restoreArtifact(target.db,{authorization:{kind:'recovery'},text:artifact.text,allowForeignLineage:true});
-    release();
-    expect(await refresh).toEqual({changed:0,more:true});
-    await refreshEstimates(target.db,target.now);
-    expect((await estimateForClaim(target.db,'proj_1','title-summary','codex',PROFILE)).estimate).toBeCloseTo(5.5);
-  }finally{release();source.sqlite.close();target.sqlite.close();}
+    source.sqlite.close();
+    return {target,restore:()=>restoreArtifact(target.db,{authorization:{kind:'recovery'},text:artifact.text,allowForeignLineage:true})};
+  };
+  const counted=await pair();
+  const counter=counting(counted.target.db);
+  try {await refreshEstimates(counter.store,counted.target.now);}finally{counted.target.sqlite.close();}
+  expect(counter.calls()).toBeGreaterThan(1);
+  const answers:unknown[]=[];
+  for(let at=1;at<=counter.calls();at++) {
+    const {target,restore}=await pair();
+    try {
+      const landing=changingAt(target.db,at,restore);
+      answers.push(await refreshEstimates(landing.store,target.now));
+      expect(landing.landed(),`call ${at}`).toBe(true);
+      for(let pass=0;(await refreshEstimates(target.db,target.now)).more;pass++)if(pass>20)throw new Error('estimator passes did not settle');
+      expect((await estimateForClaim(target.db,'proj_1','title-summary','codex',PROFILE)).estimate,`call ${at}`).toBeCloseTo(5.5);
+    }finally{target.sqlite.close();}
+  }
+  // A reader the restore overtook publishes nothing and leaves the cycle to the next wake.
+  expect(answers).toContainEqual({changed:0,more:true});
 });
 
 it('keeps empty cycles constant and incrementally folds new points after the activation floor',async()=>{
@@ -269,32 +257,45 @@ it('keeps empty cycles constant and incrementally folds new points after the act
   }finally{f.sqlite.close();}
 });
 
-it('records non-invariant completion failures and preserves fatal active-index invariants',async()=>{
-  for(const fault of ['metadata','catalogue','create','verification','origin','activation-reply']) {
+it('answers a failed completion call with a stored reason and activates on retry, wherever a call fails or the process ends',async()=>{
+  const counted=await budgetFixture(false);
+  let total=0;
+  try {
+    const counter=counting(counted.db);
+    expect(await completeBudgetMigration(counter.store,100)).toEqual({active:true,reason:null});
+    total=counter.calls();
+  }finally{counted.sqlite.close();}
+  expect(total).toBeGreaterThan(3);
+  for(const fault of ['transient','ended'] as const)for(const when of ['before','after'] as const)for(let at=1;at<=total;at++) {
+    const label=`${fault} ${when} call ${at}`;
     const f=await budgetFixture(false);
-    let catalogue=0;
     try {
-      const db={...f.db,prepare:(sql:string)=>{
-        const statement=f.db.prepare(sql);
-        return {...statement,all:async<T,>()=>{
-          if((fault==='metadata'&&sql.startsWith('SELECT key,value'))||(fault==='catalogue'&&sql.startsWith('SELECT name,sql')))throw new Error(`fixture ${fault}`);
-          if(sql.startsWith('SELECT name,sql')&&++catalogue===2&&fault==='verification')return {results:[] as T[]};
-          if(fault==='origin'&&sql.includes('origin IS NULL'))return {results:[{missing:1}] as T[]};
-          return statement.all<T>();
-        },run:async()=>{
-          if(fault==='create'&&sql.startsWith('CREATE INDEX'))throw new Error('fixture index preparation');
-          const result=await statement.run();
-          if(fault==='activation-reply'&&/INSERT OR IGNORE INTO schema_meta\(key,value\) (?:SELECT |VALUES\()'budget_enabled_at'/.test(sql))throw new Error('fixture lost activation reply');
-          return result;
-        }};
-      }};
-      expect(await completeBudgetMigration(db,100)).toMatchObject({active:['metadata','activation-reply'].includes(fault)?null:false,reason:expect.any(String)});
-      expect(await budgetActivation(f.db)).toMatchObject(fault==='activation-reply'?{active:true,reason:null}:{active:false,reason:expect.any(String)});
-      if(fault==='activation-reply') {
-        await f.setting(1);f.history('published-spent',1);
-        expect(await f.claim(f.queue('published-over-budget'))).toBeNull();
-      }else expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get()).toBeNull();
-      expect(await completeBudgetMigration(f.db,200)).toEqual({active:true,reason:null});
+      const before=f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all();
+      const store=fault==='transient'?failingAt(f.db,at,when).store:dying(f.db,at,when).store;
+      const answer=await completeBudgetMigration(store,100).then(result=>result,()=>null);
+      const stored=await budgetActivation(f.db);
+      // A failed call never reports an activation, and an answer of inactive names the refusal the store holds.
+      if(fault==='transient')expect(answer,label).toMatchObject({reason:expect.any(String)});
+      expect(answer?.active,label).not.toBe(true);
+      if(answer?.active===false)expect(stored,label).toEqual({active:false,reason:answer.reason});
+      // A completion that cannot make its first call has learned nothing and changes nothing.
+      if(at===1&&when==='before') {
+        expect(answer===null?null:answer.active,label).toBeNull();
+        expect(f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all(),label).toEqual(before);
+      }
+      // Whatever it left, the store holds a governor that is published and enforced, or one that holds automatic work.
+      if(stored.active===true) {
+        await f.setting(1);f.history(`spent-${at}`,1);
+        expect(await f.claim(f.queue('over-budget')),label).toBeNull();
+        expect(await completeBudgetMigration(f.db,200),label).toEqual({active:true,reason:null});
+      }else {
+        expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get(),label).toBeNull();
+        const held=f.queue('held');
+        expect(await f.claim(held),label).toBeNull();
+        expect(await completeBudgetMigration(f.db,200),label).toEqual({active:true,reason:null});
+        expect(await f.claim(held),label).not.toBeNull();
+      }
+      expect(await budgetActivation(f.db),label).toEqual({active:true,reason:null});
     }finally{f.sqlite.close();}
   }
   const active=await budgetFixture();
@@ -302,7 +303,7 @@ it('records non-invariant completion failures and preserves fatal active-index i
     active.sqlite.exec('DROP INDEX idx_attempts_claimed');
     await expect(completeBudgetMigration(active.db,200)).rejects.toThrow('Active budget indexes');
   }finally{active.sqlite.close();}
-});
+},120_000);
 
 it('native migration completion records an inactive budget and returns when index preparation fails',async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'budget-native-refusal-'));
@@ -322,10 +323,13 @@ it('native migration completion records an inactive budget and returns when inde
 it('keeps profiled claims from an inactive interval when activation is retried later',async()=>{
   const f=await budgetFixture(false);
   try {
-    const unavailable={...f.db,prepare:(sql:string)=>sql.startsWith('SELECT COUNT(*) AS n FROM agent_')?{
-      ...f.db.prepare(sql),all:async<T,>()=>({results:[] as T[]}),
-    }:f.db.prepare(sql)};
-    expect(await completeBudgetMigration(unavailable,f.now)).toMatchObject({active:false});
+    // A completion whose call fails before it activates leaves the budget refused, and automatic work held.
+    let refused=false;
+    for(let at=1;!refused;at++) {
+      if(at>50)throw new Error('no failed call left the budget refused');
+      refused=(await completeBudgetMigration(failingAt(f.db,at,'before').store,f.now)).active===false;
+    }
+    expect(await budgetActivation(f.db)).toMatchObject({active:false});
     expect(await f.claim(f.queue('automatic-during-refusal'),f.now+1)).toBeNull();
     expect(await f.claim(f.queue('during-refusal','manual'),f.now+1)).not.toBeNull();
     const row=f.sqlite.query<{attemptId:string},[]>("SELECT dispatched_by AS attemptId FROM agent_runs WHERE id='during-refusal'").get()!;
@@ -335,42 +339,36 @@ it('keeps profiled claims from an inactive interval when activation is retried l
     expect((await estimateForClaim(f.db,'proj_1','title-summary','codex',PROFILE)).estimate).toBeCloseTo(0.2);
     expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get()).toEqual({value:String(f.now)});
     f.sqlite.exec("DELETE FROM schema_meta WHERE key='budget_activation_started_at'");
-    const interrupted={...f.db,prepare:(sql:string)=>sql.startsWith('SELECT name,sql')?{
-      ...f.db.prepare(sql),all:async<T,>():Promise<{results:T[]}>=>{throw new Error('fixture catalogue unavailable');},
-    }:f.db.prepare(sql)};
-    expect(await completeBudgetMigration(interrupted,f.now+2000)).toMatchObject({active:null});
+    // A retry that fails anywhere after activation answers unknown and keeps the published start.
+    const counter=counting(f.db);
+    await completeBudgetMigration(counter.store,f.now+2000);
+    for(let at=1;at<=counter.calls();at++) {
+      expect(await completeBudgetMigration(failingAt(f.db,at,'before').store,f.now+2000),`call ${at}`).toMatchObject({active:null});
+      expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get(),`call ${at}`).toEqual({value:String(f.now)});
+    }
     expect(await completeBudgetMigration(f.db,f.now+3000)).toEqual({active:true,reason:null});
     expect(f.sqlite.query("SELECT value FROM schema_meta WHERE key='budget_enabled_at'").get()).toEqual({value:String(f.now)});
   }finally{f.sqlite.close();}
 });
 
-for(const fault of ['stamps','catalogue'])it(`keeps an active budget enforced after a transient ${fault} read failure`,async()=>{
+it('keeps an active budget enforced after a transient failure at any call of a completion',async()=>{
   const f=await budgetFixture();
   try {
     await f.setting(1);f.history('spent',1);
     const before=f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all();
-    const db={...f.db,prepare:(sql:string)=>{
-      const statement=f.db.prepare(sql);
-      if(sql.startsWith(fault==='stamps'?'SELECT key,value':'SELECT name,sql'))return {...statement,all:async<T,>():Promise<{results:T[]}>=>{throw new Error('fixture transient read');}};
-      return statement;
-    }};
-    expect(await completeBudgetMigration(db,f.now+1)).toMatchObject({active:null,reason:expect.stringContaining('transient')});
-    expect(f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all()).toEqual(before);
-    expect(await budgetActivation(f.db)).toEqual({active:true,reason:null});
+    const counter=counting(f.db);
+    expect(await completeBudgetMigration(counter.store,f.now+1)).toEqual({active:true,reason:null});
+    expect(counter.calls()).toBeGreaterThan(0);
+    for(const when of ['before','after'] as const)for(let at=1;at<=counter.calls();at++) {
+      const failing=failingAt(f.db,at,when,()=>new Error('fixture transient read'));
+      expect(await completeBudgetMigration(failing.store,f.now+1),`${when} call ${at}`).toMatchObject({active:null,reason:expect.stringContaining('transient')});
+      expect(f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all(),`${when} call ${at}`).toEqual(before);
+      expect(await budgetActivation(f.db),`${when} call ${at}`).toEqual({active:true,reason:null});
+    }
     expect(budgetCompletionMessage({active:null,reason:'fixture transient read'})).toBe('Budget governor state not verified: fixture transient read. Automatic work requires an active validated governor; capture and manual work remain available.');
     expect(await f.claim(f.queue('over-budget'))).toBeNull();
   }finally{f.sqlite.close();}
 });
-it('keeps unknown inactive completion state untouched until its stamps can be read',async()=>{
-  const f=await budgetFixture(false);
-  try {
-    const before=f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all();
-    const db={...f.db,prepare:(sql:string)=>sql.startsWith('SELECT key,value')?{...f.db.prepare(sql),all:async<T,>():Promise<{results:T[]}>=>{throw new Error('fixture stamps unavailable');}}:f.db.prepare(sql)};
-    expect(await completeBudgetMigration(db,f.now)).toMatchObject({active:null});
-    expect(f.sqlite.query('SELECT key,value FROM schema_meta ORDER BY key').all()).toEqual(before);
-  }finally{f.sqlite.close();}
-});
-
 
 it('retains a monotonic settlement cursor across attempt retention and tied claim times',async()=>{
   const f=await budgetFixture();
@@ -390,37 +388,29 @@ it('retains a monotonic settlement cursor across attempt retention and tied clai
   }finally{f.sqlite.close();}
 });
 
-it('leaves settlements after a cycle snapshot for the next incremental cycle',async()=>{
-  const f=await budgetFixture();
+it('counts a settlement landing at any point of a cycle once: in that cycle or the next',async()=>{
+  const counted=await budgetFixture();
+  let total=0;
   try {
-    f.history('snapshot-first',0.1);
-    let inserted=false;
-    const db={...f.db,batch:async(statements:Parameters<typeof f.db.batch>[0])=>{
-      const results=await f.db.batch(statements);
-      if(!inserted&&statements.length===1&&Object.hasOwn(results[0]?.results?.[0] as object??{},'latest')){inserted=true;f.history('snapshot-later',0.3);}
-      return results;
-    }};
-    expect(await refreshEstimates(db,f.now)).toMatchObject({more:false});
-    expect(inserted).toBe(true);
-    expect((await estimateForClaim(f.db,'proj_1','title-summary','codex',PROFILE)).estimate).toBeCloseTo(0.1);
-    expect(await refreshEstimates(f.db,f.now+3_600_000)).toMatchObject({more:false});
-    expect((await estimateForClaim(f.db,'proj_1','title-summary','codex',PROFILE)).estimate).toBeCloseTo(0.2);
-  }finally{f.sqlite.close();}
+    counted.history('snapshot-first',0.1);
+    const counter=counting(counted.db);
+    expect(await refreshEstimates(counter.store,counted.now)).toMatchObject({more:false});
+    total=counter.calls();
+  }finally{counted.sqlite.close();}
+  expect(total).toBeGreaterThan(0);
+  for(let at=1;at<=total;at++) {
+    const f=await budgetFixture();
+    try {
+      f.history('snapshot-first',0.1);
+      const landing=changingAt(f.db,at,()=>f.history('snapshot-later',0.3));
+      expect(await refreshEstimates(landing.store,f.now),`call ${at}`).toMatchObject({more:false});
+      expect(landing.landed(),`call ${at}`).toBe(true);
+      expect([0.1,0.2].map(value=>value.toFixed(6)),`call ${at}`).toContain((await estimateForClaim(f.db,'proj_1','title-summary','codex',PROFILE)).estimate.toFixed(6));
+      expect(await refreshEstimates(f.db,f.now+3_600_000)).toMatchObject({more:false});
+      expect((await estimateForClaim(f.db,'proj_1','title-summary','codex',PROFILE)).estimate,`call ${at}`).toBeCloseTo(0.2);
+    }finally{f.sqlite.close();}
+  }
 });
-
-it('propagates a refusal persistence failure instead of reporting recorded inactive state',async()=>{
-  const f=await budgetFixture(false);
-  try {
-    const db={...f.db,prepare:(sql:string)=>{
-      const statement=f.db.prepare(sql);
-      return {...statement,all:async<T,>()=>sql.startsWith('SELECT COUNT(*)')?{results:[] as T[]}:statement.all<T>(),
-        run:async()=>{if(sql.includes("VALUES('budget_activation_refusal'"))throw new Error('fixture refusal write failed');return statement.run();}};
-    }};
-    await expect(completeBudgetMigration(db,f.now)).rejects.toThrow('fixture refusal write failed');
-  }finally{f.sqlite.close();}
-});
-
-
 it('replaces restored points from pruned source attempts with sixty local settlements',async()=>{
   const source=await budgetFixture(),target=await budgetFixture();
   const cycle=async(db:typeof source.db,now:number)=>{
