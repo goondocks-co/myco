@@ -157,13 +157,15 @@ it('GATE: interrupted recovery imports and migration resumes record a bookmark b
   });
 });
 
-it('GATE: a failed durable deployment-record write refuses migrations after obtaining the bookmark', async () => {
-  for (const verb of ['update', 'create'] as const) await fixture({ persistFail: true }, async (f) => {
-    await expect(f[verb]()).rejects.toThrow('could not durably record');
-    expect(f.calls().some(({ args }) => args.includes('time-travel'))).toBe(true);
-    expect(f.calls().some(({ args }) => args.includes('migrations') || args[0] === 'deploy')).toBe(false);
+for (const verb of ['update', 'create'] as const) {
+  it(`GATE: a failed durable deployment-record write refuses migrations after obtaining the bookmark (${verb})`, async () => {
+    await fixture({ persistFail: true }, async (f) => {
+      await expect(f[verb]()).rejects.toThrow('could not durably record');
+      expect(f.calls().some(({ args }) => args.includes('time-travel'))).toBe(true);
+      expect(f.calls().some(({ args }) => args.includes('migrations') || args[0] === 'deploy')).toBe(false);
+    });
   });
-});
+}
 
 it('GATE: a first create interrupted before schema installation requires a bookmark on retry', async () => {
   await fixture({ fresh: true, schema: '0', workerBefore: null, migrationExit: 1 }, async ({ home, state, create, calls }) => {
