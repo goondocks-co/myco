@@ -200,18 +200,18 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   };
 }
 
-it('retains all attempt prices through a full native recovery and repeated startup migration',async()=>{
-  for(const budgetSource of ['current','pre-budget'] as const) {
-  const f=await fixture('local',{budgetSource});
-  try {
-    await f.restore();
-    expect(migrateOnly(f.paths.databasePath)).toBe(0);
-    expect(migrateOnly(f.paths.databasePath)).toBe(0);
-    const db=new Database(f.paths.databasePath);
-    try{await assertRecoveryBudget(db,budgetSource==='current',Date.now());}finally{db.close();}
-  }finally{f.cleanup();}
-  }
-});
+for(const budgetSource of ['current','pre-budget'] as const) {
+  it(`retains all attempt prices through a full native recovery and repeated startup migration (${budgetSource})`,async()=>{
+    const f=await fixture('local',{budgetSource});
+    try {
+      await f.restore();
+      expect(migrateOnly(f.paths.databasePath)).toBe(0);
+      expect(migrateOnly(f.paths.databasePath)).toBe(0);
+      const db=new Database(f.paths.databasePath);
+      try{await assertRecoveryBudget(db,budgetSource==='current',Date.now());}finally{db.close();}
+    }finally{f.cleanup();}
+  });
+}
 
 for(const learningSource of ['paused','pre-pause'] as const) {
   it(`recovers paused learning preferences and migrates a snapshot lacking the pause state (${learningSource})`, async () => {

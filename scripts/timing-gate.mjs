@@ -5,6 +5,11 @@ export function timingGateReports(env = process.env) {
   return env.MYCO_TIMING_GATES === 'report';
 }
 
+/** True when an 80% per-test near-miss should be listed and not fail the job. Unset enforces. */
+export function testHeadroomReports(env = process.env) {
+  return env.MYCO_TEST_HEADROOM === 'report';
+}
+
 /** Warn about one breached timing limit on the run and in its step summary. */
 export function reportTimingBreach(message, env = process.env) {
   const text = message.replace(/\r?\n/g, ' ');

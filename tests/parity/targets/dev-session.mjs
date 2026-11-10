@@ -68,7 +68,13 @@ async function command(message) {
       const mf = worker?.raw.runtimes.find(runtime => runtime.mf !== undefined)?.mf;
       if (!mf) throw new Error(`No live local D1 runtime for ${tag}`);
       const database = await mf.getD1Database('MYCO_DB');
-      const results = await database.batch(unstable_splitSqlQuery(message.sql).map(sql => database.prepare(sql)));
+      const statements = unstable_splitSqlQuery(message.sql);
+      const params = Array.isArray(message.params) ? message.params : [];
+      if (params.length > 0 && statements.length !== 1) throw new Error('bound SQL must be one statement');
+      const results = await database.batch(statements.map(sql => {
+        const prepared = database.prepare(sql);
+        return params.length > 0 ? prepared.bind(...params) : prepared;
+      }));
       process.send({ id, results });
     } else if (op === 'stop') {
       await workers.get(tag)?.dispose();

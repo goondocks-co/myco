@@ -175,6 +175,25 @@ test('the CI per-test command rejects an overrun from actual JUnit evidence', ()
     const overrun = run();
     expect(overrun.status).not.toBe(0);
     expect(overrun.stderr).toContain('80% of its 120000ms test timeout');
+    expect(overrun.stderr).toContain('Split the variants or raise the declared timeout.');
+    const reported = spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], {
+      encoding: 'utf8',
+      env: { ...process.env, MYCO_TIMING_GATES: 'enforce', MYCO_TEST_HEADROOM: 'report', GITHUB_STEP_SUMMARY: path.join(reports, 'summary.md') },
+    });
+    expect(reported.status).toBe(0);
+    expect(reported.stdout).toContain(test.file);
+    expect(reported.stdout).toContain(test.name);
+    expect(reported.stdout).toContain('97000ms');
+    expect(reported.stdout).toContain('120000ms');
+    expect(reported.stdout).toContain('Split the variants or raise the declared timeout.');
+    expect(fs.readFileSync(path.join(reports, 'summary.md'), 'utf8')).toContain('Split the variants or raise the declared timeout.');
+    const timingEnv: NodeJS.ProcessEnv = { ...process.env, MYCO_TIMING_GATES: 'report' };
+    delete timingEnv.MYCO_TEST_HEADROOM;
+    const timingOnly = spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], {
+      encoding: 'utf8',
+      env: timingEnv,
+    });
+    expect(timingOnly.status).not.toBe(0);
     fs.writeFileSync(path.join(reports, 'run.junit.xml'), xml.replace('time="97"', 'time="30"'));
     expect(run().status).toBe(0);
     fs.writeFileSync(path.join(reports, 'run.junit.xml'), '<testsuite><testcase file="tests/meta/container-bun-pin.test.ts" name="unknown case" line="1" time="4000" /></testsuite>');

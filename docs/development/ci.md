@@ -11,9 +11,10 @@ the scale and cost suites listed in `scripts/ci-scopes.mjs`.
 A nightly failure opens or updates the one issue titled "Nightly full CI is failing" with the failed jobs and commit.
 A release tag runs the full suite on its own commit and cannot publish unless it passes.
 
-Timing limits (per-test timeout headroom, shard and job budgets, hook startup and work budgets) report as warnings on
-pull requests and main pushes, and fail only a full run from `nightly.yml` or a release. A test over its own timeout
-still fails everywhere.
+Shard, job, hook-startup and hook-work budgets report as warnings on pull requests and main pushes, and fail only a
+full run from `nightly.yml` or a release. The per-test 80% timeout near-miss is listed in the step summary on pull
+requests, main pushes and tagged releases, and fails only the nightly. A test over its own timeout, or a failed
+assertion, still fails everywhere.
 
 The `check` job requires every job that belongs to the scope to succeed, including every matrix entry.
 Superseded pull request runs are cancelled; pushes to main are not cancelled.

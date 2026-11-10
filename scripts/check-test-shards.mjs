@@ -9,7 +9,7 @@ import { parse } from 'yaml';
 import { PARITY_PLAN_PREFIX } from './test-shards.mjs';
 import { assertNodeShardBudgets, assertNodeShardWeights, assertTestCaseHeadroom, declaredTestTimeout, testCaseHeadroomBreaches, testDurationSamples } from './node-test-durations.mjs';
 import { BUILD_JOB_FILES, NIGHTLY_ONLY_FILES, PARITY_SMOKE_SCENARIOS } from './ci-scopes.mjs';
-import { reportTimingBreach, timingGateReports } from './timing-gate.mjs';
+import { reportTimingBreach, testHeadroomReports, timingGateReports } from './timing-gate.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workflow = parse(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
@@ -58,7 +58,7 @@ function auditTestHeadroom(reports) {
   }
   const timeoutFor = test => declaredTestTimeout(root, test);
   const recordedCases = samples.reduce((sum, run) => sum + run.tests.length, 0);
-  if (timingGateReports()) {
+  if (testHeadroomReports()) {
     const breaches = testCaseHeadroomBreaches(samples, timeoutFor);
     breaches.forEach(breach => reportTimingBreach(breach));
     console.log(`Per-test headroom: ${recordedCases - breaches.length} of ${recordedCases} recorded cases within limit`);

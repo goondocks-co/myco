@@ -226,6 +226,7 @@ function assertPublication(workflow: typeof release): void {
     expect(workflow.jobs[job].if).toContain("needs.full-ci.result == 'success'");
   }
   expect(workflow.jobs['full-ci']).toMatchObject({ uses: './.github/workflows/ci.yml', with: { full: true } });
+  expect(workflow.jobs['full-ci'].with).toEqual({ full: true });
 }
 
 test('the canonical CI aggregate requires every verification job, including parity and shipped runtimes', () => {
@@ -234,7 +235,9 @@ test('the canonical CI aggregate requires every verification job, including pari
 });
 
 function assertFullRunWiring(nightlyWorkflow: typeof nightly, ciWorkflow: typeof ci): void {
-  expect(nightlyWorkflow.jobs.full).toMatchObject({ uses: './.github/workflows/ci.yml', with: { full: true } });
+  expect(nightlyWorkflow.jobs.full).toMatchObject({
+    uses: './.github/workflows/ci.yml', with: { full: true, enforce_test_headroom: true },
+  });
   const report = nightlyWorkflow.jobs['report-failure'];
   expect(report.needs).toBe('full');
   expect(report.if).toContain('always()');
@@ -242,11 +245,12 @@ function assertFullRunWiring(nightlyWorkflow: typeof nightly, ciWorkflow: typeof
   expect(ciWorkflow.env.MYCO_TEST_SCOPE).toContain('inputs.full');
   expect(ciWorkflow.env.MYCO_TEST_SCOPE).toContain("'full'");
   expect(ciWorkflow.env.MYCO_TIMING_GATES).toBe("${{ inputs.full && 'enforce' || 'report' }}");
+  expect(ciWorkflow.env.MYCO_TEST_HEADROOM).toBe("${{ inputs.enforce_test_headroom && 'enforce' || 'report' }}");
 }
 
 test('the nightly is a full, enforcing run and reports its own failure', () => {
   assertFullRunWiring(nightly, ci);
-  for (const mutation of ['partial', 'unreported', 'silent', 'unforced', 'pr-scope']) {
+  for (const mutation of ['partial', 'unreported', 'silent', 'unforced', 'pr-scope', 'headroom-open']) {
     const changedNightly = structuredClone(nightly);
     const changedCi = structuredClone(ci);
     if (mutation === 'partial') changedNightly.jobs.full.with.full = false;
@@ -254,6 +258,7 @@ test('the nightly is a full, enforcing run and reports its own failure', () => {
     if (mutation === 'silent') delete changedNightly.jobs['report-failure'].permissions.issues;
     if (mutation === 'unforced') changedCi.env.MYCO_TIMING_GATES = 'report';
     if (mutation === 'pr-scope') changedCi.env.MYCO_TEST_SCOPE = 'pr';
+    if (mutation === 'headroom-open') changedNightly.jobs.full.with.enforce_test_headroom = false;
     expect(() => assertFullRunWiring(changedNightly, changedCi)).toThrow();
   }
 });
