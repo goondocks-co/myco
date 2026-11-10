@@ -18,6 +18,10 @@ import { removeLegacyRegistrations, scanLegacyRegistrations } from '@myco/symbio
 import { allocateRunDirectory, recoverAbandonedRunDirectories, RUN_DIRECTORY_MANIFEST } from '@myco/runner/run-directory.js';
 import { grantsCall } from '@myco/runner/drivers/grant.js';
 import { writeApprovedProjectPin } from '../support/project-runtime-pin.js';
+import { fakeDeployment, harnessHistory, withHarnessHome } from './helpers/history-fakes.js';
+import { UNCAPTURED_STATE_PATH } from '@goondocks/myco-shared/member-protocol';
+
+const IMPORT_PLAN = '/import/plan';
 
 const roots: string[] = [];
 const scratch = () => {
@@ -25,7 +29,11 @@ const scratch = () => {
   roots.push(root);
   return root;
 };
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+const restores: Array<() => void> = [];
+afterEach(() => {
+  for (const restore of restores.splice(0).reverse()) restore();
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
 const SERVER = 'https://fixture.invalid';
 
 it('refuses provision mutations when an existing record cannot be read', () => {
@@ -161,30 +169,16 @@ it('matches a scoped source grant with a whole quoted checkout path', () => {
 
 it('keeps a failed history import due until a later pass completes', async () => {
   const { joinPass } = await import('@myco/cli/member-auto-join.js');
-  const imports = await import('@myco/member/import.js');
-  const { queueImport, listPendingImports, markSweepDone } = await import('@myco/member/auto-join.js');
-  const { writeRegistryEntry, REGISTRY_VERSION } = await import('@myco/member/registry.js');
-  const home = scratch();
-  const root = path.join(home, 'repo');
-  fs.mkdirSync(path.join(root, '.git'), { recursive: true });
-  writeRegistryEntry({ version: REGISTRY_VERSION, root, serverUrl: SERVER, projectId: 'proj_fixture',
-    token: 'mt_' + 'a'.repeat(40), machineId: 'machine', joinedAt: 1, updatedAt: 1, expiresAt: 1e12, refreshAfter: 1e12 }, { mycoHome: home });
-  queueImport({ root, rootKey: rootKeyFor(root, home), serverUrl: SERVER, projectId: 'proj_fixture', at: 1 }, home);
-  markSweepDone(home, 1);
-  let clock = 100;
-  const report = { projects: [{ projectId: 'proj_fixture', root, agents: [], endedBy: 'retry' }], unbound: 0,
-    unattributable: 0, active: 0, dropped: 0, excluded: 0, unboundDirectories: {} };
-  const run = spyOn(imports, 'runImport').mockResolvedValue(report);
-  try {
-    await joinPass(home, { now: () => clock })(1000, { force: false });
-    expect(listPendingImports(home)).toHaveLength(1);
-    await joinPass(home, { now: () => clock })(1000, { force: false });
-    expect(run).toHaveBeenCalledTimes(1);
-    clock += 3_600_000;
-    run.mockResolvedValue({ ...report, projects: [{ projectId: 'proj_fixture', root, agents: [] }] });
-    await joinPass(home, { now: () => clock })(clock + 1000, { force: false });
-    expect(listPendingImports(home)).toEqual([]);
-  } finally { run.mockRestore(); }
+  const { auto, home, server } = await historyFixture();
+  let clock = Date.now();
+  await joinPass(home, { now: () => clock, fetch: server.fetch })(clock + 1000, { force: false });
+  expect(auto.listPendingImports(home)).toHaveLength(1);
+  await joinPass(home, { now: () => clock, fetch: server.fetch })(clock + 1000, { force: false });
+  expect(server.count(IMPORT_PLAN)).toBe(1);
+  clock += 3_600_000;
+  server.answers[IMPORT_PLAN] = IMPORT_DONE;
+  await joinPass(home, { now: () => clock, fetch: server.fetch })(clock + 1000, { force: false });
+  expect(auto.listPendingImports(home)).toEqual([]);
 });
 
 it('isolates an inaccessible harness configuration and reports its failure', async () => {
@@ -216,26 +210,29 @@ it('settles a failed session and advances the backlog cursor before continuing',
   const { ServerClient } = await import('@myco/member/transport.js');
   const home = scratch();
   const spool = new MemberSpool({ serverUrl: SERVER, projectId: 'proj_fixture' }, { mycoHome: home });
-  const file = path.join(home, 'transcript');
-  fs.writeFileSync(file, 'abc');
-  for (const id of ['a', 'b']) updateSessionState(spool.dir, id, state => {
-    state.agent = 'claude-code';
-    state.transcript = { path: file, transcriptId: id, inode: fs.statSync(file).ino, nextOffset: 0, parsedSize: 3 };
-  });
-  const lease = spool.withSessionLease.bind(spool);
-  const failure = spyOn(spool, 'withSessionLease').mockImplementation((id, fn) => {
-    if (id === 'a') throw new Error('fixture transcript denied');
-    return lease(id, fn);
-  });
+  const files = { a: path.join(home, 'transcript-a'), b: path.join(home, 'transcript-b') };
+  for (const [id, file] of Object.entries(files)) {
+    fs.writeFileSync(file, 'abc');
+    updateSessionState(spool.dir, id, state => {
+      state.agent = 'claude-code';
+      state.transcript = { path: file, transcriptId: id, inode: fs.statSync(file).ino, nextOffset: 0, parsedSize: 3 };
+    });
+  }
+  const open = fs.openSync;
+  const denied = spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    if (String(args[0]) === files.a) throw Object.assign(new Error('fixture transcript denied'), { code: 'EACCES' });
+    return open(...args);
+  }) as typeof fs.openSync);
+  const held = spyOn(process.stderr, 'write').mockImplementation(() => true);
   const client = new ServerClient({ serverUrl: SERVER, projectId: 'proj_fixture', token: 'fixture' },
     async () => Response.json({ stored: true, persisted: true }), { credentialSource: 'env' });
   try {
     const report = await drainBacklog(spool, client, deadlineBudget(Date.now() + 10_000), { machineId: 'machine' });
     expect(report.sessions.map(s => s.sessionId)).toEqual(['a', 'b']);
-    expect(report.sessions[0]).toMatchObject({ error: 'fixture transcript denied' });
+    expect(report.sessions[0]).toMatchObject({ error: expect.stringContaining('fixture transcript denied') });
     expect(spool.transcriptBacklogIds()).toContain('a');
     expect(fs.readFileSync(path.join(spool.dir, BACKLOG_CURSOR_FILE), 'utf8')).toBe('b');
-  } finally { failure.mockRestore(); }
+  } finally { held.mockRestore(); denied.mockRestore(); }
 });
 
 it('owns download write errors until the failed stream closes', () => {
@@ -405,84 +402,95 @@ it('keeps renewal and membership publication independent of unreadable provision
   } finally { warning.mockRestore(); }
 });
 
+/**
+ * A connected repository with one queued history import, one finished harness session recorded in it, and a fake
+ * Deployment whose import plan answers 503 until a test changes `server.answers`.
+ */
 async function historyFixture() {
   const auto = await import('@myco/member/auto-join.js');
   const registry = await import('@myco/member/registry.js');
   const home = scratch(), root = path.join(home, 'repo');
   fs.mkdirSync(root);
   execFileSync('git', ['init', '-q', root]);
-  registry.writeRegistryEntry({ version: registry.REGISTRY_VERSION, root, serverUrl: SERVER, projectId: 'proj_fixture', token: 'mt_' + 'a'.repeat(40), machineId: 'machine', joinedAt: 1, updatedAt: 1, expiresAt: 1e12, refreshAfter: 1e12 }, { mycoHome: home });
+  registry.writeRegistryEntry({ version: registry.REGISTRY_VERSION, root, serverUrl: SERVER, projectId: 'proj_fixture', token: 'mt_' + 'a'.repeat(40), machineId: 'machine', joinedAt: 1, updatedAt: 1, expiresAt: 1e15, refreshAfter: 1e15 }, { mycoHome: home });
   const pending = { root, rootKey: auto.rootKeyFor(root, home), serverUrl: SERVER, projectId: 'proj_fixture', at: 1 };
   auto.queueImport(pending, home);
   auto.markSweepDone(home, 1);
-  return { auto, home, root, pending, report: { projects: [{ projectId: 'proj_fixture', root, agents: [], endedBy: 'retry' }], unbound: 0, unattributable: 0, active: 0, dropped: 0, excluded: 0, unboundDirectories: {} } };
+  harnessHistory(home, root);
+  restores.push(withHarnessHome(home));
+  const server = fakeDeployment({ [IMPORT_PLAN]: new Response('{}', { status: 503 }) });
+  return { auto, home, root, pending, server };
 }
+
+/** The import plan's answer once the Deployment holds everything the member offered. */
+const IMPORT_DONE = Response.json({ persisted: true, candidates: [] });
 
 it('wakes a due import from a connected hook after the helper ends idle, with increasing retry gaps', async () => {
   const { joinPass } = await import('@myco/cli/member-auto-join.js');
   const { runHelper } = await import('@myco/member/helper.js');
-  const imports = await import('@myco/member/import.js');
-  const { auto, home, root, report } = await historyFixture();
-  let clock = 100, starts = 0;
-  const run = spyOn(imports, 'runImport').mockResolvedValue(report);
+  const { auto, home, root, server } = await historyFixture();
+  const start = Date.now();
+  let clock = start, starts = 0;
+  expect(await runHelper({ projectId: auto.JOIN_BUCKET, mycoHome: home, pass: joinPass(home, { now: () => clock, fetch: server.fetch }),
+    now: () => clock, sleep: async ms => { clock += ms; }, deadlineMs: 1000, lingerMs: 1, pollMs: 1 })).toMatchObject({ endedBy: 'idle', passes: 1 });
+  const first = auto.listPendingImports(home)[0]!;
+  const firstGap = first.retryAt! - start;
+  clock = first.retryAt!;
+  const { runHook } = await import('./helpers/hooks.js');
+  const previousHome = process.env.MYCO_HOME;
+  process.env.MYCO_HOME = home;
   try {
-    expect(await runHelper({ projectId: auto.JOIN_BUCKET, mycoHome: home, pass: joinPass(home, { now: () => clock }),
-      now: () => clock, sleep: async ms => { clock += ms; }, deadlineMs: 1000, lingerMs: 1, pollMs: 1 })).toMatchObject({ endedBy: 'idle', passes: 1 });
-    const first = auto.listPendingImports(home)[0]!;
-    const firstGap = first.retryAt! - 100;
-    clock = first.retryAt!;
-    const { runHook } = await import('./helpers/hooks.js');
-    const previousHome = process.env.MYCO_HOME;
-    process.env.MYCO_HOME = home;
-    try {
-      for (const hook of ['session-start', 'user-prompt-submit', 'stop'] as const) {
-        const result = await runHook(hook, { cwd: root, session_id: 'connected-' + hook, prompt: 'hello' }, {
-          now: () => clock, fetch: async () => Response.json({ persisted: true }),
-        });
-        expect(result.starts.some(args => args.includes('--join'))).toBe(true);
-        starts++;
-      }
-    } finally {
-      if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
+    for (const hook of ['session-start', 'user-prompt-submit', 'stop'] as const) {
+      const result = await runHook(hook, { cwd: root, session_id: 'connected-' + hook, prompt: 'hello' }, {
+        now: () => clock, fetch: async () => Response.json({ persisted: true }),
+      });
+      expect(result.starts.some(args => args.includes('--join'))).toBe(true);
+      starts++;
     }
-    expect(starts).toBe(3);
-    await joinPass(home, { now: () => clock })(clock + 1000, { force: false });
-    expect(auto.listPendingImports(home)[0]!.retryAt! - clock).toBeGreaterThan(firstGap);
-  } finally { run.mockRestore(); }
+  } finally {
+    if (previousHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = previousHome;
+  }
+  expect(starts).toBe(3);
+  await joinPass(home, { now: () => clock, fetch: server.fetch })(clock + 1000, { force: false });
+  expect(server.count(IMPORT_PLAN)).toBe(2);
+  expect(auto.listPendingImports(home)[0]!.retryAt! - clock).toBeGreaterThan(firstGap);
 });
 
 it('retains terminal history dispositions without rescanning them automatically', async () => {
   const { joinPass, settleConnection } = await import('@myco/cli/member-auto-join.js');
   const { readRegistryEntry } = await import('@myco/member/registry.js');
-  const imports = await import('@myco/member/import.js');
-  for (const endedBy of ['refused', 'unauthorized', 'protocol']) {
-    const { auto, home, root, pending, report } = await historyFixture();
+  const refusals: Record<string, () => Response> = {
+    refused: () => Response.json({ persisted: false, code: 'fixture_refusal', reason: 'fixture refusal' }),
+    unauthorized: () => new Response('{}', { status: 401 }),
+    protocol: () => Response.json({ server_protocol: 99 }, { status: 409 }),
+  };
+  for (const [endedBy, answer] of Object.entries(refusals)) {
+    const { auto, home, root, pending, server } = await historyFixture();
     fs.writeFileSync(path.join(auto.autoJoinDir(home), 'imports', pending.rootKey + '.json'), JSON.stringify(pending));
-    const run = spyOn(imports, 'runImport').mockResolvedValue({ ...report, projects: [{ ...report.projects[0]!, endedBy }] });
-    try {
-      await joinPass(home, { now: () => 100 })(1000, { force: false });
-      expect(auto.listPendingImports(home)[0]?.terminal).toMatchObject({ at: 100, reason: endedBy });
-      await joinPass(home, { now: () => 86_400_000 })(86_401_000, { force: false });
-      expect(run).toHaveBeenCalledTimes(1);
-      const later: Array<() => void> = [];
-      autoJoinHold({ root, hookName: 'session-end', agent: 'claude-code', sessionId: 'terminal', mycoHome: home, now: 86_400_000, later: step => later.push(step) });
-      expect(later).toEqual([]);
-      const starts: string[][] = [];
-      await settleConnection(readRegistryEntry(root, home)!, { mycoHome: home, now: () => 86_400_000, tell: true, explicitJoin: true,
-        spawn: (_command, args) => { starts.push([...args]); return { started: false }; }, fetch: async () => new Response('{}', { status: 503 }) });
-      expect(starts.some(args => args.includes('--join'))).toBe(true);
-      expect(auto.listPendingImports(home)[0]?.terminal).toBeUndefined();
-      run.mockResolvedValue({ ...report, projects: [{ projectId: 'proj_fixture', root, agents: [] }] });
-      await joinPass(home, { now: () => 86_400_000 })(86_401_000, { force: false });
-      expect(auto.listPendingImports(home)).toEqual([]);
-    } finally { run.mockRestore(); }
+    server.answers[IMPORT_PLAN] = answer;
+    const at = Date.now(), later = at + 86_400_000;
+    await joinPass(home, { now: () => at, fetch: server.fetch })(at + 1000, { force: false });
+    expect(auto.listPendingImports(home)[0]?.terminal, endedBy).toMatchObject({ at, reason: expect.any(String) });
+    await joinPass(home, { now: () => later, fetch: server.fetch })(later + 1000, { force: false });
+    expect(server.count(IMPORT_PLAN)).toBe(1);
+    const deferred: Array<() => void> = [];
+    autoJoinHold({ root, hookName: 'session-end', agent: 'claude-code', sessionId: 'terminal', mycoHome: home, now: later, later: step => deferred.push(step) });
+    expect(deferred).toEqual([]);
+    const starts: string[][] = [];
+    await settleConnection(readRegistryEntry(root, home)!, { mycoHome: home, now: () => later, tell: true, explicitJoin: true,
+      spawn: (_command, args) => { starts.push([...args]); return { started: false }; }, fetch: async () => new Response('{}', { status: 503 }) });
+    expect(starts.some(args => args.includes('--join'))).toBe(true);
+    expect(auto.listPendingImports(home)[0]?.terminal).toBeUndefined();
+    server.answers[IMPORT_PLAN] = IMPORT_DONE;
+    await joinPass(home, { now: () => later, fetch: server.fetch })(later + 1000, { force: false });
+    expect(auto.listPendingImports(home)).toEqual([]);
   }
 });
 
 it('retains an unreadable opt-out candidate while importing independent history', async () => {
   const { joinPass } = await import('@myco/cli/member-auto-join.js');
-  const imports = await import('@myco/member/import.js');
-  const { auto, home, pending, report } = await historyFixture();
+  const { auto, home, server } = await historyFixture();
+  server.answers[IMPORT_PLAN] = IMPORT_DONE;
   const bad = path.join(home, 'bad');
   fs.mkdirSync(path.join(bad, '.git'), { recursive: true });
   recordDefaultDeployment(SERVER, { mycoHome: home });
@@ -491,14 +499,12 @@ it('retains an unreadable opt-out candidate while importing independent history'
   auto.markLeft(key, home, 1);
   const marker = path.join(auto.autoJoinDir(home), 'left', key + '.json');
   fs.writeFileSync(marker, '{ torn');
-  const run = spyOn(imports, 'runImport').mockResolvedValue({ ...report, projects: [{ projectId: pending.projectId, root: pending.root, agents: [] }] });
-  try {
-    await joinPass(home, { now: () => 100 })(1000, { force: false });
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(auto.listPendingImports(home)).toEqual([]);
-    expect(auto.listJoinRequests(home)).toHaveLength(1);
-    expect(fs.readFileSync(marker, 'utf8')).toBe('{ torn');
-  } finally { run.mockRestore(); }
+  const now = Date.now();
+  await joinPass(home, { now: () => now, fetch: server.fetch })(now + 1000, { force: false });
+  expect(server.count(IMPORT_PLAN)).toBe(1);
+  expect(auto.listPendingImports(home)).toEqual([]);
+  expect(auto.listJoinRequests(home)).toHaveLength(1);
+  expect(fs.readFileSync(marker, 'utf8')).toBe('{ torn');
 });
 
 it('retains a join request while reconnect reconciliation is busy', async () => {
@@ -524,33 +530,22 @@ it('retains a join request while reconnect reconciliation is busy', async () => 
 it('settles every opt-out report before leave resumes registry mutations', async () => {
   const { runLeave } = await import('@myco/cli/member.js');
   const registry = await import('@myco/member/registry.js');
-  const auto = await import('@myco/member/auto-join.js');
-  const reader = await import('@myco/cli/deployment-reader.js');
   const home = scratch(), root = path.join(home, 'repo');
   fs.mkdirSync(root);
   execFileSync('git', ['init', '-q', root]);
   registry.writeRegistryEntry({ version: registry.REGISTRY_VERSION, root, serverUrl: SERVER, projectId: 'proj_fixture',
     token: 'mt_' + 'a'.repeat(40), machineId: 'machine', joinedAt: 1, updatedAt: 1, expiresAt: 10_000, refreshAfter: 5_000 }, { mycoHome: home });
-  const opened = await reader.openDeploymentRequests('registry', { mycoHome: home, now: () => 100 }, SERVER);
-  if (!opened.ok) throw new Error(opened.error.message);
-  let calls = 0, settled = false;
-  const keys = spyOn(auto, 'rootKeysFor').mockReturnValue([rootKeyFor(root, home), 'a'.repeat(32)]);
-  const requests = spyOn(reader, 'openDeploymentRequests').mockResolvedValue({ ok: true, value: { ...opened.value, post: () => {
-    if (++calls === 1) throw new Error('fixture report failed');
-    return new Promise<{ ok: true; value: Record<string, unknown> }>(resolve => setImmediate(() => {
-      settled = true;
-      resolve({ ok: true, value: {} });
-    }));
-  } } });
-  const remove = registry.removeRegistryEntry;
-  const deletion = spyOn(registry, 'removeRegistryEntry').mockImplementation((...args: Parameters<typeof remove>) => {
-    expect(settled).toBe(true);
-    return remove(...args);
-  });
-  try {
-    expect(await runLeave([], { mycoHome: home, cwd: root, now: () => 100, stdout: () => {}, stderr: () => {} })).toBe(true);
-    expect(calls).toBe(2);
-  } finally { deletion.mockRestore(); requests.mockRestore(); keys.mockRestore(); }
+  const answered: Array<{ connected: boolean }> = [];
+  const server = fakeDeployment({ [UNCAPTURED_STATE_PATH]: async () => {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    answered.push({ connected: registry.readRegistryEntry(root, home) !== null });
+    if (answered.length === 1) throw new Error('fixture report failed');
+    return Response.json({ persisted: true });
+  } });
+  expect(await runLeave([], { mycoHome: home, cwd: root, now: () => 100, stdout: () => {}, stderr: () => {}, fetch: server.fetch })).toBe(true);
+  expect(answered.length).toBeGreaterThan(0);
+  expect(answered.every(report => report.connected)).toBe(true);
+  expect(registry.readRegistryEntry(root, home)).toBeNull();
 });
 
 it('keeps a durable opt-out intact during background connection repair', async () => {
@@ -583,30 +578,24 @@ it('does not wake history the join pass cannot act on', async () => {
 it('renews a queued history credential before importing and retains transient renewal failures', async () => {
   const { joinPass } = await import('@myco/cli/member-auto-join.js');
   const registry = await import('@myco/member/registry.js');
-  const imports = await import('@myco/member/import.js');
-  const { auto, home, root, pending, report } = await historyFixture();
+  const { auto, home, root, pending, server } = await historyFixture();
   const fresh = 'mt_' + 'b'.repeat(40);
-  const expire = () => registry.writeRegistryEntry({ ...registry.readRegistryEntry(root, home)!, refreshAfter: 1, expiresAt: 90 }, { mycoHome: home });
+  const now = Date.now();
+  const expire = () => registry.writeRegistryEntry({ ...registry.readRegistryEntry(root, home)!, refreshAfter: 1, expiresAt: now - 10 }, { mycoHome: home });
   expire();
-  const run = spyOn(imports, 'runImport').mockImplementation(async () => {
-    expect(registry.readRegistryEntry(root, home)?.token).toBe(fresh);
-    return { ...report, projects: [{ projectId: pending.projectId, root, agents: [] }] };
-  });
-  const calls: string[] = [];
-  try {
-    await joinPass(home, { now: () => 100, fetch: async input => {
-      calls.push(new URL(String(input)).pathname);
-      return Response.json({ refreshed: true, token: fresh, tokenId: 'fresh', expiresAt: 1e12, refreshAfter: 1e12 });
-    } })(1000, { force: false });
-    expect(calls).toEqual(['/tokens/refresh']);
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(auto.listPendingImports(home)).toEqual([]);
-    expire(); auto.queueImport(pending, home); run.mockClear();
-    await joinPass(home, { now: () => 100, fetch: async () => new Response('{}', { status: 503 }) })(1000, { force: false });
-    expect(run).not.toHaveBeenCalled();
-    expect(auto.listPendingImports(home)[0]).toMatchObject({ attempts: 1 });
-    expect(auto.listPendingImports(home)[0]?.terminal).toBeUndefined();
-  } finally { run.mockRestore(); }
+  const bearers: Array<string | null> = [];
+  server.answers['/tokens/refresh'] = () => Response.json({ refreshed: true, token: fresh, tokenId: 'fresh', expiresAt: 1e15, refreshAfter: 1e15 });
+  server.answers[IMPORT_PLAN] = request => { bearers.push(request.headers.get('authorization')); return IMPORT_DONE.clone(); };
+  await joinPass(home, { now: () => now, fetch: server.fetch })(now + 1000, { force: false });
+  expect(server.requests).toEqual(['/tokens/refresh', IMPORT_PLAN]);
+  expect(bearers).toEqual(['Bearer ' + fresh]);
+  expect(auto.listPendingImports(home)).toEqual([]);
+  expire(); auto.queueImport(pending, home);
+  const down = fakeDeployment({ '/tokens/refresh': new Response('{}', { status: 503 }) });
+  await joinPass(home, { now: () => now, fetch: down.fetch })(now + 1000, { force: false });
+  expect(down.count(IMPORT_PLAN)).toBe(0);
+  expect(auto.listPendingImports(home)[0]).toMatchObject({ attempts: 1 });
+  expect(auto.listPendingImports(home)[0]?.terminal).toBeUndefined();
 });
 
 it('reads quoted Windows runner programs and URLs from the task it writes', async () => {
