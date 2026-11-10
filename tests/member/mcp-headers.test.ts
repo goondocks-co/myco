@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { deploymentScopedHeaders, memberHeaders } from '@myco/member/constants.js';
-import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
+import { REGISTRY_VERSION, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { tempMycoHome } from './helpers/server.js';
@@ -47,6 +47,13 @@ async function headers(args: string[], cwd: string): Promise<{ out: string[]; er
 }
 
 describe('myco member mcp-headers', () => {
+  it('serves no headers for a stored membership naming plain http off this machine', async () => {
+    const plain = 'http://server.example';
+    writeDeploymentMembership({ serverUrl: plain, token: TOKEN, machineId: 'm1', joinedAt: 1, updatedAt: 1 }, { mycoHome });
+    const result = await headers(['--credential', 'registry', '--server', plain], os.homedir());
+    expect(result.out).toEqual([]);
+    expect(process.exitCode).toBe(1);
+  });
   it('resolves the named Deployment outside any joined project without inventing a project header', async () => {
     join(TOKEN);
     const result = await headers(['--credential', 'registry', '--server', SERVER_A], os.homedir());

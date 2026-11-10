@@ -22,7 +22,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 ## Core Invariants
 
 - `AGENTS.md` is the canonical rules file. Agent-specific instruction files should stay thin and point back here.
-- Hooks in `src/hooks/` must stay thin and delegate to the member seam (`src/member/`): build the envelope, append it to the spool, drain under the hook's own budget. Do not put business logic or long-running processing in hook entry points. The hooks+member import closure is gated (`tests/meta/member-seam-boundary.test.ts`): no daemon, grove, vault, db, host, or installer code behind a hook.
+- Hooks in `src/hooks/` must stay thin and delegate to the member seam (`src/member/`): build the envelope, append it to the spool, drain under the hook's own budget. Do not put business logic or long-running processing in hook entry points. The hooks+member import closure is gated (`tests/meta/boundaries/member-seam-boundary.test.ts`): no daemon, grove, vault, db, host, or installer code behind a hook.
 - The Deployment is the authority for event processing, sessions, spores and agent work. Agent work runs only on registered runners.
 - Recurring Deployment work goes through the server wake tick, and every job and scheduled task it runs is declared in one registry (`packages/myco-server/src/core/jobs.ts`); the member binary registers no timers. Do not add ad hoc polling timers on either side. A dispatch limit queues the run; a per-day ceiling refuses it and the next wake decides again.
 - Session ID is the durable key. Do not tie persistent state to hook lifecycle events.
@@ -52,7 +52,7 @@ Myco captures project memory and serves it back through context injection, MCP t
 - Prototype generated content before building its plumbing. For any feature whose deliverable is generated content (a wiki, docs, reports, summaries, prompts), milestone 1 MUST be a cheap disposable prototype of the content itself — real sample output judged by a human. No format library, harness task, UI, or plan work for the feature until the content passes that judgment.
 - When in doubt, ask whether the rule belongs here or should live in Myco context instead.
 - Test critical paths, not edge cases, tests to prevent regressions, not to verify correctness.
-- Test behavior, not code. Assert what a caller, user or stored record observes: the response, the refusal, the persisted state, the rendered output. Never assert source text, file contents, call order, SQL or plan shape, or internal wiring. A test that breaks when the code is refactored without changing behavior is a defect. The one exception is an architecture gate that enforces an owner-decided boundary (one SQL layer, one settings writer, the hook seam); there the boundary is the behavior.
+- Test behavior, not code. Assert what a caller, user or stored record observes: the response, the refusal, the persisted state, the rendered output. Never assert source text, file contents, call order, SQL or plan shape, or internal wiring. A test that breaks when the code is refactored without changing behavior is a defect. The one exception is an architecture gate that enforces an owner-decided boundary (one SQL layer, one settings writer, the hook seam, and the owner's security boundaries: member-bearer composition, member and document reads, daemon and supervisor start, auto-join locks); there the boundary is the behavior. These gates live in `tests/meta/boundaries/`, apart from the SQL layer's `db-layer`; a gate goes there only once the owner ratifies it.
 
 ## Quality Gates
 

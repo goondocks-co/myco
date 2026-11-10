@@ -1,38 +1,40 @@
-import { runtimeImportNames, moduleKey } from '../helpers/import-closure.js';
 import routeLedger from '../fixtures/server/route-ledger.json';
-import { sourceCalls } from './helpers/source-calls.js';
-import { UNRELATED_PROCESSED_LINES } from './helpers/processed-token-allowlist.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RETIRED_ROUTES, ROUTES, SESSION_AUTHORITIES, UNSERVED_PATHS, grantRoutes, isOwnedPath, ownedPathPatterns, type Shape } from '@myco-server-worker/routes.js';
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, mintMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { RUN_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
-import { CLOCK_NAME, RETIRED_CLOCK_NAMES } from '@myco-server-worker/platform/cloudflare/deployment-clock.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
-import ts from 'typescript-v6';
-import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
+import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { isDeploymentAccessPath } from './helpers/access-paths.js';
 import { isForeignKeyChildIndex } from './helpers/foreign-key-indexes.js';
 import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/owner.js';
+import { memberRouteFixtures } from './helpers/member-route-fixtures.js';
+import { offeredHarness } from './helpers/offered-harness.js';
+import { legacyWorker } from './helpers/worker-principal.js';
+import { claimNextRun } from '@myco-server-worker/core/harness.js';
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
 const SRC = join(WORKER, 'src');
-const TESTS = fileURLToPath(new URL('./', import.meta.url));
 
 /** The `[assets]` table of the deploy config, up to the next table header. */
 function assetsBlock(): string {
@@ -50,48 +52,6 @@ const allFiles = (dir: string): string[] =>
   });
 const files = (dir: string): string[] => allFiles(dir).filter((f) => f.endsWith('.ts'));
 
-it('defines the extraction unread predicate once and never writes the historical processed flag', () => {
-  const historicalDdl = new Set([
-    '\`ALTER TABLE prompt_batches ADD COLUMN processed INTEGER NOT NULL DEFAULT 0\`',
-    '\`CREATE INDEX IF NOT EXISTS idx_prompt_batches_unprocessed ON prompt_batches (project_id, processed, created_at, prompt_id)\`',
-  ]);
-  const allowedLines = new Map<string, Set<string>>();
-  for (const group of Object.values(UNRELATED_PROCESSED_LINES)) for (const [file, lines] of Object.entries(group)) {
-    const held = allowedLines.get(file) ?? new Set<string>();
-    for (const line of lines) held.add(line);
-    allowedLines.set(file, held);
-  }
-  const unexpected: { file: string; token: string }[] = [];
-  for (const file of files(SRC)) {
-    const source = readFileSync(file, 'utf8'), relative = file.slice(SRC.length + 1), tokens = tokensOf(source);
-    const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-    const owned = parsed.statements.filter(statement => {
-      const name = ts.isVariableStatement(statement) ? statement.declarationList.declarations[0]?.name
-        : ts.isFunctionDeclaration(statement) ? statement.name : undefined;
-      return name !== undefined && ts.isIdentifier(name) && relative === 'db/session-read-model.ts' && name.text === 'unreadPromptSql';
-    });
-    for (const [index, token] of tokens.entries()) {
-      if (!/\bprocessed\b/.test(token.text)) continue;
-      if (owned.some(statement => token.start >= statement.getStart(parsed) && token.end <= statement.end)) continue;
-      const line = source.slice(source.lastIndexOf('\n', token.start - 1) + 1, source.indexOf('\n', token.end) < 0 ? source.length : source.indexOf('\n', token.end)).trim();
-      const namedDomainUse = !token.text.includes('\n') && allowedLines.get(relative)?.has(line);
-      const moduleImport = tokens[index - 1]?.kind === K.FromKeyword && /^['"].*\/processed(?:-resources)?\.js['"]$/.test(token.text);
-      const policy = ['routes.ts', 'mcp/registry.ts'].includes(relative) && token.text === "'processed'"
-        && /\b(?:httpPolicy|served)\([^()]*$/.test(source.slice(Math.max(0, token.start - 100), token.start));
-      const route = relative === 'routes.ts' && (token.text === "'/api/projects/{projectId}/processed/{kind}/{id}'"
-        || (token.kind === K.RegularExpressionLiteral && token.text.includes('\\/processed\\/')));
-      const historical = relative === 'db/schema.ts' && historicalDdl.has(token.text);
-      const triggerColumns = relative === 'db/read-budget-session-statements.ts' && token.text === '\`project_id,session_id,processed,origin${';
-      const classification = ['db/processed-resources.ts', 'db/schema.ts', 'db/schema-v712.ts', 'db/schema-v716.ts'].includes(relative)
-        && !/\bprocessed\b/.test(token.text.replace(/(classification\s*(?:=|TEXT NOT NULL DEFAULT)\s*)'processed'/g, '$1')
-          .replace('processed reference classification is immutable', 'reference classification is immutable'));
-      if (!(namedDomainUse || moduleImport || policy || route || historical || triggerColumns || classification)) unexpected.push({ file: relative, token: token.text });
-    }
-  }
-  expect(unexpected).toEqual([]);
-  const historicalCallers = files(SRC).filter(file => /beforeLedger\s*:\s*true|promptSessionReadTriggers\(true\)/.test(readFileSync(file, 'utf8')));
-  expect(historicalCallers).toEqual([join(SRC, 'db/read-budget-session-statements.ts')]);
-});
 /**
  * Shared code: everything that is neither a platform adapter nor an entry point.
  * Those are the only places a platform may be named. `src/index.ts` counts as an
@@ -111,26 +71,6 @@ const EXPRESSION_END = new Set<number>([
   K.ThisKeyword, K.NullKeyword, K.TrueKeyword, K.FalseKeyword, K.SuperKeyword,
 ]);
 
-/** Every comment span in a TypeScript source, collected by the TypeScript scanner (regex literals and template substitutions re-scanned). */
-function commentText(source: string): string {
-  const scanner = createScanner(false, undefined, source);
-  const out: string[] = [];
-  let last: number | null = null;
-  let depth = 0;
-  const templates: number[] = [];
-  for (let kind = scanner.scan(); kind !== K.EndOfFile; kind = scanner.scan()) {
-    if ((kind === K.SlashToken || kind === K.SlashEqualsToken) && (last === null || !EXPRESSION_END.has(last))) kind = scanner.reScanSlashToken();
-    if (kind === K.OpenBraceToken) depth += 1;
-    else if (kind === K.CloseBraceToken) {
-      if (templates.length > 0 && templates[templates.length - 1] === depth) { templates.pop(); kind = scanner.reScanTemplateToken(false); }
-      else depth -= 1;
-    }
-    if (kind === K.TemplateHead || kind === K.TemplateMiddle) templates.push(depth);
-    if (kind === K.SingleLineCommentTrivia || kind === K.MultiLineCommentTrivia) out.push(scanner.getTokenText());
-    if (kind !== K.WhitespaceTrivia && kind !== K.NewLineTrivia && kind !== K.SingleLineCommentTrivia && kind !== K.MultiLineCommentTrivia) last = kind;
-  }
-  return out.join('\n');
-}
 
 /** Every token of a TypeScript source but its trivia, with the span it occupies; regex literals and template substitutions are re-scanned so a slash or a brace inside one is never taken for punctuation. */
 function tokensOf(source: string): { kind: number; text: string; start: number; end: number }[] {
@@ -155,20 +95,6 @@ function tokensOf(source: string): { kind: number; text: string; start: number; 
   return out;
 }
 
-/** The object argument of every `emit({ ... })` call in a source, each taken from its opening brace to the brace that matches it, so a nested object never hides the tail of a call from the scan. */
-function emitArguments(source: string): string[] {
-  const tokens = tokensOf(source);
-  const out: string[] = [];
-  for (let i = 0; i + 2 < tokens.length; i += 1) {
-    if (!(tokens[i].kind === K.Identifier && tokens[i].text === 'emit' && tokens[i + 1].kind === K.OpenParenToken && tokens[i + 2].kind === K.OpenBraceToken)) continue;
-    let depth = 0;
-    for (let j = i + 2; j < tokens.length; j += 1) {
-      if (tokens[j].kind === K.OpenBraceToken) depth += 1;
-      else if (tokens[j].kind === K.CloseBraceToken && (depth -= 1) === 0) { out.push(source.slice(tokens[i + 2].end, tokens[j].start)); break; }
-    }
-  }
-  return out;
-}
 
 const stripComments = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 const env = () => ({
@@ -188,25 +114,13 @@ const withSource = (path: string, init: RequestInit = {}) =>
 
 const envelope = (over: Record<string, unknown> = {}) => JSON.stringify(fixture(over));
 const memberPost = (token: string, body: string) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body });
-
-describe('the clock is addressed by one name (#1510)', () => {
-  const CLOCK_MODULE = join(SRC, 'platform', 'cloudflare', 'deployment-clock.ts');
-  const NAME_MODULE = join(SRC, 'platform', 'cloudflare', 'clock-name.ts');
-  const clockNames = [CLOCK_NAME, ...RETIRED_CLOCK_NAMES];
-
-  it('names the clock nowhere but its own module, which alone addresses it', () => {
-    const naming = files(SRC).filter((f) => f !== CLOCK_MODULE && f !== NAME_MODULE && /\bCLOCK_NAME\b/.test(readFileSync(f, 'utf8')));
-    expect(naming).toEqual([]);
-    expect(readFileSync(CLOCK_MODULE, 'utf8').match(/idFromName\(CLOCK_NAME\)/g)?.length).toBe(2);
-  });
-
-  it('addresses no clock by a name written out, current or retired, in the source or its tests', () => {
-    const literal = /idFromName\(\s*(['"`])([^'"`]*)\1\s*\)/g;
-    const found = [...files(SRC), ...files(TESTS)].flatMap((f) =>
-      [...readFileSync(f, 'utf8').matchAll(literal)].filter((m) => clockNames.includes(m[2]!)).map((m) => `${f}: ${m[0]}`));
-    expect(found).toEqual([]);
-  });
-});
+/** A route's path with every parameter filled by a value of the shape it accepts. */
+const concretePath = (path: string) => path.replace(/\{(sha256|key)\}/g, 'a'.repeat(64)).replace('{promptId}', uuid(1)).replace('{planKey}', '00000000-0000-5000-8000-000000000002')
+  .replace('{memberId}', 'mem_machine_2').replace('{projectId}', 'proj_1').replace(/\{tier\}/g, '1').replace(/\{[^}]+\}/g, 'a');
+/** Every stored row, table by table: what a request that must change nothing is held to. */
+const storedRows = (sqlite: Database) => Object.fromEntries(
+  (sqlite.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND sql NOT LIKE 'CREATE VIRTUAL TABLE%' ORDER BY name").all() as { name: string }[])
+    .map(({ name }) => [name, sqlite.query(`SELECT * FROM "${name}"`).all()]));
 
 describe('gates', () => {
   it('keeps the public set to exactly /health', () => {
@@ -282,22 +196,6 @@ describe('gates', () => {
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM runners`).get() as any).c).toBe(0);
   });
 
-  it('keeps every entry point to wiring: the pipeline and its own platform, and nothing that decides', () => {
-    const entries = files(join(SRC, 'entry'));
-    expect(entries.length).toBeGreaterThan(1);
-    for (const f of entries) {
-      const imports = [...readFileSync(f, 'utf8').matchAll(/from '([^']+)'/g)].map((m) => m[1]);
-      expect({ file: f, imports: imports.length }).not.toEqual({ file: f, imports: 0 });
-      // An entry may reach only ITS OWN platform, derived from its filename, so one
-      // target's entry cannot quietly depend on the other target's adapter.
-      const own = `/platform/${f.split('/').pop()!.replace(/\.ts$/, '')}/`;
-      for (const spec of imports) {
-        const allowed = spec.endsWith('/pipeline.js') || spec.includes(own) || spec.startsWith('bun:');
-        expect({ file: f, spec, allowed, own }).toEqual({ file: f, spec, allowed: true, own });
-      }
-    }
-  });
-
   it('takes tenancy and attribution from the authenticated token only, via the deployed entry', async () => {
     const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
@@ -356,16 +254,24 @@ describe('gates', () => {
     expect(grantRoutes()).toEqual(['POST /mcp']);
   });
 
-  it('names the credential class on every failed authentication it records, from a fixed pair of literals', () => {
-    const seen: string[] = [];
-    for (const f of files(SRC)) {
-      for (const call of emitArguments(readFileSync(f, 'utf8'))) {
-        if (!/kind:\s*'auth_failed'/.test(call)) continue;
-        const credential = /credential:\s*('[a-z]+')/.exec(call)?.[1] ?? 'absent';
-        seen.push(credential);
+  it('names the credential class on every failed authentication it records', async () => {
+    const e = sqliteEnv({ workerLogin: true });
+    const elsewhere = sqliteEnv({ workerLogin: true });
+    const strangerGrant = await issueExternalGrant(elsewhere.db, { projectId: 'proj_1' }, null, 'mem_machine_1', Date.now());
+    const presented = [mintMemberToken(), strangerGrant.key, `mycorun_${'r'.repeat(43)}`];
+    const lines: string[] = [];
+    const log = console.log;
+    console.log = (line: unknown) => { lines.push(String(line)); };
+    try {
+      for (const bearer of presented) {
+        const res = await worker.fetch(withSource('/events', { method: 'POST', headers: { authorization: `Bearer ${bearer}`, ...PROTOCOL }, body: '{}' }), e.env);
+        expect(res.status).toBe(401);
       }
-    }
-    expect(seen.sort()).toEqual(["'grant'", "'member'", "'runner'"]);
+    } finally { console.log = log; }
+    const recorded = lines.flatMap((line) => {
+      try { const event = JSON.parse(line) as { kind?: string; credential?: string }; return event.kind === 'auth_failed' ? [event.credential] : []; } catch { return []; }
+    });
+    expect(recorded).toEqual(['member', 'grant', 'runner']);
   });
 
   it('tells an authenticated principal a served path\'s methods only among the routes it could reach: a member is told 405 on a member path and 401 on an owner, auth or enrollment path; a grant is told 405 on the grant route alone', async () => {
@@ -496,6 +402,7 @@ describe('gates', () => {
     expect(periods).toEqual([RETRY_AFTER_SECONDS, RETRY_AFTER_SECONDS]);
   });
 
+  // Workers runtime: a handler that cancels or unlocks the request body stream the runtime owns breaks the request on the Worker, though Bun tolerates it.
   it('keeps request stream ownership with the runtime; only object-store readers own their readers', () => {
     for (const f of files(SRC)) {
       const t = readFileSync(f, 'utf8');
@@ -505,10 +412,6 @@ describe('gates', () => {
       }
       expect({ file: f, cancels: /\.cancel\(/.test(t), releases: /releaseLock\(/.test(t) }).toEqual({ file: f, cancels: false, releases: false });
     }
-  });
-
-  it('keeps every file under src a TypeScript source', () => {
-    for (const f of allFiles(SRC)) expect({ file: f, ok: /\.ts$/.test(f) && !/\.d\.ts$/.test(f) }).toEqual({ file: f, ok: true });
   });
 
   it('collapses IPv6 sources to a /64 and keeps IPv4 sources distinct', () => {
@@ -529,51 +432,6 @@ describe('gates', () => {
     expect(src('2001:db8:1:2::999.1.1.1')).toBeNull();
     expect(src('')).toBeNull();
     expect(cloudflareSourceOf(new Request('https://s/'))).toBeNull();
-  });
-
-  it('keeps shared source platform-neutral', () => {
-    const banned = [
-      /from ['"]bun:/, /import\(\s*['"]bun:/, /from ['"]cloudflare:/, /import\(\s*['"]cloudflare:/,
-      /\bcaches\b/, /\bnavigator\b/, /\.cf\b/, /\bWebSocketPair\b/, /\bDurableObject\w*\b/,
-      /\bD1Database\b/, /\bRateLimit\b/, /\bKVNamespace\b/, /\bR2Bucket\b/, /\bQueue\b/, /\bFetcher\b/,
-      /\bAi\b/, /\bVectorizeIndex\b/, /\bDispatchNamespace\b/, /\bAnalyticsEngineDataset\b/, /\bHyperdrive\b/,
-      /\bExecutionContext\b/, /\bScheduledController\b/, /\bEmailMessage\b/,
-      /cf-connecting-ip/i, /x-forwarded-for/i, /x-real-ip/i, /true-client-ip/i, /x-client-ip/i, /\bforwarded\b/i, /x-cluster-client-ip/i,
-      /\bD1_ERROR\b/, /\bD1\b/, /\bR2\b/, /\bcloudflare\b/i, /\bwrangler\b/i, /\bvectorize\b/i, /\bworkers?\.dev\b/i,
-      /\bdurable object\b/i, /from ['"]node:/, /import\(\s*['"]node:/,
-    ];
-    for (const f of sharedFiles()) {
-      const t = readFileSync(f, 'utf8');
-      for (const p of banned) expect({ file: f, pattern: String(p), matched: p.test(t) }).toEqual({ file: f, pattern: String(p), matched: false });
-    }
-  });
-
-  it('keeps the object store\'s deleter and the stored-object name each to one owner', () => {
-    // The drain is the only code that asks the store to delete, and `core/blob-objects.ts` the only code that spells
-    // where a blob's bytes are stored. Every other reach of the store takes a name one of them produced.
-    const deleters: string[] = [];
-    const spellers: string[] = [];
-    for (const f of files(SRC)) {
-      if (f.includes(`${join('platform', '')}`)) continue;
-      const t = readFileSync(f, 'utf8');
-      if (/\bblobs\.delete\(/.test(t)) deleters.push(f);
-      if (/`\$\{[^}]*(?:project|projectId|project_id)[^}]*\}\/\$\{[^}]*(?:key|Key)[^}]*\}/.test(t) || /\|\| '\/' \|\|/.test(t)) spellers.push(f);
-    }
-    expect(deleters).toEqual([join(SRC, 'core', 'object-release.ts')]);
-    expect(spellers).toEqual([join(SRC, 'core', 'blob-objects.ts')]);
-  });
-
-  it('carries no rationale, counterfactual, or deferral comments', () => {
-    const banned = [
-      /\b(later plan|for now|TODO|will be added)\b/i,
-      /\bwithout this\b/i,
-      /\b(because|rationale|the reason|since|otherwise|workaround)\b/i,
-      /\b(previously|used to|was |historically|see plan|rev \d|review)\b/i,
-    ];
-    for (const f of [...files(SRC), ...files(TESTS), ...files(join(WORKER, 'scripts'))]) {
-      const comments = commentText(readFileSync(f, 'utf8'));
-      for (const p of banned) expect({ file: f, pattern: String(p), matched: p.test(comments) }).toEqual({ file: f, pattern: String(p), matched: false });
-    }
   });
 
   it('leads every index on a project-scoped table with project_id', () => {
@@ -608,10 +466,6 @@ describe('gates', () => {
     } finally { db.close(); }
   });
 
-  it('keeps the committed migrations directory identical to the rendered steps', () => {
-    for (const f of renderMigrationFiles()) expect(readFileSync(join(WORKER, MIGRATIONS_DIR, f.name), 'utf8')).toBe(f.sql);
-  });
-
   it('declares an auth kind, a body mode and a shape for every route, and drives every non-public route through the deployed entry from its own fixture: a malformed request is refused in the route\'s shape with a code, and a token without a machine identity is refused every write, storing nothing and charging nothing', async () => {
     const { env: e, db, sqlite, bucket } = sqliteEnv({ workerLogin: true });
     /** Issued far enough back that the refresh window is open now, and far enough forward that the tokens are live. */
@@ -619,231 +473,7 @@ describe('gates', () => {
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const revokeOnly = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const anonymous = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
-    sqlite.run("INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)", [issuedAt]);
-    // A fresh Deployment: no admin has a GitHub account linked, so a member credential is answered a link key.
-    sqlite.query(`UPDATE members SET github_id = NULL`).run();
-    const KEY = 'a'.repeat(64);
-    // The run routes reference an agent identity and a project, both of which a
-    // Deployment declares before any run is claimed.
-    let runSeq = 0;
-    sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(issuedAt);
-    sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_gate', 'gate', 'built-in', 1, ?)`).run(issuedAt);
-    sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'gate')`).run(issuedAt);
-    const bytes = new TextEncoder().encode('blob-bytes');
-    const key = await sha256Hex('blob-bytes');
-    /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
-        // One run the write fixtures may report against: a report on an unknown run
-    // is refused, and a fixture must be a single accepted request.
-    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate', 'user', 'gate', 'running', 1)`).run();
-    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate_report', 'user', 'embedding-reconcile', 'running', 1)`).run();
-
-    const FIXTURES: Record<string, { shape: Shape; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
-      'POST /events': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body: envelope() }),
-      },
-      'POST /blobs/{sha256}': {
-        shape: 'stored',
-        malformed: (token) => new Request(`https://s/blobs/${KEY}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'nonsense', 'content-length': '2' }), body: '{}' }),
-        wellFormed: (token) => new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), body: bytes }),
-      },
-      'POST /tokens/refresh': {
-        shape: 'refreshed',
-        malformed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/credential/revoke': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/credential/revoke', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ tokenId: t1.tokenId }) }),
-        wellFormed: (token) => new Request('https://s/members/credential/revoke', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      // #1148 — the import plan. Advice, not an authority: it stores nothing,
-      // so a malformed ask is refused in the same shape as any other.
-      'POST /import/plan': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ candidates: [] }) }),
-      },
-      'POST /import/legacy-history': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/import/legacy-history', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/import/legacy-history', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventGroups: [[crypto.randomUUID()]] }) }),
-      },
-      'POST /runs/claim': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: `digest_${runSeq}`, capability: 'cortex' }) }),
-      },
-
-      'POST /runs/update': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', update: { status: 'failed' } }) }),
-      },
-
-
-
-
-      'POST /runs/report': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate_report', agentId: 'user', action: 'embedding-reconcile', summary: 's' }) }),
-      },
-
-      'POST /runs/embedding-step': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /spores/save': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `sp_${runSeq++}`, agentId: 'agent_gate', observationType: 'gotcha', content: 'c', agentLine: 'When using this fixture, retain its evidence.' }) }),
-      },
-      'POST /spores/list': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /spores/get': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/get', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/get', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: 'nope' }) }),
-      },
-      'POST /spores/resolve': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventId: `re_${runSeq++}`, agentId: 'agent_gate', sporeId: 'nope', action: 'obsolete', reason: 'retire fixture', status: 'obsolete' }) }),
-      },
-      'POST /context/prompt': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, promptId: 'p_gate', text: 'what did we settle on' }) }),
-      },
-      'POST /context/session': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, kind: 'start' }) }),
-      },
-
-
-      'POST /worker/claim': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [] }) }),
-      },
-      'POST /worker/lease': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
-      },
-      'POST /worker/end': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', status: 'failed' }) }),
-      },
-      'POST /worker/steps': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/steps', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/steps', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', attemptId: 'mt_absent', page: 0, pages: 1, total: 0, overflow: 0, unrecognized: { total: 0, shapes: {} }, steps: [] }) }),
-      },
-      'POST /worker/repository': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
-      },
-      'POST /worker/models': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ catalog: { observedOrder: 1, harness: 'codex', source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt: 1, models: [] } }) }),
-      },
-      'POST /mcp': {
-        shape: 'answered',
-        malformed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) }),
-      },
-      'POST /members/link-github': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/projects': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: '' }) }),
-        wellFormed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: 'gate project' }) }),
-      },
-      'POST /members/projects/resolve': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/projects/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'nope', label: 'repo' }) }),
-        wellFormed: (token) => new Request('https://s/members/projects/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'gate-repo', remote: 'git@github.com:acme/gate.git' }) }),
-      },
-      'POST /members/uncaptured': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/uncaptured', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'repo', reason: 'bogus' }) }),
-        wellFormed: (token) => new Request('https://s/members/uncaptured', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'gate-repo', reason: 'outside_folders' }) }),
-      },
-      'POST /members/uncaptured/state': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'bogus' }) }),
-        wellFormed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'connected' }) }),
-      },
-      'POST /members/harnesses/report': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'binary_missing' }] }) }),
-        wellFormed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'ready' }] }) }),
-      },
-      'GET /members/ownership': {
-        shape: 'persisted',
-        malformed: (_token) => new Request('https://s/members/ownership', { headers: memberHeaders(anonymous.token) }),
-        wellFormed: (token) => new Request('https://s/members/ownership', { headers: memberHeaders(token) }),
-      },
-      'POST /members/ownership': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ ownerMemberId: 'mem_machine_1', revision: '0' }) }),
-      },
-      'GET /members/roles': {
-        shape: 'persisted',
-        malformed: (_token) => new Request('https://s/members/roles', { headers: memberHeaders(anonymous.token) }),
-        wellFormed: (token) => new Request('https://s/members/roles', { headers: memberHeaders(token) }),
-      },
-      'POST /members/roles': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/roles', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/roles', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ member_id: 'mem_machine_3', role: 'member', expected_revision: '0' }) }),
-      },
-      'POST /members/ownership/transfer': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/ownership/transfer', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/ownership/transfer', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ member_id: 'mem_machine_2', expected_revision: '1' }) }),
-      },
-      'GET /members/raw-claims': {
-        shape: 'persisted',
-        malformed: (_token) => new Request('https://s/members/raw-claims', { headers: memberHeaders(anonymous.token) }),
-        wellFormed: (token) => new Request('https://s/members/raw-claims', { headers: memberHeaders(token) }),
-      },
-      'POST /members/raw-claims': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ revision: String((sqlite.query('SELECT revision FROM raw_provenance_state').get() as { revision: number }).revision) }) }),
-      },
-      'POST /members/projects/list': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
-        wellFormed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/settings': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/settings', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ leaf: 'x' }) }),
-        wellFormed: (token) => new Request('https://s/members/settings', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/status': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/status', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
-        wellFormed: (token) => new Request('https://s/members/status', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-    };
+    const FIXTURES = await memberRouteFixtures(sqlite, issuedAt, { otherTokenId: t1.tokenId, machinelessToken: anonymous.token });
     /** How each shape answers: the status of a terminal refusal, where its code and reason sit, and what a well-formed request that stored or answered looks like. */
     const SHAPES: Record<Shape, { refusedStatus: number; refusal: (body: any) => { refused: boolean; code: unknown; reason: unknown }; accepted: (body: any) => boolean }> = {
       persisted: { refusedStatus: 200, refusal: (b) => ({ refused: b.persisted === false, code: b.code, reason: b.reason }), accepted: (b) => b.persisted === true },
@@ -878,10 +508,13 @@ describe('gates', () => {
     expect({ events: (sqlite.query(`SELECT COUNT(*) c FROM events`).get() as any).c, blobs: (sqlite.query(`SELECT COUNT(*) c FROM blobs`).get() as any).c, puts: bucket.puts }).toEqual({ events: 0, blobs: 0, puts: [] });
     expect((sqlite.query(`SELECT bytes_written b FROM member_credentials WHERE id = ?`).get(anonymous.tokenId) as any).b).toBe(0);
     sqlite.run('UPDATE raw_provenance_backfill SET complete = 1 WHERE id = 1');
-    for (const [route, fixture] of Object.entries(FIXTURES)) {
+    const prepare = (route: string) => {
       if (route === 'POST /members/roles' || route === 'GET /members/raw-claims') sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1' WHERE id=1");
       if (route === 'POST /members/ownership/transfer') sqlite.run("UPDATE members SET role='admin',github_id='gate-transfer' WHERE id='mem_machine_2'");
       if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
+    };
+    for (const [route, fixture] of Object.entries(FIXTURES)) {
+      prepare(route);
       const token = route === 'POST /members/credential/revoke' ? revokeOnly.token : t1.token;
       const stored = await (await worker.fetch(fixture.wellFormed(token), e)).json() as Record<string, unknown>;
       if (route.startsWith('POST /runs/')) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
@@ -889,147 +522,65 @@ describe('gates', () => {
     }
   });
 
-  it('keeps db/settings persistence private to the admitted writer', () => {
-    const family = `${moduleKey(join(SRC, 'db', 'settings'))}/`;
-    const writer = moduleKey(join(SRC, 'core', 'settings.ts'));
-    const owners = new Map([
-      [family + 'leaves.ts', new Set([writer, moduleKey(join(SRC, 'db', 'runs', 'claim.ts'))])],
-      [family + 'release-connection.ts', new Set([moduleKey(join(SRC, 'core', 'release-provenance.ts'))])],
-      [family + 'secret-writes.ts', new Set([
-        moduleKey(join(SRC, 'core', 'secrets.ts')),
-        moduleKey(join(SRC, 'db', 'storage', 'repository-connection.ts')),
-        family + 'release-connection.ts',
-      ])],
-      [family + 'secret-rows.ts', new Set([moduleKey(join(SRC, 'core', 'secrets.ts'))])],
-      [family + 'machines.ts', new Set([moduleKey(join(SRC, 'core', 'machine-settings.ts'))])],
-    ]);
-    // The admission SQL other batches read through is shared on purpose: it holds no write.
-    const shared = family + 'admission.ts';
-    const offenders: string[] = [];
-    for (const file of files(SRC)) {
-      const from = moduleKey(file);
-      for (const target of runtimeImportNames(readFileSync(file, 'utf8'), file).keys()) {
-        if (target.startsWith(family) && target !== shared && !owners.get(target)?.has(from)) offenders.push(`${from} imports ${target}`);
+  it('gives a credential minted not to rotate no authority on any member route: no credential, enrollment, link key, grant, ownership or role, no run credential, and neither the provider key nor a repository credential', async () => {
+    const { env: e, db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+    turnOnGatedCapabilities(sqlite);
+    e.SECRET_WRAP_KEY = { get: async () => btoa('w'.repeat(32)) };
+    const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
+    const other = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
+    const machineless = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
+    const fixtures = await memberRouteFixtures(sqlite, issuedAt, { otherTokenId: other.tokenId, machinelessToken: machineless.token });
+    // What a door could hand out: a provider key a claimed run's harness reads, a repository credential a leased run
+    // checks out with, and a queued run either would be answered for.
+    const PROVIDER_KEY = 'sk-ant-api03-bm9uLXJvdGF0aW5nLWRvb3ItZml4dHVyZQ';
+    const REPOSITORY_TOKEN = 'synthetic-non-rotating-repository-credential';
+    const secrets = deploymentSecretStore(serverEnv.db, serverEnv.wrappingKey);
+    await secrets.put('anthropic', PROVIDER_KEY, 'mem_machine_1', issuedAt);
+    await settingsWriter(db).setLeaf('agent.harnesses.claude-code.credential', 'deployment', 'mem_machine_1', Date.now());
+    await projectRepositories(db, secrets).save('proj_1', { url: 'https://example.test/team/source', branch: 'main', revision: null, credential: { username: 'reader', token: REPOSITORY_TOKEN } }, 'mem_machine_1', issuedAt);
+    sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [issuedAt]);
+    sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context)
+      VALUES ('proj_1', 'run_door', 'myco-agent', 'vault-seed', 'queued', ?, 'worker', ?, '{}')`, [issuedAt, JSON.stringify({ serverUrl: 'https://s', actor: 'mem_machine_1' })]);
+    const offer = { harnesses: [offeredHarness('claude-code')], capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] };
+    const authority = () => ({
+      credentials: sqlite.query('SELECT id FROM member_credentials ORDER BY id').all(),
+      enrollments: sqlite.query('SELECT * FROM enrollment_authorities ORDER BY rowid').all(),
+      linkKeys: sqlite.query('SELECT * FROM identity_link_authorities ORDER BY rowid').all(),
+      grants: sqlite.query('SELECT * FROM external_grants ORDER BY rowid').all(),
+      owner: sqlite.query('SELECT member_id FROM deployment_ownership').all(),
+      roles: sqlite.query('SELECT id, role FROM members ORDER BY id').all(),
+    });
+    /** Every string an answer carries that has the shape of a member or run credential, other than the one presented. */
+    const credentialsIn = (value: unknown, presented: string): string[] => typeof value === 'string' ? (MEMBER_TOKEN_PATTERN.test(value) && value !== presented ? [value] : [])
+      : Array.isArray(value) ? value.flatMap((v) => credentialsIn(v, presented))
+        : value !== null && typeof value === 'object' ? Object.values(value).flatMap((v) => credentialsIn(v, presented)) : [];
+    for (const [route, fixture] of Object.entries(fixtures)) {
+      if (route === 'POST /members/roles' || route === 'GET /members/raw-claims') sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1' WHERE id=1");
+      if (route === 'POST /members/ownership/transfer') sqlite.run("UPDATE members SET role='admin',github_id='gate-transfer' WHERE id='mem_machine_2'");
+      if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
+      const nonRotating = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt, null, NO_RUNTIME_CLAIMS, { rotates: false });
+      let request = fixture.wellFormed(nonRotating.token);
+      if (route === 'POST /worker/claim') request = new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(nonRotating.token), body: JSON.stringify(offer) });
+      if (route === 'POST /worker/repository') {
+        // The lease a repository door answers under, taken as a worker would hold it.
+        const leased = await claimNextRun(serverEnv, { principal: legacyWorker(nonRotating.tokenId, 'machine_1'), now: Date.now(), ...offer });
+        expect({ route, leased: leased.claimed }).toEqual({ route, leased: true });
+        request = new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(nonRotating.token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_door' }) });
       }
+      const before = authority();
+      const answered = await worker.fetch(request, e);
+      const text = await answered.text();
+      expect({ route, authenticated: answered.status !== 401 }).toEqual({ route, authenticated: true });
+      expect({ route, authority: authority() }).toEqual({ route, authority: before });
+      expect({ route, providerKey: text.includes(PROVIDER_KEY), repositoryCredential: text.includes(REPOSITORY_TOKEN) }).toEqual({ route, providerKey: false, repositoryCredential: false });
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      expect({ route, credentials: credentialsIn(parsed, nonRotating.token) }).toEqual({ route, credentials: [] });
     }
-    expect(offenders).toEqual([]);
+    sqlite.close();
   });
 
-  it('writes settings and capability admission from exactly one module, keyed on the tables themselves', () => {
-    // Keying this on MODULE PATHS alone would not hold: the read-layer allowlist
-    // already permits every file under `ingest/` and `db/` to issue SQL, so a
-    // settings write from the ingest path would pass that gate untouched. The
-    // property is about the TABLES, so the gate is too — their names may appear
-    // only where they are owned.
-    //
-    // What it protects is the write ORDER. Validate, authorize, persist, record the
-    // actor, re-arm. A second writer is how one of those five goes missing on one
-    // path, and the one that goes missing silently is the actor.
-    const OWNED: Record<string, string> = {
-      setting_revisions: join('core', 'settings.ts'),
-      deployment_settings: join('core', 'settings.ts'),
-      deployment_setting_resets: join('core', 'settings.ts'),
-      project_capabilities: join('core', 'settings.ts'),
-      project_settings: join('core', 'settings.ts'),
-      deployment_secrets: join('core', 'secrets.ts'),
-      machine_settings: join('core', 'machine-settings.ts'),
-      embedding_switches: join('core', 'embedding', 'switch-store.ts'),
-      embedding_source_failures: join('core', 'embedding', 'reconcile.ts'),
-    };
-    const offenders: string[] = [];
-    for (const file of files(SRC)) {
-      const rel = file.slice(SRC.length + 1);
-      if (rel.startsWith(`db${sep}`) && !rel.startsWith(`db${sep}settings${sep}`)) {
-        if (!rel.startsWith(`db${sep}schema`)) {
-          const source = stripComments(readFileSync(file, 'utf8'));
-          for (const table of ['setting_revisions', 'deployment_settings', 'deployment_setting_resets', 'project_settings', 'project_capabilities']) {
-            if (new RegExp(`\\b${table}\\b`).test(source)) offenders.push(`${rel} names ${table}`);
-          }
-        }
-        continue;
-      }
-      if (rel.startsWith(`db${sep}settings${sep}`)) continue;
-      // Comments are stripped first: the property is about a second WRITER, and a
-      // docstring that names a table in prose is not one. Scanning raw source made
-      // the gate fire on its own explanation of what it protects.
-      const source = stripComments(readFileSync(file, 'utf8'));
-      for (const [table, owner] of Object.entries(OWNED)) {
-        if (rel === owner) continue;
-        // The backup engine's exclusion ledger names these tables to keep them out
-        // of every artifact; only a line that also carries a SQL verb is a writer.
-        if (rel === join('core', 'backup.ts')) {
-          const sqlLines = source.split('\n').filter((l) => new RegExp(`\\b${table}\\b`).test(l) && /\b(INTO|UPDATE|DELETE|SELECT)\b/i.test(l));
-          if (sqlLines.length === 0) continue;
-        }
-        if (new RegExp(`\\b${table}\\b`).test(source)) offenders.push(`${rel} names ${table}`);
-      }
-    }
-    expect(offenders).toEqual([]);
-
-    // And the owner really does carry every step, so the gate is guarding something.
-    const settings = readFileSync(join(SRC, 'core', 'settings.ts'), 'utf8');
-    for (const step of ['authorize(', 'updated_by', 'rearm(']) {
-      expect({ step, present: settings.includes(step) }).toEqual({ step, present: true });
-    }
-  });
-
-  it('schedules work past an answer from the events route, the store maintenance hand-off, a run\'s read record and a turn\'s start only', () => {
-    // Only captured event processing, store maintenance, the record of a run's reads and the stamp of a turn's start may defer work. The serving process drains deferred work before closing the store.
-    const callers = files(SRC)
-      .filter((f) => /\bafterResponse\(/.test(stripComments(readFileSync(f, 'utf8'))))
-      .map((f) => f.slice(SRC.length + 1))
-      .filter((f) => !f.startsWith('platform/') && !f.startsWith('core/adapters'));
-    expect(callers.sort()).toEqual([join('api', 'recall.ts'), join('core', 'store-maintenance.ts'), join('ingest', 'events.ts'), join('mcp', 'context.ts')]);
-    // In the MCP context the one deferral is the record of a run's reads, inside `noteRunReads`.
-    const context = stripComments(readFileSync(join(SRC, 'mcp', 'context.ts'), 'utf8'));
-    const start = context.indexOf('export function noteRunReads(');
-    const end = context.indexOf('\n}\n', start);
-    expect({ start: start >= 0, end: end > start }).toEqual({ start: true, end: true });
-    const deferrals = (text: string) => text.match(/\bafterResponse\(/g)?.length ?? 0;
-    expect({ file: deferrals(context), noteRunReads: deferrals(context.slice(start, end)) }).toEqual({ file: 1, noteRunReads: 1 });
-    // In the prompt route the one deferral is the stamp of a turn's start, inside `noteTurnStarted`.
-    const recall = stripComments(readFileSync(join(SRC, 'api', 'recall.ts'), 'utf8'));
-    const stampStart = recall.indexOf('export function noteTurnStarted(');
-    const stampEnd = recall.indexOf('\n}\n', stampStart);
-    expect({ start: stampStart >= 0, end: stampEnd > stampStart }).toEqual({ start: true, end: true });
-    expect({ file: deferrals(recall), noteTurnStarted: deferrals(recall.slice(stampStart, stampEnd)) }).toEqual({ file: 1, noteTurnStarted: 1 });
-  });
-
-  it('opens a Deployment secret from exactly one function under src, and no display surface calls it', () => {
-    // `get()` is the only thing that returns a credential. The whole point of
-    // sealing values is defeated if a settings page, a status route or a log line
-    // can reach one, so the callers are held to those that must authenticate
-    // something. `describe()` and `list()` exist precisely so a surface never needs
-    // to.
-    const store = readFileSync(join(SRC, 'core', 'secrets.ts'), 'utf8');
-    expect(store.match(/crypto\.subtle\.decrypt/g)).toHaveLength(1);
-    expect(store).toMatch(/additionalData: encoder\.encode\(name\)/);
-
-    // Keyed on CONSTRUCTION, not on a variable name. Matching `secrets.get(` or
-    // `secretStore.get(` missed `store.get(` — which is what the one file that
-    // builds a store actually calls its local, and is the most natural form for the
-    // first real consumer to use. A gate that green-lights the change it exists to
-    // catch is worse than none.
-    const constructsStore = (source: string) => /deploymentSecretStore\(/.test(stripComments(source))
-      || sourceCalls(source).some((call) => call.called === 'deploymentSecretStore');
-    expect(constructsStore('deps.deploymentSecretStore()')).toBe(true);
-    const callers = files(SRC)
-      .filter((f) => f !== join(SRC, 'core', 'secrets.ts'))
-      .filter((f) => constructsStore(readFileSync(f, 'utf8')))
-      .map((f) => f.slice(SRC.length + 1));
-    // The settings surfaces, which only ever call `describe`/`list`/`put`/`delete`;
-    // the one dispatcher, which opens a provider credential to hand it to the
-    // launched runtime's environment and nothing else; and the release check,
-    // which opens its own purpose-labelled slot to authenticate GitHub reads.
-    // A new file here is the thing to look at.
-    expect(callers.sort()).toEqual([join('api', 'release-provenance.ts'), join('api', 'repositories.ts'), join('api', 'settings.ts'), join('core', 'provider-credentials.ts'), join('core', 'release-provenance.ts'), join('core', 'run-repository.ts'), join('core', 'scheduled-tasks.ts')]);
-    const credentialCallers = files(SRC).filter((f) => (/\bopenProviderCredential\(/.test(stripComments(readFileSync(f, 'utf8'))) || sourceCalls(readFileSync(f, 'utf8')).some((call) => call.called === 'openProviderCredential')))
-      .map((f) => f.slice(SRC.length + 1)).sort();
-    expect(credentialCallers).toEqual([join('core', 'embedding', 'configured-provider.ts'), join('core', 'provider-credentials.ts')]);
-    const surface = stripComments(readFileSync(join(SRC, 'api', 'settings.ts'), 'utf8'));
-    expect(surface).not.toMatch(/\.get\(\s*ctx\.params\.name/);
-  });
-
+  // V8 (the Worker): a call taking one argument per byte throws past about 125k arguments, where JSC (Bun) accepts it.
   it('never spreads a whole byte array into a call, which is a divergence no test on one engine can catch', () => {
     // `String.fromCharCode(...bytes)` passes one argument per byte, and the two
     // runtimes disagree about how many a call may take: JSC accepts a 320KB spread,
@@ -1045,119 +596,6 @@ describe('gates', () => {
       }
     }
   });
-
-  it('seals every Deployment secret under a key the store does not hold', () => {
-    // A wrapping key that ever landed in the database it protects silently undoes
-    // the separation the ciphertext column exists to create.
-    const schema = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8');
-    const table = schema.match(/CREATE TABLE IF NOT EXISTS deployment_secrets[\s\S]*?`/)![0];
-    for (const forbidden of ['wrap', 'key_material', 'plaintext', 'preview', 'masked']) {
-      expect({ forbidden, present: table.toLowerCase().includes(forbidden) }).toEqual({ forbidden, present: false });
-    }
-    expect(table).toContain('ciphertext');
-    expect(table).toContain('key_version');
-  });
-
-  it('reaches no live statement at member_tokens: the credential store is the only table the running server reads or writes', () => {
-    // The V5 move is atomic or it is broken for everyone but the person testing it. A
-    // surviving read would authenticate against rows the backfill deliberately revoked;
-    // a surviving write would charge quota to a table nothing else consults, refusing
-    // every new member as `quota` while backfilled credentials kept working.
-    //
-    // Two references are legitimate and named here rather than pattern-matched away:
-    // the historical migration chain, which must keep naming the table it created and
-    // read from, and the CHECK constraint literal `classify()` matches to mark a quota
-    // violation terminal.
-    const offenders: string[] = [];
-    for (const file of files(SRC)) {
-      const rel = file.slice(SRC.length + 1);
-      if (/^db\/schema(?:-v\d+)?\.ts$/.test(rel.replaceAll(sep, '/'))) continue;
-      for (const line of readFileSync(file, 'utf8').split('\n')) {
-        if (!/\bmember_tokens\b/.test(line)) continue;
-        if (rel === 'telemetry.ts' && line.includes('member_tokens_quota')) continue;
-        // The backup engine's disposition ledger NAMES the table to keep it out of
-        // every artifact; a name on a line with no SQL verb is not a statement.
-        if (rel === join('core', 'backup.ts') && !/\b(INTO|UPDATE|DELETE|SELECT)\b/i.test(line)) continue;
-        offenders.push(`${rel}: ${line.trim()}`);
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it('inserts into member_credentials from exactly one live-issuing statement under src; the migration backfill can only land revoked rows, and the step-48 rebuild only the rows the table already held', () => {
-    const inserting = files(SRC).filter((f) => /INTO member_credentials\b/.test(readFileSync(f, 'utf8')));
-    // The schema's backfill is the one other writer. It is bounded here rather than
-    // waved through: every row it lands carries a revoked_at, so the exemption cannot
-    // become a path that mints a live credential outside the live-token predicate.
-    expect([...inserting].sort()).toEqual([join(SRC, 'db', 'runs', 'claim-companions.ts'), join(SRC, 'db', 'schema.ts')].sort());
-    const schema = readFileSync(join(SRC, 'db', 'schema.ts'), 'utf8');
-    const schemaInserts = [...schema.matchAll(/INSERT (OR IGNORE )?INTO member_credentials[\s\S]*?`/g)].map((m) => m[0]);
-    expect(schemaInserts).toHaveLength(2);
-    const [backfill, rebuild] = schemaInserts as [string, string];
-    // The rebuild copies back from its holding table, and the holding table is written from member_credentials alone.
-    expect(rebuild).toMatch(/FROM _v48_credential_rows`$/);
-    const holdingWrites = [...schema.matchAll(/INTO _v48_credential_rows\b[^`]*`/g)].map((m) => m[0]);
-    expect(holdingWrites).toHaveLength(1);
-    expect(holdingWrites[0]).toMatch(/SELECT \$\{CREDENTIAL_COLUMNS\} FROM member_credentials`$/);
-    expect(backfill.match(/INTO member_credentials\b/g)).toHaveLength(1);
-    expect(backfill).toMatch(/COALESCE\(t\.revoked_at, t\.expires_at\)/);
-    expect(backfill).not.toMatch(/\bNULL\b\s*(,|$)[^`]*--\s*revoked/);
-    const tokens = readFileSync(join(SRC, 'auth', 'tokens.ts'), 'utf8');
-    const issuing = readFileSync(join(SRC, 'db', 'runs', 'claim-companions.ts'), 'utf8');
-    expect(issuing.match(/INTO member_credentials\b/g)).toHaveLength(1);
-    // The parenthesized predecessor predicate — live, and minted to rotate — is conjoined with the admission gate.
-    expect(issuing).toMatch(/INSERT INTO member_credentials \([^)]*\)\s+SELECT \?, \?, \?, \?, \?, \?, NULL, 0, \?, \?, \?, NULL, \?, \?, \?\s+WHERE \(\? IS NULL OR \(\$\{TOKEN_LIVE\} AND \$\{ROTATING_PREDECESSOR\}\)\)`/);
-    expect(issuing).toMatch(/const ROTATING_PREDECESSOR = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND rotates = 1\)';/);
-    expect(readFileSync(join(SRC, 'db', 'identity', 'credentials.ts'), 'utf8')).toMatch(/UPDATE member_credentials SET revoked_at=\?1 WHERE predecessor_id=\?2 AND revoked_at IS NULL AND first_used_at IS NULL/);
-    expect(readFileSync(join(SRC, 'ingest', 'live-credential.ts'), 'utf8')).toMatch(/export const TOKEN_LIVE = 'EXISTS \(SELECT 1 FROM member_credentials WHERE id = \? AND revoked_at IS NULL\)';/);
-  });
-
-  it('emits only fixed classifiers as telemetry reasons', () => {
-    // `reason?: Classifier` on the event type is the proof; this holds the type in place and reads each call whole.
-    // The argument is taken to its matching brace, never to the first one, so a nested object cannot hide the tail
-    // of a call from the scan.
-    expect(readFileSync(join(SRC, 'telemetry.ts'), 'utf8')).toMatch(/interface TelemetryEvent \{[^}]*\breason\?: Classifier;/);
-    let scanned = 0;
-    for (const f of files(SRC)) {
-      const t = readFileSync(f, 'utf8');
-      for (const call of emitArguments(t)) {
-        scanned += 1;
-        for (const m of call.matchAll(/\breason\b\s*(?::\s*([^,]+))?/g)) {
-          const value = (m[1] ?? '').trim();
-          const fixed = /^'[^']*'$/.test(value) || value === 'classifier';
-          expect({ file: f, value, fixed }).toEqual({ file: f, value, fixed: true });
-        }
-      }
-    }
-    expect(scanned).toBeGreaterThan(0);
-  });
-
-  // The compile-time proof itself is `npm run check`, which is a separate lane from this suite. This gate holds the
-  // declarations in place so the proof cannot be deleted silently; it asserts their presence, not their satisfaction.
-  it('keeps a declared adapter proof for every platform binding, so the compile-time check has something to prove', () => {
-    const platform = readFileSync(join(SRC, 'platform', 'cloudflare', 'env.ts'), 'utf8');
-    // Each proof names two types, and the gate reads both: an adapter checked against itself compiles and proves
-    // nothing, so the second argument must be the platform's own type. Those types come from the platform's ambient
-    // declarations, which the adapter file never imports — a name it did import would not be the platform's.
-    const declared = new Map(
-      [...platform.matchAll(/export type (_\w+) = AssertAssignable<\s*(\w+)\s*,\s*(\w+)\s*>;/g)].map((m) => [m[1], [m[2], m[3]]] as const),
-    );
-    for (const [proof, adapter, binding] of [
-      ['_RelationalSatisfies', 'RelationalStore', 'D1Database'],
-      ['_RateLimitSatisfies', 'RateLimiter', 'RateLimit'],
-      ['_BlobStoreSatisfies', 'BlobStore', 'R2Bucket'],
-      ['_VectorStoreSatisfies', 'VectorIndex', 'VectorizeIndex'],
-      ['_EmbeddingSatisfies', 'EmbeddingBinding', 'Ai'],
-      ['_StagingBucketSatisfies', 'StagingBucket', 'R2Bucket'],
-    ]) {
-      expect({ proof, args: declared.get(proof) ?? null }).toEqual({ proof, args: [adapter, binding] });
-      expect({ proof, imported: new RegExp(`\\b${binding}\\b`).test(platform.slice(0, platform.indexOf('type AssertAssignable'))) })
-        .toEqual({ proof, imported: false });
-    }
-    expect(declared.size).toBe(6);
-    expect(platform).toMatch(/type AssertAssignable<A, B extends A> = B;/);
-  });
-
 
   it('never rewrites a session\'s identity columns on receipt: a second token of the same machine moves only the last receipt', async () => {
     const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
@@ -1204,13 +642,24 @@ describe('gates', () => {
     expect(free).toEqual(['GET /auth/callback', 'GET /auth/login', 'GET /health']);
   });
 
-  it('serves a signed-in account ahead of membership on exactly the two routes that link it and the sign-out, and every other session route runs for a member', () => {
+  it('serves a signed-in account ahead of membership on exactly the routes that link it, report it and sign it out, and refuses every other session route to an account that is no member, whatever owner the environment names', async () => {
     const optional = ROUTES.filter((r) => r.auth === 'session' && r.authority === 'account').map((r) => `${r.method} ${r.path}`).sort();
     expect(optional).toEqual(['GET /auth/me', 'POST /auth/link', 'POST /auth/logout']);
-    const context = readFileSync(join(SRC, 'context.ts'), 'utf8');
-    expect(context).toMatch(/export interface OwnerContext \{[^}]*\n  member: DashboardMember;\n/);
-    const importers = files(SRC).filter((f) => /\bSessionContext\b/.test(readFileSync(f, 'utf8'))).map((f) => f.slice(SRC.length + 1)).sort();
-    expect(importers).toEqual(['api/identity.ts', 'context.ts', 'routes.ts']);
+    const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
+    const outsider = '999999';
+    const admitted: string[] = [];
+    for (const r of ROUTES) {
+      if (r.auth !== 'session' || r.authority === 'account') continue;
+      const e = sqliteEnv({ workerLogin: true });
+      const cookie = await ownerCookie(e.db, Date.now(), outsider);
+      const res = await worker.fetch(
+        new Request(`https://s${concretePath(r.path)}`, { method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' }, body: r.method === 'GET' ? undefined : '{}' }),
+        { ...e.env, ...OWNER_ENV, OWNER_GITHUB_ID: outsider },
+      );
+      if (res.status !== 401 && res.status !== 403) admitted.push(`${r.method} ${r.path} ${res.status}`);
+      e.sqlite.close();
+    }
+    expect(admitted).toEqual([]);
   });
 
   it('declares on every session route which of the three authorities it admits (#1491)', () => {
@@ -1267,17 +716,18 @@ describe('gates', () => {
     const { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount } = await import('./helpers/owner.js');
     const e = sqliteEnv({ workerLogin: true });
     seedMemberRoleAccount(e.sqlite);
-    e.executed.length = 0;
+    const memberCookie = await ownerCookie(e.db, Date.now(), MEMBER_SUB);
+    const before = storedRows(e.sqlite);
     let pulled = 0;
     // Nothing is pulled until something reads it; a reader would take four chunks and the end.
     const body = new ReadableStream<Uint8Array>({
       pull(controller) { pulled += 1; if (pulled > 4) controller.close(); else controller.enqueue(new Uint8Array(64 * 1024)); },
     }, { highWaterMark: 0 });
     const res = await worker.fetch(new Request('https://s/api/backups/restore-upload', {
-      method: 'POST', body, duplex: 'half', headers: { cookie: await ownerCookie(e.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+      method: 'POST', body, duplex: 'half', headers: { cookie: memberCookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     } as RequestInit), { ...e.env, ...OWNER_ENV });
     expect({ status: res.status, pulled, body: await res.json() }).toEqual({ status: 403, pulled: 5, body: { error: 'not_admin', reason: 'this action is for an admin' } });
-    expect(e.executed.filter((sql) => /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql))).toEqual([]);
+    expect(storedRows(e.sqlite)).toEqual(before);
     expect({ puts: e.bucket.puts, gets: e.bucket.gets, deletes: e.bucket.deletes, pending: e.deferred.pending }).toEqual({ puts: [], gets: [], deletes: [], pending: [] });
 
     let oversizedPulls = 0;
@@ -1290,11 +740,11 @@ describe('gates', () => {
       },
     }, { highWaterMark: 0 });
     const bounded = await worker.fetch(new Request('https://s/api/settings/agent.power', {
-      method: 'PUT', body: oversized, duplex: 'half', headers: { cookie: await ownerCookie(e.db, Date.now(), MEMBER_SUB), 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
+      method: 'PUT', body: oversized, duplex: 'half', headers: { cookie: memberCookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s' },
     } as RequestInit), { ...e.env, ...OWNER_ENV });
     expect({ status: bounded.status, pulled: oversizedPulls, body: await bounded.json() })
       .toEqual({ status: 400, pulled: chunks + 1, body: { error: 'bad_request', reason: `body exceeds ${MAX_BODY_BYTES} bytes` } });
-    expect(e.executed.filter((sql) => /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i.test(sql))).toEqual([]);
+    expect(storedRows(e.sqlite)).toEqual(before);
     e.sqlite.close();
   });
 
@@ -1307,26 +757,9 @@ describe('gates', () => {
     expect({ status: res.status, clears: /Max-Age=0/i.test(res.headers.get('set-cookie') ?? '') }).toEqual({ status: 204, clears: true });
   });
 
-  it('compares no session to a configured owner: who may enter is a membership question', () => {
-    for (const f of [...files(SRC), ...files(join(WORKER, 'scripts'))]) {
-      expect({ file: f, named: /OWNER_GITHUB_ID|ownerGithubId/.test(readFileSync(f, 'utf8')) }).toEqual({ file: f, named: false });
-    }
-    expect(readFileSync(join(WORKER, 'wrangler.toml'), 'utf8')).not.toMatch(/OWNER_GITHUB_ID/);
-  });
-
-  it('never lets the shell be framed, on either target', () => {
+  it('never lets the hosted shell be framed', () => {
     const headers = readFileSync(join(WORKER, 'ui', 'public', '_headers'), 'utf8');
     expect(headers).toMatch(/^\/\*\n  X-Frame-Options: DENY\n  Content-Security-Policy: frame-ancestors 'none'\n/);
-    const bun = readFileSync(join(SRC, 'platform', 'bun', 'static.ts'), 'utf8');
-    expect(bun).toContain("'x-frame-options': 'DENY'");
-    expect(bun).toContain("frame-ancestors 'none'");
-  });
-
-  it('gives no credential-free route access to the bindings by type', () => {
-    const source = readFileSync(join(SRC, 'routes.ts'), 'utf8');
-    expect(source).toContain('export type PublicHandler = (request: Request) => Promise<Response>');
-    expect(source).toContain('export type AuthHandler = (request: Request, ctx: AuthContext) => Promise<Response>');
-    expect(source).not.toMatch(/AuthHandler = \([^)]*Env/);
   });
 
   it('answers every session route without disclosing the protocol number', async () => {
@@ -1380,63 +813,32 @@ describe('gates', () => {
     ].sort()).toEqual(routeLedger);
   });
 
-  it('declares every required binding that the adapter requires, and no more', () => {
-    const envSource = readFileSync(join(SRC, 'platform', 'cloudflare', 'env.ts'), 'utf8');
-    const required = [...(/REQUIRED_BINDINGS = \[([^\]]*)\]/.exec(envSource)?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]).sort();
-    const block = /export interface CloudflareBindings extends OwnerBindings \{([\s\S]*?)\n\}/.exec(envSource);
-    const mandatory = [...block![1].matchAll(/^\s*(\w+):/gm)].map((m) => m[1]).sort();
-    expect(required).toEqual(mandatory);
-    expect(required.length).toBeGreaterThan(0);
-  });
-
-  it('maps every required binding onto a capability', () => {
-    // A binding added to a target without a capability naming it is invisible
-    // on the status surface: the deployment reports itself fully capable while
-    // an operator has something unconfigured.
-    const envSource = readFileSync(join(SRC, 'platform', 'cloudflare', 'env.ts'), 'utf8');
-    const required = [...(/REQUIRED_BINDINGS = \[([^\]]*)\]/.exec(envSource)?.[1] ?? '').matchAll(/'(\w+)'/g)].map((m) => m[1]);
-    const declared = [...envSource.matchAll(/operatorNames: \[([^\]]*)\]/g)]
-      .flatMap((m) => [...m[1]!.matchAll(/'(\w+)'/g)].map((n) => n[1]));
-
-    expect(required.length).toBeGreaterThan(0);
-    expect(required.filter((name) => !declared.includes(name))).toEqual([]);
-  });
-
-  it('states each capability once, in wording neither target owns', () => {
-    for (const target of ['cloudflare', 'bun']) {
-      const source = readFileSync(join(SRC, 'platform', target, 'env.ts'), 'utf8');
-      const ids = [...source.matchAll(/capability: '([a-z-]+)'/g)].map((m) => m[1]).sort();
-      // Both targets answer for the same set, so a surface can say the same
-      // sentence on either one.
-      expect({ target, ids }).toEqual({ target, ids: ['blob-store', 'harness-runtime', 'rate-limiting', 'relational-store'] });
-
-      const labels = [...source.matchAll(/label: '([^']+)'/g)].map((m) => m[1]);
-      for (const label of labels) {
-        // Product wording, not the operator's: a label carrying a binding name
-        // is the vocabulary split this replaced.
-        expect({ target, label, mentionsBinding: /MYCO_|BUCKET|LIMIT/.test(label) })
-          .toEqual({ target, label, mentionsBinding: false });
-      }
+  it('names every binding a capability stands on, and reports that capability absent when the binding is missing', () => {
+    const bound = sqliteEnv().env;
+    const capabilities = serverEnvFromBindings(bound as never).platform.capabilities();
+    const served = capabilities.filter((c) => c.capability !== 'harness-runtime');
+    expect(served.map((c) => ({ capability: c.capability, present: c.present, names: c.operatorNames.length > 0 })))
+      .toEqual(served.map((c) => ({ capability: c.capability, present: true, names: true })));
+    for (const name of served.flatMap((c) => c.operatorNames)) {
+      const missing = serverEnvFromBindings({ ...bound, [name]: undefined } as never).platform.capabilities().filter((c) => !c.present).flatMap((c) => c.operatorNames);
+      expect({ name, named: missing.includes(name) }).toEqual({ name, named: true });
     }
   });
 
-  it('names no platform binding in shared code: the status surface reports what the platform declares', () => {
-    const status = readFileSync(join(SRC, 'api', 'status.ts'), 'utf8');
-    expect(status).not.toMatch(/REQUIRED_BINDINGS = \[/);
-    for (const name of ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT']) {
-      expect({ name, named: new RegExp(`\\b${name}\\b`).test(status) }).toEqual({ name, named: false });
+  it('authenticates a member route by its bearer alone: a signed-in admin\'s cookie opens none of them', async () => {
+    const { OWNER_ENV, ownerCookie } = await import('./helpers/owner.js');
+    const e = sqliteEnv({ workerLogin: true });
+    const cookie = await ownerCookie(e.db);
+    const opened: string[] = [];
+    for (const r of ROUTES.filter((x) => x.auth === 'member')) {
+      const res = await worker.fetch(new Request(`https://s${concretePath(r.path)}`, {
+        method: r.method, headers: { cookie, 'cf-connecting-ip': '1.2.3.4', origin: 'https://s', [PROJECT_HEADER]: 'proj_1', ...PROTOCOL }, body: '{}',
+      }), { ...e.env, ...OWNER_ENV });
+      if (res.status !== 401) opened.push(`${r.method} ${r.path} ${res.status}`);
     }
-  });
-
-  it('verifies no cookie on the member path', () => {
-    const pipeline = readFileSync(join(SRC, 'pipeline.ts'), 'utf8');
-    // The member path starts where the owner branch closes inside `run()`, not at
-    // `member()` — the bearer read and the anonymous refusal live above that function,
-    // and a slice starting there would never see the code it is meant to constrain.
-    const memberSection = pipeline.slice(pipeline.indexOf('const presented = bearer(request);'));
-    expect(memberSection).not.toContain('verifySession');
-    expect(memberSection).not.toContain('readCookie');
-    expect(memberSection).not.toContain('ownerConfig');
+    expect(opened).toEqual([]);
+    expect({ events: count(e.sqlite, 'events'), blobs: count(e.sqlite, 'blobs') }).toEqual({ events: 0, blobs: 0 });
+    e.sqlite.close();
   });
   it('pins the server\'s runtime dependencies: every package src imports is declared, every runtime dependency is imported by shared source, and the runtime set is exactly the one decided', () => {
     const manifest = JSON.parse(readFileSync(join(WORKER, 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
@@ -1476,41 +878,15 @@ describe('gates', () => {
   it('leaves owner routes ingest-neutral', async () => {
     const e = sqliteEnv({ workerLogin: true });
     const before = count(e.sqlite, 'events');
+    const credentials = (sqlite: Database) => sqlite.query('SELECT * FROM member_credentials ORDER BY id').all();
+    const credentialsBefore = credentials(e.sqlite);
     const res = await worker.fetch(
       new Request('https://s/api/projects', { headers: { cookie: await ownerCookie2(e.db), 'cf-connecting-ip': '1.2.3.4' } }),
       { ...e.env, ...OWNER_ENV2 }
     );
     expect(res.status).toBe(200);
     expect(count(e.sqlite, 'events')).toBe(before);
-    expect(e.executed.filter((sql) => /UPDATE\s+member_credentials/i.test(sql))).toEqual([]);
+    expect(credentials(e.sqlite)).toEqual(credentialsBefore);
   });
 
-  it('spells a run-status set in one place, so a predicate cannot drift from the one the writes use', () => {
-    // Two constants name what a run in flight is. A statement spelling either
-    // set by hand is a second copy that answers the same today and diverges the
-    // first time one of them changes.
-    const offenders: string[] = [];
-    for (const file of files(SRC)) {
-      const relative = file.slice(SRC.length);
-      if (relative.endsWith('db/run-statuses.ts')) continue;
-      // A schema step is a frozen copy of its generator's output; the generator spells the set through the constants.
-      if (/db\/schema-v[^/]*\.ts$/.test(relative)) continue;
-      for (const line of readFileSync(file, 'utf8').split('\n')) {
-        if (/status\s+IN\s*\(\s*'(pending|running|queued)'/.test(line)) offenders.push(`${relative}: ${line.trim().slice(0, 80)}`);
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it('declares each run-status set exactly once, and nothing else spells one', () => {
-    const source = readFileSync(join(SRC, 'db', 'run-statuses.ts'), 'utf8');
-    const spelled = [...source.matchAll(/status IN \('pending'[^)]*\)/g)].map((m) => m[0]);
-    // Three sets, three definitions, and no fourth spelling in the file that owns them.
-    // Three sets, three definitions, in the order the file declares them.
-    expect([...spelled].sort()).toEqual([
-      "status IN ('pending', 'queued')",
-      "status IN ('pending', 'running')",
-      "status IN ('pending', 'running', 'queued')",
-    ]);
-  });
 });

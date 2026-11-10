@@ -42,7 +42,7 @@ export interface CloudflareBindings extends OwnerBindings {
   /**
    * The Secrets Store binding holding the secret wrapping key.
    *
-   * Not in `REQUIRED_BINDINGS`: a deployment that never stores a Deployment secret
+   * Optional: a deployment that never stores a Deployment secret
    * serves every other route without one, and the failure should land on the first
    * attempt to seal or open rather than refusing unrelated traffic at boot.
    */
@@ -116,9 +116,6 @@ export const classifyD1Error: ErrorClassifier = (message) => {
   if (/Exceeded maximum DB size|exceeded D1's maximum account storage limit/.test(message)) return 'store_size';
   return message.startsWith('D1_ERROR') ? 'db' : null;
 };
-
-/** Every binding the Worker requires to serve a request. */
-export const REQUIRED_BINDINGS = ['MYCO_DB', 'BUCKET', 'SOURCE_LIMIT', 'TOKEN_LIMIT'] as const;
 
 /** Cloudflare admission failures are matched here; their text never enters telemetry. */
 export const classifyCloudflareError: ErrorClassifier = (message) => {

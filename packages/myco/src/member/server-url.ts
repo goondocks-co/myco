@@ -17,8 +17,7 @@
  * Every place a member admits a server URL calls `admitMemberServerUrl`:
  * `myco login` and the join code, `myco member join`, registry resolution, the
  * env source, the MCP headers helper, and the installer's reading of a member's
- * MCP entry. `tests/meta/member-server-url-rule.test.ts` fails on a URL-scheme
- * test in member-side code anywhere but here.
+ * MCP entry.
  */
 
 /** How a refusal names the rule to a person reading a terminal. */

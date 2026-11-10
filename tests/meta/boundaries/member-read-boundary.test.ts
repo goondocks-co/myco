@@ -27,7 +27,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MEMBER_READ_VERBS, MEMBER_VERBS } from '@myco/cli/member-verbs.js';
-import { closureOf, pathToEntry, REPO_ROOT, runtimeEdges } from '../helpers/import-closure.ts';
+import { closureOf, pathToEntry, REPO_ROOT, runtimeEdges } from '../../helpers/import-closure.ts';
 
 const SRC = 'packages/myco/src';
 
