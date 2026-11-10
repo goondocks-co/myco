@@ -168,74 +168,14 @@ test('a refused restore preserves the prior document and frontier without leavin
       }
       const before = await db.prepare("SELECT * FROM session_documents WHERE session_id='session'").all();
       const frontier = await db.prepare('SELECT * FROM transcript_publication').all();
-      const text = await artifact(db, [
-        { t: 'sessions', r: { project_id: 'project', session_id: 'session', machine_id: 'machine', created_by_token_id: 'token', first_received_at: 1, last_received_at: 1 } },
-        { t: 'prompt_batches', r: { project_id: 'project', session_id: 'session', prompt_id: 'legacy', text: 'retained prompt', created_at: 1 } },
-        { t: 'raw_resources', r: { project_id: 'project', kind: 'event', resource_id: 'invalid', reference_id: '', revision: 0.5 } },
-      ]);
-      await expect(restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow('invalid raw provenance revision');
+      const session = { t: 'sessions', r: { project_id: 'project', session_id: 'session', machine_id: 'machine', created_by_token_id: 'token', first_received_at: 1, last_received_at: 1 } };
+      const invalid = await artifact(db, [session, { t: 'raw_resources', r: { project_id: 'project', kind: 'event', resource_id: 'invalid', reference_id: '', revision: 0.5 } }]);
+      await expect(restoreArtifact(db, { text: invalid, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow('invalid raw provenance revision');
+      const retired = await artifact(db, [session, { t: 'prompt_batches', r: { project_id: 'project', session_id: 'session', prompt_id: 'legacy', text: 'retained prompt', created_at: 1 } }]);
+      await expect(restoreArtifact(db, { text: retired, blobs, authorization: { kind: 'recovery' } })).rejects.toMatchObject({ code: 'artifact_format_retired' });
       expect((await db.prepare("SELECT * FROM session_documents WHERE session_id='session'").all()).results, target + prior).toEqual(before.results);
       expect((await db.prepare('SELECT * FROM transcript_publication').all()).results, target + prior).toEqual(frontier.results);
-      const admitted = await artifact(db, [
-        { t: 'sessions', r: { project_id: 'project', session_id: 'session', machine_id: 'machine', created_by_token_id: 'token', first_received_at: 1, last_received_at: 1 } },
-        { t: 'prompt_batches', r: { project_id: 'project', session_id: 'session', prompt_id: 'legacy', text: 'retained prompt', created_at: 1 } },
-      ]);
-      if (prior === 'convert') {
-        await db.prepare("CREATE TRIGGER refuse_document BEFORE UPDATE OF state ON session_documents WHEN NEW.state='live' BEGIN SELECT RAISE(ABORT,'document refused'); END").run();
-        await expect(restoreArtifact(db, { text: admitted, blobs, authorization: { kind: 'recovery' } })).rejects.toThrow('document refused');
-        expect((await db.prepare("SELECT * FROM session_documents WHERE session_id='session'").all()).results, target).toEqual(before.results);
-        expect((await db.prepare('SELECT * FROM transcript_publication').all()).results, target).toEqual(frontier.results);
-        await db.prepare('DROP TRIGGER refuse_document').run();
-      }
-      await restoreArtifact(db, { text: admitted, blobs, authorization: { kind: 'recovery' } });
-      expect(await db.prepare("SELECT state,restore_hold,prompts FROM session_documents WHERE session_id='session'").first(), target)
-        .toEqual({ state: 'live', restore_hold: null, prompts: 1 });
     }
-  });
-});
-
-test('legacy tool-only bundle bytes remain held until document conversion consumes them', async () => {
-  const { sha256Hex } = await import('@myco-server-worker/hash.js');
-  const { blobObjectKey } = await import('@myco-server-worker/core/blob-objects.js');
-  const { readPage } = await import('@myco-server-worker/content/document-reader.js');
-  await withDocumentStores(async (db, target) => {
-    const blobs = memoryBlobStore(), generation = crypto.randomUUID();
-    const input = 'complete retained input '.repeat(200);
-    const tool = '00000000-0000-4000-8000-000000000123';
-    const entry = { kind: 'tool-input', resourceId: tool, eventId: 'event', envelopeHash: 'envelope', revision: 0, rawRevision: 0,
-      offset: 0, length: Buffer.byteLength(input), digest: await sha256Hex(input) };
-    const header = { version: 1, projectId: 'project', sessionId: 'session', tokenId: 'token', entries: [entry] };
-    const footer = JSON.stringify(header);
-    const bodyText = input + footer + '\n' + Buffer.byteLength(footer).toString(16).padStart(8, '0');
-    const bodyKey = await sha256Hex(bodyText);
-    const receiptText = JSON.stringify({ version: 1, header, body: { key: bodyKey, generation, size: Buffer.byteLength(bodyText), digest: bodyKey } });
-    const receiptKey = await sha256Hex(receiptText);
-    const rows: { t: string; r: Record<string, unknown> }[] = [
-      { t: 'sessions', r: { project_id: 'project', session_id: 'session', machine_id: 'machine', created_by_token_id: 'token', first_received_at: 1, last_received_at: 1 } },
-      { t: 'events', r: { project_id: 'project', event_id: 'event', session_id: 'session', token_id: 'token', kind: 'tool.use', channel: 'import', payload: JSON.stringify({ toolCallId: tool, toolName: 'shell', input: 'preview' }), envelope_hash: 'envelope', created_at: 1, received_at: 1, payload_bytes: 1 } },
-      { t: 'archive_bundles', r: { id: 1, project_id: 'project', session_id: 'session', token_id: 'token', event_id: 'event', envelope_hash: 'envelope',
-        archive_key: bodyKey, receipt_key: receiptKey, digest: bodyKey, size: Buffer.byteLength(bodyText), version: 1, entry_count: 1 } },
-      { t: 'tool_calls', r: { project_id: 'project', session_id: 'session', tool_call_id: tool, tool_name: 'shell', token_id: 'token', event_id: 'event', input: 'preview', input_bytes: Buffer.byteLength(input), input_blob_key: null, input_bundle_id: 1, input_bundle_entry: 0, created_at: 1 } },
-    ];
-    for (const [key, value, sourceKind, sourceId] of [[bodyKey, bodyText, 'bundle', bodyKey], [receiptKey, receiptText, 'receipt', `bundle:${bodyKey}`]]) {
-      const bytes = new TextEncoder().encode(value!);
-      const blob = { project_id: 'project', key, generation, size: bytes.length, media_type: 'application/json', token_id: 'token', received_at: 1 };
-      await db.prepare('INSERT INTO blobs(project_id,key,generation,size,media_type,token_id,received_at) VALUES(?,?,?,?,?,?,?)')
-        .bind(blob.project_id, key, generation, bytes.length, blob.media_type, 'token', 1).run();
-      blobs.seed(blobObjectKey('project', key!, generation), { size: bytes.length, bytes });
-      rows.push({ t: 'blobs', r: blob }, { t: 'registered_content_proofs', r: { project_id: 'project', key, generation,
-        source_kind: sourceKind, source_id: sourceId, event_id: 'event', envelope_hash: 'envelope', session_id: 'session', digest: key, size: bytes.length, verified_at: 1, durable: 1 } });
-    }
-    const text = await artifact(db, rows);
-    await expect(restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' }, documents: { plan: async () => ({
-      summary: { convert:1,merge:0,records:1,refuse:[] }, apply: async () => { throw new Error('consumer unavailable'); },
-    }) } })).rejects.toThrow('consumer unavailable');
-    expect(await db.prepare('SELECT COUNT(*) n FROM archive_bundles').first(),target).toEqual({n:1});
-    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
-    expect(await db.prepare('SELECT COUNT(*) n FROM archive_bundles').first(),target).toEqual({n:0});
-    expect(await db.prepare("SELECT COUNT(*) n FROM registered_content_proofs WHERE source_kind IN ('bundle','receipt')").first(),target).toEqual({n:0});
-    const records = await readPage({ db, blobs }, 'project', 'session', '', 0);
-    expect(records?.find(row => row.id === tool)?.input, target).toBe(input);
   });
 });
 
@@ -247,7 +187,7 @@ test('restore retains saved knowledge and anonymizes served snapshots when their
       { t: 'session_tombstones', r: { project_id: 'project', session_id: 'deleted', created_at: 1, created_by: 'member' } },
       { t: 'agents', r: { id: 'agent', name: 'agent', created_at: 1 } },
       { t: 'spores', r: { project_id: 'project', id: 'knowledge', agent_id: 'agent', session_id: 'deleted', prompt_id: 'prompt', observation_type: 'gotcha', content: 'retained knowledge', created_at: 1 } },
-      { t: 'prompt_batches', r: { project_id: 'project', session_id: 'deleted', prompt_id: 'prompt', text: 'deleted content', created_at: 1 } },
+      { t: 'event_refs', r: { project_id: 'project', event_id: 'prompt-event', session_id: 'deleted', kind: 'prompt', record_id: 'prompt' } },
       { t: 'resolution_events', r: { project_id: 'project', id: 'resolution', agent_id: 'agent', spore_id: 'knowledge', action: 'superseded', session_id: 'kept', created_at: 2 } },
       { t: 'knowledge_git_provenance', r: { id: 1, project_id: 'project', identity_key: 'provenance', session_id: 'deleted', capture_point: 'turn', captured_at: 1, status_hash: 'hash', created_at: 1 } },
       { t: 'spore_injections', r: { project_id: 'project', session_id: 'kept', id: 'receipt', prompt_id: 'kept-prompt', prompt_hash: 'hash', spore_ids: '[]', created_at: 1 } },

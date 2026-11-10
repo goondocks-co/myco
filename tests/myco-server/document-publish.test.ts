@@ -497,58 +497,25 @@ test('step 116 makes a quiet session due for every clearable stop, and the publi
   });
 }, 60_000);
 
-test('restores legacy artifact rows directly into documents and keeps a repeated restore idempotent', async () => {
+test('a backup holding content in the format before session documents is refused before any write, naming its rows', async () => {
   await withDocumentStores(async (db, name) => {
     const blobs = memoryBlobStore();
-    const env = await captureDocumentSession(db, 'project', 'source', { blobs });
+    await captureDocumentSession(db, 'project', 'source', { blobs });
     const source = (await db.prepare(`SELECT * FROM sessions WHERE project_id='project' AND session_id='source'`).first<Record<string, unknown>>())!;
-    const prompt = { project_id:'project', session_id:'restored', prompt_id:uuid(980), parent_prompt_id:null, text:'Retained artifact content',
-      blob_key:null, origin:'user', created_at:100, received_at:100, content_hash:await sha256Hex('Retained artifact content') };
-    const plan = {project_id:'project',session_id:'restored',plan_key:'plan-one',prompt_id:prompt.prompt_id,event_id:'plan-event',
-      title:'Retained plan',content:'Plan body',content_hash:await sha256Hex('Plan body'),status:'active',source:'hook',
-      token_id:source.created_by_token_id,machine_id:source.machine_id,created_at:101,updated_at:101,received_at:101,updated_by:'fixture'};
-    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation) VALUES('project',?,10,'text/plain',?,100,?)`)
-      .bind('a'.repeat(64),source.created_by_token_id,uuid(99000)).run();
-    const continuation = JSON.stringify({planPosition:3});
-    const rows: {t:string;r:Record<string,unknown>}[] = [{t:'sessions',r:{...source,session_id:'restored'}},{t:'prompt_batches',r:prompt},{t:'plans',r:plan},
-      {t:'plans',r:{...plan,plan_key:'plan-orphan',event_id:'orphan-event',prompt_id:null,session_id:'absent'}},
-      {t:'plans',r:{...plan,plan_key:'plan-target',event_id:'target-event',prompt_id:null,session_id:'source'}},
-      ...['a','b'].map((key,i)=>({t:'prompt_batches',r:{...prompt,prompt_id:uuid(981+i),text:'retained preview',blob_key:key.repeat(64)}})),
-      {t:'sessions',r:{...source,session_id:'later'}},{t:'prompt_batches',r:{...prompt,session_id:'later',prompt_id:uuid(983)}},
-      {t:'transcripts',r:{project_id:'project',session_id:'restored',transcript_id:tx,machine_id:'machine',token_id:source.created_by_token_id,
-        first_received_at:100,last_received_at:100,agent:'opencode',size:42,segment_count:0,parsed_offset:42,parse_segment_lines:1,
-        prompt_identity_scheme:'stamp-or-offset-v1',record_identity_scheme:'legacy-session-v1',
-        parser_context:JSON.stringify({mycoParserState:{chunked:true,digest:await sha256Hex(continuation)}})}},
-      {t:'transcript_parser_state_chunks',r:{project_id:'project',transcript_id:tx,cursor_offset:42,chunk_index:0,chunk_count:1,payload:continuation}}];
-    rows.push({t:'events',r:{project_id:'project',session_id:'restored',event_id:'legacy-output-event',token_id:source.created_by_token_id,
-      kind:'tool.use',channel:'cli',payload:JSON.stringify({toolCallId:'legacy-output',toolName:'Read',input:{}}),envelope_hash:'hash',created_at:100,received_at:100,payload_format:'inline'}},
-      {t:'tool_calls',r:{project_id:'project',session_id:'restored',tool_call_id:'legacy-output',event_id:'legacy-output-event',
-        tool_name:'Read',input:'{}',output_blob_key:'a'.repeat(64),success:1,created_at:100,received_at:100,token_id:source.created_by_token_id}});
+    const prompt = { project_id:'project', session_id:'restored', prompt_id:uuid(980), text:'Retained artifact content', origin:'user', created_at:100, received_at:100 };
+    const rows: {t:string;r:Record<string,unknown>}[] = [{t:'sessions',r:{...source,session_id:'restored'}},
+      {t:'prompt_batches',r:prompt},{t:'prompt_batches',r:{...prompt,prompt_id:uuid(981)}},
+      {t:'tool_calls',r:{project_id:'project',session_id:'restored',tool_call_id:'legacy-output',tool_name:'Read',input:'{}',created_at:100}},
+      {t:'transcript_parser_state_chunks',r:{project_id:'project',transcript_id:tx,cursor_offset:42,chunk_index:0,chunk_count:1,payload:'{}'}}];
     const header = {format:BACKUP_FORMAT,deploymentId:await deploymentId(db),schemaVersion:115,createdAt:100,producer:'test',
-      counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{plan_promotions:0})};
+      counts:rows.reduce<Record<string,number>>((counts,{t})=>({...counts,[t]:(counts[t]??0)+1}),{})};
     const text = [header,...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
-    const first = await restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
-    expect(await db.prepare("SELECT output_blob FROM event_refs WHERE event_id='legacy-output-event'").first(),name).toEqual({output_blob:'a'.repeat(64)});
-    expect(first.documents, name).toMatchObject({convert:2,merge:1});
-    expect(await counters(db,'source'),name).toMatchObject({plans:1});
-    expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
-    expect(await counters(db,'later'),name).toMatchObject({prompts:1});
-    expect(await db.prepare("SELECT state,restore_hold FROM session_documents WHERE session_id='restored'").first(),name).toEqual({state:'live',restore_hold:null});
-    const recovered=await readFixtureRecords({db,blobs},'project','restored');
-    expect(recovered.filter(record=>[uuid(981),uuid(982)].includes(record.id)).map(record=>record.text),name).toEqual(['retained preview','retained preview']);
-    expect(await publicationStatus(db),name).toEqual({state:'building'});
-    for (let page=0;page<20 && await projectionReadiness(db,'publication')==='building';page++) await catchUpProjections(db,{blobs});
-    expect(await readDocumentStatus(db),name).toHaveProperty('differences',{body_missing:1,body_unreadable:1});
-    const plans=await documentTurnCollection({db,blobs},{projectId:'project'},'restored',prompt.prompt_id,'plans',undefined);
-    expect(plans,name).toMatchObject({rows:[{planKey:'plan-one'}]});
-    expect(await db.prepare(`SELECT published_offset FROM transcript_publication WHERE project_id='project' AND session_id='restored'`).first(),name)
-      .toEqual({published_offset:42});
-    await publishDocuments({db,blobs},Date.now(),limits());
-    const modernText=[{...header,schemaVersion:SERVER_SCHEMA_VERSION},...rows].map(row=>JSON.stringify(row)).join('\n')+'\n';
-    await restoreArtifact(db, {text:modernText,blobs,authorization:{kind:'recovery'}});
-    expect(await db.prepare("SELECT session_id FROM plans WHERE plan_key='plan-orphan'").first(),name).toEqual({session_id:'absent'});
-    expect(await db.prepare("SELECT restore_hold FROM session_documents WHERE session_id='absent'").first(),name).toBeNull();
-    expect(await counters(db,'restored'), name).toMatchObject({prompts:3,user_prompts:3,plans:1});
+    const before = await db.prepare('SELECT (SELECT COUNT(*) FROM sessions) sessions,(SELECT COUNT(*) FROM session_documents) documents,(SELECT COUNT(*) FROM backup_restore_progress) progress').first();
+    const refused = restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}});
+    await expect(refused, name).rejects.toMatchObject({code:'artifact_format_retired',counts:{prompt_batches:2,tool_calls:1,transcript_parser_state_chunks:1}});
+    await expect(restoreArtifact(db, {text,blobs,authorization:{kind:'recovery'}}), name).rejects.toThrow(/nothing was restored from it\. Restore it on Myco 2\.0\.0-alpha\.23 or earlier/);
+    expect(await db.prepare('SELECT (SELECT COUNT(*) FROM sessions) sessions,(SELECT COUNT(*) FROM session_documents) documents,(SELECT COUNT(*) FROM backup_restore_progress) progress').first(), name).toEqual(before);
+    expect(await db.prepare("SELECT session_id FROM sessions WHERE session_id='restored'").first(), name).toBeNull();
   });
 });
 

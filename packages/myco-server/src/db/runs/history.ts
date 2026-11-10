@@ -132,12 +132,22 @@ export async function upkeepRows(db: RelationalStore, set: ProjectSet, since: nu
 
 const FAILING_AT = 'COALESCE(r.started_at,r.queued_at,r.completed_at)';
 const VISIBLE = `r.project_id IN (SELECT project_id FROM projects WHERE archived_at IS NULL)`;
+/**
+ * The failed runs of the named tasks whose failing instant is at or after ?2, sought through the task index: started
+ * runs by their start, and runs that failed before starting through the index's null start.
+ */
+const failedSince = (a: string, scope: string): string => [`${a}.started_at>=?2`, `${a}.started_at IS NULL AND COALESCE(${a}.queued_at,${a}.completed_at)>=?2`].map((since) =>
+  `SELECT ${a}.project_id,${a}.id,${a}.task,${a}.dry_run,${a}.started_at,${a}.queued_at,${a}.completed_at FROM agent_runs ${a} INDEXED BY idx_agent_runs_task
+    WHERE ${scope} AND ${a}.status='failed' AND ${since}`).join(' UNION ALL ');
+/**
+ * A failed outcome is a failure since the lookback that produced nothing, after the task's last completed run there.
+ * The latest such failure is also the latest failure that produced nothing at all, since any later one is in the window.
+ */
 const failing = read<[string, number], Row>({ name: 'runs.failingOutcomes', sql: `SELECT r.project_id,r.task,COUNT(*) AS failures,MIN(${FAILING_AT}) AS since,MAX(${FAILING_AT}) AS latest_at,
-    (SELECT l.id FROM agent_runs l WHERE l.project_id=r.project_id AND l.task=r.task AND l.status='failed' AND NOT ${producedSql('l')}
+    (SELECT l.id FROM (${failedSince('l', 'l.project_id=r.project_id AND l.task=r.task')}) l WHERE NOT ${producedSql('l')}
       ORDER BY COALESCE(l.started_at,l.queued_at,l.completed_at) DESC,l.id DESC LIMIT 1) AS latest_run
-  FROM agent_runs r INDEXED BY idx_agent_runs_task
-  WHERE ${VISIBLE} AND r.task IN (SELECT value FROM json_each(?1)) AND r.status='failed' AND ${FAILING_AT}>=?2
-    AND ${FAILING_AT}>COALESCE((SELECT MAX(s.started_at) FROM agent_runs s WHERE s.project_id=r.project_id AND s.task=r.task AND s.status='completed'),-1)
+  FROM (${failedSince('r', `${VISIBLE} AND r.task IN (SELECT value FROM json_each(?1))`)}) r
+  WHERE ${FAILING_AT}>COALESCE((SELECT MAX(s.started_at) FROM agent_runs s WHERE s.project_id=r.project_id AND s.task=r.task AND s.status='completed'),-1)
     AND NOT ${producedSql('r')}
   GROUP BY r.project_id,r.task ORDER BY latest_at DESC` });
 export const failingRows = async (db: RelationalStore, tasks: readonly string[], lookbackFrom: number): Promise<Row[]> => (await readSet(db, failing.bind(JSON.stringify(tasks), lookbackFrom)))[0];

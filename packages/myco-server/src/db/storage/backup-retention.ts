@@ -7,8 +7,8 @@ import { assertion, commit, commitNamed, read, readSet, refusalCode, write, type
 /** One retention decision holds at most this many backups. */
 export const RETENTION_PAGE = 16;
 export const BACKUP_RETENTION_CHANGED = refusalCode('backup_retention_changed');
-/** A restore's session recount keeps one progress row per artifact under this name, `next_row=1` once it has finished. */
-export const EXTRACTION_RECOUNT_PHASE = 'extraction-session-counters';
+/** A finished session recount row per artifact, `next_row=1`, held under this name; such a row holds nothing in use. */
+const EXTRACTION_RECOUNT_PHASE = 'extraction-session-counters';
 
 const headsDone = `COALESCE((SELECT done FROM projection_catchup WHERE projection='${BACKUP_WEEK_HEADS_PROJECTION}' AND phase='${BACKUP_WEEK_HEADS_PHASE}'),0)`;
 
