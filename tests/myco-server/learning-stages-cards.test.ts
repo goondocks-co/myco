@@ -16,7 +16,7 @@ import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
 import { withDocumentStores } from './helpers/document-stores.js';
 import { beforeWriteBatch } from './helpers/prepared.js';
-import { memberHeaders, memoryBlobStore, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
+import { memberHeaders, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { claimNextRun, dispatchTask, endLeasedRun } from '@myco-server-worker/core/harness.js';
@@ -31,7 +31,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { cardsWrittenBy } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
-import { NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, cardRun, longTurn } from './helpers/learning-stages.ts';
+import { BLOBS, NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, cardRun, longTurn } from './helpers/learning-stages.ts';
 
 it('cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice', async () => {
   await withDocumentStores(async (db) => {
@@ -149,7 +149,7 @@ it('sends human requests and a turn whose failure comes after a hundred calls to
 
 it('pulls cards, then learning, at claim within the budget, and the learned spore cites its session', async () => {
   await withDocumentStores(async (db) => {
-    const bindings = { MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
+    const bindings = { MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
     const env = serverEnvFromBindings(bindings as never, recordingDeferred());
     await capture(db, 'session', GOTCHAS);
     await capture(db, 'quiet', [{ id: uuid(20), text: '<task-notification>done</task-notification>', at: 100, replies: ['Noted.'] }]);

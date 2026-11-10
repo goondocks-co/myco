@@ -1,11 +1,12 @@
 import { clearArchivedTranscriptRanges } from '../db/documents/ranges.js';
-import { learningHolds, learningHoldsSql } from '../db/learning/hold.js';
+import { learningHoldsSql } from '../db/learning/hold.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
 import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql, type DerivedContentSource } from './registered-content.js';
-import { cleanupCandidate } from './storage-cleanup.js';
+import { cleanupCandidateRows, type CleanupCandidate } from '../db/storage/cleanup.js';
 import { prepareArchiveStep, type ContentRow } from './event-content.js';
-import { bundleArchiveStatements, discardArchiveBundle, prepareArchiveBundle } from './archive-bundle.js';
+import { ARCHIVE_BUNDLE_ENTRIES, bundleArchiveStatements, discardArchiveBundle, prepareArchiveBundle } from './archive-bundle.js';
+import { dueRawEvents, dueRawEventsBeside, dueSegments, publishedOffsetSql, rawEventArchiveCursor, type DueRawEvent, type DueSegment } from '../db/storage/raw-event-archive.js';
 import { transcriptRetentionFact } from '../ingest/retention.js';
 import { observedSettingsGuard } from './settings.js';
 import { effectiveRawOwnerSql } from './raw-claims.js';
@@ -17,28 +18,14 @@ const RAW_EVENT_PAGE_BYTES = 1024 * 1024;
 const RAW_EVENT_STATEMENT_RESERVE = 88;
 const RAW_EVENT_BLOB_RESERVE = 8;
 interface State { phase:number;cursor_project:string;cursor_id:string;cursor_offset:number;due_received:number;due_kind:string;revision:number }
-interface Due {project_id:string;source_kind:'transcript';source_id:string;session_id:string;size:number;
-  received_at:number;transcript_id:string|null;base_offset:number|null;length:number|null;created_at:number|null;
-  source_blob_key:string|null;source_generation:string|null;token_id:string;eligible_at:number}
-interface RawEventState { cursor_project:string;cursor_session:string;cursor_created:number;cursor_rowid:number;revision:number }
-interface RawEventIdentity { source_rowid:number;project_id:string;event_id:string;session_id:string;token_id:string;
-  raw_revision:number;raw_owner:string|null;raw_provenance:string|null;
-  created_at:number;received_at:number;payload_format:string }
-
+interface RawEventPosition { cursor_received:number;cursor_rowid:number }
 const readState=(db:RelationalStore)=>db.prepare(`SELECT phase,cursor_project,cursor_id,cursor_offset,due_received,due_kind,revision
   FROM raw_archive_state WHERE id=1`).first<State>();
-const readRawEventState=(db:RelationalStore)=>db.prepare(`SELECT cursor_project,cursor_session,cursor_created,cursor_rowid,revision
-  FROM raw_event_archive_state WHERE id=1`).first<RawEventState>();
-/** The byte a transcript's live publication has reached; -1 while it has none or its publication stopped on a failure. */
-const publishedSql=(t:string)=>`COALESCE((SELECT p.published_offset FROM session_documents d JOIN transcript_publication p
-  ON p.project_id=d.project_id AND p.generation=d.generation AND p.transcript_id=${t}.transcript_id
-  WHERE d.project_id=${t}.project_id AND d.session_id=${t}.session_id AND d.state='live' AND p.state<>'failed'),-1)`;
 const stateGuard=(s:State)=>({sql:`EXISTS (SELECT 1 FROM raw_archive_state WHERE id=1 AND phase=?
   AND cursor_project=? AND cursor_id=? AND cursor_offset=? AND due_received=? AND due_kind=? AND revision=?)`,
   params:[s.phase,s.cursor_project,s.cursor_id,s.cursor_offset,s.due_received,s.due_kind,s.revision]});
-const rawEventStateGuard=(s:RawEventState)=>({sql:`EXISTS (SELECT 1 FROM raw_event_archive_state WHERE id=1
-  AND cursor_project=? AND cursor_session=? AND cursor_created=? AND cursor_rowid=? AND revision=?)`,
-  params:[s.cursor_project,s.cursor_session,s.cursor_created,s.cursor_rowid,s.revision]});
+const rawEventStateGuard=(s:RawEventPosition&{revision:number})=>({sql:`EXISTS (SELECT 1 FROM raw_event_archive_state WHERE id=1
+  AND cursor_received=? AND cursor_rowid=? AND revision=?)`,params:[s.cursor_received,s.cursor_rowid,s.revision]});
 
 /** The stored leaves keep their observed versions through the archive transaction. */
 async function policyGuard(db:RelationalStore,days:number):Promise<{sql:string;params:unknown[]}> {
@@ -54,10 +41,10 @@ async function commit(db:RelationalStore,s:State,next:Partial<State>,writes:Prep
   const results=await db.batch([...contentAssertion(db,guard.sql,guard.params),...writes,
     db.prepare(`UPDATE raw_archive_state SET phase=?,cursor_project=?,cursor_id=?,cursor_offset=?,due_received=?,due_kind=?,
       revision=revision+1,complete=0 WHERE id=1 AND phase=? AND cursor_project=? AND cursor_id=?
-      AND cursor_offset=? AND due_received=? AND due_kind=? AND revision=?`)
+      AND cursor_offset=? AND due_received=? AND due_kind=? AND revision=? RETURNING revision`)
       .bind(next.phase??s.phase,next.cursor_project??s.cursor_project,next.cursor_id??s.cursor_id,
         next.cursor_offset??s.cursor_offset,next.due_received??s.due_received,next.due_kind??s.due_kind,...guard.params)]);
-  if(results.at(-1)?.meta.changes!==1) throw new Error('raw_archive_cursor_changed');
+  if(results.at(-1)?.results.length!==1) throw new Error('raw_archive_cursor_changed');
 }
 
 /** Historical segment identities are seeded in numeric-offset pages. */
@@ -86,12 +73,12 @@ async function seedSegments(db:RelationalStore,s:State):Promise<void> {
 }
 
 /** A published segment's existing registered generation becomes its retained cold locator. */
-async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,now:number,days:number,deadline:number):Promise<void> {
+async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:DueSegment,now:number,days:number,deadline:number):Promise<void> {
   const db=env.db;
   if(row.transcript_id===null||row.base_offset===null||row.length===null||row.created_at===null
     ||row.source_blob_key===null||row.size!==row.length) throw new Error('raw_archive_segment_metadata_missing');
   const sourceRow=await db.prepare(`SELECT x.event_id,x.blob_key,x.length,x.created_at,x.received_at,x.token_id,
-    e.envelope_hash,${publishedSql('t')} AS published,b.generation FROM transcript_segments x
+    e.envelope_hash,${publishedOffsetSql('t')} AS published,b.generation FROM transcript_segments x
     JOIN transcripts t ON t.project_id=x.project_id AND t.transcript_id=x.transcript_id
     JOIN events e ON e.project_id=x.project_id AND e.event_id=x.event_id
     JOIN blobs b ON b.project_id=x.project_id AND b.key=x.blob_key
@@ -128,7 +115,7 @@ async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,n
       WHERE r.project_id=? AND r.source_kind='transcript' AND r.source_id=? AND r.disposition='hot'
         AND r.received_at<=? AND r.source_blob_key=x.blob_key AND r.source_generation IS b.generation
         AND r.length=x.length AND r.created_at=x.created_at AND r.token_id=x.token_id
-        AND e.envelope_hash=? AND ${publishedSql('t')}>=x.base_offset+x.length)`;
+        AND e.envelope_hash=? AND ${publishedOffsetSql('t')}>=x.base_offset+x.length)`;
   await commit(db,s,{cursor_project:row.project_id,cursor_id:row.source_id,due_received:row.eligible_at,
     due_kind:row.source_kind},[
     ...contentAssertion(db,guard,[...policy.params,...bodyProof.params,...receiptProof.params,
@@ -146,91 +133,75 @@ async function archiveSegment(env:Pick<ServerEnv,'db'|'blobs'>,s:State,row:Due,n
   ]);
 }
 
-/** The due index bounds identities examined even when most sources are held. */
+/** The due index bounds identities examined even when most sources are held; one statement reads each row's holds. */
 async function archiveDue(env:Pick<ServerEnv,'db'|'blobs'>,s:State,now:number,days:number,deadline:number):Promise<number> {
   const db=env.db;
   const cutoff=now-days*DAY_MS;
-  const {results}=await db.prepare(`SELECT project_id,source_kind,source_id,session_id,size,received_at,transcript_id,
-    base_offset,length,created_at,source_blob_key,source_generation,token_id,eligible_at
-    FROM raw_archive_refs INDEXED BY idx_raw_archive_refs_due WHERE disposition='hot' AND eligible_at<=?
-      AND (eligible_at,project_id,source_kind,source_id)>(?,?,?,?)
-    ORDER BY eligible_at,project_id,source_kind,source_id LIMIT ?`)
-    .bind(cutoff,s.due_received,s.cursor_project,s.due_kind,s.cursor_id,PAGE).all<Due>();
-  if(results.length===0) {
+  const page=await dueSegments(db,cutoff,{received:s.due_received,project:s.cursor_project,kind:s.due_kind,id:s.cursor_id},PAGE);
+  if(page.length===0) {
     if(s.due_received!==-1||s.cursor_project!=='') await commit(db,s,
       {cursor_project:'',cursor_id:'',due_received:-1,due_kind:''},[]);
     return 0;
   }
-  for(const row of results) {
-    if(await learningHolds(db,row.project_id,row.session_id)) continue;
-    const publication=await db.prepare(`SELECT ${publishedSql('t')} AS published FROM transcripts t
-      WHERE project_id=? AND transcript_id=?`).bind(row.project_id,row.transcript_id).first<{published:number}>();
-    if(publication!==null&&row.base_offset!==null&&row.length!==null&&publication.published>=row.base_offset+row.length) {
-      await archiveSegment(env,s,row,now,days,deadline);
-      return 1;
-    }
+  for(const row of page) {
+    if(row.held===1||row.base_offset===null||row.length===null||row.published<row.base_offset+row.length) continue;
+    await archiveSegment(env,s,row,now,days,deadline);
+    return 1;
   }
-  const last=results.at(-1)!;
+  const last=page.at(-1)!;
   await commit(db,s,{cursor_project:last.project_id,cursor_id:last.source_id,due_received:last.eligible_at,
     due_kind:last.source_kind},[]);
   return 0;
 }
 
-/** A source-order page keeps session neighbors together without an event catalogue. */
+/** Whether two rows may share one archive bundle: one session and one immutable uploader evidence class. */
+const sameEvidence=(a:DueRawEvent,b:DueRawEvent)=>a.project_id===b.project_id&&a.session_id===b.session_id&&a.token_id===b.token_id
+  &&a.raw_owner===b.raw_owner&&a.raw_provenance===b.raw_provenance;
+
+/** One page of hot events past the held cursor, oldest first: a due head and its session neighbours become one bundle, and only rows that remain due and unheld stay ahead of the cursor. */
 async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,days:number,deadline:number):Promise<number> {
   const db=env.db;
-  const state=await readRawEventState(db);
+  const state=await rawEventArchiveCursor(db);
   if(state===null) throw new Error('raw_event_archive_state_missing');
-  const {results}=await db.prepare(`SELECT e.rowid AS source_rowid,e.project_id,e.event_id,e.session_id,e.token_id,
-    COALESCE(e.raw_revision,0) AS raw_revision,c.provenance AS raw_provenance,
-    ${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')} AS raw_owner,
-    e.created_at,e.received_at,e.payload_format
-    FROM events e INDEXED BY idx_events_session LEFT JOIN raw_credentials c ON c.token_id=e.token_id
-    WHERE (e.project_id,e.session_id,e.created_at,e.rowid)>(?,?,?,?)
-    ORDER BY e.project_id,e.session_id,e.created_at,e.rowid LIMIT ?`)
-    .bind(state.cursor_project,state.cursor_session,state.cursor_created,state.cursor_rowid,PAGE)
-    .all<RawEventIdentity>();
-  const advance=async(last:RawEventIdentity|null,writes:PreparedStatement[],policy=false):Promise<void>=>{
+  const cutoff=now-days*DAY_MS;
+  const heads=await dueRawEvents(db,state,cutoff,PAGE);
+  const advance=async(last:Pick<DueRawEvent,'received_at'|'source_rowid'>|null,writes:PreparedStatement[],policy=false):Promise<void>=>{
     const guard=rawEventStateGuard(state);
     const held=policy?await policyGuard(db,days):null;
     const committed=await db.batch([
       ...contentAssertion(db,held===null?guard.sql:`${guard.sql} AND ${held.sql}`,
         held===null?guard.params:[...guard.params,...held.params]),
       ...writes,
-      db.prepare(`UPDATE raw_event_archive_state SET cursor_project=?,cursor_session=?,cursor_created=?,
-        cursor_rowid=?,revision=revision+1 WHERE id=1 AND cursor_project=? AND cursor_session=?
-        AND cursor_created=? AND cursor_rowid=? AND revision=?`)
-        .bind(last?.project_id??'',last?.session_id??'',last?.created_at??-1,last?.source_rowid??-1,...guard.params),
+      db.prepare(`UPDATE raw_event_archive_state SET cursor_received=?,cursor_rowid=?,revision=revision+1
+        WHERE id=1 AND cursor_received=? AND cursor_rowid=? AND revision=? RETURNING revision`)
+        .bind(last?.received_at??-1,last?.source_rowid??-1,...guard.params),
     ]);
-    if(committed.at(-1)?.meta.changes!==1) throw new Error('raw_event_archive_cursor_changed');
+    if(committed.at(-1)?.results.length!==1) throw new Error('raw_event_archive_cursor_changed');
   };
-  if(results.length===0) {
-    if(state.cursor_project!==''||state.cursor_session!=='') await advance(null,[]);
+  if(heads.length===0) {
+    if(state.cursor_received!==-1||state.cursor_rowid!==-1) await advance(null,[]);
     return 0;
   }
-  const cutoff=now-days*DAY_MS;
-  const selected:Array<{kind:'event';row:ContentRow;identity:RawEventIdentity}>=[];
-  let lastSkipped:RawEventIdentity|null=null;
+  const firstEligible=heads.findIndex(head=>head.held===0);
+  if(firstEligible===-1) {
+    await advance(heads.at(-1)!,[]);
+    return 0;
+  }
+  const lastSkipped=firstEligible>0?heads[firstEligible-1]!:null;
+  const head=heads[firstEligible]!;
+  const neighbours=await dueRawEventsBeside(db,head,ARCHIVE_BUNDLE_ENTRIES,cutoff);
+  const ids:CleanupCandidate[]=neighbours.map(row=>({project_id:row.project_id,resource_id:row.event_id,resource_kind:'event'}));
+  const candidates=new Map((await cleanupCandidateRows(db,ids,true)).map(row=>[row.resource_id,row]));
+  if(!candidates.has(head.event_id)) {
+    await advance(head,[]);
+    return 0;
+  }
+  const selected:Array<{kind:'event';row:ContentRow;identity:DueRawEvent}>=[];
   let bytes=0;
-  for(const identity of results) {
-    if(identity.received_at>cutoff||identity.payload_format!=='inline'||await learningHolds(db,identity.project_id,identity.session_id)) {
-      if(selected.length>0) break;
-      lastSkipped=identity;
-      continue;
-    }
-    if(selected.length>0) {
-      const first=selected[0]!.identity;
-      if(identity.project_id!==first.project_id||identity.session_id!==first.session_id
-        ||identity.token_id!==first.token_id||identity.raw_owner!==first.raw_owner
-        ||identity.raw_provenance!==first.raw_provenance) break;
-    }
-    const row=await cleanupCandidate(db,{project_id:identity.project_id,resource_id:identity.event_id,
-      resource_kind:'event'},true);
-    if(row===null) {
-      if(selected.length>0) break;
-      lastSkipped=identity;
-      continue;
-    }
+  for(const identity of neighbours) {
+    if(!sameEvidence(identity,head)) break;
+    const row=candidates.get(identity.event_id);
+    if(row===undefined) break;
     if(row.session_id!==identity.session_id||row.token_id!==identity.token_id
       ||(row.raw_revision??0)!==identity.raw_revision||row.received_at!==identity.received_at)
       throw new Error('raw_event_archive_source_changed');
@@ -238,10 +209,6 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
     selected.push({kind:'event',row,identity});
     bytes+=row.bytes;
     if(bytes>=RAW_EVENT_PAGE_BYTES) break;
-  }
-  if(selected.length===0) {
-    await advance(results.at(-1)!,[]);
-    return 0;
   }
   const first=selected[0]!;
   const step=first.row.bytes>RAW_EVENT_PAGE_BYTES
@@ -271,7 +238,7 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
     const writes=[...contentAssertion(db,unheld,[JSON.stringify(selected.map(({identity})=>identity))]),
       ...contentAssertion(db,sourceAge,[JSON.stringify(selected.map(({identity})=>identity)),cutoff]),
       ...bundleArchiveStatements(db,bundle)];
-    await advance(selected.at(-1)!.identity,writes,true);
+    await advance(lastSkipped??{received_at:state.cursor_received,source_rowid:state.cursor_rowid},writes,true);
     return selected.length;
   } finally { await discardArchiveBundle(env,bundle,now); }
 }
@@ -291,7 +258,7 @@ export async function archiveRawSources(env:ServerEnv,now:number,days:number):Pr
     const budget=()=>remainingContentBudget(measured.env.db);
     const admitted=()=>{const left=budget();return left.statements>=RAW_EVENT_STATEMENT_RESERVE
       &&left.blobCalls>=RAW_EVENT_BLOB_RESERVE&&left.wallMs>0&&Date.now()<started+remaining.wallMs;};
-    const rawState=await readRawEventState(measured.env.db);
+    const rawState=await rawEventArchiveCursor(measured.env.db);
     if(rawState===null) throw new Error('raw_event_archive_state_missing');
     const rawFirst=(state.revision+rawState.revision)%2===0;
     if(rawFirst&&admitted()) {

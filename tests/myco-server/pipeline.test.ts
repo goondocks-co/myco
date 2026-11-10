@@ -329,7 +329,7 @@ describe('pipeline (via the deployed entry)', () => {
     expect(res.headers.get(PROTOCOL_HEADER)).toBe(String(SERVER_PROTOCOL));
     expect({ used: noLength.bodyUsed, locked: noLength.body?.locked }).toEqual({ used: false, locked: false });
     const big = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, 'content-type': 'text/plain', 'content-length': String(MAX_BLOB_BYTES + 1), ...PROTOCOL } });
-    expect(await jsonBody((await worker.fetch(big, env)))).toEqual({ stored: false, code: 'blob_cap', reason: `blob exceeds ${MAX_BLOB_BYTES} bytes` });
+    expect(await jsonBody((await worker.fetch(big, env)))).toEqual({ stored: false, code: 'blob_cap', reason: expect.stringContaining(`the limit is ${MAX_BLOB_BYTES} bytes`) });
     for (const bad of ['-1', '1.5', 'x']) {
       const req = new Request(`https://s/blobs/${key}`, { method: 'POST', body: new Uint8Array(8), headers: { authorization: `Bearer ${token}`, 'cf-connecting-ip': '1.2.3.4', [PROJECT_HEADER]: PROJECT, 'content-type': 'text/plain', 'content-length': bad, ...PROTOCOL } });
       expect(await jsonBody((await worker.fetch(req, env)))).toEqual({ stored: false, code: 'content_length', reason: 'content-length required' });

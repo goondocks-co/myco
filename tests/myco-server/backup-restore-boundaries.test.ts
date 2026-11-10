@@ -4,7 +4,10 @@ import { backupArtifact, createBackup, deploymentId, restoreArtifact } from '@my
 import { drainSessionDeletions, tombstoneSession } from './helpers/session-deletion.js';
 import { acquireRecoveryHold, drainObjectReleases, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
 import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
-import { memoryBlobStore } from './helpers/fixtures.js';
+import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { eventContent } from '@myco-server-worker/core/event-content.js';
+import { EVENT_INLINE_PAYLOAD_BYTES } from '@myco-server-worker/ingest/event-payload.js';
 
 async function artifact(db: RelationalStore, rows: { t: string; r: Record<string, unknown> }[]) {
   return [JSON.stringify({ format: 'myco-backup/1', deploymentId: await deploymentId(db), schemaVersion: 100, createdAt: 1, producer: 'test', counts: {} }),
@@ -17,6 +20,22 @@ async function saved(db: RelationalStore, blobs: ReturnType<typeof memoryBlobSto
 }
 
 const transcript = 'tx_' + 'a'.repeat(32);
+
+test('a backup and restore keeps an event whose payload lives in the object store readable byte for byte', async () => {
+  await withDocumentStores(async (db, target) => {
+    const blobs = memoryBlobStore();
+    const issued = await captureDocumentSession(db, 'project', 'session', { blobs, idOffset: 900 });
+    const payload = { promptId: uuid(5001), text: 'y'.repeat(EVENT_INLINE_PAYLOAD_BYTES + 1), origin: 'user' };
+    const landed = await ingestEvent(db, { projectId: 'project', machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: Date.now() },
+      envelope({ eventId: uuid(5002), sessionId: 'session', kind: 'prompt', payload }), { db, blobs });
+    expect(landed, target).toEqual({ persisted: true, projected: true });
+    const text = await saved(db, blobs);
+    await db.batch([db.prepare(`DELETE FROM events WHERE event_id='${uuid(5002)}'`),
+      db.prepare(`DELETE FROM registered_content_proofs WHERE source_kind='event' AND source_id='${uuid(5002)}'`)]);
+    await restoreArtifact(db, { text, blobs, authorization: { kind: 'recovery' } });
+    expect(await eventContent({ db, blobs }, 'project', uuid(5002)), target).toBe(JSON.stringify(payload));
+  });
+});
 
 test('restore cannot bring back the raw events or transcripts of an unpublished deleted session', async () => {
   await withDocumentStores(async (db, target) => {

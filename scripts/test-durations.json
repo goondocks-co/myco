@@ -912,7 +912,10 @@
     "tests/myco-server/title-work.test.ts": 7000,
     "tests/setup/miniflare-stale-connection.test.ts": 2000,
     "tests/myco-server/session-browse-statistics.test.ts": 9000,
-    "tests/myco-server/context-placement.test.ts": 900
+    "tests/myco-server/context-placement.test.ts": 900,
+    "tests/myco-server/event-direct-body.test.ts": 600,
+    "tests/myco-server/raw-event-archive-due.test.ts": 4000,
+    "tests/myco-server/credential-carry.test.ts": 100
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -1015,7 +1018,8 @@
     "view store: empty instance storage preserves captured turns and additive backup": 45000,
     "worker writes: required state and responses commit together under late authority loss": 232000,
     "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000,
-    "claim heads: exact queue counts, guarded capacity and head holds": 180000
+    "claim heads: exact queue counts, guarded capacity and head holds": 180000,
+    "event intake: a payload over the inline ceiling is stored whole in the object store; a replay lands once": 12000
   },
   "jobs": {
     "hook-startup": {

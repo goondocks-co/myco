@@ -36,6 +36,7 @@ import { NEXT_S8A2, NEXT_S8A2_STATEMENTS } from '@myco-server-worker/db/schema-v
 import { NEXT_S4B } from '@myco-server-worker/db/schema-vNEXT-s4b.js';
 import { NEXT_S2D, VNEXT_S2D_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2d.js';
 import { NEXT_S4B2, VNEXT_S4B2_STEPS } from '@myco-server-worker/db/schema-vNEXT-s4b2.js';
+import { VNEXT_S2E_STEPS } from '@myco-server-worker/db/schema-vNEXT-s2e.js';
 import { V717, V717_STATEMENTS } from '@myco-server-worker/db/schema-v717.js';
 import { V719, V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
 import { V724, V724_STATEMENTS } from '@myco-server-worker/db/schema-v724.js';
@@ -474,6 +475,10 @@ const STATEMENT_EXCEPTIONS: readonly StatementException[] = [
   ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT OR IGNORE INTO search_revisions')).map(sql => ({ step: V721, sql, reason: 'Each searched kind starts at search revision 0.' })),
   ...V721_STATEMENTS.filter(sql => sql.startsWith('DROP INDEX')).map(sql => ({ step: V721, sql, reason: 'The Deployment-wide spore index is replaced under its own name with the Project after the id.' })),
   ...V721_STATEMENTS.filter(sql => sql.startsWith('INSERT INTO projection_catchup')).map(sql => ({ step: V721, sql, reason: 'Spore and plan totals record whether existing rows need counting by the catch-up.' })),
+  ...VNEXT_S2E_STEPS.flatMap(step => step.statements.map(sql => ({ step: step.version, sql,
+    reason: sql.startsWith('CREATE INDEX') ? 'The hot event archive seeks due rows by receipt age: one index over the table it reads, in its own step.'
+      : sql.startsWith('ALTER') ? 'The archive sweep cursor orders hot rows by receipt age alone, so the session columns of the retired walk go.'
+      : 'A cursor from the retired walk has no meaning in the new order, so it restarts at the head of the due path.' }))),
   ...NEXT_S8A2_STATEMENTS.filter(sql => sql.startsWith('INSERT')).map(sql => ({ step: NEXT_S8A2, sql, reason: 'The walk over the object store seeds its one position row.' })),
   { step: NEXT_S4B, sql: "INSERT INTO projection_catchup(projection,phase,done) SELECT 'spore_resolution_edges','sporeResolutionEdges',NOT EXISTS(SELECT 1 FROM resolution_events) ON CONFLICT DO NOTHING", reason: 'Lineage edges record whether existing resolution events need replaying by the catch-up.' },
   ...VNEXT_S2D_STEPS.at(-1)!.statements.filter(sql => /^(ALTER TABLE|DROP INDEX)/.test(sql)).map(sql => ({ step: NEXT_S2D, sql, reason:

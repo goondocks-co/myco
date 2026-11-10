@@ -2,6 +2,13 @@ import type { RelationalStore } from '../core/adapters.js';
 import type { Fragment } from './projections.js';
 
 /**
+ * How many live upload reservations one rotation carries. A credential holding more than this at the instant it
+ * rotates reports fewer stored bytes for the excess: the counter is reported, never compared, and this keeps the rotation's
+ * read a fixed size however many uploads a credential has in flight.
+ */
+const CARRIED_RESERVATIONS = 256;
+
+/**
  * What a member's capture is admitted by: its credential is still live. Nothing
  * else about the credential is an admission. Capture is never refused for
  * volume: `member_credentials.bytes_written` is a reporting counter, charged for
@@ -36,5 +43,6 @@ export async function storedBytes(db: RelationalStore, tokenId: string): Promise
  */
 export function carriedBytes(predecessorSlot: string, nowSlot: string): string {
   return `(SELECT bytes_written FROM member_credentials WHERE id=${predecessorSlot})
-    +(SELECT COALESCE(SUM(size),0) FROM blob_reservations WHERE token_id=${predecessorSlot} AND expires_at>${nowSlot})`;
+    +(SELECT COALESCE(SUM(size),0) FROM (SELECT size FROM blob_reservations INDEXED BY idx_blob_reservations_credential
+      WHERE token_id=${predecessorSlot} AND expires_at>${nowSlot} ORDER BY expires_at DESC LIMIT ${CARRIED_RESERVATIONS}))`;
 }

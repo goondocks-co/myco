@@ -16,8 +16,9 @@ export const aheadOfClock = (value: number, now: number): boolean => value > now
 /** The refusal text for a value the clock rule refuses, by field name. */
 export const AHEAD_OF_CLOCK = (field: string): string => `${field} is more than ${MAX_CLOCK_SKEW_MS} ms ahead of the server clock`;
 
-/** The refusal a member sees when a payload is over the cap; it names the route that takes large content. */
-export const PAYLOAD_CAP_REASON = `payload exceeds ${MAX_PAYLOAD_BYTES} bytes; spill to POST /blobs/{sha256} and reference it`;
+/** The refusal a member sees when a payload is over the cap: the size refused, the limit, and the route that takes large content. */
+export const payloadCapReason = (bytes: number): string =>
+  `payload is ${bytes} bytes; the limit is ${MAX_PAYLOAD_BYTES} bytes. Nothing was stored. Upload the large field with POST /blobs/{sha256} and send the event again naming that key.`;
 
 /** How an event reached the Deployment. `import` is a member shipping bytes that already existed on its disk (#1148): the same kinds and the same path, marked so the parse reads it beside live work, never ahead of it, and no title is scheduled for a session that ended weeks ago. */
 type Channel = 'cli' | 'http' | 'import';
@@ -77,9 +78,8 @@ function checkPayload(payload: unknown): { ok: true; json: string; bytes: Uint8A
     const violation = payloadBoundViolation(payload);
     if (violation !== null) return refused(violation);
     const json = JSON.stringify(payload);
-    if (json.length > MAX_PAYLOAD_BYTES) return refused(PAYLOAD_CAP_REASON);
     const bytes = utf8(json);
-    if (bytes.byteLength > MAX_PAYLOAD_BYTES) return refused(PAYLOAD_CAP_REASON);
+    if (bytes.byteLength > MAX_PAYLOAD_BYTES) return refused(payloadCapReason(bytes.byteLength));
     return { ok: true, json, bytes };
   } catch (err) {
     if (err instanceof RangeError) return refused('payload exceeds inspection limits');

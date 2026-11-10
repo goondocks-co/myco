@@ -33,13 +33,16 @@ export interface Turn {
   replies?: string[]; tools?: { name: string; input: unknown; output?: string; ok?: boolean; error?: string }[];
 }
 
+/** One object store for capture and publication, so a payload held in it reads back wherever it is published from. */
+export const BLOBS = memoryBlobStore();
+
 export let serial = 0;
 export async function capture(db: RelationalStore, sessionId: string, turns: readonly Turn[], projectId = 'project', receiptAt = 1) {
   await ensureMember(db, 'member', 1, 'member');
   const issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, 1);
   const ctx = { projectId, machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: receiptAt };
   const send = async (event: Record<string, unknown>) => {
-    const result = await ingestEvent(db, ctx, envelope({ eventId: uuid(100_000 + ++serial), sessionId, ...event }));
+    const result = await ingestEvent(db, ctx, envelope({ eventId: uuid(100_000 + ++serial), sessionId, ...event }), { db, blobs: BLOBS });
     if (!result.persisted) throw new Error(JSON.stringify(result));
   };
   await send({ kind: 'session.start', createdAt: 1, payload: { agent: 'claude-code', startedAt: 1 } });
@@ -66,7 +69,7 @@ export function fakeCard(input: string): { signal: 'none' | 'low' | 'high'; card
 }
 
 /** Publishes every session due and settles the cards due for settlement, as the wake does. */
-export async function publish(db: RelationalStore, now: number, blobs: BlobStore = memoryBlobStore()) {
+export async function publish(db: RelationalStore, now: number, blobs: BlobStore = BLOBS) {
   await publishDocuments({ db, blobs }, now, { calls: 500, deadline: Date.now() + 60_000, clock: Date.now });
   return blobs;
 }
@@ -109,7 +112,7 @@ export interface MaterialAnswer { revision: string; page: number; next_page?: nu
 
 /** A card worker with calls through the real `/mcp` route. */
 export async function cardWorker(db: RelationalStore) {
-  const bindings = { MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
+  const bindings = { MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
   const env = serverEnvFromBindings(bindings as never, recordingDeferred());
   await db.prepare(enable).run();
   await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();

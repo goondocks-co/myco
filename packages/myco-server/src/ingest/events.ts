@@ -35,6 +35,9 @@ import { ALWAYS, credentialLive } from './live-credential.js';
 import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
 
 import { materialFields, materialMerge } from './material-mutation.js';
+import { EVENT_INLINE_PAYLOAD_BYTES, retainedEventPayload } from './event-payload.js';
+import { prepareEventBody, settleUnstoredEventBody } from '../core/event-body.js';
+import { eventBodyAdmission, eventBodyHeldRead, eventBodyStatements, type EventBody } from '../db/events/body.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 interface TranscriptExtra {
@@ -141,8 +144,12 @@ export async function ingestEvent(
 ): Promise<IngestResult> {
   const planned = await planEventWrite(db, ctx, body, env);
   if (!planned.ok) return refused(ctx, planned);
-  const results = await db.batch(planned.write.statements);
-  return planned.write.interpret(results);
+  try {
+    const results = await db.batch(planned.write.statements);
+    return planned.write.interpret(results);
+  } finally {
+    await planned.write.settleBody?.();
+  }
 }
 
 /** The statements one event needs and how to read their answers, without executing them. Callers with one event run their own batch; a caller with many concatenates the statements of each into ONE batch and interprets each write's own slice — the difference between one database call per event and one per pass. */
@@ -151,6 +158,8 @@ interface EventWrite {
   replayAdmission?: Fragment;
   statements: PreparedStatement[];
   interpret(results: BatchResult[]): IngestResult;
+  /** Consumes a body's upload authority when its event did not store it; the caller runs it on every exit. */
+  settleBody?: () => Promise<void>;
 }
 
 type PlannedWrite = { ok: true; write: EventWrite } | Refused;
@@ -294,12 +303,14 @@ export async function planEventWrite(
   const checks = [projectLive(write), ...sharedChecks(spec, write, e, p, plan.identities)];
   const admission: Fragment[] = [liveAdmission, ...checks.map((c) => c.admission), ...plan.admission];
   const textKeys = Object.keys(DOCUMENT_TEXT_FIELDS[e.kind] ?? {}).flatMap(field => typeof p[field] === 'string' ? [p[field] as string] : []);
-  if (textKeys.length > 0) {
+  const overCeiling = e.payloadBytes.byteLength > EVENT_INLINE_PAYLOAD_BYTES;
+  let eventBody: EventBody | undefined;
+  if (textKeys.length > 0 || overCeiling) {
     const permitted = await db.prepare(`SELECT 1 AS admitted WHERE ${admission.map(fragment => `(${fragment.sql})`).join(' AND ')}
       AND NOT EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=?)`)
       .bind(...admission.flatMap(fragment => fragment.params), ctx.projectId, e.eventId).first();
     if (permitted !== null) {
-      if (env === undefined) throw new StorageContractError('Document text admission requires a content store');
+      if (env === undefined) throw new StorageContractError('Document text or payload body admission requires a content store');
       for (const key of new Set(textKeys)) {
         try { await documentText(env, ctx.projectId, key); }
         catch (error) {
@@ -307,6 +318,11 @@ export async function planEventWrite(
           return { ok: false, ...refusal('Referenced document text must be valid UTF-8', 'invalid_field') };
         }
       }
+      // A refused or duplicate event never reaches here: only an event about to be stored puts bytes in the store.
+      if (overCeiling) eventBody = await prepareEventBody(env, {
+        projectId: ctx.projectId, sessionId: e.sessionId, eventId: e.eventId, tokenId: ctx.tokenId, envelopeHash: digest, nonce: write.nonce,
+        payload: e.payloadBytes as Uint8Array<ArrayBuffer>,
+      }, ctx.now) ?? undefined;
     }
   }
   const replayChecks = plan.replay === undefined ? undefined : [...admission, plan.replay.compatible, sourceProof!];
@@ -340,7 +356,8 @@ export async function planEventWrite(
         token_id: ctx.tokenId,
         kind: e.kind,
         channel: e.channel,
-        payload: e.payloadJson,
+        payload: eventBody === undefined ? e.payloadJson : retainedEventPayload(e.payload),
+        payload_format: eventBody === undefined ? 'inline' : 'blob',
         envelope_hash: digest,
         created_at: e.createdAt,
         received_at: ctx.now,
@@ -354,13 +371,14 @@ export async function planEventWrite(
       ['created_at', 'received_at', 'payload_bytes'],
     ),
   });
+  const rawAdmission = eventBody === undefined ? admission : [...admission, eventBodyAdmission(eventBody)];
   const raw = db
     .prepare(
       `INSERT INTO events (${rawMaterial.insert.columns.join(',')})
-      SELECT ${rawMaterial.insert.sql} WHERE ${admission.map((a) => a.sql).join(' AND ')}
+      SELECT ${rawMaterial.insert.sql} WHERE ${rawAdmission.map((a) => a.sql).join(' AND ')}
       ON CONFLICT(project_id,event_id) DO NOTHING`,
     )
-    .bind(...rawMaterial.insert.params, ...admission.flatMap((a) => a.params));
+    .bind(...rawMaterial.insert.params, ...rawAdmission.flatMap((a) => a.params));
 
   const counted = charged
     ? db
@@ -480,6 +498,7 @@ export async function planEventWrite(
     ...turnStart,
     ...liveCapture,
     ...delivery.statements,
+    ...(eventBody === undefined ? [] : eventBodyStatements(db, eventBody, ctx.now)),
   ];
   const statements: PreparedStatement[] = [
     raw,
@@ -492,8 +511,10 @@ export async function planEventWrite(
     admitted,
     ...shared,
     ...plan.reads,
+    ...(eventBody === undefined ? [] : [eventBodyHeldRead(db, eventBody)]),
   ];
 
+  let landed = false;
   const interpret = (results: BatchResult[]): IngestResult => {
     if (results.length !== statements.length)
       throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
@@ -508,10 +529,12 @@ export async function planEventWrite(
     const liveRow = results[afterWrites + 1].results[0] as { live: number } | undefined;
     const allReads: ReadRows = results.slice(afterWrites + 2).map((r) => r.results as Record<string, unknown>[]);
     const sharedRows = allReads.slice(0, checks.length);
-    const reads = allReads.slice(checks.length);
+    const bodyRead = eventBody === undefined ? [] : allReads.slice(-1);
+    const reads = allReads.slice(checks.length, allReads.length - bodyRead.length);
     const extra = plan.extra ? plan.extra(reads) : {};
 
     if (storedRow?.ingest_nonce === write.nonce) {
+      landed = true;
       if (
         plan.projections.length > 0 &&
         storedRow.replayed !== 1 &&
@@ -545,6 +568,8 @@ export async function planEventWrite(
       emit({ kind: 'ingest_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId });
       return { persisted: false, code: 'event_id_conflict', reason: 'event id conflict', ...extra };
     }
+    // A body verified and then lost to the release owner or expiry can land on a retry, which this answer asks for.
+    if (eventBody !== undefined && (bodyRead[0]?.[0] as { held?: number } | undefined)?.held !== 1) throw new Error('event_body_authority_lost');
     if (plan.heldDuplicate && plan.heldDuplicate(reads)) {
       emit({ kind: 'ingest_duplicate', projectId: ctx.projectId, tokenId: ctx.tokenId });
       return { persisted: true, duplicate: true, ...extra };
@@ -564,6 +589,7 @@ export async function planEventWrite(
       replayAdmission: replayGate,
       statements,
       interpret,
+      ...(eventBody === undefined ? {} : { settleBody: async () => { if (!landed) await settleUnstoredEventBody(db, eventBody!, ctx.now); } }),
     },
   };
 }
