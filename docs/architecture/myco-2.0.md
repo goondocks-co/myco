@@ -1231,7 +1231,7 @@ Every row in §7 is `Blk` except one: **#928** (native Cloudflare intelligence-p
 
 ## 9. The gate
 
-The §7 ledger is kept current by review: a change that adds, retires or moves a capability edits its row in the same pull request. No test checks the ledger against the registries.
+Only the MCP tool rows (§7.3) are checked, by `tests/myco-server/tool-catalogue.test.ts`; every other row is kept by review.
 
 `tests/meta/no-1-4-reach.test.ts` walks the import closure of the 2.0 entry points, the CLI and every verb it dispatches included, and stops at the 1.4 tree. Every edge that crosses into it is named, with the #1170 phase that removes it; a new crossing fails, and so does a named edge that no longer exists, so the list only shrinks. The boundary is closed: every file under `packages/myco/src` is reached, inside the 1.4 tree, or named with why nothing reaches it. A 1.4 path named in a `package.json` script, a Dockerfile, the Makefile or a CI workflow is named too, with its phase.
 

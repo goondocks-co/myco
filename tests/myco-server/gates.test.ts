@@ -9,7 +9,7 @@ import { RETIRED_ROUTES, ROUTES, SESSION_AUTHORITIES, UNSERVED_PATHS, grantRoute
 import { issueExternalGrant } from '@myco-server-worker/auth/grants.js';
 import worker from '@myco-server-worker/index.js';
 import { createIngestThrottle } from './helpers/throttle.js';
-import { MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, mintMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
+import { MEMBER_TOKEN_PATTERN, MEMBER_TOKEN_REFRESH_WINDOW_MS, MEMBER_TOKEN_TTL_MS, mintMemberToken, NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, RETRY_AFTER_SECONDS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
@@ -18,12 +18,20 @@ import { sha256Hex } from '@myco-server-worker/hash.js';
 import { RUN_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
 import { kindSpec } from '@myco-server-worker/ingest/kinds.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
-import { REQUIRED_BINDINGS, serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { createScanner, SyntaxKind } from 'typescript/unstable/ast';
-import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING } from './helpers/fixtures.js';
+import { envelope as fixture, memberHeaders, sqliteEnv, uuid, PROTOCOL, count, RETIRED_BYTE_CEILING, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { isDeploymentAccessPath } from './helpers/access-paths.js';
 import { isForeignKeyChildIndex } from './helpers/foreign-key-indexes.js';
 import { OWNER_ENV as OWNER_ENV2, ownerCookie as ownerCookie2 } from './helpers/owner.js';
+import { memberRouteFixtures } from './helpers/member-route-fixtures.js';
+import { offeredHarness } from './helpers/offered-harness.js';
+import { legacyWorker } from './helpers/worker-principal.js';
+import { claimNextRun } from '@myco-server-worker/core/harness.js';
+import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
+import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
 
 const WORKER = fileURLToPath(new URL('../../packages/myco-server/', import.meta.url));
 const SRC = join(WORKER, 'src');
@@ -465,231 +473,7 @@ describe('gates', () => {
     const t1 = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const revokeOnly = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
     const anonymous = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
-    sqlite.run("INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', ?)", [issuedAt]);
-    // A fresh Deployment: no admin has a GitHub account linked, so a member credential is answered a link key.
-    sqlite.query(`UPDATE members SET github_id = NULL`).run();
-    const KEY = 'a'.repeat(64);
-    // The run routes reference an agent identity and a project, both of which a
-    // Deployment declares before any run is claimed.
-    let runSeq = 0;
-    sqlite.query(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`).run(issuedAt);
-    sqlite.query(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('agent_gate', 'gate', 'built-in', 1, ?)`).run(issuedAt);
-    sqlite.query(`INSERT OR IGNORE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', 1, ?, 'gate')`).run(issuedAt);
-    const bytes = new TextEncoder().encode('blob-bytes');
-    const key = await sha256Hex('blob-bytes');
-    /** Per non-public route: a malformed request the route refuses, and a well-formed one it would store. */
-        // One run the write fixtures may report against: a report on an unknown run
-    // is refused, and a fixture must be a single accepted request.
-    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate', 'user', 'gate', 'running', 1)`).run();
-    sqlite.query(`INSERT OR IGNORE INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'run_gate_report', 'user', 'embedding-reconcile', 'running', 1)`).run();
-
-    const FIXTURES: Record<string, { shape: Shape; malformed: (token: string) => Request; wellFormed: (token: string) => Request }> = {
-      'POST /events': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/events', { method: 'POST', headers: memberHeaders(token), body: envelope() }),
-      },
-      'POST /blobs/{sha256}': {
-        shape: 'stored',
-        malformed: (token) => new Request(`https://s/blobs/${KEY}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'nonsense', 'content-length': '2' }), body: '{}' }),
-        wellFormed: (token) => new Request(`https://s/blobs/${key}`, { method: 'POST', headers: memberHeaders(token, { 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), body: bytes }),
-      },
-      'POST /tokens/refresh': {
-        shape: 'refreshed',
-        malformed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/tokens/refresh', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/credential/revoke': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/credential/revoke', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ tokenId: t1.tokenId }) }),
-        wellFormed: (token) => new Request('https://s/members/credential/revoke', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      // #1148 — the import plan. Advice, not an authority: it stores nothing,
-      // so a malformed ask is refused in the same shape as any other.
-      'POST /import/plan': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/import/plan', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ candidates: [] }) }),
-      },
-      'POST /import/legacy-history': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/import/legacy-history', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/import/legacy-history', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventGroups: [[crypto.randomUUID()]] }) }),
-      },
-      'POST /runs/claim': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `run_${runSeq++}`, agentId: 'agent_gate', task: `digest_${runSeq}`, capability: 'cortex' }) }),
-      },
-
-      'POST /runs/update': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/update', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'nope', update: { status: 'failed' } }) }),
-      },
-
-
-
-
-      'POST /runs/report': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate_report', agentId: 'user', action: 'embedding-reconcile', summary: 's' }) }),
-      },
-
-      'POST /runs/embedding-step': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/runs/embedding-step', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ runId: 'run_gate' }) }),
-      },
-      'POST /spores/save': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: `sp_${runSeq++}`, agentId: 'agent_gate', observationType: 'gotcha', content: 'c', agentLine: 'When using this fixture, retain its evidence.' }) }),
-      },
-      'POST /spores/list': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/spores/list', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /spores/get': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/get', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/get', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ id: 'nope' }) }),
-      },
-      'POST /spores/resolve': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventId: `re_${runSeq++}`, agentId: 'agent_gate', sporeId: 'nope', action: 'obsolete', reason: 'retire fixture', status: 'obsolete' }) }),
-      },
-      'POST /context/prompt': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, promptId: 'p_gate', text: 'what did we settle on' }) }),
-      },
-      'POST /context/session': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/context/session', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, kind: 'start' }) }),
-      },
-
-
-      'POST /worker/claim': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [] }) }),
-      },
-      'POST /worker/lease': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/lease', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
-      },
-      'POST /worker/end': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/end', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', status: 'failed' }) }),
-      },
-      'POST /worker/steps': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/steps', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/steps', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent', attemptId: 'mt_absent', page: 0, pages: 1, total: 0, overflow: 0, unrecognized: { total: 0, shapes: {} }, steps: [] }) }),
-      },
-      'POST /worker/repository': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_absent' }) }),
-      },
-      'POST /worker/models': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/worker/models', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ catalog: { observedOrder: 1, harness: 'codex', source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt: 1, models: [] } }) }),
-      },
-      'POST /mcp': {
-        shape: 'answered',
-        malformed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) }),
-      },
-      'POST /members/link-github': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: 'not json' }),
-        wellFormed: (token) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/projects': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: '' }) }),
-        wellFormed: (token) => new Request('https://s/members/projects', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ name: 'gate project' }) }),
-      },
-      'POST /members/projects/resolve': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/projects/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'nope', label: 'repo' }) }),
-        wellFormed: (token) => new Request('https://s/members/projects/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'gate-repo', remote: 'git@github.com:acme/gate.git' }) }),
-      },
-      'POST /members/uncaptured': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/uncaptured', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'repo', reason: 'bogus' }) }),
-        wellFormed: (token) => new Request('https://s/members/uncaptured', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), label: 'gate-repo', reason: 'outside_folders' }) }),
-      },
-      'POST /members/uncaptured/state': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'bogus' }) }),
-        wellFormed: (token) => new Request('https://s/members/uncaptured/state', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ rootKey: 'a'.repeat(16), state: 'connected' }) }),
-      },
-      'POST /members/harnesses/report': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'binary_missing' }] }) }),
-        wellFormed: (token) => new Request('https://s/members/harnesses/report', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'ready' }] }) }),
-      },
-      'GET /members/ownership': {
-        shape: 'persisted',
-        malformed: (_token) => new Request('https://s/members/ownership', { headers: memberHeaders(anonymous.token) }),
-        wellFormed: (token) => new Request('https://s/members/ownership', { headers: memberHeaders(token) }),
-      },
-      'POST /members/ownership': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/ownership', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ ownerMemberId: 'mem_machine_1', revision: '0' }) }),
-      },
-      'GET /members/roles': {
-        shape: 'persisted',
-        malformed: (_token) => new Request('https://s/members/roles', { headers: memberHeaders(anonymous.token) }),
-        wellFormed: (token) => new Request('https://s/members/roles', { headers: memberHeaders(token) }),
-      },
-      'POST /members/roles': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/roles', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/roles', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ member_id: 'mem_machine_3', role: 'member', expected_revision: '0' }) }),
-      },
-      'POST /members/ownership/transfer': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/ownership/transfer', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/ownership/transfer', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ member_id: 'mem_machine_2', expected_revision: '1' }) }),
-      },
-      'GET /members/raw-claims': {
-        shape: 'persisted',
-        malformed: (_token) => new Request('https://s/members/raw-claims', { headers: memberHeaders(anonymous.token) }),
-        wellFormed: (token) => new Request('https://s/members/raw-claims', { headers: memberHeaders(token) }),
-      },
-      'POST /members/raw-claims': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-        wellFormed: (token) => new Request('https://s/members/raw-claims', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ revision: String((sqlite.query('SELECT revision FROM raw_provenance_state').get() as { revision: number }).revision) }) }),
-      },
-      'POST /members/projects/list': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
-        wellFormed: (token) => new Request('https://s/members/projects/list', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/settings': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/settings', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ leaf: 'x' }) }),
-        wellFormed: (token) => new Request('https://s/members/settings', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-      'POST /members/status': {
-        shape: 'persisted',
-        malformed: (token) => new Request('https://s/members/status', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ project: 'x' }) }),
-        wellFormed: (token) => new Request('https://s/members/status', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
-      },
-    };
+    const FIXTURES = await memberRouteFixtures(sqlite, issuedAt, { otherTokenId: t1.tokenId, machinelessToken: anonymous.token });
     /** How each shape answers: the status of a terminal refusal, where its code and reason sit, and what a well-formed request that stored or answered looks like. */
     const SHAPES: Record<Shape, { refusedStatus: number; refusal: (body: any) => { refused: boolean; code: unknown; reason: unknown }; accepted: (body: any) => boolean }> = {
       persisted: { refusedStatus: 200, refusal: (b) => ({ refused: b.persisted === false, code: b.code, reason: b.reason }), accepted: (b) => b.persisted === true },
@@ -729,9 +513,35 @@ describe('gates', () => {
       if (route === 'POST /members/ownership/transfer') sqlite.run("UPDATE members SET role='admin',github_id='gate-transfer' WHERE id='mem_machine_2'");
       if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
     };
-    // A credential minted not to rotate reaches every member route with a request the route would act on, and gains
-    // no authority that could outlive it: no credential, enrollment, link key or grant is minted, and no ownership or
-    // role moves.
+    for (const [route, fixture] of Object.entries(FIXTURES)) {
+      prepare(route);
+      const token = route === 'POST /members/credential/revoke' ? revokeOnly.token : t1.token;
+      const stored = await (await worker.fetch(fixture.wellFormed(token), e)).json() as Record<string, unknown>;
+      if (route.startsWith('POST /runs/')) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
+      else expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
+    }
+  });
+
+  it('gives a credential minted not to rotate no authority on any member route: no credential, enrollment, link key, grant, ownership or role, no run credential, and neither the provider key nor a repository credential', async () => {
+    const { env: e, db, sqlite, serverEnv } = sqliteEnv({ workerLogin: true });
+    turnOnGatedCapabilities(sqlite);
+    e.SECRET_WRAP_KEY = { get: async () => btoa('w'.repeat(32)) };
+    const issuedAt = Date.now() - (MEMBER_TOKEN_TTL_MS - MEMBER_TOKEN_REFRESH_WINDOW_MS / 2);
+    const other = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt);
+    const machineless = await issueMemberToken(db, { memberId: 'mem_anon', machineId: null }, issuedAt);
+    const fixtures = await memberRouteFixtures(sqlite, issuedAt, { otherTokenId: other.tokenId, machinelessToken: machineless.token });
+    // What a door could hand out: a provider key a claimed run's harness reads, a repository credential a leased run
+    // checks out with, and a queued run either would be answered for.
+    const PROVIDER_KEY = 'sk-ant-api03-bm9uLXJvdGF0aW5nLWRvb3ItZml4dHVyZQ';
+    const REPOSITORY_TOKEN = 'synthetic-non-rotating-repository-credential';
+    const secrets = deploymentSecretStore(serverEnv.db, serverEnv.wrappingKey);
+    await secrets.put('anthropic', PROVIDER_KEY, 'mem_machine_1', issuedAt);
+    await settingsWriter(db).setLeaf('agent.harnesses.claude-code.credential', 'deployment', 'mem_machine_1', Date.now());
+    await projectRepositories(db, secrets).save('proj_1', { url: 'https://example.test/team/source', branch: 'main', revision: null, credential: { username: 'reader', token: REPOSITORY_TOKEN } }, 'mem_machine_1', issuedAt);
+    sqlite.run(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ?)`, [issuedAt]);
+    sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context)
+      VALUES ('proj_1', 'run_door', 'myco-agent', 'vault-seed', 'queued', ?, 'worker', ?, '{}')`, [issuedAt, JSON.stringify({ serverUrl: 'https://s', actor: 'mem_machine_1' })]);
+    const offer = { harnesses: [offeredHarness('claude-code')], capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] };
     const authority = () => ({
       credentials: sqlite.query('SELECT id FROM member_credentials ORDER BY id').all(),
       enrollments: sqlite.query('SELECT * FROM enrollment_authorities ORDER BY rowid').all(),
@@ -740,25 +550,34 @@ describe('gates', () => {
       owner: sqlite.query('SELECT member_id FROM deployment_ownership').all(),
       roles: sqlite.query('SELECT id, role FROM members ORDER BY id').all(),
     });
-    const people = sqlite.query('SELECT id, role, github_id FROM members').all() as { id: string; role: string; github_id: string | null }[];
-    const owner = sqlite.query('SELECT member_id FROM deployment_ownership WHERE id = 1').get() as { member_id: string | null } | null;
-    for (const [route, fixture] of Object.entries(FIXTURES)) {
-      prepare(route);
+    /** Every string an answer carries that has the shape of a member or run credential, other than the one presented. */
+    const credentialsIn = (value: unknown, presented: string): string[] => typeof value === 'string' ? (MEMBER_TOKEN_PATTERN.test(value) && value !== presented ? [value] : [])
+      : Array.isArray(value) ? value.flatMap((v) => credentialsIn(v, presented))
+        : value !== null && typeof value === 'object' ? Object.values(value).flatMap((v) => credentialsIn(v, presented)) : [];
+    for (const [route, fixture] of Object.entries(fixtures)) {
+      if (route === 'POST /members/roles' || route === 'GET /members/raw-claims') sqlite.run("UPDATE deployment_ownership SET member_id='mem_machine_1' WHERE id=1");
+      if (route === 'POST /members/ownership/transfer') sqlite.run("UPDATE members SET role='admin',github_id='gate-transfer' WHERE id='mem_machine_2'");
+      if (route === 'POST /members/ownership') sqlite.run("UPDATE members SET github_id = 'gate-owner' WHERE id = 'mem_machine_1'");
       const nonRotating = await issueMemberToken(db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, issuedAt, null, NO_RUNTIME_CLAIMS, { rotates: false });
+      let request = fixture.wellFormed(nonRotating.token);
+      if (route === 'POST /worker/claim') request = new Request('https://s/worker/claim', { method: 'POST', headers: memberHeaders(nonRotating.token), body: JSON.stringify(offer) });
+      if (route === 'POST /worker/repository') {
+        // The lease a repository door answers under, taken as a worker would hold it.
+        const leased = await claimNextRun(serverEnv, { principal: legacyWorker(nonRotating.tokenId, 'machine_1'), now: Date.now(), ...offer });
+        expect({ route, leased: leased.claimed }).toEqual({ route, leased: true });
+        request = new Request('https://s/worker/repository', { method: 'POST', headers: memberHeaders(nonRotating.token), body: JSON.stringify({ projectId: 'proj_1', runId: 'run_door' }) });
+      }
       const before = authority();
-      const answered = await worker.fetch(fixture.wellFormed(nonRotating.token), e);
+      const answered = await worker.fetch(request, e);
+      const text = await answered.text();
       expect({ route, authenticated: answered.status !== 401 }).toEqual({ route, authenticated: true });
       expect({ route, authority: authority() }).toEqual({ route, authority: before });
+      expect({ route, providerKey: text.includes(PROVIDER_KEY), repositoryCredential: text.includes(REPOSITORY_TOKEN) }).toEqual({ route, providerKey: false, repositoryCredential: false });
+      let parsed: unknown = null;
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      expect({ route, credentials: credentialsIn(parsed, nonRotating.token) }).toEqual({ route, credentials: [] });
     }
-    for (const person of people) sqlite.run('UPDATE members SET role = ?, github_id = ? WHERE id = ?', [person.role, person.github_id, person.id]);
-    if (owner !== null) sqlite.run('UPDATE deployment_ownership SET member_id = ? WHERE id = 1', [owner.member_id]);
-    for (const [route, fixture] of Object.entries(FIXTURES)) {
-      prepare(route);
-      const token = route === 'POST /members/credential/revoke' ? revokeOnly.token : t1.token;
-      const stored = await (await worker.fetch(fixture.wellFormed(token), e)).json() as Record<string, unknown>;
-      if (route.startsWith('POST /runs/')) expect({ route, code: stored.code, persisted: stored.persisted }).toEqual({ route, code: 'run_scope', persisted: false });
-      else expect({ route, accepted: SHAPES[fixture.shape].accepted(stored) }).toEqual({ route, accepted: true });
-    }
+    sqlite.close();
   });
 
   // V8 (the Worker): a call taking one argument per byte throws past about 125k arguments, where JSC (Bun) accepts it.
@@ -777,10 +596,6 @@ describe('gates', () => {
       }
     }
   });
-
-  // The compile-time proof itself is `npm run check`, which is a separate lane from this suite. This gate holds the
-  // declarations in place so the proof cannot be deleted silently; it asserts their presence, not their satisfaction.
-
 
   it('never rewrites a session\'s identity columns on receipt: a second token of the same machine moves only the last receipt', async () => {
     const { env: e, db, sqlite } = sqliteEnv({ workerLogin: true });
@@ -998,11 +813,14 @@ describe('gates', () => {
     ].sort()).toEqual(routeLedger);
   });
 
-  it('names every required binding it is missing as an absent capability', () => {
-    const bound = Object.fromEntries(REQUIRED_BINDINGS.map((name) => [name, {}]));
-    for (const name of REQUIRED_BINDINGS) {
-      const caps = serverEnvFromBindings({ ...bound, [name]: undefined } as never).platform.capabilities();
-      const missing = caps.filter((c) => !c.present).flatMap((c) => c.operatorNames);
+  it('names every binding a capability stands on, and reports that capability absent when the binding is missing', () => {
+    const bound = sqliteEnv().env;
+    const capabilities = serverEnvFromBindings(bound as never).platform.capabilities();
+    const served = capabilities.filter((c) => c.capability !== 'harness-runtime');
+    expect(served.map((c) => ({ capability: c.capability, present: c.present, names: c.operatorNames.length > 0 })))
+      .toEqual(served.map((c) => ({ capability: c.capability, present: true, names: true })));
+    for (const name of served.flatMap((c) => c.operatorNames)) {
+      const missing = serverEnvFromBindings({ ...bound, [name]: undefined } as never).platform.capabilities().filter((c) => !c.present).flatMap((c) => c.operatorNames);
       expect({ name, named: missing.includes(name) }).toEqual({ name, named: true });
     }
   });

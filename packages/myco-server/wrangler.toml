@@ -38,7 +38,7 @@ simple = { limit = 300, period = 60 }
 
 # The key Deployment-held secrets are sealed under. Declared here so a deploy that
 # omits it is visible in configuration rather than at the first attempt to store a
-# credential. NOT in REQUIRED_BINDINGS: a Deployment that never stores one serves
+# credential. Optional: a Deployment that never stores one serves
 # every other route without it, and the failure belongs at the first seal.
 #
 # Create the store and the secret once, then bind. An account holds ONE

@@ -914,7 +914,8 @@
     "tests/myco-server/credential-carry.test.ts": 100,
     "tests/myco-server/run-report-door.test.ts": 3900,
     "tests/myco-server/secret-display.test.ts": 3900,
-    "tests/meta/boundaries/settings-one-writer.test.ts": 1200
+    "tests/meta/boundaries/settings-one-writer.test.ts": 1200,
+    "tests/myco-server/queued-run-lifecycle.test.ts": 4000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -1018,7 +1019,8 @@
     "worker writes: required state and responses commit together under late authority loss": 232000,
     "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000,
     "claim heads: exact queue counts, guarded capacity and head holds": 180000,
-    "event intake: a payload over the inline ceiling is stored whole in the object store; a replay lands once": 12000
+    "event intake: a payload over the inline ceiling is stored whole in the object store; a replay lands once": 12000,
+    "request bodies: a body near the cap is stored whole and a streamed body past it is refused, on the Worker as on Bun": 6000
   },
   "jobs": {
     "hook-startup": {
