@@ -187,7 +187,7 @@ test('the CI per-test command rejects an overrun from actual JUnit evidence', ()
     expect(reported.stdout).toContain('120000ms');
     expect(reported.stdout).toContain('Split the variants or raise the declared timeout.');
     expect(fs.readFileSync(path.join(reports, 'summary.md'), 'utf8')).toContain('Split the variants or raise the declared timeout.');
-    const timingEnv = { ...process.env, MYCO_TIMING_GATES: 'report' };
+    const timingEnv: NodeJS.ProcessEnv = { ...process.env, MYCO_TIMING_GATES: 'report' };
     delete timingEnv.MYCO_TEST_HEADROOM;
     const timingOnly = spawnSync('node', ['scripts/check-test-shards.mjs', '--test-reports', reports], {
       encoding: 'utf8',
