@@ -50,8 +50,8 @@ async function queuedChild(db: RelationalStore, tie: boolean, spillChild = false
   return fixture;
 }
 
-test('a queued child preceding its parent publishes under that parent for either timestamp ordering', async () => {
-  for (const tie of [false, true]) await withDocumentStores(async (db, target) => {
+for (const tie of [false, true]) test(`a queued child preceding its parent publishes under that parent for either timestamp ordering (tie: ${tie})`, async () => {
+  await withDocumentStores(async (db, target) => {
     const { env, now } = await queuedChild(db, tie);
     if (tie) await db.prepare(`UPDATE publish_queue SET retry_at=? WHERE session_id='session'`).bind(now + PUBLISH_BACKOFF_MAX_MS).run();
     await publishDocuments(env, now, limits());
@@ -65,8 +65,8 @@ test('a queued child preceding its parent publishes under that parent for either
   });
 });
 
-test('a queued child and its ancestor recover from a transient read fault without an ancestor order hold', async () => {
-  for (const childFails of [false, true]) await withDocumentStores(async (db, target) => {
+for (const childFails of [false, true]) test(`a queued child and its ancestor recover from a transient read fault without an ancestor order hold (childFails: ${childFails})`, async () => {
+  await withDocumentStores(async (db, target) => {
     const { env, now, blobs, key } = await queuedChild(db, true, childFails), get = blobs.get.bind(blobs);
     let fail = true;
     blobs.get = async physical => { if (fail && physical.includes(key)) { fail = false; throw new Error('prompt store unavailable'); } return get(physical); };
@@ -83,8 +83,8 @@ test('a queued child and its ancestor recover from a transient read fault withou
   });
 });
 
-test('queued self-parent and multi-prompt cycles publish without holding later turns', async () => {
-  for (const size of [1, 2]) await withDocumentStores(async (db, target) => {
+for (const size of [1, 2]) test(`queued self-parent and multi-prompt cycles publish without holding later turns (size: ${size})`, async () => {
+  await withDocumentStores(async (db, target) => {
     const { env, now, ctx } = await queuedTurn(db);
     const events = [envelope({ eventId: uuid(101), sessionId: 'cycle', kind: 'session.start', payload: { agent: 'claude-code' } }),
       ...Array.from({ length: size }, (_, i) => envelope({ eventId: uuid(102 + i), sessionId: 'cycle', kind: 'prompt',
