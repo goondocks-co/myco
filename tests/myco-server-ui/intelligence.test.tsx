@@ -567,7 +567,7 @@ describe('running a task by hand', () => {
 
 for (const [code, sentence] of [
   ['machine_did_not_start', 'No machine started the task within a day.'],
-  ['machine_unresponsive', 'Myco heard nothing from it until its time limit passed, so Myco ended it. Whether its machine stopped is not known.'],
+  ['machine_unresponsive', 'Its time limit passed, so Myco ended it. Whether its machine stopped is not known.'],
   ['task_start_failed', 'The machine could not start the task.'],
   ['model_not_applied', 'The agent couldn’t use the chosen model.'],
   ['report_without_audit', 'The agent didn’t account for the steps it took, so its work couldn’t be checked.'],
@@ -598,7 +598,8 @@ for (const [code, sentence] of [
     expect(open.textContent).not.toContain(prose);
     fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
     expect(open.querySelector('[data-run-technical]')!.textContent).toContain(sentence);
-    expect(open.querySelector('[data-run-technical]')!.textContent).toContain(prose);
+    // A run Myco ended by its time limit keeps no machine's word: its stored sentence is Myco's own, so only the code's words show.
+    expect({ code, storedShown: open.querySelector('[data-run-technical]')!.textContent!.includes(prose) }).toEqual({ code, storedShown: code !== 'machine_unresponsive' });
   });
 }
 
@@ -738,11 +739,11 @@ it('keeps a coded failure as the headline when the run also filed a report', asy
   })) } }));
   mount(`/p/${P}/work/runs/run_5e0b1c2d3f`);
   const open = await panel();
-  await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('Myco heard nothing from it until its time limit passed, so Myco ended it. Whether its machine stopped is not known.'));
+  await waitFor(() => expect(open.querySelector('[data-run-failure]')!.textContent).toContain('Its time limit passed, so Myco ended it. Whether its machine stopped is not known.'));
   expect(open.textContent).not.toContain(reason);
   expect(open.querySelector('[data-run-report]')!.textContent).toContain(report);
   fireEvent.click(within(open.querySelector<HTMLElement>('[data-run-technical]')!).getByRole('button', { name: /Technical details/ }));
-  expect(open.querySelector('[data-run-technical]')!.textContent).toContain(reason);
+  expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(reason);
   expect(open.querySelector('[data-run-technical]')!.textContent).not.toContain(report);
 });
 
@@ -824,7 +825,7 @@ describe('stored run audit evidence', () => {
 
 it('reads every page of a run’s 201 calls, then lists them a page at a time with the true total', async () => {
   const first = runDetail(mapRuns[1]!, {
-    toolCalls: Array.from({ length: 200 }, (_, i) => ({ id: i, status: 'success' as const, tool: 'myco_run_map', op: 'get', recordedAt: NOW + i, durationMs: 10 })),
+    toolCalls: Array.from({ length: 200 }, (_, i) => ({ id: i, status: 'success' as const, tool: 'myco_run_map', op: i % 2 === 0 ? 'get' : 'write', recordedAt: NOW + i, durationMs: 10 })),
     toolCallCoverage: { total: 201, failed: 0, cursor: 'next-page' },
   });
   const last = runDetail(mapRuns[1]!, { toolCalls: [{ id: 200, status: 'unknown', tool: 'myco_run', op: 'report', recordedAt: NOW, durationMs: null }], toolCallCoverage: { total: 201, failed: 0, cursor: null } });
@@ -856,20 +857,18 @@ describe('reviewed run evidence', () => {
     const pairs = [...new Map(Object.values(RUN_TOOL_MAP).flat().map((pair) => [`${pair.tool}/${pair.op}`, pair])).values()];
     const open = await openReviewed({ toolCalls: [...pairs.map((pair, i) => ({ id: i, status: 'success' as const, tool: pair.tool, op: pair.op, recordedAt: NOW, durationMs: 10 })), { id: pairs.length, status: 'success', tool: 'myco_future_runtime', op: 'credential', recordedAt: NOW, durationMs: 10 }] });
     const activity = within(open).getByRole('region', { name: 'What it did' });
-    const rows = within(activity).getAllByRole('listitem');
-    expect(rows).toHaveLength(pairs.length + 1);
+    const story = within(open).getByRole('region', { name: 'What happened' });
+    const rows = [...within(activity).getAllByRole('listitem'), ...story.querySelectorAll<HTMLElement>('[data-story-row^="calls-"]')];
     for (const row of rows) {
       expect(row.textContent).not.toMatch(MECHANISM_WORDS);
       expect(row.textContent).not.toMatch(RETIRED_VOCABULARY);
       expect(row.textContent).not.toContain('myco_');
     }
-    expect(activity.textContent).toContain('Read the code map');
-    expect(activity.textContent).toContain('Wrote the code map');
-    expect(activity.textContent).toContain('Read session material');
-    expect(activity.textContent).toContain('Reported');
-    expect(rows.at(-1)!.textContent).toContain('Called Myco');
-    fireEvent.click(within(rows[0]!).getByRole('button', { name: 'Technical details' }));
-    expect(rows[0]!.textContent).toContain(pairs[0]!.tool);
+    const said = `${activity.textContent}${story.textContent}`;
+    for (const words of ['Read the code map', 'Wrote the code map', 'Read session material', 'Reported', 'Called Myco']) expect(said).toContain(words);
+    const first = within(activity).getAllByRole('listitem')[0]!;
+    fireEvent.click(within(first).getByRole('button', { name: 'Technical details' }));
+    expect(first.textContent).toContain(pairs[0]!.tool);
   });
   for (const task of ['canopy-map', 'vault-seed']) {
     it(`names the pinned repository source for ${task} rather than session reads`, async () => {

@@ -15,7 +15,7 @@ import { ActivitySection, AgentAccount, FilesReadPart, summaryOf, useAttemptEvid
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { InkLink, OnwardLink, PartLabel } from './OutcomeCard';
 import { AskedVersusDid, SourceMark, Tries, WhatHappened } from './RunStory';
-import { runStory, SOURCE_WORDS, type Source } from './story';
+import { inferredEnd, recordedOutputWords, runStory, SOURCE_WORDS, type Source } from './story';
 import { stepsKnown } from './activity';
 import {
   atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, deployWords, fullErrorWords, dollars, fleetWaitWords, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
@@ -99,7 +99,7 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const ran = finished || live;
   const fleetWait = run.status === 'queued' ? fleetWaitWords(run) : null;
   const story = runStory({
-    answer, calls: calls.rows, steps: stepsKnown(latest.coverage) ? latest.steps.rows : null,
+    answer, calls: calls.rows, callsComplete: calls.complete, steps: stepsKnown(latest.coverage) ? latest.steps.rows : null,
     startedBy: startedBy === null ? null : startedKicker(startedBy), cause: causeOf(answer), memberName: name, now,
   });
   return (
@@ -284,6 +284,11 @@ function Produced({ answer, projectId }: { answer: RunDetailAnswer; projectId: s
       </div>
     );
   }
+  if (run.result === 'produced' || run.result === 'failed_with_output') {
+    const words = recordedOutputWords(answer);
+    return <p className="t-small text-ink-2" data-run-output="">{words ?? 'Its output is recorded and not listed here.'}{run.result === 'failed_with_output' ? ' It is kept.' : ''}</p>;
+  }
+  if (run.result === 'failed' && kind === null) return <p className="t-small text-muted">No output recorded.</p>;
   return <p className="t-small text-muted">{run.result === 'unchanged' ? 'Checked and changed nothing' : 'Nothing'}{run.status === 'failed' ? '; it stopped before writing anything' : ''}.</p>;
 }
 
@@ -336,7 +341,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
               <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{runErrorWords(run.errorCode, run.errorReason ?? null, run.repositoryFailure ?? null)}</p>
               {run.errorCode === 'repository_unprepared'
                 ? run.repositoryFailure?.summary?.trim() && <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{redactSecrets(run.repositoryFailure.summary)}</p>
-                : <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>}
+                : !inferredEnd(run.errorCode) && <p className="whitespace-pre-wrap break-words t-mono text-ink-2">{run.error}</p>}
             </div>
           )}
         </div>

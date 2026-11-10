@@ -9,6 +9,7 @@ import {
   type Source, type StoryRow, type Tone, type Try,
 } from './story';
 import { atWords } from './words';
+import { callWords } from './call-words';
 import type { RunDetailAnswer, RunPageRow } from './wire';
 
 const SOURCE_ICON: Readonly<Record<Source, string>> = { saw: '●', runner: '◐', agent: '○', inferred: '◇', none: '–' };
@@ -41,9 +42,14 @@ function StoryLine({ entry }: { entry: StoryRow }) {
         {entry.note !== null && <p className="t-meta text-muted">{entry.note}</p>}
         {entry.calls !== null && (
           <Disclosure summary={`Show the ${entry.calls.length.toLocaleString()} calls`}>
-            <ul className="flex flex-col gap-s1 pt-s1 t-mono text-muted">
-              {entry.calls.map((call) => <li key={call.id} className="break-all">{clockWords(call.recordedAt)} {call.tool}{call.op === null ? '' : ` / ${call.op}`}</li>)}
-            </ul>
+            <div className="flex flex-col gap-s2 pt-s1">
+              <ul className="flex flex-col gap-s1 t-small text-muted">
+                {entry.calls.map((call) => <li key={call.id}><span className="tabular-nums">{clockWords(call.recordedAt)}</span> {callWords(call.tool, call.op)}</li>)}
+              </ul>
+              <FactsPanel>
+                <FactRow term="Myco call" mono>{entry.calls[0]!.tool}{entry.calls[0]!.op === null ? '' : ` / ${entry.calls[0]!.op}`}</FactRow>
+              </FactsPanel>
+            </div>
           </Disclosure>
         )}
       </div>

@@ -166,6 +166,96 @@ describe('Did it do what we asked?', () => {
   });
 });
 
+describe('the facts the panel states', () => {
+  const searchRun = (id: string, over: Partial<RunPageRow>, reports: Array<{ action: string; summary: string; details: string | null; createdAt: number }> = []) =>
+    runDetail(runRow({ id, task: 'embedding-reconcile', harness: null, ...over }), { reports, outcomeEvidence: evidence({ artifactPresent: null }) });
+
+  it('says only that the time limit passed for a run Myco ended past it, in the banner and in the technical details', async () => {
+    const panel = await open('run_embed1914', searchRunCutOff());
+    expect(panel.querySelector('[data-run-failure]')!.textContent).toContain('Its time limit passed, so Myco ended it. Whether its machine stopped is not known.');
+    fireEvent.click(within(panel.querySelector('[data-run-technical]') as HTMLElement).getByRole('button', { name: /Technical details/ }));
+    expect(panel.querySelector('[data-run-technical]')!.textContent).not.toContain('stopped responding');
+    expect(panel.textContent).not.toContain('heard nothing');
+  });
+
+  it('claims Myco agrees only where Myco checked a report of nothing to do, and says the output is there where it checked the output', async () => {
+    const unchecked = await open('run_idle_index', searchRun('run_idle_index', { status: 'completed', result: 'unchanged' }, [
+      { action: 'embedding', summary: 'Processed 0 embedding records; settled.', details: null, createdAt: NOW - 61 * MINUTE },
+    ]));
+    expect(verdict(unchecked)).toContain('Changed nothing');
+    expect(verdict(unchecked)).not.toContain('agrees');
+    expect(unchecked.querySelector('[data-asked="owed"]')!.textContent).not.toContain('agrees');
+    cleanup();
+
+    const current = runDetail(runRow({ id: 'run_map_current', task: 'canopy-map', status: 'completed', result: 'unchanged' }), {
+      reports: [{ action: 'map', summary: 'The map is current.', details: null, createdAt: NOW - 61 * MINUTE }],
+      outcomeEvidence: evidence({ artifactPresent: true }),
+    });
+    const map = await open('run_map_current', current);
+    expect(verdict(map)).toContain('Did the work, and its output is there');
+    expect(verdict(map)).not.toContain('agrees');
+    expect(map.querySelector('[data-asked="owed"]')!.textContent).toContain('Report and output both there');
+  });
+
+  it('names the search index update a run recorded instead of saying it wrote nothing, and keeps a failed run’s output', async () => {
+    const produced = await open('run_index_ok', searchRun('run_index_ok', { status: 'completed', result: 'produced' }, [
+      { action: 'embedding', summary: 'Processed 340 embedding records; settled.', details: null, createdAt: NOW - 61 * MINUTE },
+    ]));
+    const made = within(produced).getByRole('region', { name: 'What it produced' }).textContent!;
+    expect(made).toContain('An update to the search index. Its report: Processed 340 embedding records; settled.');
+    expect(made).not.toContain('Nothing');
+    cleanup();
+
+    const kept = await open('run_index_kept', searchRun('run_index_kept', { status: 'failed', failed: true, result: 'failed_with_output' }));
+    const keptWords = within(kept).getByRole('region', { name: 'What it produced' }).textContent!;
+    expect(keptWords).toContain('An update to the search index.');
+    expect(keptWords).toContain('It is kept.');
+    expect(keptWords).not.toContain('stopped before writing anything');
+  });
+
+  it('marks a silence Myco measured between its own records as Myco saw, and an ending that changed nothing as Myco inferred', async () => {
+    const cutOff = await open('run_embed1914', searchRunCutOff());
+    const silence = story(cutOff).querySelector('[data-story-row="silence-end"]')!;
+    expect(silence.textContent).toContain('Silence for 6 min 46 s');
+    expect(silence.querySelector('[data-source]')!.textContent).toContain('Myco saw');
+    expect(silence.textContent).toContain('Whether its runner kept checking in is not recorded');
+    cleanup();
+
+    const idle = await open('run_idle_index', searchRun('run_idle_index', { status: 'completed', result: 'unchanged' }));
+    expect(line(idle, 'end').textContent).toContain('Completed, and changed nothing');
+    expect(line(idle, 'end').querySelector('[data-source]')!.textContent).toContain('Myco inferred');
+  });
+
+  it('says a lapsed hold ran out, not that its runner stopped renewing it', async () => {
+    const lapsed = runDetail(runRow({ id: 'run_lapsed', task: 'extract-curate', status: 'failed', failed: true, result: 'failed' }), {
+      run: { errorCode: 'lease_lapsed', error: 'the lease lapsed' },
+      attempts: [attempt('att_lapsed', NOW - 70 * MINUTE, runner('rn_b82ef603', 'cloud-vm-1'))], attemptCount: 1,
+    });
+    const panel = await open('run_lapsed', lapsed);
+    expect(line(panel, 'inferred').textContent).toContain('Its hold on the run ran out, so Myco ended it');
+    expect(panel.textContent).not.toContain('stopped renewing');
+  });
+
+  it('lists grouped calls once, under What happened, in the story’s words, with the route only in the facts panel', async () => {
+    const panel = await open('run_embed1914', searchRunCutOff());
+    const did = within(panel).getByRole('region', { name: 'What it did' });
+    expect(did.textContent).not.toContain('Advanced the search index');
+    expect(did.textContent).toContain('Myco’s calls are listed, grouped, under “What happened”.');
+    const grouped = story(panel).querySelector('[data-story-row^="calls-"]') as HTMLElement;
+    fireEvent.click(within(grouped).getByRole('button', { name: /Show the 8 calls/ }));
+    expect(within(grouped).getAllByText(/Advanced the search index$/)).toHaveLength(8);
+    for (const node of within(grouped).getAllByText(/\/runs\/embedding-step/)) expect(node.closest('[data-facts]')).not.toBeNull();
+  });
+
+  it('measures no silence while Myco’s list of calls is still incomplete', async () => {
+    const detail = searchRunCutOff();
+    const panel = await open('run_embed1914', { ...detail, toolCallCoverage: { total: 300, failed: 0, cursor: 'more' } });
+    expect(story(panel).textContent).not.toContain('Silence');
+    expect(story(panel).textContent).not.toContain('No call for');
+    expect(line(panel, 'inferred').textContent).toContain('Its time limit passed, so Myco ended it');
+  });
+});
+
 describe('Tries', () => {
   it('links one piece of work across its tries from the task’s run list', async () => {
     const cutOff = searchRunCutOff();

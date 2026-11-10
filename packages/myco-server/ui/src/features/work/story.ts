@@ -48,15 +48,25 @@ export function clockWords(at: number): string {
 
 const row = (over: Partial<StoryRow> & Pick<StoryRow, 'key' | 'words' | 'source'>): StoryRow => ({ at: null, tone: null, note: null, runner: null, calls: null, ...over });
 
-/** Calls in a row that read the same and answered the same collapse into one row with a count and a time span. */
-function groupCalls(calls: readonly RunCall[]): StoryRow[] {
+/** Consecutive calls that read the same and answered the same, oldest first. */
+function callGroups(calls: readonly RunCall[]): RunCall[][] {
   const groups: RunCall[][] = [];
   for (const call of [...calls].sort((a, b) => a.recordedAt - b.recordedAt || a.id - b.id)) {
     const last = groups.at(-1)?.[0];
     if (last !== undefined && callWords(last.tool, last.op) === callWords(call.tool, call.op) && last.status === call.status) groups.at(-1)!.push(call);
     else groups.push([call]);
   }
-  return groups.map((group) => {
+  return groups;
+}
+
+/** The calls "What happened" lists as one grouped row; "What it did" leaves them to it. */
+export function groupedCallIds(calls: readonly RunCall[]): ReadonlySet<number> {
+  return new Set(callGroups(calls).filter((group) => group.length > 1).flat().map((call) => call.id));
+}
+
+/** Calls in a row that read the same and answered the same collapse into one row with a count and a time span. */
+function groupCalls(calls: readonly RunCall[]): StoryRow[] {
+  return callGroups(calls).map((group) => {
     const first = group[0]!;
     const end = group.at(-1)!;
     const lead = callWords(first.tool, first.op);
@@ -98,6 +108,8 @@ export interface StoryInput {
   calls: readonly RunCall[];
   /** The latest attempt's steps, where its step log is known. */
   steps: readonly RunStep[] | null;
+  /** Whether every call Myco recorded is loaded; a gap measured against a partial list could be closed by a later page. */
+  callsComplete: boolean;
   /** Who started it, as the kicker says it ("on its schedule"), or null. */
   startedBy: string | null;
   /** Why it failed, in reader words. */
@@ -113,16 +125,21 @@ const INFERRED_END: Readonly<Record<string, (quiet: number | null) => { words: s
     note: 'Myco ends any run still open past its time limit. That the limit passed is all Myco knows: whether the machine stopped is not known.',
   }),
   lease_lapsed: () => ({
-    words: 'Its runner stopped renewing its hold on the run, so Myco ended it',
-    note: 'Myco reads this from the hold running out. Why the runner stopped is not known.',
+    words: 'Its hold on the run ran out, so Myco ended it',
+    note: 'Myco reads this from the hold running out. Why it ran out is not known.',
   }),
 };
+
+/** Whether Myco ended the run by a rule rather than on anything the machine said. */
+export function inferredEnd(code: string | null | undefined): boolean {
+  return INFERRED_END[code ?? ''] !== undefined;
+}
 
 /**
  * "What happened", in order: queued, claimed, the calls Myco saw grouped, the runner's steps, the agent's reports,
  * any silence longer than a minute, then how it ended.
  */
-export function runStory({ answer, calls, steps, startedBy, cause, memberName, now }: StoryInput): StoryRow[] {
+export function runStory({ answer, calls, callsComplete, steps, startedBy, cause, memberName, now }: StoryInput): StoryRow[] {
   const { run } = answer;
   const timed: StoryRow[] = [];
   if (run.queuedAt !== null) timed.push(row({ key: 'queued', at: run.queuedAt, words: startedBy === null ? 'Queued' : `Queued, ${startedBy}`, source: 'saw' }));
@@ -143,9 +160,9 @@ export function runStory({ answer, calls, steps, startedBy, cause, memberName, n
   const story: StoryRow[] = [];
   let heard: number | null = null;
   const silence = (until: number, key: string) => {
-    if (heard === null || until - heard <= SILENCE_MS) return;
+    if (!callsComplete || heard === null || until - heard <= SILENCE_MS) return;
     story.push(row({
-      key, words: `Silence for ${spanWords(until - heard)}`, source: 'none',
+      key, words: `Silence for ${spanWords(until - heard)}`, source: 'saw',
       note: 'Myco recorded nothing from this run in this time. Whether its runner kept checking in is not recorded for a run.',
     }));
   };
@@ -162,7 +179,7 @@ export function runStory({ answer, calls, steps, startedBy, cause, memberName, n
   const live = run.status === 'running' || run.status === 'claimed';
   const stepLogMissing = latest !== undefined && latest.steps === null;
   if (live) {
-    if (heard !== null && now - heard > SILENCE_MS) story.push(row({ key: 'quiet', words: `No call to Myco for ${spanWords(now - heard)} so far`, source: 'saw' }));
+    if (callsComplete && heard !== null && now - heard > SILENCE_MS) story.push(row({ key: 'quiet', words: `No call to Myco for ${spanWords(now - heard)} so far`, source: 'saw' }));
     if (stepLogMissing) story.push(row({ key: 'no-steps', words: 'What it is doing on the machine isn’t visible yet', source: 'none', note: 'The runner sends its step log when the attempt ends.' }));
     return story;
   }
@@ -171,7 +188,7 @@ export function runStory({ answer, calls, steps, startedBy, cause, memberName, n
   silence(ended, 'silence-end');
   const inferred = run.status === 'failed' ? INFERRED_END[run.errorCode ?? ''] : undefined;
   if (inferred !== undefined) {
-    const said = inferred(heard === null ? null : ended - heard);
+    const said = inferred(heard === null || !callsComplete ? null : ended - heard);
     story.push(row({ key: 'inferred', at: ended, words: said.words, source: 'inferred', tone: 'bad', note: said.note }));
   }
   story.push(endRow(answer, ended, inferred !== undefined, cause));
@@ -189,7 +206,7 @@ function endRow({ run, reports }: RunDetailAnswer, at: number, inferred: boolean
     const kept = run.result === 'failed_with_output' ? '. What it wrote is kept' : '';
     return row({ key: 'end', at, words: inferred ? `Ended as failed${noReport}${kept}` : `Failed: ${cause.replace(/\.$/, '')}${kept}`, source: 'saw', tone: 'bad' });
   }
-  if (run.result === 'unchanged') return row({ key: 'end', at, words: 'Completed, and changed nothing', source: 'saw', tone: 'good' });
+  if (run.result === 'unchanged') return row({ key: 'end', at, words: 'Completed, and changed nothing', source: 'inferred', tone: 'good' });
   return row({ key: 'end', at, words: 'Completed', source: 'saw', tone: 'good' });
 }
 
@@ -208,6 +225,22 @@ export function exactDetails({ run, attempts }: RunDetailAnswer): Array<[string,
     ['Finished', run.completedAt === null ? null : new Date(run.completedAt).toISOString()],
   ];
   return facts.filter((fact): fact is [string, string] => fact[1] !== null);
+}
+
+/** The search index update, card write or spore changes a run without a listed artifact recorded; null where the detail carries none of them. */
+export function recordedOutputWords({ run, reports }: RunDetailAnswer): string | null {
+  const said = (action: string) => reports.filter((report) => report.action === action).at(-1)?.summary.split('\n')[0]?.trim() ?? null;
+  if (run.task === 'embedding-reconcile') {
+    const summary = said('embedding');
+    return summary === null ? 'An update to the search index.' : `An update to the search index. Its report: ${summary}`;
+  }
+  if (run.task === 'turn-cards') return 'Turn cards for its session’s turns.';
+  if (run.task === 'curate-spores') {
+    const lines = reports.filter((report) => report.action === 'curated').at(-1)?.summary.split('\n') ?? [];
+    const tally = lines.length > 1 ? lines.at(-1)!.trim() : null;
+    return tally === null ? 'Changes to related spores: retired, replaced or merged.' : `Changes to related spores: ${tally}.`;
+  }
+  return null;
 }
 
 /** One line of "Did it do what we asked?": what was asked beside what the evidence says, and on whose word. */
@@ -232,9 +265,11 @@ export function verdictOf({ run, outcomeEvidence }: RunDetailAnswer): { words: s
   if (run.status === 'skipped') return { words: 'Nothing ran, so nothing was asked of it', source: 'saw', tone: null };
   if (run.errorCode === 'run_cancelled') return { words: 'Cancelled before it finished', source: 'saw', tone: 'bad' };
   if (run.status === 'completed') {
-    return run.result === 'unchanged'
-      ? { words: 'Changed nothing, and Myco agrees', source: 'inferred', tone: 'good' }
-      : { words: 'Did the work, and its output is there', source: 'inferred', tone: 'good' };
+    if (outcomeEvidence?.skipSupported === true) return { words: 'Changed nothing, and Myco agrees', source: 'inferred', tone: 'good' };
+    if (outcomeEvidence?.artifactPresent === true) return { words: 'Did the work, and its output is there', source: 'inferred', tone: 'good' };
+    return run.result === 'produced'
+      ? { words: 'Did the work', source: 'inferred', tone: 'good' }
+      : { words: 'Changed nothing', source: 'inferred', tone: null };
   }
   if (DID_NOT_DO_THE_WORK.has(run.errorCode ?? '') || (run.errorCode === 'run_failed' && shortOfRule(outcomeEvidence))) {
     return { words: 'Ran and did not do the work', source: 'inferred', tone: 'bad' };
