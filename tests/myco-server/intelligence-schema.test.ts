@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const LEDGER_PATH = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
@@ -65,10 +66,18 @@ const LEDGER_ROWS_WITHOUT_A_TABLE = new Set(['schema_version']);
 
 const v7 = SCHEMA_STEPS.find((s) => s.version === 7)!;
 
+let v85: Uint8Array | null = null;
+
+/** A private copy of the schema as it stood at v85, before v86 retired part of v7; the steps replay once per file. */
 function applied(): Database {
-  const db = new Database(':memory:');
-  for (const step of SCHEMA_STEPS.filter((step) => step.version <= 85)) for (const s of step.statements) db.exec(s);
-  return db;
+  if (v85 === null) {
+    const db = new Database(':memory:');
+    try {
+      for (const step of SCHEMA_STEPS.filter((step) => step.version <= 85)) for (const s of step.statements) db.exec(s);
+      v85 = db.serialize();
+    } finally { db.close(); }
+  }
+  return Database.deserialize(v85);
 }
 
 interface Column { name: string; notnull: number }
@@ -106,9 +115,8 @@ describe('v7 intelligence schema', () => {
   });
 
   it('retires the v7 skill, digest and instruction tables at v86', () => {
-    const db = new Database(':memory:');
+    const db = schemaSqlite();
     try {
-      for (const step of SCHEMA_STEPS) for (const statement of step.statements) db.exec(statement);
       const present = new Set((db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[]).map(({ name }) => name));
       expect([...RETIRED_V86_TABLES].filter((table) => present.has(table))).toEqual([]);
       const ledger = fs.readFileSync(LEDGER_PATH, 'utf8');

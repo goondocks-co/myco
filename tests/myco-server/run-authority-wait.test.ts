@@ -1,13 +1,13 @@
 import { expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { runAuthorityWait } from './helpers/run-authority-wait.js';
+import { schemaD1Root, schemaSqlite } from './helpers/schema-template.js';
 
 const expected = ['lease', 'attempt', 'credential'].map(bound => ({ bound, refused: true, applied: 0, rows: 0 }));
 
 it('native: authority expires while the real store batch waits', async () => {
-  const sqlite = new Database(':memory:');
+  const sqlite = schemaSqlite();
   try { expect(await runAuthorityWait(sqliteRelationalStore(sqlite))).toEqual(expected); }
   finally { sqlite.close(); }
 });
@@ -20,7 +20,8 @@ it('D1 workerd: authority expires while the real store batch waits', async () =>
       export default { async fetch(request, env) { try { return Response.json(await runAuthorityWait(env.DB)); }
         catch(error) { return Response.json({ error: String(error.stack) }, { status: 500 }); } } };` },
     { type: 'ESModule', path: 'scenario.js', contents: await bundle.outputs[0]!.text() },
-  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'] }));
+  ], compatibilityDate: '2026-07-01', compatibilityFlags: ['nodejs_compat'], d1Databases: ['DB'],
+    resourcePersistencePath: await schemaD1Root() }));
   try {
     const response = await mf.dispatchFetch('http://authority/');
     const answer = await response.json();

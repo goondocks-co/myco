@@ -456,10 +456,10 @@ describe('gates', () => {
   it('re-applying numbered migrations leaves the current schema unchanged', async () => {
     const { applySchemaSteps } = await import('./helpers/migrate.js');
     const { sqliteRelationalStore } = await import('@myco-server-worker/platform/bun/sqlite.js');
-    const db = new Database(':memory:');
+    const { schemaSqlite } = await import('./helpers/schema-template.js');
+    const db = schemaSqlite();
     try {
       const store = sqliteRelationalStore(db);
-      await applySchemaSteps(store);
       const before = db.query(`SELECT name,sql FROM sqlite_master ORDER BY name`).all();
       expect(await applySchemaSteps(store)).toEqual([]);
       expect(db.query(`SELECT name,sql FROM sqlite_master ORDER BY name`).all()).toEqual(before);

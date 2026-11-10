@@ -3,7 +3,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
 import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
-import { applySchemaSteps } from './helpers/migrate.js';
+import { schemaD1Root } from './helpers/schema-template.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { memoryBlobStore, recordingLimiter, sqliteEnv } from './helpers/fixtures.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
@@ -130,10 +130,9 @@ describe('hot event archive due work', () => {
   });
 
   it('costs the same D1 rows to find nothing due at 1,000 and 20,000 hot young events', async () => {
-    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'] }));
+    const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }', compatibilityDate: '2026-07-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
     try {
       const db = await mf.getD1Database('DB');
-      await applySchemaSteps(db);
       await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?, ?, 1)').bind(PROJECT, PROJECT).run();
       await db.prepare(`UPDATE raw_archive_state SET phase=2 WHERE id=1`).run();
       const measured = measuredStore(db);
