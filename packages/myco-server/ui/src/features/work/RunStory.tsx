@@ -31,8 +31,8 @@ function StoryLine({ entry }: { entry: StoryRow }) {
     ? <>{entry.words.slice(0, entry.words.indexOf(entry.runner.name))}<InkLink to={`${RUNNERS_PATH}#runner-${encodeURIComponent(entry.runner.id)}`}>{entry.runner.name}</InkLink>{entry.words.slice(entry.words.indexOf(entry.runner.name) + entry.runner.name.length)}</>
     : entry.words;
   return (
-    <li className={cn('grid grid-cols-[5.5rem_1fr] gap-s3 py-s2', silent && 'border-l-2 border-dashed border-line pl-s2')} data-story-row={entry.key} data-story-tone={entry.tone ?? undefined}>
-      <span className="t-meta tabular-nums text-muted">{entry.at === null ? '' : <time dateTime={new Date(entry.at).toISOString()}>{clockWords(entry.at)}</time>}</span>
+    <li className={cn('flex gap-s3 py-s2', silent && 'border-l-2 border-dashed border-line pl-s2')} data-story-row={entry.key} data-story-tone={entry.tone ?? undefined}>
+      <span className="shrink-0 t-meta tabular-nums text-muted">{entry.at === null ? <span aria-hidden className="invisible">00:00:00</span> : <time dateTime={new Date(entry.at).toISOString()}>{clockWords(entry.at)}</time>}</span>
       <div className="flex min-w-0 flex-col gap-s1">
         <div className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1">
           <span className={cn('min-w-0 break-words t-small', silent ? 'text-muted' : toneClass(entry.tone))}>{words}</span>
@@ -85,18 +85,15 @@ export function AskedVersusDid({ answer }: { answer: RunDetailAnswer }) {
         <SourceMark source={verdict.source} />
       </p>
       {rows.length > 0 && (
-        <table className="w-full table-fixed border-collapse t-small">
-          <thead><tr className="text-left t-meta text-muted"><th className="w-[22%] py-s1 font-normal" /><th className="w-[30%] py-s1 font-normal">Asked</th><th className="py-s1 font-normal">What the evidence says</th></tr></thead>
-          <tbody className="divide-y divide-line">
-            {rows.map((entry) => (
-              <tr key={entry.key} data-asked={entry.key} className="align-top">
-                <td className="py-s2 pr-s2 text-muted">{entry.label}</td>
-                <td className="break-words py-s2 pr-s2 text-ink-2">{entry.asked}</td>
-                <td className="py-s2"><div className="flex flex-col items-start gap-s1"><span className={cn('break-words', toneClass(entry.tone))}>{entry.evidence}</span><SourceMark source={entry.source} /></div></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ul className="flex flex-col divide-y divide-line" aria-label="Asked and what the evidence says">
+          {rows.map((entry) => (
+            <li key={entry.key} data-asked={entry.key} className="flex flex-col gap-s1 py-s2 t-small">
+              <span className="font-medium text-ink">{entry.label}</span>
+              <span className="break-words text-ink-2"><span className="text-muted">Asked: </span>{entry.asked}</span>
+              <span className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1"><span className={cn('break-words', toneClass(entry.tone))}><span className="text-muted">Evidence: </span>{entry.evidence}</span><SourceMark source={entry.source} /></span>
+            </li>
+          ))}
+        </ul>
       )}
     </section>
   );
