@@ -178,7 +178,7 @@ describe('the facts the panel states', () => {
     expect(panel.textContent).not.toContain('heard nothing');
   });
 
-  it('claims Myco agrees only where Myco checked a report of nothing to do, and says the output is there where it checked the output', async () => {
+  it('claims Myco agrees only where Myco checked a report of nothing to do, and says the output is there where it checked the output, claiming the work only when the run changed something', async () => {
     const unchecked = await open('run_idle_index', searchRun('run_idle_index', { status: 'completed', result: 'unchanged' }, [
       { action: 'embedding', summary: 'Processed 0 embedding records; settled.', details: null, createdAt: NOW - 61 * MINUTE },
     ]));
@@ -192,9 +192,17 @@ describe('the facts the panel states', () => {
       outcomeEvidence: evidence({ artifactPresent: true }),
     });
     const map = await open('run_map_current', current);
-    expect(verdict(map)).toContain('Did the work, and its output is there');
+    expect(verdict(map)).toContain('Changed nothing; the output Myco checks for is there');
+    expect(verdict(map)).not.toContain('Did the work');
     expect(verdict(map)).not.toContain('agrees');
     expect(map.querySelector('[data-asked="owed"]')!.textContent).toContain('Report and output both there');
+    cleanup();
+
+    const wrote = runDetail(runRow({ id: 'run_map_written', task: 'canopy-map', status: 'completed', result: 'produced' }), {
+      reports: [{ action: 'map', summary: 'Updated the map.', details: null, createdAt: NOW - 61 * MINUTE }],
+      outcomeEvidence: evidence({ artifactPresent: true }),
+    });
+    expect(verdict(await open('run_map_written', wrote))).toContain('Did the work, and its output is there');
   });
 
   it('names the search index update a run recorded instead of saying it wrote nothing, and keeps a failed run’s output', async () => {

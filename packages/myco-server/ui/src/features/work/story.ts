@@ -266,7 +266,11 @@ export function verdictOf({ run, outcomeEvidence }: RunDetailAnswer): { words: s
   if (run.errorCode === 'run_cancelled') return { words: 'Cancelled before it finished', source: 'saw', tone: 'bad' };
   if (run.status === 'completed') {
     if (outcomeEvidence?.skipSupported === true) return { words: 'Changed nothing, and Myco agrees', source: 'inferred', tone: 'good' };
-    if (outcomeEvidence?.artifactPresent === true) return { words: 'Did the work, and its output is there', source: 'inferred', tone: 'good' };
+    if (outcomeEvidence?.artifactPresent === true) {
+      return run.result === 'produced'
+        ? { words: 'Did the work, and its output is there', source: 'inferred', tone: 'good' }
+        : { words: 'Changed nothing; the output Myco checks for is there', source: 'inferred', tone: 'good' };
+    }
     return run.result === 'produced'
       ? { words: 'Did the work', source: 'inferred', tone: 'good' }
       : { words: 'Changed nothing', source: 'inferred', tone: null };
