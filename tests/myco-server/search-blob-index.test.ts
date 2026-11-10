@@ -101,7 +101,10 @@ describe('finding plans by a body stored apart', () => {
       active: (await f.search('okapineedle', { mode: 'fts', status: 'active' })).hits.map((hit) => hit.id),
       completed: (await f.search('okapineedle', { mode: 'fts', status: 'completed' })).hits.map((hit) => hit.id),
       byTime: (await walk(f, 'okapineedle', { type: 'plan', order: 'time' })).sort(),
-    }).toEqual({ all: ['plan:newer', 'plan:older'], active: ['older'], completed: ['newer'], byTime: ['plan:newer', 'plan:older'] });
+      oneAPage: (await walk(f, 'okapineedle', { type: 'plan', limit: 1 })).sort(),
+      oneAPageByTime: (await walk(f, 'okapineedle', { type: 'plan', order: 'time', limit: 1 })).sort(),
+    }).toEqual({ all: ['plan:newer', 'plan:older'], active: ['older'], completed: ['newer'], byTime: ['plan:newer', 'plan:older'],
+      oneAPage: ['plan:newer', 'plan:older'], oneAPageByTime: ['plan:newer', 'plan:older'] });
   });
 
   it('lists a plan once across every page when its title and several chunks of its body all match, by relevance and by time', async () => {

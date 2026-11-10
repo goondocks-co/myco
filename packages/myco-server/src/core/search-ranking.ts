@@ -20,6 +20,18 @@ export interface KindWindow { low: number; partial: boolean }
  */
 export interface RankedEntry { id: number; plans?: string[] }
 
+/** A plan key as a stable 32-bit number (FNV-1a, never 0), so an entry is named by numbers alone. */
+export function planHash(plan: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < plan.length; i += 1) hash = Math.imul(hash ^ plan.charCodeAt(i), 0x01000193) >>> 0;
+  return hash === 0 ? 1 : hash;
+}
+
+/** One ranked entry's name: its document, and the plan it lists when it lists one (0 when it lists none). */
+export function entryKey(entry: RankedEntry): [number, number] {
+  return [entry.id, entry.plans === undefined ? 0 : planHash(entry.plans[0]!)];
+}
+
 export interface RankedWindow {
   /** The window's documents in rank order. */
   entries: RankedEntry[];
@@ -97,8 +109,8 @@ export async function rankWindow(db: RelationalStore, projects: readonly string[
   for (const id of ranked) {
     if (!planIds.has(id)) { window.entries.push({ id }); continue; }
     const mine = (plans.get(id) ?? []).filter((plan) => !listedAbove.has(plan) && !owned.has(plan));
-    mine.forEach((plan) => owned.add(plan));
-    if (mine.length > 0) window.entries.push({ id, plans: mine });
+    // One entry per plan, so a page never cuts the plans of a shared body short.
+    for (const plan of mine) { owned.add(plan); window.entries.push({ id, plans: [plan] }); }
   }
   return window;
 }

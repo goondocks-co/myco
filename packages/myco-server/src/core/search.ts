@@ -12,7 +12,7 @@ import {
   decodeCursor, docIdRange, documentKinds, encodeCursor, recordMs, searchBinding, searchRequest, SearchRefused, windowExpression,
   type DocumentKind, type SearchCursor, type SearchRequest,
 } from './search-query.js';
-import { matchingPlanDocuments, rankWindow, type KindWindow, type RankedEntry, type RankedWindow } from './search-ranking.js';
+import { entryKey, matchingPlanDocuments, rankWindow, type KindWindow, type RankedEntry, type RankedWindow } from './search-ranking.js';
 import { pageOfHits, SEARCH_PAGE_BATCH, type PageInput } from './search-hits.js';
 
 /**
@@ -86,26 +86,26 @@ async function wordSearch(search: WordSearch): Promise<WordAnswer> {
   if (kinds.length === 0 || projects.length === 0) return empty;
   const walk: Walk = { ...search, binding, input: (scores) => ({ db: env.db, projects, request, scores }) };
   const input = walk.input;
-  if (request.order === 'time') return timePage(walk, kinds, cursor?.o === 't' ? cursor.a : null);
+  if (request.order === 'time') return timePage(walk, kinds, cursor?.o === 't' ? cursor : null);
   if (cursor?.o === 't') throw new SearchRefused('cursor_foreign', 'cursor belongs to a search by time: send it with order=time, or send none for the first page');
   if (cursor === null) {
     const { high } = docIdRange(request.filters);
     const window = await rankWindow(env.db, projects, request, Object.fromEntries(kinds.map((kind) => [kind, high])));
     const page = await pageOfHits(input(window.scores), window.entries, 0);
     const more = page.next < window.entries.length || anyPartial(window.kinds);
-    // The cursor names the window (its fences) and the place the page stopped, and the documents it listed, so a
-    // re-read of the window that moved repeats none of them.
-    const listed = window.entries.slice(0, page.next).filter((entry) => page.listed.has(entry.id)).map((entry) => entry.id);
-    return answerOf(page.hits, window.kinds, now, coverage, more ? encodeCursor({ o: 'r', b: binding, at: now, f: window.fences, n: page.next, l: listed }) : null);
+    // The cursor names the window (its fences) and the entries the page listed: a re-read of the window that moved
+    // repeats none of them and, read again from its start, hides none.
+    const listed = window.entries.slice(0, page.next).map(entryKey).filter(([id, plan]) => page.listed.has(`${id}:${plan}`));
+    return answerOf(page.hits, window.kinds, now, coverage, more ? encodeCursor({ o: 'r', b: binding, at: now, f: window.fences, l: listed }) : null);
   }
   if (cursor.o === 'r') {
     const window = await rankWindow(env.db, projects, request, cursor.f);
-    const listed = new Set(cursor.l);
-    const start = cursor.n - window.entries.slice(0, cursor.n).filter((entry) => listed.has(entry.id)).length;
-    const entries = window.entries.filter((entry) => !listed.has(entry.id));
+    const listed = new Set(cursor.l.map(([id, plan]) => `${id}:${plan}`));
+    const entries = window.entries.filter((entry) => !listed.has(entryKey(entry).join(':')));
     const state: WindowState = { search_id: crypto.randomUUID(), round: 0, asof: now, entries, kinds: window.kinds, scores: window.scores };
-    // A first page that examined its whole window goes straight to the next older one.
-    return start < entries.length ? continueWindow(walk, state, Math.max(0, start)) : olderWindow(walk, state);
+    // Read again from its start, without what page one listed: a window that moved since hides nothing. A continuation
+    // that finds nothing left in it opens the next older window in the same request.
+    return entries.length === 0 ? olderWindow(walk, state) : continueWindow(walk, state, 0, { olderWhenEmpty: true });
   }
   if (cursor.o !== 'w') throw new SearchRefused('cursor_foreign', 'cursor is not one this search returned: send none for the first page');
   const held = await heldWindow(env.db, cursor.s, now);
@@ -147,9 +147,10 @@ interface WindowState {
 }
 
 /** A page of a ranking from `from`; a ranking not yet stored is stored once when a page follows it. */
-async function continueWindow(walk: Walk, state: WindowState, from: number): Promise<WordAnswer> {
+async function continueWindow(walk: Walk, state: WindowState, from: number, options: { olderWhenEmpty?: boolean } = {}): Promise<WordAnswer> {
   const { env, reader, binding, now, coverage } = walk;
   const page = await pageOfHits(walk.input(state.scores), state.entries, from);
+  if (options.olderWhenEmpty === true && page.hits.length === 0 && page.next >= state.entries.length) return olderWindow(walk, state);
   const more = page.next < state.entries.length || anyPartial(state.kinds);
   if (more && state.stored !== true) {
     await storeWindow(env.db, {
@@ -162,16 +163,20 @@ async function continueWindow(walk: Walk, state: WindowState, from: number): Pro
     more ? encodeCursor({ o: 'w', b: binding, s: state.search_id, r: state.round, n: page.next }) : null);
 }
 
-/** One type's matches oldest first, after the last one listed: each page a bounded walk upward by `doc_id`. */
-async function timePage(walk: Walk, kinds: readonly DocumentKind[], after: number | null): Promise<WordAnswer> {
+/**
+ * One type's matches oldest first, after the last one listed: each page a bounded walk upward by `doc_id`. A page that
+ * stops between two plans of one shared body names the last plan it examined there, and the next page resumes after it.
+ */
+async function timePage(walk: Walk, kinds: readonly DocumentKind[], after: { a: number; k?: number } | null): Promise<WordAnswer> {
   const { env, projects, request, binding, now, coverage } = walk;
   const input = walk.input(null);
   const range = docIdRange(request.filters);
-  let low = after === null ? range.low : after + 1;
+  let low = after === null ? range.low : after.k === undefined ? after.a + 1 : after.a;
   const hits: SearchAcrossResult[] = [];
   let examined = 0;
   let more = false;
-  let last = after;
+  let last = after?.a ?? null;
+  let lastPlan: number | undefined;
   const step = Math.max(request.limit + 1, SEARCH_PAGE_BATCH);
   while (hits.length < request.limit && examined < SEARCH_WINDOW) {
     const found = (await readWindows(env.db, kinds.map((kind) => ({ match: windowExpression(kind, projects, request), low, high: range.high, limit: step, direction: 'oldest' as const })))).windows;
@@ -179,18 +184,21 @@ async function timePage(walk: Walk, kinds: readonly DocumentKind[], after: numbe
     const cut = full.length === 0 ? Infinity : Math.min(...full.map((ids) => ids.at(-1)!));
     const ids = found.flat().filter((id) => id < cut || full.length === 0).sort((a, b) => a - b);
     if (ids.length === 0) { more = false; break; }
-    const entries = await oldestOwners(walk, kinds, ids);
+    const entries = (await oldestOwners(walk, kinds, ids))
+      .filter((entry) => after?.k === undefined || entry.id !== after.a || entryKey(entry)[1] > after.k);
     const page = await pageOfHits({ ...input, request: { ...request, limit: request.limit - hits.length } }, entries, 0);
     hits.push(...page.hits);
     examined += page.next;
     // Documents between listed entries own no plan, so the walk stands after the last entry examined, or after the batch.
-    last = page.next < entries.length ? entries[page.next - 1]?.id ?? last : ids.at(-1)!;
+    const stopped = page.next < entries.length ? entries[page.next - 1] : undefined;
+    last = page.next < entries.length ? stopped?.id ?? last : ids.at(-1)!;
+    lastPlan = stopped !== undefined && entries[page.next]!.id === stopped.id ? entryKey(stopped)[1] : undefined;
     more = page.next < entries.length || full.length > 0;
     if (!more || page.next < entries.length) break;
     low = last! + 1;
   }
   more ||= examined >= SEARCH_WINDOW;
-  return { hits, coverage, partial: false, asOf: now, nextCursor: more && last !== null ? encodeCursor({ o: 't', b: binding, a: last }) : null };
+  return { hits, coverage, partial: false, asOf: now, nextCursor: more && last !== null ? encodeCursor({ o: 't', b: binding, a: last, ...(lastPlan === undefined ? {} : { k: lastPlan }) }) : null };
 }
 
 /**
@@ -203,8 +211,8 @@ async function oldestOwners(walk: Walk, kinds: readonly DocumentKind[], ids: rea
   const matching = await matchingPlanDocuments(walk.env.db, walk.projects, walk.request, [...new Set([...plans.values()].flat())]);
   const oldest = new Map([...matching].map(([plan, docs]) => [plan, Math.min(...docs.map((doc) => doc.doc_id))]));
   return ids.flatMap((id) => {
-    const owned = (plans.get(id) ?? []).filter((plan) => oldest.get(plan) === id);
-    return owned.length === 0 ? [] : [{ id, plans: owned }];
+    const owned = (plans.get(id) ?? []).filter((plan) => oldest.get(plan) === id).map((plan) => ({ id, plans: [plan] }));
+    return owned.sort((x, y) => entryKey(x)[1] - entryKey(y)[1]);
   });
 }
 

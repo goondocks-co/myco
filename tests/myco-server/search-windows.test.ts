@@ -80,6 +80,29 @@ it('reaches the older matches of a filter that rejects the whole newest window, 
   });
 });
 
+it('still lists every remaining match of a filtered search once when records change between its first and second page, on both stores', async () => {
+  await withDocumentStores(async (db, target) => {
+    await seed(db);
+    for (const [session, agent] of [['sc', 'claude'], ['sx', 'codex']]) {
+      await run(db, "INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES ('project', ?, 'machine', 'token', 1, 1, ?)", session, agent);
+    }
+    await spores(db, 'project', 40);
+    // Codex owns every even spore, so page one examines and rejects the Claude spores between the ones it lists.
+    await run(db, "UPDATE spores SET agent_line = NULL, session_id = CASE WHEN CAST(substr(id, 3) AS INTEGER) % 2 = 0 THEN 'sx' ELSE 'sc' END WHERE project_id = 'project'");
+    const env = envOf(db);
+    const scope = { projectId: 'project' };
+    const page = (cursor: string) => searchDeployment(env, scope, options({ type: 'spore', agent: 'codex', limit: 3, cursor }), 'member:a', NOW);
+    const first = await searchDeployment(env, scope, options({ type: 'spore', agent: 'codex', limit: 3 }), 'member:a', NOW);
+    // Between the pages: delete the Claude spores page one rejected, and give the oldest Codex spore a headline that ranks it first.
+    const listedFirst = first.hits.map((hit) => hit.id).sort();
+    await run(db, "DELETE FROM spores WHERE project_id = 'project' AND session_id = 'sc' AND id > ?", listedFirst[0]);
+    await run(db, "UPDATE spores SET agent_line = 'cobalt' WHERE project_id = 'project' AND id = 'sp0000'");
+    const rest = await walk((cursor) => page(cursor ?? first.nextCursor!));
+    const all = [...first.hits.map((hit) => `spore:${hit.id}`), ...rest];
+    expect({ target, listed: all.length, unique: new Set(all).size, retitled: all.includes('spore:sp0000') }).toEqual({ target, listed: 20, unique: 20, retitled: true });
+  });
+});
+
 it('lists what the first page ranked after writes land between pages: no refusal, no repeat, and a removed record is gone from the next page', async () => {
   await withDocumentStores(async (db, target) => {
     await seed(db);

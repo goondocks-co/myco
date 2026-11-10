@@ -4,7 +4,7 @@ import type { RelationalStore } from './adapters.js';
 import { hydrateDocuments, type HydratedDocument, type HydrationFilters } from '../db/search/hydration.js';
 import { getReleaseStatesAcross, type ReleaseNamespace } from './provenance.js';
 import type { SearchRequest } from './search-query.js';
-import type { RankedEntry } from './search-ranking.js';
+import { entryKey, type RankedEntry } from './search-ranking.js';
 
 /**
  * A page of hits from ranked documents. Each document is read back with its record and kept only as it is now: its
@@ -41,12 +41,12 @@ function filtersOf({ projects, request }: PageInput): HydrationFilters {
  * Hits from `entries` starting at `from`, the position after the last document examined, and the documents listed. An
  * entry's hits stay on one page: an entry that would overflow a page that already holds hits waits for the next.
  */
-export async function pageOfHits(input: PageInput, entries: readonly RankedEntry[], from: number): Promise<{ hits: SearchAcrossResult[]; next: number; listed: Set<number> }> {
+export async function pageOfHits(input: PageInput, entries: readonly RankedEntry[], from: number): Promise<{ hits: SearchAcrossResult[]; next: number; listed: Set<string> }> {
   const { request } = input;
   const filters = filtersOf(input);
   const kept: { doc: HydratedDocument; release: ReleaseAnnotation | undefined }[] = [];
   const seen = new Set<string>();
-  const listed = new Set<number>();
+  const listed = new Set<string>();
   let position = from;
   const stop = Math.min(entries.length, from + SEARCH_WINDOW);
   let full = false;
@@ -54,7 +54,7 @@ export async function pageOfHits(input: PageInput, entries: readonly RankedEntry
     // The first batch is a page and one more, enough when the filters admit most documents; later batches are fixed.
     const size = position === from ? Math.min(SEARCH_PAGE_BATCH, request.limit + 1) : SEARCH_PAGE_BATCH;
     const batch = entries.slice(position, Math.min(stop, position + size));
-    const docs = await hydrateDocuments(input.db, batch.map((entry) => entry.id), filters, { chars: 0, word: null });
+    const docs = await hydrateDocuments(input.db, [...new Set(batch.map((entry) => entry.id))], filters, { chars: 0, word: null });
     const rowsOf = (entry: RankedEntry) => (docs.get(entry.id) ?? []).filter((doc) => entry.plans === undefined || entry.plans.includes(doc.plan ?? ''));
     const releases = releaseFiltered(request) ? await releaseOf(input.db, batch.flatMap(rowsOf)) : new Map<string, ReleaseAnnotation>();
     let consumed = 0;
@@ -64,7 +64,7 @@ export async function pageOfHits(input: PageInput, entries: readonly RankedEntry
       if (kept.length > 0 && kept.length + rows.length > request.limit) { full = true; break; }
       consumed += 1;
       for (const row of rows) { seen.add(hitKey(row.doc)); kept.push(row); }
-      if (rows.length > 0) listed.add(entry.id);
+      if (rows.length > 0) listed.add(entryKey(entry).join(':'));
       if (kept.length >= request.limit) break;
     }
     position += consumed;
