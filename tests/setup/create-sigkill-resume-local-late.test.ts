@@ -1,3 +1,12 @@
-import { describeCreateSigkillResume } from './fixtures/create-sigkill-resume.js';
+import { describe, it } from 'bun:test';
+import { installCreateSigkillResume, resumeCreateAfterSigkill } from './fixtures/create-sigkill-resume.js';
 
-describeCreateSigkillResume('local', ['owner-link', 'machine', 'project', 'service']);
+describe('local create journeys across SIGKILL', () => {
+  const dirs = { root: '', project: '' };
+  installCreateSigkillResume(dirs);
+  for (const boundary of ['owner-link', 'machine', 'project', 'service']) {
+    it(`local: resumes after SIGKILL at ${boundary}`, async () => {
+      await resumeCreateAfterSigkill('local', boundary, dirs.root, dirs.project);
+    }, 90_000);
+  }
+});

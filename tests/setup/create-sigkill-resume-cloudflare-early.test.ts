@@ -1,3 +1,12 @@
-import { describeCreateSigkillResume } from './fixtures/create-sigkill-resume.js';
+import { describe, it } from 'bun:test';
+import { installCreateSigkillResume, resumeCreateAfterSigkill } from './fixtures/create-sigkill-resume.js';
 
-describeCreateSigkillResume('cloudflare', ['create', 'conversion', 'signin', 'owner-mint', 'owner-link', 'machine']);
+describe('cloudflare create journeys across SIGKILL', () => {
+  const dirs = { root: '', project: '' };
+  installCreateSigkillResume(dirs);
+  for (const boundary of ['create', 'conversion', 'signin', 'owner-mint', 'owner-link', 'machine']) {
+    it(`cloudflare: resumes after SIGKILL at ${boundary}`, async () => {
+      await resumeCreateAfterSigkill('cloudflare', boundary, dirs.root, dirs.project);
+    }, 90_000);
+  }
+});
