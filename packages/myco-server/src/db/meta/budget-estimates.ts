@@ -1,6 +1,6 @@
 /** The estimator's Deployment-wide progress: its epoch, cycle, watermark and refresh stamp. */
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { commit, read, readSet, write } from '../index.js';
+import { read, readSet, write } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 import { BUDGET_ENABLED } from './budget-activation.js';
 
@@ -79,9 +79,6 @@ export function estimateCompletionStatements(db: RelationalStore, until: number,
     .map(bound => prepareBound(db, bound));
 }
 
-const restartEpoch = write<[epoch: string]>({ name: 'meta.restartEstimateEpoch', sql: `INSERT OR REPLACE INTO schema_meta(key,value) SELECT '${EPOCH_KEY}',? WHERE 1` });
-const forgetEstimateCycle = write<[]>({ name: 'meta.forgetEstimateCycle', sql: `DELETE FROM schema_meta WHERE key IN ('${REFRESHED_KEY}','${PROGRESS_KEY}','${WATERMARK_KEY}') AND (1)` });
-
 /** Restarts the estimator's cycle while a restore's own guard, written against the rows it replaces, still holds. */
 export function estimateInvalidationStatements(db: RelationalStore, guard: { sql: string; params: unknown[] }, restoredFloor?: number): PreparedStatement[] {
   return [
@@ -91,8 +88,4 @@ export function estimateInvalidationStatements(db: RelationalStore, guard: { sql
       ON CONFLICT(key) DO UPDATE SET value=CAST(MIN(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)`)
       .bind(String(restoredFloor), ...guard.params)]),
   ];
-}
-
-export async function invalidateEstimates(db: RelationalStore): Promise<void> {
-  await commit(db, restartEpoch.bind(crypto.randomUUID()), forgetEstimateCycle.bind());
 }

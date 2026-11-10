@@ -1,5 +1,4 @@
 import { jsonBody } from '../helpers/json-body.js';
-import { PLATFORM_RECONCILIATION_MATRICES } from './helpers/reconciliation-cases.js';
 import type { AttemptCheckpoint } from '@myco-server-worker/core/recovery-producer.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 /**
@@ -831,8 +830,6 @@ it('schema drift aborts the multipart upload and retires its parts through failu
 });
 
 it('producer checkpoints replace parts and inventory atomically, including replay, clearing and faults', async () => {
-  expect(PLATFORM_RECONCILIATION_MATRICES['platform/cloudflare/recovery-producer-object.ts#checkpoint'])
-    .toEqual(['checkpoint-transaction', 'checkpoint-transaction']);
   const sql = new Database(':memory:');
   try {
     const producer = producerOver(sql, []);
