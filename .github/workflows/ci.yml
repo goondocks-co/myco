@@ -61,6 +61,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: node scripts/check-shipped-migrations.mjs
       - uses: ./.github/actions/ci-setup
+      - name: Added test lines assert behaviour, not code
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/check-test-additions.mjs
       - name: Build the Linux SQLite library
         run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
       - name: The standalone dashboard matches its committed bundle without shared build artifacts

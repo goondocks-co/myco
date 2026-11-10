@@ -143,6 +143,24 @@ export async function expectPersisted(res: Response, label: string): Promise<voi
 /** A single-quoted SQL literal; scenario values MUST pass through this on their way into `target.sql`. */
 export const lit = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
+/**
+ * Moves an instant column (`*_at`) of the matching rows `byMs` into the past, for state no client can reach except by
+ * waiting out a time-to-live. Scenarios age rows through this one helper instead of writing rows themselves. It names
+ * at least one row, and refuses when an instant would reach zero or below, which no clock produces.
+ */
+export async function ageRows(target: ParityTarget, options: { table: string; column: string; byMs: number; match: Record<string, string> }): Promise<void> {
+  const { table, column, byMs, match } = options;
+  const keys = Object.keys(match);
+  if (![table, ...keys].every((name) => /^\w+$/.test(name)) || !/^\w+_at$/.test(column) || keys.length === 0
+    || !Number.isSafeInteger(byMs) || byMs <= 0) {
+    throw new Error(`ageRows takes a table, an instant column named *_at, at least one match column and a positive whole number of milliseconds; got ${JSON.stringify({ table, column, byMs, match })}`);
+  }
+  const where = Object.entries(match).map(([name, value]) => `${name} = ${lit(value)}`).join(' AND ');
+  const [below] = await target.sql(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where} AND ${column} <= ${byMs}`);
+  if (Number(below?.n ?? 0) > 0) throw new Error(`ageRows would move ${String(below?.n)} ${table}.${column} values to zero or below; age by less than ${byMs} ms`);
+  await target.sql(`UPDATE ${table} SET ${column} = ${column} - ${byMs} WHERE ${where}`);
+}
+
 /** Polls `read` until `pred` answers true or `ms` elapses; answers the last read either way. */
 export async function waitFor<T>(read: () => Promise<T>, pred: (value: T) => boolean, ms = 45_000): Promise<T> {
   const deadline = Date.now() + ms;
