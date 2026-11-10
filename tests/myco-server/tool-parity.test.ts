@@ -5,7 +5,7 @@ import { describe, expect, it } from 'bun:test';
 import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
 import { isRunTool, isWriteOp, PROJECT_PIVOT, RUN_TOOLS, SERVED_TOOLS, WRITE_OPS, type AnyTool, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
-import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { PLAN_BODY_CALL, TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
@@ -156,11 +156,9 @@ describe('tool parity', () => {
         }
       }
       if (server.name === 'myco_plans') {
-        // The list pages by cursor and answers metadata, never a body (#2101 S9a): `cursor` is added, and the description
-        // and the limit state the page, its bound and the search that finds plans by what they say.
         const LIST_BEFORE = 'op: \"list\" (default) returns plan summaries.';
         expect(frozen.description).toContain(LIST_BEFORE);
-        expect(current.description).toContain('with has_more and the cursor of the next page');
+        expect(current.description).toContain(`with has_more, the cursor of the next page, and body_call, the call that reads one plan's body: ${PLAN_BODY_CALL}`);
         expect(current.description).toContain('never its body');
         expect(current.description).toContain('call myco_search with type \"plan\"');
         expect(current.description).toContain('List example: {\"op\":\"list\"');

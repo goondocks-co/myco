@@ -29,7 +29,7 @@ import { isServedTool, isWriteOp, PROJECT_PIVOT, UNSERVED_OPS } from '@myco-serv
 import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
 import { archiveProject } from '@myco-server-worker/db/storage/s2a3.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
-import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { PLAN_BODY_CALL, TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { validateInput } from '@myco-server-worker/mcp/validate.js';
 import { NO_INSTRUCTIONS_MESSAGE } from '@myco-server-worker/mcp/tools/cortex.js';
 import { NO_BODY_FOR_GRANT, NO_STATUS_MESSAGE, skillBodyLocation } from '@myco-server-worker/mcp/tools/skills.js';
@@ -80,7 +80,7 @@ async function setup() {
 }
 
 /** An empty plan list: one page holding no plan and none after it. */
-const NO_PLANS = { plans: [], has_more: false, cursor: null };
+const NO_PLANS = { plans: [], has_more: false, cursor: null, body_call: PLAN_BODY_CALL };
 
 describe('POST /mcp', () => {
   it('authenticates projectless discovery without creating a project', async () => {
@@ -253,7 +253,7 @@ describe('POST /mcp', () => {
 
     const listed = (await call(t1.token, 'myco_plans', { op: 'list' })).result;
     expect(listed).toEqual({ plans: [{ id: first.id, title: 'X', status: 'active', progress: '1/2', prompt_id: null, tags: ['t1'], created_at: first.created_at,
-      updated_at: first.updated_at, preview: '- [x] one - [ ] two' }], has_more: false, cursor: null });
+      updated_at: first.updated_at, preview: '- [x] one - [ ] two' }], has_more: false, cursor: null, body_call: PLAN_BODY_CALL });
 
     expect((await call(t1.token, 'myco_plans', { op: 'save', id: first.id, status: 'in_progress' })).result).toEqual({ ok: false, error: 'session_id is required for op: save' });
     const updated = (await call(t1.token, 'myco_plans', { op: 'save', id: first.id, session_id: 'sess_a', status: 'in_progress' })).result;

@@ -5,10 +5,8 @@
  * or a plan: they sit in modules whose runtime imports its build does not
  * carry. So it declares them in `features/knowledge/wire.ts`, and this file
  * holds the two to each other. The assertions are types: `npm run
- * typecheck:tests` fails when a shape drifts, and the one runtime expectation
- * keeps the file a test Bun collects.
+ * typecheck:tests` fails when a shape drifts.
  */
-import { describe, expect, it } from 'bun:test';
 import type * as Ui from '../../packages/myco-server/ui/src/features/knowledge/wire.ts';
 import type { SporeAcrossRow, SporeFacets, SporeRow, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
 import type { getSpore } from '../../packages/myco-server/src/db/spores/records.ts';
@@ -42,25 +40,19 @@ type PlanAnswer = { plan: NonNullable<Awaited<ReturnType<typeof getPlan>>>; proj
 type ProjectPlansPage = NonNullable<Awaited<ReturnType<typeof pageProjectPlans>>>;
 type ProjectPlansAnswer = { plans: ProjectPlansPage['rows']; cursor: ProjectPlansPage['cursor']; hasMore: boolean };
 
-const SAME: [
-  Same<Ui.SporeFacets, SporeFacets>,
-  Same<NonNullable<Ui.SporeFields['authorKind']>, NonNullable<SporeRow['authorKind']>>,
-] = [true, true];
+/** Each entry type-checks only when it is `true`. */
+type Holds<T extends true> = T;
 
-const READS: [
-  Reads<SporeRow, Ui.SporeFields>,
-  Reads<SporeAcrossRow, Ui.SporeStreamRow>,
-  Reads<SporesAnswer, Ui.SporeStreamPage>,
-  Reads<SporeAnswer, Ui.SporeArticleAnswer>,
-  Reads<ProjectPlanRow, Ui.PlanFields>,
-  Reads<PlanAcrossRow, Ui.PlanBoardRow>,
-  Reads<PlansAnswer, Ui.PlanBoardPage>,
-  Reads<ProjectPlansAnswer, Ui.ProjectPlanPage>,
-  Reads<PlanAnswer, Ui.PlanPageAnswer>,
-] = [true, true, true, true, true, true, true, true, true];
-
-describe("the Knowledge pages' wire shapes", () => {
-  it('are held to the server declarations by the tests typecheck', () => {
-    expect([...SAME, ...READS].every(Boolean)).toBe(true);
-  });
-});
+export type KnowledgeWireShapes = [
+  Holds<Same<Ui.SporeFacets, SporeFacets>>,
+  Holds<Same<NonNullable<Ui.SporeFields['authorKind']>, NonNullable<SporeRow['authorKind']>>>,
+  Holds<Reads<SporeRow, Ui.SporeFields>>,
+  Holds<Reads<SporeAcrossRow, Ui.SporeStreamRow>>,
+  Holds<Reads<SporesAnswer, Ui.SporeStreamPage>>,
+  Holds<Reads<SporeAnswer, Ui.SporeArticleAnswer>>,
+  Holds<Reads<ProjectPlanRow, Ui.PlanFields>>,
+  Holds<Reads<PlanAcrossRow, Ui.PlanBoardRow>>,
+  Holds<Reads<PlansAnswer, Ui.PlanBoardPage>>,
+  Holds<Reads<ProjectPlansAnswer, Ui.ProjectPlanPage>>,
+  Holds<Reads<PlanAnswer, Ui.PlanPageAnswer>>,
+];

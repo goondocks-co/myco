@@ -21,7 +21,11 @@ const activity_DEFAULT_FEED = 20;
 
 const activity_MAX_FEED = 100;
 
-/** The prefix naming the feed cursor's encoding: the instant, the kind, then the source. */
+/**
+ * The prefix naming the feed cursor's encoding: the instant, the kind, then the source. It marks a position, not a
+ * snapshot: unedited records neither repeat nor drop across pages, and a record edited meanwhile moves to the head, where
+ * a fresh first page shows it.
+ */
 const CURSOR_PREFIX = 'a1:';
 
 /** The refusal of a cursor the feed did not issue. */
@@ -45,8 +49,9 @@ function activity_decodeCursor(text: string): ActivityKey | null {
 
 /**
  * The project's recent activity, newest first, across sessions, runs, active spores and plans, a page at a time; null
- * for a cursor the feed did not issue. A record edited while a reader pages moves to the head of the feed, which that
- * reader already holds; every other record keeps its place, so later pages neither repeat nor drop one. A session's line
+ * for a cursor the feed did not issue. A record edited while a reader pages moves to the head of the feed: a reader
+ * already past it does not see it again, a reader not yet at it does not reach it on later pages, and a fresh first page
+ * shows it. Every unedited record keeps its place, so later pages neither repeat nor drop one. A session's line
  * carries the label the session list shows; a deleted session and its plans are not listed.
  */
 async function activity_activityFeed(db: RelationalStore, scope: ReadScope, opts: { limit?: number; cursor?: string } = {}): Promise<activity_FeedPage | null> {

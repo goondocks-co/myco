@@ -19,6 +19,7 @@ import {
 import type { ReadScope } from '../../read/scope.js';
 import { processedBody } from '../../read/processed.js';
 import { failure, memberOf, scopeOf, type ToolContext } from '../context.js';
+import { PLAN_BODY_CALL } from '../definitions.js';
 import type { ToolInput } from '../validate.js';
 
 interface PlanSummary {
@@ -87,7 +88,7 @@ export async function handlePlans(input: ToolInput, ctx: ToolContext): Promise<u
   });
   const filters = { ...(status === undefined ? {} : { status }), ...(session === undefined ? {} : { session }) };
   if (page === null) return failure(`Not read: cursor ${JSON.stringify(input.cursor)} is not one this list answered. Next call: myco_plans ${JSON.stringify({ op: 'list', ...filters })} to start from the first page.`);
-  return { plans: page.rows.map(row => ({ ...summary(row), preview: row.preview })), has_more: page.cursor !== null, cursor: page.cursor };
+  return { plans: page.rows.map(row => ({ ...summary(row), preview: row.preview })), has_more: page.cursor !== null, cursor: page.cursor, body_call: PLAN_BODY_CALL };
 }
 
 async function save(input: ToolInput, ctx: ToolContext, scope: ReadScope): Promise<unknown> {

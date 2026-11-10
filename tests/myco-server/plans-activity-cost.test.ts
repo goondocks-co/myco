@@ -102,8 +102,7 @@ const CASES: CostCase[] = [
     const later = (await activityFeed(db, A, { limit: PAGE, cursor: first.nextCursor! }))!;
     expect(later.items.length).toBe(PAGE);
   } },
-  // The capture path reads two rows more at the large size once statistics are analyzed, with or without the plan list
-  // and feed triggers, and still two at 25 times the history: a bounded seek, not a walk.
+  // A bounded seek in the capture path may read up to two rows more at the large size.
   { name: 'plan writer: a capture save and a status edit', extra: 2, run: async (db, { scale }) => {
     const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
     const saved = await savePlan(env, MEMBER, WRITTEN, { sessionId: 'writer', planKey: `written-${scale}`, title: 'Written', content: '- [x] done\n- [ ] next' }, NOW + 100);

@@ -26,6 +26,9 @@ import { SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS, SEARCH_STOP
  * is refused: a member credential reaches every Project of the Deployment, so an
  * unnamed write would land wherever the transport happened to point.
  */
+/** The call that reads one plan's body, which a plan list never carries: the list answer and the tool description both name it. */
+export const PLAN_BODY_CALL = 'myco_plans {"op":"get","id":"<id>"}';
+
 const PROJECT_DESCRIPTION = "The Project this call reads or writes: a project id, or the repository's git remote. Optional on a read, which falls back to this request's own Project; required on a write. An unknown Project answers not found.";
 
 export interface JsonSchemaProperty {
@@ -261,7 +264,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_plans",
-    "description": `Manage implementation plans. op: \"list\" (default) returns one page of plan summaries, newest edit first — each with its title, status, a preview of its opening and its task-list progress, never its body — with has_more and the cursor of the next page; pass that cursor back to continue. To find plans by what they say, call myco_search with type \"plan\". op: \"get\" returns one plan with content by id. op: \"save\" creates a plan for a session with content and at least one of source_path or plan_key (both allowed — plan_key is the identity, source_path is metadata), or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to \"active\". op: \"delete\" removes a plan by id; cross-machine rows require force_remote: true. List example: {\"op\":\"list\",\"status\":\"in_progress\",\"limit\":20}`,
+    "description": `Manage implementation plans. op: \"list\" (default) returns one page of plan summaries, newest edit first — each with its title, status, a preview of its opening and its task-list progress, never its body — with has_more, the cursor of the next page, and body_call, the call that reads one plan's body: ${PLAN_BODY_CALL}; pass that cursor back to continue. To find plans by what they say, call myco_search with type \"plan\". op: \"get\" returns one plan with content by id. op: \"save\" creates a plan for a session with content and at least one of source_path or plan_key (both allowed — plan_key is the identity, source_path is metadata), or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to \"active\". op: \"delete\" removes a plan by id; cross-machine rows require force_remote: true. List example: {\"op\":\"list\",\"status\":\"in_progress\",\"limit\":20}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": true,

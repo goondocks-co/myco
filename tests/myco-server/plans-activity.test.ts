@@ -36,7 +36,8 @@ async function rig() {
   };
   const save = async (planKey: string, extra: Record<string, unknown> = {}) =>
     (await plans({ op: 'save', session_id: 'sess_a', plan_key: planKey, title: `Plan ${planKey}`, content: `# ${planKey}\n- [x] one\n- [ ] two`, ...extra })).id as string;
-  const setStatus = (id: string, status: string) => plans({ op: 'save', id, session_id: 'sess_a', status });
+  /** A status edit made after every earlier write, so it is the newest edit by the clock as well as by order. */
+  const setStatus = async (id: string, status: string) => { await Bun.sleep(2); return plans({ op: 'save', id, session_id: 'sess_a', status }); };
   return { ...e, get, plans, save, setStatus };
 }
 
@@ -68,7 +69,7 @@ describe('plan lists', () => {
     expect(await r.plans({ op: 'get', id })).toMatchObject({ content: '# lists\n- [x] one\n- [ ] two', progress: '1/2' });
   });
 
-  it('page past an edit without repeating or dropping a plan, the edited plan moving to the head', async () => {
+  it('page past an edit: unedited plans neither repeat nor drop, and an edited plan moves to the head, where a fresh first page shows it', async () => {
     const r = await rig();
     const ids: string[] = [];
     for (const key of ['a', 'b', 'c', 'd', 'e', 'f']) ids.push(await r.save(key));
@@ -81,12 +82,13 @@ describe('plan lists', () => {
       return { rows: (body.plans as { planKey: string }[]).map(row => row.planKey), cursor: body.cursor as string | null };
     };
     for (const page of [pageAcross, pageInProject]) {
+      // A plan already read is edited: the later pages hold each plan not yet read exactly once.
       const first = await page(null);
-      // A plan already read is edited: the reader holds it, and every other plan follows once.
       await r.setStatus(first.rows[0]!, 'in_progress');
       const rest = await walk(page, first.cursor);
-      expect([...first.rows, ...rest].sort()).toEqual([...ids].sort());
-      // A plan not yet read is edited: later pages hold every other plan once, and the next first page leads with it.
+      expect(rest.sort()).toEqual(ids.filter(id => !first.rows.includes(id)).sort());
+      // A plan not yet read is edited: the later pages hold every other unread plan exactly once and not the edited
+      // one, which moved to the head; a fresh first page leads with it.
       const head = await page(null);
       const unread = (await walk(page, head.cursor)).at(-1)!;
       await r.setStatus(unread, 'completed');
@@ -137,16 +139,18 @@ describe('the activity feed', () => {
     return { rows: (body.items as { type: string; id: string }[]).map(item => `${item.type}:${item.id}`), cursor: body.nextCursor as string | null };
   };
 
-  it('pages past an edit without repeating or dropping a record, the edited plan moving to the head', async () => {
+  it('pages past an edit: unedited records neither repeat nor drop, and an edited plan moves to the head, where a fresh first page shows it', async () => {
     const r = await rig();
     for (const key of ['a', 'b', 'c', 'd', 'e']) await r.save(key);
     const page = feedPage(r);
     const everything = await walk(page);
     expect(everything).toContain('session:sess_a');
     const first = await page(null);
-    await r.setStatus(first.rows.find(row => row.startsWith('plan:'))!.slice('plan:'.length), 'in_progress');
+    const edited = first.rows.find(row => row.startsWith('plan:'))!;
+    await r.setStatus(edited.slice('plan:'.length), 'in_progress');
     const rest = await walk(page, first.cursor);
-    expect([...first.rows, ...rest].sort()).toEqual([...everything].sort());
+    expect(rest.sort()).toEqual(everything.filter(row => !first.rows.includes(row)).sort());
+    expect((await page(null)).rows[0]).toBe(edited);
     const refused = await r.get(`/api/projects/${PROJECT}/activity?cursor=${encodeURIComponent('plans1:1:proj_1:a')}`);
     expect({ status: refused.status, reason: refused.body.reason }).toEqual({ status: 400, reason: expect.stringContaining('request the first page again') });
   });

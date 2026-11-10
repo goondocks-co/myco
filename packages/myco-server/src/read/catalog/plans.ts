@@ -85,8 +85,9 @@ interface plans_ProjectPlanOptions { status?: string; sessionId?: string; limit?
 
 /**
  * One page of the Project's plans, most recently edited first, and the cursor of the next; null for a cursor this list
- * did not issue. A plan edited while a reader pages moves to the head of the list, which that reader already holds; every
- * other plan keeps its place, so later pages neither repeat nor drop one.
+ * did not issue. A cursor is a position, not a snapshot: a plan edited while a reader pages moves to the head of the
+ * list, so a reader already past it does not see it again and a reader not yet at it does not reach it on later pages;
+ * a fresh first page shows it. Every unedited plan keeps its place, so later pages neither repeat nor drop one.
  */
 async function plans_pageProjectPlans(db: RelationalStore, scope: ReadScope, opts: plans_ProjectPlanOptions = {}): Promise<Page<plans_PlanListItem> | null> {
   const limit = clampLimit(opts.limit);
@@ -106,7 +107,8 @@ type plans_SessionPlanRow = plans_PlanListItem & { orderedAt: number };
 
 /**
  * One page of a session's plans, oldest edit first as the session's timeline reads, and the cursor of the next; an
- * empty page for a cursor this list did not issue.
+ * empty page for a cursor this list did not issue. A plan edited while a reader pages moves to the end, so a reader
+ * already past it reads it again there; every unedited plan keeps its place.
  */
 async function plans_pageSessionPlans(db: RelationalStore, scope: ReadScope, sessionId: string,
   opts: { status?: string; limit?: number; cursor?: string } = {}): Promise<Page<plans_SessionPlanRow>> {
@@ -120,7 +122,11 @@ async function plans_pageSessionPlans(db: RelationalStore, scope: ReadScope, ses
   return { rows: items, cursor: nextInProject(items, page.more) };
 }
 
-/** The prefix naming the encoding of the cross-Project plan list's cursor: the edit instant, the Project, then the plan. */
+/**
+ * The prefix naming the encoding of the cross-Project plan list's cursor: the edit instant, the Project, then the plan.
+ * It marks a position, not a snapshot: unedited plans neither repeat nor drop across pages, and a plan edited meanwhile
+ * moves to the head, where a fresh first page shows it.
+ */
 const ACROSS_CURSOR_PREFIX = 'plans1:';
 const PROJECT_ID = /^[A-Za-z0-9._-]{1,64}$/;
 
