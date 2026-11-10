@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import { expect, it } from 'bun:test';
 import path from 'node:path';
 import os from 'node:os';
-import { createSupervisorStartScanner } from '../helpers/supervisor-starts.ts';
-import { closureOf, filesUnder, REPO_ROOT, pathToEntry, withoutShebang, type Closure } from '../helpers/import-closure.ts';
-import { walk, walkMemberRuntime } from '../helpers/2-0-closure.ts';
-import { isLegacy } from '../helpers/legacy-boundary.ts';
+import { createSupervisorStartScanner } from './supervisor-starts.ts';
+import { closureOf, filesUnder, REPO_ROOT, pathToEntry, withoutShebang, type Closure } from '../../helpers/import-closure.ts';
+import { walk, walkMemberRuntime } from '../../helpers/2-0-closure.ts';
+import { isLegacy } from '../../helpers/legacy-boundary.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages/myco/src');
 const MYCO = 'packages/myco/src/';

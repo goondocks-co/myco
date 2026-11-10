@@ -9,6 +9,7 @@ import { runJoin, runProvision, runLeave } from '@myco/cli/member.js';
 import { run as doctor } from '@myco/cli/member-doctor.js';
 import { run as update } from '@myco/cli/update.js';
 import { logoutDeployment } from '@myco/symbionts/logout-runtime.js';
+import { loadManifests } from '@myco/symbionts/detect.js';
 import { configureSqliteLibrary } from '../../../packages/myco-server/src/platform/bun/sqlite-library.js';
 Bun.plugin({ name: 'fixture-cloudflare', setup(build) { build.module('cloudflare:workers', () => ({ exports: { DurableObject: class {}, WorkerEntrypoint: class {} }, loader: 'object' })); } });
 configureSqliteLibrary();
@@ -35,11 +36,15 @@ assert(await runJoin(['https://server.example', '--project', 'proj_1', '--token-
 clean('join');
 assert(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8').split('\n').includes('/' + path.relative(root, path.join(joinRoot, '.myco/runtime.home')).split(path.sep).join('/')));
 if (joinRoot === root) {
-assert(runProvision(['codex'], deps));
-assert(runProvision(['claude-code'], deps));
-assert(runProvision(['cursor'], deps));
+// Every harness a member can provision writes only to its own home, never into the repository.
+for (const { name } of loadManifests()) assert(runProvision([name], deps), `provision ${name}: ${output.join('\n')}`);
 clean('provision');
-assert(runProvision(['--refresh'], deps));
+// A refresh reads each provisioned harness's session activity for this Deployment; OpenCode's cannot be read in this
+// fixture's home, which the refresh answers as a repair it could not make. OpenCode leaves first, and its removal is held
+// to the same clean repository.
+assert(runProvision(['opencode', '--remove'], deps), output.join('\n'));
+clean('remove');
+{ const at = output.length; assert(runProvision(['--refresh'], deps), output.slice(at).join('\n')); }
 clean('refresh');
 await update([], { home: mycoHome, currentVersion: '2.0.0-alpha.2', resolveRefs: async () => null,
   refreshMember: async () => { assert(runProvision(['--refresh'], deps)); } });

@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript-v6';
 import { DEPLOYMENT_LEAVES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
-import { closureOf, filesUnder, moduleKey, REPO_ROOT } from '../helpers/import-closure.ts';
+import { closureOf, filesUnder, moduleKey, REPO_ROOT } from '../../helpers/import-closure.ts';
 
 const ROUTE = '/members/settings';
 const READERS = ['packages/myco/src/cli/member-config.ts', 'packages/myco/src/member/machine-settings.ts'];

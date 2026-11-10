@@ -1,6 +1,6 @@
 import path from 'node:path';
 import ts from 'typescript-v6';
-import { REPO_ROOT, type Closure } from './import-closure.ts';
+import { REPO_ROOT, type Closure } from '../../helpers/import-closure.ts';
 
 type SourceMutation = (file: string, text: string) => string;
 interface ImplementationReuse {

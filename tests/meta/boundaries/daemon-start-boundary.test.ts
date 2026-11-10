@@ -1,9 +1,9 @@
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import ts from 'typescript-v6';
-import { codeOf, runtimeImportNames } from '../helpers/import-closure.ts';
-import { walk } from '../helpers/2-0-closure.ts';
-import { isLegacy } from '../helpers/legacy-boundary.ts';
+import { codeOf, runtimeImportNames } from '../../helpers/import-closure.ts';
+import { walk } from '../../helpers/2-0-closure.ts';
+import { isLegacy } from '../../helpers/legacy-boundary.ts';
 
 /** Resolve local argv bindings conservatively, including every assignment to a name. */
 function buildsDaemonArgv(file: string, text: string): boolean {

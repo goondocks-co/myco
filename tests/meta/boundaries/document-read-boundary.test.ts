@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'packages', 'myco-server', 'src');
+const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'packages', 'myco-server', 'src');
 const PUBLISHER = 'ingest/publish.ts';
 const PUBLISHER_IMPORTERS = ['core/jobs-run.ts'];
 const METADATA_PAGE = 'db/documents/metadata-catchup.ts';

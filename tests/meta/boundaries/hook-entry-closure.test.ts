@@ -13,7 +13,7 @@
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { cliVerbModules, closureOf, pathToEntry, REPO_ROOT, runtimeEdges, withoutShebang } from '../helpers/import-closure.ts';
+import { cliVerbModules, closureOf, pathToEntry, REPO_ROOT, runtimeEdges, withoutShebang } from '../../helpers/import-closure.ts';
 
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const at = (rel: string): string => path.join(SRC, rel);

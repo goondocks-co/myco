@@ -80,6 +80,7 @@ import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/sour
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { issueMemberToken } from './helpers/member-token.js';
+import { MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS, refreshMemberToken } from '@myco-server-worker/auth/tokens.js';
 
 async function ownerCookie(db: ReturnType<typeof sqliteEnv>['db'], now = Date.now()): Promise<string> {
   const value = await signSession(SESSION_SECRET, { aud: await deploymentIdentity(db), sub: '583231', login: 'octocat', iat: now, exp: now + 60_000 });
@@ -97,16 +98,21 @@ describe('owner route dispatch', () => {
     expect(res.headers.get('set-cookie')).toContain('Max-Age=0');
   });
 
-  it('refuses a member token on an owner route WITHOUT reading member_credentials', async () => {
+  it('refuses a member token on an owner route without authenticating it: an unused successor stays unused and its predecessor live', async () => {
     const e = sqliteEnv();
-    const minted = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
-    e.executed.length = 0;
+    const now = Date.now();
+    const root = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now - MEMBER_TOKEN_TTL_MS + 1_000);
+    const minted = await refreshMemberToken(e.db, { memberId: 'mem_machine_1', tokenId: root.tokenId, machineId: 'machine_1', expiresAt: root.expiresAt,
+      lineageRoot: root.tokenId, lineageStartedAt: now - MEMBER_TOKEN_TTL_MS + 1_000, runtime: NO_RUNTIME_CLAIMS }, now);
+    if (!minted.refreshed) throw new Error('fixture: refresh refused');
+    const credentials = () => ({ current: e.sqlite.query('SELECT * FROM member_credentials ORDER BY id').all(), retired: e.sqlite.query('SELECT * FROM member_tokens ORDER BY id').all() });
+    const before = credentials();
     const res = await worker.fetch(
       new Request('https://s/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${minted.token}`, 'cf-connecting-ip': '1.2.3.4' } }),
       { ...e.env, ...OWNER_ENV }
     );
     expect(res.status).toBe(401);
-    expect(e.executed.filter((sql) => sql.includes('member_tokens'))).toEqual([]);
+    expect(credentials()).toEqual(before);
   });
 
   it('refuses an owner session on a member route WITHOUT verifying it', async () => {

@@ -1,5 +1,3 @@
-import ts from 'typescript-v6';
-import { sourceProgram } from '../helpers/source-program.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -20,13 +18,9 @@ import { LINEAGE_REPLAY_REVOKER, MEMBER_TOKEN_TTL_MS, NO_RUNTIME_CLAIMS, refresh
 import { issueMemberToken } from './helpers/member-token.js';
 import { NON_ROTATING, NON_ROTATING_AUTHORITY } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
-import { readFileSync } from 'node:fs';
-import { sourceCalls } from './helpers/source-calls.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { memberHeaders, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { OWNER_ENV } from './helpers/owner.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
@@ -168,84 +162,12 @@ describe('a credential that rotates, beside it', () => {
 });
 
 describe('every route that mints an authority able to outlive the credential (#1420)', () => {
-  const SRC = fileURLToPath(new URL('../../packages/myco-server/src/', import.meta.url));
   const linkRequest = (token: string) => new Request('https://s/members/link-github', { method: 'POST', headers: memberHeaders(token), body: '{}' });
   const linkKeys = (e: Env) => (e.sqlite.query(`SELECT COUNT(*) c FROM identity_link_authorities`).get() as { c: number }).c;
 
   it('is declared in the route table: the refresh, the worker\'s claim and repository, and the GitHub link, and no other member route', () => {
     const declared = ROUTES.filter((r) => r.auth === 'member' && 'mintsAuthority' in r && r.mintsAuthority === true).map((r) => `${r.method} ${r.path}`);
     expect(declared).toEqual(['POST /tokens/refresh', 'POST /worker/claim', 'POST /worker/repository', 'POST /members/link-github', 'POST /members/ownership', 'POST /members/ownership/transfer', 'POST /members/roles']);
-  });
-
-  it('requires authority admission on every member route that reaches a minter or secret opener', () => {
-    const graph = sourceProgram([join(SRC, 'routes.ts')]);
-    const source = graph.program.getSourceFile(join(SRC, 'routes.ts'))!;
-    const authorityWrites = new Map<ts.Declaration, boolean>();
-    const writesAuthority = (target: ts.Declaration): boolean => {
-      if (authorityWrites.has(target)) return authorityWrites.get(target)!;
-      let found = false;
-      const visited = new Set<ts.Node>();
-      const visit = (node: ts.Node): void => {
-        if (visited.has(node)) return;
-        visited.add(node);
-        if (ts.isIdentifier(node)) {
-          const declared = graph.declaration(node);
-          if (declared && ts.isVariableDeclaration(declared) && declared.initializer) {
-            const value = declared.initializer;
-            if (ts.isStringLiteralLike(value) || ts.isTemplateExpression(value) || ts.isBinaryExpression(value) || ts.isIdentifier(value)) visit(value);
-          }
-        }
-        const text = ts.isStringLiteralLike(node) ? node.text : ts.isTemplateExpression(node)
-          ? node.head.text + node.templateSpans.map(span => span.literal.text).join('') : '';
-        if (/\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO)\s+(?:member_credentials|enrollment_authorities|identity_link_authorities|external_grants)\b|\bUPDATE\s+(?:deployment_ownership\s+SET\s+member_id|members\s+SET\s+role)\b/i.test(text)) found = true;
-        ts.forEachChild(node, visit);
-      };
-      visit(target);
-      authorityWrites.set(target, found);
-      return found;
-    };
-    const terminal = (_call: ts.CallExpression, target: ts.Declaration | undefined): boolean => {
-      if (!target) return false;
-      const name = 'name' in target ? (target.name as ts.Node | undefined)?.getText() : undefined;
-      return writesAuthority(target)
-        || name === 'get' && ts.isInterfaceDeclaration(target.parent) && target.parent.name.text === 'SecretStore'
-        || name === 'access' && target.getSourceFile().fileName.endsWith('/core/repositories.ts');
-    };
-    const doors: string[] = [], members: string[] = [];
-    const stringOf = (node: ts.Node | undefined): string | undefined => {
-      if (!node) return undefined;
-      if (ts.isStringLiteralLike(node)) return node.text;
-      const target = graph.declaration(node);
-      return target && ts.isVariableDeclaration(target) ? stringOf(target.initializer) : undefined;
-    };
-    const visit = (node: ts.Node): void => {
-      if (ts.isObjectLiteralExpression(node)) {
-        const fields = new Map(node.properties.filter(ts.isPropertyAssignment).map(p => [ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name) ? p.name.text : p.name.getText(source), p.initializer]));
-        if (stringOf(fields.get('auth')) === 'member') {
-          const path = stringOf(fields.get('path'));
-          const route = ROUTES.find(route => route.path === path && route.method === stringOf(fields.get('method')));
-          expect(route, fields.get('path')?.getText(source)).toBeDefined();
-          members.push(`${route!.method} ${path}`);
-          if (route!.authorization.subjects.includes('member')) {
-            const handlers = [...fields.values()].filter(value => graph.checker.getTypeAtLocation(value).getCallSignatures().length > 0);
-            expect(handlers.length).toBeGreaterThan(0);
-            const reaches = handlers.some(handler => {
-              const target = graph.declaration(handler);
-              expect(target, handler.getText(source)).toBeDefined();
-              return graph.reaches(target!, terminal);
-            });
-            if (reaches) {
-              doors.push(path!);
-              expect({ path, guarded: fields.get('mintsAuthority')?.kind === ts.SyntaxKind.TrueKeyword }).toEqual({ path, guarded: true });
-            }
-          }
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-    expect(members.sort()).toEqual(ROUTES.filter(route => route.auth === 'member').map(route => `${route.method} ${route.path}`).sort());
-    expect(doors.sort()).toEqual(ROUTES.filter(route => route.auth === 'member' && 'mintsAuthority' in route && route.mintsAuthority).map(route => route.path).sort());
   });
 
   it('refuses every authority door before its handler for a non-rotating credential', async () => {

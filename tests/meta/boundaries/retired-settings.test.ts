@@ -7,7 +7,7 @@ import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS, executionProfi
 import { V68_RETIRED_SETTINGS } from '@myco-server-worker/db/schema-v68.js';
 import { SECRET_SLOT_NAMES, harnessesReading } from '@goondocks/myco-shared/secret-slots';
 
-const ROOT = fileURLToPath(new URL('../../packages/', import.meta.url));
+const ROOT = fileURLToPath(new URL('../../../packages/', import.meta.url));
 const SERVER = join(ROOT, 'myco-server', 'src');
 /** The code the member runs: its own modules, the hooks and capture it installs, and the worker. */
 const MEMBER = ['myco/src/member', 'myco/src/hooks', 'myco/src/capture', 'myco/src/symbionts', 'myco/src/plans', 'myco-shared/src'].map((dir) => join(ROOT, dir));

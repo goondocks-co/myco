@@ -10,7 +10,7 @@
  * credential stored, the transcript retention window and storage — from the
  * member route `POST /members/status`,
  * which no MCP tool serves. Nothing here opens a vault, a database or the local
- * daemon, and `tests/meta/member-read-boundary.test.ts` holds the import
+ * daemon, and `tests/meta/boundaries/member-read-boundary.test.ts` holds the import
  * closure to that.
  *
  * Routing and the credential, its renewal included, are the member verbs'

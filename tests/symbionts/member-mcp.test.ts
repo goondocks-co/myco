@@ -410,6 +410,16 @@ describe('what a report reads from the member MCP targets', () => {
     expect(seen.every((t) => t.present && t.deploymentsAgree === false && t.namesExpectedDeployment === false && !t.carriesCredential)).toBe(true);
   });
 
+  it('takes no entry naming plain http off this machine as a Deployment', () => {
+    const { installer } = globalInstaller('claude-code');
+    const plain = 'http://server.example';
+    writeEntries(installer, { type: 'http', url: `${plain}/mcp`, headersHelper: `/opt/myco member mcp-headers ${CREDENTIAL_FLAG} registry --server ${plain}` });
+
+    const seen = installer.inspectMemberMcp(plain, true);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((t) => t.present && t.deploymentsAgree === false && t.namesExpectedDeployment === false && t.configuredDeployment === undefined)).toBe(true);
+  });
+
   it('does not read a valid helper as agreement when the URL it dials is no Deployment', () => {
     const { installer } = globalInstaller('claude-code');
     // The helper mints for a real Deployment; the host would dial something else.

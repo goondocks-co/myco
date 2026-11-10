@@ -199,8 +199,8 @@ export interface SecretWrappingKey {
  * A thing the Deployment can do, named the way the product names it.
  *
  * The core reports what the platform declares rather than knowing any
- * platform's binding names itself, which is why no `REQUIRED_BINDINGS` lives in
- * `api/status.ts`.
+ * platform's binding names itself, which is why `api/status.ts` names no
+ * binding.
  *
  * The two targets configure the same capability under different operator names,
  * and a surface reporting those names speaks two vocabularies for one thing and
