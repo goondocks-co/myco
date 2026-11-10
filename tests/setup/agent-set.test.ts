@@ -200,8 +200,8 @@ it('healing re-reads choices and owned registrations after acquiring the repair 
 
 const children = new Set<ChildProcess>();
 const fixture = path.join(import.meta.dir, 'fixtures/repair-lease.ts');
-function repairChild(mode: string, signal: string, ...extra: string[]) {
-  const child = spawn(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), fixture, mode, home, signal, ...extra], {
+function repairChild(mode: string, signal: string) {
+  const child = spawn(process.execPath, ['--tsconfig-override', path.resolve('tsconfig.json'), fixture, mode, home, signal], {
     cwd: scratch, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -214,15 +214,24 @@ function repairChild(mode: string, signal: string, ...extra: string[]) {
   });
   return { child, exited, output: () => output };
 }
-/** A helper process holding the repair lease until `signal` is written or, given, `releaseAfterMs` passes. */
-async function helperLease(releaseAfterMs?: number) {
+/**
+ * A helper process holding the repair lease until `signal` is written. With `releaseOnAttempt`, this process's first
+ * open of the lease file writes the signal, so the helper lets go only once the caller is already trying the lease.
+ */
+async function helperLease(releaseOnAttempt = false) {
   const signal = path.join(scratch, 'release-helper');
-  const holder = repairChild('hold', signal, ...(releaseAfterMs === undefined ? [] : [String(releaseAfterMs)]));
+  const holder = repairChild('hold', signal);
   await new Promise<void>((resolve, reject) => {
     holder.child.stdout!.on('data', data => { if (String(data).includes('READY')) resolve(); });
     holder.exited.then(() => reject(new Error('fixture helper exited before readiness')), reject);
   });
-  return { ...holder, signal };
+  const lease = path.join(home, 'member', REPAIR_LOCK);
+  const open = fs.openSync;
+  const attempt = releaseOnAttempt ? spyOn(fs, 'openSync').mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    if (String(args[0]) === lease && !fs.existsSync(signal)) fs.writeFileSync(signal, 'release');
+    return open(...args);
+  }) as typeof fs.openSync) : null;
+  return { ...holder, signal, stopWatching: () => attempt?.mockRestore() };
 }
 
 for (const operation of ['named', 'batch', 'join', 'healing'] as const) it(operation + ' provision completes before a concurrent remove, which stays removed', async () => {
@@ -273,7 +282,7 @@ for (const operation of ['guided setup', 'login'] as const) it(operation + ' wai
   fs.mkdirSync(root);
   execFileSync('git', ['init', '-q', root]);
   writeRegistryEntry({ version: 2, root, projectId: 'proj_fixture', serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
-  const holder = await helperLease(500);
+  const holder = await helperLease(true);
   const lines: string[] = [];
   const errors: string[] = [];
   try {
@@ -301,6 +310,7 @@ for (const operation of ['guided setup', 'login'] as const) it(operation + ' wai
     expect(lines.join('\n')).toContain('Capture is set up for Claude Code, Codex.');
     expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   } finally {
+    holder.stopWatching();
     fs.writeFileSync(holder.signal, 'release');
     expect(await holder.exited, holder.output()).toBe(0);
   }

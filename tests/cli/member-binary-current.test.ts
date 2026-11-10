@@ -89,7 +89,14 @@ beforeEach(() => {
     stageBinary: async () => { throw new Error('no download allowed'); },
   };
 });
-afterEach(() => { setPluginVersion(originalVersion); restore(); fs.rmSync(root, { recursive: true, force: true }); process.exitCode = 0; });
+/** The executable this process runs, which `compiledProcess` links to: no test may write through the link. */
+const runtime = fs.realpathSync(process.execPath);
+const runtimeIdentity = () => { const stat = fs.statSync(runtime); return { ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs }; };
+const runtimeBefore = runtimeIdentity();
+afterEach(() => {
+  setPluginVersion(originalVersion); restore(); fs.rmSync(root, { recursive: true, force: true }); process.exitCode = 0;
+  expect(runtimeIdentity()).toEqual(runtimeBefore);
+});
 
 it('attempts once per day across helper passes and treats corrupt state as due', async () => {
   let attempts = 0;

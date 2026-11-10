@@ -464,13 +464,15 @@ it('retains terminal history dispositions without rescanning them automatically'
     unauthorized: () => new Response('{}', { status: 401 }),
     protocol: () => Response.json({ server_protocol: 99 }, { status: 409 }),
   };
+  // The reason a held import shows the user (`myco member status`: "is held (<reason>)").
+  const heldFor: Record<string, string> = { refused: 'fixture_refusal: fixture refusal', unauthorized: 'does not offer import', protocol: 'HTTP 409' };
   for (const [endedBy, answer] of Object.entries(refusals)) {
     const { auto, home, root, pending, server } = await historyFixture();
     fs.writeFileSync(path.join(auto.autoJoinDir(home), 'imports', pending.rootKey + '.json'), JSON.stringify(pending));
     server.answers[IMPORT_PLAN] = answer;
     const at = Date.now(), later = at + 86_400_000;
     await joinPass(home, { now: () => at, fetch: server.fetch })(at + 1000, { force: false });
-    expect(auto.listPendingImports(home)[0]?.terminal, endedBy).toMatchObject({ at, reason: expect.any(String) });
+    expect(auto.listPendingImports(home)[0]?.terminal, endedBy).toMatchObject({ at, reason: expect.stringContaining(heldFor[endedBy]!) });
     await joinPass(home, { now: () => later, fetch: server.fetch })(later + 1000, { force: false });
     expect(server.count(IMPORT_PLAN)).toBe(1);
     const deferred: Array<() => void> = [];
@@ -530,21 +532,38 @@ it('retains a join request while reconnect reconciliation is busy', async () => 
 it('settles every opt-out report before leave resumes registry mutations', async () => {
   const { runLeave } = await import('@myco/cli/member.js');
   const registry = await import('@myco/member/registry.js');
+  const { autoJoinDir } = await import('@myco/member/auto-join.js');
   const home = scratch(), root = path.join(home, 'repo');
   fs.mkdirSync(root);
   execFileSync('git', ['init', '-q', root]);
   registry.writeRegistryEntry({ version: registry.REGISTRY_VERSION, root, serverUrl: SERVER, projectId: 'proj_fixture',
     token: 'mt_' + 'a'.repeat(40), machineId: 'machine', joinedAt: 1, updatedAt: 1, expiresAt: 10_000, refreshAfter: 5_000 }, { mycoHome: home });
+  // The repository is known under a key from the machine's earlier salt as well as its current one: leave reports both.
+  rootKeyFor(root, home);
+  fs.writeFileSync(path.join(autoJoinDir(home), 'salt'), 'e'.repeat(64));
   const answered: Array<{ connected: boolean }> = [];
-  const server = fakeDeployment({ [UNCAPTURED_STATE_PATH]: async () => {
-    await new Promise(resolve => setTimeout(resolve, 20));
-    answered.push({ connected: registry.readRegistryEntry(root, home) !== null });
-    if (answered.length === 1) throw new Error('fixture report failed');
-    return Response.json({ persisted: true });
-  } });
-  expect(await runLeave([], { mycoHome: home, cwd: root, now: () => 100, stdout: () => {}, stderr: () => {}, fetch: server.fetch })).toBe(true);
-  expect(answered.length).toBeGreaterThan(0);
-  expect(answered.every(report => report.connected)).toBe(true);
+  let reports = 0;
+  // The first report is refused, and renewing the credential for it fails writing the renewed membership.
+  const server = fakeDeployment({
+    [UNCAPTURED_STATE_PATH]: async () => {
+      if (++reports === 1) return new Response('{}', { status: 401 });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      answered.push({ connected: registry.readRegistryEntry(root, home) !== null });
+      return Response.json({ persisted: true });
+    },
+    '/tokens/refresh': () => Response.json({ refreshed: true, token: 'mt_' + 'b'.repeat(40), tokenId: 'fresh', expiresAt: 1e15, refreshAfter: 1e15 }),
+  });
+  const membership = registry.deploymentPath(SERVER, home);
+  const rename = fs.renameSync;
+  const torn = spyOn(fs, 'renameSync').mockImplementation(((...args: Parameters<typeof fs.renameSync>) => {
+    if (String(args[1]) === membership && reports > 0) throw new TypeError('fixture membership write failed');
+    return rename(...args);
+  }) as typeof fs.renameSync);
+  try {
+    expect(await runLeave([], { mycoHome: home, cwd: root, now: () => 100, stdout: () => {}, stderr: () => {}, fetch: server.fetch })).toBe(true);
+  } finally { torn.mockRestore(); }
+  expect(reports).toBeGreaterThanOrEqual(2);
+  expect(answered).toEqual(Array.from({ length: reports - 1 }, () => ({ connected: true })));
   expect(registry.readRegistryEntry(root, home)).toBeNull();
 });
 

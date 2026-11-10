@@ -23,6 +23,7 @@ import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { defaultSpec, servicePaths, renderUnit } from '@myco/server/service.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { readProvisionRecord, recordProvision } from '@myco/symbionts/member-provision-record.js';
 
 const SERVER = 'https://member.example';
@@ -796,17 +797,22 @@ describe('member-only remove', () => {
   it('keeps lease files until the Deployment lease has closed', async () => {
     installMarker();
     write('server/local/myco.sqlite');
-    const local = path.join(home, 'server/local');
+    // Each lease file, as it is removed, is tried the way another process would take its lease.
+    const removals: Array<{ file: string; held: boolean }> = [];
     const rm = fs.rmSync;
-    const busy = spyOn(fs, 'rmSync').mockImplementation(((...args: Parameters<typeof fs.rmSync>) => {
-      if (String(args[0]) === local) throw Object.assign(new Error('fixture data busy'), { code: 'EBUSY' });
+    const leases = spyOn(fs, 'rmSync').mockImplementation(((...args: Parameters<typeof fs.rmSync>) => {
+      const file = String(args[0]);
+      if (['local.lock', 'cloudflare.lock'].includes(path.basename(file)) && path.basename(path.dirname(file)) === 'server') {
+        const probe = LifecycleLock.acquire(file, { command: 'fixture other operator' });
+        removals.push({ file: path.basename(file), held: !probe.acquired });
+        if (probe.acquired) probe.lock.release();
+      }
       return rm(...args);
     }) as typeof fs.rmSync);
-    try { await expect(run(['--purge', '--allow-deployment-loss', '--yes'], deps())).rejects.toThrow('fixture data busy'); }
-    finally { busy.mockRestore(); }
-    expect(fs.existsSync(path.join(home, 'server/local.lock'))).toBe(true);
-    expect(fs.existsSync(path.join(home, 'server/cloudflare.lock'))).toBe(true);
-    await run(['--purge', '--allow-deployment-loss', '--yes'], deps());
+    try { await run(['--purge', '--allow-deployment-loss', '--yes'], deps()); }
+    finally { leases.mockRestore(); }
+    expect(removals.map(removal => removal.file).sort()).toEqual(['cloudflare.lock', 'local.lock']);
+    expect(removals.filter(removal => removal.held)).toEqual([]);
     expect(fs.existsSync(home)).toBe(false);
   });
 });

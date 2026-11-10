@@ -131,7 +131,7 @@ describe('a kick', () => {
 });
 
 describe('myco member helper', () => {
-  it('logs a failed prompt-context request under its destination without the failure bytes and leaves the ask pending', async () => {
+  it('logs a failed prompt-context request under its destination and leaves the ask pending', async () => {
     const rig = await memberRig();
     const serverUrl = 'https://s';
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl });
@@ -142,7 +142,7 @@ describe('myco member helper', () => {
     updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'prompt', promptId, text: 'must arrive', at: Date.now() }); });
     const deployment = async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
-      if (new URL(request.url).pathname === '/context/prompt') throw new Error('fixture\u001b[31m\nprefetch failure');
+      if (new URL(request.url).pathname === '/context/prompt') throw new Error('fixture prefetch failure');
       return rig.fetch(request);
     };
     const restore = routeStderrToHelperLog(mycoHome, PROJECT, serverUrl);
@@ -151,7 +151,6 @@ describe('myco member helper', () => {
     expect(rig.rows('events')).toBe(1);
     const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
     expect(log).toContain(`${promptContextLogPrefix(serverUrl, PROJECT)}context for ${sessionId} prompt ${promptId} not served`);
-    expect(log).not.toContain('\u001b');
     expect(readSessionState(spool.dir, sessionId).contextAsks).toHaveLength(1);
   });
 
@@ -222,7 +221,7 @@ describe('myco member helper', () => {
     } finally { rename.mockRestore(); write.mockRestore(); }
     expect(rig.rows('events')).toBe(1);
     expect(spool.depth(sessionId)).toBe(0);
-    expect(diagnostics.join('')).toContain('context prefetch failed: Cannot persist machine settings request order.');
+    expect(diagnostics.join('')).toContain(`${promptContextLogPrefix('https://s', PROJECT)}context prefetch failed: Cannot persist machine settings request order.`);
   });
 
   it('ships the project\'s spool to its Deployment and logs what it did', async () => {

@@ -493,12 +493,12 @@ describe('Deployment feature scope', () => {
     let features = 'turn';
     const fetch = watchingFeatures(async () => Response.json({}, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: features } }), { serverUrl, spoolDir: spool().dir, mycoHome, now: () => 2 });
     const snapshot = deploymentFeaturesPath(serverUrl, mycoHome), project = projectContextPath(spool().dir);
-    const written = (file: string) => fs.statSync(file).ino;
+    const stamp = () => JSON.parse(fs.readFileSync(snapshot, 'utf8')).receivedAt as number;
     await fetch(serverUrl);
-    const first = { snapshot: written(snapshot), project: written(project) };
+    const first = { stamp: stamp(), project: fs.statSync(project).ino };
     await fetch(serverUrl);
-    expect(written(snapshot)).not.toBe(first.snapshot);
-    expect(written(project)).toBe(first.project);
+    expect(stamp()).toBeGreaterThan(first.stamp);
+    expect(fs.statSync(project).ino).toBe(first.project);
     const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
     let fail = failing('renameSync', (_from, to) => to === snapshot);
     features = '';

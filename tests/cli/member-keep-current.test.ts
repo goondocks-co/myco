@@ -101,6 +101,20 @@ it('doctor names a remedy other than itself and keep-current holds repair for an
   expect(result?.harnesses[0].state).toBe('repair_failed');
 });
 
+it('doctor names its own remedy when an agent configuration conflict carries none', () => {
+  provisionGlobally('cursor', null, home, { serverUrl: SERVER });
+  const file = path.join(agentHome, '.cursor', 'hooks.json');
+  // Duplicate keys beside a retired setting: the retired-settings reconciliation cannot read the file.
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('{', '{"user":1,"user":2,"chat.tools.terminal.autoApprove":{"myco":true},'));
+  const warn = spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const check = setupChecks(home).find(check => check.status === 'warn' && check.detail.includes(file));
+    expect(check?.detail).toStartWith("Cursor's configuration could not be checked:");
+    expect(check?.detail).toEndWith('Review this configuration before changing global hooks or tools.');
+    expect(check?.detail).not.toMatch(/myco doctor/i);
+  } finally { warn.mockRestore(); }
+});
+
 it('the next CLI helper pass restores deleted hooks and MCP byte for byte and preserves unrelated config', async () => {
   fs.mkdirSync(path.dirname(config()), { recursive: true });
   fs.writeFileSync(config(), 'model = "personal-model"\n\n[features]\nhooks = true\n\n[mcp_servers.other]\ncommand = "other"\n');
