@@ -97,7 +97,7 @@ export const applyCloudflareSchema = cloudflareOperation(async (options: SchemaO
     try {
       paced = await applyMigrationsPaced({
         databaseName: record.databaseName, before, target: SERVER_SCHEMA_VERSION,
-        apply: () => runCloudflareCommand(options, ['d1', 'migrations', 'apply', record.databaseName, '--remote']),
+        apply: (timeoutMs) => runCloudflareCommand(options, ['d1', 'migrations', 'apply', record.databaseName, '--remote'], timeoutMs),
         liveSchema: () => cloudflareSchemaVersion(database),
         fileAfter: (version) => {
           const step = SCHEMA_STEPS.find((candidate) => candidate.version === version + 1);
