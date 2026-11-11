@@ -167,7 +167,7 @@ export async function main(opts: HookMainOptions = {}) {
         : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
       // A notification is not where a cached answer is delivered, and it leaves that answer for the next prompt.
       const outgoing = { ...response, ...(promptId === undefined ? {} : { promptId }) };
-      const served = isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)
+      const served: ReturnType<typeof withServed> = isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)
         ? { response: outgoing }
         : withServed(spool.dir, sessionId, state, outgoing);
       // The rows the rendered answer named, reported where they reached the agent, in the append that records the render.
