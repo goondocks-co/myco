@@ -13,15 +13,22 @@ import { STUB_PROFILE } from '../helpers/stub-profile-harness.js';
 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
-async function withProbeFixture(run: (fixture: { root: string; probes: string; running: string }) => Promise<void>, slow = false): Promise<void> {
+/**
+ * A machine whose `claude` answers its login probe, logging each (slowly where `slow`), and prints `printed` for
+ * `--version` after `versionSeconds`, logging each ask with the asking process.
+ */
+async function withProbeFixture(run: (fixture: { root: string; probes: string; running: string; versions: string }) => Promise<void>,
+  { slow = false, printed = '2.1.3 (Claude Code)', versionSeconds = 0 }: { slow?: boolean; printed?: string; versionSeconds?: number } = {}): Promise<void> {
   const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-probe-')));
   const home = join(root, 'home');
   const bin = join(root, 'bin');
   mkdirSync(home); mkdirSync(bin);
   const probes = join(root, 'probes');
   const running = join(root, 'running');
+  const versions = join(root, 'versions');
   writeFileSync(join(bin, 'claude'), [
     '#!/bin/sh',
+    `if [ "$1" = "--version" ]; then printf 'asked %s\\n' $$ >> ${quote(versions)}; sleep ${versionSeconds}; printf '%s\\n' ${quote(printed)}; exit 0; fi`,
     `printf 'probe\\n' >> ${quote(probes)}`,
     `touch ${quote(running)}`,
     slow ? 'sleep 0.2' : '',
@@ -30,7 +37,7 @@ async function withProbeFixture(run: (fixture: { root: string; probes: string; r
   ].join('\n'), { mode: 0o755 });
   const before = { ...process.env };
   Object.assign(process.env, { HOME: home, CODEX_HOME: join(home, '.codex'), CLAUDE_CONFIG_DIR: join(home, '.claude'), MYCO_HOME: join(home, '.myco'), PATH: `${bin}:/usr/bin:/bin` });
-  try { await run({ root, probes, running }); } finally {
+  try { await run({ root, probes, running, versions }); } finally {
     for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key];
     Object.assign(process.env, before);
   }
@@ -86,7 +93,56 @@ describe('worker login probe cadence', () => {
         expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(2);
         expect([...progressed]).toEqual([1, 2]);
       } finally { clearInterval(timer); stopping.abort(); }
-    }, true);
+    }, { slow: true });
+  });
+
+  it('offers each agent with the version its CLI prints once a background probe has read it, asking the installed binary once', async () => {
+    await withProbeFixture(async ({ root, versions }) => {
+      const stopping = new AbortController();
+      let now = 0;
+      const offered: Array<Array<{ id: string; version?: string }>> = [];
+      await runWorker({
+        serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'),
+        only: ['claude-code'], pollIdleMs: 1, signal: stopping.signal, clock: () => now, log: () => {},
+        fetchImpl: (async (input, init) => {
+          if (new URL(String(input)).pathname === '/worker/claim') {
+            now += 2_000;
+            offered.push((JSON.parse(String(init?.body)) as { harnesses: Array<{ id: string; version?: string }> }).harnesses.map(({ id, version }) => ({ id, version })));
+            if (offered.at(-1)![0]!.version !== undefined || offered.length === 200) stopping.abort();
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return answer({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
+        }) as typeof fetch,
+      });
+      expect(offered.at(-1)).toEqual([{ id: 'claude-code', version: '2.1.3' }]);
+      expect(offered.slice(0, -1).every((offer) => offer[0]!.version === undefined)).toBe(true);
+      expect(readFileSync(versions, 'utf8').trim().split('\n')).toHaveLength(1);
+    });
+  });
+
+  it('never holds a claim for a version probe that has not answered', async () => {
+    await withProbeFixture(async ({ root, versions }) => {
+      const stopping = new AbortController();
+      const started = performance.now();
+      let first: { offer: unknown; afterMs: number } | null = null;
+      await runWorker({
+        serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'),
+        only: ['claude-code'], pollIdleMs: 1, signal: stopping.signal, log: () => {},
+        fetchImpl: (async (input, init) => {
+          if (new URL(String(input)).pathname === '/worker/claim') {
+            first = { offer: (JSON.parse(String(init?.body)) as { harnesses: unknown[] }).harnesses[0], afterMs: performance.now() - started };
+            stopping.abort();
+          }
+          return answer({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
+        }) as typeof fetch,
+      });
+      expect(first!.offer).toMatchObject({ id: 'claude-code', installed: true, authenticated: true });
+      expect(first!.offer).not.toHaveProperty('version');
+      expect(first!.afterMs).toBeLessThan(2_000);
+      // The stopped worker leaves no probe behind.
+      const asking = Number(readFileSync(versions, 'utf8').trim().split(' ')[1]);
+      expect(() => process.kill(asking, 0)).toThrow();
+    }, { versionSeconds: 3 });
   });
 
   it('expires the offer after a failed run before the next claim', async () => {
@@ -140,7 +196,7 @@ describe('worker login probe cadence', () => {
         expect(claimAt).not.toBeNull();
         expect(claimAt! - lastProbeTick).toBeGreaterThanOrEqual(settleMs);
       } finally { clearInterval(timer); stopping.abort(); }
-    }, true);
+    }, { slow: true });
   });
 });
 

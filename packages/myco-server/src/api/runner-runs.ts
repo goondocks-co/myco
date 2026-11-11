@@ -7,6 +7,8 @@ import type { OwnerContext } from '../context.js';
 import { runnerAttempts, runnerFacts, type RunnerAttemptKey, type RunnerAttemptRow } from '../db/runners/recent-runs.js';
 import { decodeCursor, encodeCursor } from '../read/scope.js';
 import { badRequest, notFound, ok } from './scope.js';
+import { runAccounting } from '../read/accounting.js';
+import { requestedProfile } from '@goondocks/myco-shared/execution-profile';
 
 /** The most runs one page of a runner's history lists, and the page it lists when none is asked for. */
 export const RUNNER_RUNS_PAGE = 50;
@@ -54,6 +56,8 @@ export async function handleRunnerRuns(env: ServerEnv, ctx: OwnerContext): Promi
   const runs = listed.map((row) => ({
     attemptId: row.attempt_id, claimedAt: Number(row.claimed_at), projectId: row.project_id, projectName: row.project_name, runId: row.run_id,
     task: row.task, completedAt: row.completed_at === null ? null : Number(row.completed_at), outcome: outcomeOf(row),
+    runnerVersion: row.runner_version, agentVersion: row.agent_version, harness: row.harness,
+    requested: requestedProfile(row.requested_profile), identity: runAccounting(row.usage_data).identity,
   }));
   return ok({
     runner: { id: runner.id, name: runner.name, state: runner.state, lastSeenAt: runner.last_seen_at === null ? null : Number(runner.last_seen_at), version: runner.version },

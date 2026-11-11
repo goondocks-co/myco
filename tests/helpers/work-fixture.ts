@@ -164,6 +164,7 @@ export const runDetail = (
   produced: { spores: { total: 0, items: [] } },
   attempts: [], attemptCount: over.attempts?.length ?? 0, steps: null,
   ...over,
+  servedPrompts: over.servedPrompts ?? null,
   reports: (over.reports ?? []).map((report) => ({ ...report, audit: report.audit ?? null })),
   run: {
     ...run, instruction: null, instructions: null, sessionRef: null, actualCostUsd: null, estimatedCostUsd: run.costUsd, reasoningLevel: null, resumeMode: null,

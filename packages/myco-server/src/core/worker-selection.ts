@@ -44,7 +44,20 @@ export interface OfferedHarness {
   unavailableReason?: 'login_missing';
   signInFailure?: HarnessSignInFailure;
   profile?: ProfileCapability;
+  /** The coding agent's own version, as the worker read it from the agent's CLI; absent where it reported none. */
+  version?: string;
 }
+
+/** A coding agent version a worker may report: a version token, never free text. Anything else is kept as not reported. */
+const AGENT_VERSION_SHAPE = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+
+/** The reported agent version where it has the version shape; undefined otherwise. */
+export const agentVersionOf = (value: unknown): string | undefined =>
+  typeof value === 'string' && AGENT_VERSION_SHAPE.test(value) ? value : undefined;
+
+/** The version the claiming worker reported for the harness its run is held on; null where it reported none. */
+export const reportedAgentVersion = (offers: readonly OfferedHarness[], harness: string): string | null =>
+  offers.find((offer) => offer.id === harness)?.version ?? null;
 
 const parseLeaf = (value: string | undefined): unknown => {
   if (value === undefined) return undefined;

@@ -204,6 +204,7 @@ describe('first Claude Code login recovery', () => {
       writeFileSync(join(scratch, 'success'), [JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call_1', name: 'mcp__myco__myco_run_sessions', input: {} }] } }), JSON.stringify({ type: 'result', subtype: 'success', stop_reason: 'end_turn', is_error: false, total_cost_usd: 0.3, usage: { input_tokens: 17, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } })].join('\n') + '\n');
       writeFileSync(join(scratch, 'claude'), [
         '#!/bin/sh',
+        `if [ "$1" = --version ]; then echo '2.1.3 (Claude Code)'; exit 0; fi`,
         `if [ "$1" = auth ]; then echo probe >> "${probes}"; ${mode === 'logged-out' ? `if [ -f "${count}" ]; then exit 1; fi;` : ''} exit 0; fi`,
         `echo run >> "${count}"`,
         `echo "$PWD" >> "${join(scratch, 'directories')}"`,

@@ -94,7 +94,7 @@ export function AskedVersusDid({ answer }: { answer: RunDetailAnswer }) {
           {rows.map((entry) => (
             <li key={entry.key} data-asked={entry.key} className="flex flex-col gap-s1 py-s2 t-small">
               <span className="font-medium text-ink">{entry.label}</span>
-              <span className="break-words text-ink-2"><span className="text-muted">Asked: </span>{entry.asked}</span>
+              <span className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1"><span className="break-words text-ink-2"><span className="text-muted">Asked: </span>{entry.asked}</span>{entry.askedSource !== undefined && <SourceMark source={entry.askedSource} />}</span>
               <span className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1"><span className={cn('break-words', toneClass(entry.tone))}><span className="text-muted">Evidence: </span>{entry.evidence}</span><SourceMark source={entry.source} /></span>
             </li>
           ))}

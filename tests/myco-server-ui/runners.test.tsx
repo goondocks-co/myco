@@ -290,7 +290,8 @@ it('shows a failed agent sign-in while another agent keeps the runner online', a
 });
 
 describe('Runner page', () => {
-  const ran = (runId: string, outcome: string, minutesAgo: number) => ({ attemptId: `att_${runId}`, claimedAt: NOW - minutesAgo * 60_000, projectId: 'proj_1', projectName: 'Myco', runId, task: 'canopy-map', completedAt: null, outcome });
+  const ran = (runId: string, outcome: string, minutesAgo: number, drift: Record<string, unknown> = {}) => ({ attemptId: `att_${runId}`, claimedAt: NOW - minutesAgo * 60_000, projectId: 'proj_1', projectName: 'Myco', runId, task: 'canopy-map', completedAt: null, outcome,
+    runnerVersion: null, agentVersion: null, harness: 'claude-code', requested: null, identity: { status: 'not_recorded' }, ...drift });
   const facts = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', lastSeenAt: NOW - 5_000, version: '2.0.0-alpha.2' };
 
   it('opens from its card: its last check-in, how its recent runs went, and each run linked, older runs on request', async () => {
@@ -305,5 +306,49 @@ describe('Runner page', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
     await waitFor(() => expect(screen.getByText(/2 of the last 3 finished runs worked/)).toBeTruthy());
     expect(screen.getByRole('link', { name: /Worked; changed nothing/ }).getAttribute('href')).toBe('/p/proj_1/work/runs/run_old');
+  });
+
+  it('counts the versions its shown runs ran with', async () => {
+    const rows = [
+      ...Array.from({ length: 5 }, (_, at) => ran(`run_new${at}`, 'worked', at + 1, { runnerVersion: '2.0.0-alpha.24', agentVersion: '2.1.3' })),
+      ran('run_handed', 'handed_on', 12, { runnerVersion: '2.0.0-alpha.23', agentVersion: '2.1.2' }),
+      ran('run_old', 'failed', 30),
+    ];
+    mount('member', RUNNER, { route: '/runners/rn_mini', runs: () => ({ runner: facts, rows, cursor: null }) });
+    const drift = await screen.findByRole('region', { name: 'What its runs ran with' });
+    const said = (kind: string) => drift.querySelector(`[data-drift="${kind}"]`)!.textContent!;
+    expect(said('runner')).toContain('Ran 2.0.0-alpha.24 for 5 runs, 2.0.0-alpha.23 for 1 run, not reported for 1 run');
+    expect(said('runner')).toContain('Runner reports');
+    expect(said('agent')).toContain('Claude Code 2.1.3 for 5 runs, 2.1.2 for 1 run, not reported for 1 run');
+  });
+
+  it('counts only a reported model that matches as the model it was asked for, and keeps each comparison state its own line', async () => {
+    const profile = (model: string, resolvesTo?: string) => ({ tier: 'default', model, effort: null, sources: { tier: 'task', model: 'configured' }, ...(resolvesTo === undefined ? {} : { resolvesTo }) });
+    const recorded = (model: string, status = 'reported', provider?: string) => ({ status, source: 'stream', primary: { model, ...(provider === undefined ? {} : { provider }) }, models: [{ model }] });
+    const sonnet = profile('sonnet', 'claude-sonnet-5-5');
+    const rows = [
+      ...Array.from({ length: 2 }, (_, at) => ran(`run_ok${at}`, 'worked', at + 1, { requested: sonnet, identity: recorded('claude-sonnet-5-5') })),
+      ran('run_haiku', 'worked', 5, { requested: sonnet, identity: recorded('claude-haiku-5-5') }),
+      ran('run_handed', 'handed_on', 6, { requested: sonnet, identity: recorded('claude-haiku-5-5') }),
+      ran('run_alias', 'worked', 7, { harness: 'opencode', requested: profile('openrouter/~anthropic/claude-opus-latest'), identity: recorded('anthropic/claude-opus-5', 'reported', 'openrouter') }),
+      ran('run_launch', 'worked', 8, { harness: 'codex', requested: profile('gpt-5.5'), identity: recorded('gpt-5.5', 'launched') }),
+      // The same model asked and run, compared against a recorded resolution and without one, in both orders.
+      ran('run_bare1', 'worked', 9, { harness: 'codex', requested: profile('gpt-5.5'), identity: recorded('gpt-5.5-2026') }),
+      ran('run_resolved', 'worked', 10, { harness: 'codex', requested: profile('gpt-5.5', 'gpt-5.5-2026'), identity: recorded('gpt-5.5-2026') }),
+      ran('run_bare2', 'worked', 11, { harness: 'codex', requested: profile('gpt-5.5'), identity: recorded('gpt-5.5-2026') }),
+    ];
+    mount('member', RUNNER, { route: '/runners/rn_mini', runs: () => ({ runner: facts, rows, cursor: null }) });
+    const drift = await screen.findByRole('region', { name: 'What its runs ran with' });
+    expect(drift.querySelector('[data-drift="models"]')!.textContent).toContain(
+      'Ran the model it was asked for in 3 of 7 runs whose agent reported its model; 1 run can’t be confirmed; 1 run recorded only the model it was launched with');
+    const lines = [...drift.querySelectorAll<HTMLElement>('[data-model-drift]')].map((line) => [line.textContent, line.dataset.modelDrift]);
+    expect(lines).toEqual([
+      ['Claude Code: Asked for Sonnet (resolves to claude-sonnet-5-5), ran claude-sonnet-5-5: 2 runs', 'match'],
+      ['Codex: Asked for gpt-5.5, ran gpt-5.5-2026, a different model than asked: 2 runs', 'mismatch'],
+      ['Claude Code: Asked for Sonnet (resolves to claude-sonnet-5-5), ran claude-haiku-5-5, a different model than asked: 1 run', 'mismatch'],
+      ['OpenCode: Asked for openrouter/~anthropic/claude-opus-latest, ran openrouter/anthropic/claude-opus-5; the provider chooses which model this name runs, so it can’t be confirmed: 1 run', 'unconfirmed'],
+      ['Codex: Asked for gpt-5.5, launched with gpt-5.5; the agent did not report what it ran: 1 run', 'launched'],
+      ['Codex: Asked for gpt-5.5 (resolves to gpt-5.5-2026), ran gpt-5.5-2026: 1 run', 'match'],
+    ]);
   });
 });

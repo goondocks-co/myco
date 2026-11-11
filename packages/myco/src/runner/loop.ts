@@ -35,7 +35,7 @@ import { WORKER_STEPS_FEATURE } from '@goondocks/myco-shared/worker-steps';
 import nodeFs from 'node:fs';
 const { mkdirSync, realpathSync } = nodeFs;
 import { join, dirname } from 'node:path';
-import { detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, WITHHELD_REASON, type DetectionMode } from './detect.js';
+import { detectHarnessesAsync, HARNESS_DETECTION_MAX_MS, harnessDetection, offerOf, stopVersionProbes, WITHHELD_REASON, type DetectionMode } from './detect.js';
 import { keepDiagnostic } from './diagnostic-log.js';
 import { driverFor } from './drivers/registry.js';
 import { STOP_GRACE_MS } from './process-group.js';
@@ -959,7 +959,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   const detection = harnessDetection({ detect: async (excluded) => {
     const wanted = HARNESSES.filter(harness => (options.only === undefined || options.only.length === 0 || options.only.includes(harness.id))
       && !excluded.includes(harness.id)).map(harness => harness.id);
-    const detected = wanted.length === 0 ? [] : await runnerRequest(signal => detectHarnessesAsync(wanted, signal, options.detection), options.signal);
+    const detected = wanted.length === 0 ? [] : await runnerRequest(signal => detectHarnessesAsync(wanted, signal, { credentialBytes: options.detection?.credentialBytes ?? true, versions: true }), options.signal);
     for (const harness of detected) if (harness.error !== undefined) options.log(`${harness.id} unavailable: ${harness.error}`);
     return detected;
   }, clock });
@@ -975,7 +975,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   try {
     return await claimLoop();
   } finally {
-    try { await catalogs.stop(); } finally { retryRunDirectoryDiscards(options); }
+    try { await Promise.all([catalogs.stop(), stopVersionProbes()]); } finally { retryRunDirectoryDiscards(options); }
   }
 
   async function claimLoop(): Promise<WorkerOutcome> {

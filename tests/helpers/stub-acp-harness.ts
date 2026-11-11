@@ -60,6 +60,8 @@ function peerScript(turnDelaySeconds: string, holdUntil: string, holdTicks: numb
     'for arg in "$@"; do',
     '  if [ "$arg" = "status" ]; then exit 0; fi',
     'done',
+    '# Detection also asks the agent its version, as a real agent CLI answers it.',
+    'if [ "$1" = "--version" ]; then printf \'%s\\n\' \'0.0.1 (stub)\'; exit 0; fi',
     options.spawnedFile === undefined ? '' : `printf '%s\\n' "$$" >> ${quote(options.spawnedFile)}`,
     '',
     'reply() {',

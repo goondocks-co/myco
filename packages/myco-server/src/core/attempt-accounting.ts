@@ -2,7 +2,6 @@ import type { Bound } from '../db/index.js';
 import { pricedAttemptInsert } from '../db/runs/claim-companions.js';
 import { RESTORE_CLAIM_FIELDS, restoreAgentStateRow, restoreAttemptRow, settleAttemptCost } from '../db/runs/attempt-accounting.js';
 import {isExecutionProfile} from '@goondocks/myco-shared/execution-profile';
-import type { RelationalStore } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 import type { WorkerPrincipal } from './worker-lease.js';
 import { seedForStage, BUDGET_ESTIMATE_PREFIX } from './budget-policy.js';
@@ -31,11 +30,13 @@ export function attemptRestoreComparison(row:Record<string,unknown>):Record<stri
     && (RESTORE_CLAIM_FIELDS.has(key)||['project_id','run_id','attempt_id'].includes(key))
     && (key!=='cost_source'||row.cost_usd!=null)));
 }
+/** The claimed attempt's row; `agentVersion` is the version the claim reported for the harness the run is held on, null where it reported none, and kept only on a runner's attempt. */
 export function recordPricedAttemptWrite(
-  db: RelationalStore, scope: ReadScope, runId: string, attemptId: string, worker: WorkerPrincipal, now: number, price?: AttemptPrice,
+  scope: ReadScope, attempt: { runId: string; attemptId: string; worker: WorkerPrincipal; now: number; price?: AttemptPrice; agentVersion: string | null },
 ): Bound {
+  const { runId, attemptId, worker, now, price, agentVersion } = attempt;
   const runner = worker.kind === 'runner';
-  return pricedAttemptInsert[Number(runner)]!.bind(runner ? worker.credentialId : worker.tokenId, worker.machineId, now, worker.kind, runner ? worker.runnerId : null, price?.estimate ?? seedForStage(''), price?.profileJson ?? null, scope.projectId, runId, attemptId, ...(runner ? [worker.runnerId,worker.credentialId] : [worker.tokenId]));
+  return pricedAttemptInsert[Number(runner)]!.bind(runner ? worker.credentialId : worker.tokenId, worker.machineId, now, worker.kind, runner ? worker.runnerId : null, price?.estimate ?? seedForStage(''), price?.profileJson ?? null, ...(runner ? [agentVersion] : []), scope.projectId, runId, attemptId, ...(runner ? [worker.runnerId,worker.credentialId] : [worker.tokenId]));
 }
 
 /** Cost can settle only while this exact attempt remains under the authenticated live lease. */
