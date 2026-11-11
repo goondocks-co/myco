@@ -275,6 +275,14 @@ describe('a harness system notification', () => {
     expect(person.parts).toEqual([{ kind: 'spores', sporeIds: ['a'], planIds: [] }]);
     expect(person.skipped).not.toContain('notification');
 
+    const pasted = await composePromptContext(
+      db, SCOPE, ON, true,
+      { sessionId: 'sess_pasted', admission: admit(SCOPE.projectId, 'sess_pasted'), promptId: 'pasted', text: `${TASK_NOTIFICATION}\nPlease explain this XML.`, now: NOW, agent: 'claude-code' },
+      semanticRecall(db, SCOPE),
+    );
+    expect(pasted.context).toContain('recency is the whole selector');
+    expect(pasted.skipped).not.toContain('notification');
+
     const undeclared = await composePromptContext(
       db, SCOPE, ON, true,
       { sessionId: 'sess_codex', admission: admit(SCOPE.projectId, 'sess_codex'), promptId: 'codex', text: TASK_NOTIFICATION, now: NOW, agent: 'codex' },

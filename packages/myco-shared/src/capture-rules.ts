@@ -39,10 +39,20 @@ export function notificationEnvelopes(bundles: readonly CaptureRuleBundle[], age
   return bundles.find((bundle) => bundle.name === agent)?.notificationEnvelopes ?? [];
 }
 
-/** A prompt whose text opens with a system-notification envelope its harness declares. */
+/** A prompt that is one complete system-notification envelope its harness declares, with nothing after the closing tag. */
 export function isHarnessSystemNotification(bundles: readonly CaptureRuleBundle[], agent: string | null, text: string): boolean {
   const tags = notificationEnvelopes(bundles, agent);
-  return tags.length > 0 && envelopeTagAtStart(text, tags);
+  return tags.length > 0 && isCompleteEnvelope(text, tags);
+}
+
+/** The whole prompt is one envelope of a declared tag: its opening tag through the matching close, or one empty tag, and nothing else. */
+function isCompleteEnvelope(text: string, tags: readonly string[]): boolean {
+  const body = text.trim();
+  return tags.some((tag) => {
+    const name = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const open = `<${name}(?:\\s[^>]*)?>`;
+    return new RegExp(`^${open}[\\s\\S]*</${name}>$`).test(body) || new RegExp(`^<${name}(?:\\s[^>]*)?/>$`).test(body);
+  });
 }
 
 export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boolean {

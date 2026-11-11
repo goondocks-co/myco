@@ -80,6 +80,7 @@ interface HookConfigEntry {
   mcpReconnectNotice?: string;
   capturePrompts?: unknown;
   captureRules?: unknown;
+  notificationEnvelopes?: string[];
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
@@ -197,6 +198,8 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
   if (capturePrompts) entry.capturePrompts = capturePrompts;
   const captureRules = manifest.capture?.rules;
   if (captureRules && captureRules.length > 0) entry.captureRules = captureRules;
+  const notificationEnvelopes = manifest.capture?.notificationEnvelopes;
+  if (notificationEnvelopes !== undefined && notificationEnvelopes.length > 0) entry.notificationEnvelopes = notificationEnvelopes;
   if (manifest.capture?.subagentParentPath) entry.subagentParentPath = manifest.capture.subagentParentPath;
   if (manifest.capture?.subagentThreadIdPath) entry.subagentThreadIdPath = manifest.capture.subagentThreadIdPath;
   if (manifest.capture?.subagentLabelPath) entry.subagentLabelPath = manifest.capture.subagentLabelPath;
@@ -356,6 +359,8 @@ export interface HookConfigEntry {
   mcpReconnectNotice?: string;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
+  /** Tags of system-notification envelopes this harness declares. A prompt that is only one is not injected. */
+  notificationEnvelopes?: string[];
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;

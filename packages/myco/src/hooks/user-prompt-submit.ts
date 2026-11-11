@@ -1,4 +1,5 @@
 import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.js';
+import { isHarnessSystemNotification, type CaptureRuleBundle } from '@goondocks/myco-shared/capture-rules';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun, type OptionalHookCapture } from '../member/capture.js';
 import { contextDeliveredEvent, deriveId, mintId, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
@@ -12,6 +13,14 @@ import {
   ASK_IDENTITY_MARKER, canonicalPromptId, hookPromptRequest, hookScheme, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, turnGrained,
   type DeliveredSessionRecord, type PromptIdentityDeclaration, type PromptIdScheme, type PromptScopeReason,
 } from '@goondocks/myco-shared/prompt-identity';
+
+/** Notification envelopes each harness declares, from the hook config the manifests generate. */
+const NOTIFICATION_BUNDLES: readonly CaptureRuleBundle[] = Object.entries(HOOK_CONFIG).map(([name, entry]) => ({
+  name,
+  rules: [],
+  promptIdentity: entry.promptIdentity,
+  ...(entry.notificationEnvelopes === undefined ? {} : { notificationEnvelopes: entry.notificationEnvelopes }),
+}));
 
 /**
  * What this submission is named: the id its agent's declaration gives it, with the scheme it is derived by where the
@@ -156,7 +165,11 @@ export async function main(opts: HookMainOptions = {}) {
       const events: OutboundEvent[] = transcriptWritesRows || promptId === undefined
         ? []
         : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
-      const served = withServed(spool.dir, sessionId, state, { ...response, ...(promptId === undefined ? {} : { promptId }) });
+      // A notification is not where a cached answer is delivered, and it leaves that answer for the next prompt.
+      const outgoing = { ...response, ...(promptId === undefined ? {} : { promptId }) };
+      const served = isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)
+        ? { response: outgoing }
+        : withServed(spool.dir, sessionId, state, outgoing);
       // The rows the rendered answer named, reported where they reached the agent, in the append that records the render.
       const delivered = served.rendered;
       if (naming.version === 'v1' && delivered !== undefined

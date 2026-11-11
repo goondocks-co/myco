@@ -327,7 +327,7 @@ const harnessName = (value: unknown): string | null => (typeof value === 'string
  * spill carries its blob key as that hash, so one text inline and the same text
  * spilled read as two different contents and each serves the session again.
  *
- * A prompt that opens with a system-notification envelope its harness declares
+ * A prompt that is only a system-notification envelope its harness declares
  * is answered empty, with `notification` named, and no contributor runs. The
  * ask names that harness; an ask that names none uses the session's recorded
  * agent. A harness that declares none is answered by the contributors below.

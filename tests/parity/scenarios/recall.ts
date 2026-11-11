@@ -122,6 +122,8 @@ export const recall: ParityScenario = {
     expect(storedNotice).toEqual([{ outcome: 'empty', skipped: '["notification"]', failures: '[]', context_chars: 0 }]);
     const quoted = await served(session, crypto.randomUUID(), `what did we settle about ${stamp}\n${notice}`);
     expect(quoted.skipped).not.toContain('notification');
+    const leading = await served(session, crypto.randomUUID(), `${notice}\nwhat did we settle about ${stamp}`);
+    expect(leading.skipped).not.toContain('notification');
     const codex = `parity-recall-codex-${stamp}`;
     await post(codex, 'session.start', { agent: 'codex', branch: 'recall', startedAt: stamp }, stamp);
     const codexNotice = await served(codex, crypto.randomUUID(), notice);
