@@ -3,13 +3,8 @@ import { recordCurrent, releaseNow } from './helpers/release-now.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
-import {
-  acquireRecoveryHold,
-  drainObjectReleases,
-  releaseBlobs,
-  releaseRecoveryHold,
-  resetRecoveryLedger,
-} from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases, releaseBlobs, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import {
   assignRestoreGeneration,
   recordBlobCandidates,

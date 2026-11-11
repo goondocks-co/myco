@@ -11,7 +11,7 @@
  */
 import type { ServerEnv } from './adapters.js';
 import { storedSettings } from './settings.js';
-import { deferringOperatorHold } from './object-release.js';
+import { deferringOperatorHold } from '../db/recovery/holds.js';
 import { settleOpenHold } from './recovery-hold.js';
 import { ADVANCING_STAGES, type ExportWait, type ProducerRefusal, type RecoveryProducerStatus } from './recovery-producer.js';
 

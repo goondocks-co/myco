@@ -5,12 +5,8 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobObjectKey, blobObjectKeySql, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
 import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
-import {
-  acquireRecoveryHold,
-  drainObjectReleases,
-  releaseRecoveryHold,
-  resetRecoveryLedger,
-} from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { assignRestoreGeneration } from '@myco-server-worker/db/storage/release-queue.js';
 import { createBackup } from '@myco-server-worker/core/backup.js';
 import { pruneBackups } from '@myco-server-worker/core/backup-retention.js';

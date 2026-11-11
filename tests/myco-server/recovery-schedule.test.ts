@@ -23,7 +23,7 @@ import { acquireOperatorHold, settleOperatorHold } from '@myco-server-worker/cor
 import { SCHEDULED_BY } from '@myco-server-worker/core/recovery-admission.js';
 import { settlementOf, type AttemptStage, type RecoveryAdmission, type RecoveryAdmissionReadiness, type RecoveryProducerStatus } from '@myco-server-worker/core/recovery-producer.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
-import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { holdSettlementDue } from '@myco-server-worker/core/recovery-hold.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 

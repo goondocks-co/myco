@@ -8,7 +8,7 @@
  * answer that never comes keeps the hold, and says so.
  */
 import type { ServerEnv } from './adapters.js';
-import { acquireRecoveryHold, deferringOperatorHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold, type OperatorHoldRelease, type RecoveryHoldSource } from './object-release.js';
+import { acquireRecoveryHold, deferringOperatorHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold, type OperatorHoldRelease, type RecoveryHoldSource } from '../db/recovery/holds.js';
 import type { HoldSettlement } from './recovery-producer.js';
 import { classify, emit } from '../telemetry.js';
 import { within } from './recovery-inventory.js';

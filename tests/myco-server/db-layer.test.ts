@@ -26,7 +26,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'core/event-content-restore.ts',
   'core/event-content.ts',
   'core/harness.ts',
-  'core/object-release.ts',
   'core/raw-archive.ts',
   'core/raw-backfill.ts',
   'core/raw-claims.ts',
@@ -87,7 +86,6 @@ const PENDING: ReadonlySet<string> = new Set([
 const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
   'api/member-projects.ts',
   'core/archive-bundle.ts',
-  'core/object-release.ts',
   'core/raw-claims.ts',
   'core/remotes.ts',
 ]);

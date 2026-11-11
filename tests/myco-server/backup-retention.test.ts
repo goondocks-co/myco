@@ -9,7 +9,8 @@ import { backupArtifact, createBackup, previewRestore, setBackupPinned, verifyBa
 import { acceptRestore, advanceRestore, restoreJobProgress, stopRestore } from '@myco-server-worker/core/restore-job.js';
 import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { continueBackupRetention, pruneBackups, releaseRetentionPage, retentionDecision } from '@myco-server-worker/core/backup-retention.js';
-import { acquireRecoveryHold, drainObjectReleases, objectReleaseBacklogged, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases, objectReleaseBacklogged } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { listBackupPage } from '@myco-server-worker/db/storage/backup-list.js';
 import { backupPruneStatus } from '@myco-server-worker/db/meta/backup-prune.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';

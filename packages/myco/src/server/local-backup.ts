@@ -4,7 +4,7 @@ import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
-import { acquireRecoveryHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold, openRecoveryHold, readRecoveryHold, releaseOperatorHold } from '@myco-server-worker/db/recovery/holds.js';
 import { LOCAL_SECRET_NAMES, readLocalRecord, resolveLocalPaths, type LocalDeploymentPaths } from './local.js';
 import { LocalVolume } from './local-volume.js';
 import { createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest, type RecoveryRetryPolicy } from './recovery-bundle.js';

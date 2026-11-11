@@ -9,7 +9,7 @@ import {
 import type { LifecycleOptions } from './cloudflare-lifecycle.js';
 import { renderDeployConfig } from './deploy-config.js';
 import { HOSTED_RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';
-import { recoveryHoldOf, recoveryHoldSql } from '@myco-server-worker/core/object-release.js';
+import { recoveryHoldOf, recoveryHoldSql } from '@myco-server-worker/db/recovery/holds.js';
 import { recoveryConfigurationOf } from './cloudflare-resources.js';
 import {
   CaptureRefusedBeforeSnapshot, createRecoveryBundle, type RecoveryHoldOwner, type RecoveryHoldReading, type RecoveryManifest, type RecoveryRetryPolicy,

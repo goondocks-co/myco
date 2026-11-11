@@ -4,7 +4,8 @@ import { backupArtifact, createBackup, deploymentId } from '@myco-server-worker/
 import { restoreArtifact } from './helpers/restore-artifact.js';
 import { restoreThroughJob } from './helpers/restore-through-job.js';
 import { drainSessionDeletions, tombstoneSession } from './helpers/session-deletion.js';
-import { acquireRecoveryHold, drainObjectReleases, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
 import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
