@@ -66,21 +66,6 @@ export function expectTwoScale(costs: readonly CaseCost[]): void {
   }
 }
 
-/**
- * A request reported for walking rows it should seek (`issue` names the report, #2174 for the first four). It still
- * reads more at the large size than its extra allows, and at most `perUnit` rows for each of the `units` the corpus grew
- * by; it writes no more. The lower bound fails once the read is keyed, so the exemption is removed with the fix; the
- * upper bound fails if the walk gets worse.
- */
-export function expectReportedWalk(cost: CaseCost, walk: { issue: string; perUnit: number; units: number }): void {
-  const label = `${walk.issue} ${cost.name}`;
-  const [small, large] = cost.reads;
-  expect(large, `${label}: the walk is gone, so remove this exemption; rows read, small ${small}`).toBeGreaterThan(small + cost.extra);
-  expect(large, `${label}: the walk grew past ${walk.perUnit} rows per unit; rows read, small ${small}`)
-    .toBeLessThanOrEqual(small + walk.perUnit * walk.units + cost.extra);
-  expect(cost.writes[1], `${label} rows written, small ${cost.writes[0]}`).toBeLessThanOrEqual(cost.writes[0]);
-}
-
 /** Runs `insert` once for each corpus unit in [from, to), the unit's number as `n.i`; `binds` are `?3` onward. */
 export async function eachUnit(db: RelationalStore, from: number, to: number, insert: string, ...binds: unknown[]): Promise<void> {
   if (from >= to) return;
