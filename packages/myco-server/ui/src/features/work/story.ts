@@ -1,4 +1,5 @@
 import { EFFORT_UNAPPLIED, profileModelVerdict } from '@goondocks/myco-shared/execution-profile';
+import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { callStepWords, callWords } from './call-words';
 import { displayModel } from './ModelSummary';
 import { count } from '../today/words';
@@ -95,16 +96,26 @@ function groupCalls(calls: readonly RunCall[]): StoryRow[] {
   });
 }
 
+/** What Myco said held a run while it waited in the queue, quoted; null where no hold was recorded. */
+function waitedNote(hold: string | null | undefined): string | null {
+  const sentence = holdSentence(hold ?? null);
+  return sentence === null ? null : `While it waited, Myco said: “${sentence}”`;
+}
+
 function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null, memberName: (id: string) => string | null): StoryRow[] {
   const total = attemptCount ?? attempts.length;
   return attempts.map((attempt, index) => {
-    const position = total > 1 ? ` (attempt ${(total - attempts.length + index + 1).toLocaleString()} of ${total.toLocaleString()})` : '';
+    const ordinal = total - attempts.length + index + 1;
+    const position = total > 1 ? ` (attempt ${ordinal.toLocaleString()} of ${total.toLocaleString()})` : '';
+    // The first attempt's wait reads on its own row after "Queued"; a later attempt waited after going back to the queue.
+    const waited = ordinal > 1 ? waitedNote(attempt.waitedFor) : null;
+    const note = waited === null ? null : `It went back to the queue first. ${waited}`;
     if (attempt.executor.kind === 'runner') {
       const name = attempt.executor.name ?? 'a runner';
-      return row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', runner: { id: attempt.executor.runnerId, name } });
+      return row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', note, runner: { id: attempt.executor.runnerId, name } });
     }
     const member = attempt.executor.memberId === null ? null : memberName(attempt.executor.memberId);
-    return row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw' });
+    return row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw', note });
   });
 }
 
@@ -132,14 +143,18 @@ export interface StoryInput {
   now: number;
 }
 
-/** Codes Myco applies by rule when a run goes quiet, never from anything the machine said. */
-const INFERRED_END: Readonly<Record<string, (quiet: number | null) => { words: string; note: string }>> = {
-  machine_unresponsive: (quiet) => ({
-    words: `${quiet === null ? 'Its time limit passed' : `No call for ${spanWords(quiet)}, past its time limit`}, so Myco ended it`,
+/**
+ * Codes Myco applies by rule when a run goes quiet, never from anything the machine said. Where Myco kept the latest
+ * renewal of the run's hold, each names how long Myco heard nothing from the run (no call, step, report or renewal)
+ * before it ended it; where it did not, renewals it was not keeping may have come, so only the calls are measured.
+ */
+const INFERRED_END: Readonly<Record<string, (quiet: number | null, renewalKept: boolean) => { words: string; note: string }>> = {
+  machine_unresponsive: (quiet, kept) => ({
+    words: `${quiet === null ? 'Its time limit passed' : kept ? `Myco heard nothing for ${spanWords(quiet)} and its time limit passed` : `No call for ${spanWords(quiet)}, past its time limit`}, so Myco ended it`,
     note: 'Myco ends any run still open past its time limit. That the limit passed is all Myco knows: whether the machine stopped is not known.',
   }),
-  lease_lapsed: () => ({
-    words: 'Its hold on the run ran out, so Myco ended it',
+  lease_lapsed: (quiet, kept) => ({
+    words: `${quiet === null || !kept ? 'Its hold on the run ran out' : `Myco heard nothing for ${spanWords(quiet)} and its hold on the run ran out`}, so Myco ended it`,
     note: 'Myco reads this from the hold running out. Why it ran out is not known.',
   }),
 };
@@ -150,8 +165,9 @@ export function inferredEnd(code: string | null | undefined): boolean {
 }
 
 /**
- * "What happened", in order: queued, claimed, the calls Myco saw grouped, the runner's steps, the agent's reports,
- * any silence longer than a minute, then how it ended.
+ * "What happened", in order: queued, how long it waited and what held it, claimed, the calls Myco saw grouped, the
+ * runner's steps, the agent's reports, the latest renewal of its hold, any silence longer than a minute, then how it
+ * ended. Myco keeps only the latest renewal, so no silence is claimed before it: the machine may have renewed then.
  */
 export function runStory({ answer, calls, callsComplete, steps, startedBy, cause, memberName, now }: StoryInput): StoryRow[] {
   const { run } = answer;
@@ -169,31 +185,42 @@ export function runStory({ answer, calls, callsComplete, steps, startedBy, cause
     }));
   }
   timed.push(...reportRows(answer.reports));
+  const renewed = run.lastRenewedAt ?? null;
+  if (renewed !== null) {
+    timed.push(row({ key: 'renewed', at: renewed, words: 'Last renewed its hold on this run', source: 'saw',
+      note: 'The machine renews its hold while it works on the run. Myco keeps only the latest renewal.' }));
+  }
   timed.sort((a, b) => a.at! - b.at!);
 
   const story: StoryRow[] = [];
   let heard: number | null = null;
+  /** The last thing Myco heard other than a renewal: what "no call to Myco" on a live run is measured from. */
+  let called: number | null = null;
   const silence = (until: number, key: string) => {
-    if (!callsComplete || heard === null || until - heard <= SILENCE_MS) return;
+    if (!callsComplete || heard === null || until - heard <= SILENCE_MS || (renewed !== null && until <= renewed)) return;
     story.push(row({
       key, words: `Silence for ${spanWords(until - heard)}`, source: 'saw',
-      note: 'Myco recorded nothing from this run in this time. Whether its runner kept checking in is not recorded for a run.',
+      note: renewed === null
+        ? 'Myco recorded nothing from this run in this time. Whether its runner kept checking in is not recorded for a run.'
+        : 'Myco heard nothing from this run in this time: no call, step, report or renewal of its hold.',
     }));
   };
+  const first = answer.attempts.length > 0 && (answer.attemptCount ?? answer.attempts.length) === answer.attempts.length ? answer.attempts[0]! : null;
   for (const entry of timed) {
     if (story.at(-1)?.key === 'queued' && heard !== null && entry.at! - heard > SILENCE_MS) {
-      story.push(row({ key: 'waited', words: `Waited ${spanWords(entry.at! - heard)} to be taken`, source: 'saw' }));
+      story.push(row({ key: 'waited', words: `Waited ${spanWords(entry.at! - heard)} to be taken`, source: 'saw', note: waitedNote(first?.waitedFor) }));
     } else silence(entry.at!, `silence-${entry.key}`);
     story.push(entry);
     const covered = entry.key === 'steps' ? stepEnd! : entry.calls?.at(-1)?.recordedAt ?? entry.at!;
     heard = heard === null ? covered : Math.max(heard, covered);
+    if (entry.key !== 'renewed') called = called === null ? covered : Math.max(called, covered);
   }
 
   const latest = answer.attempts.at(-1);
   const live = run.status === 'running' || run.status === 'claimed';
   const stepLogMissing = latest !== undefined && latest.steps === null;
   if (live) {
-    if (callsComplete && heard !== null && now - heard > SILENCE_MS) story.push(row({ key: 'quiet', words: `No call to Myco for ${spanWords(now - heard)} so far`, source: 'saw' }));
+    if (callsComplete && called !== null && now - called > SILENCE_MS) story.push(row({ key: 'quiet', words: `No call to Myco for ${spanWords(now - called)} so far`, source: 'saw' }));
     if (stepLogMissing) story.push(row({ key: 'no-steps', words: 'What it is doing on the machine isn’t visible yet', source: 'none', note: 'The runner sends its step log when the attempt ends.' }));
     return story;
   }
@@ -202,7 +229,7 @@ export function runStory({ answer, calls, callsComplete, steps, startedBy, cause
   silence(ended, 'silence-end');
   const inferred = run.status === 'failed' ? INFERRED_END[run.errorCode ?? ''] : undefined;
   if (inferred !== undefined) {
-    const said = inferred(heard === null || !callsComplete ? null : ended - heard);
+    const said = inferred(heard === null || !callsComplete ? null : ended - heard, renewed !== null);
     story.push(row({ key: 'inferred', at: ended, words: said.words, source: 'inferred', tone: 'bad', note: said.note }));
   }
   story.push(endRow(answer, ended, inferred !== undefined, cause));

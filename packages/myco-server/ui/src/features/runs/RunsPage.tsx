@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import { Button, Card, ErrorState, FilterPills, HealthDot, Link, ListRow, Select, ShowMore, Sparkline, StackedBars, type HealthTone } from '../../design';
+import { Button, Card, ErrorState, FilterPills, HealthDot, Link, ListRow, Select, ShowMore, Sparkline, StackedBars, StatusChip, type HealthTone } from '../../design';
 import { usePaged, type Page } from '../../hooks/use-paged';
 import { useProjects } from '../../hooks/use-projects';
 import { fetchJson } from '../../lib/api';
@@ -10,7 +11,7 @@ import { runPath, runnerPath } from '../../routes/nav';
 import { AdminPage, AdminSection } from '../admin/AdminFrame';
 import { taskWords } from '../admin/workers';
 import { runErrorWords, shortTime } from '../work/words';
-import { gapsOf, slicesOf, type RunsWindow } from './timeline';
+import { gapReading, gapsOf, presenceOf, slicesOf, type Presence, type QuietSpell, type RunsWindow } from './timeline';
 
 type Outcome = 'worked' | 'unchanged' | 'failed';
 interface Counts { worked: number; unchanged: number; failed: number }
@@ -21,8 +22,11 @@ export interface RunHoursAnswer {
   window: { name: RunsWindow; since: number; until: number; sliceMs: number };
   counted: boolean;
   totals: Counts & { waitedMs: number };
-  lanes: { runnerId: string | null; name: string | null; hours: (Counts & { hour: number })[] }[];
+  lanes: { runnerId: string | null; name: string | null; hours: (Counts & { hour: number })[]; checkins: number[] }[];
   failures: Record<Dimension, FailureGroup[]>;
+  recordedSince: number | null;
+  waits: { queuedHour: number; takenHour: number; runs: number }[];
+  stillWaiting: { since: number; runs: number }[];
 }
 /** One run of `GET /api/runs/finished`. */
 interface FinishedRun {
@@ -107,7 +111,7 @@ export function RunsPage() {
       {hours.isPending && <p className="t-body text-muted">Loading runs…</p>}
       {answer !== undefined && (
         <>
-          <AdminSection id="runs-timeline" title="When runs finished" description={window === 'day' ? 'Each runner’s runs by the hour. An empty hour is one where nothing finished on that runner.' : 'Each runner’s runs by the day. An empty day is one where nothing finished on that runner.'}>
+          <AdminSection id="runs-timeline" title="When runs finished" description={window === 'day' ? 'Each runner’s runs by the hour, and the hours it checked in beneath. An empty hour is one where nothing finished on that runner.' : 'Each runner’s runs by the day, and the days it checked in beneath. An empty day is one where nothing finished on that runner.'}>
             <Timeline answer={answer} now={now} span={words.span} />
           </AdminSection>
           <AdminSection id="runs-failing" title="What’s failing" description={`Failed runs ${words.span}, grouped, beside ${words.before}. Open a group to see its runs.`}
@@ -163,11 +167,13 @@ export function RunsPage() {
   );
 }
 
-/** Each runner's lane of finished runs per slice, the empty slices left visible, then the spells when nothing finished anywhere. */
+/** Each runner's lane of finished runs per slice with its check-ins beneath, the empty slices left visible, then the spells when nothing finished anywhere, each opening what its facts come to. */
 function Timeline({ answer, now, span }: { answer: RunHoursAnswer; now: number; span: string }) {
   const { totals } = answer;
   const finished = totals.worked + totals.unchanged + totals.failed;
   const gaps = gapsOf(answer, now);
+  const [open, setOpen] = useState<number | null>(null);
+  const opened = gaps.find((gap) => gap.from === open) ?? null;
   return (
     <Card className="flex flex-col gap-s3">
       {!answer.counted && <p className="t-small text-muted" data-runs-counting="">Myco is still counting runs that finished before this page existed, so earlier hours may read low.</p>}
@@ -184,13 +190,56 @@ function Timeline({ answer, now, span }: { answer: RunHoursAnswer; now: number; 
               {lane.runnerId === null ? <span className="t-small text-ink-2">Runs no runner ran</span>
                 : <Link to={runnerPath(lane.runnerId)} className="t-small">{lane.name ?? 'A runner no longer registered'}</Link>}
               <StackedBars label={label} slots={slices.map((slice) => ({ parts: [{ value: slice.worked, tone: 'ok' }, { value: slice.unchanged, tone: 'faint' }, { value: slice.failed, tone: 'bad' }] }))} />
+              {lane.runnerId !== null && <CheckIns name={lane.name ?? 'This runner'} presence={presenceOf(answer, lane)} />}
             </li>
           );
         })}
       </ul>
-      {gaps.length > 0 && <ul className="flex flex-col gap-s1 t-small text-ink-2" data-runs-gaps="">{gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>}
-      <p className="t-meta text-muted">Green worked, grey changed nothing, red failed. Hatched: nothing finished.</p>
+      {gaps.length > 0 && (
+        <ul className="flex flex-col gap-s1" data-runs-gaps="">
+          {gaps.map((gap) => (
+            <li key={gap.from}>
+              <Button size="sm" variant="ghost" aria-expanded={open === gap.from} onClick={() => setOpen(open === gap.from ? null : gap.from)}>{gap.words}</Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {opened !== null && <GapCard answer={answer} spell={opened} now={now} />}
+      <p className="t-meta text-muted">Green worked, grey changed nothing, red failed. Hatched: nothing finished. Beneath each runner, a filled mark for each {answer.window.sliceMs > 3_600_000 ? 'day' : 'hour'} it checked in.</p>
     </Card>
+  );
+}
+
+const PRESENCE_FILL: Readonly<Record<Presence, string>> = { 'checked-in': 'fill-primary', silent: 'fill-line', unrecorded: 'fill-transparent' };
+
+/** One mark per slice: filled where the runner checked in, faint where it did not, empty before check-ins were recorded. */
+function CheckIns({ name, presence }: { name: string; presence: readonly Presence[] }) {
+  const seen = presence.filter((p) => p === 'checked-in').length;
+  const recorded = presence.filter((p) => p !== 'unrecorded').length;
+  const label = recorded === 0 ? `${name}: check-ins not recorded for this window` : `${name} checked in during ${seen} of ${recorded}${recorded < presence.length ? ' recorded' : ''}`;
+  const gap = presence.length > 1 ? 0.4 : 0;
+  const bar = presence.length === 0 ? 0 : (100 - gap * (presence.length - 1)) / presence.length;
+  return (
+    <svg role="img" aria-label={label} width="100%" height={5} viewBox="0 0 100 5" preserveAspectRatio="none" className="block" data-runs-checkins={seen}>
+      <title>{label}</title>
+      {presence.map((p, i) => <rect key={i} x={i * (bar + gap)} y={0} width={bar} height={5} className={PRESENCE_FILL[p]} />)}
+    </svg>
+  );
+}
+
+/** What a quiet spell's facts come to, from the counters: whether anything waited and who checked in. */
+function GapCard({ answer, spell, now }: { answer: RunHoursAnswer; spell: QuietSpell; now: number }) {
+  const reading = gapReading(answer, spell, now);
+  return (
+    <div className="flex flex-col gap-s2 rounded-card border border-line p-s3" data-runs-gap={reading.verdict} role="group" aria-label={spell.words}>
+      <div className="flex flex-wrap items-center justify-between gap-s2">
+        <strong className="t-body text-ink">{spell.words}</strong>
+        {reading.verdict !== 'unrecorded' && <StatusChip tone={reading.verdict === 'normal' ? 'ok' : 'warn'}>{reading.verdict === 'normal' ? 'Looks normal' : 'Worth a look'}</StatusChip>}
+      </div>
+      <p className="t-body text-ink-2">{reading.headline}</p>
+      {reading.facts.length > 0 && <ul className="flex flex-col gap-s1 t-small text-ink-2">{reading.facts.map((fact) => <li key={fact}>{fact}</li>)}</ul>}
+      {reading.verdict !== 'unrecorded' && <p className="t-meta text-muted">“Looks normal” means nothing waited and a runner could have taken it. It is a reading of these facts, not a guarantee.</p>}
+    </div>
   );
 }
 

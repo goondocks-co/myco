@@ -35,6 +35,7 @@ import { PLAN_PAGE_STEPS } from './schema-steps-plan-pages.js';
 import { VNEXT_PLAN_CURATION_STEPS } from './schema-steps-plan-curation.js';
 import { RUN_HOURS_STEPS } from './schema-steps-run-hours.js';
 import { PULLED_WAITING_STEPS } from './schema-steps-pulled-waiting.js';
+import { RUN_LIVENESS_STEPS } from './schema-steps-run-liveness.js';
 import { V719, V719_STATEMENTS, V719_REACHES, V719_DEPLOYMENT_INDEXES } from './schema-v719.js';
 import { V710_STATEMENTS, V710_REACHES } from './schema-v710.js';
 import { V711_STATEMENTS, V711_REACHES, V711_DEPLOYMENT_INDEXES } from './schema-v711.js';
@@ -2355,6 +2356,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...PLAN_PAGE_STEPS.map(stamp),
   ...RUN_HOURS_STEPS.map(stamp),
   ...PULLED_WAITING_STEPS.map(stamp),
+  ...RUN_LIVENESS_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

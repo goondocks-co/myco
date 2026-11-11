@@ -4,7 +4,9 @@
  * hourly counts over a day, a week or one Project, and the due work no machine took. Its pages of finished runs cost the
  * same when the window holds ten times the runs: whole, or narrowed to a runner, a cause, no runner or one Project, a
  * narrowed page reads only the runs that match its first filter, and a page narrowed twice inspects a bounded number of
- * them however many other runs share its first filter.
+ * them however many other runs share its first filter. Each runner's check-ins and the runs that waited, which a quiet
+ * spell is read from, cost the same when a Deployment holds ten times their history outside the window, and so does
+ * a runner's contact counting its check-in.
  */
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -18,6 +20,8 @@ import { NOW_PROJECTS_MAX } from '@myco-server-worker/db/runs/now.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
+import { runnerContactWrite } from '@myco-server-worker/core/worker-contacts.js';
+import { commit } from '@myco-server-worker/db/index.js';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -150,6 +154,49 @@ it('a page of finished runs, whole or narrowed, costs D1 the same as the window 
       { name: 'a cause many runs recorded, on one runner', run: async (db) => expect((await page({ errorCode: 'lease_lapsed', runnerId: 'rn_1' })(db)).cursor).not.toBeNull() },
       { name: 'runs that recorded no runner', run: async (db) => expect((await page({ runnerId: '' })(db)).rows).toHaveLength(5) },
       { name: 'one Project’s runs', run: async (db) => expect((await page({}, { all: false, projectIds: ['proj_1'] })(db)).rows.length).toBeGreaterThan(0) },
+    ],
+  }));
+}, 240_000);
+
+/** Every hour of the last week for each of three runners, and runs that waited an hour, taken in each of those hours. */
+async function recentContacts(db: RelationalStore) {
+  await setup(db);
+  for (const i of [0, 1, 2]) {
+    await eachUnit(db, 0, 7 * 24, `INSERT INTO runner_contact_hour(hour,runner_id,contacts,first_seen_at,last_seen_at)
+      SELECT ?3-i*${HOUR},'rn_${i}',4,?3-i*${HOUR},?3-i*${HOUR}+1000 FROM n`, NOW - (NOW % HOUR));
+  }
+  await eachUnit(db, 0, 7 * 24, `INSERT INTO run_wait_hour(claimed_hour,queued_hour,project_id,runs) SELECT ?3-i*${HOUR},?3-(i+1)*${HOUR},'proj_'||(i%2),2 FROM n`, NOW - (NOW % HOUR));
+  await commit(db, runnerContactWrite(db, { runnerId: 'rn_0', now: NOW }));
+}
+
+/** Each unit is an hour, eight days to a month back, outside every read's window: another runner's check-in and runs that waited then. */
+async function olderContacts(db: RelationalStore, from: number, to: number) {
+  await eachUnit(db, from, to, `INSERT INTO runner_contact_hour(hour,runner_id,contacts,first_seen_at,last_seen_at)
+    SELECT ?3-(i%500)*${HOUR},'rn_old_'||(i/500),1,?3-(i%500)*${HOUR},?3-(i%500)*${HOUR} FROM n`, NOW - (NOW % HOUR) - 8 * DAY);
+  await eachUnit(db, from, to, `INSERT INTO run_wait_hour(claimed_hour,queued_hour,project_id,runs)
+    SELECT ?3-(i%500)*${HOUR},?3-(i%500)*${HOUR}-(i/500+1)*${HOUR},'proj_'||(i%2),1 FROM n`, NOW - (NOW % HOUR) - 8 * DAY);
+}
+
+it('check-ins and waits on the Runs page, and a contact counting its check-in, cost D1 the same as their history grows', async () => {
+  expectTwoScale(await d1TwoScale({
+    sizes: [500, 5_000],
+    setup: recentContacts,
+    grow: olderContacts,
+    cases: [
+      { name: 'a contact counts its check-in in its hour', run: async (db, at) => {
+        await commit(db, runnerContactWrite(db, { runnerId: 'rn_0', now: NOW + (at.scale + 2) * 60_000 }));
+      } },
+      { name: 'a day of runner lanes with their check-ins and waits', run: async (db) => {
+        const day = await readRunHours(db, ALL, 'day', NOW);
+        expect(day.lanes.filter((lane) => lane.checkins.length > 0)).toHaveLength(3);
+        expect(day.waits.length).toBeGreaterThan(0);
+      } },
+      { name: 'a week of runner lanes with their check-ins and waits', run: async (db) => {
+        const week = await readRunHours(db, ALL, 'week', NOW);
+        expect(week.lanes.every((lane) => lane.runnerId === null || lane.checkins.length > 0)).toBe(true);
+        expect(week.recordedSince).not.toBeNull();
+      } },
+      { name: 'one Project’s waits', run: async (db) => expect((await readRunHours(db, { all: false, projectIds: ['proj_1'] }, 'week', NOW)).waits.length).toBeGreaterThan(0) },
     ],
   }));
 }, 240_000);

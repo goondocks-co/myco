@@ -10,8 +10,8 @@ export const CREDENTIAL_INSERT_SQL = `INSERT INTO member_credentials (id, member
               SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?, ?
                WHERE (? IS NULL OR (${TOKEN_LIVE} AND ${ROTATING_PREDECESSOR}))`;
 export const credentialInsert = write<readonly unknown[]>({name:'claim.credentialInsert',sql:CREDENTIAL_INSERT_SQL+' RETURNING id'});
-export const pricedAttemptInsert = [false,true].map(runner => write<readonly unknown[]>({name:`claim.pricedAttempt${runner ? 'Runner' : 'Member'}`,sql:`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,machine_id,claimed_at,owner_kind,runner_id,estimate_usd,profile_json)
-    SELECT project_id,id,dispatched_by,?,?,?,?,?,?,? FROM agent_runs
+export const pricedAttemptInsert = [false,true].map(runner => write<readonly unknown[]>({name:`claim.pricedAttempt${runner ? 'Runner' : 'Member'}`,sql:`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,machine_id,claimed_at,owner_kind,runner_id,estimate_usd,profile_json,waited_for)
+    SELECT project_id,id,dispatched_by,?,?,?,?,?,?,?,waited_for FROM agent_runs
     WHERE project_id=? AND id=? AND status='running' AND dispatched_by=?
     AND ${runner ? 'leased_runner_id=? AND leased_runner_credential_id=?' : 'leased_by=?'}
     ON CONFLICT(project_id,run_id,attempt_id) DO NOTHING`}));

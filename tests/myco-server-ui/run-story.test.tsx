@@ -106,6 +106,32 @@ describe('What happened', () => {
     expect(exact).toContain('machine_unresponsive');
   });
 
+  it('measures the silence from the last renewal of the run’s hold, and names how long Myco heard nothing before it ended the run', async () => {
+    const cutOff = searchRunCutOff();
+    const renewed = cutOff.run.completedAt! - 6 * MINUTE - 46 * SECOND;
+    const panel = await open('run_embed1914', { ...cutOff, run: { ...cutOff.run, lastRenewedAt: renewed } });
+    const rows = [...story(panel).querySelectorAll<HTMLElement>('[data-story-row]')].map((row) => row.dataset.storyRow);
+    expect(rows.slice(rows.indexOf('renewed'))).toEqual(['renewed', 'silence-end', 'inferred', 'end', 'no-steps']);
+    expect(line(panel, 'renewed').textContent).toContain('Last renewed its hold on this run');
+    expect(line(panel, 'renewed').querySelector('[data-source]')!.textContent).toContain('Myco saw');
+    expect(line(panel, 'silence-end').textContent).toContain('Silence for 6 min 46 s');
+    expect(line(panel, 'inferred').textContent).toContain('Myco heard nothing for 6 min 46 s and its time limit passed, so Myco ended it');
+    expect(rows.filter((key) => key!.startsWith('silence-'))).toEqual(['silence-end']);
+  });
+
+  it('says what a run waited for in the queue and for how long, from the hold its claim recorded', async () => {
+    const queued = NOW - 40 * MINUTE;
+    const claimed = queued + 12 * MINUTE;
+    const detail = runDetail(runRow({ id: 'run_title01', task: 'title-summary', status: 'completed', queuedAt: queued, startedAt: claimed, completedAt: claimed + 30 * SECOND, result: 'produced' }), {
+      attempts: [{ ...attempt('att_title', claimed, runner('rn_c04d11e8', 'studio-m4')), waitedFor: 'budget' }], attemptCount: 1,
+      outcomeEvidence: { hasReport: true, hasAudit: null, artifactPresent: null, skipSupported: null, targetSessionId: null },
+    });
+    const panel = await open('run_title01', detail);
+    const waited = line(panel, 'waited');
+    expect(waited.textContent).toContain('Waited 12 min to be taken');
+    expect(waited.textContent).toContain('While it waited, Myco said: “Waiting until the daily budget has room for this run.”');
+  });
+
   it('says in reader words what each recorded route call did and how long it took, under one row or beside a single call', async () => {
     const cutOff = searchRunCutOff();
     const calls = cutOff.toolCalls.map((call) => ({ ...call, op: 'missing', durationMs: 340, result: { processed: 1 } }));
@@ -256,6 +282,17 @@ describe('the facts the panel states', () => {
     });
     const panel = await open('run_lapsed', lapsed);
     expect(line(panel, 'inferred').textContent).toContain('Its hold on the run ran out, so Myco ended it');
+    expect(panel.textContent).not.toContain('stopped renewing');
+  });
+
+  it('names how long Myco heard nothing before a lapsed hold ended the run, where the latest renewal was kept', async () => {
+    const claimed = NOW - 70 * MINUTE;
+    const lapsed = runDetail(runRow({ id: 'run_lapsed', task: 'extract-curate', status: 'failed', failed: true, result: 'failed', startedAt: claimed, completedAt: claimed + 3 * MINUTE }), {
+      run: { errorCode: 'lease_lapsed', error: 'the lease lapsed', lastRenewedAt: claimed + 90 * SECOND },
+      attempts: [attempt('att_lapsed', claimed, runner('rn_b82ef603', 'cloud-vm-1'))], attemptCount: 1,
+    });
+    const panel = await open('run_lapsed', lapsed);
+    expect(line(panel, 'inferred').textContent).toContain('Myco heard nothing for 1 min 30 s and its hold on the run ran out, so Myco ended it');
     expect(panel.textContent).not.toContain('stopped renewing');
   });
 

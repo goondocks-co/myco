@@ -9,6 +9,8 @@ import { read, readSet } from '../index.js';
 import { runNotRetiring } from './evidence-schema.js';
 import type { RunResult } from './run-output.js';
 import { RUN_HOUR_PROJECTION, type FactFilter } from './run-hours.js';
+import { contactHourReads } from '../runners/contact-hours.js';
+import { waitHourReads } from './wait-hours.js';
 
 /** One hour's count for one Project-less combination of task, runner, agent, result and error code. */
 export interface RunHourRow { hour: number; task: string; runner_id: string; harness: string; result: RunResult; error_code: string; runs: number; wait_ms: number }
@@ -24,12 +26,21 @@ const hours = [true, false].map((all) => read<[projects: string, since: number, 
 const ready = read<[], { done: number }>({ name: 'runHours.ready', sql: `SELECT done FROM projection_catchup WHERE projection='${RUN_HOUR_PROJECTION}'` });
 const runnerNames = read<[ids: string], { id: string; name: string }>({ name: 'runHours.runnerNames', sql: 'SELECT id,name FROM runners WHERE id IN (SELECT value FROM json_each(?1))' });
 
-/** The hourly counts of the visible Projects in [since, until), whether every earlier run is counted yet, and the runners they name. */
-export async function runHourWindow(db: RelationalStore, set: ProjectSet, since: number, until: number) {
-  const [rows, phase] = await readSet(db, hours[set.all ? 0 : 1]!.bind(setValue(set), since, until), ready.bind());
-  const ids = [...new Set(rows.map((row) => row.runner_id).filter((id) => id !== ''))];
+/**
+ * The hourly counts of the visible Projects in [since, until), whether every earlier run is counted yet, and the runners
+ * they name; each runner's check-in hours from `checkinsSince`, the earliest hour check-ins are kept for, the runs taken
+ * after waiting from `checkinsSince` by their queued and taken hours, and the queued work still waiting.
+ */
+export async function runHourWindow(db: RelationalStore, set: ProjectSet, { since, until, checkinsSince }: { since: number; until: number; checkinsSince: number }) {
+  const projects = setValue(set);
+  const [rows, phase, checkins, earliest, waits, waiting] = await readSet(db, hours[set.all ? 0 : 1]!.bind(projects, since, until), ready.bind(),
+    ...contactHourReads(checkinsSince, until), ...waitHourReads(set, projects, checkinsSince, until));
+  const ids = [...new Set([...rows.map((row) => row.runner_id), ...checkins.map((row) => row.runner_id)].filter((id) => id !== ''))];
   const [names] = ids.length === 0 ? [[]] : await readSet(db, runnerNames.bind(JSON.stringify(ids)));
-  return { rows, counted: phase.length > 0 && phase.every((row) => row.done === 1), runners: new Map(names.map((row) => [row.id, row.name])) };
+  return {
+    rows, counted: phase.length > 0 && phase.every((row) => row.done === 1), runners: new Map(names.map((row) => [row.id, row.name])),
+    checkins, recordedSince: earliest[0]?.hour ?? null, waits, waiting,
+  };
 }
 
 /** How a finished run reads on the Runs page: it changed something, changed nothing, or failed. */
