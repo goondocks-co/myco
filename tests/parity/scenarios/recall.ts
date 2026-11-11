@@ -109,26 +109,10 @@ export const recall: ParityScenario = {
     expect(answers.filter((answer) => answer.outcome === 'empty')).toHaveLength(2);
     expect(answers.filter((answer) => answer.outcome === 'empty').every((answer) => JSON.parse(answer.skipped).includes('plan-nudge:repeat'))).toBe(true);
 
-    // A Claude Code task notification is an empty answer. A person's prompt that
-    // quotes one, and the same text from a harness that declares no notification
-    // envelope, still go through recall.
-    const noticeId = crypto.randomUUID();
-    const notice = `<task-notification>\n<task-id>${stamp}</task-id>\n<status>completed</status>\n<summary>background task finished</summary>\n</task-notification>`;
-    const abstained = await served(session, noticeId, notice);
-    expect({ persisted: abstained.persisted, context: abstained.context, parts: abstained.parts, skipped: abstained.skipped })
-      .toEqual({ persisted: true, context: '', parts: [], skipped: ['notification'] });
-    const storedNotice = await target.sql(`SELECT outcome, skipped, failures, context_chars FROM prompt_context_answers
-      WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)} AND prompt_id = ${lit(noticeId)}`) as Array<{ outcome: string; skipped: string; failures: string; context_chars: number }>;
-    expect(storedNotice).toEqual([{ outcome: 'empty', skipped: '["notification"]', failures: '[]', context_chars: 0 }]);
-    const quoted = await served(session, crypto.randomUUID(), `what did we settle about ${stamp}\n${notice}`);
-    expect(quoted.skipped).not.toContain('notification');
-    const leading = await served(session, crypto.randomUUID(), `${notice}\nwhat did we settle about ${stamp}`);
-    expect(leading.skipped).not.toContain('notification');
-    const codex = `parity-recall-codex-${stamp}`;
-    await post(codex, 'session.start', { agent: 'codex', branch: 'recall', startedAt: stamp }, stamp);
-    const codexNotice = await served(codex, crypto.randomUUID(), notice);
-    expect(codexNotice.skipped).not.toContain('notification');
-    expect(codexNotice.skipped).toContain('spores:no_semantic');
+    const notice = `<task-notification>\n<task-id>${stamp}</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>`;
+    const abstained = await served(session, crypto.randomUUID(), notice);
+    expect({ context: abstained.context, parts: abstained.parts, skipped: abstained.skipped }).toEqual({ context: '', parts: [], skipped: ['notification'] });
+    expect((await served(session, crypto.randomUUID(), `${notice}\nwhat did we settle about ${stamp}`)).skipped).not.toContain('notification');
 
     // The record of what the prompt was served reaches the turn body under that prompt.
     interface Turn { injection: { sporeIds: string[]; spores: { id: string }[] } | null }

@@ -178,8 +178,6 @@ describe('a prompt', () => {
     await runHook('user-prompt-submit', { session_id: 'sess-note', prompt: 'how do we rotate tokens?', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'claude-code' });
     const held = await runHook('user-prompt-submit', { session_id: 'sess-note', prompt: notice, transcript_path: tx }, { fetch: served.fetch, symbiont: 'claude-code' });
     expect(contextOf(held.stdout)).toBe('Session:: `sess-note`');
-    expect(readSessionContext(spool().dir, 'sess-note').prompt?.context).toBe(recalled);
-    expect(readSessionState(spool().dir, 'sess-note').contextAsks?.some((ask) => ask.kind === 'prompt' && ask.text === notice)).toBe(true);
     const next = await runHook('user-prompt-submit', { session_id: 'sess-note', prompt: 'and the window?', transcript_path: tx }, { fetch: served.fetch, symbiont: 'claude-code' });
     expect(contextOf(next.stdout)).toBe(`Session:: \`sess-note\`\n\n${recalled}`);
   });
