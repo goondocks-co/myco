@@ -1246,13 +1246,13 @@ export async function endLeasedRun(
   if ('held' in prepared) return { ended: false, reason: prepared.reason };
   const { row, unmet, status, update, errorCode, context } = prepared;
   const now = clock();
-  const statement = runUpdateStatement(env.db, { projectId: run.projectId }, run.runId, {
+  const statement = runUpdateStatement({ projectId: run.projectId }, run.runId, {
     ...update, completed_at: now,
-  }, { worker: worker.principal, dispatchedBy: row.dispatchedBy, now }, errorCode, context);
+  }, { lease: { worker: worker.principal, dispatchedBy: row.dispatchedBy, now }, errorCode, context });
   if (statement === null) return { ended: false, reason: 'the lease is no longer held' };
   const accounting = settleAttemptCostStatement({projectId:run.projectId},run.runId,row.dispatchedBy,worker.principal,now,
     typeof update.cost_usd==='number'?update.cost_usd:null,typeof update.cost_source==='string'?update.cost_source:null);
-  const [, changed, retired] = await env.db.batch([prepareBound(env.db, accounting), statement,
+  const [, changed, retired] = await env.db.batch([prepareBound(env.db, accounting), prepareBound(env.db, statement),
     revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, endedUnderAttempt(run.projectId, run.runId, row.dispatchedBy))]);
   if (changed!.results.length === 0) return { ended: false, reason: 'the lease is no longer held' };
   emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.results.length === 1 });

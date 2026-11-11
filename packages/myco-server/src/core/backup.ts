@@ -1363,7 +1363,8 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
       const compared=chunk.map(row=>table==='agent_run_attempts'?attemptRestoreComparison(row):Object.fromEntries(keys.map(key=>[key,row[key]])));
       const profiledTimes=table==='agent_run_attempts'?chunk.flatMap(row=>row.profile_json!=null&&typeof row.claimed_at==='number'?[row.claimed_at]:[]):[];
       const restoredFloor=profiledTimes.length===0?undefined:profiledTimes.reduce((floor,time)=>Math.min(floor,time),Infinity);
-      statements.push(...estimateInvalidationStatements(db,{sql:`NOT (${restoredRowsMatch(table,compared,keys)})`,params:[JSON.stringify(compared)]},restoredFloor));
+      statements.push(...estimateInvalidationStatements({sql:`NOT (${restoredRowsMatch(table,compared,keys)})`,params:[JSON.stringify(compared)]},restoredFloor)
+        .map(statement=>prepareBound(db,statement)));
     }
     const inserts=statements.length;
     statements.push(...chunk.map((row) => {

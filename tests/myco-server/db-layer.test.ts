@@ -56,9 +56,7 @@ const PENDING: ReadonlySet<string> = new Set([
   'read/task-descriptions.ts',
   'routes.ts',
   // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
-  'db/meta/budget-estimates.ts', // A restore's guard is composed from the columns of the rows it replaces.
-  'db/runs/attribution.ts', // Learning completion passes companions core still composes.
-  'db/runs/change.ts', // A run update's column set varies with the caller; its companions are core statements.
+  'db/runs/change.ts', // A terminal run update commits with the credential retirement auth/tokens still prepares.
 ]);
 
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
