@@ -5,9 +5,9 @@
  * default https port, and is shown as text everywhere else. `idx_session_artifacts_session` serves the read.
  */
 import type { RelationalStore } from '../core/adapters.js';
-import { type ArtifactKind, type SessionArtifactRow } from '../core/session-artifacts.js';
-import { ARTIFACT_COLUMNS } from '../db/sessions/artifacts.js';
-import { keyset, page, type Page, type ReadScope } from './scope.js';
+import type { ArtifactKind, SessionArtifactRow } from '../core/session-artifacts.js';
+import { sessionArtifactPage } from '../db/sessions/artifact-pages.js';
+import { clampLimit, decodeCursor, page, type Page, type ReadScope } from './scope.js';
 
 /** The hosts whose artifact URLs a reader is offered as links. */
 const LINKED_ARTIFACT_HOSTS: readonly string[] = ['github.com'];
@@ -36,14 +36,11 @@ const linkedHost = (url: string): boolean => {
 export async function listSessionArtifacts(
   db: RelationalStore, scope: ReadScope, sessionId: string, opts: { limit?: number; cursor?: string } = {},
 ): Promise<Page<SessionArtifact> | null> {
-  const k = keyset(opts, { order: 'reported_at', id: 'id', direction: 'ASC' });
-  if (k === null) return null;
-  const { results } = await db.prepare(`SELECT ${ARTIFACT_COLUMNS} FROM session_artifacts
-      WHERE project_id = ? AND session_id = ?${k.where === '' ? '' : ` AND ${k.where}`}
-      ORDER BY reported_at, id LIMIT ?`)
-    .bind(scope.projectId, sessionId, ...k.params, k.limit + 1)
-    .all<SessionArtifactRow>();
-  const paged = page(results, k.limit, (row) => ({ createdAt: row.reportedAt, id: row.id }));
+  const limit = clampLimit(opts.limit);
+  const after = opts.cursor === undefined ? null : decodeCursor(opts.cursor);
+  if (opts.cursor !== undefined && after === null) return null;
+  const results = await sessionArtifactPage(db, { project: scope.projectId, session: sessionId, limit: limit + 1, after });
+  const paged = page(results, limit, (row) => ({ createdAt: row.reportedAt, id: row.id }));
   return { cursor: paged.cursor, rows: paged.rows.map(shape) };
 }
 

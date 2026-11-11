@@ -5,7 +5,8 @@ import { ENROLLMENT_TTL_MS, EnrollmentAuthorizationError, issueEnrollmentAuthori
 import { ADMIN_IDENTITY_LINK_TTL_MS, issueIdentityLinkAuthority, memberLinkState } from '../auth/identity-link.js';
 import { listMembers, memberState, revokeMember } from '../auth/members-admin.js';
 import { revokeCredentialAsMember } from '../auth/tokens.js';
-import { credentialActivity, credentialMember, listCredentials } from '../read/credentials.js';
+import { credentialMember } from '../db/storage/content-lifecycle.js';
+import { credentialActivity, listCredentials } from '../read/credentials.js';
 import { sessions_projectExists as projectExists } from '../read/catalog/sessions.js';
 import { emit } from '../telemetry.js';
 import { badRequest, notFound, ok, readJsonObject } from './scope.js';

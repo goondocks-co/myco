@@ -66,12 +66,6 @@ export async function listCredentials(
   return page(rows, limit, (r) => ({ createdAt: r.lineageStartedAt, id: r.id }));
 }
 
-/** The member a credential belongs to, or null when no credential has this id. */
-export async function credentialMember(db: RelationalStore, tokenId: string): Promise<string | null> {
-  const row = await db.prepare('SELECT member_id FROM member_credentials WHERE id = ?').bind(tokenId).first<{ member_id: string }>();
-  return row?.member_id ?? null;
-}
-
 /**
  * What one credential wrote across every Project, newest first, over `idx_events_token_only (token_id, created_at,
  * event_id, project_id)`. An event is keyed by its Project and its id, so the cursor carries both; a cursor this list

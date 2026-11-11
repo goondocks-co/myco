@@ -15,7 +15,7 @@ import { Database } from 'bun:sqlite';
 import { CAPTURE_RECEIPT_GRAIN_MS, namedCaptureHeadSelect, unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v708.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { captureRecencyStatement, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
+import { captureRecencyWindow, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
 
 /** The member-role account the tests act as, as the capture rows name it. */
 const LAPTOP_MEMBER = { id: 'mem_machine_2', label: 'machine_2' };
@@ -110,7 +110,7 @@ describe('capture recency', () => {
         const expected = sqlite.query<Record<string, unknown>, [number]>(`SELECT machine_id,agent,last_received_at AS last_event_at,project_id FROM (
           SELECT *,ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY last_received_at / ? DESC,project_id,session_id) AS position
           FROM sessions WHERE machine_id IS NOT NULL) WHERE position=1 ORDER BY last_event_at DESC,machine_id,agent`).all(CAPTURE_RECEIPT_GRAIN_MS);
-        expect((await captureRecencyStatement(db, 100).all()).results).toEqual(expected);
+        expect(await captureRecencyWindow(db, 100)).toEqual(expected);
         expect(sqlite.query<{ n: number }, [number]>(`SELECT COUNT(*) AS n FROM machine_capture_heads h WHERE NOT EXISTS (
           SELECT 1 FROM sessions s WHERE s.project_id=h.project_id AND s.session_id=h.session_id
             AND s.machine_id=h.machine_id AND json_quote(s.agent)=h.agent_json
@@ -147,7 +147,7 @@ describe('capture recency', () => {
         }
         expect(f.sqlite.query("SELECT * FROM machine_capture_heads WHERE machine_id='order-machine'").get())
           .toEqual({ project_id: 'proj_1', machine_id: 'order-machine', agent_json: '"codex"', session_id: 'a', last_received_at: 0 });
-        expect((await captureRecencyStatement(f.db, CAPTURE_RECEIPT_GRAIN_MS).all()).results)
+        expect(await captureRecencyWindow(f.db, CAPTURE_RECEIPT_GRAIN_MS))
           .toEqual([{ machine_id: 'order-machine', agent: 'codex', last_event_at: 50_000, project_id: 'proj_1' }]);
       } finally { f.sqlite.close(); }
     }

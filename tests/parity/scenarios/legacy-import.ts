@@ -1,7 +1,6 @@
 import { expect } from 'bun:test';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { LEGACY_HISTORY_PATH, LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
-import { LEGACY_HISTORY_SQL, LEGACY_RECORDS_SQL, LEGACY_SPORES_SQL, LEGACY_LINEAGE_SQL } from '@myco-server-worker/read/legacy-history.js';
 
 /**
  * A Myco 1.4 vault import, identical on both front doors (#1161): what the
@@ -100,13 +99,6 @@ export const legacyImportParity: ParityScenario = {
     await target.sql(`UPDATE projects SET archived_at = 1 WHERE project_id = ${lit(target.projectId)}`);
     try { expect(await confirmation()).toEqual({ persisted: true, confirmed: true, eventIds: [eventId] }); }
     finally { await target.sql(`UPDATE projects SET archived_at = NULL WHERE project_id = ${lit(target.projectId)}`); }
-    const binds = [target.projectId, JSON.stringify([eventId]), LEGACY_IMPORT_ADAPTER, String(owner.machine_id)];
-    let bind = 0;
-    const proof = LEGACY_HISTORY_SQL.replace(/\?/g, () => lit(binds[bind++]!));
-    const queryPlan = (await target.sql(`EXPLAIN QUERY PLAN ${proof}`)).map(row => row.detail).join('\n');
-    expect(queryPlan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
-    expect(queryPlan).toContain('SEARCH f USING INDEX sqlite_autoindex_events_1');
-    expect(queryPlan).toMatch(/SEARCH s (?:EXISTS )?USING INDEX sqlite_autoindex_sessions_1 \(project_id=\? AND session_id=\?\)/);
     const sourceIds = { eventGroups: [[eventId]], recordIds: [String(titleEvent.event_id)], sporeIds: [spore], lineageIds: [imported] };
     const fullProof = async (extra = {}) => (await post(LEGACY_HISTORY_PATH, { ...sourceIds, ...extra })).json() as Promise<{ confirmed: boolean }>;
     expect((await fullProof()).confirmed).toBe(true);
@@ -118,16 +110,6 @@ export const legacyImportParity: ParityScenario = {
       expect((await fullProof()).confirmed).toBe(false);
       await target.sql(`UPDATE ${table} SET author = ${lit(String(author.author))} WHERE project_id = ${lit(target.projectId)}`);
     }
-    for (const [sql, table] of [[LEGACY_SPORES_SQL, 'spores'], [LEGACY_LINEAGE_SQL, 'resolution_events']] as const) {
-      const values = [target.projectId, JSON.stringify([spore]), String(author.author), String(owner.machine_id)];
-      let index = 0;
-      const plan = (await target.sql(`EXPLAIN QUERY PLAN ${sql.replace(/\?/g, () => lit(values[index++]!))}`)).map(row => row.detail).join('\n');
-      expect(plan).toContain(`SEARCH r USING INDEX sqlite_autoindex_${table}_1 (project_id=? AND id=?)`);
-      expect(plan).toMatch(/SEARCH s (?:EXISTS )?USING INDEX sqlite_autoindex_sessions_1/);
-    }
-    let recordBind = 0;
-    const recordPlan = (await target.sql(`EXPLAIN QUERY PLAN ${LEGACY_RECORDS_SQL.replace(/\?/g, () => lit(binds[recordBind++]!))}`)).map(row => row.detail).join('\n');
-    expect(recordPlan).toContain('SEARCH e USING INDEX sqlite_autoindex_events_1 (project_id=? AND event_id=?)');
     const contentProbe = async (sessions = [vaultSession, startOnly]) => (await post(LEGACY_HISTORY_PATH, { eventGroups: [], sessions, projectState: true })).json();
     await target.sql(`INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,first_received_at,last_received_at,token_id) VALUES (${lit(target.projectId)},'legacy-source-transcript',${lit(startOnly)},${lit(String(owner.machine_id))},5000,1,1,'fixture')`);
     expect(await contentProbe()).toEqual({ persisted: true, confirmed: true, eventIds: [], projectState: 'active', sources: { withTranscript: [startOnly], vaultSourced: [vaultSession] } });

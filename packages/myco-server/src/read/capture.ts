@@ -11,9 +11,11 @@
  * credential carries. A read shows a viewer the name of the viewer's own machines alone: anyone else's machine is
  * shown as the member it belongs to, never by its host name. Only the admin pages that manage machines read every name.
  */
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
+import type { RelationalStore } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
+import { ownMachineLabels } from '../db/capture/own-machines.js';
 import { shownMachineOwners } from '../db/capture/owners.js';
+import { captureRecencyRows, type CaptureRecencyRow } from '../db/capture/recency.js';
 
 /** How far back capture recency looks. A machine and agent silent for longer drop out of the answer. */
 export const CAPTURE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -36,15 +38,8 @@ function shownMachineName(owner: MachineOwner | undefined, viewerId: string): st
  */
 export async function ownMachineNames(db: RelationalStore, viewerId: string, nowMs: number, machineIds?: readonly string[]): Promise<Map<string, string>> {
   if (machineIds?.length === 0) return new Map();
-  const { results } = await db.prepare(`SELECT mc.machine_id, COALESCE(mc.label, (
-      SELECT c.runtime_label FROM member_credentials c
-        WHERE c.machine_id = mc.machine_id AND c.member_id = mc.member_id AND c.revoked_at IS NULL
-          AND c.expires_at > ? AND c.runtime_label IS NOT NULL ORDER BY c.issued_at DESC, c.id DESC LIMIT 1)) AS name
-    FROM machine_claims mc WHERE mc.member_id = ?
-      ${machineIds === undefined ? '' : 'AND mc.machine_id IN (SELECT value FROM json_each(?))'}`)
-    .bind(nowMs, viewerId, ...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]))
-    .all<{ machine_id: string; name: string | null }>();
-  return new Map(results.flatMap(row => row.name === null ? [] : [[row.machine_id, row.name] as const]));
+  const rows = await ownMachineLabels(db, viewerId, nowMs, machineIds);
+  return new Map(rows.flatMap(row => row.name === null ? [] : [[row.machine_id, row.name] as const]));
 }
 
 /** `rows` with the viewer's own machines named from `names`, and every other machine left unnamed. */
@@ -68,40 +63,33 @@ export interface CaptureRow {
   projectId: string;
 }
 
-/** Canonical receipt-minute heads resolve their exact session receipt by primary key. */
-export function captureRecencyStatement(db: RelationalStore, nowMs: number, machineIds?: readonly string[]): PreparedStatement {
-  return db.prepare(`SELECT machine_id,json_extract(agent_json,'$') AS agent,MAX(last_received_at) AS last_event_at,project_id
-    FROM (
-      SELECT h.machine_id,h.agent_json,h.project_id,s.last_received_at
-      FROM machine_capture_heads h CROSS JOIN sessions s ON s.project_id=h.project_id AND s.session_id=h.session_id
-    ) WHERE last_received_at >= ?
-      ${machineIds === undefined ? '' : 'AND machine_id IN (SELECT value FROM json_each(?))'}
-    GROUP BY machine_id,agent_json ORDER BY last_event_at DESC,machine_id,agent`)
-    .bind(nowMs - CAPTURE_WINDOW_MS, ...(machineIds === undefined ? [] : [JSON.stringify(machineIds)]));
+/** The newest receipt per machine and agent within the capture window, most recent first; restricted to `machineIds` when given. */
+export function captureRecencyWindow(db: RelationalStore, nowMs: number, machineIds?: readonly string[]): Promise<CaptureRecencyRow[]> {
+  return captureRecencyRows(db, nowMs - CAPTURE_WINDOW_MS, machineIds);
 }
 
-/** The rows `captureRecencyStatement` answers, as `viewerId` is shown them. */
-function captureRowsOf(rows: readonly unknown[], owners: ReadonlyMap<string, MachineOwner>, viewerId: string): CaptureRow[] {
-  return (rows as Record<string, unknown>[]).map((row) => {
-    const owner = owners.get(String(row.machine_id));
+/** The rows `captureRecencyWindow` answers, as `viewerId` is shown them. */
+function captureRowsOf(rows: readonly CaptureRecencyRow[], owners: ReadonlyMap<string, MachineOwner>, viewerId: string): CaptureRow[] {
+  return rows.map((row) => {
+    const owner = owners.get(row.machine_id);
     return {
-      machineId: String(row.machine_id),
+      machineId: row.machine_id,
       machineName: shownMachineName(owner, viewerId),
       member: owner === undefined ? null : { id: owner.memberId, label: owner.memberId === HARNESS_MEMBER_ID ? 'Myco' : owner.memberLabel },
       agent: row.agent === null || row.agent === undefined ? null : String(row.agent),
       lastEventAt: Number(row.last_event_at),
-      projectId: String(row.project_id),
+      projectId: row.project_id,
     };
   });
 }
 
 /** Receipt-minute heads with their source receipts, most recent first, as `viewerId` is shown them. */
 export async function captureRecency(db: RelationalStore, nowMs: number, viewerId: string): Promise<CaptureRow[]> {
-  const recent = await captureRecencyStatement(db, nowMs).all<Record<string, unknown>>();
+  const recent = await captureRecencyWindow(db, nowMs);
   const owners = new Map<string, MachineOwner>();
-  const ids = [...new Set(recent.results.map((row) => String(row.machine_id)))];
+  const ids = [...new Set(recent.map((row) => row.machine_id))];
   for (const row of await shownMachineOwners(db, nowMs, ids)) {
     owners.set(row.machine_id, { name: row.label ?? row.carried_label, memberId: row.member_id, memberLabel: row.member_label });
   }
-  return captureRowsOf(recent.results, owners, viewerId);
+  return captureRowsOf(recent, owners, viewerId);
 }

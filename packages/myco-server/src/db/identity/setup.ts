@@ -11,7 +11,7 @@ import { applyFleetSignInAvailability } from '../runs/fleet.js';
 import { readWorkerFleet } from '../../core/worker-contacts.js';
 import { harnessCredentialAvailability } from '../../core/secrets.js';
 import type { MachineScope } from '../../read/machines.js';
-import { projectsFiltering } from '../../read/scope.js';
+import { visibleProjectSql } from '../storage/visible-projects.js';
 
 const SETUP_CAPTURE_CANDIDATES_PER_HARNESS = 8;
 const RUN_ID_PREFIX_END = RUN_ID_PREFIX.slice(0, -1) + String.fromCharCode(RUN_ID_PREFIX.charCodeAt(RUN_ID_PREFIX.length - 1) + 1);
@@ -78,7 +78,7 @@ function setupStatement(all: boolean) {
         ORDER BY s.last_live_received_at DESC LIMIT ${SETUP_CAPTURE_CANDIDATES_PER_HARNESS}
       ) s WHERE EXISTS (SELECT 1 FROM member_credentials source WHERE source.id = s.created_by_token_id
           AND source.member_id = mc.member_id AND source.machine_id = mc.machine_id)
-        AND ${projectsFiltering({ all: true }, 's').sql}
+        AND ${visibleProjectSql('s')}
         AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = s.project_id AND t.session_id = s.session_id))))`;
 
   return read<Array<string | number>, SetupRow>({ name: all ? 'identity.setupAdmin' : 'identity.setupMember', sql: `SELECT
@@ -86,7 +86,7 @@ function setupStatement(all: boolean) {
     ${all ? `(SELECT COUNT(*) FROM projects p INDEXED BY sqlite_autoindex_projects_1 WHERE p.project_id > '' AND p.archived_at IS NULL)` : '0'} AS projects,
     ${capture} AS live_capture,
     EXISTS (SELECT 1 FROM agent_runs a INDEXED BY idx_fleet_queue WHERE a.status = 'queued'
-      AND ${projectsFiltering({ all: true }, 'a').sql}) AS queued,
+      AND ${visibleProjectSql('a')}) AS queued,
     EXISTS (SELECT 1 FROM runners WHERE id > '' AND state = 'enabled') AS enabled_runner` });
 }
 const adminSetup = setupStatement(true);
