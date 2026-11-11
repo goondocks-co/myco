@@ -1,6 +1,5 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet, write, type Bound } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
 
 const tombstoned = read<[project: string, sessions: string], { session_id: string }>({ name: 'tombstone.among', sql:
   'SELECT t.session_id FROM json_each(?2) s CROSS JOIN session_tombstones t ON t.project_id=?1 AND t.session_id=s.value' });
@@ -50,6 +49,6 @@ export const sessionFactsCleared = (projectId: string, sessionId: string): Bound
  * writer of deleted-session state (deletion, and restore of `sessions` or `session_tombstones` rows) runs it in the batch
  * that writes that state, so a deleted session never stays in the parent indexes.
  */
-export function clearDeletedParentsStatement(db: RelationalStore, projectId: string, sessionIds: readonly string[]): PreparedStatement {
-  return prepareBound(db, clearDeletedParents.bind(projectId, JSON.stringify(sessionIds)));
+export function clearDeletedParentsStatement(projectId: string, sessionIds: readonly string[]): Bound<never, 'write'> {
+  return clearDeletedParents.bind(projectId, JSON.stringify(sessionIds));
 }

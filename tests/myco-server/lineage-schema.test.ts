@@ -12,6 +12,8 @@ import {
 } from '@myco-server-worker/read/catalog/lineage.js';
 import { inListChunks } from '@myco-server-worker/read/scope.js';
 import { clearDeletedParentsStatement } from '@myco-server-worker/db/sessions/tombstones.js';
+import { prepareBound } from '@myco-server-worker/db/kernel/statement.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 let mf: Miniflare;
 
@@ -127,7 +129,7 @@ it.each(['launch_parent_session_id', 'parent_session_id'] as const)('reads the s
       `${root}-deleted-${String(firstNew + 1 + i).padStart(5, '0')}`);
     await d1.batch([
       d1.prepare(`INSERT OR IGNORE INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES (?, ?, NULL, 1, 'owner')`).bind(projectId, `${root}-deleted-${String(firstNew).padStart(5, '0')}`),
-      clearDeletedParentsStatement(asStore(d1), projectId, [`${root}-deleted-${String(firstNew).padStart(5, '0')}`]),
+      prepareBound(asStore(d1), clearDeletedParentsStatement(projectId, [`${root}-deleted-${String(firstNew).padStart(5, '0')}`])),
       ...(remainingIds.length === 0 ? [] : [
         d1.prepare(`WITH RECURSIVE n(i) AS (SELECT ${firstNew + 1} UNION ALL SELECT i+1 FROM n WHERE i<${target})
           INSERT OR IGNORE INTO session_tombstones (project_id, session_id, reason, created_at, created_by)
@@ -136,7 +138,7 @@ it.each(['launch_parent_session_id', 'parent_session_id'] as const)('reads the s
           WHERE project_id = ? AND session_id GLOB ?
             AND (title IS NOT NULL OR summary IS NOT NULL OR titled_at IS NOT NULL OR titled_by IS NOT NULL)`)
           .bind(projectId, `${root}-deleted-*`),
-        ...inListChunks(remainingIds).map(chunk => clearDeletedParentsStatement(asStore(d1), projectId, chunk)),
+        ...inListChunks(remainingIds).map(chunk => prepareBound(asStore(d1), clearDeletedParentsStatement(projectId, chunk))),
       ]),
     ] as never);
     deleted = target;
@@ -149,6 +151,6 @@ it.each(['launch_parent_session_id', 'parent_session_id'] as const)('reads the s
 }, 120_000);
 
 /** The D1 binding as the server's store: its prepared statements batch as they are. */
-function asStore(d1: Awaited<ReturnType<Miniflare['getD1Database']>>) {
-  return d1 as unknown as Parameters<typeof clearDeletedParentsStatement>[0];
+function asStore(d1: Awaited<ReturnType<Miniflare['getD1Database']>>): RelationalStore {
+  return d1 as unknown as RelationalStore;
 }
