@@ -1,3 +1,4 @@
+import { retiringPlansSql } from './retirement.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { read, readSet, write } from '../index.js';
@@ -55,7 +56,13 @@ export function planCountSchemaStatements(): string[] {
   ];
 }
 
-const READY = read<[string, string], { done: number }>({ name: 'planCounts.ready', sql: 'SELECT done FROM projection_catchup WHERE projection=?1 AND phase=?2' });
+const readySql = (projects: string) => `SELECT done AND NOT ${retiringPlansSql(projects)} AS done FROM projection_catchup
+  WHERE projection='${PLAN_COUNT_PROJECTION}' AND phase='${PLAN_COUNT_PHASE}'`;
+const READY = {
+  project: read<[project: string], { done: number }>({ name: 'planCounts.readyProject', sql: readySql('project_id=?1') }),
+  named: read<[projects: string], { done: number }>({ name: 'planCounts.readyNamed', sql: readySql('project_id IN (SELECT value FROM json_each(?1))') }),
+  all: read<[], { done: number }>({ name: 'planCounts.readyAll', sql: readySql('project_id IN (SELECT project_id FROM projects WHERE archived_at IS NULL)') }),
+};
 const BY_STATUS = {
   project: read<[string], { status: string; n: number }>({ name: 'planCounts.byStatusProject',
     sql: 'SELECT status,n FROM plan_counts WHERE project_id=?1 AND n<>0' }),
@@ -65,9 +72,9 @@ const BY_STATUS = {
     sql: 'SELECT status,SUM(n) AS n FROM plan_counts WHERE project_id IN (SELECT value FROM json_each(?1)) GROUP BY status HAVING SUM(n)<>0' }),
 };
 
-/** How many plans of each status the Projects hold, from the counters; `building` until existing plans have been counted. */
+/** How many plans of each status the Projects hold, from the counters; `building` until existing plans have been counted and deleted plans retired. */
 export async function planStatusTotals(db: RelationalStore, scope: { projectId: string } | ProjectSet): Promise<CountAnswer<Record<string, number>>> {
-  const ready = READY.bind(PLAN_COUNT_PROJECTION, PLAN_COUNT_PHASE);
+  const ready = 'projectId' in scope ? READY.project.bind(scope.projectId) : scope.all ? READY.all.bind() : READY.named.bind(JSON.stringify(scope.projectIds));
   const counts = 'projectId' in scope ? BY_STATUS.project.bind(scope.projectId)
     : scope.all ? BY_STATUS.all.bind() : BY_STATUS.named.bind(JSON.stringify(scope.projectIds));
   const [held, rows] = await readSet(db, ready, counts);

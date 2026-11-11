@@ -89,8 +89,10 @@ export async function handleSporesAcross(env: ServerEnv, ctx: OwnerContext): Pro
  * `GET /api/plans`: the plan list across Projects, newest edit first, a page at a time with `hasMore`, each row the
  * plan's metadata, a preview and its progress (never its body); `status` must be
  * one the catalogue holds. The first page (no cursor) carries `totals`, how many plans of each status the Projects
- * hold, from the maintained counters (or `counting: 'building'` while existing plans are still being counted); with
+ * hold, from the maintained counters (or `counting: 'building'` while existing plans are being counted or deleted plans are being retired); with
  * a start instant there are no totals. A text match is a search (`/api/search`).
+ * Cursors mark a position, not a snapshot: a plan edited between pages moves to the head and may be absent from
+ * the continuation; a fresh first page shows it.
  */
 export async function handlePlansAcross(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const set = await projectSetOf(env, ctx);

@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
+import { retiringPlansSql } from '../plans/retirement.js';
 import { read, readSet } from '../index.js';
 import { firstPromptSql } from '../sessions/browse.js';
 import { everyPhaseDone } from '../projections/family.js';
@@ -14,15 +15,16 @@ export interface ActivityKey { sortAt: number; kind: string; sourceId: string }
 export interface ActivitySessionLabel { session_id: string; title: string | null; first_prompt: string | null; agent: string | null }
 
 const COLUMNS = 'kind,source_id,sort_at,preview,session_id';
+const VISIBLE = `NOT ${retiringPlansSql('project_id=?1')}`;
 const ORDER = 'ORDER BY sort_at DESC,kind DESC,source_id DESC';
 
 const FIRST = read<[project: string, limit: number], ActivityRow>({ name: 'activityFeed.first',
-  sql: `SELECT ${COLUMNS} FROM project_activity INDEXED BY idx_project_activity_feed WHERE project_id=?1 ${ORDER} LIMIT ?2` });
+  sql: `SELECT ${COLUMNS} FROM project_activity INDEXED BY idx_project_activity_feed WHERE project_id=?1 ${ORDER} LIMIT CASE WHEN ${VISIBLE} THEN ?2 ELSE 0 END` });
 const AFTER = read<[project: string, limit: number, sortAt: number, kind: string, sourceId: string], ActivityRow>({ name: 'activityFeed.after',
   sql: `SELECT ${COLUMNS} FROM project_activity INDEXED BY idx_project_activity_feed WHERE project_id=?1
-    AND sort_at<=?3 AND (sort_at<?3 OR (sort_at=?3 AND (kind<?4 OR (kind=?4 AND source_id<?5)))) ${ORDER} LIMIT ?2` });
-const PHASES = read<[projection: string], { phase: string; done: number }>({ name: 'activityFeed.phases',
-  sql: 'SELECT phase,done FROM projection_catchup WHERE projection=?1' });
+    AND sort_at<=?3 AND (sort_at<?3 OR (sort_at=?3 AND (kind<?4 OR (kind=?4 AND source_id<?5)))) ${ORDER} LIMIT CASE WHEN ${VISIBLE} THEN ?2 ELSE 0 END` });
+const PHASES = read<[project: string, projection: string], { phase: string; done: number; retiring: number }>({ name: 'activityFeed.phases',
+  sql: `SELECT phase,done,NOT ${VISIBLE} AS retiring FROM projection_catchup WHERE projection=?2` });
 const SESSION_LABELS = read<[project: string, sessions: string], ActivitySessionLabel>({ name: 'activityFeed.sessionLabels',
   sql: `SELECT s.session_id,s.title,${firstPromptSql('s')} AS first_prompt,s.agent FROM json_each(?2) k
     CROSS JOIN sessions s ON s.project_id=?1 AND s.session_id=k.value` });
@@ -30,14 +32,15 @@ const SESSION_LABELS = read<[project: string, sessions: string], ActivitySession
 /**
  * One feed page, newest first, at most `limit` + 1 rows after `after`, the labels of the sessions on it, and whether
  * every existing source has been added yet: until then the page holds only what was added or written since.
+ * While deletion jobs retire plan contributions, the page withholds all rows and reports building.
  */
 export async function readActivityPage(db: RelationalStore, request: { projectId: string; after: ActivityKey | null; limit: number }): Promise<{
   rows: ActivityRow[]; sessions: Map<string, ActivitySessionLabel>; building: boolean;
 }> {
   const { projectId, after, limit } = request;
   const page = after === null ? FIRST.bind(projectId, limit + 1) : AFTER.bind(projectId, limit + 1, after.sortAt, after.kind, after.sourceId);
-  const [rows, phases] = await readSet(db, page, PHASES.bind(ACTIVITY_PROJECTION));
+  const [rows, phases] = await readSet(db, page, PHASES.bind(projectId, ACTIVITY_PROJECTION));
   const sessionIds = rows.filter(row => row.kind === 'session').map(row => row.source_id);
   const [labels] = sessionIds.length === 0 ? [[]] : await readSet(db, SESSION_LABELS.bind(projectId, JSON.stringify(sessionIds)));
-  return { rows, sessions: new Map(labels.map(label => [label.session_id, label])), building: !everyPhaseDone(ACTIVITY_CATCHUP, phases) };
+  return { rows, sessions: new Map(labels.map(label => [label.session_id, label])), building: phases.some(phase => phase.retiring === 1) || !everyPhaseDone(ACTIVITY_CATCHUP, phases) };
 }

@@ -26,6 +26,7 @@ export const HEAVY_AND_SCALE_SUITES = [
   'tests/myco-server/legacy-history-budget.test.ts',
   'tests/myco-server/lineage-restore.test.ts',
   'tests/myco-server/machine-head-cost.test.ts',
+  'tests/myco-server/plan-status-intent.test.ts',
   'tests/myco-server/plans-activity-cost.test.ts',
   'tests/myco-server/raw-proof-cost.test.ts',
   'tests/myco-server/recovery-alarm-runtime.test.ts',
