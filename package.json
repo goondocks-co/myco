@@ -13,6 +13,7 @@
     "check:fixtures": "node --import tsx scripts/check-fixture-redaction.ts",
     "check:migrations": "node scripts/check-shipped-migrations.mjs origin/main",
     "check:test-additions": "node scripts/check-test-additions.mjs origin/main",
+    "check:test-budget": "node scripts/check-test-budget.mjs origin/main",
     "build": "npm run build -w @goondocks/myco-shared && npm run build -w @goondocks/myco",
     "build:ui": "npm run build:ui -w @goondocks/myco",
     "build:watch": "tsc --watch",

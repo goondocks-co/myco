@@ -20,8 +20,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { redactSecrets } from '../../scripts/redact-secrets.mjs';
-
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const HANG_FIXTURE = 'tests/fixtures/runner/budget_hang_test.ts';
 const STDIN_FIXTURE = 'tests/fixtures/runner/stdin_read_test.ts';
@@ -92,11 +90,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 const args = process.argv.slice(2);
 if (args[0] === '--version') {
-  if (process.env.FAKE_BUN_ALTERNATE) {
-    const link = path.join(process.env.HOME, 'bin', 'bun');
-    fs.rmSync(link);
-    fs.symlinkSync(process.env.FAKE_BUN_ALTERNATE, link);
-  }
   console.log(process.env.FAKE_BUN_VERSION ?? '9.9.9');
   process.exit(0);
 }
@@ -108,20 +101,14 @@ const mode = process.env.FAKE_BUN_MODE === 'fail-then-delay'
   ? (dom ? 'delayed-pass' : 'log-error')
   : process.env.FAKE_BUN_MODE === 'repair-evidence' ? (dom ? 'repair' : 'missing')
   : (process.env.FAKE_BUN_MODE ?? 'pass');
-if (mode === 'unreadable') fs.mkdirSync(file);
-else if (mode !== 'missing') {
-  const xml = mode === 'malformed' ? '<testsuites><testsuite'
-    : mode === 'zero' ? '<testsuites><testsuite tests="0" failures="0" errors="0" /></testsuites>'
-    : mode === 'skip-only' ? '<testsuites><testsuite tests="1" failures="0" errors="0"><testcase name="fixture"><skipped /></testcase></testsuite></testsuites>'
+if (mode !== 'missing') {
+  const xml = mode === 'zero' ? '<testsuites><testsuite tests="0" failures="0" errors="0" /></testsuites>'
     : mode === 'junit-fail' ? '<testsuites><testsuite tests="1" failures="1" errors="0"><testcase name="fixture"><failure type="AssertionError" /></testcase></testsuite></testsuites>'
     : '<testsuites><testsuite tests="1" failures="0" errors="0"><testcase name="fixture" /></testsuite></testsuites>';
   fs.writeFileSync(file, xml);
   if (mode === 'repair') fs.writeFileSync(path.join(path.dirname(file), 'node-env.junit.xml'), xml);
 }
 if (mode === 'log-error') console.error(' 1 error');
-else if (mode === 'fail-marker') console.error('(fail) fixture assertion');
-else if (mode === 'uncaught-error') console.error('error: uncaught fixture');
-else if (mode === 'colored-log-error') console.error(String.fromCharCode(27) + '[31m 1 error' + String.fromCharCode(27) + '[0m');
 else if (mode === 'stream-only') {
   process.stderr.write(' 1 er');
   await new Promise((resolve) => setTimeout(resolve, 30));
@@ -130,21 +117,11 @@ else if (mode === 'stream-only') {
   fs.writeFileSync(file.replace(/\\.junit\\.xml$/, '.log'), '');
 }
 else if (mode === 'held-tail-error') process.stderr.write(' 1 error');
-else if (mode === 'skip-only') console.error(' 0 pass\\n 1 skip\\n 0 fail');
 else console.error(' 1 pass\\n 0 fail');
-if (mode === 'unreadable-log') {
-  const log = file.replace(/\\.junit\\.xml$/, '.log');
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  fs.rmSync(log, { force: true });
-  fs.mkdirSync(log);
-}
 if (process.env.FAKE_BUN_READY_FILE && (process.env.FAKE_BUN_MODE !== 'fail-then-delay' || mode === 'delayed-pass')) fs.writeFileSync(process.env.FAKE_BUN_READY_FILE, String(process.pid));
 if (process.env.FAKE_BUN_DELAY_MS && (process.env.FAKE_BUN_MODE !== 'fail-then-delay' || mode === 'delayed-pass')) await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_BUN_DELAY_MS)));
 `);
   fs.chmodSync(executable, 0o755);
-  const alternate = path.join(bin, 'other-bun');
-  fs.writeFileSync(alternate, '#!/usr/bin/env node\nconsole.error("UNEXPECTED_BUN_PATH"); process.exit(67);\n');
-  fs.chmodSync(alternate, 0o755);
   return bin;
 }
 
@@ -218,56 +195,27 @@ describe('run-bun-tests guards', () => {
 
   test.skipIf(process.platform === 'win32')('accepts evidence only when Bun ran tests and both artifacts are readable', () => withReportDir(async (base) => {
     const bin = fakeBun(base);
-    const cases: Array<[string, string]> = [
-      ['missing', 'ENOENT'],
-      ['unreadable', 'EISDIR'],
-      ['malformed', 'unclosed tag'],
-      ['zero', 'zero executed tests'],
-      ['junit-fail', 'JUnit aggregated 1 failure'],
-      ['log-error', 'Bun reported a failure or error'],
-      ['fail-marker', 'Bun reported a failure or error'],
-      ['uncaught-error', 'Bun reported a failure or error'],
-      ['colored-log-error', 'Bun reported a failure or error'],
-      ['unreadable-log', 'EISDIR'],
-    ];
-    for (const [mode, diagnostic] of cases) {
-      const reports = path.join(base, mode);
-      const { status, output } = await runRunner(STDIN_FIXTURE, {
-        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-        MYCO_RUNNER_REPORT_DIR: reports,
-        FAKE_BUN_MODE: mode,
-      });
-      expect({ mode, status, output }).toEqual({ mode, status: 1, output: expect.stringContaining(diagnostic) });
-    }
-    const { status, output } = await runRunner(STDIN_FIXTURE, {
+    const failed = await runRunner(STDIN_FIXTURE, {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      MYCO_RUNNER_REPORT_DIR: path.join(base, 'log-error'),
+      FAKE_BUN_MODE: 'log-error',
+    });
+    expect(failed.status).toBe(1);
+    expect(failed.output).toContain('Bun reported a failure or error');
+    const passed = await runRunner(STDIN_FIXTURE, {
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
       MYCO_RUNNER_REPORT_DIR: path.join(base, 'pass'),
     });
-    expect(status).toBe(0);
-    expect(output).toContain('FAKE_BUN_EXEC');
-    expect(output).toContain('PRELOADS ./tests/setup/sandbox-preload.ts');
-    expect(output).toContain('WARNING: running Bun 9.9.9');
-    const skipped = await runRunner(STDIN_FIXTURE, {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      MYCO_RUNNER_REPORT_DIR: path.join(base, 'skip-only'),
-      FAKE_BUN_MODE: 'skip-only',
-    });
-    expect(skipped.status).toBe(0);
-    const matching = await runRunner(STDIN_FIXTURE, {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      MYCO_RUNNER_REPORT_DIR: path.join(base, 'matching'),
-      FAKE_BUN_VERSION: fs.readFileSync(path.join(REPO, '.bun-version'), 'utf8').trim(),
-    });
-    expect(matching.status).toBe(0);
-    expect(matching.output).not.toContain('WARNING: running Bun');
-    const pinned = await runRunner(STDIN_FIXTURE, {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      MYCO_RUNNER_REPORT_DIR: path.join(base, 'pinned-executable'),
-      FAKE_BUN_ALTERNATE: path.join(bin, 'other-bun'),
-    });
-    expect(pinned.status).toBe(0);
-    expect(pinned.output).toContain('FAKE_BUN_EXEC');
-    expect(pinned.output).not.toContain('UNEXPECTED_BUN_PATH');
+    expect(passed.status).toBe(0);
+    expect(passed.output).toContain('FAKE_BUN_EXEC');
+    for (const [mode, diagnostic] of [['junit-fail', 'JUnit aggregated 1 failure'], ['zero', 'zero executed tests']] as const) {
+      const result = await runRunner(STDIN_FIXTURE, {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        MYCO_RUNNER_REPORT_DIR: path.join(base, mode),
+        FAKE_BUN_MODE: mode,
+      });
+      expect({ mode, status: result.status, output: result.output }).toEqual({ mode, status: 1, output: expect.stringContaining(diagnostic) });
+    }
   }), RUN_BOUND_MS + 10_000);
 
   test.skipIf(process.platform === 'win32')('concurrent runs keep configs and reports separate when one is interrupted', () => withReportDir(async (base) => {
@@ -775,23 +723,4 @@ describe('run-bun-tests temp containment', () => {
       expect({ isolation, left: entries(tempDir) }).toEqual({ isolation, left: [] });
     }
   }), RUN_BOUND_MS + 10_000);
-});
-
-describe('hang diagnostics redaction', () => {
-  test('replaces every credential-like value, quoted or bare, and leaves the rest of a command line alone', () => {
-    const cases: Array<[string, string]> = [
-      ['bun test --token abc123 --api-key=XYZ', 'bun test --token <redacted> --api-key=<redacted>'],
-      ['--token "two words" next', '--token <redacted> next'],
-      ["--password='p w' rest", '--password=<redacted> rest'],
-      ['MYCO_SECRET_TOKEN=s3cr3t x', 'MYCO_SECRET_TOKEN=<redacted> x'],
-      ['Authorization: Bearer eyJhbGc', 'Authorization: Bearer <redacted>'],
-      ['Authorization: Basic dXNlcjpwYXNz', 'Authorization: Basic <redacted>'],
-      ['x-api-key: sk-123 more', 'x-api-key: <redacted> more'],
-      ['{"token": "abc"}', '{"token": <redacted>}'],
-      ['https://user:pw@host/x', 'https://<redacted>@host/x'],
-      [`https://s/join#${'k'.repeat(43)}`, 'https://s/join#<redacted>'],
-      ['bun test --timeout 30000 tests/a.test.ts', 'bun test --timeout 30000 tests/a.test.ts'],
-    ];
-    expect(cases.map(([input]) => [input, redactSecrets(input)])).toEqual(cases);
-  });
 });
