@@ -104,7 +104,7 @@ function waitedNote(hold: string | null | undefined): string | null {
 }
 
 /** The versions an attempt ran with, as its runner reported them: its own and the coding agent's. */
-export function versionRow(attempt: RunAttempt, harness: string | null): StoryRow {
+function versionRow(attempt: RunAttempt, harness: string | null): StoryRow {
   const agent = harness === null ? 'the agent' : harnessLabel(harness);
   const runner = attempt.executor.kind === 'runner'
     ? attempt.runnerVersion === null ? 'Runner version not reported' : `Runner ${attempt.runnerVersion}`
