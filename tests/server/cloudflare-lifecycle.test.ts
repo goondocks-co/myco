@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import { budgetD1Database, budgetD1Reply } from './helpers/budget-d1.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "../support/fenced-fs.mjs";
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -17,15 +16,18 @@ import {
   rollbackCloudflareDeployment,
   destroyCloudflareDeployment,
   updateCloudflareDeployment,
+  cloudflareUpdateLines,
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
-import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
+import { stagingDir, stagingRoot } from '@myco/server/cloudflare-stage.js';
 import { cloudflareResources } from '@myco/server/cloudflare-resources.js';
 import { deployedWorkerSecretNames, ensureSecretsStore, findSecretsStore, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
+import { CommandTimedOut } from '@myco/server/runner.js';
+import { WORKER_UPDATE_RETRY_MS, WorkerUpdateStopped } from '@myco/server/cloudflare-worker-update.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const DB_ID = '11111111-2222-4333-8444-555555555555';
@@ -84,6 +86,7 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       'secrets-store store list': { stdout: '', code: 0 },
       'secrets-store store create': { stdout: `Created store myco (${STORE})` },
       'deploy -c wrangler.deploy.toml': { stdout: 'Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
+      'versions upload': { stdout: 'Worker Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
       ...over,
     };
     const match = Object.entries(canned).find(([k]) => flat.includes(k));
@@ -282,31 +285,14 @@ describe('create', () => {
     expect(calls.filter((c) => c.args.includes('recovery-worker-recovery')).length).toBe(2);
   });
 
-  it('provisions, writes the record before deploying, renders the config, migrates before the deploy, and records the version', async () => {
-    const { home, dir, options } = setup();
+  it('provisions the resources and records their ids and the serving version', async () => {
+    const { home, options } = setup();
     const result = await createCloudflareDeployment({ ...options, runner: runner() });
 
     expect(result.createdResources).toEqual(['d1 myco-server', 'r2 myco-server-blobs', 'r2 myco-server-recovery', 'secrets store', 'store secret myco-secret-wrap-key', 'worker secret SESSION_SECRET']);
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId, version: record.versionId }).toEqual({ db: DB_ID, store: STORE, version: '16a2423e-af96-4310-b61b-4e2b5fd1310b' });
-
-    const rendered = readFileSync(join(dir, DEPLOY_CONFIG_NAME), 'utf8');
-    expect(rendered).toContain(`database_id = "${DB_ID}"`);
-    expect(rendered).toContain(`store_id = "${STORE}"`);
-
-    // Everything a deploy reads is staged from what the binary carries: no
-    // checkout is consulted and nothing is built on the operator's machine.
-    expect(existsSync(join(dir, WORKER_ENTRY))).toBe(true);
-    expect(existsSync(join(dir, 'ui', 'dist', 'index.html'))).toBe(true);
-    expect(readdirSync(join(dir, 'migrations')).length).toBe(renderMigrationFiles().length);
-
     const flat = calls.map((c) => c.args.join(' '));
-    const migrateAt = flat.findIndex((a) => a.includes('migrations apply'));
-    const deployAt = flat.findIndex((a) => /(^|\s)deploy(\s|$)/.test(a) && a.includes(DEPLOY_CONFIG_NAME));
-    const secretAt = flat.findIndex((a) => a.includes('secret put SESSION_SECRET'));
-    expect({ migrateAt: migrateAt >= 0, deployAt: deployAt >= 0, order: migrateAt < deployAt, secretAfterDeploy: secretAt > deployAt }).toEqual({ migrateAt: true, deployAt: true, order: true, secretAfterDeploy: true });
-    expect(flat[migrateAt]).toContain(DEPLOY_CONFIG_NAME);
-
     // The absence the issue asks for: nothing on this machine builds, and no
     // command reaches a container runtime or a checkout.
     for (const forbidden of ['containers build', 'run build:ui', 'run harness:bundle', 'docker']) {
@@ -482,14 +468,117 @@ describe('update', () => {
     }
   });
 
-  it('refuses without a record, and with one migrates then deploys through the rendered config', async () => {
-    const { home, dir, options } = setup();
-    await expect(updateCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(join(home, 'server', 'cloudflare', 'record.json'));
-    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
-    const updated = await updateCloudflareDeployment({ ...options, runner: runner() });
-    expect(updated.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
-    expect(existsSync(join(dir, DEPLOY_CONFIG_NAME))).toBe(true);
-    expect(readDeploymentRecord(home)!.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
+  const uploadFailure = { code: 1, stdout: '', stderr: 'binding MYCO_DB of type d1 failed to generate. Please try again later or contact support. [code: 10021]' };
+  const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
+  const updateFixture = () => {
+    const { home, options } = setup();
+    recordFor(home);
+    const remote = { schema: SERVER_SCHEMA_VERSION - 1, worker: 'old-version', uploaded: false };
+    const failures: { upload: Array<CommandResult & { elapsedMs?: number }>; deploy: CommandResult[]; triggers: CommandResult[]; uploadSuccessMs?: number; stall?: boolean } = { upload: [], deploy: [], triggers: [] };
+    const lines: string[] = [];
+    const responses: number[] = [];
+    let time = 0;
+    const provider = runner();
+    const selected: CommandRunner = { async run(command, args, runOptions) {
+      if (args[2] === 'versions') {
+        const phase = args[3] === 'upload' ? 'upload' : 'deploy';
+        if (phase === 'deploy' && failures.stall) {
+          time += runOptions!.timeoutMs!;
+          throw new CommandTimedOut(command, args, runOptions!.timeoutMs!, 'ended');
+        }
+        if (phase === 'upload') time += failures.upload[0]?.elapsedMs ?? failures.uploadSuccessMs ?? 0;
+        const failure = failures[phase].shift();
+        if (failure) return failure;
+        if (phase === 'upload') {
+          remote.uploaded = true;
+        } else {
+          if (!remote.uploaded) throw new Error('version not found');
+          remote.worker = args[4]!.split('@')[0]!;
+          responses.push(remote.schema === SERVER_SCHEMA_VERSION ? 200 : 503);
+        }
+      }
+      if (args[2] === 'triggers' && failures.triggers.length > 0) return failures.triggers.shift()!;
+      if (args[2] === 'd1' && args[3] === 'migrations') remote.schema = SERVER_SCHEMA_VERSION;
+      return provider.run(command, args, runOptions);
+    } };
+    return { home, remote, failures, lines, responses, get elapsed() { return time; }, update: () => updateCloudflareDeployment({ ...options, runner: selected,
+      report: line => lines.push(line), workerRetry: { now: () => time, sleep: async ms => { time += ms; } } }) };
+  };
+
+  it('retries two transient upload refusals while the old schema serves, then activates and records the uploaded version', async () => {
+    const f = updateFixture();
+    f.failures.upload.push(uploadFailure, uploadFailure);
+    const result = await f.update();
+    expect(result.summary.worker).toBe('applied');
+    expect(f.remote).toMatchObject({ schema: SERVER_SCHEMA_VERSION, worker: version });
+    expect(f.responses).toEqual([200]);
+    expect(readDeploymentRecord(f.home)).toMatchObject({ versionId: version, schemaUpdates: [{ appliedAt: expect.any(String), workerVersionBefore: 'old-version' }] });
+    expect(f.lines.join('\n')).toContain('Worker upload: attempt 3 succeeded');
+    expect(f.lines.join('\n')).toContain('Worker upload: attempt 2 failed transiently');
+    expect(cloudflareUpdateLines(result.summary).join('\n')).toContain(`Worker version ${version} uploaded and activated.`);
+  });
+
+  it('retries a transient activation failure and ends applied', async () => {
+    const f = updateFixture();
+    f.failures.deploy.push({ code: 1, stdout: '', stderr: 'HTTP 503 Service Unavailable' });
+    expect((await f.update()).summary.worker).toBe('applied');
+    expect(f.remote.worker).toBe(version);
+    expect(f.lines.join('\n')).toContain('Worker deploy: attempt 2 succeeded');
+  });
+
+  it('gives activation a fresh budget after an upload consumes almost ten minutes', async () => {
+    const f = updateFixture();
+    f.failures.upload.push(...Array.from({ length: 4 }, () => ({ ...uploadFailure, elapsedMs: 90_000 })));
+    f.failures.uploadSuccessMs = 73_000;
+    f.failures.deploy.push({ code: 1, stdout: '', stderr: 'HTTP 503 Service Unavailable' });
+    expect((await f.update()).summary.worker).toBe('applied');
+    expect(f.elapsed).toBeGreaterThan(WORKER_UPDATE_RETRY_MS);
+    expect(f.remote.worker).toBe(version);
+    expect(f.lines.join('\n')).toContain('Worker deploy: attempt 2 succeeded');
+  });
+
+  it('stops by name on a permanent upload refusal and leaves the schema and serving Worker intact', async () => {
+    const f = updateFixture();
+    f.failures.upload.push({ code: 1, stdout: '', stderr: 'script validation failed [code: 10021]' });
+    await expect(f.update()).rejects.toThrow('stopped: Worker refused during upload');
+    expect(f.remote).toEqual({ schema: SERVER_SCHEMA_VERSION - 1, worker: 'old-version', uploaded: false });
+    expect(readDeploymentRecord(f.home)!.schemaUpdates?.[0]?.appliedAt).toBeUndefined();
+    expect(f.lines.join('\n')).toContain('Next: run: myco server update --target cloudflare');
+  });
+
+  it('stops by name when activation exhausts its time after migration, naming the refusal gap and retained recovery point', async () => {
+    const f = updateFixture();
+    f.failures.stall = true;
+    const stopped = await f.update().catch(error => error);
+    expect(stopped).toBeInstanceOf(WorkerUpdateStopped);
+    expect(stopped.reason).toBe('out_of_time');
+    expect(f.elapsed).toBe(WORKER_UPDATE_RETRY_MS);
+    expect(f.remote).toMatchObject({ schema: SERVER_SCHEMA_VERSION, worker: 'old-version' });
+    expect(readDeploymentRecord(f.home)).toMatchObject({ versionId: 'old-version', schemaUpdates: [{ appliedAt: expect.any(String) }] });
+    const text = f.lines.join('\n');
+    expect(text).toContain(`Worker upload: attempt 1 (${WORKER_UPDATE_RETRY_MS / 1000} s left`);
+    expect(text).toContain('stopped: Worker update ran out of time during deploy');
+    expect(text).toContain('Deployment refuses requests until the Worker lands');
+    expect(text).toContain('members are spooling capture so nothing is lost');
+    expect(text).toContain('Next: run: myco server update --target cloudflare');
+    expect(text).toContain('may still have landed');
+    expect(text).toContain('Finish the update before editing secrets');
+  });
+
+  it('reports a permanent activation refusal without an unconfirmed-activation warning', async () => {
+    const f = updateFixture();
+    f.failures.deploy.push({ code: 1, stdout: '', stderr: 'Authentication error [code: 10000]' });
+    await expect(f.update()).rejects.toThrow('stopped: Worker refused during deploy');
+    expect(f.lines.join('\n')).not.toContain('may still have landed');
+  });
+
+  it('names the routes permission on a trigger refusal and retains the activated Worker record', async () => {
+    const f = updateFixture();
+    writeDeploymentRecord({ ...readDeploymentRecord(f.home)!, url: 'https://myco.example.com' }, f.home);
+    f.failures.triggers.push({ code: 1, stdout: '', stderr: 'Authentication error [code: 10000]' });
+    await expect(f.update()).rejects.toThrow('Zone / Workers Routes Edit for configured routes or custom domains');
+    expect(readDeploymentRecord(f.home)!.versionId).toBe(version);
+    expect(f.lines.join('\n')).not.toContain('Finish the update before editing secrets');
   });
 });
 

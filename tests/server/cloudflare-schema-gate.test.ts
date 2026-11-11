@@ -36,7 +36,7 @@ for(const failure of ['empty','error'])it(`publishes the Worker with a visible i
     const source=new Database(file);
     source.exec("INSERT INTO fixture_population VALUES(7); INSERT INTO projects(project_id,name,created_at) VALUES('kept','Kept',1); INSERT INTO agents(id,name,source,enabled,created_at) VALUES('fixture','Fixture','built-in',1,1); INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,dispatch_spec) VALUES('kept','waiting','fixture','title-summary','queued',1,'{\"actor\":\"clock\"}')");
     source.close();
-    await update();
+    expect((await update()).summary.worker).toBe('applied');
     expect(readDeploymentRecord(home)).toMatchObject({versionId:'22222222-2222-4333-8444-555555555555',schemaUpdates:[{schemaAfter:SERVER_SCHEMA_VERSION,appliedAt:expect.any(String)}]});
     const db=new Database(file);
     try {
@@ -49,14 +49,13 @@ for(const failure of ['empty','error'])it(`publishes the Worker with a visible i
     }finally{db.close();}
     expect(reports.join('\n')).toContain('Budget governor inactive:');
     fs.writeFileSync(state,JSON.stringify({...JSON.parse(fs.readFileSync(state,'utf8')),budgetCountFailure:null}));
-    await update();
+    expect((await update()).summary.worker).toBe('applied');
     const restored=new Database(file);
     try {
       expect(await readBudgetStatus(sqliteRelationalStore(restored),Date.now())).toMatchObject({active:true,reason:null});
       expect(restored.query("SELECT value FROM schema_meta WHERE key='budget_activation_refusal'").get()).toBeNull();
     }finally{restored.close();}
     expect(calls().filter(({args})=>args[0]==='d1'&&args[1]==='migrations')).toHaveLength(1);
-    expect(calls().filter(({args})=>args[0]==='deploy')).toHaveLength(2);
   });
 });
 
@@ -223,7 +222,7 @@ for(const fault of ['stamps','catalogue'])it(`publishes the Worker without disab
       await completeBudgetMigration(sqliteRelationalStore(source),100);
       before=source.query('SELECT key,value FROM schema_meta ORDER BY key').all();
     }finally{source.close();}
-    await update();
+    expect((await update()).summary.worker).toBe('applied');
     const db=new Database(file);
     try {
       expect(db.query('SELECT key,value FROM schema_meta ORDER BY key').all()).toEqual(before);
@@ -231,7 +230,6 @@ for(const fault of ['stamps','catalogue'])it(`publishes the Worker without disab
     }finally{db.close();}
     expect(reports.join(' / ')).toContain('Budget governor state not verified:');
     expect(reports.join(' / ')).not.toContain('Budget governor inactive:');
-    expect(calls().filter(({args})=>args[0]==='deploy')).toHaveLength(1);
   });
 });
 

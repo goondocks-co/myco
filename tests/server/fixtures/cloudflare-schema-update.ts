@@ -113,6 +113,9 @@ else if (args[0] === 'secrets-store' && args[1] === 'secret' && args[2] === 'lis
 else if (args[0] === 'secrets-store' && args[1] === 'secret' && args[2] === 'create') console.log('Created fixture secret');
 else if (args[0] === 'secret' && args[1] === 'list') out([{name:'SESSION_SECRET',type:'secret_text'}]);
 else if (args[0] === 'deploy') console.log('Current Version ID: 22222222-2222-4333-8444-555555555555');
+else if (args[0] === 'versions' && args[1] === 'upload') console.log('Worker Version ID: 22222222-2222-4333-8444-555555555555');
+else if (args[0] === 'versions' && args[1] === 'deploy') console.log('Deployed fixture version');
+else if (args[0] === 'triggers' && args[1] === 'deploy') console.log('Applied fixture triggers');
 else { console.error('unexpected fake command: '+args.join(' ')); process.exit(8); }
 `;
 
