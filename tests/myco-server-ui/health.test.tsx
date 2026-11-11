@@ -526,6 +526,7 @@ describe('Health', () => {
     const { asked } = server(routes({ '/auth/me': () => Response.json(dashboardMe(MEMBER)) }));
     mount();
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
     for (const path of ['/api/attention', '/api/backups', '/api/maintenance', '/api/recovery/exports', '/api/kpis']) {
       expect(asked.some((line) => line.includes(path))).toBe(false);
     }

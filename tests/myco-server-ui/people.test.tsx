@@ -245,6 +245,7 @@ describe('My machines', () => {
     expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Rename', MACHINE_SETTINGS_CONTROLS.action, 'What it wrote', 'Stop']);
     expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();
     expect(screen.getByText(/an admin creates a one-time link on/).textContent).toContain(INVITE_CONTROLS.page);
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(adminRequests(asked)).toEqual([]);
     expect(rawIdsIn(document.body)).toEqual([]);
   });

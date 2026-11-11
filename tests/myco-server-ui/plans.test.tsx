@@ -266,7 +266,7 @@ describe('a plan’s page', () => {
     fireEvent.click(await screen.findByRole('combobox', { name: /^Plan\ status(?::|$)/ }));
     fireEvent.click(await screen.findByRole('option', { name: 'Done' }));
     // Picking writes nothing; the save does.
-    expect(await screen.findByRole('button', { name: 'Save status' })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 30));
     expect(sent).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Save status' }));
     await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: `/api/projects/${MYCO}/sessions/s1/plans/${KEY}/status`, body: { status: 'completed' } }]));

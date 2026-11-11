@@ -76,7 +76,9 @@ describe('the dashboard for a member who is not an admin', () => {
       mount(page);
       // A run's panel is modal, which hides the page behind it from the accessibility tree.
       await screen.findByRole('navigation', { name: 'Pages', hidden: true });
-      await waitFor(() => expect(asked.length).toBeGreaterThan(1));
+      // Let every query the page mounts go out before reading what it asked.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(asked.length).toBeGreaterThan(1);
       expect(adminRequests(asked)).toEqual([]);
     });
   }

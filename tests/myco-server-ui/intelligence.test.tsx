@@ -362,6 +362,7 @@ describe('running a task by hand', () => {
     await waitFor(() => expect(sent).toHaveLength(1));
     answer(Response.json({ runId: 'run_new0000001', projectId: P, queued: true }));
     await waitFor(() => expect(document.querySelector('[data-started]')).not.toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 30));
     expect(sent).toHaveLength(1);
   });
 
