@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { resolveMycoHome } from '@myco/paths/home.js';
 import { normalizeMemberServerAddress } from '@myco/member/server-url.js';
 import { parseJoinCode } from '@myco/member/join-code.js';
@@ -305,9 +306,36 @@ function statusRepository(cwd: string): string | undefined {
     if (runGitAnswer(['rev-parse', '--is-inside-work-tree'], cwd) !== 'true') return undefined;
   } catch (error) {
     const stderr = (error as { stderr?: string | Buffer }).stderr?.toString() ?? '';
-    if (/^fatal: (?:not a git repository\b|gitfile does not point to a valid repository:)/m.test(stderr)) return undefined;
+    if (/^fatal: (?:not a git repository\b|gitfile does not point to a valid repository:)/m.test(stderr) && hasStrayGitEntry(cwd)) return undefined;
     throw error;
   }
   if (verdict === UNUSUAL) return path.resolve(cwd, runGitAnswer(['rev-parse', '--git-common-dir'], cwd), '..');
   return verdict.from === 'files' ? path.dirname(verdict.layout.commonDir) : verdict.root;
+}
+
+/** Only readable entries with no repository qualify as stray Git entries. */
+function hasStrayGitEntry(cwd: string): boolean {
+  let start: string;
+  try { start = fs.realpathSync(cwd); } catch { return false; }
+  for (let dir = start; ; dir = path.dirname(dir)) {
+    const entry = path.join(dir, '.git');
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(entry); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || path.dirname(dir) === dir) return false;
+      continue;
+    }
+    try {
+      if (stat.isDirectory()) {
+        fs.accessSync(entry, fs.constants.R_OK | fs.constants.X_OK);
+        return !fs.readdirSync(entry).includes('HEAD');
+      }
+      if (!stat.isFile()) return false;
+      const target = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(entry, 'utf8'));
+      if (target === null) return false;
+      try { fs.statSync(path.resolve(dir, target[1]!)); }
+      catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT'; }
+      return false;
+    } catch { return false; }
+  }
 }

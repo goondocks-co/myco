@@ -101,6 +101,20 @@ for (const args of [[], ['--join', STATUS_URL]]) for (const inside of [false, tr
   });
 }
 
+for (const damage of ['corrupt HEAD', 'unreadable git directory']) {
+  it.skipIf(damage === 'unreadable git directory' && (process.platform === 'win32' || process.getuid?.() === 0))(`reports a Git failure for ${damage}`, async () => {
+    const cwd = fixture.repositories[3];
+    const entry = path.join(cwd, '.git');
+    const errors: string[] = [];
+    if (damage === 'corrupt HEAD') fs.writeFileSync(path.join(entry, 'HEAD'), 'not-a-ref\n');
+    else fs.chmodSync(entry, 0);
+    try {
+      expect(await run(['--status'], { ...deps(), cwd, stderr: line => errors.push(line) })).toBe(4);
+      expect(errors.join('\n')).toContain('fatal: not a git repository');
+    } finally { if (damage === 'unreadable git directory') execFileSync('chmod', ['700', entry]); }
+  });
+}
+
 it('preserves JSON observation keys, ids, scope and state values', async () => {
   expect(await run(['--status', '--json'], deps())).toBe(3);
   const body = JSON.parse(lines[0]) as { observations: Observation[] };
