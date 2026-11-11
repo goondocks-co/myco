@@ -85,7 +85,7 @@ for (const { role, cookie } of ROLES) for (const { viewport, mode } of SHOT_MATR
       for (const task of registry.tasks) {
         await expect(page.locator(`article[data-task="${task.task}"] [data-run-now]`)).toHaveCount(task.startable ? 1 : 0);
       }
-      expect(registry.tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
+      expect(registry.tasks.filter((task) => task.startable).map((task) => task.task).sort()).toEqual(['canopy-map', 'curate-plans', 'extract-curate', 'vault-seed']);
       expect(registry.tasks.find((task) => task.task === 'extract-curate')!.availabilityNote).toBeNull();
       expect(registry.tasks.find((task) => task.task === 'turn-cards')!.startable).toBe(false);
       const map = registry.tasks.find((task) => task.task === 'canopy-map')!;
