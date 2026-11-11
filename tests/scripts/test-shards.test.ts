@@ -34,10 +34,10 @@ describe('test shard selection', () => {
         expect(group.reduce((total, file) => total + weight(file), 0)).toBeLessThanOrEqual(budget);
       }
       const legacy = 'tests/setup/journeys-legacy.test.ts';
-      const early = 'tests/setup/create-sigkill-resume-local-early.test.ts';
+      const local = 'tests/setup/create-sigkill-resume-local.test.ts';
       const journeys = groups.find(group => group.includes(legacy));
       expect(journeys).toContain(legacy);
-      expect(journeys).not.toContain(early);
+      expect(journeys).not.toContain(local);
     }
   });
 

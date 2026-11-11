@@ -1,20 +1,31 @@
 The CI workflow has two scopes, and the `check` job is the one required result of both.
 
-**Every pull request and main push:** lint and types, the native build, 18 Node test shards, two DOM test shards,
+**Every pull request and main push:** lint and types, the native build, 17 Node test shards, two DOM test shards,
 a parity smoke (`scripts/ci-scopes.mjs`), a small UI smoke, a Windows smoke, hook startup checks and container checks.
-Darwin release-recipe build and verification jobs run when build or release inputs change.
+Darwin release-recipe build and verification jobs run when build or release inputs change. The build job also runs
+`npm run check:test-budget`. That fails a change whose pull request plan is over the node runner budget in
+`scripts/check-test-budget.mjs`, or whose test-to-product line ratio rises while the ratio is above 1.0. Each plan
+file is charged at the larger of its declared weight and its recorded CI time, and a file with no recorded time is
+charged at least the floor beside that budget. The ratio counts non-blank, non-comment lines. Make room for
+the runner budget by deleting or demoting tests, and for the ratio by deleting test code. Never raise the budget.
 
 **The full run** (nightly on main through `.github/workflows/nightly.yml`, a `full-ci` pull request label, or a release
 tag through `publish.yml`) adds the full Windows contract list, all seven parity shards, every dashboard screen, and
-the scale and cost suites listed in `scripts/ci-scopes.mjs`.
+the heavy and scale suites listed in `scripts/ci-scopes.mjs`: nested `bun test` or binary processes, whole setup
+journeys, SIGKILL and resume, recovery and restore, D1 scale and cost, and native lifecycle suites that spawn a
+server. A pull request keeps one fast critical-flow test for each of those areas. Parity beyond the smoke runs only
+in the full run.
 
 A nightly failure opens or updates the one issue titled "Nightly full CI is failing" with the failed jobs and commit.
 A release tag runs the full suite on its own commit and cannot publish unless it passes.
 
 Shard, job, hook-startup and hook-work budgets report as warnings on pull requests and main pushes, and fail only a
-full run from `nightly.yml` or a release. The per-test 80% timeout near-miss is listed in the step summary on pull
-requests, main pushes and tagged releases, and fails only the nightly. A test over its own timeout, or a failed
-assertion, still fails everywhere.
+full run from `nightly.yml` or a release. Those shard and job budgets are what may fail a run whose tests passed,
+because they keep a job inside its time limit. The per-test 80% timeout near-miss is listed in the step summary on pull
+requests, main pushes and tagged releases, and fails only the nightly. A near-miss is reported, not failed. A test over
+its own timeout, or a failed assertion, still fails everywhere. A test file that fails only with a Miniflare proxy or
+devalue internal assertion, `TypeError: Unable to connect`, or D1 `Network connection lost` is rerun once, alone, and
+that rerun is the result. The step summary names the file and the signature. Any other failure is not retried.
 
 The `check` job requires every job that belongs to the scope to succeed, including every matrix entry.
 Superseded pull request runs are cancelled; pushes to main are not cancelled.
@@ -27,7 +38,7 @@ and Cloudflare targets and runs its selected scenarios against both.
 Run a shard locally:
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/18 npm test
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=1/17 npm test
 MYCO_TEST_KIND=dom MYCO_TEST_SHARD=1/2 npm test
 MYCO_PARITY_SHARD=1/7 npm run test:parity
 ```
@@ -37,7 +48,7 @@ printed by `MYCO_RUNNER_DRY_RUN=1 npm test`. `MYCO_TEST_GROUP` filters after sha
 assignment; an unknown label or a group assigned elsewhere is an error.
 
 ```sh
-MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/18 \
+MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/17 \
   MYCO_TEST_GROUP='node env shared tests-myco-server-3' \
   MYCO_RUNNER_GROUP_BUDGET_MS=3600000 npm test -- --rerun-each 20
 ```

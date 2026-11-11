@@ -12,7 +12,8 @@ import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { parse as parseYaml } from 'yaml';
 import { DEFAULT_TEST_TIMEOUT_MS, groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
-import { BUILD_JOB_FILES, NIGHTLY_ONLY_FILES } from './ci-scopes.mjs';
+import { BUILD_JOB_FILES, HEAVY_AND_SCALE_SUITES } from './ci-scopes.mjs';
+import { infrastructureRetrySummary, logHasUncarriedError, replaceFileSuites, retryableInfrastructureFaults } from './infrastructure-faults.mjs';
 import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
@@ -385,7 +386,7 @@ delete process.env.MYCO_TEST_HEADROOM;
 // A file a shard does not run in this CI scope: the build job owns it, or the full run does.
 function leftToAnotherCiJob(file) {
   if (testScope === '') return false;
-  return BUILD_JOB_FILES.includes(file) || (testScope === 'pr' && NIGHTLY_ONLY_FILES.includes(file));
+  return BUILD_JOB_FILES.includes(file) || (testScope === 'pr' && HEAVY_AND_SCALE_SUITES.includes(file));
 }
 
 function isFastExcluded(file) {
@@ -961,8 +962,115 @@ function captureHangDiagnostics(pids, hangFile, heading) {
 }
 
 
+function reportInfrastructureRetry(file, signature) {
+  const line = `${infrastructureRetrySummary(file, signature)}\n`;
+  process.stderr.write(`[run-bun-tests] ${line}`);
+  if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, line);
+}
+
+/** Rerun one file by itself. The caller decides whether this result replaces the phase. */
+async function runFileOnce(file, preloads, isolate, deadlineMs) {
+  const slug = bundleSlug(`retry-${file}`);
+  const reportFile = path.join(RUN_REPORT_DIR, `${slug}.junit.xml`);
+  const teeFile = path.join(RUN_REPORT_DIR, `${slug}.log`);
+  fs.writeFileSync(teeFile, '');
+  const args = [
+    'test',
+    ...preloads.flatMap((preload) => ['--preload', preload]),
+    ...(isolate ? ['--isolate'] : []),
+    '--timeout', String(DEFAULT_TEST_TIMEOUT_MS),
+    '--reporter=junit',
+    `--reporter-outfile=${reportFile}`,
+    file,
+  ];
+  const result = await runWithTeeAndHeartbeat(BUN_EXECUTABLE, args, teeFile, `retry ${file}`, { deadlineMs, hangFile: hangPath(slug) });
+  return { ...result, reportFile, teeFile };
+}
+
+/**
+ * The original phase log with the retried faults' own `(fail)`, `N fail` and signature
+ * `error:` lines removed. Returns null when the log has more `(fail)` lines than JUnit
+ * failures, which the report does not account for.
+ */
+function logWithoutRetriedMarkers(log, faults, junitFailureCount) {
+  const lines = log.split('\n');
+  const failLines = lines.filter((line) => /^\(fail\)\s+/.test(stripVTControlCharacters(line)));
+  if (failLines.length > junitFailureCount) return null;
+  const signatures = faults.map((fault) => fault.signature);
+  return lines.filter((line) => {
+    const plain = stripVTControlCharacters(line);
+    if (/^\(fail\)\s+/.test(plain)) return false;
+    if (/^\s*[1-9]\d*\s+fail\b/.test(plain)) return false;
+    if (/^error:\s+\S/.test(plain) && signatures.some((signature) => plain.includes(signature))) return false;
+    return true;
+  }).join('\n');
+}
+
+/**
+ * Rerun a phase only when every JUnit failure is an infrastructure fault in its own file
+ * and the log carries no error that JUnit does not. Returns true when every rerun passed
+ * and the phase artifacts show that pass. Any other failure is left where it was.
+ */
+async function rerunInfrastructureFaults(label, phaseFiles, teeFile, reportFile, preloads, isolate, deadlineMs, seenFailure) {
+  let log = '';
+  try { log = fs.readFileSync(teeFile, 'utf8'); } catch { return false; }
+  if (logHasUncarriedError(log)) return false;
+  let junitFailures = [];
+  try { junitFailures = parseFailuresFromJunit(reportFile); } catch { junitFailures = []; }
+  const failures = junitFailures.map((failure) => ({
+    file: failure.file || (phaseFiles.length === 1 ? phaseFiles[0] : ''),
+    body: failure.body,
+  }));
+  if (failures.length === 0 || failures.some((failure) => !failure.file)) return false;
+  const retry = retryableInfrastructureFaults({ failures });
+  const failedFiles = new Set(failures.map((failure) => failure.file));
+  const retriedFiles = new Set(retry.map((fault) => fault.file));
+  const covered = failedFiles.size > 0 && [...failedFiles].every((file) => retriedFiles.has(file));
+  if (!covered) return false;
+  const passingLogs = [];
+  let report = '';
+  try { report = fs.readFileSync(reportFile, 'utf8'); } catch { return false; }
+  for (const fault of retry) {
+    if (Date.now() >= deadlineMs) return false;
+    reportInfrastructureRetry(fault.file, fault.signature);
+    const rerun = await runFileOnce(fault.file, preloads, isolate, deadlineMs);
+    let rerunLog = '';
+    let rerunReport = '';
+    try {
+      rerunLog = fs.readFileSync(rerun.teeFile, 'utf8');
+      rerunReport = fs.readFileSync(rerun.reportFile, 'utf8');
+    } catch { return false; }
+    if (rerun.status !== 0 || rerun.wedged || rerun.overBudget || outputHasFailureMarker(rerunLog)) return false;
+    try { report = replaceFileSuites(report, fault.file, rerunReport); }
+    catch (error) {
+      console.error(`[run-bun-tests] FAIL: ${label} infrastructure retry could not replace its report: ${error.message}`);
+      return false;
+    }
+    passingLogs.push(rerunLog);
+  }
+  const rerunLog = passingLogs.join('');
+  if (parseJunitFailures(report).length > 0 || outputHasFailureMarker(rerunLog)) return false;
+  // Keep every line that is not the retried fault's own marker, then append the passing rerun.
+  // evaluatePhaseEvidence reads that combined log, so a marker from any other file still fails the phase.
+  const retained = logWithoutRetriedMarkers(log, retry, failures.length);
+  if (retained === null) return false;
+  const combined = `${retained}${retained.endsWith('\n') || retained.length === 0 ? '' : '\n'}${rerunLog}`;
+  if (outputHasFailureMarker(combined)) return false;
+  try {
+    fs.writeFileSync(reportFile, report);
+    fs.writeFileSync(teeFile, combined);
+  } catch (error) {
+    console.error(`[run-bun-tests] FAIL: ${label} infrastructure retry could not replace its report: ${error.message}`);
+    return false;
+  }
+  observedFailure = seenFailure;
+  console.error(`[run-bun-tests] ${label} passed after infrastructure retry`);
+  return true;
+}
+
 async function runPhase(label, extraArgs, preloads, { isolate, files }) {
   if (extraArgs === null || extraArgs.length === 0) return 0;
+    const seenFailure = observedFailure;
     console.log(`\n=== bun test (${label}) ===`);
     const reportFile = reportPath(label);
     const teeFile = logPath(label);
@@ -1010,6 +1118,12 @@ async function runPhase(label, extraArgs, preloads, { isolate, files }) {
     if (overBudget) {
       overBudgetGroups.push({ label, files, hangFile });
       writeOverBudgetJunit(reportFile, label, files);
+    } else if (status !== 0 && !wedged && !evidenceError) {
+      const cleared = await rerunInfrastructureFaults(label, files, teeFile, reportFile, preloads, isolate, deadlineMs, seenFailure);
+      if (cleared) {
+        status = 0;
+        streamFailure = false;
+      }
     }
     const evidence = evaluatePhaseEvidence([{ label, file: reportFile, log: teeFile }]);
     if (status !== 0 || evidence.failures > 0 || evidence.invalid.length > 0) recordObservedFailure();
@@ -1036,7 +1150,10 @@ async function runPhase(label, extraArgs, preloads, { isolate, files }) {
  * useful for jumping to the failing file.
  */
 function parseFailuresFromJunit(file) {
-  const xml = fs.readFileSync(file, 'utf8');
+  return parseJunitFailures(fs.readFileSync(file, 'utf8'));
+}
+
+function parseJunitFailures(xml) {
   const failures = [];
   const pairedTestcasePattern =
     /<testcase\b([^>]*?)(?<!\/)\s*>([\s\S]*?)<\/testcase>/g;
@@ -1053,12 +1170,14 @@ function parseFailuresFromJunit(file) {
     // still try to surface `message` and `type` when present.
     const failureMessage = body.match(/<(?:failure|error)[^>]*\bmessage="([^"]*)"/)?.[1] ?? '';
     const failureType = body.match(/<(?:failure|error)[^>]*\btype="([^"]*)"/)?.[1] ?? '';
+    const failureText = body.match(/<(?:failure|error)\b[^>]*>([\s\S]*?)<\/(?:failure|error)>/)?.[1] ?? '';
     failures.push({
       name: decodeXmlEntities(name),
       classname: decodeXmlEntities(classname),
       file: sourceFile,
       line: lineNo,
       message: decodeXmlEntities(failureMessage || failureType),
+      body: decodeXmlEntities(`${failureMessage}\n${failureText}`),
     });
   }
   return failures;

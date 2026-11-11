@@ -8,7 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { parse } from 'yaml';
 import { PARITY_PLAN_PREFIX } from './test-shards.mjs';
 import { assertNodeShardBudgets, assertNodeShardWeights, assertTestCaseHeadroom, declaredTestTimeout, testCaseHeadroomBreaches, testDurationSamples } from './node-test-durations.mjs';
-import { BUILD_JOB_FILES, NIGHTLY_ONLY_FILES, PARITY_SMOKE_SCENARIOS } from './ci-scopes.mjs';
+import { BUILD_JOB_FILES, HEAVY_AND_SCALE_SUITES, PARITY_SMOKE_SCENARIOS } from './ci-scopes.mjs';
 import { reportTimingBreach, testHeadroomReports, timingGateReports } from './timing-gate.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -120,11 +120,14 @@ export function assertCoverage(actual, expected, label) {
 }
 
 
+/** Shard and plan selectors a nested runner must not inherit from its parent. */
+export const nestedRunnerEnvKeys = ['MYCO_TEST_SCOPE', 'MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_GROUP', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD', 'MYCO_RUNNER_PLAN_FILE', 'MYCO_RUNNER_MATRIX_PLAN_FILE', 'MYCO_PARITY_PLAN_MATRIX'];
+
 function audit() {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-shard-audit-'));
   const manifestPath = path.join(scratch, 'manifest.json');
   const baseEnv = { ...process.env };
-  for (const key of ['MYCO_TEST_SCOPE', 'MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_GROUP', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD', 'MYCO_RUNNER_PLAN_FILE', 'MYCO_RUNNER_MATRIX_PLAN_FILE', 'MYCO_PARITY_PLAN_MATRIX']) delete baseEnv[key];
+  for (const key of nestedRunnerEnvKeys) delete baseEnv[key];
   baseEnv.MYCO_RUNNER_REPORT_DIR = path.join(scratch, 'reports');
 
   let generations = 0;
@@ -161,7 +164,7 @@ function audit() {
     const full = matrix.full;
     const discovered = fs.readdirSync(path.join(root, 'tests'), { recursive: true })
       .filter((file) => /\.test\.tsx?$/.test(file)).map((file) => `tests/${file.split(path.sep).join('/')}`);
-    for (const file of [...BUILD_JOB_FILES, ...NIGHTLY_ONLY_FILES]) assert.ok(discovered.includes(file), `Listed in scripts/ci-scopes.mjs but no such test: ${file}`);
+    for (const file of [...BUILD_JOB_FILES, ...HEAVY_AND_SCALE_SUITES]) assert.ok(discovered.includes(file), `Listed in scripts/ci-scopes.mjs but no such test: ${file}`);
     const shardFiles = discovered.filter((file) => !BUILD_JOB_FILES.includes(file));
     assert.ok(BUILD_JOB_FILES.every((file) => workflow.jobs.build.steps.some((step) => step.run === `npm test -- ${file}`)), 'A file listed for the build job is not run by it');
     assertCoverage(full.flatMap((phase) => phase.files), shardFiles, 'Full suite');
@@ -175,7 +178,7 @@ function audit() {
     const sharded = ordinary;
     assertCoverage(sharded.flatMap((phase) => phase.files), shardFiles, 'CI test shards (full run)');
     const pullRequest = testPlan({ MYCO_TEST_SCOPE: 'pr' }).ordinary.flatMap(({ phases: plan }) => plan);
-    assertCoverage(pullRequest.flatMap((phase) => phase.files), shardFiles.filter((file) => !NIGHTLY_ONLY_FILES.includes(file)), 'CI test shards (pull request)');
+    assertCoverage(pullRequest.flatMap((phase) => phase.files), shardFiles.filter((file) => !HEAVY_AND_SCALE_SUITES.includes(file)), 'CI test shards (pull request)');
     const durations = JSON.parse(fs.readFileSync(path.join(root, 'scripts/test-durations.json'), 'utf8'));
     auditJobHeadroom(workflow, durations.jobs);
     const nodeWorkload = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/runner/node-ci-durations.json'), 'utf8'));
