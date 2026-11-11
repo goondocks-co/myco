@@ -68,7 +68,7 @@ describe('accepting a deletion', () => {
     expect(count(e.sqlite, 'events')).toBeGreaterThan(0);
     expect(await getSession(e.db, SCOPE, S)).toBeNull();
     expect((await pageProjectPlans(e.db, SCOPE))!.rows).toEqual([]);
-    expect(await projectStatistics(e.db, 'proj_1', NOW)).toEqual({ state: 'building' });
+    expect(await projectStatistics(e.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', prompts: 0, plans: null });
     await drainSessionDeletions(e.serverEnv, NOW);
     expect(await projectStatistics(e.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', prompts: 0 });
   });

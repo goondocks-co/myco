@@ -61,18 +61,19 @@ const readySql = (projects: string) => `SELECT done AND NOT ${retiringPlansSql(p
 const READY = {
   project: read<[project: string], { done: number }>({ name: 'planCounts.readyProject', sql: readySql('project_id=?1') }),
   named: read<[projects: string], { done: number }>({ name: 'planCounts.readyNamed', sql: readySql('project_id IN (SELECT value FROM json_each(?1))') }),
-  all: read<[], { done: number }>({ name: 'planCounts.readyAll', sql: readySql('project_id IN (SELECT project_id FROM projects WHERE archived_at IS NULL)') }),
+  all: read<[], { done: number }>({ name: 'planCounts.readyAll', sql: `SELECT done FROM projection_catchup WHERE projection='${PLAN_COUNT_PROJECTION}' AND phase='${PLAN_COUNT_PHASE}'` }),
 };
 const BY_STATUS = {
   project: read<[string], { status: string; n: number }>({ name: 'planCounts.byStatusProject',
     sql: 'SELECT status,n FROM plan_counts WHERE project_id=?1 AND n<>0' }),
   all: read<[], { status: string; n: number }>({ name: 'planCounts.byStatusAll',
-    sql: 'SELECT status,SUM(n) AS n FROM plan_counts WHERE project_id IN (SELECT project_id FROM projects WHERE archived_at IS NULL) GROUP BY status HAVING SUM(n)<>0' }),
+    sql: `SELECT c.status,SUM(c.n) AS n FROM plan_counts c WHERE c.project_id IN (SELECT project_id FROM projects WHERE archived_at IS NULL)
+      AND NOT ${retiringPlansSql('j.project_id=c.project_id')} GROUP BY c.status HAVING SUM(c.n)<>0` }),
   named: read<[string], { status: string; n: number }>({ name: 'planCounts.byStatusNamed',
     sql: 'SELECT status,SUM(n) AS n FROM plan_counts WHERE project_id IN (SELECT value FROM json_each(?1)) GROUP BY status HAVING SUM(n)<>0' }),
 };
 
-/** How many plans of each status the Projects hold, from the counters; `building` until existing plans have been counted and deleted plans retired. */
+/** How many plans of each status the Projects hold, from the counters. Project and named totals withhold readiness during retirement; all-Project totals omit retiring Projects. */
 export async function planStatusTotals(db: RelationalStore, scope: { projectId: string } | ProjectSet): Promise<CountAnswer<Record<string, number>>> {
   const ready = 'projectId' in scope ? READY.project.bind(scope.projectId) : scope.all ? READY.all.bind() : READY.named.bind(JSON.stringify(scope.projectIds));
   const counts = 'projectId' in scope ? BY_STATUS.project.bind(scope.projectId)

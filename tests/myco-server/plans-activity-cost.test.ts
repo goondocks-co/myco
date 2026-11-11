@@ -134,7 +134,7 @@ it('plan lists, the activity feed and the plan writer cost D1 the same as the De
   expectTwoScale(await d1TwoScale({ sizes: SIZES, setup, grow, cases: CASES, warm: true }));
 }, 300_000);
 
-it('accepting deletion and withholding activity stay bounded as the deleted session grows', async () => {
+it('accepting deletion and checking totals stay bounded as the deleted session grows', async () => {
   expectTwoScale(await d1TwoScale({ sizes: [40, 400], setup, grow: async (db, from, to) => {
     if (from > 0) for (let wake = 0; wake < 100 && (await advanceSessionDeletions(db, NOW)).more; wake++) { /* drain */ }
     for (const session of from === 0 ? ['small-delete', 'large-delete'] : ['large-delete']) {
@@ -148,11 +148,8 @@ it('accepting deletion and withholding activity stay bounded as the deleted sess
       expect(await acceptSessionDeletion(db, { projectId: 'proj_w', sessionId: scale === 0 ? 'small-delete' : 'large-delete', by: 'member', now: NOW }))
         .toMatchObject({ state: 'running' });
     } },
-        { name: 'totals while contributions retire', run: async db => {
+    { name: 'totals while contributions retire', run: async db => {
       expect(await planTotals(db, WRITTEN)).toEqual({ state: 'building' });
-    } },
-    { name: 'activity visibility during retirement', run: async db => {
-      expect(await activityFeed(db, WRITTEN, { limit: PAGE })).toMatchObject({ items: [], building: true });
     } },
   ] }));
 }, 300_000);

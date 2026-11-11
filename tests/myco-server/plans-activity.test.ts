@@ -9,6 +9,8 @@ import { activity_activityFeed as activityFeed } from '@myco-server-worker/read/
 import { plans_pageProjectPlans as pageProjectPlans } from '@myco-server-worker/read/catalog/plans.js';
 import { tombstoneSession as acceptDeletion } from '@myco-server-worker/core/tombstones.js';
 import { plans_planTotals as planTotals } from '@myco-server-worker/read/catalog/plans.js';
+import { DELETION_PAGE } from '@myco-server-worker/db/sessions/deletion-phases.js';
+import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { advanceSessionDeletions } from '@myco-server-worker/db/sessions/deletion.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { applySchemaSteps } from './helpers/migrate.js';
@@ -163,22 +165,38 @@ describe('the activity feed', () => {
     expect({ status: refused.status, reason: refused.body.reason }).toEqual({ status: 400, reason: expect.stringContaining('request the first page again') });
   });
 
-  it('stops listing a deleted session and its plans, and the plan lists stop listing them too', async () => {
+  it('hides retiring contributions while paused and during cleanup, preserving other sessions and Projects', async () => {
     const r = await rig();
     const id = await r.save('doomed');
-    expect(await walk(feedPage(r))).toEqual(expect.arrayContaining([`plan:${id}`, 'session:sess_a']));
+    r.sqlite.query(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?1)
+      INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
+      SELECT p.project_id,'00000000-0000-4000-8000-'||printf('%012d',i),p.session_id,'00000000-0000-4000-8000-'||printf('%012d',i),p.machine_id,p.title,p.content,p.content_hash,p.status,
+        p.created_at,p.updated_at+1,p.token_id,p.received_at FROM n CROSS JOIN plans p WHERE p.plan_key=?2`).run(DELETION_PAGE, id);
+    const kept = await r.save('kept', { session_id: 'sess_b' });
+    const other = await r.save('other', { project: 'proj_2', session_id: 'elsewhere' });
     await acceptDeletion({ db: r.db }, SCOPE, 'sess_a', PRINCIPAL.id, Date.now());
-    expect(await planTotals(r.db, { all: true })).toEqual({ state: 'building' });
-    expect(await planTotals(r.db, { all: false, projectIds: [PROJECT] })).toEqual({ state: 'building' });
-    expect(await planTotals(r.db, { projectId: PROJECT })).toEqual({ state: 'building' });
-    expect(await activityFeed(r.db, SCOPE)).toMatchObject({ items: [], building: true });
+    const visible = async () => {
+      expect((await walk(feedPage(r))).sort()).toEqual([`plan:${kept}`, 'session:sess_b'].sort());
+      expect((await r.get(`/api/projects/${PROJECT}/activity`)).body).toMatchObject({ building: false,
+        stats: { state: 'ready', sessions: 1, prompts: 0, attachments: 0, plans: null } });
+      expect(await planTotals(r.db, { all: true })).toEqual({ state: 'ready', value: { active: 1 } });
+      expect(await planTotals(r.db, { projectId: 'proj_2' })).toEqual({ state: 'ready', value: { active: 1 } });
+      expect(await planTotals(r.db, { all: false, projectIds: [PROJECT, 'proj_2'] })).toEqual({ state: 'building' });
+      expect(await planTotals(r.db, SCOPE)).toEqual({ state: 'building' });
+    };
+    const hold = crypto.randomUUID();
+    expect(await acquireRecoveryHold(r.db, hold, Date.now())).toBe(true);
     await advanceSessionDeletions(r.db, Date.now(), 1);
-    expect(await planTotals(r.db, { all: true })).toEqual({ state: 'ready', value: {} });
-    expect(await activityFeed(r.db, SCOPE)).toMatchObject({ items: [], building: false });
+    await visible();
+    expect(await releaseRecoveryHold(r.db, hold, Date.now(), 'complete')).toBe(true);
+    await advanceSessionDeletions(r.db, Date.now(), 1);
+    expect(r.sqlite.query('SELECT plan_key FROM plans WHERE project_id=?1 AND session_id=?2').all(PROJECT, 'sess_a')).toEqual([{ plan_key: id }]);
+    await visible();
     await drainSessionDeletions({ db: r.db }, Date.now());
-    expect(await walk(feedPage(r))).toEqual([]);
-    expect((await r.get('/api/plans')).body.plans).toEqual([]);
-    expect((await pageProjectPlans(r.db, SCOPE))!.rows).toEqual([]);
+    expect(await planTotals(r.db, { all: true })).toEqual({ state: 'ready', value: { active: 2 } });
+    expect((await r.get(`/api/projects/${PROJECT}/activity`)).body).toMatchObject({ building: false, stats: { state: 'ready', plans: 1 } });
+    expect((await pageProjectPlans(r.db, SCOPE))!.rows.map(row => row.planKey)).toEqual([kept]);
+    expect((await r.get('/api/plans')).body.plans.map((plan: { planKey: string }) => plan.planKey).sort()).toEqual([kept, other].sort());
   });
 });
 
