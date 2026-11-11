@@ -14,6 +14,8 @@ import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
+import { spawnOwnedGroup, type OwnedProcess } from './process-group.js';
+import { runnerRequest } from './request.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import type { CodexInstallationContext, CodexInstallationVerdict } from '@myco/runner/drivers/codex.js';
 
@@ -24,6 +26,8 @@ export interface DetectedHarness {
   error?: string;
   unavailableReason?: 'login_missing';
   signInSource?: RunnerCredentialChoice;
+  /** The agent's own version, as its CLI prints it; absent where it printed none this worker can read. */
+  version?: string;
 }
 
 export interface OfferedHarness extends DetectedHarness {
@@ -154,6 +158,8 @@ async function fileHoldsAsync(at: string | null, requires: readonly string[]): P
 export interface DetectionMode {
   /** False limits a file probe to whether the file exists and is non-empty; its bytes are never read. */
   credentialBytes: boolean;
+  /** True asks each installed agent its version in the background, for a worker that stops its probes as it ends. */
+  versions?: boolean;
 }
 
 const READ_CREDENTIAL_BYTES: DetectionMode = { credentialBytes: true };
@@ -171,20 +177,88 @@ async function fileNonEmpty(at: string | null): Promise<boolean> {
   }
 }
 
-/** Worker detection leaves the event loop free for leases, requests and shutdown. */
+/** The first version token an agent CLI prints for `--version`: `2.1.3 (Claude Code)` is 2.1.3, `codex-cli 0.50.0` is 0.50.0. */
+const VERSION_TOKEN = /\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.]+)?/;
+const MAX_VERSION_CHARS = 64;
+
+/** The version an agent CLI printed, or undefined where it printed nothing that reads as one. */
+function agentVersionOf(printed: string | null): string | undefined {
+  const token = printed === null ? undefined : VERSION_TOKEN.exec(printed)?.[0];
+  return token === undefined || token.length > MAX_VERSION_CHARS ? undefined : token;
+}
+
+/**
+ * Each installed binary's version, asked once per file as it stands on disk: an upgrade replaces the file and is asked
+ * again. A probe runs in the background as a process group of its own, stopped with its helpers when the runner request timeout
+ * passes or the worker stops it; until it answers, the binary has no version.
+ */
+const versions = new Map<string, { version: string | undefined } | 'asking'>();
+const probes = new Set<OwnedProcess>();
+let probesStopping = new AbortController();
+const MAX_VERSION_OUTPUT_CHARS = 4096;
+
+function askVersion(at: string, key: string): void {
+  versions.set(key, 'asking');
+  void runnerRequest((signal) => readVersion(at, signal), probesStopping.signal)
+    .catch(() => undefined)
+    .then((version) => { versions.set(key, { version }); });
+}
+
+async function readVersion(at: string, signal: AbortSignal): Promise<string | undefined> {
+  // Its input is closed: an agent that reads its input for a session reads none and ends, rather than waiting out the probe.
+  const owned = spawnOwnedGroup(at, ['--version'], { env: probeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }, signal);
+  probes.add(owned);
+  let printed = '';
+  owned.child.stdout?.setEncoding('utf8');
+  owned.child.stdout?.on('data', (chunk: string) => { if (printed.length < MAX_VERSION_OUTPUT_CHARS) printed += chunk; });
+  try {
+    const code = await owned.exit.catch(() => -1);
+    return code === 0 ? agentVersionOf(printed) : undefined;
+  } finally { probes.delete(owned); }
+}
+
+/** Stop every version probe still running, its helpers included, and wait until they are gone. */
+export async function stopVersionProbes(): Promise<void> {
+  probesStopping.abort();
+  probesStopping = new AbortController();
+  await Promise.all([...probes].map((owned) => owned.dispose().catch(() => undefined)));
+}
+
+/** The binary's version where its probe has answered; otherwise undefined, with a probe started if none is asking. */
+async function knownVersion(at: string, ask: boolean): Promise<string | undefined> {
+  let key: string;
+  try {
+    const found = await stat(at);
+    key = `${at}\u0000${found.mtimeMs}\u0000${found.size}`;
+  } catch { return undefined; }
+  const held = versions.get(key);
+  if (held === undefined && ask) askVersion(at, key);
+  return typeof held === 'object' ? held.version : undefined;
+}
+
+/**
+ * Worker detection leaves the event loop free for leases, requests and shutdown. An agent's version is offered once a
+ * background probe has read it: detection never waits on it.
+ */
 export async function detectHarnessesAsync(only?: readonly string[], signal?: AbortSignal, mode: DetectionMode = READ_CREDENTIAL_BYTES): Promise<DetectedHarness[]> {
   const wanted = only === undefined || only.length === 0 ? null : new Set(only);
   return Promise.all(HARNESSES.filter((harness) => wanted === null || wanted.has(harness.id)).map(async (harness) => {
     const found = await probeCommand(process.platform === 'win32' ? 'where' : 'which', [harness.binary], signal);
-    const installed = (found?.split('\n')[0]?.trim() ?? '').length > 0;
+    const at = found?.split('\n')[0]?.trim() ?? '';
+    const installed = at.length > 0;
     if (!installed) return { id: harness.id, installed, authenticated: false };
+    const version = knownVersion(at, mode.versions === true);
+    const withVersion = async (detected: DetectedHarness): Promise<DetectedHarness> => {
+      const known = await version;
+      return known === undefined ? detected : { ...detected, version: known };
+    };
     try {
       const probe = harness.credential;
       const authenticated = probe.kind === 'command'
         ? await probeCommand(harness.binary, probe.args, signal, credentialProbeEnvironment(harness, probeEnv())) !== null
         : mode.credentialBytes ? await fileHoldsAsync(credentialFile(harness), probe.requires) : await fileNonEmpty(credentialFile(harness));
-      return { id: harness.id, installed, authenticated };
-    } catch (error) { return { id: harness.id, installed, authenticated: false, error: error instanceof Error ? error.message : String(error) }; }
+      return withVersion({ id: harness.id, installed, authenticated });
+    } catch (error) { return withVersion({ id: harness.id, installed, authenticated: false, error: error instanceof Error ? error.message : String(error) }); }
   }));
 }
 
@@ -249,7 +323,7 @@ export function offerOf(detected: readonly DetectedHarness[]): { offered: Offere
   return {
     offered: detected.flatMap((found) => {
       const harness = harnessById(found.id);
-      return harness !== null && offerable(harness) ? [{ id: found.id, installed: found.installed, authenticated: found.authenticated, ...(found.unavailableReason === undefined ? {} : { unavailableReason: found.unavailableReason, signInFailure: {
+      return harness !== null && offerable(harness) ? [{ id: found.id, installed: found.installed, authenticated: found.authenticated, ...(found.version === undefined ? {} : { version: found.version }), ...(found.unavailableReason === undefined ? {} : { unavailableReason: found.unavailableReason, signInFailure: {
         name: harness.name, source: found.signInSource ?? 'own', hint: found.signInSource === 'stored'
           ? STORED_SIGN_IN_HINT : (process.platform === 'darwin' ? harness.signInHint.darwin : undefined) ?? harness.signInHint.default,
       } }), profile: harness.profile }] : [];

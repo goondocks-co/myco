@@ -46,7 +46,7 @@ async function rig() {
     [id, NOW, JSON.stringify({ params: { session_id: 'fixture-session', mode: 'claim' }, serverUrl: 'https://s', actor: 'deployment', timeoutSeconds: 300 }), JSON.stringify({ timeoutSeconds: 300 })],
   );
   const claim = async (tokenId: string, machineId: string, now: number) => {
-    const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(tokenId, machineId), harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
+    const claimed = await claimNextRun(e.serverEnv, { principal: legacyWorker(tokenId, machineId), harnesses: [{ ...offeredHarness('claude-code'), version: '2.1.3' }], capabilities: WORKER_CAPABILITIES, now });
     if (!claimed.claimed) throw new Error(`nothing claimed: ${claimed.reason}`);
     return claimed.run;
   };
@@ -72,6 +72,7 @@ describe('a claim and its attempt', () => {
 });
 
 describe('a step page', () => {
+  // A legacy member's claim offers a version, but a member attempt has no runner to report one and keeps neither.
   it('lands once however often it is sent, and the run\'s detail reads the log with its totals', async () => {
     const r = await rig();
     r.queue('run_1');
@@ -81,7 +82,7 @@ describe('a step page', () => {
     expect(await r.send(r.first.token, 'run_1', page!)).toEqual({ persisted: true, stored: true, landed: 0 });
     expect(r.stored('run_1', run.attemptId)).toEqual(steps(3));
     const detail = await getRunDetail(r.e.db, SCOPE, 'run_1', NOW + 2, 'mem_worker');
-    expect(detail?.attempts).toEqual([{ attemptId: run.attemptId, claimedAt: NOW + 1, executor: { kind: 'legacy-worker', memberId: 'mem_worker' }, steps: { total: 3, received: 3, overflow: 0, unrecognized: UNRECOGNIZED }, waitedFor: 'worker', waitedSince: NOW }]);
+    expect(detail?.attempts).toEqual([{ attemptId: run.attemptId, claimedAt: NOW + 1, executor: { kind: 'legacy-worker', memberId: 'mem_worker' }, steps: { total: 3, received: 3, overflow: 0, unrecognized: UNRECOGNIZED }, waitedFor: 'worker', waitedSince: NOW, runnerVersion: null, agentVersion: null, harness: 'claude-code' }]);
     expect(detail?.steps).toEqual({ attemptId: run.attemptId, rows: steps(3), cursor: null });
   });
 

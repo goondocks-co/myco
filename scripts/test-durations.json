@@ -628,6 +628,7 @@
     "tests/myco-server/run-heads.test.ts": 14560,
     "tests/myco-server/run-list-read-cost.test.ts": 22000,
     "tests/myco-server/run-liveness.test.ts": 5000,
+    "tests/myco-server/run-drift.test.ts": 12000,
     "tests/myco-server/run-material.test.ts": 4,
     "tests/myco-server/run-panel-truth.test.ts": 833,
     "tests/myco-server/run-reads.test.ts": 2797,

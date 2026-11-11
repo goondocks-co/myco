@@ -155,6 +155,12 @@ export interface RunAttempt {
   waitedFor: string | null;
   /** When the stay in the queue this attempt ended began; null when the run was never queued or it was not recorded. */
   waitedSince: number | null;
+  /** The runner's own version at the claim, as it last reported it; null where it reported none or no runner took it. */
+  runnerVersion: string | null;
+  /** The coding agent's version the claim reported for the harness it ran; null where it reported none. */
+  agentVersion: string | null;
+  /** The harness this attempt was claimed for, as its claim recorded it; null for an attempt that recorded none. */
+  harness: string | null;
 }
 
 /** One step a worker observed, metadata only: its target in its shaped form, where `…` marks words not kept. */
@@ -232,6 +238,8 @@ export interface RunDetailAnswer {
   steps: RunStepPage | null;
   /** What the run's task owes before it closes, checked against what is stored now; null for a task held to no rule. */
   outcomeEvidence: RunCloseEvidence | null;
+  /** The distinct prompts Myco served the run; null for a run queued before Myco counted them. */
+  servedPrompts: number | null;
   projectId: string;
 }
 

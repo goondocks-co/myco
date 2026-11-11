@@ -21,7 +21,7 @@ import { parseWorkerAccounting, WorkerUsageError } from '@goondocks/myco-shared/
 import type { ServerEnv } from '../core/adapters.js';
 import type { DeploymentContext } from '../context.js';
 import { claimNextRun, endLeasedRun, renewLease } from '../core/harness.js';
-import { type OfferedHarness } from '../core/worker-selection.js';
+import { agentVersionOf, type OfferedHarness } from '../core/worker-selection.js';
 import { WORKER_HEARTBEAT_MS, WORKER_LEASE_MS, WORKER_POLL_IDLE_MS } from '../constants.js';
 import { ok } from './scope.js';
 import { prepareWorkerRepository } from '../core/worker-repository.js';
@@ -58,9 +58,10 @@ function offered(value: unknown): OfferedHarness[] {
   const out: OfferedHarness[] = [];
   for (const entry of value) {
     if (entry === null || typeof entry !== 'object') continue;
-    const { id, installed, authenticated, profile, unavailableReason, signInFailure } = entry as Record<string, unknown>;
+    const { id, installed, authenticated, profile, unavailableReason, signInFailure, version } = entry as Record<string, unknown>;
     const capability = offeredProfile(profile);
-    if (typeof id === 'string' && HARNESS_ID_SHAPE.test(id)) out.push({ id, ...(installed === undefined ? {} : { installed: installed === true }), authenticated: authenticated === true, ...(unavailableReason === 'login_missing' ? { unavailableReason, signInFailure: parseHarnessSignInFailure(signInFailure) } : {}), ...(capability === undefined ? {} : { profile: capability }) });
+    const agentVersion = agentVersionOf(version);
+    if (typeof id === 'string' && HARNESS_ID_SHAPE.test(id)) out.push({ id, ...(installed === undefined ? {} : { installed: installed === true }), authenticated: authenticated === true, ...(unavailableReason === 'login_missing' ? { unavailableReason, signInFailure: parseHarnessSignInFailure(signInFailure) } : {}), ...(capability === undefined ? {} : { profile: capability }), ...(agentVersion === undefined ? {} : { version: agentVersion }) });
   }
   return out;
 }

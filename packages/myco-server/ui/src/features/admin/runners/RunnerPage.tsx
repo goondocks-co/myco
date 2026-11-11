@@ -7,10 +7,11 @@ import { atWords } from '../../work/words';
 import { SourceMark } from '../../work/RunStory';
 import { AdminPage, AdminSection } from '../AdminFrame';
 import { taskWords } from '../workers';
+import { agentVersionWords, modelDrift, runnerVersionWords, type DriftFacts } from './drift';
 
 /** How one claim by this runner came out, as `GET /api/runners/{id}/runs` answers it. */
 type RunnerRunOutcome = 'running' | 'worked' | 'changed_nothing' | 'failed' | 'handed_on' | 'other';
-interface RunnerRun { attemptId: string; claimedAt: number; projectId: string; projectName: string | null; runId: string; task: string | null; completedAt: number | null; outcome: RunnerRunOutcome }
+interface RunnerRun extends DriftFacts { attemptId: string; claimedAt: number; projectId: string; projectName: string | null; runId: string; task: string | null; completedAt: number | null; outcome: RunnerRunOutcome }
 interface RunnerRunsPage extends Page<RunnerRun> {
   runner: { id: string; name: string; state: string; lastSeenAt: number | null; version: string | null };
 }
@@ -58,6 +59,7 @@ export function RunnerPage() {
           {runner.version !== null && <p className="t-meta text-muted">Runner version {runner.version}, as it last reported.</p>}
         </Card>
       )}
+      {runs.rows.length > 0 && <RunnerDrift rows={runs.rows} />}
       <AdminSection id="runner-runs" title="Recent runs" description="Each time this runner took a run, with how that run came out. A run another try took on later shows here where this runner stopped.">
         {runner !== undefined && runs.rows.length === 0 && <p className="t-body text-muted">This runner has not run anything yet.</p>}
         <ul className="flex flex-col">
@@ -79,5 +81,27 @@ export function RunnerPage() {
         {runs.rows.length > 0 && <ShowMore shown={runs.rows.length} noun="runs" onMore={runs.more} pending={runs.isFetchingMore} hasMore={runs.hasMore} />}
       </AdminSection>
     </AdminPage>
+  );
+}
+
+/** Versions and models across the runs the page has loaded: what each ran with, and the model each ran against what it was asked for. */
+function RunnerDrift({ rows }: { rows: readonly RunnerRun[] }) {
+  const runner = runnerVersionWords(rows);
+  const agents = agentVersionWords(rows);
+  const models = modelDrift(rows);
+  return (
+    <AdminSection id="runner-drift" title="What its runs ran with" description={`Across the ${rows.length.toLocaleString()} runs shown below: the versions each ran with, and the model each ran against the one it was asked for.`}>
+      <Card className="flex flex-col gap-s2" data-runner-drift="">
+        {runner !== null && <p className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1 t-small text-ink-2" data-drift="runner">Runner: {runner}<SourceMark source="runner" /></p>}
+        {agents !== null && <p className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1 t-small text-ink-2" data-drift="agent">Agents: {agents}<SourceMark source="runner" /></p>}
+        {models.headline !== null && <p className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1 t-small text-ink-2" data-drift="models">{models.headline}<SourceMark source="runner" /></p>}
+        {models.lines.length > 0 && (
+          <ul className="flex flex-col gap-s1 t-meta" aria-label="Models asked for and run">
+            {models.lines.map((line) => <li key={line.words} className={line.state === 'mismatch' ? 'text-warn' : 'text-muted'} data-model-drift={line.state}>{line.words}</li>)}
+          </ul>
+        )}
+        <p className="t-meta text-muted">Versions are as the runner reported them when it took each run; a runner from before Myco recorded them reads “not reported”. Models are as each run’s latest try recorded them: the model its agent reported, or only the one it was launched with where it reported none.</p>
+      </Card>
+    </AdminSection>
   );
 }
