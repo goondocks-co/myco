@@ -4,6 +4,7 @@ import { clampLimit, decodeCursor, encodeCursor, type Page, type ProjectSet, typ
 import { readPlanPage, readPlanTags, type PlanListRow, type PlanPageKey } from '../../db/plans/browse.js';
 import { planInSession, readPlanDetail, readPlanSummary } from '../../db/plans/detail.js';
 import { planStatusTotals } from '../../db/plans/counts.js';
+import { PAST_PLAN_STATUSES } from '../../db/plans/resolution.js';
 
 /** The statuses an administrative edit may write — the catalogue's; the list filter alone admits 'all'. */
 const plans_WRITABLE_PLAN_STATUSES: ReadonlySet<string> = new Set(PLAN_STATUSES);
@@ -27,6 +28,8 @@ interface plans_PlanListItem {
   progress: string | null;
   /** The member behind its last administrative edit, null when a capture event wrote last. */
   updatedBy: string | null;
+  /** The later plan an abandoned plan was superseded by, with its title; null for every other plan. */
+  supersededBy: { planKey: string; title: string | null } | null;
   createdAt: number;
   updatedAt: number;
   tags: string[];
@@ -47,12 +50,16 @@ interface plans_ProjectPlanRow extends plans_PlanListItem {
   blobKey: string | null;
   /** The registered object admitted by this plan's processed-field provenance, or null. */
   objectKey: string | null;
-  /** Null for a plan nobody has resolved or reviewed. */
+  /** Null for a live plan, and for a past plan nobody resolved. */
   resolution: plans_PlanResolution | null;
 }
 
-const resolutionOf = (row: { resolution_note: string | null; resolved_at: number | null; superseded_by: string | null; outcome_refs: string | null }): plans_PlanResolution | null =>
-  row.resolution_note === null && row.resolved_at === null ? null
+const supersededOf = (row: { superseded_by: string | null; superseded_by_title: string | null }) =>
+  row.superseded_by === null ? null : { planKey: row.superseded_by, title: row.superseded_by_title };
+
+/** A past plan's resolution; a live plan has none to show, even one curation reviewed and left open. */
+const resolutionOf = (row: { status: string; resolution_note: string | null; resolved_at: number | null; superseded_by: string | null; outcome_refs: string | null }): plans_PlanResolution | null =>
+  !(PAST_PLAN_STATUSES as readonly string[]).includes(row.status) || (row.resolution_note === null && row.resolved_at === null) ? null
     : { note: row.resolution_note, resolvedAt: row.resolved_at, supersededBy: row.superseded_by, evidence: row.outcome_refs === null ? [] : JSON.parse(row.outcome_refs) as string[] };
 
 /** A plan's bounded metadata, including the content revision and source session. */
@@ -88,7 +95,7 @@ function listed(row: PlanListRow, tags: string[]): plans_PlanAcrossRow {
   return {
     projectId: row.project_id, planKey: row.plan_key, sessionId: row.session_id, promptId: row.prompt_id, title: row.title, status: row.status,
     originPath: row.origin_path, preview: row.preview, progress: storedProgress(row.progress_done, row.progress_total), updatedBy: row.updated_by,
-    createdAt: row.created_at, updatedAt: row.updated_at, tags,
+    supersededBy: supersededOf(row), createdAt: row.created_at, updatedAt: row.updated_at, tags,
   };
 }
 
@@ -215,7 +222,7 @@ async function plans_getPlan(db: RelationalStore, scope: ReadScope, planKey: str
     planKey: row.plan_key, sessionId: row.session_id, promptId: row.prompt_id, title: row.title, status: row.status, content: row.content,
     blobKey: row.blob_key, objectKey: row.object_key, originPath: row.origin_path, preview: row.preview,
     progress: storedProgress(row.progress_done, row.progress_total), updatedBy: row.updated_by, createdAt: row.created_at, updatedAt: row.updated_at,
-    tags: tags.get(scope.projectId)?.get(planKey) ?? [], resolution: resolutionOf(row),
+    supersededBy: supersededOf(row), tags: tags.get(scope.projectId)?.get(planKey) ?? [], resolution: resolutionOf(row),
   };
 }
 

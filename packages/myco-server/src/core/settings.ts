@@ -188,7 +188,9 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 const TASK_FIELDS = ['harness', 'model', 'reasoningLevel', 'schedule'] as const;
 const SCHEDULE_FIELDS = ['enabled', 'intervalSeconds', 'runIn', 'preCondition', 'accelerator', 'maxRunsPerDay', 'memberRunsPerDay', 'reservedRunsPerDay', 'runWhenCold', 'overlap'] as const;
 const consumedTaskFields = (task: string): readonly string[] => {
-  if (!(OUTCOME_TASKS as readonly string[]).includes(task) || TASK_EXECUTION_PROFILES[task] !== undefined) return [];
+  if (!(OUTCOME_TASKS as readonly string[]).includes(task)) return [];
+  // A fixed execution profile takes no agent choice; its schedule is still the owner's.
+  if (TASK_EXECUTION_PROFILES[task] !== undefined) return TASK_SCHEDULE[task] != null ? ['schedule'] : [];
   if (task === EXTRACTION_TASK) return ['harness', 'model', 'reasoningLevel', 'enabled', 'memberRunsPerDay'];
   return task === TITLING_TASK || TASK_SCHEDULE[task] != null ? TASK_FIELDS : TASK_FIELDS.filter((field) => field !== 'schedule');
 };

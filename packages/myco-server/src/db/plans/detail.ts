@@ -3,7 +3,7 @@ import { registeredObjectKeySql } from '../../core/blob-objects.js';
 import { processedResourceProofSql } from '../processed-resources.js';
 import { notTombstonedSql } from '../session-read-model.js';
 import { first, read, write } from '../index.js';
-import { PAST_PLAN_STATUSES } from './resolution.js';
+import { PAST_PLAN_STATUSES, supersededColumnsSql } from './resolution.js';
 
 /** One plan in full: its body, the object key of a body spilled to a blob once its processing is proven, and its stored progress. */
 export interface PlanDetailRow {
@@ -25,6 +25,7 @@ export interface PlanDetailRow {
   resolution_note: string | null;
   resolved_at: number | null;
   superseded_by: string | null;
+  superseded_by_title: string | null;
   outcome_refs: string | null;
 }
 
@@ -36,7 +37,7 @@ const DETAIL = read<[project: string, plan: string], PlanDetailRow>({ name: 'pla
   sql: `SELECT p.plan_key,p.session_id,p.prompt_id,p.title,p.status,p.content,p.blob_key,
       CASE WHEN ${processedResourceProofSql('p.project_id', 'plan', 'p.plan_key', 'p.blob_key')} THEN ${registeredObjectKeySql('p.project_id', 'p.blob_key')} END AS object_key,
       p.origin_path,p.updated_by,p.created_at,p.updated_at,m.preview,m.progress_done,m.progress_total,
-      p.resolution_note,p.resolved_at,p.superseded_by,p.outcome_refs
+      p.resolution_note,p.resolved_at,p.outcome_refs,${supersededColumnsSql('p')}
     FROM plans p LEFT JOIN plan_metadata m ON m.project_id=p.project_id AND m.plan_key=p.plan_key WHERE p.project_id=?1 AND p.plan_key=?2 AND ${SHOWN}` });
 const SUMMARY = read<[project: string, plan: string], PlanSummaryRow>({ name: 'planDetail.summary',
   sql: `SELECT p.plan_key,p.title,p.status,p.session_id,p.content_hash FROM plans p WHERE p.project_id=?1 AND p.plan_key=?2 AND ${SHOWN}` });

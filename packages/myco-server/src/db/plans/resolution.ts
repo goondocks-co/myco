@@ -23,6 +23,11 @@ export const planResolvedSql = (p: string): string => `${p}.status IN (${PAST}) 
 export const planOutcomeLineSql = (p: string): string => `CASE WHEN ${p}.status = 'completed' THEN 'Completed' WHEN ${p}.superseded_by IS NOT NULL THEN 'Superseded'
   ELSE 'Abandoned' END || ' ' || date(${p}.resolved_at / 1000, 'unixepoch') || COALESCE(': ' || ${p}.resolution_note, '')`;
 
+/** An abandoned plan's superseding plan and that plan's title, as `superseded_by` and `superseded_by_title`; null for every other plan. */
+export const supersededColumnsSql = (p: string): string => `CASE WHEN ${p}.status='abandoned' THEN ${p}.superseded_by END AS superseded_by,
+  CASE WHEN ${p}.status='abandoned' AND ${p}.superseded_by IS NOT NULL
+    THEN (SELECT s.title FROM plans s WHERE s.project_id=${p}.project_id AND s.plan_key=${p}.superseded_by) END AS superseded_by_title`;
+
 /** The instant a plan last moved for curation: its last edit, or its last review if later. The candidate index is on it. */
 const DUE = (p: string) => `MAX(${p}.updated_at, COALESCE(${p}.reviewed_at, 0))`;
 
@@ -67,16 +72,28 @@ export async function stalePlanExists(db: RelationalStore, projectId: string, be
 /** One pull request, issue, tag, release or deploy a session reported. */
 export interface ReportedOutcomeRow { session_id: string; kind: string; artifact_id: string; url: string; reported_at: number }
 
-const OUTCOMES = read<[project: string, sessions: string, limit: number], ReportedOutcomeRow>({ name: 'planCuration.outcomes',
+const OUTCOMES = read<[project: string, sessions: string, since: number, limit: number], ReportedOutcomeRow>({ name: 'planCuration.outcomes',
   sql: `SELECT a.session_id,a.kind,a.artifact_id,a.url,a.reported_at FROM json_each(?2) j
-    CROSS JOIN session_artifacts a INDEXED BY idx_session_artifacts_session ON a.project_id=?1 AND a.session_id=j.value
-    ORDER BY a.reported_at DESC,a.id LIMIT ?3` });
+    CROSS JOIN session_artifacts a INDEXED BY idx_session_artifacts_session ON a.project_id=?1 AND a.session_id=j.value AND a.reported_at>=?3
+    ORDER BY a.reported_at DESC,a.id LIMIT ?4` });
 
-/** The newest `limit` outcomes the sessions of each set reported, one read per set. */
-export async function readReportedOutcomes(db: RelationalStore, projectId: string, sessionSets: readonly (readonly string[])[], limit: number): Promise<ReportedOutcomeRow[][]> {
-  if (sessionSets.length === 0) return [];
-  return readSet(db, ...sessionSets.map((sessions) => OUTCOMES.bind(projectId, JSON.stringify(sessions), limit)));
+/** The sessions whose outcomes are one plan's evidence, and the instant the plan was written: only outcomes reported since count. */
+export interface OutcomeSessions { sessions: readonly string[]; since: number }
+
+/** The newest `limit` outcomes the sessions of each set reported at or after its instant, one read per set. */
+export async function readReportedOutcomes(db: RelationalStore, projectId: string, sets: readonly OutcomeSessions[], limit: number): Promise<ReportedOutcomeRow[][]> {
+  if (sets.length === 0) return [];
+  return readSet(db, ...sets.map((set) => OUTCOMES.bind(projectId, JSON.stringify(set.sessions), set.since, limit)));
 }
+
+const OUTCOME_REPORTER = read<[project: string, sessions: string, kind: string, artifact: string], { session_id: string; reported_at: number }>({
+  name: 'planCuration.outcomeReporter',
+  sql: `SELECT a.session_id,a.reported_at FROM json_each(?2) j CROSS JOIN session_artifacts a INDEXED BY idx_session_artifacts_identity
+    ON a.project_id=?1 AND a.session_id=j.value AND a.kind=?3 AND a.artifact_id=?4 ORDER BY a.reported_at LIMIT 1` });
+
+/** Which of `sessions` reported the artifact `kind`/`artifactId`, and when; null when none of them did. */
+export const readOutcomeReporter = (db: RelationalStore, projectId: string, sessions: readonly string[], kind: string, artifactId: string): Promise<{ session_id: string; reported_at: number } | null> =>
+  first(db, OUTCOME_REPORTER.bind(projectId, JSON.stringify(sessions), kind, artifactId));
 
 const PLAN_HELD = read<[project: string, plan: string], { plan_key: string; created_at: number }>({ name: 'planCuration.planHeld',
   sql: `SELECT p.plan_key,p.created_at FROM plans p WHERE p.project_id=?1 AND p.plan_key=?2 AND ${notTombstonedSql('p')}` });

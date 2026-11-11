@@ -173,6 +173,16 @@ export function planStatusWord(status: string): string {
   return PLAN_STATUS_WORDS[status] ?? sporeTypeWord(status);
 }
 
+/** A plan's state as the reader names it: an abandoned plan a later plan carries on is Superseded. */
+export function planStateWord(plan: { status: string; supersededBy?: { planKey: string } | null }): string {
+  return plan.status === 'abandoned' && plan.supersededBy != null ? 'Superseded' : planStatusWord(plan.status);
+}
+
+/** The later plan that replaced this one, by its title. */
+export function supersedingTitle(superseding: { title: string | null }): string {
+  return superseding.title === null || superseding.title.trim() === '' ? 'a later plan' : superseding.title;
+}
+
 /** In progress is the one plan state the reader acts on; the rest are quiet. */
 export function planStatusTone(status: string): Tone {
   return status === 'in_progress' ? 'ok' : 'neutral';
