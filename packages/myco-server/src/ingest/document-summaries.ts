@@ -6,7 +6,7 @@ import type { ServerEnv } from '../core/adapters.js';
 import { cardOutline } from '../core/turn-cards.js';
 import { sessionEditPaths } from '../db/documents/edit-paths.js';
 import { prepareBound } from '../db/kernel/statement.js';
-import { contentAssertion } from '../core/registered-content.js';
+import { contentAssertion } from '../db/storage/content-guard.js';
 import { registeredObjectKeySql } from '../db/storage/registered-object-key.js';
 import { readBodyChunk, readPageChunk, type ChunkRow } from '../content/document-reader.js';
 import { SESSION_OWNER } from '../db/document-tables.js';

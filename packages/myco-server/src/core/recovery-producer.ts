@@ -23,7 +23,7 @@ import {
 } from './recovery-inventory.js';
 import {
   endStatements, feedStatements, newStatementScan, tableColumns, tableDefinition, type StatementScan,
-} from './sql-statements.js';
+} from '../db/sql-statements.js';
 
 /**
  * How an attempt ends, or that it continues. `downloaded` is where a settled export-only attempt rests; the stages

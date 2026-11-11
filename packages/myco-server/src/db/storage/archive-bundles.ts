@@ -3,7 +3,7 @@
  * rows in one transaction, and the reads that resolve a stored bundle.
  */
 import type { RelationalStore } from '../../core/adapters.js';
-import { effectiveRawOwnerSql } from '../../core/raw-claims.js';
+import { effectiveRawOwnerSql } from '../raw/claims.js';
 import { composedStatements } from '../composed-statements.js';
 import { archivedEventPayloadSql } from '../document-tables.js';
 import { commit, first, read, readSet, rows, write, type BindValue, type Bound } from '../index.js';

@@ -1,26 +1,18 @@
-import type { PreparedStatement, RelationalStore } from './adapters.js';
-import { runCallerGuard } from '../db/runs/claim.js';
+import type { RelationalStore } from './adapters.js';
+import { refused } from '../db/index.js';
+import { boundWriteGuardStore } from '../db/kernel/guarded-store.js';
+import { liveRunWrite, RUN_WRITE_EXPIRED } from '../db/runs/live-run-write.js';
 import { type RunCaller } from '../db/runs/lifecycle.js';
-import { writeGuardStore } from './write-guard-store.js';
-
-const EXPIRED_PATH = '$[myco_run_write_expired]';
 
 export class RunWriteExpired extends Error {
   constructor() { super('credential holds no live run'); }
 }
 
-/** Run mutations and their authority assertions commit in one atomic store batch. */
+/** Run mutations and their authority assertions commit in one atomic store batch, checked before and after the writes. */
 export function runWriteStore(db: RelationalStore, projectId: string, runId: string, caller: RunCaller): RelationalStore {
-  const assertion = (): PreparedStatement => {
-    const guard = runCallerGuard(caller, "status = 'running'");
-    // An invalid JSON path aborts the transaction with a named authority failure.
-    return db.prepare(`SELECT CASE WHEN EXISTS (
-      SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ?${guard.sql}
-    ) THEN 1 ELSE json_extract('[]', ?) END AS admitted`)
-      .bind(projectId, runId, ...guard.params, EXPIRED_PATH);
-  };
-  return writeGuardStore(db, assertion, error => {
-    if (error instanceof Error && error.message.includes(EXPIRED_PATH.slice(1))) throw new RunWriteExpired();
+  const assertion = () => liveRunWrite(projectId, runId, caller);
+  return boundWriteGuardStore(db, assertion, error => {
+    if (refused(error, RUN_WRITE_EXPIRED)) throw new RunWriteExpired();
     throw error;
-  }, { assertAfter: true });
+  }, { after: () => [assertion()] });
 }

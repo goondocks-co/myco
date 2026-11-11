@@ -32,7 +32,7 @@
  * What an answer says is read once for every caller of this API
  * (`readD1ExportAnswer`): only `complete` or `error` for the export ends it.
  */
-import { newStatementScan, feedStatements, endStatements, isSelectStatement } from '@myco-server-worker/core/sql-statements.js';
+import { newStatementScan, feedStatements, endStatements, isSelectStatement } from '@myco-server-worker/db/sql-statements.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';

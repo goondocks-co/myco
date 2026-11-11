@@ -3,7 +3,7 @@ import { parseRunnerCredentialChoices, type RunnerCredentialChoices } from '@goo
 import { tryNameMemberFromLogin } from './members-admin.js';
 import { AUTH_SETUP_CODES } from '@goondocks/myco-shared/member-protocol';
 import { hasLinkedAdmin } from './identity-link.js';
-import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
+import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import { toBase64Url } from '../base64.js';
 import { sha256Hex } from '../hash.js';
@@ -51,11 +51,6 @@ interface DeviceRow {
  */
 export function expireCarriedDeviceRequest(row: Record<string, unknown>, now: number): Record<string, unknown> {
   return row.decision === null && typeof row.expires_at === 'number' && row.expires_at > now ? { ...row, expires_at: now } : row;
-}
-
-/** `expireCarriedDeviceRequest` over every request a recovered store holds. */
-export function expireCarriedDeviceRequests(db: RelationalStore, now: number): PreparedStatement {
-  return db.prepare('UPDATE device_requests SET expires_at = ? WHERE decision IS NULL AND expires_at > ?').bind(now, now);
 }
 
 const deviceError = (error: string, status = 400, interval?: number): Response =>

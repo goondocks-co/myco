@@ -1,11 +1,11 @@
 import { SHA256 } from '@stablelib/sha256';
-import type { PreparedStatement, RelationalStore, ContentStore } from './adapters.js';
+import type { ContentStore } from './adapters.js';
 import { blobObjectKey } from './blob-objects.js';
 import { admitDerivedUpload, contentRegistration, durableProofHeld, publishDerivedUpload, recordProofOfRegistered, type DerivedAuthority } from '../db/storage/content-lifecycle.js';
 import { settleUpload } from '../db/storage/object-lifecycle.js';
-import { BLOB_RESERVATION_TTL_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
+import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
+import { sourceLiveGuard } from '../db/storage/content-source.js';
 import { sha256HexOf, utf8 } from '../hash.js';
-import { credentialLive } from '../db/identity/capture-credential.js';
 import { measuredContentEnv } from './content-budget.js';
 
 export interface DerivedContentSource {
@@ -27,39 +27,6 @@ export interface VerifiedContent {
   preparationCalls?: number;
 }
 export interface ContentPublicationGuard { sql: string; params: readonly unknown[] | (() => readonly unknown[]) }
-
-/** An internal source still belongs to the live Project and untombstoned session. */
-const sourceLive = (source: DerivedContentSource) => {
-  const credential = source.memberTokenId === undefined ? { sql: '1', params: [] } : credentialLive(source.memberTokenId);
-  // A server source may re-derive the transcript parser's own earlier event for its session; the replay gate decides whether it lands.
-  const rederived = source.memberTokenId === undefined ? ` AND NOT (producer_adapter='${TRANSCRIPT_PARSE_ADAPTER}' AND session_id=?)` : '';
-  return {
-  sql: `(${credential.sql}) AND EXISTS (SELECT 1 FROM projects WHERE project_id=?)
-    AND NOT EXISTS (SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)
-    AND NOT EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND envelope_hash<>?${rederived})`,
-  params: [...credential.params, source.projectId, source.projectId, source.sessionId, source.projectId, source.eventId, source.envelopeHash,
-    ...(source.memberTokenId === undefined ? [source.sessionId] : [])],
-}; };
-
-/** A failed assertion aborts the entire publication or clear transaction. */
-export function contentAssertion(db: RelationalStore, sql: string, params: readonly unknown[],
-  when?: { sql: string; params: readonly unknown[] }): PreparedStatement[] {
-  return [db.prepare(`INSERT INTO storage_content_guard(ok) SELECT CASE WHEN (${sql}) THEN 1 ELSE 0 END
-    ${when === undefined ? '' : `WHERE (${when.sql})`}`).bind(...params,...(when?.params??[])),
-    db.prepare('DELETE FROM storage_content_guard')];
-}
-
-/** Exact immutable generation and durable read-back evidence required by a content transition. */
-export function verifiedContentSql(source: DerivedContentSource, content: VerifiedContent): { sql: string; params: unknown[] } {
-  return {
-    sql: `EXISTS (SELECT 1 FROM registered_content_proofs p JOIN blobs b
-      ON b.project_id=p.project_id AND b.key=p.key AND b.generation IS p.generation AND b.size=p.size
-      WHERE p.project_id=? AND p.source_kind=? AND p.source_id=? AND p.event_id=? AND p.envelope_hash=?
-        AND p.key=? AND p.generation IS ? AND p.digest=p.key AND p.size=? AND p.durable=1)`,
-    params: [source.projectId, source.sourceKind, source.resourceId ?? source.eventId, source.eventId, source.envelopeHash,
-      content.key, content.generation, content.size],
-  };
-}
 
 /** Verifies a complete stored body in bounded chunks without retaining the body in memory. */
 export async function verifyContentObject(env: Pick<ContentStore, 'blobs'>, physical: string, size: number, digest: string): Promise<void> {
@@ -111,7 +78,7 @@ export async function prepareDerivedStream(
 ): Promise<VerifiedContent> {
   const db = env.db;
   const publicationStarted=Date.now();
-  const sourceAuthority = sourceLive(source);
+  const sourceAuthority = sourceLiveGuard(source);
   const live = () => publicationGuard === undefined ? sourceAuthority : {
     sql: `(${sourceAuthority.sql}) AND (${publicationGuard.sql})`,
     params: [...sourceAuthority.params, ...(typeof publicationGuard.params === 'function'

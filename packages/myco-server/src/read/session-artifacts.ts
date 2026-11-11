@@ -5,7 +5,8 @@
  * default https port, and is shown as text everywhere else. `idx_session_artifacts_session` serves the read.
  */
 import type { RelationalStore } from '../core/adapters.js';
-import { ARTIFACT_COLUMNS, type ArtifactKind, type SessionArtifactRow } from '../core/session-artifacts.js';
+import { type ArtifactKind, type SessionArtifactRow } from '../core/session-artifacts.js';
+import { ARTIFACT_COLUMNS } from '../db/sessions/artifacts.js';
 import { keyset, page, type Page, type ReadScope } from './scope.js';
 
 /** The hosts whose artifact URLs a reader is offered as links. */

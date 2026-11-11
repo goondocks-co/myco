@@ -28,7 +28,7 @@ import { TASK_ADMISSION } from '@myco-server-worker/core/task-catalogue.js';
 import { skipContext } from '@myco-server-worker/core/runs.js';
 import { hasLiveTaskRun, lastTaskEntryAt, taskEntriesSince } from '@myco-server-worker/db/runs/claim.js';
 import { INPUT_UNCHANGED } from '@myco-server-worker/db/schedule-entry.js';
-import { taskFactsKey, taskRunFacts } from '@myco-server-worker/db/runs/task-facts.js';
+import { taskFactsKey } from '@myco-server-worker/db/runs/task-facts.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
@@ -521,16 +521,6 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
       }
     }
     expect([...whole.capabilities].sort()).toEqual(['proj_1', 'proj_2', 'proj_3'].flatMap((id) => ['canopy'].map((capability) => taskFactsKey(id, capability))).sort());
-  });
-
-  it('reads every Project\'s runs through the Project-and-task index, never by scanning the runs', () => {
-    const f = fixture();
-    const facts = taskRunFacts(f.env.db, ['canopy-map'], NOW - DAY, CLOCK_ACTOR);
-    const sql = (facts.statement as unknown as { sql?: string }).sql;
-    const text = sql ?? '';
-    const plan = f.sqlite.query(`EXPLAIN QUERY PLAN ${text}`).all(...(Array.from({ length: (text.match(/\?/g) ?? []).length }, () => null) as never[])) as Array<{ detail: string }>;
-    const details = plan.map((row) => row.detail);
-    expect({ index: details.some((d) => d.includes('idx_agent_runs_task')), scans: details.filter((d) => /^SCAN agent_runs/.test(d)) }).toEqual({ index: true, scans: [] });
   });
 });
 

@@ -3,12 +3,13 @@ import { describe, expect, it } from 'bun:test';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { memoryBlobStore } from './helpers/fixtures.js';
 import { BACKFILL_PROJECTS, historicalBackfillSql, HISTORICAL_BLOBS, HISTORICAL_EVENTS, HISTORICAL_PLANS, HISTORICAL_TRANSCRIPTS } from './helpers/raw-backfill-fixture.js';
 import { schemaSqlite } from './helpers/schema-template.js';
+import { changingAtStatement, observing } from './helpers/store-faults.js';
 
 const NOW = Date.parse('2026-10-04T12:00:00Z');
 const MAX_PASSES = 3;
@@ -31,21 +32,14 @@ const fingerprint = async (sqlite: Database, table: string): Promise<string> => 
   return sha256Hex(JSON.stringify(rows));
 };
 
+/** Records the largest result each store call answers, so a pass can be held to one page of rows per statement. */
 function sourcePageGate(sqlite: Database, pages: number[]): RelationalStore {
   const db = sqliteD1(sqlite);
-  const observe = (sql: string, statement: PreparedStatement): PreparedStatement => ({
-    ...statement,
-    bind: (...values) => observe(sql, statement.bind(...values)),
-    all: async <T = Record<string, unknown>>() => {
-      const result = await statement.all<T>();
-      if (sql.startsWith('SELECT s.project_id,') && sql.includes('AS resource_id FROM')) {
-        pages.push(result.results.length);
-        expect(result.results.length).toBeLessThanOrEqual(RAW_BACKFILL_BATCH);
-      }
-      return result;
-    },
-  });
-  return { ...db, prepare: (sql) => observe(sql, db.prepare(sql)) };
+  return { ...db, batch: async (statements) => {
+    const results = await db.batch(statements);
+    pages.push(Math.max(0, ...results.map((result) => result.results.length)));
+    return results;
+  } };
 }
 
 describe('bounded raw provenance backfill correction gates', () => {
@@ -65,21 +59,11 @@ describe('bounded raw provenance backfill correction gates', () => {
       const db = sqliteD1(sqlite);
       const selected = sqlite.query(`SELECT project_id, key FROM blobs ORDER BY project_id, key LIMIT ${RAW_BACKFILL_BATCH}`).all();
       const injectedKey = '0'.repeat(63) + '-';
-      let injected = false;
-      const concurrent: RelationalStore = {
-        ...db,
-        batch: async (statements) => {
-          if (!injected) {
-            sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
-              VALUES (?, ?, 1, 'text/plain', 'credential_backfill', ?, '00000000-0000-4000-8000-000000000001')`, [BACKFILL_PROJECTS[0], injectedKey, NOW]);
-            injected = true;
-          }
-          return db.batch(statements);
-        },
-      };
+      const concurrent = changingAtStatement(db, 'raw.backfillAttributeBlob', () => sqlite.run(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
+        VALUES (?, ?, 1, 'text/plain', 'credential_backfill', ?, '00000000-0000-4000-8000-000000000001')`, [BACKFILL_PROJECTS[0], injectedKey, NOW]));
       const { rawBackfill } = await import('@myco-server-worker/core/raw-backfill.js');
-      expect(await rawBackfill(concurrent, NOW, { budget: { calls: 6, wallMs: 2_000 } })).toEqual({ changed: RAW_BACKFILL_BATCH, more: true });
-      expect(injected).toBe(true);
+      expect(await rawBackfill(concurrent.store, NOW, { budget: { calls: 6, wallMs: 2_000 } })).toEqual({ changed: RAW_BACKFILL_BATCH, more: true });
+      expect(concurrent.landed()).toBe(true);
       for (const row of selected as Array<{ project_id: string; key: string }>) {
         expect(sqlite.query(`SELECT owner_member_id FROM raw_resources WHERE kind = 'blob' AND project_id = ? AND resource_id = ?`).get(row.project_id, row.key)).toEqual({ owner_member_id: 'member_backfill' });
       }
@@ -94,15 +78,13 @@ describe('bounded raw provenance backfill correction gates', () => {
       for (const sql of SCHEMA_STEPS.find(s => s.version === 71)!.statements) sqlite.exec(sql);
       const db = sqliteD1(sqlite);
       let elapsed = 0;
-      let commits = 0;
-      const timed: RelationalStore = { ...db, batch: async statements => {
-        const result = await db.batch(statements);
-        commits++; elapsed += 40; return result;
-      }};
-      expect(await rawBackfill(timed, NOW, { clock: () => elapsed, budget: { calls: 120, wallMs: 100 } }))
-        .toEqual({ changed: RAW_BACKFILL_BATCH * 2, more: true });
-      expect(commits).toBe(2);
-      expect(elapsed).toBeLessThan(100);
+      const timed = observing(db, (_call, moment) => { if (moment === 'after') elapsed += 10; });
+      const timedRun = await rawBackfill(timed.store, NOW, { clock: () => elapsed, budget: { calls: 120, wallMs: 70 } });
+      expect(timedRun.more).toBe(true);
+      expect(timedRun.changed % RAW_BACKFILL_BATCH).toBe(0);
+      const pageCost = elapsed / (timedRun.changed / RAW_BACKFILL_BATCH);
+      expect(elapsed).toBeLessThan(70);
+      expect(elapsed + pageCost).toBeGreaterThanOrEqual(70);
       let statements = 0;
       const counted = sqliteD1(sqlite, { onSql: () => { statements++; } });
       expect((await rawBackfill(counted, NOW, { clock: () => 0, budget: { calls: 12, wallMs: 100 } })).more).toBe(true);
@@ -124,12 +106,10 @@ describe('bounded raw provenance backfill correction gates', () => {
     try {
       for (const sql of SCHEMA_STEPS.find(s => s.version === 71)!.statements) sqlite.exec(sql);
       const db = sqliteD1(sqlite);
-      let commits = 0;
-      const interrupted: RelationalStore = { ...db, batch: async statements => {
-        if (commits === 1) throw new Error('interrupted between pages');
-        const result = await db.batch(statements); commits++; return result;
-      }};
-      await expect(rawBackfill(interrupted, NOW)).rejects.toThrow('interrupted between pages');
+      const interrupted = observing(db, (_call, moment) => {
+        if (moment === 'before' && count(sqlite, 'raw_resources') > 0) throw new Error('interrupted between pages');
+      });
+      await expect(rawBackfill(interrupted.store, NOW)).rejects.toThrow('interrupted between pages');
       expect(count(sqlite, 'raw_resources')).toBe(RAW_BACKFILL_BATCH);
       const checkpoint = sqlite.query('SELECT * FROM raw_provenance_backfill').all();
       const committed = sqlite.query('SELECT * FROM raw_resources ORDER BY rowid').all();
@@ -209,6 +189,7 @@ describe('bounded raw provenance backfill correction gates', () => {
       }
       expect(completed).toBe(true);
       expect(pages.length).toBeGreaterThan(20);
+      expect(Math.max(...pages)).toBeLessThanOrEqual(RAW_BACKFILL_BATCH);
       expect(sqlite.query(`SELECT complete FROM raw_provenance_backfill WHERE id = 1`).get()).toEqual({ complete: 1 });
       expect(count(sqlite, 'raw_resources')).toBe(HISTORICAL_BLOBS + HISTORICAL_TRANSCRIPTS);
       expect(sqlite.query('SELECT kind, COUNT(*) AS n FROM processed_resources GROUP BY kind ORDER BY kind').all()).toEqual([

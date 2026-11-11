@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../core/adapters.js';
-import { boundWriteGuardStore } from '../core/write-guard-store.js';
+import { boundWriteGuardStore } from '../db/kernel/guarded-store.js';
 import { CREDENTIAL_ENDED, credentialWriteAuthority, GRANT_ENDED, grantWriteAuthority } from '../db/auth/write-authority.js';
 import { refused } from '../db/index.js';
 import { TokenRevokedError } from '../telemetry.js';

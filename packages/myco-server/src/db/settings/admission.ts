@@ -1,7 +1,7 @@
 import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from '../../core/budget-policy.js';
 import { EXTRACTION_TASK } from '../../core/task-catalogue.js';
 import type { RelationalStore } from '../../core/adapters.js';
-import { first, read, rows } from '../index.js';
+import { first, read, rows, type Bound } from '../index.js';
 
 /**
  * SQL over settings and capabilities for admissions that run inside another module's batch, and the reads that resolve
@@ -95,6 +95,19 @@ const requested = read<[project: string, capabilities: string], { capability: st
   `SELECT requested.value AS capability,${capabilityOnSql('?1', 'requested.value')} AS enabled FROM json_each(?2) requested` });
 const nextCuration = read<[after: string], { project_id: string }>({ name: 'settings.nextCurationProject', sql: `SELECT c.project_id FROM spore_curation_changes c INDEXED BY idx_curation_changes_due
   WHERE c.dirty=1 AND c.project_id>?1 ORDER BY c.project_id LIMIT 1` });
+
+export interface EnabledCapability { projectId: string; capability: string }
+const enabledSql = (project: string) => `SELECT p.project_id AS projectId, requested.value AS capability FROM projects p
+  CROSS JOIN json_each(?1) requested WHERE ${capabilityOnSql('p.project_id', 'requested.value')}${project}`;
+const enabledEverywhere = read<[capabilities: string], EnabledCapability>({ name: 'settings.enabledCapabilities', sql: enabledSql('') });
+const enabledInProject = read<[capabilities: string, project: string], EnabledCapability>({ name: 'settings.enabledCapabilitiesInProject',
+  sql: enabledSql(' AND p.project_id = ?2') });
+
+/** Each of `capabilities` that is on, for every stored Project or the Project named, as one read. */
+export function enabledCapabilitiesRead(capabilities: readonly string[], projectId?: string): Bound<EnabledCapability, 'read'> {
+  const requested = JSON.stringify(capabilities);
+  return projectId === undefined ? enabledEverywhere.bind(requested) : enabledInProject.bind(requested, projectId);
+}
 
 /** Whether a Project accepts new intelligence work. */
 export const projectWorkEnabled = async (db: RelationalStore, projectId: string): Promise<boolean> => (await first(db, projectWork.bind(projectId)))?.enabled === 1;

@@ -3,7 +3,8 @@ import type { Bound } from '../db/index.js';
 import { commitRawArchivePage, commitRawEventPage, rawEventsStillDue, readRawArchiveState, readSegmentSource, seedSegmentRef, segmentArchive,
   segmentsAfter, type RawArchiveState as State } from '../db/storage/raw-archive.js';
 import { measuredContentEnv, remainingContentBudget } from './content-budget.js';
-import { prepareDerivedContent, prepareDerivedStream, verifiedContentSql, type DerivedContentSource } from './registered-content.js';
+import { prepareDerivedContent, prepareDerivedStream, type DerivedContentSource } from './registered-content.js';
+import { verifiedContentSql } from '../db/storage/content-source.js';
 import { cleanupCandidateRows, type CleanupCandidate } from '../db/storage/cleanup.js';
 import { prepareArchiveStep, type ContentRow } from './event-content.js';
 import { ARCHIVE_BUNDLE_ENTRIES, bundleArchiveStatements, discardArchiveBundle, prepareArchiveBundle } from './archive-bundle.js';

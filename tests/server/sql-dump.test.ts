@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { importTableDump } from '@myco/server/sql-dump.js';
-import { MAX_STATEMENT_CHARACTERS } from '@myco-server-worker/core/sql-statements.js';
+import { MAX_STATEMENT_CHARACTERS } from '@myco-server-worker/db/sql-statements.js';
 
 it('imports provider NUL text, multiline literals and binary bytes across stream boundaries without interpreting literal punctuation', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-sql-dump-'));

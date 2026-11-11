@@ -3,7 +3,7 @@
  * A dispatch-named session does not narrow the sessions the run may cite.
  */
 import type { RelationalStore } from '../../core/adapters.js';
-import { boundWriteGuardStore } from '../../core/write-guard-store.js';
+import { boundWriteGuardStore } from '../kernel/guarded-store.js';
 import { notTombstonedSql } from '../session-read-model.js';
 import type { ReadScope } from '../../read/scope.js';
 import { LEDGER_ENABLED_AT } from '../schema-v95.js';

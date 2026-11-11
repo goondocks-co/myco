@@ -10,7 +10,7 @@ import {
   restoreTranscriptSegmentStatement,
 } from '../db/documents/ranges.js';
 import { excludeDeletedRestoreRows, excludeDeletedSnapshotRows, excludeRetiredRuns, restoreBlobReferences } from './restore-rows.js';
-import { contentAssertion } from './registered-content.js';
+import { contentAssertion } from '../db/storage/content-guard.js';
 import { eventReferenceStatement } from '../db/event-references.js';
 import { archivedEventMetadata } from '../db/document-tables.js';
 import { estimateInvalidationStatements } from '../db/meta/budget-estimates.js';
@@ -27,7 +27,8 @@ import { restoreAuthorityReceipt, restoreSelectsOwner } from '../db/identity/res
 import { prepareBound } from '../db/kernel/statement.js';
 import { restoreOwnership } from '../db/identity/ownership.js';
 import { restoreTableKey } from '../db/recovery/restore-keys.js';
-import { effectiveRawOwnerSql, reserveRawRestore } from './raw-claims.js';
+import { reserveRawRestore } from './raw-claims.js';
+import { effectiveRawOwnerSql } from '../db/raw/claims.js';
 /**
  * Deployment backup and restore.
  *
@@ -532,7 +533,7 @@ const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> =
   agent_run_attempts: (db, row) => prepareBound(db, restoreAttemptStatement(row)),
   extraction_acks: (db, row) => prepareBound(db, restoreExtractionAck(row)),
   transcript_segments: (db, row) => prepareBound(db, restoreTranscriptSegmentStatement(row)),
-  session_artifacts: restoreSessionArtifactStatement,
+  session_artifacts: (db, row) => prepareBound(db, restoreSessionArtifactStatement(row)),
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
   transcripts(db, row, decided) {
     const columns = Object.keys(row).filter((column) => column !== 'prompt_identity_scheme');
@@ -1362,7 +1363,8 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
       const compared=chunk.map(row=>table==='agent_run_attempts'?attemptRestoreComparison(row):Object.fromEntries(keys.map(key=>[key,row[key]])));
       const profiledTimes=table==='agent_run_attempts'?chunk.flatMap(row=>row.profile_json!=null&&typeof row.claimed_at==='number'?[row.claimed_at]:[]):[];
       const restoredFloor=profiledTimes.length===0?undefined:profiledTimes.reduce((floor,time)=>Math.min(floor,time),Infinity);
-      statements.push(...estimateInvalidationStatements(db,{sql:`NOT (${restoredRowsMatch(table,compared,keys)})`,params:[JSON.stringify(compared)]},restoredFloor));
+      statements.push(...estimateInvalidationStatements({sql:`NOT (${restoredRowsMatch(table,compared,keys)})`,params:[JSON.stringify(compared)]},restoredFloor)
+        .map(statement=>prepareBound(db,statement)));
     }
     const inserts=statements.length;
     statements.push(...chunk.map((row) => {

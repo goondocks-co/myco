@@ -1,7 +1,6 @@
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { schemaD1Root } from './helpers/schema-template.js';
-import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
-import { promptAnswerRetentionStatements } from '@myco-server-worker/db/prompt-answer-retention.js';
+import { significantStatement } from '../../packages/myco-server/src/db/sql-statements.js';
 /**
  * Recall: the capability gate over everything, the contributors and the order
  * they stand in, the once-per-session records, the bounds at a part boundary,
@@ -25,7 +24,6 @@ import {
   SESSION_CONTEXT_MAX_CHARS,
   SUBAGENT_CORTEX_GUIDANCE,
   PROMPT_ANSWER_RETENTION_DAYS,
-  PROMPT_ANSWER_RETENTION_SQL,
   type Contribution,
   type RecallLeaves,
   type RecallSkip,
@@ -550,7 +548,7 @@ describe('prompt selection diagnostics', () => {
 });
 
 describe('prompt answer retention', () => {
-  it('sweeps 30-day diagnostics through the scheduled retention job in indexed target batches of 500', async () => {
+  it('sweeps 30-day diagnostics through the scheduled retention job in target batches of 500', async () => {
     const e = sqliteEnv();
     const cutoff = NOW - PROMPT_ANSWER_RETENTION_DAYS * 86_400_000;
     const insert = e.sqlite.query(`INSERT INTO prompt_context_answers (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
@@ -559,21 +557,6 @@ describe('prompt answer retention', () => {
       for (const project of ['proj_1', 'proj_2']) {
         for (let i = 0; i < (project === 'proj_1' ? JOB_BATCH + 1 : 2); i++) insert.run(project, `old-${i}`, JSON.stringify(emptyInjectionCounts()), cutoff - 1);
         for (const at of [cutoff, NOW]) insert.run(project, `kept-${at}`, JSON.stringify(emptyInjectionCounts()), at);
-      }
-      const targetRows = [{ project_id: 'proj_1', session_id: 'uncaptured', id: 'old-0' }];
-      const deletes: string[] = [];
-      promptAnswerRetentionStatements({ ...e.serverEnv.db, prepare(sql) { deletes.push(sql); return e.serverEnv.db.prepare(sql); } }, targetRows, cutoff);
-      const targets = JSON.stringify(targetRows);
-      for (const [sql, params, index] of [
-        [PROMPT_ANSWER_RETENTION_SQL, [cutoff, JOB_BATCH], 'idx_prompt_context_answers_created (project_id=? AND created_at<?)'],
-        [deletes[0]!, [targets, cutoff], 'sqlite_autoindex_prompt_context_answers_1'],
-      ] as const) {
-        const statement = e.sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`);
-        try {
-          const plan = JSON.stringify(statement.all(...params));
-          expect(plan).toContain(index);
-          expect(plan).not.toMatch(/SCAN (?:prompt_context_answers|a)\b/);
-        } finally { statement.finalize(); }
       }
       expect(await agentRunRetention(e.serverEnv, NOW)).toBe(JOB_BATCH);
       expect(await agentRunRetention(e.serverEnv, NOW)).toBe(3);

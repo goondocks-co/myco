@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { claimableRawIdentitySql, effectiveRawOwnerSql, rawClaimCutoffSql } from '../../core/raw-claims.js';
+import { claimableRawIdentitySql, effectiveRawOwnerSql, rawClaimCutoffSql } from './claims.js';
 import { BLOB_REFERENCES, blobReferenceColumn, kindFilter, type BlobReference } from '../../core/blob-references.js';
 import { read, rows, type Statement } from '../index.js';
 import { notTombstonedSql } from '../session-read-model.js';

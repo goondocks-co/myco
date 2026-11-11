@@ -1,7 +1,4 @@
-import {
-  pruneSelectedPromptAnswers,
-  type ExpiredPromptAnswer,
-} from '../db/prompt-answer-retention.js';
+import { expiredPromptAnswers, pruneSelectedPromptAnswers } from '../db/prompt-answer-retention.js';
 import { promptAnswerWrite, sessionRecordWrite } from '../db/context-records.js';
 import { rows } from '../db/index.js';
 /**
@@ -263,19 +260,9 @@ async function recordPromptAnswer(
   return answer;
 }
 
-export const PROMPT_ANSWER_RETENTION_SQL = `SELECT a.project_id,a.session_id,a.id
-  FROM projects p CROSS JOIN prompt_context_answers a
-  WHERE a.project_id=p.project_id AND a.created_at<? LIMIT ?`;
-
 /** Deletes at most one batch of prompt answer diagnostics older than the cutoff across the Deployment's Projects. */
 export async function prunePromptAnswers(db: RelationalStore, cutoffMs: number, limit: number): Promise<number> {
-  const targets = (
-    await db
-      .prepare(PROMPT_ANSWER_RETENTION_SQL)
-      .bind(cutoffMs, limit)
-      .all<ExpiredPromptAnswer>()
-  ).results;
-  return pruneSelectedPromptAnswers(db, targets, cutoffMs);
+  return pruneSelectedPromptAnswers(db, await expiredPromptAnswers(db, cutoffMs, limit), cutoffMs);
 }
 
 interface RecallSessionBlock {

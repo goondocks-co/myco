@@ -13,7 +13,7 @@ import { budgetD1Database,budgetD1Reply } from '../server/helpers/budget-d1.js';
 import {sqliteEnv} from '../myco-server/helpers/fixtures.js';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { significantStatement } from '@myco-server-worker/core/sql-statements.js';
+import { significantStatement } from '@myco-server-worker/db/sql-statements.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const RECORDED = '11111111-2222-4333-8444-555555555555';

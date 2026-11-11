@@ -15,7 +15,7 @@ import {
 } from '@myco-server-worker/core/recovery-producer.js';
 import { newInventoryProgress, type InventoryObject, type InventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
 import { STAGING_FORMAT, STAGING_MANIFEST_FILE, STAGING_OBJECTS_DIRECTORY } from '@myco-server-worker/core/recovery-staging.js';
-import { tableColumns } from '@myco-server-worker/core/sql-statements.js';
+import { tableColumns } from '@myco-server-worker/db/sql-statements.js';
 import { snapshotObjectFacts } from '@myco/server/recovery-bundle.js';
 import { stagingFixture } from './helpers/recovery-staging.js';
 

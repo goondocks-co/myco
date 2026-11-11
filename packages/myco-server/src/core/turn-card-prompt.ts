@@ -7,7 +7,8 @@ import { MAX_BODY_BYTES } from '../ingest/body.js';
 /** The request limit and recovery a card run receives before writing. */
 export const CARD_WRITE_BOUND = `Each call's entire JSON request must fit ${MAX_BODY_BYTES} UTF-8 bytes, including JSON escaping and the MCP envelope. Split cards across smaller calls when needed, carrying the material revision on every write.`;
 
-export const TURN_CARD_PROMPT = `Write one card per turn of a coding session, from the trimmed turns this run is served. Budget: a few turns.
+/** What the run does, step by step, and what its cards are for. */
+const CARD_STEPS = `Write one card per turn of a coding session, from the trimmed turns this run is served. Budget: a few turns.
 
 ## Steps
 
@@ -17,9 +18,10 @@ export const TURN_CARD_PROMPT = `Write one card per turn of a coding session, fr
 
 ## What a card is for
 
-A later agent reads only these cards to learn what is worth remembering from the session: gotchas, decisions, fixes that worked, and corrections. It will not see the turn itself unless it asks. A card that drops the exact detail of a gotcha loses it for good.
+A later agent reads only these cards to learn what is worth remembering from the session: gotchas, decisions, fixes that worked, and corrections. It will not see the turn itself unless it asks. A card that drops the exact detail of a gotcha loses it for good.`;
 
-## Card fields (all required; use "" or [] when empty)
+/** The fields every card carries, and how exactly it quotes the turn. */
+const CARD_FIELDS = `## Card fields (all required; use "" or [] when empty)
 
 - \`asked\`: what the person asked for, in their words where short.
 - \`done\`: what the agent actually did.
@@ -36,6 +38,8 @@ A later agent reads only these cards to learn what is worth remembering from the
 ## Exactness
 
 Copy error messages, commands, file paths, flags, versions, config keys and identifiers EXACTLY as they appear in the turn, character for character, inside the field. Never paraphrase, shorten or "clean up" them. A routine turn gets a short card. A turn with an error, a fix, a decision or a correction gets as much detail as it needs.`;
+
+export const TURN_CARD_PROMPT = `${CARD_STEPS}\n\n${CARD_FIELDS}`;
 
 export const CARD_SIGNALS = ['none', 'low', 'high'] as const;
 export type CardSignal = (typeof CARD_SIGNALS)[number];

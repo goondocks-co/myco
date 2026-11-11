@@ -16,7 +16,7 @@ import { schemaSqlite } from './helpers/schema-template.js';
 import { engineAssertions,runTick } from '@myco-server-worker/core/tick.js';
 import { estimateInvalidationStatements } from '@myco-server-worker/db/meta/budget-estimates.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
-import { rows } from '@myco-server-worker/db/index.js';
+import { commit, rows } from '@myco-server-worker/db/index.js';
 import worker from '@myco-server-worker/index.js';
 import { asOwner,OWNER_ENV } from './helpers/owner.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
@@ -132,7 +132,7 @@ it('wakes from deep sleep for an empty estimator refresh and then lifts its prep
     const projects=f.sqlite.query('SELECT project_id FROM projects ORDER BY project_id').all();
     await refreshEstimates(f.db,f.now);
     expect((await runTick(f.serverEnv,f.now)).state).toBe('deep_sleep');
-    await f.db.batch(estimateInvalidationStatements(f.db,{sql:'1',params:[]}));
+    await commit(f.db,...estimateInvalidationStatements({sql:'1',params:[]}));
     const wake=await runTick(f.serverEnv,f.now+1);
     expect(wake).toMatchObject({state:'sleep',heldBy:'estimate:due'});
     expect(wake.jobs).toContainEqual(expect.objectContaining({name:'estimate-refresh',failed:null,more:false}));

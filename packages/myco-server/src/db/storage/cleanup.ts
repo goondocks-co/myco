@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ContentRow } from '../../core/event-content.js';
-import { effectiveRawOwnerSql } from '../../core/raw-claims.js';
+import { effectiveRawOwnerSql } from '../raw/claims.js';
 import { archivedEventPayloadSql } from '../document-tables.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 

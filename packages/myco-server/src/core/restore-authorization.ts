@@ -1,6 +1,7 @@
-import { authorize, deploymentIdentity, memberSubject, memberWritePredicate } from '../auth/authorization.js';
-import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
-import { deploymentOwnerSql } from '../db/identity/ownership-policy.js';
+import { authorize, deploymentIdentity, memberSubject } from '../auth/authorization.js';
+import type { RelationalStore } from './adapters.js';
+import { guardedStore } from '../db/kernel/guarded-store.js';
+import { deploymentOwned, restoreAuthorityHolds } from '../db/recovery/restore-guards.js';
 
 export type RestoreAuthorization = { kind: 'member'; memberId: string } | { kind: 'recovery' };
 
@@ -32,8 +33,7 @@ export async function restoreAdmission(db: RelationalStore, actor: RestoreAuthor
   });
   if (allowed) return { allowed: true, requiresOwner, code: null };
   if (!requiresOwner) return { allowed: false, requiresOwner, code: 'not_admin' };
-  const owner = await db.prepare('SELECT member_id FROM deployment_ownership WHERE id = 1').first<{ member_id: string | null }>();
-  return { allowed: false, requiresOwner, code: owner?.member_id == null ? 'owner_pending' : 'not_owner' };
+  return { allowed: false, requiresOwner, code: await deploymentOwned(db) ? 'not_owner' : 'owner_pending' };
 }
 
 /** Admission precedes every restore write; each transaction retains the actor's current authority. */
@@ -42,28 +42,14 @@ export async function authorizeRestore(db: RelationalStore, actor: RestoreAuthor
   const tableNames = [...tables];
   const admission = await restoreAdmission(db, actor, tableNames);
   if (!admission.allowed) throw new RestoreAuthorizationError(admission.code);
-  const originals = new WeakMap<PreparedStatement, PreparedStatement>();
-  const predicate = admission.requiresOwner ? deploymentOwnerSql('?') : memberWritePredicate('?', 'NULL');
-  const batch = async (statements: PreparedStatement[]): Promise<RunResult[]> => {
-    const guard = db.prepare(`INSERT INTO restore_reference_guard (missing)
-      SELECT 'restore authority changed' WHERE NOT (${predicate})`).bind(actor.memberId);
-    try {
-      return (await db.batch([guard, ...statements.map(statement => originals.get(statement) ?? statement)])).slice(1);
-    } catch (error) {
+  const { memberId } = actor;
+  return guardedStore(db, {
+    before: () => [restoreAuthorityHolds(memberId, admission.requiresOwner ? 'owner' : 'admin')],
+    covers: 'every',
+    refusal: async error => {
       const current = await restoreAdmission(db, actor, tableNames);
       if (!current.allowed) throw new RestoreAuthorizationError(current.code);
       throw error;
-    }
-  };
-  const statement = (original: PreparedStatement): PreparedStatement => {
-    const wrapped: PreparedStatement = {
-      bind: (...values) => statement(original.bind(...values)),
-      run: async () => (await batch([original]))[0]!,
-      all: async <T>() => ({ results: (await batch([original]))[0]!.results as T[] }),
-      first: async <T>() => ((await batch([original]))[0]!.results[0] as T | undefined) ?? null,
-    };
-    originals.set(wrapped, original);
-    return wrapped;
-  };
-  return { prepare: sql => statement(db.prepare(sql)), batch };
+    },
+  });
 }

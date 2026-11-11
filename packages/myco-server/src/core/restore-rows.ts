@@ -1,6 +1,6 @@
-import { writeGuardStore } from './write-guard-store.js';
-import { inheritStoreContext } from './adapters.js';
-import type { PreparedStatement, RelationalStore } from './adapters.js';
+import type { RelationalStore } from './adapters.js';
+import { guardedStore } from '../db/kernel/guarded-store.js';
+import { readTombstoneFrontier, tombstoneFrontier, tombstonesUnmoved } from '../db/recovery/restore-guards.js';
 import { DERIVED_TABLES } from '../db/sessions/deletion-phases.js';
 import { tombstonedAmong } from '../db/sessions/tombstones.js';
 import { referencedBlobsOf } from './object-release.js';
@@ -129,24 +129,13 @@ export async function excludeDeletedRestoreRows(db: RelationalStore, tables: Map
 
 /** Every write compares the append-only tombstone frontier; its own inserts advance that frontier in the same transaction. */
 async function restoreDeletionGuard(source: RelationalStore): Promise<RelationalStore> {
-  const frontier = () => source.prepare('SELECT COALESCE(MAX(rowid),0) watermark FROM session_tombstones');
-  let watermark = (await frontier().first<{ watermark: number }>())!.watermark;
-  const assertions = new WeakSet<PreparedStatement>();
-  const checkpointed: RelationalStore = inheritStoreContext(source, {
-    prepare: sql => source.prepare(sql),
-    async batch(statements) {
-      if (!assertions.has(statements[0]!)) return source.batch(statements);
-      const results = await source.batch([...statements,frontier()]);
-      watermark = (results.at(-1)!.results[0] as { watermark: number }).watermark;
-      return results.slice(0,-1);
-    },
+  let watermark = await readTombstoneFrontier(source);
+  return guardedStore(source, {
+    before: () => [tombstonesUnmoved(watermark)],
+    after: () => [tombstoneFrontier()],
+    observe: ([frontier]) => { watermark = (frontier!.results[0] as { watermark: number }).watermark; },
+    refusal: error => { throw error; },
   });
-  return writeGuardStore(checkpointed, () => {
-    const assertion = source.prepare(`INSERT INTO restore_reference_guard(missing)
-      SELECT 'session deleted during restore' WHERE (SELECT COALESCE(MAX(rowid),0) FROM session_tombstones)<>?`).bind(watermark);
-    assertions.add(assertion);
-    return assertion;
-  }, error => { throw error; });
 }
 
 /** Includes immutable document directories and prepared archive bytes in restore's object closure. */

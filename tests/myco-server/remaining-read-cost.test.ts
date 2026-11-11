@@ -11,6 +11,7 @@ import {
   sessions_listSessions as listSessions,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { taskRunFacts } from '@myco-server-worker/db/runs/task-facts.js';
+import { readSet } from '@myco-server-worker/db/index.js';
 import { pageSegments } from '@myco-server-worker/read/transcript.js';
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { handleTranscript } from '@myco-server-worker/api/sessions.js';
@@ -187,8 +188,9 @@ test('schedule facts read latest entries and the rolling window independently of
       .bind(size)
       .run();
     measured.reset();
-    const q = taskRunFacts(measured.db, ['extract-curate'], 10000, 'clock', 'runs');
-    const facts = q.read((await q.statement.all<Record<string, unknown>>()).results);
+    const q = taskRunFacts(['extract-curate'], 10000, 'clock', 'runs');
+    const [rows] = await readSet(measured.db, q.statement);
+    const facts = q.read(rows);
     sample('schedule', size);
     expect([...facts.values()]).toEqual([{ live: false, lastEntryAt: size, entriesSince: 0 }]);
   }
