@@ -65,10 +65,10 @@ it('a page of runs, a run\'s detail, its reads and its spores cost D1 the same a
 }, 180_000);
 
 /** Every retained task, so a page of runs carries every arm of the produced rule. */
-const TASKS = JSON.stringify(RETAINED_TASKS);
+const TASKS = JSON.stringify(RETAINED_TASKS), PRODUCED = `(i/${RETAINED_TASKS.length})%2`;
 /**
  * Runs of every retained task in `proj_2` for units [from, to), named under `prefix`, each with the evidence its task's
- * produced rule reads: half record output, half nothing. History takes a prefix that sorts apart from the page's, so
+ * produced rule reads: each task's runs alternate, a block of every task at a time, between recording output and nothing. History takes a prefix that sorts apart from the page's, so
  * every seek for a page run lands among page keys at either size.
  */
 async function produceRuns(db: RelationalStore, prefix: string, from: number, to: number) {
@@ -76,14 +76,14 @@ async function produceRuns(db: RelationalStore, prefix: string, from: number, to
   await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,completed_at,queued_at)
     SELECT 'proj_2',${run},'agent',json_extract(?3,'$['||CAST(i%?5 AS INTEGER)||']'),'completed',?4-i*?6,?4-i*?6+1,?4-i*?6 FROM n`, TASKS, NOW, RETAINED_TASKS.length, MINUTE);
   await eachUnit(db, from, to, `INSERT INTO agent_run_events(project_id,run_id,event_type,tool_name,outcome,payload,recorded_at)
-    SELECT 'proj_2',${run},'run_write',value,'written',json_object('op','write','written',i%2),1 FROM n CROSS JOIN json_each('["myco_run_cards","myco_run_sessions","myco_run_map"]')
-    WHERE value='myco_run_cards' OR i%2=1`);
+    SELECT 'proj_2',${run},'run_write',value,'written',json_object('op','write','written',${PRODUCED}),1 FROM n CROSS JOIN json_each('["myco_run_cards","myco_run_sessions","myco_run_map","myco_run_plans"]')
+    WHERE value='myco_run_cards' OR ${PRODUCED}=1`);
   await eachUnit(db, from, to, `INSERT INTO agent_reports(project_id,run_id,agent_id,action,summary,details,created_at)
-    SELECT 'proj_2',${run},'agent','embedding','Reported.',json_object('processed',i%2),1 FROM n`);
+    SELECT 'proj_2',${run},'agent','embedding','Reported.',json_object('processed',${PRODUCED}),1 FROM n`);
   await eachUnit(db, from, to, `INSERT INTO spores(project_id,id,agent_id,session_id,observation_type,status,content,author,created_at)
-    SELECT 'proj_2',${run}||'-spore','agent','recent','gotcha','obsolete','x',CASE WHEN i%2=1 THEN ${run} END,1 FROM n`);
+    SELECT 'proj_2',${run}||'-spore','agent','recent','gotcha','obsolete','x',CASE WHEN ${PRODUCED}=1 THEN ${run} END,1 FROM n`);
   await eachUnit(db, from, to, `INSERT INTO resolution_events(project_id,id,agent_id,spore_id,action,created_at,author)
-    SELECT 'proj_2',${run}||'-retire','agent',${run}||'-spore','obsolete',1,CASE WHEN i%2=1 THEN ${run} END FROM n`);
+    SELECT 'proj_2',${run}||'-retire','agent',${run}||'-spore','obsolete',1,CASE WHEN ${PRODUCED}=1 THEN ${run} END FROM n`);
 }
 
 it('a page of runs of every task reads what each produced at the same D1 cost as history grows', async () => {
