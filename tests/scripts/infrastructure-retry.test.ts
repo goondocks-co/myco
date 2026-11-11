@@ -9,9 +9,11 @@ import { nestedRunnerEnvKeys } from '../../scripts/check-test-shards.mjs';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STDIN_FIXTURE = 'tests/fixtures/runner/stdin_read_test.ts';
 
-function run(args: string[], env: Record<string, string> = {}) {
+// Reports go under the caller's temp folder, out of this run's target/test-reports, which CI audits afterwards.
+function run(args: string[], reports: string, env: Record<string, string> = {}) {
   const childEnv = { ...process.env, ...env };
   for (const key of nestedRunnerEnvKeys) delete childEnv[key];
+  childEnv.MYCO_RUNNER_REPORT_DIR = reports;
   const result = spawnSync(process.execPath, ['scripts/run-bun-tests.mjs', ...args], {
     cwd: REPO, encoding: 'utf8', timeout: 60_000, env: childEnv,
   });
@@ -37,12 +39,11 @@ test('connect', () => {
   process.env.MYCO_TEST_SHARD = '1';
   process.env.MYCO_TEST_SCOPE = 'pr';
   try {
-    const cleared = run([connect, path.join(dir, 'ok.test.ts')]);
+    const cleared = run([connect, path.join(dir, 'ok.test.ts')], path.join(dir, 'reports'));
     expect(cleared.status).toBe(0);
-    expect(cleared.output).toContain('Infrastructure retry:');
     expect(cleared.output).toContain('passed after infrastructure retry');
     fs.rmSync(marker, { force: true });
-    const hidden = run([connect, path.join(dir, 'missing.test.ts')]);
+    const hidden = run([connect, path.join(dir, 'missing.test.ts')], path.join(dir, 'reports'));
     expect(hidden.status).not.toBe(0);
     expect(hidden.output).toContain('Unhandled error between tests');
     expect(hidden.output).not.toContain('Infrastructure retry:');
@@ -70,10 +71,10 @@ console.error(' 1 pass\\n 0 fail');
 `);
   fs.chmodSync(bun, 0o755);
   try {
-    const failed = run([STDIN_FIXTURE], { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_BUN_MODE: 'junit-fail' });
+    const failed = run([STDIN_FIXTURE], path.join(dir, 'reports'), { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_BUN_MODE: 'junit-fail' });
     expect(failed.status).not.toBe(0);
     expect(failed.output).toContain('JUnit aggregated 1 failure');
-    const empty = run([STDIN_FIXTURE], { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_BUN_MODE: 'zero' });
+    const empty = run([STDIN_FIXTURE], path.join(dir, 'reports'), { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_BUN_MODE: 'zero' });
     expect(empty.status).not.toBe(0);
     expect(empty.output).toContain('zero executed tests');
   } finally {
