@@ -471,7 +471,7 @@ const claimDefinitions = Object.fromEntries(budgetVariants.flatMap(budgetKind =>
       RETURNING project_id AS projectId,id,task,instruction,run_context AS runContext,dry_run AS dryRun` :
       `UPDATE agent_runs
         SET status = 'running', started_at = ?, dispatched_by = ?, leased_by = ?, leased_runner_id = ?, leased_runner_credential_id = ?,
-        lease_expires_at=?,harness=?,held_by=NULL,reasoning_level=?,model=?,execution_overrides=?,subject=COALESCE(?,subject)
+        lease_expires_at=?,harness=?,waited_for=held_by,held_by=NULL,last_renewed_at=NULL,reasoning_level=?,model=?,execution_overrides=?,subject=COALESCE(?,subject)
       WHERE project_id=? AND id=? AND ${authority}
         AND (? IS NULL OR NOT EXISTS(SELECT 1 FROM agent_runs flight INDEXED BY idx_agent_runs_task_live
           WHERE flight.task=agent_runs.task AND flight.${IN_FLIGHT_RUN_STATUSES} AND flight.subject=? AND flight.id!=agent_runs.id))

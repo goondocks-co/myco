@@ -201,7 +201,7 @@ const COLUMNS = `id, agent_id, task, subject, status, provider, model, usage_dat
 const DETAIL_COLUMNS = `${COLUMNS},
   ${contextValue('repository.branch')} AS source_branch, ${contextValue('repository.commit')} AS source_commit,
   instruction, session_ref, actual_cost_usd, estimated_cost_usd, reasoning_level,
-  resume_mode, resume_attempts, error, error_code, CASE WHEN status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
+  resume_mode, resume_attempts, error, error_code, last_renewed_at, CASE WHEN status = 'failed' THEN ${contextValue(FAILURE_REASON_KEY)} END AS error_reason,
   CASE WHEN status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_CODE_KEY)} END AS repository_failure_code,
   CASE WHEN status = 'failed' THEN ${contextValue(REPOSITORY_FAILURE_SUMMARY_KEY)} END AS repository_failure_summary,
   CASE WHEN json_valid(${contextValue(HARNESS_STOP_KEY)}) THEN ${contextValue(HARNESS_STOP_KEY)} END AS harness_stop,

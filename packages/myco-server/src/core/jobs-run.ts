@@ -32,7 +32,8 @@ import { failStaleRun, listLiveRunsAcrossProjects } from '../db/runs/lifecycle.j
 import { listQueuedAcrossProjects } from '../db/runs/queue.js';
 import { pruneRevokedCredentials } from '../db/credential-retention.js';
 import { pruneTerminalRuns } from '../db/runs/retention.js';
-import { pruneRunHours, RUN_HOUR_RETENTION_MS } from '../db/runs/run-hours.js';
+import { RUN_HOUR_RETENTION_MS } from '../db/runs/run-hours.js';
+import { pruneRunHours } from '../db/runs/hour-retention.js';
 import { storedSettings } from './settings.js';
 import { releaseRun } from './release.js';
 import { reconcileSearchIndex } from './search-index.js';

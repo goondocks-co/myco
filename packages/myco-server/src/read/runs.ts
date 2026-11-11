@@ -114,6 +114,8 @@ interface RunDetailRow extends RunListRow {
   resumeMode: string | null;
   resumeAttempts: number;
   errorCode: string | null;
+  /** When the machine holding it last renewed its lease: its last sign of life outside its calls and steps; null when never renewed. */
+  lastRenewedAt: number | null;
   /** Why a failed run failed, in the reader's words, where the worker that ran it gave a reason; null where it gave none. */
   errorReason: string | null;
   repositoryFailure?: RepositoryFailure | null;
@@ -170,6 +172,10 @@ export interface RunAttemptRow {
    * has arrived: a worker that keeps none, or one that has not delivered it yet.
    */
   steps: { total: number; received: number; overflow: number; unrecognized: UnrecognizedCount | null } | null;
+  /** The hold its run waited under in the queue before this attempt took it; null when it waited under none or was never queued. */
+  waitedFor: string | null;
+  /** When the stay in the queue this attempt ended began; null when the run was never queued or it was not recorded. */
+  waitedSince: number | null;
 }
 
 /** One step a worker observed, metadata only: never file contents or command output. */
@@ -309,6 +315,7 @@ function toDetailRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string,
     resumeMode: text(row.resume_mode),
     resumeAttempts: (row.resume_attempts as number | null) ?? 0,
     errorCode: runErrorCode(text(row.error), text(row.error_code)),
+    lastRenewedAt: num(row.last_renewed_at),
     errorReason: text(row.error_reason),
     ...(repositoryFailure === null ? {} : { repositoryFailure }),
     error: text(row.error),
@@ -468,20 +475,22 @@ function unrecognizedOf(raw: string | null): UnrecognizedCount | null {
 }
 
 /** A step count while its history is still being counted is null, so the attempt answers no coverage rather than zero received. */
-const attemptOf = (received: ReadonlyMap<string, number> | null) => (row: AttemptRecord): RunAttemptRow => ({
+const attemptOf = (received: ReadonlyMap<string, number> | null, includeSignIn = false) => (row: AttemptRecord): RunAttemptRow => ({
   attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
   executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'legacy-worker', memberId: row.memberId },
   steps: row.total === null || received === null ? null : { total: Number(row.total), received: received.get(row.attemptId) ?? 0, overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
+  waitedFor: visibleRunHolder(row.waitedFor, includeSignIn),
+  waitedSince: row.waitedSince === null ? null : Number(row.waitedSince),
 });
 
 /**
  * A run's latest `MAX_ATTEMPTS` attempts, oldest first, each with its step log's totals and how many of its steps the
  * Deployment holds, and how many attempts the run has in all.
  */
-export async function runAttempts(db: RelationalStore, scope: ReadScope, runId: string): Promise<{ rows: RunAttemptRow[]; total: number | null }> {
+export async function runAttempts(db: RelationalStore, scope: ReadScope, runId: string, includeSignIn = false): Promise<{ rows: RunAttemptRow[]; total: number | null }> {
   const latest = await latestRunAttempts(db, scope.projectId, runId, MAX_ATTEMPTS);
   const [received, head] = await Promise.all([attemptsReceived(db, scope, runId, latest.map((row) => row.attemptId)), runEvidenceHead(db, scope, runId)]);
-  return { rows: latest.map(attemptOf(received)).reverse(), total: head === null ? null : head.attempts };
+  return { rows: latest.map(attemptOf(received, includeSignIn)).reverse(), total: head === null ? null : head.attempts };
 }
 
 /** One attempt of a run by its id, or null where the run has no such attempt. */
@@ -515,7 +524,7 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
   const [callPage, currentMap, attempts] = await Promise.all([
     runToolCallPage(db, scope, runId, calls),
     canopyMapRecord(db, scope.projectId, runId, { event: RUN_WRITE_EVENT, tool: MAP_WRITE_TOOL }),
-    runAttempts(db, scope, runId),
+    runAttempts(db, scope, runId, calls.includeSignIn === true),
   ]);
   const latest = attempts.rows.at(-1);
   return {
