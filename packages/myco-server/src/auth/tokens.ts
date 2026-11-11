@@ -1,5 +1,6 @@
 import { commitNamed, refused, rows, type Bound } from '../db/index.js';
 import { credentialInsert } from '../db/runs/claim-companions.js';
+import { retireOwnedCredentialWrite } from '../db/identity/member-credential-retirement.js';
 import {
   activationWrites, CREDENTIAL_NOT_REFRESHABLE, refreshableAssertion, retireBankedWrite,
   revokeLineageAsMemberWrite, revokeLineageWrite, revokeMachineAsMemberWrite,
@@ -7,7 +8,7 @@ import {
 import { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE } from '@goondocks/myco-shared/member-protocol';
 export { MEMBER_TOKEN_REFRESH_WINDOW_MS, LINEAGE_REPLAYED_CODE };
 import { toBase64Url } from '../base64.js';
-import type { RelationalStore, PreparedStatement } from '../core/adapters.js';
+import type { RelationalStore } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID, MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_TTL_MS, SERVER_SCHEMA_VERSION, TOKEN_ID_BYTES, TOKEN_ID_PREFIX } from '../constants.js';
 import { sha256Hex } from '../hash.js';
 import { emit, SchemaMismatchError, TokenRevokedError, type Classifier } from '../telemetry.js';
@@ -150,22 +151,12 @@ export async function revokeMachineCredentialsAsMember(
  * Revoke a credential only when it belongs to the named member. The dispatch
  * path mints a credential for the harness member per run and releases it when
  * the run ends; a run claimed under a person's own credential carries that
- * credential in the same column, and a release must never end it.
+ * credential in the same column, and a release must never end it. Reports whether it changed.
  */
-export function revokeCredentialOfMemberStatement(
-  db: RelationalStore, memberId: string, tokenId: string, nowMs: number,
-  condition?: { sql: string; params: readonly unknown[] },
-): PreparedStatement {
-  return db.prepare(`UPDATE member_credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND member_id = ? AND revoked_at IS NULL${condition === undefined ? '' : ` AND (${condition.sql})`} RETURNING id`)
-    .bind(nowMs, memberId, tokenId, memberId, ...(condition?.params ?? []));
-}
-
-/** Revoke a member-owned credential and report whether it changed. */
 export async function revokeCredentialOfMember(
   db: RelationalStore, memberId: string, tokenId: string, nowMs: number,
 ): Promise<boolean> {
-  const result = await revokeCredentialOfMemberStatement(db, memberId, tokenId, nowMs).run();
-  const revoked = result.results.length === 1;
+  const revoked = (await rows(db, retireOwnedCredentialWrite(nowMs, memberId, tokenId))).length === 1;
   emit({ kind: 'credential_revoked', tokenId, revokedBy: memberId, revoked });
   return revoked;
 }

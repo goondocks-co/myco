@@ -2,19 +2,22 @@ import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
 import { PublicationRestoreBuilding } from '../db/documents/readiness.js';
 import { isTombstoned, sessionPresent } from '../db/sessions/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
-import { registeredObjectKeySql } from '../db/storage/registered-object-key.js';
 import { readStoredObject } from '../core/stored-object.js';
 /**
  * A backup's session documents are restored from its immutable chunks. A session without a live document is converted
  * from the artifact's snapshot; a live document merges the snapshot's records. A converting session's records,
  * continuation, publication frontier and catalog become live in one transaction.
  */
-import type { PreparedStatement, ServerEnv } from '../core/adapters.js';
+import type { ServerEnv } from '../core/adapters.js';
+import { commit, type Bound } from '../db/index.js';
 import { sha256HexOf } from '../hash.js';
-import { contentAssertion } from '../db/storage/content-guard.js';
+import {
+  clearForConversionWrites, holdArtifactChunkWrite, nothingPublishedGuard, openRestoredDocumentWrite, registeredArtifactObject, restoredDocumentHeld,
+  restoreRegistrationGuard, restoreTarget, type RestoreSelection,
+} from '../db/documents/restore-conversion.js';
 import { SessionDocument } from '../content/session-pages.js';
 import { generationHasChunks } from '../db/documents/directory.js';
-import { DocumentBatch, publicationStatement, type BatchDocument } from './document-batch.js';
+import { DocumentBatch, publicationStatement } from './document-batch.js';
 import type { RestoreDocuments } from '../core/backup.js';
 
 type Row = Record<string, unknown>;
@@ -57,10 +60,9 @@ async function artifactDocument(env:Pick<ServerEnv,'db'|'blobs'>, tables:Readonl
   if(byNumber.size!==chunks.length)throw new Error('artifact_document_directory_invalid');
   const bytes=new Map<unknown,Uint8Array<ArrayBuffer>>();
   const read=async(row:Row)=>{
-    const physical=await env.db.prepare(`SELECT ${registeredObjectKeySql('b.project_id','b.key')} physical FROM blobs b WHERE b.project_id=? AND b.key=?`)
-      .bind(doc.project_id,row.blob_key).first<{physical:string}>();
+    const physical=await registeredArtifactObject(env.db,doc.project_id as string,row.blob_key as string);
     if(!physical)throw new Error('artifact_document_object_missing');
-    const object=await readStoredObject(env.blobs,physical.physical,Number(row.bytes));
+    const object=await readStoredObject(env.blobs,physical,Number(row.bytes));
     if(object.kind!=='read'||await sha256HexOf(object.bytes)!==row.blob_key)throw new Error('artifact_document_digest');
     return object.bytes;
   };
@@ -137,38 +139,26 @@ function artifactFrontiers(batch: DocumentBatch, snapshot: ArtifactDocument): Ro
     u:row.unfinished,r:row.reply_unfinished,a:row.reply_latest_at,ps:row.prompt_scheme,rs:row.record_scheme,v:row.parser_version,s:row.state,f:row.failure,w:row.awaited_size,n:row.placed_records??null,d:row.placed_digest??null,diag:row.diagnostic??null}));
 }
 
-/** The catalog tables a conversion fills before its flip. */
-const BUILT = ['document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress','session_chunks', 'session_pages', 'session_sealed_records', 'session_prompts', 'session_paths', 'session_edit_paths', 'session_turn_entries', 'session_turn_totals', 'session_path_build', 'myco_tool_calls', 'transcript_publication'] as const;
-
 /** Publishes each restored document atomically against its current catalog and frontier. */
 export async function applyDocumentRestore(env: Pick<ServerEnv, 'db' | 'blobs'>, plan: DocumentRestorePlan, now: number): Promise<void> {
-  for(const session of [...plan.convert,...plan.merge])for(const chunk of session.snapshot.chunks)await env.db.prepare(`INSERT OR IGNORE INTO retired_objects(project_id,session_id,blob_key,source_id,retired_at) VALUES(?,?,?,?,?)`)
-    .bind(session.projectId,session.sessionId,chunk.blob_key,chunk.source_id,now).run();
+  for(const session of [...plan.convert,...plan.merge])for(const chunk of session.snapshot.chunks)
+    await commit(env.db,holdArtifactChunkWrite(session.projectId,session.sessionId,{key:chunk.blob_key as string,source:chunk.source_id as string},now));
   for (const session of plan.convert) await mergeSession(env, session, now, true);
   for (const session of plan.merge) await mergeSession(env, session, now, false);
 }
 
 async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldDocument, now: number, plannedConversion: boolean): Promise<void> {
   const db = env.db;
-  const state = `state=? AND restore_hold IS ? AND (restore_hold IS NULL OR due_at<=?)`;
-  const [docs] = await db.batch([
-    db.prepare(`SELECT d.state,d.restore_hold,d.due_at,d.generation, d.next_chunk, d.prompts, d.first_prompt, d.open_turn_key, d.build, s.created_by_token_id token_id,s.agent
-      FROM sessions s LEFT JOIN session_documents d ON s.project_id = d.project_id AND s.session_id = d.session_id
-      WHERE s.project_id = ?1 AND s.session_id = ?2
-        AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=s.project_id AND t.session_id=s.session_id)`).bind(session.projectId, session.sessionId),
-  ]);
-  const held = docs!.results[0] as (Omit<BatchDocument, 'generation'> & { generation: number | null; state: string | null; restore_hold: string | null; due_at: number | null; build: string | null; agent: string | null }) | undefined;
-  if (held === undefined || (held.state !== null && !['live','convert'].includes(held.state))) throw new RestorePlanStale();
+  const held = await restoreTarget(db, session.projectId, session.sessionId);
+  if (held === null || (held.state !== null && !['live','convert'].includes(held.state))) throw new RestorePlanStale();
   if (held.restore_hold != null && (held.due_at === null || held.due_at > now)) throw new RestoreInProgress();
   if (held.state === 'live' && held.generation === null) throw new RestorePlanStale();
   const absent = held.state === null;
   const converting = held.state !== 'live';
   if (plannedConversion && !converting && (held.next_chunk !== 0 || await generationHasChunks(db, session.projectId, session.sessionId, held.generation ?? 1))) throw new RestorePlanStale();
   const generation = held.generation;
-  const owner = absent ? [] : [held.state, held.restore_hold, now];
-  const selected = absent ? `NOT EXISTS(SELECT 1 FROM session_documents WHERE project_id=? AND session_id=?)`
-    : `EXISTS(SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND ${state} AND generation IS ?)`;
-  const selection = [session.projectId,session.sessionId,...owner,...(absent?[]:[generation])];
+  const selection: RestoreSelection = absent ? { project: session.projectId, session: session.sessionId, absent: true }
+    : { project: session.projectId, session: session.sessionId, absent: false, state: held.state!, hold: held.restore_hold, now, generation, nextChunk: held.next_chunk };
   const doc = { ...held, generation: converting ? (generation ?? 0) + 1 : generation!,
     ...(converting ? { next_chunk: 0, prompts: 0, first_prompt: null, open_turn_key: null, build: null } : {}) };
   const batch = new DocumentBatch(env, session.projectId, session.sessionId, doc);
@@ -177,33 +167,12 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldD
   const frontiers = plannedConversion ? artifactFrontiers(batch, session.snapshot) : [];
   await batch.place(session.snapshot.records, doc.agent);
   for(const key of session.snapshot.plans)batch.writer.plans.add(key);
-  await batch.commit(batch.writer.changed, 'live', now, (version) => ({
-    sql: `${selected}
-      AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,
-    params: [...selection, session.projectId, session.sessionId, version.key, version.sourceId],
-  }), (registered) => {
-    const before: PreparedStatement[] = contentAssertion(db, `(${selected})
-      AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)
-      ${absent ? '' : 'AND EXISTS(SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND next_chunk=?)'}
-      AND NOT EXISTS (SELECT 1 FROM json_each(?) j LEFT JOIN session_chunks c ON c.project_id=? AND c.session_id=? AND c.generation=?
-        AND c.chunk_no=json_extract(j.value,'$.n') WHERE c.blob_key IS NOT json_extract(j.value,'$.k'))`,
-    [...selection,session.projectId,session.sessionId,...(absent?[]:[session.projectId,session.sessionId,held.next_chunk]),
-      batch.expectedChunks(registered), session.projectId, session.sessionId, doc.generation]);
-    if (absent) before.push(db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at)
-      VALUES(?,?,'live',?,?)`).bind(session.projectId,session.sessionId,doc.generation,now));
-    if (plannedConversion && !converting) before.push(...contentAssertion(db,
-      `NOT EXISTS(SELECT 1 FROM transcript_publication WHERE project_id=? AND session_id=? AND published_offset>0)`,
-      [session.projectId,session.sessionId]));
-    if (converting && !absent) before.push(
-      db.prepare(`INSERT OR IGNORE INTO retired_objects(project_id,session_id,blob_key,source_id,retired_at)
-        SELECT project_id,session_id,blob_key,source_id,? FROM session_chunks WHERE project_id=? AND session_id=?`).bind(now,session.projectId,session.sessionId),
-      ...BUILT.map(table => db.prepare(`DELETE FROM ${table} WHERE project_id=? AND session_id=?`).bind(session.projectId,session.sessionId)),
-      db.prepare(`UPDATE session_documents SET generation=?,build=NULL,prompts=0,user_prompts=0,replies=0,tool_calls=0,failed_tools=0,plans=0,
-        myco_calls=0,files_edited=0,paths_count=0,myco_build=0,paths_build=NULL,rollup_after=NULL,rollup_page=0,rollup_record=0,
-        first_prompt=NULL,last_record_at=NULL,open_turn_key=NULL,next_chunk=0 WHERE project_id=? AND session_id=?`)
-        .bind(doc.generation,session.projectId,session.sessionId),
-    );
-    return { before, after: [...(frontiers.length===0?[]:[publicationStatement(db,session.projectId,session.sessionId,doc.generation,now,frontiers)]), batch.restoredCatalogStatement(now, { generation: doc.generation, build: doc.build })] };
+  await batch.commit(batch.writer.changed, 'live', now, (version) => restoreRegistrationGuard(selection, version), (registered) => {
+    const before: Bound[] = restoredDocumentHeld(selection, batch.expectedChunks(registered), doc.generation);
+    if (absent) before.push(openRestoredDocumentWrite(session.projectId, session.sessionId, doc.generation, now));
+    if (plannedConversion && !converting) before.push(...nothingPublishedGuard(session.projectId, session.sessionId));
+    if (converting && !absent) before.push(...clearForConversionWrites(session.projectId, session.sessionId, doc.generation, now));
+    return { before, after: [...(frontiers.length===0?[]:[publicationStatement(session.projectId,session.sessionId,doc.generation,now,frontiers)]), batch.restoredCatalogStatement(now, { generation: doc.generation, build: doc.build })] };
   });
 }
 

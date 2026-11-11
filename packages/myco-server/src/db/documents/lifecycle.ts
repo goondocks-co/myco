@@ -1,8 +1,7 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../../constants.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { read, readSet, write, type Bound } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
 import type { CatchupFamily } from '../projections/family.js';
 
 /**
@@ -184,8 +183,7 @@ export async function sessionLifecycleState(db: RelationalStore, project: string
 type LifecycleGate = { eventId: string; nonce: string };
 
 /** The publisher's own document turn can reopen a session no lifecycle event has touched. */
-export const ensureSessionLifecycle = (db: RelationalStore, project: string, session: string): PreparedStatement =>
-  prepareBound(db, ensureRow.bind(project, session));
+export const ensureSessionLifecycle = (project: string, session: string): Bound => ensureRow.bind(project, session);
 
 /** Settles the session's end from its facts, or, while it builds, from its standing end and known turns. */
 interface SessionEnd { project: string; session: string; requestedAt: number | null; endedAt: number; actor: string | null; gate: LifecycleGate }
@@ -196,8 +194,7 @@ export const settleSessionEnd = ({ project, session, requestedAt, endedAt, actor
 export const settleSessionTurn = (project: string, session: string, gate: LifecycleGate): Bound =>
   settleTurnStatement.bind(project, session, project, gate.eventId, gate.nonce);
 
-export const settlePublishedTurn = (db: RelationalStore, project: string, session: string): PreparedStatement =>
-  prepareBound(db, settlePublished.bind(project, session));
+export const settlePublishedTurn = (project: string, session: string): Bound => settlePublished.bind(project, session);
 
 export const presentedDatesAfterEvent = (project: string, session: string, gate: LifecycleGate): Bound =>
   presentedEvent.bind(project, session, project, gate.eventId, gate.nonce);
@@ -206,8 +203,8 @@ interface SegmentDates { project: string; session: string; gate: LifecycleGate; 
 export const presentedDatesAfterSegment = ({ project, session, gate, transcriptId, baseOffset }: SegmentDates): Bound =>
   presentedSegment.bind(project, session, project, gate.eventId, gate.nonce, transcriptId, baseOffset);
 
-export const presentedDatesAfterPublication = (db: RelationalStore, project: string, session: string, generation: number, lastRecordAt: number | null): PreparedStatement =>
-  prepareBound(db, presentedPublished.bind(project, session, generation, lastRecordAt));
+export const presentedDatesAfterPublication = (project: string, session: string, generation: number, lastRecordAt: number | null): Bound =>
+  presentedPublished.bind(project, session, generation, lastRecordAt);
 
 export const LIFECYCLE_CATCHUP = {
   projection: LIFECYCLE_PROJECTION,

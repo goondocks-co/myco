@@ -11,6 +11,7 @@
  * compares the same baseline whether or not a parse has run.
  */
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { commit } from '@myco-server-worker/db/index.js';
 import { declaredScheme } from '@myco-server-worker/ingest/prompt-scheme.js';
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -315,7 +316,7 @@ describe('the vector a presented date is filtered by', () => {
 
     // A pass over a transcript already read resolves the same minimum.
     const { generation } = r.sqlite.query('SELECT generation FROM session_documents WHERE project_id = ? AND session_id = ?').get(PROJECT, SESSION) as { generation: number };
-    await r.serverEnv.db.batch([presentedDatesAfterPublication(r.serverEnv.db, PROJECT, SESSION, generation, null)]);
+    await commit(r.serverEnv.db, presentedDatesAfterPublication(PROJECT, SESSION, generation, null));
     expect(revision(r.sqlite)).toBe(moved);
   });
 

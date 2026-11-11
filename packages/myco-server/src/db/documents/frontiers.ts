@@ -1,7 +1,5 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
 import { PARSER_VERSION } from '../../constants.js';
-import { write } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import { write, type Bound } from '../index.js';
 
 const publish=write<[string,number,string,number,number,string]>({name:'publication.saveFrontiers',sql:`INSERT INTO transcript_publication (project_id,transcript_id,generation,session_id,published_offset,segment_lines,
       open_prompt_id,unfinished,reply_unfinished,reply_latest_at,prompt_scheme,record_scheme,parser_version,state,failure,awaited_size,updated_at,
@@ -14,7 +12,7 @@ const publish=write<[string,number,string,number,number,string]>({name:'publicat
       reply_latest_at=excluded.reply_latest_at,parser_version=excluded.parser_version,state=excluded.state,failure=excluded.failure,
       awaited_size=excluded.awaited_size,updated_at=excluded.updated_at,placed_records=excluded.placed_records,placed_digest=excluded.placed_digest,diagnostic=excluded.diagnostic`});
 /** Upserts publisher frontiers, retaining an artifact's recorded parser version when supplied. */
-export function publicationStatement(db:RelationalStore,projectId:string,sessionId:string,generation:number,now:number,
-  rows:readonly Record<string,unknown>[]):PreparedStatement {
-  return prepareBound(db,publish.bind(projectId,generation,sessionId,PARSER_VERSION,now,JSON.stringify(rows)));
+export function publicationStatement(projectId:string,sessionId:string,generation:number,now:number,
+  rows:readonly Record<string,unknown>[]):Bound {
+  return publish.bind(projectId,generation,sessionId,PARSER_VERSION,now,JSON.stringify(rows));
 }

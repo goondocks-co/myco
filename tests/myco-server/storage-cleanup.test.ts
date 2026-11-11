@@ -241,7 +241,7 @@ describe('archive-before-clear storage cleanup',()=>{
           for(const table of ['session_lifecycle_facts','session_user_prompt_firsts'])rig.sqlite.run(`DELETE FROM ${table}`);
           rig.sqlite.run("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE projection='session_lifecycle'");
           while(await catchUpPhase(rig.db,LIFECYCLE_PHASE as never)>0);
-          await rig.db.batch([presentedDatesAfterPublication(rig.db,'proj_1','sess_1',1,null)]);
+          await commit(rig.db, presentedDatesAfterPublication('proj_1','sess_1',1,null));
         };
         await presented();
         const before=rig.sqlite.query('SELECT occurred_started_at,occurred_ended_at,ended_at,title FROM sessions').get();

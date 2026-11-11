@@ -20,6 +20,15 @@ export function contentGuard(sql: string, params: readonly unknown[], when?: { s
 }
 
 /**
+ * A content guard whose condition is fixed when its module loads, defined once under `name`: binding it answers the
+ * guard row and its clear, failing the batch on the guard table's own CHECK unless `condition` holds.
+ */
+export function namedContentGuard<Params extends BindValue[]>(name: string, condition: string): (...params: Params) => Bound<never, 'write'>[] {
+  const guard = write<Params>({ name, sql: `INSERT INTO storage_content_guard(ok) SELECT CASE WHEN (${condition}) THEN 1 ELSE 0 END` });
+  return (...params) => [guard.bind(...params), clear.bind()];
+}
+
+/**
  * `contentGuard` compiled for a batch still built from prepared statements: a failed guard aborts the whole publication
  * or clear transaction with the guard table's own refusal.
  */
