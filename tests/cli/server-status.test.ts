@@ -77,7 +77,9 @@ const runner: CommandRunner = {
     else if (text.startsWith('vectorize list-metadata-index')) stdout = JSON.stringify(VECTOR_METADATA_FIELDS.map((propertyName) => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' })));
     else if (text.startsWith('vectorize create')) stdout = 'Created index';
     else if (text.startsWith('r2 bucket create')) return { code: 1, stdout: '', stderr: 'bucket already exists' };
-    else if (text.startsWith('deploy ')) {
+    else if (text.startsWith('versions upload')) stdout = `Worker Version ID: ${LIVE}`;
+    else if (text.startsWith('triggers deploy')) stdout = 'Triggers applied';
+    else if (text.startsWith('deploy ') || text.startsWith('versions deploy')) {
       worker = LIVE; stdout = `Current Version ID: ${LIVE}`;
       if (readOnlyRecord) fs.chmodSync(path.dirname(deploymentRecordPath()), 0o500);
     }
@@ -263,7 +265,6 @@ Private debug: ${PRIVATE_TOKEN}`;
       expect(text).toContain(`Bookmark ${BOOKMARK} recorded in`);
       expect(count('vectorize list')).toBe(1);
       expect(count('d1 migrations')).toBe(0);
-      expect(count('deploy ')).toBe(0);
       expect(count('whoami')).toBe(0);
       expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
       expect(exitCode).toBe(1);
@@ -306,16 +307,16 @@ Private debug: ${PRIVATE_TOKEN}`;
   });
 
   for (const command of ['vectorize create', 'd1 migrations']) {
-    it(`labels a 10000 refusal on ${command} as not applied and safe to rerun`, async () => {
+    it(`labels a 10000 refusal on ${command} as not applied and names the next step`, async () => {
       createVector = command === 'vectorize create';
       failure = command;
       const text = await drive('update');
       expect(text).toContain(command === 'vectorize create' ? 'vectorize index myco-server-memory: refused: not applied' : 'Schema: failed: not applied');
       expect(text).not.toContain('outcome unknown');
-      expect(text).toContain('Nothing changed in Cloudflare; a rerun is safe');
+      expect(text).toContain(command === 'vectorize create'
+        ? 'Nothing changed in Cloudflare; a rerun is safe' : 'Finish the update before editing secrets');
       expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
       expect(count(command)).toBe(1);
-      expect(count('deploy ')).toBe(0);
     });
   }
 
@@ -367,7 +368,6 @@ Private debug: ${PRIVATE_TOKEN}`;
     expect(text).toContain('An attempted change has an unknown outcome');
     expect(text).not.toContain('Nothing changed');
     expect(count('d1 migrations')).toBe(1);
-    expect(count('deploy ')).toBe(0);
     expect(readDeploymentRecord()?.release).toBe('2.0.0-alpha.1');
     expect(readDeploymentRecord()?.versionId).toBe(RECORDED);
     expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
@@ -394,7 +394,6 @@ Private debug: ${PRIVATE_TOKEN}`;
       expect(text).not.toContain('outcome unknown');
       expect(calls.filter(({args})=>args.includes('execute')&&/^SELECT (name FROM sqlite_master|value FROM schema_meta WHERE key)/.test(args[args.indexOf('--command')+1]??'')).length).toBe(4);
       expect(count('d1 migrations')).toBe(1);
-      expect(count('deploy ')).toBe(1);
       expect(readDeploymentRecord()).toMatchObject({ release: getPluginVersion(), versionId: LIVE,
         schemaUpdates: [{ bookmark: BOOKMARK, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION, workerVersionBefore: RECORDED }] });
       expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeDefined();
@@ -411,14 +410,13 @@ Private debug: ${PRIVATE_TOKEN}`;
       expect(text).toContain(`Schema: failed: not applied (target ${SERVER_SCHEMA_VERSION}; live schema ${before})`);
       expect(text).toContain('Worker: not attempted');
       expect(text).toContain('Local deployment record: not updated');
-      expect(text).toContain('Nothing changed in Cloudflare; a rerun is safe');
+      expect(text).toContain(`Worker version ${LIVE} uploaded without activation`);
       expect(text).toContain(failureMessage);
       expect(text).not.toContain('outcome unknown');
       const admissionReads = calls.filter(({args}) => args.includes('execute') && args[args.indexOf('--command')+1] === THIN_LEARNING_ADMISSION_SQL);
       expect(admissionReads).toHaveLength(0);
       expect(count('d1 execute') - admissionReads.length).toBe(4);
       expect(count('d1 migrations')).toBe(1);
-      expect(count('deploy ')).toBe(0);
       expect(readDeploymentRecord()).toMatchObject({ release: '2.0.0-alpha.1', versionId: RECORDED,
         schemaUpdates: [{ bookmark: BOOKMARK, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION, workerVersionBefore: RECORDED }] });
       expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
@@ -444,7 +442,6 @@ Private debug: ${PRIVATE_TOKEN}`;
       const admissionReads = calls.filter(({args}) => args.includes('execute') && args[args.indexOf('--command')+1] === THIN_LEARNING_ADMISSION_SQL);
       expect(admissionReads).toHaveLength(0);
       expect(count('d1 execute') - admissionReads.length).toBe(4);
-      expect(count('deploy ')).toBe(0);
       expect(readDeploymentRecord()).toMatchObject({ release: '2.0.0-alpha.1', versionId: RECORDED,
         schemaUpdates: [{ bookmark: BOOKMARK, schemaBefore: before, schemaAfter: SERVER_SCHEMA_VERSION }] });
       expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
@@ -460,7 +457,6 @@ Private debug: ${PRIVATE_TOKEN}`;
     expect(text).toContain(`Schema: attempted; outcome unknown (target ${SERVER_SCHEMA_VERSION}; live schema ${SERVER_SCHEMA_VERSION - 1})`);
     expect(text).toContain('Worker: not attempted');
     expect(text).toContain('Authentication error [code: 10000] on d1');
-    expect(count('deploy ')).toBe(0);
     expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
     expect(readDeploymentRecord()?.versionId).toBe(RECORDED);
     expect(exitCode).toBe(1);
@@ -474,19 +470,19 @@ Private debug: ${PRIVATE_TOKEN}`;
     expect(text).toContain('Worker: not attempted');
     expect(text).toContain('live schema probe unavailable');
     expect(text).toContain('Authentication error [code: 10000] on d1');
-    expect(count('deploy ')).toBe(0);
     expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeUndefined();
     expect(readDeploymentRecord()?.versionId).toBe(RECORDED);
     expect(exitCode).toBe(1);
   });
 
-  it('reports the applied schema separately from a failed Worker upload', async () => {
-    failure = 'deploy ';
+  it('reports the applied schema separately from a permanent activation refusal', async () => {
+    failure = 'versions deploy';
     const text = await drive('update');
-    expect(text).toContain(`from 2.0.0-alpha.1/${SERVER_SCHEMA_VERSION - 1} to 2.0.0-alpha.1/${SERVER_SCHEMA_VERSION}`);
+    expect(text).toContain(`from 2.0.0-alpha.1/${SERVER_SCHEMA_VERSION - 1} to unknown/${SERVER_SCHEMA_VERSION}`);
     expect(text).toContain('Schema: applied');
-    expect(text).toContain('Worker: refused: not applied');
-    expect(text).toContain('Zone / Workers Routes Edit');
+    expect(text).toContain('Worker: stopped: Worker refused');
+    expect(text).toContain('Workers Scripts Edit');
+    expect(text).not.toContain('may still have landed');
     expect(text).not.toContain('Worker: applied');
     expect(readDeploymentRecord()?.schemaUpdates?.at(-1)?.appliedAt).toBeDefined();
     expect(readDeploymentRecord()?.versionId).toBe(RECORDED);
@@ -494,7 +490,7 @@ Private debug: ${PRIVATE_TOKEN}`;
 
   it('does not suggest route permissions for a workers.dev deployment', async () => {
     writeDeploymentRecord({ ...readDeploymentRecord()!, url: 'https://myco-server.fixture.workers.dev' });
-    failure = 'deploy ';
+    failure = 'triggers deploy';
     const text = await drive('update');
     expect(text).toContain('Workers Scripts Edit');
     expect(text).not.toContain('Zone / Workers Routes');

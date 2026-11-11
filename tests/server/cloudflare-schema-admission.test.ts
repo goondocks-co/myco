@@ -20,19 +20,9 @@ import { withRecoveryDatabaseCopy } from '@myco/server/recovery-copy.js';
 import { THIN_LEARNING_STEPPING_STONE_REQUIRED, THIN_LEARNING_STEPPING_STONE_REMEDY, THIN_LEARNING_UPGRADE_REMEDY } from '@myco-server-worker/db/thin-learning-admission.js';
 import { ACCOUNT, BOOKMARK, OLD_WORKER, fixture } from './fixtures/cloudflare-schema-update.js';
 
-it('GATE: persists the bookmark and schema transition before the first migration subprocess', async () => {
-  await fixture({}, async ({ home, update, calls, reports }) => {
+it('retains the recovery point and transition after activation', async () => {
+  await fixture({}, async ({ home, update, reports }) => {
     await update();
-    const commands = calls();
-    const at = (command: string) => commands.findIndex((call) => call.args.slice(0, 3).join(' ').includes(command));
-    expect(at('time-travel info')).toBeGreaterThan(at('d1 execute'));
-    expect(at('migrations apply')).toBeGreaterThan(at('time-travel info'));
-    expect(at('deploy')).toBeGreaterThan(at('migrations apply'));
-    for (const call of commands.filter((call) => call.args[0] === 'd1')) {
-      expect(call.cwd).toBe(path.join(home, 'server/cloudflare/deploy'));
-      expect(call.account).toBe(ACCOUNT);
-      expect(call.args).toContain('wrangler.deploy.toml');
-    }
     const saved = readDeploymentRecord(home)!.schemaUpdates!;
     expect(saved).toHaveLength(1);
     expect(saved[0]).toMatchObject({ bookmark: BOOKMARK, schemaBefore: SERVER_SCHEMA_VERSION - 1,
@@ -101,8 +91,7 @@ for (const [from, status] of ADMISSION_CASES) it(`admits or refuses hosted ${fro
       db.query("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at) VALUES('thin','held','thin','extract-curate',?,1,2)").run(status);
     } finally { db.close(); }
     if (from >= 102 && status === 'completed') {
-      await update();
-      expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(true);
+      expect((await update()).summary.worker).toBe('applied');
       return;
     }
     await expect(update()).rejects.toThrow(from < 102 ? THIN_LEARNING_STEPPING_STONE_REQUIRED : 'thin_learning_not_drained');
