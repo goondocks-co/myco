@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { readPage } from '@myco-server-worker/content/document-reader.js';
@@ -12,7 +12,10 @@ import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
 import { statusMetadata } from '@myco-server-worker/db/documents/failure-head.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
-import { captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
+import { captureDocumentTranscript, documentFileStores } from './helpers/document-stores.js';
+
+const withDocumentStores = documentFileStores(10);
+afterAll(() => withDocumentStores.close());
 import { envelope, memoryBlobStore, uuid } from './helpers/fixtures.js';
 import { MIN, tx, item, user, call, output, limits, one, counters, ran, seedRecords } from './helpers/document-publication.js';
 

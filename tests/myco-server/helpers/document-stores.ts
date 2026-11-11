@@ -20,9 +20,54 @@ import path from 'node:path';
 const storeTargets=new WeakMap<RelationalStore,DocumentTarget>();
 
 type DocumentTarget = 'native'|'D1';
+type DocumentRun = (db: RelationalStore, target: DocumentTarget, native?: Database) => Promise<void>;
+
+async function seedProjects(db: RelationalStore): Promise<void> {
+  for (const project of ['project', 'other']) await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
+}
+
+/**
+ * One Miniflare for this file. Each case takes the next private D1 database copied from the schema template, and a
+ * fresh native copy. A `through` other than the current schema still boots on its own, because that schema differs.
+ */
+export function documentFileStores(capacity: number): ((run: DocumentRun, through?: number) => Promise<void>) & { close(): Promise<void> } {
+  const ids = Array.from({ length: capacity }, (_, index) => `doc${index}`);
+  let mf: Miniflare | null = null;
+  let next = 0;
+  const open = async (): Promise<Miniflare> => {
+    if (mf !== null) return mf;
+    mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01',
+      d1Databases: ids, resourcePersistencePath: await schemaD1Root(ids) }));
+    return mf;
+  };
+  const run = async (use: DocumentRun, through = Infinity): Promise<void> => {
+    if (through !== Infinity) return withDocumentStores(use, through);
+    const selected = process.env.MYCO_DOCUMENT_TEST_STORE;
+    if (selected !== undefined && !['native', 'D1'].includes(selected)) throw new Error('Unknown document test store');
+    let native: Database | null = null;
+    try {
+      if (selected !== 'D1') {
+        native = schemaSqlite();
+        const db = sqliteRelationalStore(native);
+        storeTargets.set(db, 'native');
+        await seedProjects(db);
+        await use(db, 'native', native);
+      }
+      if (selected !== 'native') {
+        const id = ids[next++];
+        if (id === undefined) throw new Error(`document store pool of ${capacity} is exhausted`);
+        const db = await (await open()).getD1Database(id) as RelationalStore;
+        storeTargets.set(db, 'D1');
+        await seedProjects(db);
+        await use(db, 'D1');
+      }
+    } finally { native?.close(); }
+  };
+  return Object.assign(run, { close: async () => { await mf?.dispose(); mf = null; } });
+}
 
 /** Runs `run` on native SQLite, then on D1 through Miniflare: each a private database holding the schema through step `through`, with two projects. */
-export async function withDocumentStores(run: (db: RelationalStore, target: DocumentTarget, native?: Database) => Promise<void>, through = Infinity): Promise<void> {
+export async function withDocumentStores(run: DocumentRun, through = Infinity): Promise<void> {
   const selected=process.env.MYCO_DOCUMENT_TEST_STORE;
   if(selected!==undefined&&!['native','D1'].includes(selected))throw new Error('Unknown document test store');
   const current=through===Infinity;
@@ -43,7 +88,7 @@ export async function withDocumentStores(run: (db: RelationalStore, target: Docu
       }
       storeTargets.set(db,target);
       if(!current)for (const step of SCHEMA_STEPS.filter(step => step.version <= through)) await db.batch(step.statements.map(sql => db.prepare(sql)));
-      for(const project of ['project','other'])await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project,project).run();
+      await seedProjects(db);
       await run(db, target, target==='native'?native!:undefined);
     }
   } finally { native?.close(); await mf?.dispose(); }

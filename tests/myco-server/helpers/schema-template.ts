@@ -46,12 +46,58 @@ export async function replaySchema(db: RelationalStore): Promise<void> {
 }
 
 let nativeImage: Uint8Array | null = null;
+const versionImages = new Map<number, Uint8Array>();
+
+/** Applies schema steps after `from` through `through`, each step in one transaction, as the store's batch applies it. */
+function applySteps(sqlite: Database, from: number, through: number): void {
+  const apply = sqlite.transaction((statements: readonly string[]) => { for (const sql of statements) sqlite.exec(sql); });
+  for (const step of SCHEMA_STEPS) if (step.version > from && step.version <= through) apply(step.statements);
+}
+
+/** The serialized schema at `through`, built once and continued from the nearest lower version already built. */
+function imageThrough(through: number): Uint8Array {
+  const cached = versionImages.get(through);
+  if (cached !== undefined) return cached;
+  let from = 0;
+  let base: Uint8Array | undefined;
+  for (const [version, image] of versionImages) if (version < through && version > from) { from = version; base = image; }
+  const sqlite = base === undefined ? new Database(':memory:') : Database.deserialize(base);
+  try {
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    applySteps(sqlite, from, through);
+    const image = sqlite.serialize();
+    versionImages.set(through, image);
+    return image;
+  } finally { sqlite.close(); }
+}
 
 /**
- * A private in-memory database holding the current schema and nothing else. Foreign key enforcement is a setting of
- * the connection, not the file: it is on unless `foreignKeys` is false, for a test that opened a bare connection.
+ * Restamp the clock and random cells this database actually has. Older versions lack the later tables and keys.
+ * Learning pause and resume rows, where present, take the unixepoch milliseconds those inserts use.
  */
-export function schemaSqlite(options: { foreignKeys?: boolean } = {}): Database {
+function restampCopy(sqlite: Database): void {
+  const names = new Set((sqlite.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((row) => row.name));
+  if (names.has('schema_meta')) {
+    sqlite.exec(RESTAMP_SQL[0]!);
+    sqlite.exec(RESTAMP_SQL[1]!);
+    sqlite.exec(`UPDATE schema_meta SET value = CAST(unixepoch()*1000 AS TEXT) WHERE key IN ('learning_paused_at', 'learning_resumed_at')`);
+  }
+  if (names.has('object_store_reconciliation')) sqlite.exec(RESTAMP_SQL[2]!);
+}
+
+/**
+ * A private in-memory database holding the current schema, or the schema through `through`, and nothing else.
+ * Each version is built once in this process. Foreign key enforcement is a setting of the connection, not the file:
+ * it is on unless `foreignKeys` is false, for a test that opened a bare connection.
+ */
+export function schemaSqlite(options: { foreignKeys?: boolean; through?: number } = {}): Database {
+  const latest = SCHEMA_STEPS.at(-1)!.version;
+  if (options.through !== undefined && options.through < latest) {
+    const sqlite = Database.deserialize(imageThrough(options.through));
+    if (options.foreignKeys !== false) sqlite.exec('PRAGMA foreign_keys = ON');
+    restampCopy(sqlite);
+    return sqlite;
+  }
   if (nativeImage === null) {
     const template = new Database(':memory:');
     try {
@@ -121,6 +167,31 @@ function d1TemplateFile(): Promise<string> {
   });
 }
 
+/**
+ * The file names Miniflare stores these D1 database ids under, learnt by opening them once in one empty root.
+ * A name already learnt is left as it is.
+ */
+async function learnObjectNames(ids: readonly string[]): Promise<void> {
+  const missing = ids.filter((id) => !objectNames.has(id));
+  if (missing.length === 0) return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-d1-name-'));
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: WORKER, compatibilityDate: COMPATIBILITY_DATE,
+    d1Databases: [...missing], resourcePersistencePath: root }));
+  try {
+    const seen = new Set(objectFiles(root));
+    for (const id of missing) {
+      await (await mf.getD1Database(id) as unknown as RelationalStore).prepare('SELECT 1').first();
+      const created = objectFiles(root).filter((name) => !seen.has(name));
+      for (const name of objectFiles(root)) seen.add(name);
+      if (created.length !== 1) throw new Error(`expected one D1 object file for ${id}, found ${created.length}`);
+      objectNames.set(id, Promise.resolve(created[0]!));
+    }
+  } finally {
+    await mf.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 /** The file name Miniflare stores D1 database `id` under, learnt by opening it once in an empty root. */
 function objectName(id: string): Promise<string> {
   let name = objectNames.get(id);
@@ -142,6 +213,7 @@ function objectName(id: string): Promise<string> {
  */
 export async function schemaD1Root(ids: readonly string[] = ['DB']): Promise<string> {
   const template = await d1TemplateFile();
+  await learnObjectNames(ids);
   const root = persistRoot('myco-schema-d1-copy-');
   fs.mkdirSync(path.join(root, D1_OBJECT_DIR), { recursive: true });
   for (const id of ids) {

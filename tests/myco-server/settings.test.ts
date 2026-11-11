@@ -5,18 +5,17 @@
  * Capability reads default on and preserve explicit per-Project opt-outs.
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { settingsWriter, instructionsTemplate, DEPLOYMENT_LEAVES, INSTRUCTIONS_TEMPLATE_LEAF, PROJECT_CAPABILITIES, RETIRED_LEAVES } from '@myco-server-worker/core/settings.js';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES } from '@myco-server-worker/constants.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
 
 function rig(opts: Parameters<typeof settingsWriter>[1] = {}) {
-  const sqlite = migrateAndSeed(new Database(':memory:'));
+  const sqlite = seededSqlite();
   const db = sqliteRelationalStore(sqlite);
   return { sqlite, db, w: settingsWriter(db, { target: 'bun', ...opts }) };
 }
