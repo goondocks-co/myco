@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import { CommandFailed, CommandTimedOut } from '@myco/server/runner.js';
 import {
-  applyMigrationsPaced, D1_MIGRATION_APPLY_TIMEOUT_MS, D1_OVERLOAD_BACKOFF_MIN_MS, D1_OVERLOAD_RETRIES, D1_UPDATE_CEILING_MS,
+  applyMigrationsPaced, D1_MIGRATION_APPLY_TIMEOUT_MS, D1_OVERLOAD_BACKOFF_MIN_MS, D1_OVERLOAD_RETRIES,
   schemaStopLines, SchemaUpdateStopped,
 } from '@myco/server/cloudflare-migration-pacing.js';
 
@@ -12,6 +12,7 @@ function database(start: number, target: number, faults: Record<number, Fault[]>
   let schema = start;
   let clock = 0;
   const waits: number[] = [];
+  const timeouts: number[] = [];
   const lines: string[] = [];
   const failed = (listed: boolean) => new CommandFailed('npx', ['wrangler'], { code: 1, stdout: listed ? 'Migrations to be applied' : '', stderr: 'D1 DB is overloaded [code: 7429]' });
   const run = () => applyMigrationsPaced({
@@ -20,20 +21,20 @@ function database(start: number, target: number, faults: Record<number, Fault[]>
     liveSchema: async () => schema,
     fileAfter: (version) => `file-${version + 1}`,
     apply: async (timeoutMs) => {
-      expect(timeoutMs).toBe(D1_MIGRATION_APPLY_TIMEOUT_MS);
+      timeouts.push(timeoutMs);
       while (schema < target) {
         const fault = faults[schema + 1]?.shift();
         if (fault === undefined || fault.includes('after commit')) { schema += 1; clock += secondsPerFile * 1000; }
         if (fault === 'overloaded after commit') throw failed(true);
         if (fault === 'stall' || fault === 'stall after commit') {
-          clock += D1_MIGRATION_APPLY_TIMEOUT_MS;
+          clock += timeoutMs;
           throw new CommandTimedOut('npx', ['wrangler'], timeoutMs, 'ended');
         }
         if (fault === 'overload' || fault === 'overload with nothing listed') throw failed(fault === 'overload');
       }
     },
   });
-  return { run, waits, lines, schema: () => schema };
+  return { run, waits, timeouts, lines, schema: () => schema };
 }
 
 it('reads the schema after a stalled apply that committed a file and carries on from there', async () => {
@@ -74,12 +75,20 @@ it('still stops once the waits at one schema are spent', async () => {
   expect(stopped.message).toContain(`through ${D1_OVERLOAD_RETRIES} retries at schema 3`);
 });
 
-it('stops by name at the update ceiling even while the schema keeps advancing', async () => {
+it('stops by name when a backoff crosses the ceiling, without starting another apply', async () => {
   const faults: Record<number, Fault[]> = {};
   for (let file = 1; file <= 20; file += 1) faults[file] = ['overloaded after commit'];
-  const d = database(0, 20, faults, D1_UPDATE_CEILING_MS / 1000 / 5);
+  const d = database(0, 20, faults, 886);
   const stopped = await d.run().catch((error) => error);
-  expect(stopped.stop.reason).toBe('out_of_time');
-  expect(stopped.stop.reached).toBeLessThan(20);
+  expect(stopped.stop).toMatchObject({ reason: 'out_of_time', reached: 8 });
+  expect(d.timeouts).toHaveLength(8);
+  expect(d.waits.at(-1)).toBeLessThan(D1_OVERLOAD_BACKOFF_MIN_MS);
   expect(schemaStopLines(stopped.stop, { release: 'r', versionId: null, schema: 0 }).join('\n')).toContain('ran past its 2 hours limit');
+});
+
+it('settles an apply cut short by the ceiling against the live schema before calling it out of time', async () => {
+  const d = database(0, 4, { 1: ['overloaded after commit'], 2: ['stall'] }, 7000);
+  const stopped = await d.run().catch((error) => error);
+  expect(stopped.stop).toMatchObject({ reason: 'out_of_time', reached: 1 });
+  expect(d.timeouts[1]).toBeLessThan(D1_MIGRATION_APPLY_TIMEOUT_MS);
 });

@@ -128,7 +128,7 @@ export type PacedApply =
  * (itself retried on overload) and reported as progress; a timed-out attempt may have committed files, so it is never
  * rerun blind. The waits at one schema are bounded, and start over when the schema advances. The update stops by name
  * when the waits at one schema run out, when the same file fails twice with nothing applied in between, or when the
- * whole update passes its ceiling.
+ * whole update passes its ceiling. No attempt starts after the ceiling, and an attempt gets at most the time left.
  */
 export async function applyMigrationsPaced(options: {
   databaseName: string;
@@ -144,7 +144,8 @@ export async function applyMigrationsPaced(options: {
 }): Promise<PacedApply> {
   const sleep = options.retry?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = options.retry?.now ?? Date.now;
-  const startedAt = now();
+  const deadline = now() + D1_UPDATE_CEILING_MS;
+  const remaining = () => deadline - now();
   const report = (line: string) => options.report?.(line);
   /** Waits spent at the current live schema, and across the whole update. */
   let retries = 0;
@@ -162,10 +163,10 @@ export async function applyMigrationsPaced(options: {
   };
   /** One wait before the next attempt; the reason to stop instead once the waits at this schema or the update's time are spent. */
   const wait = async (): Promise<'overloaded' | 'out_of_time' | undefined> => {
-    if (now() - startedAt >= D1_UPDATE_CEILING_MS) return 'out_of_time';
+    if (remaining() <= 0) return 'out_of_time';
     if (retries >= D1_OVERLOAD_RETRIES) return 'overloaded';
-    const delay = nextDelay;
-    nextDelay = Math.min(D1_OVERLOAD_BACKOFF_MAX_MS, delay * 2);
+    const delay = Math.min(nextDelay, remaining());
+    nextDelay = Math.min(D1_OVERLOAD_BACKOFF_MAX_MS, nextDelay * 2);
     retries += 1;
     totalRetries += 1;
     report(`Waiting ${Math.round(delay / 1000)} s for D1's load to settle (retry ${retries} of ${D1_OVERLOAD_RETRIES} at schema ${lastRead}).`);
@@ -185,11 +186,14 @@ export async function applyMigrationsPaced(options: {
     }
   };
 
+  let lastError: unknown;
   for (;;) {
     let kind: 'overload' | 'timeout';
     let error: unknown;
+    // No attempt starts past the deadline, and none may run past it: the last one gets only the time that is left.
+    if (remaining() <= 0) return stop('out_of_time', lastRead, lastError);
     try {
-      await options.apply(D1_MIGRATION_APPLY_TIMEOUT_MS);
+      await options.apply(Math.min(D1_MIGRATION_APPLY_TIMEOUT_MS, remaining()));
       if (totalRetries > 0) report(`D1 migrations applied after ${totalRetries} ${totalRetries === 1 ? 'retry' : 'retries'}; schema ${options.target} of ${options.target}.`);
       return { kind: 'applied' };
     } catch (caught) {
@@ -201,6 +205,7 @@ export async function applyMigrationsPaced(options: {
     if (error instanceof CommandTimedOut && (error.treeEnd === 'failed' || error.treeEnd === 'unknown')) {
       return stop('migration_timed_out', null, error, { stillRunning: true, ...(options.fileAfter(lastRead) === undefined ? {} : { migration: options.fileAfter(lastRead)! }) });
     }
+    lastError = error;
     const live = await readLive();
     if ('error' in live) {
       if (live.stopReason === undefined) return { kind: 'failed', error };
@@ -224,6 +229,7 @@ export async function applyMigrationsPaced(options: {
     report(kind === 'timeout'
       ? `The migration command answered nothing for ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)} and was ended: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`
       : `D1 overloaded (code 7429) applying migrations: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`);
+    if (remaining() <= 0) return stop('out_of_time', live.schema, error);
     if (suspect !== undefined && suspect.failures >= 2) return stop(kind === 'timeout' ? 'migration_timed_out' : 'migration_over_limit', live.schema, error, { migration: suspect.file });
     const stopReason = await wait();
     if (stopReason !== undefined) return stop(stopReason, live.schema, error);
