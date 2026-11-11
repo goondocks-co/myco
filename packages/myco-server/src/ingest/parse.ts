@@ -19,7 +19,7 @@ import type { TranscriptRole } from '@goondocks/myco-shared/member-protocol';
 
 import { segmentsToRead, splitCompleteLines } from './segments.js';
 
-import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { parseSegments, type ParseSegment } from '../db/transcripts/parse-segments.js';
 
 import { remainingInvocationBudget } from '../core/content-budget.js';
 
@@ -132,40 +132,8 @@ export interface ParseTarget {
     /** The line breaks between the first byte of the segment holding the cursor and the cursor, or null where not known. */
     segmentLines?: number | null;
     /** The segments past the cursor, read with the selection; absent where the pass reads them itself. */
-    segments?: SegmentRow[];
+    segments?: ParseSegment[];
 }
-
-/** A segment row as a pass reads it: where it sits in the transcript, its bytes' stored object, and the time its event carries. */
-interface SegmentRow {
-    base_offset: number;
-    length: number;
-    blob_key: string;
-    object_key: string | null;
-    created_at: number;
-}
-
-/** Both hot and archived segments provide the parser's exact registered object and original creation time. */
-const segmentSource = (project: string, transcript: string, after: string): string => {
-    const [hotAfter, coldAfter] = after === '?' ? ['?3', '?6'] : [after, after];
-    const [hotProject, coldProject] = project === '?' ? ['?1', '?4'] : [project, project];
-    const [hotTranscript, coldTranscript] = transcript === '?' ? ['?2', '?5'] : [transcript, transcript];
-    return `
-  SELECT s.base_offset,s.length,s.blob_key,COALESCE(e.created_at,s.created_at) AS created_at,
-    ${registeredObjectKeySql('s.project_id', 's.blob_key')} AS object_key
-    FROM transcript_segments s LEFT JOIN events e ON e.project_id=s.project_id AND e.event_id=s.event_id
-    WHERE s.project_id=${project} AND s.transcript_id=${transcript}
-      AND s.base_offset>=COALESCE((SELECT MAX(k.base_offset) FROM transcript_segments k
-        WHERE k.project_id=${hotProject} AND k.transcript_id=${hotTranscript} AND k.base_offset<=${hotAfter}),${hotAfter})
-      AND s.base_offset+s.length>${hotAfter}
-  UNION ALL
-  SELECT r.base_offset,r.length,r.archive_key AS blob_key,r.created_at,
-    ${registeredObjectKeySql('r.project_id', 'r.archive_key')} AS object_key
-    FROM raw_archive_refs r WHERE r.project_id=${project} AND r.transcript_id=${transcript}
-      AND r.source_kind='transcript' AND r.disposition='archived'
-      AND r.base_offset>=COALESCE((SELECT MAX(k.base_offset) FROM raw_archive_refs k
-        WHERE k.project_id=${coldProject} AND k.transcript_id=${coldTranscript} AND k.base_offset<=${coldAfter}),${coldAfter})
-      AND r.base_offset+r.length>${coldAfter}`;
-};
 
 /**
  * Why a transcript's parse stopped. Each is a stable classifier a dashboard and an operator read; none is a caller's
@@ -407,14 +375,11 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
     const recoveringHeader = needsHeader && target.parsedOffset > 0;
     const readOffset = recoveringHeader ? 0 : target.parsedOffset;
     // The selection read the segments past the cursor with the transcript; a pass reading from elsewhere reads its own.
-    let segments: SegmentRow[];
+    let segments: ParseSegment[];
     if (target.segments !== undefined && readOffset === target.parsedOffset)
         segments = target.segments;
     else {
-        segments = (await env.db
-            .prepare(`SELECT * FROM (${segmentSource('?', '?', '?')}) ORDER BY base_offset LIMIT ${TRANSCRIPT_PARSE_SEGMENTS_PER_READ}`)
-            .bind(target.projectId, target.transcriptId, readOffset, target.projectId, target.transcriptId, readOffset)
-            .all<SegmentRow>()).results;
+        segments = await parseSegments(env.db, target.projectId, target.transcriptId, readOffset, TRANSCRIPT_PARSE_SEGMENTS_PER_READ);
         calls += 1;
     }
     const taken = segmentsToRead(segments.map((s) => ({ baseOffset: s.base_offset, length: s.length, blobKey: s.blob_key, objectKey: s.object_key, createdAt: s.created_at })), readOffset, Number.POSITIVE_INFINITY, TRANSCRIPT_PARSE_SEGMENTS_PER_READ);

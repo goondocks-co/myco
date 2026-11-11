@@ -4,7 +4,8 @@
  */
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { endTurnStatement, startTurnStatement } from '@myco-server-worker/ingest/turns.js';
+import { commit } from '@myco-server-worker/db/index.js';
+import { endTurn, startTurn } from '@myco-server-worker/db/sessions/turns.js';
 import {
   sessions_listSessions as listSessions,
   sessions_listSessionsAcross as listSessionsAcross,
@@ -75,8 +76,8 @@ it('pages, windows and turns a session at the same D1 cost as the Deployment\'s 
         await store.prepare(`INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at,ingest_nonce)
           VALUES('proj_0',?1,?2,'mt_0','turn','cli','{}','hash',?3,?3,?4)`).bind(`end-${scale}`, session, NOW, `nonce-end-${scale}`).run();
         restart();
-        await startTurnStatement(db, { projectId: 'proj_0', sessionId: session, machineId: 'm_0', at: NOW }).run();
-        await endTurnStatement(db, { projectId: 'proj_0', sessionId: session, eventId: `end-${scale}`, endedAt: NOW + 1, nonce: `nonce-end-${scale}` }).run();
+        await commit(db, startTurn({ projectId: 'proj_0', sessionId: session, machineId: 'm_0', at: NOW }));
+        await commit(db, endTurn({ projectId: 'proj_0', sessionId: session, eventId: `end-${scale}`, endedAt: NOW + 1, nonce: `nonce-end-${scale}` }));
         expect(await store.prepare('SELECT working_since, last_turn_end_at FROM sessions WHERE project_id = ? AND session_id = ?').bind('proj_0', session).first())
           .toEqual({ working_since: null, last_turn_end_at: NOW + 1 });
       } },

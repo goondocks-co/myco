@@ -34,8 +34,5 @@ export async function seedRecords(env: Pick<ServerEnv, 'db' | 'blobs'>, session:
   const seed = new DocumentBatch(env, 'project', session, doc as never);
   await seed.open();
   await seed.place(records, null);
-  await seed.commit(true, 'live', at, () => ({ sql: '1', params: [] }), () => {
-    const set = seed.documentSet(at);
-    return { before: [], after: [db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id='project' AND session_id=?`).bind(...set.params, session)] };
-  });
+  await seed.commit(true, 'live', at, () => ({ sql: '1', params: [] }), () => ({ before: [], after: [seed.catalogStatement(at)] }));
 }

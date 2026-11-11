@@ -5,7 +5,7 @@ import { admitDerivedUpload, contentRegistration, durableProofHeld, publishDeriv
 import { settleUpload } from '../db/storage/object-lifecycle.js';
 import { BLOB_RESERVATION_TTL_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { sha256HexOf, utf8 } from '../hash.js';
-import { credentialLive } from '../ingest/live-credential.js';
+import { credentialLive } from '../db/identity/capture-credential.js';
 import { measuredContentEnv } from './content-budget.js';
 
 export interface DerivedContentSource {

@@ -70,7 +70,7 @@ import { mintWrite, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revoke
 import { type ProjectCapability, observedSettingsGuard } from './settings.js';
 import { projectWorkEnabled } from '../db/settings/admission.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
-import { pruneUncaptured } from '../ingest/uncaptured.js';
+import { pruneUncaptured } from '../db/sessions/uncaptured-reports.js';
 import { runnerContactWrite, workerContactWrite, pruneWorkerContacts, recentWorkerCapabilities, recentWorkerReports, WORKER_CONTACT_RETENTION_MS } from './worker-contacts.js';
 import { catalogResolution, pruneModelCatalogs, type CatalogOwner } from './model-catalogs.js';
 import { workerKey, type WorkerPrincipal } from './worker-lease.js';

@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { blobObjectKeySql } from '../../core/blob-objects.js';
-import { TOKEN_LIVE } from '../../ingest/live-credential.js';
+import { TOKEN_LIVE } from '../identity/capture-credential.js';
 import { commit, read, write } from '../index.js';
 import { objectJournalSql } from './object-journal.js';
 const journal = write<[token: string, now: number]>({ name: 'storage.expireCredentialUploads', sql:

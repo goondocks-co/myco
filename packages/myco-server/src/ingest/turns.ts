@@ -22,7 +22,6 @@
  *
  * A session with an open turn reads as working (`read/catalog/sessions.ts`, `WORKING_CAP_MS`).
  */
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { TURN_END_HEADER, TURN_KIND } from '@goondocks/myco-shared/member-protocol';
 
@@ -78,47 +77,4 @@ export function turnStartedAt(promptId: string, nowMs: number): number | null {
  */
 export function turnStartedAtAsk(askedAt: number, nowMs: number): number | null {
   return Number.isSafeInteger(askedAt) && Math.abs(askedAt - nowMs) <= MAX_CLOCK_SKEW_MS ? askedAt : null;
-}
-
-/**
- * Open a session's turn at `at`, on the machine that holds the session, when no turn end at or after `at` has reached
- * the Deployment: a stamp arriving after its own turn's end opens nothing. The session's recorded end is weighed where
- * the turn is read (`read/catalog/sessions.ts`): a turn older than it is no turn, and a session resumed after it is working
- * again, with its end left as it stands. A session the Deployment does not hold yet is left alone: its first turn opens
- * nothing.
- */
-export function startTurnStatement(db: RelationalStore, s: { projectId: string; sessionId: string; machineId: string; at: number }): PreparedStatement {
-  return db.prepare(
-    `UPDATE sessions SET working_since = ?
-      WHERE project_id = ? AND session_id = ? AND machine_id = ? AND (last_turn_end_at IS NULL OR last_turn_end_at < ?)
-        AND (working_since IS NULL OR working_since < ?)`,
-  ).bind(s.at, s.projectId, s.sessionId, s.machineId, s.at, s.at);
-}
-
-/**
- * The same opening, from a `turn` start this request stored (`nonce`): a duplicate delivery of the event, which stores
- * nothing, opens nothing again.
- */
-export function startTurnFromEventStatement(
-  db: RelationalStore, s: { projectId: string; sessionId: string; machineId: string; at: number; eventId: string; nonce: string },
-): PreparedStatement {
-  return db.prepare(
-    `UPDATE sessions SET working_since = ?
-      WHERE project_id = ? AND session_id = ? AND machine_id = ? AND (last_turn_end_at IS NULL OR last_turn_end_at < ?)
-        AND (working_since IS NULL OR working_since < ?)
-        AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`,
-  ).bind(s.at, s.projectId, s.sessionId, s.machineId, s.at, s.at, s.projectId, s.eventId, s.nonce);
-}
-
-/**
- * Record a turn end that happened at `endedAt`, when this request stored the event (`nonce`): it moves the session's
- * `last_turn_end_at`, and closes the open turn unless that turn started after it.
- */
-export function endTurnStatement(db: RelationalStore, e: { projectId: string; sessionId: string; eventId: string; endedAt: number; nonce: string }): PreparedStatement {
-  return db.prepare(
-    `UPDATE sessions SET last_turn_end_at = MAX(COALESCE(last_turn_end_at, 0), ?),
-         working_since = CASE WHEN working_since IS NOT NULL AND working_since <= ? THEN NULL ELSE working_since END
-      WHERE project_id = ? AND session_id = ?
-        AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`,
-  ).bind(e.endedAt, e.endedAt, e.projectId, e.sessionId, e.projectId, e.eventId, e.nonce);
 }

@@ -29,8 +29,10 @@ import {
   isPromptIdScheme,
   type PromptScopeReason,
 } from '@goondocks/myco-shared/prompt-identity';
-import { ALWAYS, credentialLive } from './live-credential.js';
-import { endsTurn, endTurnStatement, startTurnFromEventStatement, turnStartFrom } from './turns.js';
+import { ALWAYS, credentialLive } from '../db/identity/capture-credential.js';
+import { endsTurn, turnStartFrom } from './turns.js';
+import { endTurn, startTurnFromEvent } from '../db/sessions/turns.js';
+import { prepareBound } from '../db/kernel/statement.js';
 
 import { materialFields, materialMerge } from './material-mutation.js';
 import { EVENT_INLINE_PAYLOAD_BYTES, retainedEventPayload } from './event-payload.js';
@@ -450,13 +452,13 @@ export async function planEventWrite(
   // A turn's end moves the session's last turn end and closes its open turn, unless the turn started after it.
   const turnEnd = endsTurn(e, ctx.turnEnd === true, p)
     ? [
-        endTurnStatement(db, {
+        prepareBound(db, endTurn({
           projectId: ctx.projectId,
           sessionId: e.sessionId,
           eventId: e.eventId,
           endedAt: e.createdAt,
           nonce: write.nonce,
-        }),
+        })),
       ]
     : [];
   // A turn start opens the session's turn at its own instant, after the receipt has opened the session row it names.
@@ -465,14 +467,14 @@ export async function planEventWrite(
     startedAt === null
       ? []
       : [
-          startTurnFromEventStatement(db, {
+          prepareBound(db, startTurnFromEvent({
             projectId: ctx.projectId,
             sessionId: e.sessionId,
             machineId: ctx.machineId,
             at: startedAt,
             eventId: e.eventId,
             nonce: write.nonce,
-          }),
+          })),
         ];
   const liveCapture =
     e.channel === 'import'

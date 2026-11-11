@@ -20,7 +20,8 @@ import { HELD_STATES, isUncapturedReason, type HeldState, type UncapturedReason 
 const isHeldState = (value: string): value is HeldState => (HELD_STATES as readonly string[]).includes(value);
 import { emit } from '../telemetry.js';
 import { mayCreateProjects } from '../db/storage/projects.js';
-import { clearUncapturedStatement } from '../ingest/uncaptured.js';
+import { commit } from '../db/index.js';
+import { clearUncaptured } from '../db/sessions/uncaptured-reports.js';
 import { badRequest, listVisibleProjects, notFound, ok, readJsonObject } from './scope.js';
 
 /**
@@ -121,7 +122,7 @@ export async function handleConnectUncaptured(env: ServerEnv, ctx: OwnerContext)
   if (!written.applied) return written.reason === 'absent' ? notFound() : badRequest(written.detail ?? 'the connection could not be recorded');
   if (projectId !== null && holder === null && row.remote !== null) await recordProjectRemote(env.db, projectId, row.remote, ctx.now);
   // Connected: the machine joins at a hook in the repository, and "Needs you" has nothing more to ask.
-  await clearUncapturedStatement(env.db, machineId, rootKey).run();
+  await commit(env.db, clearUncaptured(machineId, rootKey));
   emit({ kind: 'repository_connected', machineId, actor: ctx.member.id });
   return ok({ connected: true, machineId, rootKey, projectId } satisfies ConnectAnswer);
 }

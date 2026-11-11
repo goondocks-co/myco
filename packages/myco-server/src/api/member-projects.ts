@@ -24,7 +24,9 @@ import { admitProject, PROJECT_NAME_MAX } from '../db/storage/projects.js';
 import { resolveRepository } from '../core/remotes.js';
 import { connectedRoot, connectMachineRoot, disconnectMachineRoot } from '../core/machine-settings.js';
 import { ROOT_KEY } from '../core/settings.js';
-import { clearUncapturedStatement, heldUncapturedStatement, isUncapturedReason, recordUncapturedStatement, type UncapturedReason } from '../ingest/uncaptured.js';
+import { isUncapturedReason, type UncapturedReason } from '@goondocks/myco-shared/member-protocol';
+import { commit } from '../db/index.js';
+import { clearUncaptured, heldUncaptured, recordUncaptured } from '../db/sessions/uncaptured-reports.js';
 import { listVisibleProjects, ok, parseJsonObject } from './scope.js';
 import { emit } from '../telemetry.js';
 
@@ -97,7 +99,7 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
   if (typeof repository === 'string') return ok({ persisted: false, code: 'invalid_field', reason: repository } satisfies RepositoryAnswer);
   const { rootKey, label } = repository;
   const miss = async (reason: UncapturedReason, detail: string): Promise<Response> => {
-    await recordUncapturedStatement(env.db, { machineId: ctx.machineId, memberId: ctx.memberId, rootKey, label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }).run();
+    await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey, label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
     return ok({ persisted: false, code: reason, reason: detail } satisfies RepositoryAnswer);
   };
   const remote = repository.remote === null ? null : normalizeRemote(repository.remote);
@@ -105,7 +107,7 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
   if (told !== null && told !== '') {
     const [project] = (await listVisibleProjects(env.db, { id: ctx.memberId })).filter((p) => p.projectId === told);
     if (project === undefined) return miss('archived', 'the project this repository was connected to no longer accepts capture');
-    await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run();
+    await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
     return ok({ persisted: true, projectId: project.projectId, name: project.name, created: false } satisfies RepositoryAnswer);
   }
   if (remote === null && told === null) return miss('no_remote', 'a repository with no remote joins only when it is connected from "Needs you"');
@@ -123,7 +125,7 @@ export async function handleResolveMemberProject(env: ServerEnv, ctx: Credential
     const written = await connectMachineRoot(env.db, ctx.machineId, rootKey, resolved.projectId, ctx.memberId, ctx.now);
     if (!written.applied) return Response.json({ persisted: false, code: written.reason, reason: written.detail ?? 'the connections changed; retry the edit' }, { status: written.reason === 'conflict' ? 409 : 400 });
   }
-  await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run();
+  await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
   return ok({ persisted: true, projectId: resolved.projectId, name: resolved.name, created: resolved.created } satisfies RepositoryAnswer);
 }
 
@@ -140,7 +142,7 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
     return ok({ persisted: false, code: 'invalid_field', reason: 'reason must be outside_folders or no_remote' });
   }
   const remote = repository.remote === null ? null : normalizeRemote(repository.remote);
-  const written = await recordUncapturedStatement(env.db, { machineId: ctx.machineId, memberId: ctx.memberId, rootKey: repository.rootKey, label: repository.label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }).run();
+  const [written] = await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey: repository.rootKey, label: repository.label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
   return ok({ persisted: written.meta.changes > 0 });
 }
 
@@ -162,11 +164,9 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
     // Left on the machine: nothing is asked of "Needs you", and the machine is no longer told to connect it.
     const untold = await disconnectMachineRoot(env.db, ctx.machineId, rootKey, ctx.memberId, ctx.now);
     if (!untold.applied) return Response.json({ persisted: false, code: untold.reason, reason: untold.detail ?? 'the connections changed; retry the edit' }, { status: untold.reason === 'conflict' ? 409 : 400 });
-    const cleared = await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run();
+    const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
     return ok({ persisted: cleared.meta.changes > 0 || untold.changed });
   }
-  const written = state === 'connected'
-    ? await clearUncapturedStatement(env.db, ctx.machineId, rootKey).run()
-    : await heldUncapturedStatement(env.db, ctx.machineId, rootKey, state).run();
+  const [written] = await commit(env.db, state === 'connected' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
   return ok({ persisted: written.meta.changes > 0 });
 }
