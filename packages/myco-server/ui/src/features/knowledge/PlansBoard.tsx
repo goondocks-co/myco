@@ -7,7 +7,7 @@ import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
 import { projectPath } from '../../routes/nav';
 import type { PlanBoardRow } from './wire';
-import { ago, PLAN_COLUMNS, planStatusWord, planTitle, progressParts, progressWords, type PlanStatus } from './words';
+import { ago, PLAN_COLUMNS, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
 
 const FILTER_DEBOUNCE_MS = 250;
 
@@ -94,6 +94,7 @@ function Column({ status, projectId, projectName, now }: ColumnProps) {
                   title={planTitle(plan)}
                   meta={[projectId === null ? projectName(plan.projectId) ?? 'A project' : null, `updated ${ago(plan.updatedAt, now)}`]}
                   progress={plan.progress}
+                  supersededBy={plan.supersededBy ?? null}
                 />
               ))}
             </ul>
@@ -123,10 +124,12 @@ interface PlanCardProps {
   /** The project across projects, and when it was last edited. */
   meta: ReadonlyArray<string | null>;
   progress?: PlanBoardRow['progress'];
+  /** The later plan that carries this plan's work on, when one does. */
+  supersededBy?: PlanBoardRow['supersededBy'];
 }
 
 /** One plan on the board: its title opens its page, the line beneath says where and when, and the session that wrote it is one link away. */
-function PlanCard({ projectId, planKey, sessionId, title, meta, progress }: PlanCardProps) {
+function PlanCard({ projectId, planKey, sessionId, title, meta, progress, supersededBy = null }: PlanCardProps) {
   const parts = progress === undefined ? null : progressParts(progress);
   const words = progress === undefined ? null : progressWords(progress);
   const facts = meta.filter((part): part is string => part !== null);
@@ -147,6 +150,14 @@ function PlanCard({ projectId, planKey, sessionId, title, meta, progress }: Plan
       {facts.length > 0 && (
         <p className="flex flex-col t-meta text-muted">
           {facts.map((fact) => <span key={fact} className="truncate whitespace-nowrap">{fact}</span>)}
+        </p>
+      )}
+      {supersededBy !== null && (
+        <p className="t-meta text-muted" data-plan-superseded="">
+          Superseded by{' '}
+          <RouterLink to={planPagePath(projectId, { planKey: supersededBy.planKey })} className={cn('relative z-10 rounded-chip font-medium text-primary hover:underline', focusRing)}>
+            {supersedingTitle(supersededBy)}
+          </RouterLink>
         </p>
       )}
       {sessionId !== null && (

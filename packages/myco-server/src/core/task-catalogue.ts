@@ -34,11 +34,13 @@ export const TITLING_TASK = 'title-summary';
 /** The task that learns durable knowledge from session material. */
 export const EXTRACTION_TASK = 'extract-curate';
 export const CURATION_TASK = 'curate-spores';
+/** The task that resolves a Project's stale live plans with the evidence of what became of them. */
+export const PLAN_CURATION_TASK = 'curate-plans';
 /** The task that seeds a Project from a checkout of its code and git history. */
 export const SEEDING_TASK = 'vault-seed';
 
 /** The worker run outcomes: every worker-served task with a prompt of its own. */
-export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK, CURATION_TASK];
+export const OUTCOME_TASKS: readonly string[] = [EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK, CURATION_TASK, PLAN_CURATION_TASK];
 
 /** The reasoning tier each worker outcome declares. */
 export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/execution-profile').ReasoningTier>> = {
@@ -46,6 +48,7 @@ export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/
   [EXTRACTION_TASK]: 'default',
   [CARD_TASK]: 'low',
   [CURATION_TASK]: 'low',
+  [PLAN_CURATION_TASK]: 'low',
   [MAP_TASK]: 'default',
   [SEEDING_TASK]: 'default',
 };
@@ -53,6 +56,7 @@ export const TASK_TIERS: Readonly<Record<string, import('@goondocks/myco-shared/
 /** Tasks whose execution is fixed rather than selected through tier overrides. */
 export const TASK_EXECUTION_PROFILES: Readonly<Record<string, { model: string; effort: string }>> = {
   [CURATION_TASK]: { model: 'sonnet', effort: 'low' },
+  [PLAN_CURATION_TASK]: { model: 'sonnet', effort: 'low' },
 };
 
 /** Tasks whose required worker capability is not available for dispatch. */
@@ -65,6 +69,7 @@ export const TASK_ADMISSION = {
   [EXTRACTION_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [CARD_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [CURATION_TASK]: { kind: 'capability', capability: 'spore_curation' },
+  [PLAN_CURATION_TASK]: { kind: 'capability', capability: 'spore_curation' },
   [SEEDING_TASK]: { kind: 'capability', capability: 'vault_evolution' },
   [TITLING_TASK]: { kind: 'capture' },
 } satisfies Readonly<Record<string, RunAdmissionGate>>;
@@ -89,6 +94,7 @@ export const TASK_TOOLS: Readonly<Record<string, readonly string[]>> = {
   ],
   [CARD_TASK]: ['vault_turn_cards', 'vault_report'],
   [CURATION_TASK]: ['vault_spore_curation', 'vault_search_semantic', 'vault_curate_spore', 'vault_report'],
+  [PLAN_CURATION_TASK]: ['vault_plan_curation', 'vault_search_fts', 'vault_report'],
   [SEEDING_TASK]: ['vault_spores', 'vault_spore', 'vault_search_fts', 'vault_search_semantic', 'vault_create_spore', 'vault_report'],
   [TITLING_TASK]: ['vault_report', 'vault_session_summary_material', 'vault_update_session'],
 };
@@ -114,6 +120,7 @@ export const TASK_RUN_TIMEOUT_SECONDS: Readonly<Record<string, number>> = {
   [EXTRACTION_TASK]: 900,
   [CARD_TASK]: 600,
   [CURATION_TASK]: 300,
+  [PLAN_CURATION_TASK]: 300,
   [SEEDING_TASK]: MAX_WORKER_RUN_SECONDS,
 };
 
@@ -142,6 +149,7 @@ export function admissionForTask(taskName: string): RunAdmissionGate | null {
 /** Reader descriptions owned by the task declarations. */
 export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; description: string }>> = {
   [CURATION_TASK]: { name: 'Curate overlapping spores', description: 'Review one cluster of closely related spores and record whether to resolve them or keep them apart.' },
+  [PLAN_CURATION_TASK]: { name: 'Curate stale plans', description: 'Review plans nobody has touched for two weeks and record whether each landed, was dropped, was superseded or is still open, citing the evidence.' },
   [CARD_TASK]: { name: 'Card session turns', description: 'Write a short card for each finished turn of a session, keeping errors, fixes and decisions word for word.' },
   [EXTRACTION_TASK]: { name: 'Learn from sessions', description: 'Save durable knowledge from sessions as spores, and retire knowledge they replace.' },
   [SEEDING_TASK]: { name: 'Seed project memory', description: 'Read the connected code and git history to write the project’s first spores.' },

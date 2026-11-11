@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { occurredAt, presentedStatus } from '../session-dates.js';
 import { read, readSet } from '../index.js';
+import { planOutcomeLineSql, planResolvedSql } from '../plans/resolution.js';
 
 /**
  * A page's documents read back with the records they stand for, keeping only those a reader may list now: in a Project
@@ -64,6 +65,8 @@ const admitted = (a: Admission) => [
 ].join(' AND ');
 
 const NO_TURN = 'NULL AS turn_id, NULL AS turn_preview, NULL AS turn_chars';
+/** A past plan's outcome as its hit reads: how and when it was resolved, then its resolution note. */
+const PLAN_LINE = `CASE WHEN ${planResolvedSql('p')} THEN ${planOutcomeLineSql('p')} END AS line`;
 
 const HYDRATE = [
   read<Slots, HydratedDocument>({ name: 'searchHydration.sessions', sql:
@@ -77,12 +80,12 @@ const HYDRATE = [
     FROM ${IDS} CROSS JOIN spores s ON s.project_id = d.project_id AND s.id = d.source_key ${sessionOf('s.session_id')}
     WHERE d.kind = 'spore' AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 's.status', session: 's.session_id', created: 's.created_at', liveSession: null })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.plans', sql:
-    `SELECT d.doc_id, 'plan' AS kind, d.project_id, p.plan_key AS id, json_array(p.project_id, p.plan_key) AS plan, p.title, NULL AS line, ${textOf('p.content')},
+    `SELECT d.doc_id, 'plan' AS kind, d.project_id, p.plan_key AS id, json_array(p.project_id, p.plan_key) AS plan, p.title, ${PLAN_LINE}, ${textOf('p.content')},
       p.status, NULL AS observation_type, p.session_id, p.prompt_id, p.created_at, se.agent, ${NO_TURN}
     FROM ${IDS} CROSS JOIN plans p ON p.project_id = d.project_id AND p.plan_key = d.source_key ${sessionOf('p.session_id')}
     WHERE d.kind = 'plan' AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 'p.status', session: 'p.session_id', created: 'p.created_at', liveSession: 'p.session_id' })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.chunks', sql:
-    `SELECT d.doc_id, 'chunk' AS kind, d.project_id, p.plan_key AS id, json_array(p.project_id, p.plan_key) AS plan, p.title, NULL AS line, ${textOf('d.body')},
+    `SELECT d.doc_id, 'chunk' AS kind, d.project_id, p.plan_key AS id, json_array(p.project_id, p.plan_key) AS plan, p.title, ${PLAN_LINE}, ${textOf('d.body')},
       p.status, NULL AS observation_type, p.session_id, p.prompt_id, p.created_at, se.agent, ${NO_TURN}
     FROM ${IDS} CROSS JOIN search_blob_refs r ON r.project_id = d.project_id AND r.blob_key = d.blob_key
       CROSS JOIN plans p ON p.project_id = r.project_id AND p.plan_key = r.plan_key ${sessionOf('p.session_id')}

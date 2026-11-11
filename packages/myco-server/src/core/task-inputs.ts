@@ -19,7 +19,8 @@ import type { ServerEnv } from './adapters.js';
 import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { buildMapInput, mapPrompt, MAP_RULES } from './canopy-input.js';
 import { buildSeedingInput, seedingPrompt, SEEDING_RULES } from './seeding-input.js';
-import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { EXTRACTION_TASK, PLAN_CURATION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { buildPlanCurationInput, planCurationPrompt } from './plan-curation.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_RULES } from './extraction-rules.js';
 import { buildHandStartLearning, learningPrompt } from './learning-stages.js';
@@ -81,6 +82,10 @@ export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   [TITLING_TASK]: {
     build: (_env, _projectId, _now, options) => buildTitlingInput(options.params ?? {}),
     template: () => ({ promptTemplate: titlingPrompt('{{session.id}}', 'claim'), standingRules: null, templateVariants: [{ name: 'When a person asks for a fresh title', prompt: titlingPrompt('{{session.id}}', 'owner') }, { name: 'When a session still open has gone on since its title', prompt: titlingPrompt('{{session.id}}', 'refresh') }] }),
+  },
+  [PLAN_CURATION_TASK]: {
+    build: (env, projectId, now) => buildPlanCurationInput(env, projectId, now),
+    template: () => ({ promptTemplate: planCurationPrompt('{{plans.with_evidence}}'), standingRules: null, templateVariants: [] }),
   },
   [MAP_TASK]: {
     build: (env, projectId, _now, options) => buildMapInput(env, projectId, options),

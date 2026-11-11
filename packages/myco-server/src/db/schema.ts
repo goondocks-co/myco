@@ -31,6 +31,7 @@ import { VNEXT_SEARCH_STEPS } from './schema-steps-search-documents.js';
 import { VNEXT_S8C_STEPS } from './schema-steps-restore-jobs.js';
 import { VNEXT_S9A_STEPS } from './schema-steps-plans-activity.js';
 import { SEARCH_RETIREMENT_STEPS } from './schema-steps-search-retirement.js';
+import { VNEXT_PLAN_CURATION_STEPS } from './schema-steps-plan-curation.js';
 import { V719, V719_STATEMENTS, V719_REACHES, V719_DEPLOYMENT_INDEXES } from './schema-v719.js';
 import { V710_STATEMENTS, V710_REACHES } from './schema-v710.js';
 import { V711_STATEMENTS, V711_REACHES, V711_DEPLOYMENT_INDEXES } from './schema-v711.js';
@@ -2347,6 +2348,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...VNEXT_S8C_STEPS.map(stamp),
   ...VNEXT_S9A_STEPS.map(stamp),
   ...SEARCH_RETIREMENT_STEPS.map(stamp),
+  ...VNEXT_PLAN_CURATION_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

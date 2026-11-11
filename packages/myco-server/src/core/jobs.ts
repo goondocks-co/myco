@@ -25,7 +25,7 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { declared } from './declared.js';
 import type { PowerState } from './power.js';
 import { POWER_STATE_DEPTH } from './power.js';
-import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { EXTRACTION_TASK, PLAN_CURATION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 
 interface ServerJob {
@@ -282,6 +282,7 @@ export const TASK_SCHEDULE: Readonly<Record<string, TaskSchedule | null>> = {
   [EXTRACTION_TASK]: null,
   [CARD_TASK]: null,
   'curate-spores': null,
+  [PLAN_CURATION_TASK]: { intervalSeconds: 86_400, runIn: ['active', 'idle', 'sleep'], overlap: 'skip', maxRunsPerDay: 2, preCondition: 'has-stale-plans' },
   [SEEDING_TASK]: null,
   [TITLING_TASK]: null,
 };

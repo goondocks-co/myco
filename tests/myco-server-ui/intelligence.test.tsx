@@ -324,6 +324,7 @@ describe('running a task by hand', () => {
       'Learn from new sessions nowLast ran today at 14:00',
       'Update the code map nowLast ran today at 12:30',
       `Learn from the project’s code${TASK_DESCRIPTIONS.find((task) => task.task === 'vault-seed')!.description}`,
+      `Curate stale plans now${TASK_DESCRIPTIONS.find((task) => task.task === 'curate-plans')!.description}`,
     ]));
     fireEvent.click(within(menu).getByRole('menuitem', { name: /Update the code map now/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Update the code map now?' });

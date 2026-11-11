@@ -56,6 +56,13 @@ export const STARTABLE_TASKS: readonly StartableTask[] = [
     noun: 'runs over the code',
     started: 'Learning from the code',
   },
+  {
+    task: 'curate-plans',
+    label: 'Curate stale plans now',
+    confirm: 'Curate plans now',
+    noun: 'plan curation runs',
+    started: 'Plan curation',
+  },
 ];
 
 /** Where a task sits in the menu: in the order the page has words for, any other after them. */
