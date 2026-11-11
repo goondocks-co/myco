@@ -9,7 +9,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { parse as parseToml } from 'smol-toml';
 import { NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { extractStructuredResult } from '@myco/mcp/client-call.js';
@@ -48,18 +48,17 @@ async function createDeployment(index: number): Promise<Deployment> {
   const dir = path.join(scratch, `deployment-${index}`);
   fs.mkdirSync(dir, { recursive: true });
   const database = path.join(dir, 'myco.sqlite');
-  const sqlite = new Database(database);
-  sqlite.exec('PRAGMA foreign_keys = ON');
-  for (const file of renderMigrationFiles()) sqlite.exec(file.sql);
+  const sqlite = schemaSqlite();
   sqlite.query('INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, 0)').run(PROJECT, `route-${index}`);
   sqlite.query('INSERT INTO members (id, label, created_at, revoked_at) VALUES (?, ?, 0, NULL)').run(`mem_route_${index}`, `route-${index}`);
   const { token } = await issueMemberToken(sqliteRelationalStore(sqlite),
     { memberId: `mem_route_${index}`, machineId: 'machine_routing_same' }, Date.now(), null, NO_RUNTIME_CLAIMS, { rotates: false });
+  fs.writeFileSync(database, sqlite.serialize());
   sqlite.close();
 
   const blobDir = path.join(dir, 'blobs');
   const native = await serve({ databasePath: database, blobDir, port: 0,
-    bind: 'loopback', transport: 'loopback', sourceFrom: 'socket' });
+    bind: 'loopback', transport: 'loopback', sourceFrom: 'socket', wakeLoop: false });
   stops.push(native.stop);
   return { url: `http://127.0.0.1:${native.port}`, database, blobDir, token };
 }
