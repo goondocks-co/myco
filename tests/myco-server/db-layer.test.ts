@@ -23,12 +23,9 @@ const PENDING: ReadonlySet<string> = new Set([
   'core/backup.ts',
   'core/content-budget.ts',
   'core/harness.ts',
-  'core/recall.ts',
   'core/recovered-tenant.ts',
   'core/registered-content.ts',
   'core/relational-snapshot.ts',
-  'core/remotes.ts',
-  'core/repositories.ts',
   'core/restore-authorization.ts',
   'core/restore-rows.ts',
   'core/run-write-store.ts',
@@ -74,7 +71,6 @@ const PENDING: ReadonlySet<string> = new Set([
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
 const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
   'api/member-projects.ts',
-  'core/remotes.ts',
 ]);
 
 const source = (text: string) => ts.createSourceFile('core/example.ts', text, ts.ScriptTarget.Latest, true);

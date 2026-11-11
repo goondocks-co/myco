@@ -6,8 +6,7 @@ import type { ReadScope } from '../read/scope.js';
 
 /** Configured source identity without any credential metadata. */
 export async function repositoryIdentity(db: RelationalStore, scope: ReadScope, usableSecret?: (slot: string) => Promise<boolean>): Promise<{ url: string; branch: string } | null> {
-  const row=await db.prepare('SELECT url,branch,secret_slot AS secretSlot FROM project_repositories WHERE project_id=?')
-    .bind(scope.projectId).first<{url:string;branch:string;secretSlot:string|null}>();
+  const row = await repositoryConnection(db, scope.projectId);
   if (row === null || row.secretSlot !== null && usableSecret !== undefined && !await usableSecret(row.secretSlot)) return null;
   return {url:row.url,branch:row.branch};
 }

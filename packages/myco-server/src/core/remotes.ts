@@ -22,23 +22,16 @@ import { admitProject, type ProjectCreator } from '../db/storage/projects.js';
  */
 import type { RelationalStore } from './adapters.js';
 import { emit } from '../telemetry.js';
+import { bindRemote, remoteHolderRow, remoteProjectId } from '../db/storage/project-remotes.js';
 
 /** The Project a remote names, or null where no Project has claimed it. */
 export async function projectForRemote(db: RelationalStore, remote: string): Promise<string | null> {
-  const row = await db
-    .prepare(`SELECT project_id AS projectId FROM project_remotes WHERE remote = ?`)
-    .bind(remote)
-    .first<{ projectId: string }>();
-  return row?.projectId ?? null;
+  return remoteProjectId(db, remote);
 }
 
 /** The Project a remote names and whether it is archived, or null where no Project has claimed the remote. */
 export async function remoteHolder(db: RelationalStore, remote: string): Promise<{ projectId: string; archived: boolean } | null> {
-  const row = await db
-    .prepare(`SELECT p.project_id AS projectId, p.archived_at AS archivedAt
-                FROM projects p WHERE p.project_id = (SELECT r.project_id FROM project_remotes r WHERE r.remote = ?)`)
-    .bind(remote)
-    .first<{ projectId: string; archivedAt: number | null }>();
+  const row = await remoteHolderRow(db, remote);
   return row === null ? null : { projectId: row.projectId, archived: row.archivedAt !== null };
 }
 
@@ -52,11 +45,7 @@ export async function remoteHolder(db: RelationalStore, remote: string): Promise
  * a silent drop is how it would stay invisible.
  */
 export async function recordProjectRemote(db: RelationalStore, projectId: string, remote: string, now: number): Promise<boolean> {
-  const written = await db
-    .prepare(`INSERT OR IGNORE INTO project_remotes (remote, project_id, first_seen_at) VALUES (?, ?, ?)`)
-    .bind(remote, projectId, now)
-    .run();
-  const bound = written.meta.changes === 1;
+  const bound = await bindRemote(db, remote, projectId, now);
   if (!bound) emit({ kind: 'remote_bound', remote, projectId, status: 'held' });
   return bound;
 }

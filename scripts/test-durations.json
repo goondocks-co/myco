@@ -554,6 +554,7 @@
     "tests/myco-server/processed-bodies.test.ts": 600,
     "tests/myco-server/project-cursors.test.ts": 6462,
     "tests/myco-server/project-resolution.test.ts": 600,
+    "tests/myco-server/prompt-answer-retention-cost.test.ts": 3000,
     "tests/myco-server/prompt-identity.test.ts": 6300,
     "tests/myco-server/prompt-scheme.test.ts": 1748,
     "tests/myco-server/provenance.test.ts": 44365,
