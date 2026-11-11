@@ -18,6 +18,7 @@ import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './s
 import { RUN_CANCEL_POLICY, authorizeHttp } from '../auth/http-authorization.js';
 import type { RunDetail } from '../read/runs.js';
 import { paging } from './sessions.js';
+import { MAX_SESSION_ID_CHARS } from '../core/spore-input-contract.js';
 
 /** The run detail with the caller's cancellation decision. */
 export type DashboardRunDetail = Omit<RunDetail, 'run'> & { run: RunDetail['run'] & { canCancel: boolean; cancelReason: string | null } };
@@ -41,11 +42,14 @@ function runIdParam(raw: string): string | null {
   return decoded.length > 0 && decoded.length <= MAX_ID_CHARS ? decoded : null;
 }
 
-/** A filter value from the query, absent when not given, or a refusal when it exceeds the identifier bound. */
-function filterParam(url: URL, name: string): string | undefined | Response {
+/** The longest subject a claim writes: a session's learning or card subject, its prefix and the longest session id. */
+const MAX_SUBJECT_CHARS = 'session:'.length + MAX_SESSION_ID_CHARS;
+
+/** A filter value from the query, absent when not given, or a refusal when it exceeds `max` characters. */
+function filterParam(url: URL, name: string, max = MAX_ID_CHARS): string | undefined | Response {
   const raw = url.searchParams.get(name);
   if (raw === null) return undefined;
-  if (raw.length === 0 || raw.length > MAX_ID_CHARS) return badRequest(`${name} must be 1 to ${MAX_ID_CHARS} characters`);
+  if (raw.length === 0 || raw.length > max) return badRequest(`${name} must be 1 to ${max} characters`);
   return raw;
 }
 
@@ -57,7 +61,7 @@ export const SUBJECT_WINDOW_MS = 86_400_000;
  * window of at most `SUBJECT_WINDOW_MS`, so the runs it passes over are bounded by that task's runs in one day.
  */
 function subjectParam(url: URL, task: string | undefined, since: number | undefined, until: number | undefined): string | null | undefined | Response {
-  const named = filterParam(url, 'subject');
+  const named = filterParam(url, 'subject', MAX_SUBJECT_CHARS);
   if (named instanceof Response) return named;
   const none = url.searchParams.get('noSubject');
   if (none !== null && none !== '1') return badRequest('noSubject must be 1 when given');

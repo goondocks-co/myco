@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { MAX_SESSION_ID_CHARS } from '@myco-server-worker/core/spore-input-contract.js';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
@@ -188,9 +189,10 @@ it('filters a day of one task by subject before the page fills, null matching nu
     f.run('same', 'curate-spores', 'completed', NOW - 100);
     f.run('none', 'curate-spores', 'completed', NOW - 50);
     for (let i = 0; i < 6; i++) f.sqlite.run('UPDATE agent_runs SET subject = ? WHERE id = ?', [`cluster-${i}`, `other_${i}`]);
-    f.sqlite.run(`UPDATE agent_runs SET subject = 'cluster-a' WHERE id = 'same'`);
+    const longest = `cards:${'s'.repeat(MAX_SESSION_ID_CHARS)}`;
+    f.sqlite.run('UPDATE agent_runs SET subject = ? WHERE id = ?', [longest, 'same']);
     const window = `task=curate-spores&since=${NOW - DAY}&until=${NOW}&order=oldest&limit=6`;
-    expect((await f.get(`/api/projects/proj_1/runs?${window}&subject=cluster-a`)).rows.map((row: Answer) => row.id)).toEqual(['same']);
+    expect((await f.get(`/api/projects/proj_1/runs?${window}&subject=${longest}`)).rows.map((row: Answer) => row.id)).toEqual(['same']);
     expect((await f.get(`/api/projects/proj_1/runs?${window}&noSubject=1`)).rows.map((row: Answer) => row.id)).toEqual(['none']);
     const refused = await f.get('/api/projects/proj_1/runs?task=curate-spores&subject=cluster-a', 400);
     expect(refused.reason).toContain('needs task, since and until');
