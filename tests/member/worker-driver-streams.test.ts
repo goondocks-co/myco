@@ -2000,7 +2000,7 @@ describe('a harness no worker offers', () => {
         pollIdleMs: 3_000, log: (line) => { logged.push(line); }, fetchImpl: profileWorkerServer(fetchImpl), signal: stopping.signal,
         onOfferAcknowledged: async () => { stopping.abort(); },
       });
-      expect(claims).toEqual([[{ id: STUB_HARNESS, installed: true, authenticated: true, profile: harnessById(STUB_HARNESS)!.profile }]]);
+      expect(claims).toEqual([[{ id: STUB_HARNESS, installed: true, authenticated: true, version: '0.0.1', profile: harnessById(STUB_HARNESS)!.profile }]]);
       expect(logged.some(line => line.startsWith('Checked in:') && line.includes('unavailable: antigravity'))).toBe(true);
     } finally { agy.remove(); }
   }, 15_000);

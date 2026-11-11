@@ -19,6 +19,7 @@ import { attemptsReceived, runEvidenceHead } from '../db/runs/evidence.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
+import { servedPromptCount } from '../db/runs/served-prompts.js';
 import { type RunResult } from '../db/runs/run-output.js';
 import { MAP_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
@@ -176,6 +177,10 @@ export interface RunAttemptRow {
   waitedFor: string | null;
   /** When the stay in the queue this attempt ended began; null when the run was never queued or it was not recorded. */
   waitedSince: number | null;
+  /** The runner's own version at the claim, as it last reported it; null where it reported none or no runner took it. */
+  runnerVersion: string | null;
+  /** The coding agent's version the claim reported for the harness it ran; null where it reported none. */
+  agentVersion: string | null;
 }
 
 /** One step a worker observed, metadata only: never file contents or command output. */
@@ -215,6 +220,8 @@ export interface RunDetail {
   attemptCount: number | null;
   /** The first page of the latest attempt's step log; null for a run no worker claimed. */
   steps: RunStepPage | null;
+  /** The distinct prompts Myco served the run; null for a run queued before Myco counted them. */
+  servedPrompts: number | null;
 }
 
 interface RunFilters {
@@ -481,6 +488,8 @@ const attemptOf = (received: ReadonlyMap<string, number> | null, includeSignIn =
   steps: row.total === null || received === null ? null : { total: Number(row.total), received: received.get(row.attemptId) ?? 0, overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
   waitedFor: visibleRunHolder(row.waitedFor, includeSignIn),
   waitedSince: row.waitedSince === null ? null : Number(row.waitedSince),
+  runnerVersion: row.runnerVersion,
+  agentVersion: row.agentVersion,
 });
 
 /**
@@ -521,10 +530,11 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
   if (row === null) return null;
   const waits = row.status === 'queued' ? await queuedWaits(db, scope, [runId]) : null;
   const run = await getRun(db, scope, runId);
-  const [callPage, currentMap, attempts] = await Promise.all([
+  const [callPage, currentMap, attempts, servedPrompts] = await Promise.all([
     runToolCallPage(db, scope, runId, calls),
     canopyMapRecord(db, scope.projectId, runId, { event: RUN_WRITE_EVENT, tool: MAP_WRITE_TOOL }),
     runAttempts(db, scope, runId, calls.includeSignIn === true),
+    servedPromptCount(db, scope, runId),
   ]);
   const latest = attempts.rows.at(-1);
   return {
@@ -540,5 +550,6 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
     attempts: attempts.rows,
     attemptCount: attempts.total,
     steps: latest === undefined ? null : await runStepPage(db, scope, runId, latest.attemptId),
+    servedPrompts,
   };
 }

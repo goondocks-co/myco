@@ -7,6 +7,7 @@ import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { LEDGER_ENABLED_AT } from '@myco-server-worker/db/schema-v95.js';
 import { GUARD_ENABLED_AT } from '@myco-server-worker/db/schema-v101.js';
+import { SERVED_PROMPTS_COUNTED_FROM } from '@myco-server-worker/db/runs/served-prompts.js';
 import { removeWhenTestsEnd } from '../../support/remove-when-tests-end.js';
 import { DEPLOYMENT_ID_KEY } from './d1.js';
 
@@ -30,13 +31,14 @@ export const RESTAMPED_CELLS = [
   { table: 'schema_meta', key: DEPLOYMENT_ID_KEY },
   { table: 'schema_meta', key: LEDGER_ENABLED_AT },
   { table: 'schema_meta', key: GUARD_ENABLED_AT },
+  { table: 'schema_meta', key: SERVED_PROMPTS_COUNTED_FROM },
   { table: 'object_store_reconciliation', column: 'armed_at' },
 ] as const;
 
 const NOW_MS = `CAST(CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER) AS TEXT)`;
 const RESTAMP_SQL = [
   `UPDATE schema_meta SET value = lower(hex(randomblob(16))) WHERE key = '${DEPLOYMENT_ID_KEY}'`,
-  `UPDATE schema_meta SET value = ${NOW_MS} WHERE key IN ('${LEDGER_ENABLED_AT}', '${GUARD_ENABLED_AT}')`,
+  `UPDATE schema_meta SET value = ${NOW_MS} WHERE key IN ('${LEDGER_ENABLED_AT}', '${GUARD_ENABLED_AT}', '${SERVED_PROMPTS_COUNTED_FROM}')`,
   `UPDATE object_store_reconciliation SET armed_at = (CAST(strftime('%s','now') AS INTEGER) + 1) * 1000 WHERE slot = 1`,
 ];
 

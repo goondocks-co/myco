@@ -28,6 +28,7 @@ import { lastContactAt, recentCapabilityRows, recentReportRows, retireWorkerCont
 import { fleetRows, removedRunnerRows, type MemberFleetRow, type RunnerFleetRow } from '../db/runners/fleet-rows.js';
 import { runnerDisplay, type RunnerFleetRecord, type FleetRun, type RunnerAvailability } from '@goondocks/myco-shared/runner-fleet';
 import { MODEL_CATALOG_FRESH_MS, parseModelCatalog } from '@goondocks/myco-shared/execution-profile';
+import { agentVersionOf } from './worker-selection.js';
 import { isRunnerUpdateText, RUNNER_UPDATE_RESULTS } from '@goondocks/myco-shared/runner-update';
 import semver from 'semver';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
@@ -40,6 +41,8 @@ export interface ReportedHarness {
   unavailableReason?: 'login_missing';
   signInFailure?: HarnessSignInFailure;
   profile?: ProfileCapability;
+  /** The coding agent's own version, as the worker read it; absent where it reported none. */
+  version?: string;
 }
 
 /** Why the worker's last claim took no run, in the claim's own vocabulary; null when it took one. */
@@ -99,6 +102,7 @@ function boundedOffers(offers: readonly ReportedHarness[]): ReportedHarness[] {
     id: offer.id.slice(0, MAX_ID), ...(offer.installed === undefined ? {} : { installed: offer.installed === true }), authenticated: offer.authenticated === true,
     ...(offer.unavailableReason === 'login_missing' ? { unavailableReason: offer.unavailableReason, signInFailure: parseHarnessSignInFailure(offer.signInFailure) } : {}),
     ...(offer.profile === undefined ? {} : { profile: offer.profile }),
+    ...(agentVersionOf(offer.version) === undefined ? {} : { version: offer.version }),
   }));
 }
 
@@ -121,7 +125,8 @@ export function parseOffers(raw: unknown): ReportedHarness[] | null {
         && (profile.model === 'flag' || profile.model === 'config' || profile.model === 'none')
         && Array.isArray(profile.efforts) && profile.efforts.every((effort) => typeof effort === 'string');
       offers.push({ id: offer.id, ...(offer.installed === undefined ? {} : { installed: offer.installed === true }), authenticated: offer.authenticated === true,
-        ...(offer.unavailableReason === 'login_missing' ? { unavailableReason: offer.unavailableReason, signInFailure: parseHarnessSignInFailure(offer.signInFailure) } : {}), ...(validProfile ? { profile } : {}) });
+        ...(offer.unavailableReason === 'login_missing' ? { unavailableReason: offer.unavailableReason, signInFailure: parseHarnessSignInFailure(offer.signInFailure) } : {}), ...(validProfile ? { profile } : {}),
+        ...(agentVersionOf(offer.version) === undefined ? {} : { version: offer.version }) });
     }
     return offers;
   } catch {
@@ -150,7 +155,7 @@ function unchanged(stored: WorkerContact | null, offers: readonly ReportedHarnes
 
 function sameOffers(left: readonly ReportedHarness[], right: readonly ReportedHarness[]): boolean {
   return left.length === right.length && left.every((offer, i) => offer.id === right[i]?.id
-    && JSON.stringify(offer.signInFailure) === JSON.stringify(right[i]?.signInFailure) && offer.unavailableReason === right[i]?.unavailableReason && offer.installed === right[i]?.installed && offer.authenticated === right[i]?.authenticated && JSON.stringify(offer.profile) === JSON.stringify(right[i]?.profile));
+    && JSON.stringify(offer.signInFailure) === JSON.stringify(right[i]?.signInFailure) && offer.unavailableReason === right[i]?.unavailableReason && offer.installed === right[i]?.installed && offer.authenticated === right[i]?.authenticated && JSON.stringify(offer.profile) === JSON.stringify(right[i]?.profile) && offer.version === right[i]?.version);
 }
 
 function contactOf(row: WorkerContactRow): WorkerContact {

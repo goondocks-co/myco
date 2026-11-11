@@ -60,7 +60,7 @@ async function open(runId: string, detail: unknown, taskRuns: (url: URL) => RunP
 }
 
 const runner = (runnerId: string, name: string): RunAttempt['executor'] => ({ kind: 'runner', runnerId, name });
-const attempt = (attemptId: string, claimedAt: number, executor: RunAttempt['executor'], steps: RunAttempt['steps'] = null): RunAttempt => ({ attemptId, claimedAt, executor, steps, waitedFor: null, waitedSince: null });
+const attempt = (attemptId: string, claimedAt: number, executor: RunAttempt['executor'], steps: RunAttempt['steps'] = null): RunAttempt => ({ attemptId, claimedAt, executor, steps, waitedFor: null, waitedSince: null, runnerVersion: null, agentVersion: null });
 const routeCall = (id: number, at: number): RunCall => ({ id, tool: '/runs/embedding-step', op: null, recordedAt: at, durationMs: null, status: 'success' });
 const story = (panel: HTMLElement) => within(panel).getByRole('region', { name: 'What happened' });
 const line = (panel: HTMLElement, key: string) => story(panel).querySelector<HTMLElement>(`[data-story-row="${key}"]`)!;
@@ -175,6 +175,20 @@ describe('What happened', () => {
     expect(owed).toContain('Myco saw');
   });
 
+  it('names the runner and agent versions an attempt ran with, as its runner reported them, and an older runner’s as not reported', async () => {
+    const claimed = NOW - 20 * MINUTE;
+    const run = runRow({ id: 'run_title02', task: 'title-summary', status: 'completed', queuedAt: claimed - SECOND, startedAt: claimed, completedAt: claimed + 30 * SECOND, result: 'produced', harness: 'claude-code' });
+    const panel = await open('run_title02', runDetail(run, {
+      attempts: [{ ...attempt('att_new', claimed, runner('rn_c04d11e8', 'studio-m4')), runnerVersion: '2.0.0-alpha.24', agentVersion: '2.1.3' }], attemptCount: 1,
+    }));
+    expect(line(panel, 'versions-att_new').textContent).toContain('Runner 2.0.0-alpha.24 · Claude Code 2.1.3');
+    expect(line(panel, 'versions-att_new').querySelector('[data-source]')!.textContent).toContain('Runner reports');
+    cleanup();
+    const older = await open('run_title02', runDetail(run, { attempts: [attempt('att_old', claimed, runner('rn_c04d11e8', 'studio-m4'))], attemptCount: 1 }));
+    expect(line(older, 'versions-att_old').textContent).toContain('Runner version not reported · Claude Code version not reported');
+    expect(line(older, 'versions-att_old').querySelector('[data-source]')!.textContent).toContain('Not recorded');
+  });
+
   it('says a step log that never arrived is not recorded, rather than that the run did nothing on its machine', async () => {
     const panel = await open('run_embed1914', searchRunCutOff());
     expect(line(panel, 'no-steps').textContent).toContain('The runner’s step log never arrived');
@@ -202,6 +216,22 @@ describe('Did it do what we asked?', () => {
     expect(verdict(idle)).toContain('Ran and did not do the work');
     expect(verdict(idle)).not.toContain('Changed nothing');
     expect(idle.querySelector('[data-asked="owed"]')!.textContent).toContain('No report');
+  });
+
+  it('sets the prompts Myco gave a run beside what the agent says it read, each marked with whose word it is', async () => {
+    const run = runRow({ id: 'run_learn01', task: 'extract-curate', status: 'completed', result: 'produced' });
+    const audit = { steps: ['Read the slice'], examined: Array.from({ length: 9 }, (_, at) => `turn ${at}`), commands: [], failures: [], reasoning: 'Saved what lasts.', omitted: 0 };
+    const panel = await open('run_learn01', runDetail(run, { servedPrompts: 12, reports: [{ action: 'learned', summary: 'Saved two spores.', details: null, audit, createdAt: NOW - 5 * MINUTE }] }));
+    const prompts = panel.querySelector<HTMLElement>('[data-asked="prompts"]')!;
+    expect(prompts.textContent).toContain('Myco gave it 12 prompts');
+    expect(prompts.textContent).toContain('It read 9');
+    expect([...prompts.querySelectorAll('[data-source]')].map((mark) => mark.textContent)).toEqual([expect.stringContaining('Myco saw'), expect.stringContaining('The agent says')]);
+    cleanup();
+    const silent = await open('run_learn01', runDetail(run, { servedPrompts: 12 }));
+    expect(silent.querySelector('[data-asked="prompts"]')!.textContent).toContain('It gave no account of what it read');
+    cleanup();
+    const uncounted = await open('run_learn01', runDetail(run, { servedPrompts: null }));
+    expect(uncounted.querySelector('[data-asked="prompts"]')).toBeNull();
   });
 
   it('reads a run cut off by its time limit as stopped, not as one that did not do the work', async () => {
@@ -302,7 +332,7 @@ describe('the facts the panel states', () => {
     });
     const panel = await open('run_again', detail);
     const rows = [...story(panel).querySelectorAll<HTMLElement>('[data-story-row]')].map((row) => row.dataset.storyRow);
-    expect(rows.slice(0, 6)).toEqual(['queued', 'waited', 'claim-att_one', 'requeued-att_two', 'waited-requeued-att_two', 'claim-att_two']);
+    expect(rows.slice(0, 8)).toEqual(['queued', 'waited', 'claim-att_one', 'versions-att_one', 'requeued-att_two', 'waited-requeued-att_two', 'claim-att_two', 'versions-att_two']);
     expect(line(panel, 'requeued-att_two').textContent).toContain('Back in the queue');
     expect(line(panel, 'waited-requeued-att_two').textContent).toContain('Waited 30 min to be taken');
   });

@@ -106,6 +106,7 @@ import {
   selectExecution,
   type LoginStep,
   type OfferedHarness,
+  reportedAgentVersion,
 } from './worker-selection.js';
 import { DEFAULT_DISPATCH_TIMEOUT_SECONDS } from './run-deadline.js';
 
@@ -1086,7 +1087,7 @@ export async function claimNextRun(
   const limits = await readDispatchLimits(env);
   const price = await estimateForClaim(env.db,candidate.projectId,candidate.task,harness,profile);
   const claimed = await claimQueuedRun(env, candidate, {
-    worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, profile, now: worker.now, capabilities:worker.capabilities,
+    worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness, agentVersion: reportedAgentVersion(worker.harnesses, harness), profile, now: worker.now, capabilities:worker.capabilities,
     settingsGuard:policy.revisions,
     ...(built !== null && !built.unchanged ? { input: built.input } : {}),
   });
@@ -1185,7 +1186,7 @@ async function pullAtClaim(
         clearPulledBudgetHolds({ levels: pulledStages().map(stage => stage.level), level: stage.level, now: worker.now,
           projectId: item.projectId, runId, attemptId: dispatchedBy }),
       ] }, {
-      worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now, capabilities:worker.capabilities,
+      worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, agentVersion: reportedAgentVersion(worker.harnesses, chosen.harness), profile, now: worker.now, capabilities:worker.capabilities,
       settingsGuard:policy.revisions,
     });
     if (claimed === null) {

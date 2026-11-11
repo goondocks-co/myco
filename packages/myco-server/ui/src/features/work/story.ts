@@ -3,6 +3,7 @@ import { holdSentence } from '@goondocks/myco-shared/run-holds';
 import { callStepWords, callWords } from './call-words';
 import { displayModel } from './ModelSummary';
 import { count } from '../today/words';
+import { harnessLabel } from '../../lib/harness';
 import type { RunAttempt, RunCall, RunCloseEvidence, RunDetailAnswer, RunPageRow, RunReport, RunStep } from './wire';
 
 /**
@@ -102,7 +103,22 @@ function waitedNote(hold: string | null | undefined): string | null {
   return sentence === null ? null : `While it waited, Myco said: “${sentence}”`;
 }
 
-function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null, memberName: (id: string) => string | null): StoryRow[] {
+/** The versions an attempt ran with, as its runner reported them: its own and the coding agent's. */
+export function versionRow(attempt: RunAttempt, harness: string | null): StoryRow {
+  const agent = harness === null ? 'the agent' : harnessLabel(harness);
+  const runner = attempt.executor.kind === 'runner'
+    ? attempt.runnerVersion === null ? 'Runner version not reported' : `Runner ${attempt.runnerVersion}`
+    : null;
+  const parts = [...(runner === null ? [] : [runner]), attempt.agentVersion === null ? `${agent} version not reported` : `${agent} ${attempt.agentVersion}`];
+  const reported = attempt.runnerVersion !== null || attempt.agentVersion !== null;
+  const words = parts.join(' · ');
+  return row({
+    key: `versions-${attempt.attemptId}`, at: attempt.claimedAt, words: `${words.charAt(0).toUpperCase()}${words.slice(1)}`, source: reported ? 'runner' : 'none',
+    note: reported ? null : 'A runner from before Myco recorded versions sends none.',
+  });
+}
+
+function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null, memberName: (id: string) => string | null, harness: string | null): StoryRow[] {
   const total = attemptCount ?? attempts.length;
   return attempts.flatMap((attempt, index) => {
     const ordinal = total - attempts.length + index + 1;
@@ -113,10 +129,10 @@ function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null,
       : [];
     if (attempt.executor.kind === 'runner') {
       const name = attempt.executor.name ?? 'a runner';
-      return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', runner: { id: attempt.executor.runnerId, name } })];
+      return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', runner: { id: attempt.executor.runnerId, name } }), versionRow(attempt, harness)];
     }
     const member = attempt.executor.memberId === null ? null : memberName(attempt.executor.memberId);
-    return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw' })];
+    return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw' }), versionRow(attempt, harness)];
   });
 }
 
@@ -174,7 +190,7 @@ export function runStory({ answer, calls, callsComplete, steps, startedBy, cause
   const { run } = answer;
   const timed: StoryRow[] = [];
   if (run.queuedAt !== null) timed.push(row({ key: 'queued', at: run.queuedAt, words: startedBy === null ? 'Queued' : `Queued, ${startedBy}`, source: 'saw' }));
-  const claims = claimRows(answer.attempts, answer.attemptCount, memberName);
+  const claims = claimRows(answer.attempts, answer.attemptCount, memberName, run.harness);
   if (claims.length > 0) timed.push(...claims);
   else if (run.startedAt !== null) timed.push(row({ key: 'started', at: run.startedAt, words: 'Started', source: 'saw' }));
   timed.push(...groupCalls(calls));
@@ -294,6 +310,8 @@ export interface AskedRow {
   key: string;
   label: string;
   asked: string;
+  /** Whose word the asked side rests on, where it is a record rather than the request itself. */
+  askedSource?: Source;
   evidence: string;
   source: Source;
   tone: Tone;
@@ -344,8 +362,17 @@ function evidenceWords(evidence: RunCloseEvidence): { evidence: string; tone: To
   return { evidence: 'Report filed', tone: 'good' };
 }
 
-/** Asked versus evidence: model, effort, material and the evidence the task owes. */
-export function askedRows({ run, read, outcomeEvidence }: RunDetailAnswer): AskedRow[] {
+/** What the agent's latest account says it read, counted; null where no report carries an account. */
+function examinedWords(reports: readonly RunReport[]): string | null {
+  const audit = reports.filter((report) => report.audit !== null).at(-1)?.audit;
+  if (audit === undefined || audit === null) return null;
+  const listed = audit.examined.length;
+  return `It read ${audit.omitted > 0 && listed > 0 ? 'at least ' : ''}${listed.toLocaleString()}`;
+}
+
+/** Asked versus evidence: model, effort, material, prompts served versus read, and the evidence the task owes. */
+export function askedRows(answer: RunDetailAnswer): AskedRow[] {
+  const { run, read, outcomeEvidence } = answer;
   const rows: AskedRow[] = [];
   const live = run.status === 'queued' || run.status === 'running' || run.status === 'claimed';
   const identity = run.identity;
@@ -371,6 +398,14 @@ export function askedRows({ run, read, outcomeEvidence }: RunDetailAnswer): Aske
       key: 'material', label: 'Material', asked: run.targetSessionId !== null ? 'One session named' : 'Sessions Myco serves it',
       evidence: read.recorded ? `${count(read.total, 'session')} served by Myco` : 'Which sessions it read isn’t recorded',
       source: read.recorded ? 'saw' : 'none', tone: run.targetSessionId !== null && read.recorded && read.total === 0 ? 'bad' : null,
+    });
+  }
+  const prompts = answer.servedPrompts;
+  if (prompts !== null && prompts > 0) {
+    const examined = examinedWords(answer.reports);
+    rows.push({
+      key: 'prompts', label: 'Prompts served versus read', asked: `Myco gave it ${count(prompts, 'prompt')}`, askedSource: 'saw',
+      evidence: examined ?? (live ? 'Reported when it ends' : 'It gave no account of what it read'), source: examined === null ? 'none' : 'agent', tone: null,
     });
   }
   if (outcomeEvidence !== null) {

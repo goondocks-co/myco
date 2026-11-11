@@ -290,7 +290,8 @@ it('shows a failed agent sign-in while another agent keeps the runner online', a
 });
 
 describe('Runner page', () => {
-  const ran = (runId: string, outcome: string, minutesAgo: number) => ({ attemptId: `att_${runId}`, claimedAt: NOW - minutesAgo * 60_000, projectId: 'proj_1', projectName: 'Myco', runId, task: 'canopy-map', completedAt: null, outcome });
+  const ran = (runId: string, outcome: string, minutesAgo: number, drift: Record<string, unknown> = {}) => ({ attemptId: `att_${runId}`, claimedAt: NOW - minutesAgo * 60_000, projectId: 'proj_1', projectName: 'Myco', runId, task: 'canopy-map', completedAt: null, outcome,
+    runnerVersion: null, agentVersion: null, harness: 'claude-code', requested: null, identity: { status: 'not_recorded' }, ...drift });
   const facts = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', lastSeenAt: NOW - 5_000, version: '2.0.0-alpha.2' };
 
   it('opens from its card: its last check-in, how its recent runs went, and each run linked, older runs on request', async () => {
@@ -305,5 +306,29 @@ describe('Runner page', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
     await waitFor(() => expect(screen.getByText(/2 of the last 3 finished runs worked/)).toBeTruthy());
     expect(screen.getByRole('link', { name: /Worked; changed nothing/ }).getAttribute('href')).toBe('/p/proj_1/work/runs/run_old');
+  });
+
+  it('counts the versions and models its shown runs ran with, against the model each was asked for', async () => {
+    const asked = { tier: 'default', model: 'sonnet', effort: null, sources: { tier: 'task', model: 'configured' }, resolvesTo: 'claude-sonnet-5-5' };
+    const ranModel = (model: string) => ({ status: 'reported', source: 'stream', primary: { model }, models: [{ model }] });
+    const rows = [
+      ...Array.from({ length: 4 }, (_, at) => ran(`run_new${at}`, 'worked', at + 1, { runnerVersion: '2.0.0-alpha.24', agentVersion: '2.1.3', requested: asked, identity: ranModel('claude-sonnet-5-5') })),
+      ran('run_other', 'worked', 10, { runnerVersion: '2.0.0-alpha.24', agentVersion: '2.1.3', requested: asked, identity: ranModel('claude-haiku-5-5') }),
+      ran('run_handed', 'handed_on', 12, { runnerVersion: '2.0.0-alpha.23', agentVersion: '2.1.2', requested: asked, identity: ranModel('claude-haiku-5-5') }),
+      ran('run_old', 'failed', 30),
+    ];
+    mount('member', RUNNER, { route: '/runners/rn_mini', runs: () => ({ runner: facts, rows, cursor: null }) });
+    const drift = await screen.findByRole('region', { name: 'What its runs ran with' });
+    const said = (kind: string) => drift.querySelector(`[data-drift="${kind}"]`)!.textContent!;
+    expect(said('runner')).toContain('Ran 2.0.0-alpha.24 for 5 runs, 2.0.0-alpha.23 for 1 run, not reported for 1 run');
+    expect(said('runner')).toContain('Runner reports');
+    expect(said('agent')).toContain('Claude Code 2.1.3 for 5 runs, 2.1.2 for 1 run, not reported for 1 run');
+    expect(said('models')).toContain('Ran the model it was asked for in 4 of 5 runs that reported one');
+    const lines = [...drift.querySelectorAll<HTMLElement>('[data-model-drift]')].map((line) => [line.textContent, line.dataset.modelDrift]);
+    expect(lines).toEqual([
+      ['Asked for Sonnet, ran claude-sonnet-5-5: 4 runs', 'same'],
+      ['Asked for Sonnet, ran claude-haiku-5-5: 1 run, a different model than asked', 'differs'],
+      ['No model asked, model not reported: 1 run', 'same'],
+    ]);
   });
 });

@@ -72,6 +72,7 @@ export function stubProfileHarness(options: StubOptions = {}): { detected: Detec
   const script = [
     '#!/bin/sh',
     'if [ "$1" = "auth" ]; then exit 0; fi',
+    'if [ "$1" = "--version" ]; then printf \'%s\\n\' \'0.0.1 (stub)\'; exit 0; fi',
     listingAnswer(options.listedFile),
     options.ignoreTermination === true ? "trap '' TERM" : '',
     options.argumentsFile === undefined ? '' : `printf '%s\\n' "$@" > ${quote(options.argumentsFile)}`,

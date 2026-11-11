@@ -11,8 +11,10 @@ export const CREDENTIAL_INSERT_SQL = `INSERT INTO member_credentials (id, member
               SELECT ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, NULL, ?, ?, ?
                WHERE (? IS NULL OR (${TOKEN_LIVE} AND ${ROTATING_PREDECESSOR}))`;
 export const credentialInsert = write<readonly unknown[]>({name:'claim.credentialInsert',sql:CREDENTIAL_INSERT_SQL+' RETURNING id'});
-export const pricedAttemptInsert = [false,true].map(runner => write<readonly unknown[]>({name:`claim.pricedAttempt${runner ? 'Runner' : 'Member'}`,sql:`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,machine_id,claimed_at,owner_kind,runner_id,estimate_usd,profile_json,waited_for,waited_since)
-    SELECT project_id,id,dispatched_by,?,?,?,?,?,?,?,waited_for,${queueEnteredSql('agent_runs')} FROM agent_runs
+/** The attempt keeps the runner version its runner last reported in its contact, and the coding agent version its claim reported. */
+export const pricedAttemptInsert = [false,true].map(runner => write<readonly unknown[]>({name:`claim.pricedAttempt${runner ? 'Runner' : 'Member'}`,sql:`INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,machine_id,claimed_at,owner_kind,runner_id,estimate_usd,profile_json,agent_version,waited_for,waited_since,runner_version)
+    SELECT project_id,id,dispatched_by,?,?,?,?,?,?,?,?,waited_for,${queueEnteredSql('agent_runs')},
+      ${runner ? '(SELECT c.version FROM runner_contacts c WHERE c.runner_id=agent_runs.leased_runner_id)' : 'NULL'} FROM agent_runs
     WHERE project_id=? AND id=? AND status='running' AND dispatched_by=?
     AND ${runner ? 'leased_runner_id=? AND leased_runner_credential_id=?' : 'leased_by=?'}
     ON CONFLICT(project_id,run_id,attempt_id) DO NOTHING`}));
