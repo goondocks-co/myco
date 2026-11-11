@@ -1,7 +1,7 @@
 import type { MemberRole } from '../../auth/roles.js';
 import type { Bound } from '../index.js';
 import { read, write } from '../index.js';
-import { enrollmentAuthorityPredicate, memberWritePredicate } from '../../auth/authorization.js';
+import { enrollmentAuthorityPredicate, memberWritePredicate } from '../auth/write-predicates.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { prepareBound } from '../kernel/statement.js';
 

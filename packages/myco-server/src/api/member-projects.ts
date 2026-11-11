@@ -143,7 +143,7 @@ export async function handleReportUncaptured(env: ServerEnv, ctx: CredentialCont
   }
   const remote = repository.remote === null ? null : normalizeRemote(repository.remote);
   const [written] = await commit(env.db, recordUncaptured({ machineId: ctx.machineId, memberId: ctx.memberId, rootKey: repository.rootKey, label: repository.label, remote, reason, held: repository.held, sessions: repository.sessions, now: ctx.now }));
-  return ok({ persisted: written.meta.changes > 0 });
+  return ok({ persisted: written.results.length > 0 });
 }
 
 /**
@@ -165,8 +165,8 @@ export async function handleUncapturedState(env: ServerEnv, ctx: CredentialConte
     const untold = await disconnectMachineRoot(env.db, ctx.machineId, rootKey, ctx.memberId, ctx.now);
     if (!untold.applied) return Response.json({ persisted: false, code: untold.reason, reason: untold.detail ?? 'the connections changed; retry the edit' }, { status: untold.reason === 'conflict' ? 409 : 400 });
     const [cleared] = await commit(env.db, clearUncaptured(ctx.machineId, rootKey));
-    return ok({ persisted: cleared.meta.changes > 0 || untold.changed });
+    return ok({ persisted: cleared.results.length > 0 || untold.changed });
   }
   const [written] = await commit(env.db, state === 'connected' ? clearUncaptured(ctx.machineId, rootKey) : heldUncaptured(ctx.machineId, rootKey, state));
-  return ok({ persisted: written.meta.changes > 0 });
+  return ok({ persisted: written.results.length > 0 });
 }

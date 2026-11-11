@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { memberWritePredicate } from '../../auth/authorization.js';
+import { memberWritePredicate } from '../auth/write-predicates.js';
 import { MemberWriteRefused } from '../../auth/member-write-store.js';
 import { first, read, write } from '../index.js';
 

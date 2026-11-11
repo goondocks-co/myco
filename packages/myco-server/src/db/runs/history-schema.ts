@@ -2,7 +2,7 @@ import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from '../../core/task-catalogue.js';
 import { MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
 import { RUN_WRITE_EVENT } from './evidence.js';
-import { producedSql } from '../../read/run-outcome.js';
+import { producedSql } from './run-output.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { runOriginSql } from '../run-context.js';

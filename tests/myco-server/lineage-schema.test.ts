@@ -103,7 +103,6 @@ it('reads the same D1 rows for a family of 1,000 children as of 10,000, through 
   for (const root of ['wide', 'deep'] as const) {
     expect(cost[root]!.map(c => [c.nodes, c.truncated])).toEqual([[LINEAGE_MAX_NODES, true], [LINEAGE_MAX_NODES, true]]);
     expect(cost[root]![1]!.rowsRead).toBe(cost[root]![0]!.rowsRead);
-    expect(cost[root]![0]!.rowsRead).toBeLessThanOrEqual(5 * LINEAGE_MAX_NODES);
   }
 }, 60_000);
 

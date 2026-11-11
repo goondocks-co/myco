@@ -1,8 +1,8 @@
 import type { RelationalStore as lineage_import_RelationalStore } from "../../core/adapters.js";
-import { notTombstonedSql as lineage_import_notTombstonedSql } from "../../db/session-read-model.js";
+import { lineageChildIds, lineageSessionRows, type LineageSessionRow } from "../../db/sessions/lineage.js";
 import { inListChunks as lineage_import_inListChunks } from "../scope.js";
 import type { ReadScope as lineage_import_ReadScope } from "../scope.js";
-import { sessions_FIRST_PROMPT_SQL, sessions_PRESENTED_ENDED_AT, sessions_PRESENTED_STARTED_AT, sessions_relatedSessionLabel } from './sessions.js';
+import { sessions_relatedSessionLabel } from './sessions.js';
 
 /** The most generations the walk climbs above the session, and descends below the root it reached. */
 const lineage_LINEAGE_MAX_DEPTH = 8;
@@ -47,33 +47,12 @@ interface lineage_SessionLineage {
   truncated: boolean;
 }
 
-interface lineage_Row {
-  session_id: string;
-  agent: string | null;
-  title: string | null;
-  first_prompt: string | null;
-  started_at: number | null;
-  ended_at: number | null;
-  parent_session_id: string | null;
-  parent_reason: string | null;
-  launch_parent_session_id: string | null;
-}
-
-const lineage_LINEAGE_COLUMNS = `s.session_id, s.agent, s.title, ${sessions_FIRST_PROMPT_SQL} AS first_prompt, ${sessions_PRESENTED_STARTED_AT} AS started_at,
-  ${sessions_PRESENTED_ENDED_AT} AS ended_at, s.parent_session_id, s.parent_reason, s.launch_parent_session_id`;
-
-const lineage_LIVE = lineage_import_notTombstonedSql('s');
+type lineage_Row = LineageSessionRow;
 
 /** The column that names each edge kind's parent. */
 const lineage_PARENT_COLUMN: Record<lineage_LineageEdgeKind, 'launch_parent_session_id' | 'parent_session_id'> = {
   launched: 'launch_parent_session_id',
   continuation: 'parent_session_id',
-};
-
-/** The index each parent column's children are read through, named: it holds the parent and the child's id, so it supplies the order a bounded selection stops in. */
-const lineage_CHILDREN_INDEX: Record<lineage_LineageEdgeKind, string> = {
-  launched: 'idx_sessions_launch_parent',
-  continuation: 'idx_sessions_parent',
 };
 
 /** A row's parents as edges, launch first. */
@@ -90,14 +69,7 @@ const lineage_byStart = (a: { startedAt: number | null; sessionId: string }, b: 
 /** The live sessions this Project holds among `ids`. */
 async function lineage_sessionsNamed(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, ids: readonly string[]): Promise<lineage_Row[]> {
   const out: lineage_Row[] = [];
-  for (const run of lineage_import_inListChunks(ids)) {
-    const rows=await (async()=>{
-    const { results } = await db.prepare(`SELECT ${lineage_LINEAGE_COLUMNS} FROM sessions s
-        WHERE s.project_id = ? AND s.session_id IN (${run.map(() => '?').join(', ')}) AND ${lineage_LIVE}`).bind(...[scope.projectId,...run]).all<lineage_Row>();
-    return results;
-    })();
-    out.push(...rows);
-  }
+  for (const run of lineage_import_inListChunks(ids)) out.push(...await lineageSessionRows(db, scope.projectId, run));
   return out;
 }
 
@@ -107,16 +79,9 @@ async function lineage_sessionsNamed(db: lineage_import_RelationalStore, scope: 
  */
 async function lineage_childIdsOf(db: lineage_import_RelationalStore, scope: lineage_import_ReadScope, kind: lineage_LineageEdgeKind, ids: readonly string[], limit: number): Promise<string[]> {
   const out: string[] = [];
-  const column = lineage_PARENT_COLUMN[kind];
   for (const run of lineage_import_inListChunks([...ids].sort())) {
     if (out.length >= limit) break;
-    const rows=await (async()=>{
-    const { results } = await db.prepare(`SELECT s.session_id, ${"NULL"} AS __myco_capture_context FROM sessions s INDEXED BY ${lineage_CHILDREN_INDEX[kind]}
-        WHERE s.project_id = ? AND s.${column} IN (${run.map(() => '?').join(', ')}) AND ${lineage_LIVE}
-        ORDER BY s.${column}, s.session_id LIMIT ?`).bind(...[scope.projectId,...run,limit-out.length]).all<{ session_id: string }>();
-    return results;
-    })();
-    out.push(...rows.map(row=>row.session_id));
+    out.push(...await lineageChildIds(db, { project: scope.projectId, kind, parents: run, limit: limit - out.length }));
   }
   return out;
 }
@@ -223,6 +188,5 @@ function lineage_placed(rows: ReadonlyMap<string, lineage_Row>, uncaptured: Read
 export {
   lineage_LINEAGE_MAX_NODES,
   type lineage_SessionLineage,
-  lineage_CHILDREN_INDEX,
   lineage_sessionLineage,
 };

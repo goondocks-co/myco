@@ -1,5 +1,5 @@
 import { personMemberSql } from '../../auth/member-kind.js';
-import { memberWritePredicate, OWNER_CONTROL_CREDENTIAL_WRITE } from '../../auth/authorization.js';
+import { memberWritePredicate, OWNER_CONTROL_CREDENTIAL_WRITE } from '../auth/write-predicates.js';
 import { carriedBytes } from './capture-credential.js';
 import { CREDENTIAL_INSERT_SQL } from '../runs/claim-companions.js';
 import { assertion, refusalCode, write, type Bound } from '../index.js';

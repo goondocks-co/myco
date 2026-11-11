@@ -1,3 +1,4 @@
+import { refusingWrites } from './helpers/refusing-writes.js';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { Database } from 'bun:sqlite';
 import { registerBlob } from './helpers/d1.js';
@@ -410,10 +411,11 @@ describe('blob route', () => {
       const t=await issueMemberToken(e.db,{memberId:'mem_machine_1',machineId:'machine_1'},Date.now());
       let unavailable=fault==='database unavailable';
       const db=e.env.MYCO_DB;
-      e.env.MYCO_DB={...db,batch:async(statements:PreparedStatement[])=>{
-        if(unavailable) {unavailable=false;throw new Error('store unavailable');}
-        return db.batch(statements);
-      }};
+      e.env.MYCO_DB=refusingWrites(db,'store unavailable',()=>{
+        if(!unavailable) return false;
+        unavailable=false;
+        return true;
+      });
       const put=e.bucket.put.bind(e.bucket);
       e.bucket.put=async(...args)=>{
         if(fault==='PUT rejected') throw new Error('store unavailable');

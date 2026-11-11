@@ -13,37 +13,6 @@ export type ProjectSet =
   | { readonly all: true }
   | { readonly all: false; readonly projectIds: readonly string[] };
 
-/** The Projects `all` covers: those accepting capture, which are the ones every listing shows by default. */
-const VISIBLE_PROJECTS = `SELECT project_id FROM projects WHERE archived_at IS NULL`;
-
-/**
- * The set as a predicate that drives the read by Project: one index search per Project on an index led by
- * `project_id`. The form for a table read through its Project-led indexes.
- */
-export function projectsDriving(set: ProjectSet, column: string): { sql: string; params: string[] } {
-  if (set.all) return { sql: `${column} IN (${VISIBLE_PROJECTS})`, params: [] };
-  return { sql: `${column} IN (${set.projectIds.map(() => '?').join(', ')})`, params: [...set.projectIds] };
-}
-
-/**
- * The set as a predicate checked per row against the Project's own key, so an index not led by `project_id` can
- * order the read. The form for a read that walks a Deployment-wide index and stops at its page.
- */
-export function projectsFiltering(set: ProjectSet, alias: string): { sql: string; params: string[] } {
-  if (set.all) return { sql: `EXISTS (SELECT 1 FROM projects p WHERE p.project_id = ${alias}.project_id AND p.archived_at IS NULL)`, params: [] };
-  return projectsDriving(set, `${alias}.project_id`);
-}
-
-/**
- * The set as a predicate on `${alias}.project_id` that binds at most one value however many Projects it names, for a
- * statement that repeats the predicate or binds many values of its own. A named set travels as one JSON array; every
- * Project is checked per row, as `projectsFiltering` checks it.
- */
-export function projectsBoundOnce(set: ProjectSet, alias: string): { sql: string; params: string[] } {
-  if (set.all) return projectsFiltering(set, alias);
-  return { sql: `${alias}.project_id IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(set.projectIds)] };
-}
-
 /**
  * A LIKE pattern matching `text` anywhere, with the pattern's own metacharacters escaped; the statement names `\` as
  * its escape (`LIKE ? ESCAPE '\'`). SQLite's LIKE folds case for ASCII letters only.
@@ -81,25 +50,12 @@ export function clampLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_PAGE);
 }
 
-/** How a keyset page is ordered: the column no later write moves, the tie-breaking id, and the direction. */
-interface KeysetSpec {
-  order: string;
-  id: string;
-  direction: 'ASC' | 'DESC';
-}
-
-/** The page size and the cursor's predicate for one keyset read, or null for a malformed cursor — refused rather than treated as absent. `where` is empty on page one; `params` bind it. */
-export function keyset(opts: { limit?: number; cursor?: string }, spec: KeysetSpec): { limit: number; where: string; params: readonly (number | string)[] } | null {
+/** The page size and the key the cursor names, or null for a malformed cursor — refused rather than treated as absent. `after` is null on page one. */
+export function keysetPage(opts: { limit?: number; cursor?: string }): { limit: number; after: { createdAt: number; id: string } | null } | null {
   const limit = clampLimit(opts.limit);
-  if (opts.cursor === undefined) return { limit, where: '', params: [] };
+  if (opts.cursor === undefined) return { limit, after: null };
   const after = decodeCursor(opts.cursor);
-  if (after === null) return null;
-  const cmp = spec.direction === 'DESC' ? '<' : '>';
-  return {
-    limit,
-    where: `${spec.order} ${cmp}= ? AND (${spec.order} ${cmp} ? OR (${spec.order} = ? AND ${spec.id} ${cmp} ?))`,
-    params: [after.createdAt, after.createdAt, after.createdAt, after.id],
-  };
+  return after === null ? null : { limit, after };
 }
 
 /** The most ids one statement names in an `IN (…)` list. The hosted store admits 100 bound parameters per statement; the scope's own binding takes one, and a margin keeps a statement that binds a few more still under the ceiling. */

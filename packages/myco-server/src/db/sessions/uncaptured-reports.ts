@@ -25,15 +25,16 @@ interface UncapturedReport {
 }
 
 const record = write<[machine: string, root: string, member: string, label: string, remote: string | null, reason: string,
-  firstMisses: number, held: string, now: number, sessions: number]>({ name: 'uncaptured.record', sql:
+  firstMisses: number, held: string, now: number, sessions: number], { machine_id: string }>({ name: 'uncaptured.record', sql:
   `INSERT INTO uncaptured_roots (machine_id, root_key, member_id, label, remote, reason, misses, held, first_seen_at, last_seen_at)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
      ON CONFLICT (machine_id, root_key) DO UPDATE SET label = excluded.label, remote = excluded.remote, reason = excluded.reason,
-       misses = uncaptured_roots.misses + ?10, held = excluded.held, last_seen_at = excluded.last_seen_at` });
-const clear = write<[machine: string, root: string]>({ name: 'uncaptured.clear', sql:
-  `DELETE FROM uncaptured_roots WHERE machine_id = ?1 AND root_key = ?2` });
-const held = write<[held: string, machine: string, root: string]>({ name: 'uncaptured.held', sql:
-  `UPDATE uncaptured_roots SET held = ?1 WHERE machine_id = ?2 AND root_key = ?3` });
+       misses = uncaptured_roots.misses + ?10, held = excluded.held, last_seen_at = excluded.last_seen_at
+     RETURNING machine_id` });
+const clear = write<[machine: string, root: string], { machine_id: string }>({ name: 'uncaptured.clear', sql:
+  `DELETE FROM uncaptured_roots WHERE machine_id = ?1 AND root_key = ?2 RETURNING machine_id` });
+const held = write<[held: string, machine: string, root: string], { machine_id: string }>({ name: 'uncaptured.held', sql:
+  `UPDATE uncaptured_roots SET held = ?1 WHERE machine_id = ?2 AND root_key = ?3 RETURNING machine_id` });
 const prune = write<[before: number, batch: number], { machine_id: string }>({ name: 'uncaptured.prune', sql:
   `DELETE FROM uncaptured_roots WHERE rowid IN (SELECT rowid FROM uncaptured_roots WHERE last_seen_at < ?1 ORDER BY last_seen_at LIMIT ?2)
      RETURNING machine_id` });
@@ -42,15 +43,15 @@ const prune = write<[before: number, batch: number], { machine_id: string }>({ n
  * Record a report: a first one writes the row, a later one keeps the latest reason, name, remote and hold, and counts
  * the sessions that met the repository after the last. `misses` counts sessions, never attempts.
  */
-export function recordUncaptured(r: UncapturedReport): Bound {
+export function recordUncaptured(r: UncapturedReport): Bound<{ machine_id: string }, 'write'> {
   return record.bind(r.machineId, r.rootKey, r.memberId, r.label, r.remote, r.reason, Math.max(r.sessions, 1), r.held, r.now, r.sessions);
 }
 
 /** Forget a repository once it is connected. */
-export const clearUncaptured = (machineId: string, rootKey: string): Bound => clear.bind(machineId, rootKey);
+export const clearUncaptured = (machineId: string, rootKey: string): Bound<{ machine_id: string }, 'write'> => clear.bind(machineId, rootKey);
 
 /** Record that a machine no longer holds a repository's capture: past its cap, or discarded with age. */
-export const heldUncaptured = (machineId: string, rootKey: string, state: Exclude<HeldState, 'held'>): Bound => held.bind(state, machineId, rootKey);
+export const heldUncaptured = (machineId: string, rootKey: string, state: Exclude<HeldState, 'held'>): Bound<{ machine_id: string }, 'write'> => held.bind(state, machineId, rootKey);
 
 /** How long a repository no machine reports again stays listed. */
 export const UNCAPTURED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;

@@ -1,3 +1,4 @@
+import { refusingWrites } from './helpers/refusing-writes.js';
 import { jsonBody } from '../helpers/json-body.js';
 import { afterEach, describe, it, expect } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
@@ -45,10 +46,12 @@ async function envFor(token: string, opts: EnvOpts = {}) {
     bind: (...values) => observe(statement.bind(...values)),
     run: async () => opts.writeThrows ? failure() : statement.run(),
   });
-  const db: RelationalStore = {
-    prepare: sql => opts.authThrows ? failure() : observe(fixture.db.prepare(sql)),
-    batch: statements => opts.writeThrows ? failure() : fixture.db.batch(statements),
+  const observed: RelationalStore = { ...fixture.db, prepare: sql => observe(fixture.db.prepare(sql)) };
+  const db: RelationalStore = opts.writeThrows ? refusingWrites(observed, 'D1_ERROR: boom') : {
+    prepare: sql => opts.authThrows ? failure() : observed.prepare(sql),
+    batch: statements => fixture.db.batch(statements),
   };
+  if (opts.authThrows) db.prepare = () => failure();
   return {
     ...fixture.env,
     MYCO_DB: db,
@@ -236,7 +239,7 @@ describe('pipeline (via the deployed entry)', () => {
     const constraintEnv = async () => {
       const env = await envFor(token);
       const db = env.MYCO_DB;
-      env.MYCO_DB = { ...db, batch: async () => { throw new Error('D1_ERROR: CHECK constraint failed: member_tokens_quota: SQLITE_CONSTRAINT_CHECK'); } };
+      env.MYCO_DB = refusingWrites(db, 'D1_ERROR: CHECK constraint failed: member_tokens_quota: SQLITE_CONSTRAINT_CHECK');
       return env;
     };
     const blob = () => blobPost(token, 'b'.repeat(64), new Uint8Array([1, 2]), 'text/plain', { [PROJECT_HEADER]: PROJECT });

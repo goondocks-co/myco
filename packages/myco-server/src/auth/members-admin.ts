@@ -21,7 +21,8 @@ import { recordMemberNamingFailure } from '../db/meta/member-naming-failure.js';
 import { FOREIGN_LINEAGE_REVOKER } from '../constants.js';
 import { memberPage, type MemberPageRow, type RuntimeFreshness } from '../db/identity/access-pages.js';
 import { MAX_PAGE, type Page } from '../read/scope.js';
-import { deploymentOwnerSql } from '../db/identity/ownership-policy.js';
+import { actsAsOwner, isOwnerMember, memberRoleRow, otherLinkedMemberCount } from '../db/identity/member-standing.js';
+import { memberLinkRowOf } from '../db/identity/link.js';
 import { memberRevocationWrites } from '../db/identity/member-revocation.js';
 import { commitNamed } from '../db/index.js';
 import { asMemberRole, type MemberRole } from './roles.js';
@@ -112,14 +113,14 @@ export async function tryNameMemberFromLogin(db: RelationalStore, memberId: stri
 
 /** The role a member holds, or null when the Deployment holds no such member. */
 async function memberRole(db: RelationalStore, memberId: string): Promise<MemberRole | null> {
-  const row = await db.prepare(`SELECT role FROM members WHERE id = ?`).bind(memberId).first<{ role: string }>();
-  return row === null ? null : asMemberRole(row.role);
+  const role = await memberRoleRow(db, memberId);
+  return role === null ? null : asMemberRole(role);
 }
 
 type MemberState = 'absent' | 'live' | 'revoked';
 
 export async function memberState(db: RelationalStore, memberId: string): Promise<MemberState> {
-  const row = await db.prepare(`SELECT revoked_at FROM members WHERE id = ?`).bind(memberId).first<{ revoked_at: number | null }>();
+  const row = await memberLinkRowOf(db, memberId);
   if (row === null) return 'absent';
   return row.revoked_at === null ? 'live' : 'revoked';
 }
@@ -147,14 +148,8 @@ export async function revokeMember(db: RelationalStore, memberId: string, actor:
   if (isSystemMember(memberId)) return { ok: false, reason: 'system_member' };
   const state = await memberState(db, memberId);
   if (state !== 'live') return { ok: false, reason: state === 'absent' ? 'absent' : 'already_revoked' };
-  const protectedOwner = await db.prepare('SELECT 1 FROM deployment_ownership WHERE id = 1 AND member_id = ?').bind(memberId).first();
-  if (protectedOwner !== null) return { ok: false, reason: 'active_owner' };
+  if (await isOwnerMember(db, memberId)) return { ok: false, reason: 'active_owner' };
   const targetRole = await memberRole(db, memberId);
-  const actorOwner = await db.prepare(`SELECT ${deploymentOwnerSql('?')} AS admitted`).bind(actor).first<{ admitted: number }>();
-  if (targetRole === 'admin' && actorOwner?.admitted !== 1) return { ok: false, reason: 'not_owner' };
-  const others = await db
-    .prepare(`SELECT COUNT(*) AS linked FROM members WHERE revoked_at IS NULL AND github_id IS NOT NULL AND id <> ?`)
-    .bind(memberId)
-    .first<{ linked: number }>();
-  return { ok: false, reason: Number(others?.linked) === 0 ? 'last_member' : 'last_admin' };
+  if (targetRole === 'admin' && !await actsAsOwner(db, actor)) return { ok: false, reason: 'not_owner' };
+  return { ok: false, reason: await otherLinkedMemberCount(db, memberId) === 0 ? 'last_member' : 'last_admin' };
 }

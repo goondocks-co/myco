@@ -5,9 +5,10 @@ import { heldPartition } from '../core/embedding/policy.js';
 import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
-import { clampLimit, decodeCursor, keyset, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
+import { clampLimit, decodeCursor, keysetPage, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
 import { runDetailRow, runIsVisible, runListRows, type RunListOrder } from '../db/runs/history.js';
 import { readSet } from '../db/index.js';
+import { attemptStepRows, canopyMapRecord, latestRunAttempts, runAttemptRecord, runCallEvents, type AttemptRecord } from '../db/runs/detail-pages.js';
 import { queuedWaits, type QueuedWait } from '../db/runs/queue.js';
 import { getRun, isTerminalRunStatus } from '../db/runs/lifecycle.js';
 import { RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure, type RunCallResult } from '../db/runs/evidence.js';
@@ -18,7 +19,7 @@ import { attemptsReceived, runEvidenceHead } from '../db/runs/evidence.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
-import { type RunResult } from './run-outcome.js';
+import { type RunResult } from '../db/runs/run-output.js';
 import { MAP_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-shared/worker-steps';
@@ -433,15 +434,13 @@ function toToolCall(row: Record<string, unknown>): RunToolCallRow {
 
 /** Calls admitted by the Deployment, oldest first, with totals covering the whole run. */
 async function runToolCallPage(db: RelationalStore, scope: ReadScope, runId: string, opts: { limit?: number; cursor?: string } = {}): Promise<{ rows: RunToolCallRow[]; total: number | null; failed: number | null; cursor: string | null }> {
-  const k = keyset({ ...opts, limit: opts.limit ?? MAX_TOOL_CALLS }, { order: 'recorded_at', id: 'id', direction: 'ASC' });
+  const k = keysetPage({ ...opts, limit: opts.limit ?? MAX_TOOL_CALLS });
   if (k === null) throw new Error('Malformed call cursor.');
   const [calls, head] = await Promise.all([
-    db.prepare(`SELECT id, tool_name AS tool, duration_ms AS durationMs, outcome, payload, recorded_at AS recordedAt
-      FROM agent_run_events WHERE project_id = ? AND run_id = ? AND event_type = ? ${k.where === '' ? '' : `AND ${k.where}`}
-      ORDER BY recorded_at ASC, id ASC LIMIT ?`).bind(scope.projectId, runId, RUN_TOOL_EVENT, ...k.params, k.limit + 1).all<Record<string, unknown>>(),
+    runCallEvents(db, { project: scope.projectId, run: runId, event: RUN_TOOL_EVENT, after: k.after, limit: k.limit + 1 }),
     runEvidenceHead(db, scope, runId),
   ]);
-  const paged = page(calls.results, k.limit, (r) => ({ createdAt: Number(r.recordedAt), id: String(r.id) }));
+  const paged = page(calls, k.limit, (r) => ({ createdAt: Number(r.recordedAt), id: String(r.id) }));
   return { rows: paged.rows.map(toToolCall), cursor: paged.cursor, total: head?.calls ?? null, failed: head?.failed ?? null };
 }
 
@@ -468,15 +467,6 @@ function unrecognizedOf(raw: string | null): UnrecognizedCount | null {
   }
 }
 
-const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
-  a.owner_kind AS ownerKind, a.runner_id AS runnerId, (SELECT r.name FROM runners r WHERE r.id = a.runner_id) AS runnerName,
-  CASE WHEN a.owner_kind = 'member' THEN (SELECT c.member_id FROM member_credentials c WHERE c.id = a.leased_by) END AS memberId`;
-
-type AttemptRecord = {
-  attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null;
-  ownerKind: 'member' | 'runner'; runnerId: string | null; runnerName: string | null; memberId: string | null;
-};
-
 /** A step count while its history is still being counted is null, so the attempt answers no coverage rather than zero received. */
 const attemptOf = (received: ReadonlyMap<string, number> | null) => (row: AttemptRecord): RunAttemptRow => ({
   attemptId: row.attemptId, claimedAt: Number(row.claimedAt),
@@ -489,28 +479,22 @@ const attemptOf = (received: ReadonlyMap<string, number> | null) => (row: Attemp
  * Deployment holds, and how many attempts the run has in all.
  */
 export async function runAttempts(db: RelationalStore, scope: ReadScope, runId: string): Promise<{ rows: RunAttemptRow[]; total: number | null }> {
-  const latest = (await db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM agent_run_attempts a WHERE a.project_id = ? AND a.run_id = ?
-      ORDER BY a.claimed_at DESC, a.attempt_id DESC LIMIT ?`).bind(scope.projectId, runId, MAX_ATTEMPTS).all<AttemptRecord>()).results;
+  const latest = await latestRunAttempts(db, scope.projectId, runId, MAX_ATTEMPTS);
   const [received, head] = await Promise.all([attemptsReceived(db, scope, runId, latest.map((row) => row.attemptId)), runEvidenceHead(db, scope, runId)]);
   return { rows: latest.map(attemptOf(received)).reverse(), total: head === null ? null : head.attempts };
 }
 
 /** One attempt of a run by its id, or null where the run has no such attempt. */
 async function runAttempt(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string): Promise<RunAttemptRow | null> {
-  const row = await db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM agent_run_attempts a WHERE a.project_id = ? AND a.run_id = ? AND a.attempt_id = ?`)
-    .bind(scope.projectId, runId, attemptId).first<AttemptRecord>();
+  const row = await runAttemptRecord(db, scope.projectId, runId, attemptId);
   return row === null ? null : attemptOf(await attemptsReceived(db, scope, runId, [attemptId]))(row);
 }
 
 /** One page of an attempt's step log, in step order. */
 async function runStepPage(db: RelationalStore, scope: ReadScope, runId: string, attemptId: string, opts: { limit?: number; cursor?: string } = {}): Promise<RunStepPage> {
-  const k = keyset({ ...opts, limit: opts.limit ?? MAX_PAGE }, { order: 'seq', id: 'seq', direction: 'ASC' });
+  const k = keysetPage({ ...opts, limit: opts.limit ?? MAX_PAGE });
   if (k === null) throw new Error('Malformed step cursor.');
-  const { results } = await db.prepare(
-    `SELECT seq, call_id AS callId, kind, tool, target, outcome, exit_code AS exitCode, started_at AS startedAt, ended_at AS endedAt
-      FROM agent_run_steps WHERE project_id = ? AND run_id = ? AND attempt_id = ? ${k.where === '' ? '' : `AND ${k.where}`}
-      ORDER BY seq ASC LIMIT ?`,
-  ).bind(scope.projectId, runId, attemptId, ...k.params, k.limit + 1).all<RunStepRow>();
+  const results = await attemptStepRows(db, { project: scope.projectId, run: runId, attempt: attemptId, after: k.after, limit: k.limit + 1 });
   const paged = page(results, k.limit, (row) => ({ createdAt: Number(row.seq), id: String(row.seq) }));
   return { attemptId, rows: [...paged.rows], cursor: paged.cursor };
 }
@@ -530,11 +514,7 @@ export async function getRunDetail(db: RelationalStore, scope: ReadScope, runId:
   const run = await getRun(db, scope, runId);
   const [callPage, currentMap, attempts] = await Promise.all([
     runToolCallPage(db, scope, runId, calls),
-    db.prepare(`SELECT revision, repository_branch AS branch, repository_commit AS commitId, generated_at AS generatedAt,
-      source_run_id AS sourceRunId,
-      EXISTS (SELECT 1 FROM agent_run_events e WHERE e.project_id = ? AND e.run_id = ? AND e.event_type = ? AND e.tool_name = ?) AS wroteMap
-      FROM canopy_maps WHERE project_id = ?`).bind(scope.projectId, runId, RUN_WRITE_EVENT, MAP_WRITE_TOOL, scope.projectId)
-      .first<{ revision: string; branch: string; commitId: string; generatedAt: number; sourceRunId: string; wroteMap: number }>(),
+    canopyMapRecord(db, scope.projectId, runId, { event: RUN_WRITE_EVENT, tool: MAP_WRITE_TOOL }),
     runAttempts(db, scope, runId),
   ]);
   const latest = attempts.rows.at(-1);

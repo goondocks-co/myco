@@ -6,7 +6,7 @@
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { MAX_NAMED_PROJECTS, type ProjectSet } from '@myco-server-worker/read/scope.js';
-import { sessions_listSessionsAcross as listSessionsAcross } from '@myco-server-worker/read/catalog/sessions.js';
+import { sessions_listProjects as listProjects, sessions_listSessionsAcross as listSessionsAcross } from '@myco-server-worker/read/catalog/sessions.js';
 import { listSporePageAcross } from '@myco-server-worker/core/spores.js';
 import { encodeProjectCursor } from '@myco-server-worker/read/project-cursor.js';
 import { plans_pagePlansAcross as pagePlansAcross, plans_planTotals as planTotals } from '@myco-server-worker/read/catalog/plans.js';
@@ -86,6 +86,7 @@ it('Today reads and an actor\'s task entries cost D1 the same as the Deployment\
     cases: [
       { name: 'capture recency', run: async (db) => expect((await captureRecency(db, NOW, 'mem_1')).length).toBeGreaterThan(0) },
       { name: 'machine rename', run: async (db, { scale }) => expect(await renameMachine(db, { memberId: 'mem_1' }, 'm_1', `renamed ${scale}`)).toBe(true) },
+      { name: 'project listing', run: async (db) => expect((await listProjects(db)).map((project) => project.projectId)).toEqual(expect.arrayContaining(['proj_0', 'proj_1', 'proj_2'])) },
       { name: 'own machine names', run: async (db) => expect((await ownMachineNames(db, 'mem_1', NOW)).size).toBe(2) },
       { name: 'failing outcomes', run: async (db) => expect(await failingOutcomes(db, ['extract-curate', 'canopy-map'], NOW - DAY))
         .toEqual([expect.objectContaining({ projectId: 'proj_1', task: 'canopy-map' })]) },

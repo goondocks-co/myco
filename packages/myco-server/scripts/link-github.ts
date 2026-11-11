@@ -9,7 +9,9 @@
  * as mint-enrollment.ts does. It also clears any earlier account, which is how
  * a member's account is changed once linked.
  */
-import { GITHUB_ACCOUNT_ID, linkStatement } from '../src/auth/identity-link.ts';
+import { GITHUB_ACCOUNT_ID } from '../src/auth/identity-link.ts';
+import { memberAccountBind } from '../src/db/identity/member-standing.ts';
+import { prepareClaimCompanion } from '../src/db/runs/claim-companions.ts';
 import { sqlCapture } from './sql-capture.ts';
 
 const [memberId, githubId] = process.argv.slice(2);
@@ -20,7 +22,7 @@ if (!memberId || !githubId || !/^mem_[A-Za-z0-9._-]{1,64}$/.test(memberId) || !G
 }
 
 const { db, statements } = sqlCapture();
-await linkStatement(db, memberId, githubId).run();
+await prepareClaimCompanion(db, memberAccountBind(memberId, githubId)).run();
 
 console.log(`-- bind GitHub account ${githubId} to ${memberId}; replaces any earlier account`);
 for (const s of statements) console.log(s);

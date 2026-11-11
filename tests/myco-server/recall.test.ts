@@ -423,18 +423,22 @@ describe('prompt selection diagnostics', () => {
     for (let i = 0; i < 100; i++) await insertSpore(db, SCOPE, spore(`chunk-${i}`));
     const semantic = await semanticRecall(db, SCOPE)();
     let joins = 0;
-    const wrap = (statement: PreparedStatement): PreparedStatement => ({
-      ...statement,
-      bind: (...values) => wrap(statement.bind(...values)),
-      all: async <T,>() => {
-        if (++joins === 2) throw new Error('receipt chunk unavailable');
-        return statement.all<T>();
+    const joining = new WeakSet<PreparedStatement>();
+    const wrap = (statement: PreparedStatement): PreparedStatement => {
+      const wrapped: PreparedStatement = { ...statement, bind: (...values) => wrap(statement.bind(...values)) };
+      joining.add(wrapped);
+      return wrapped;
+    };
+    const failingDb: RelationalStore = { ...db,
+      prepare: sql => {
+        const statement = db.prepare(sql);
+        return significantStatement(sql).startsWith('WITH hits AS MATERIALIZED') ? wrap(statement) : statement;
       },
-    });
-    const failingDb: RelationalStore = { ...db, prepare: sql => {
-      const statement = db.prepare(sql);
-      return significantStatement(sql).startsWith('WITH hits AS MATERIALIZED') ? wrap(statement) : statement;
-    } };
+      batch: async statements => {
+        if (statements.some(statement => joining.has(statement)) && ++joins === 2) throw new Error('receipt chunk unavailable');
+        return db.batch(statements);
+      },
+    };
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
       await composePromptContext(failingDb, SCOPE, ON, true, { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'partial-join', text: PROMPT, now: NOW }, async () => semantic);

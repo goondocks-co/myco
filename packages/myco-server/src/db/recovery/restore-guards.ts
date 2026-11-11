@@ -4,7 +4,7 @@
  * into `restore_reference_guard`, which never holds a row, so the whole batch fails.
  */
 import type { RelationalStore } from '../../core/adapters.js';
-import { memberWritePredicate } from '../../auth/authorization.js';
+import { memberWritePredicate } from '../auth/write-predicates.js';
 import { deploymentOwnerSql } from '../identity/ownership-policy.js';
 import { first, read, write, type Bound } from '../index.js';
 

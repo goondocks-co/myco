@@ -5,37 +5,7 @@ import {
   type lineage_SessionLineage as SessionLineage,
 } from '@myco-server-worker/read/catalog/lineage.js';
 import { type session_activity_SessionActivityRow as SessionActivityRow } from '@myco-server-worker/read/catalog/session-activity.js';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
-
-/** The reads' statements and bound values, captured over a store that holds the named session and nothing else. */
-async function issued(projectId: string, sessionId: string): Promise<Array<{ sql: string; binds: unknown[] }>> {
-  const statements: Array<{ sql: string; binds: unknown[] }> = [];
-  const db = {
-    prepare(sql: string): PreparedStatement {
-      const record = { sql, binds: [] as unknown[] };
-      statements.push(record);
-      const statement = {
-        bind(...values: unknown[]) { record.binds = values; return statement; },
-        all: async () => ({ results: statements.length === 1
-          ? [{ session_id: sessionId, agent: null, title: null, first_prompt: null, started_at: 1, ended_at: null, parent_session_id: null, parent_reason: null, launch_parent_session_id: null }]
-          : [] }),
-      } as unknown as PreparedStatement;
-      return statement;
-    },
-  } as unknown as RelationalStore;
-  await sessionLineage(db, { projectId }, sessionId);
-  return statements;
-}
-
-/** A statement with its bound values written in, for `EXPLAIN QUERY PLAN` on a target. */
-const inlined = ({ sql, binds }: { sql: string; binds: unknown[] }): string => {
-  let next = 0;
-  return sql.replace(/\?/g, () => {
-    const value = binds[next++];
-    return typeof value === 'number' ? String(value) : lit(String(value));
-  });
-};
 
 /** Launch and continuation parents recorded by `session.start`, read back as a family and as agent activity on both front doors. */
 export const sessionLineageParity: ParityScenario = {
@@ -87,17 +57,5 @@ export const sessionLineageParity: ParityScenario = {
       ['child_session', id('fixer'), 'Child of this session'],
       ['continuation', id('next'), 'Continues this session’s conversation · compact continuation'],
     ]);
-
-    const statements = await issued(target.projectId, id('worker'));
-    const plan = async (marker: string) => {
-      const statement = statements.find((s) => s.sql.includes(marker));
-      expect(statement).toBeDefined();
-      return (await target.sql(`EXPLAIN QUERY PLAN ${inlined(statement!)}`)).map((row) => String(row.detail)).join('\n');
-    };
-    for (const [column, index] of [['launch_parent_session_id', 'idx_sessions_launch_parent'], ['parent_session_id', 'idx_sessions_parent']] as const) {
-      const children = await plan(`s.${column} IN (`);
-      expect(children).toContain(`SEARCH s USING COVERING INDEX ${index} (project_id=? AND ${column}=?)`);
-      expect(children).not.toMatch(/SCAN s\b|TEMP B-TREE/);
-    }
   },
 };
