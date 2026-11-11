@@ -1,17 +1,19 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { SERVER_STATE_PREFIX, WORKER_POLL_IDLE_MS } from '../../constants.js';
+import { SERVER_STATE_PREFIX } from '../../constants.js';
 import { commit, read, readSet, write } from '../index.js';
 
 const KEY_PREFIX = `${SERVER_STATE_PREFIX}pulled-budget:`;
-/** A claim outcome is current for three idle polls, then the next poll must renew it. */
-export const PULLED_BUDGET_HOLD_MS = 3 * WORKER_POLL_IDLE_MS;
+/** A claim's budget refusal stays current for a minute; a refused poll renews it once it is half that old, or at once when what it holds changed. */
+export const PULLED_BUDGET_HOLD_MS = 60_000;
 export interface PulledBudgetHold { level: number; task: string; requiredUsd: number; at: number }
 const key = (level: number) => `${KEY_PREFIX}${level}`;
 const keys = (levels: readonly number[]) => JSON.stringify([...new Set(levels)].map(key));
 
 const record = write<[key: string, level: number, task: string, required: number, now: number]>({
   name: 'pull.budgetHold', sql: `INSERT INTO schema_meta(key,value) VALUES(?1,json_object('level',?2,'task',?3,'requiredUsd',?4,'at',?5))
-    ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE json_extract(schema_meta.value,'$.at')<=?5`,
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE json_extract(schema_meta.value,'$.at')<=?5
+      AND (json_extract(schema_meta.value,'$.at')<=?5-${PULLED_BUDGET_HOLD_MS / 2} OR json_extract(schema_meta.value,'$.task') IS NOT ?3
+        OR json_extract(schema_meta.value,'$.requiredUsd') IS NOT ?4)`,
 });
 const current = read<[keys: string, floor: number, now: number], PulledBudgetHold>({
   name: 'pull.currentBudgetHold', sql: `SELECT json_extract(value,'$.level') AS level,json_extract(value,'$.task') AS task,
