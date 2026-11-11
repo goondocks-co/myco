@@ -1,5 +1,6 @@
 import { budgetActivation } from '../db/meta/budget-activation.js';
-import { estimateAdvanceStatement, estimateCompletionStatements, estimateCursor, estimateSampleStatement, estimatesRefreshedAt } from '../db/meta/budget-estimates.js';
+import { estimateAdvanceStatement, estimateCompletionStatements, estimateCursor, estimateSampleStatement, estimateSettlements, estimatesRefreshedAt } from '../db/meta/budget-estimates.js';
+import { commit } from '../db/index.js';
 import type { RelationalStore } from './adapters.js';
 import type { ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
 import { ensureAgent, getState } from '../db/runs/state.js';
@@ -42,11 +43,7 @@ export async function refreshEstimates(db: RelationalStore, now: number): Promis
   const progress:Progress=held===null
     ? {after,until:Math.max(after,observed.latest),floor,revision:crypto.randomUUID(),cycle:crypto.randomUUID(),rebuild:observed.watermark===null}
     : JSON.parse(held.value);
-  const results=(await db.prepare(`SELECT a.settled_seq AS seq,a.project_id AS projectId,r.task,a.profile_json AS profile,
-    a.cost_usd AS cost,a.estimate_usd AS estimate FROM agent_run_attempts a INDEXED BY idx_attempts_settled JOIN agent_runs r ON r.project_id=a.project_id AND r.id=a.run_id
-    WHERE a.settled_seq>? AND a.settled_seq<=? AND a.claimed_at>=? AND a.profile_json IS NOT NULL AND a.cost_usd IS NOT NULL
-    ORDER BY a.settled_seq LIMIT ?`)
-    .bind(progress.after,progress.until,progress.floor,ESTIMATE_PUBLISH_PAGE).all<{seq:number;projectId:string;task:string;profile:string;cost:number;estimate:number|null}>()).results;
+  const results=await estimateSettlements(db,progress.after,progress.until,progress.floor,ESTIMATE_PUBLISH_PAGE);
   const groups=new Map<string,{projectId:string;key:string;points:SamplePoint[]}>();
   for(const row of results) {
     if(!BUDGET_WORKER_TASKS.includes(row.task))continue;
@@ -68,17 +65,17 @@ export async function refreshEstimates(db: RelationalStore, now: number): Promis
   if(last!==undefined)progress.after=last.seq;
   progress.revision=crypto.randomUUID();
   const next=JSON.stringify(progress);
-  const advance=estimateAdvanceStatement(db,held?.value??null,next,observed.epoch,now-ESTIMATE_INTERVAL_MS);
+  const advance=estimateAdvanceStatement(held?.value??null,next,observed.epoch,now-ESTIMATE_INTERVAL_MS);
   if(groups.size>0)await ensureAgent(db,{id:ESTIMATE_AGENT,name:ESTIMATE_AGENT,provider:null,model:null,enabled:true},now);
   const writes=[...groups.values()].map(group=>{
     const ratios=group.points.flatMap(point=>point.ratio===null?[]:[point.ratio]).sort((a,b)=>a-b);
     const sample:SampleState={estimate:group.points.reduce((sum,point)=>sum+point.cost,0)/group.points.length,
       ratioP95:ratios.length===0?null:ratios[Math.ceil(ratios.length*0.95)-1]!,n:group.points.length,ratioN:ratios.length,refreshedAt:now,cycle:progress.cycle,points:group.points};
-    return estimateSampleStatement(db,group.projectId,ESTIMATE_AGENT,group.key,JSON.stringify(sample),now,progress.revision);
+    return estimateSampleStatement(group.projectId,ESTIMATE_AGENT,group.key,JSON.stringify(sample),now,progress.revision);
   });
   const done=results.length<ESTIMATE_PUBLISH_PAGE;
-  const completion=done?estimateCompletionStatements(db,progress.until,now,progress.revision):[];
-  const [advanced]=await db.batch([advance,...writes,...completion]);
+  const completion=done?estimateCompletionStatements(progress.until,now,progress.revision):[];
+  const [advanced]=await commit(db,advance,...writes,...completion);
   if(advanced!.results.length!==1)return {changed:0,more:await estimateRefreshDue(db,now)};
   return {changed:results.length+writes.length,more:!done};
 }

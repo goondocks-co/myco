@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import { archivedEventMetadata } from '@myco-server-worker/db/document-tables.js';
 import { releaseNow } from './helpers/release-now.js';
 import { describe,expect,it } from 'bun:test';
@@ -176,7 +177,7 @@ describe('archive-before-clear storage cleanup',()=>{
         const archive=await prepareArchive(rig.serverEnv,'event',row!,now);
         rig.sqlite.query('DELETE FROM registered_content_proofs WHERE key=?').run(archive[released].key);
         await releaseNow(rig.db,[{projectId:'proj_1',key:archive[released].key}],now);
-        await expect(rig.db.batch(eventArchiveStatements(rig.db,row!,archive))).rejects.toThrow();
+        await expect(commit(rig.db, ...eventArchiveStatements(rig.db,row!,archive))).rejects.toThrow();
         expect(rig.sqlite.query('SELECT payload_format FROM events').get()).toEqual({payload_format:'inline'});
       }finally{rig.sqlite.close();}
     }
@@ -189,7 +190,7 @@ describe('archive-before-clear storage cleanup',()=>{
       const archive=await prepareArchive(rig.serverEnv,'event',row!,now);
       rig.sqlite.query('INSERT INTO session_tombstones(project_id,session_id,created_at,created_by) VALUES(?,?,?,?)')
         .run('proj_1','sess_1',now,'mem_machine_1');
-      await expect(rig.db.batch(eventArchiveStatements(rig.db,row!,archive))).rejects.toThrow();
+      await expect(commit(rig.db, ...eventArchiveStatements(rig.db,row!,archive))).rejects.toThrow();
       expect(rig.sqlite.query('SELECT payload,payload_format FROM events').get()).toEqual({payload:original,payload_format:'inline'});
       expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM archive_bundles').get()).toEqual({n:0});
     }finally{rig.sqlite.close();}
@@ -249,7 +250,7 @@ describe('archive-before-clear storage cleanup',()=>{
         const rows=rig.sqlite.query('SELECT event_id FROM events').all() as {event_id:string}[];
         for(const {event_id} of rows){
           const row=await cleanupCandidate(rig.db,{project_id:'proj_1',resource_kind:'event',resource_id:event_id},true);
-          await rig.db.batch(eventArchiveStatements(rig.db,row!,await prepareArchive(rig.serverEnv,'event',row!,now)));
+          await commit(rig.db, ...eventArchiveStatements(rig.db,row!,await prepareArchive(rig.serverEnv,'event',row!,now)));
         }
         await presented();
         expect(rig.sqlite.query('SELECT occurred_started_at,occurred_ended_at,ended_at,title FROM sessions').get()).toEqual(before);

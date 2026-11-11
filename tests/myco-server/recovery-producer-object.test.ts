@@ -15,7 +15,7 @@ import { RecoveryProducer } from '@myco-server-worker/platform/cloudflare/recove
 import { PRODUCER_LIMITS, PRODUCER_STALL_MS, type RecoveryAdmission } from '@myco-server-worker/core/recovery-producer.js';
 import { settleOpenHold } from '@myco-server-worker/core/recovery-hold.js';
 import { Stalled } from '@myco-server-worker/core/recovery-inventory.js';
-import { acquireRecoveryHold } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { HOSTED_RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-server-worker/core/recovery-staging.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';

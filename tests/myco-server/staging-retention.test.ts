@@ -11,7 +11,7 @@
 import { expect, it } from 'bun:test';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { jobRunsAt, SERVER_JOBS, STAGING_RETENTION_JOB } from '@myco-server-worker/core/jobs.js';
-import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import {
   keptStagings,
   KEEP_STAGINGS_DEFAULT,

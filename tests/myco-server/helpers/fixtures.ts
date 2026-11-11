@@ -2,7 +2,7 @@ import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
 import type { DocRecord } from '@myco-server-worker/content/document.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './vector-index.js';
-import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
+import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
 import type { Database } from 'bun:sqlite';
 import type { BlobStore, OutboundFetch, ServerEnv, StoredObject } from '@myco-server-worker/core/adapters.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';

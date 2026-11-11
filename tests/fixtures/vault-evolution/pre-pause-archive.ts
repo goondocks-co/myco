@@ -8,6 +8,7 @@ import { transcriptRetentionFact } from '@myco-server-worker/ingest/retention.js
 import { observedSettingsGuard } from '@myco-server-worker/core/settings.js';
 import { effectiveRawOwnerSql } from '@myco-server-worker/core/raw-claims.js';
 import { emit } from '@myco-server-worker/telemetry.js';
+import { prepareBound } from '@myco-server-worker/db/kernel/statement.js';
 
 const DAY_MS = 86_400_000;
 const PAGE = 20;
@@ -269,7 +270,7 @@ async function archiveRawEventPage(env:Pick<ServerEnv,'db'|'blobs'>,now:number,d
       OR ${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')}
         IS NOT json_extract(j.value,'$.raw_owner'))`;
     const writes=[...contentAssertion(db,sourceAge,[JSON.stringify(selected.map(({identity})=>identity)),cutoff]),
-      ...bundleArchiveStatements(db,bundle)];
+      ...bundleArchiveStatements(db,bundle).map(statement=>prepareBound(db,statement))];
     await advance(selected.at(-1)!.identity,writes,true);
     return selected.length;
   } finally { await discardArchiveBundle(env,bundle,now); }

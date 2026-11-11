@@ -3,7 +3,7 @@ import { embeddingDueInsert, INPUT_REFUSAL_RETRY_MS } from '../embedding-due.js'
 import { currentEmbeddingSourceSql } from '../embedding-retirement.js';
 import { DELETION_RETRIES, RECEIPT } from '../../core/embedding/receipt-state.js';
 import type { VectorType } from '../../core/embedding/vectors.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import type { embedding_EmbeddingSource as EmbeddingSource } from '../../read/catalog/embedding.js';
 import { binaryOrder } from '../../read/scope.js';
 import { eligibleEmbeddingSource } from '../embedding-sources.js';

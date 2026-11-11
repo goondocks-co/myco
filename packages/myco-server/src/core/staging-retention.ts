@@ -14,7 +14,7 @@
  */
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import { storedSettings } from './settings.js';
-import { openRecoveryHold } from './object-release.js';
+import { openRecoveryHold } from '../db/recovery/holds.js';
 import { within } from './recovery-inventory.js';
 import { classify, emit } from '../telemetry.js';
 import { ADVANCING_STAGES, type AttemptStage, type StagingPrunePolicy } from './recovery-producer.js';

@@ -23,6 +23,8 @@ import {
 } from '../db/runs/queue.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
+import { endedUnderAttempt } from '../db/runs/attempt-accounting.js';
+import { prepareBound } from '../db/kernel/statement.js';
 import { NOTHING_DUE } from './learning-sessions.js';
 import { harnessCredentialAvailability } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
@@ -80,7 +82,7 @@ import { UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } fr
 import { claimQueuedRun, claimPulledRun } from './worker-claim.js';
 import { deploymentTaskEntriesSince } from '../db/runs/claim.js';
 import { lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
-import { TERMINAL_RUN_STATUSES, runRemainingMs, getRun, type RunRow } from '../db/runs/lifecycle.js';
+import { runRemainingMs, getRun, type RunRow } from '../db/runs/lifecycle.js';
 import { applyRunUpdate, runUpdateStatement } from '../db/runs/change.js';
 import { ensureAgent } from '../db/runs/state.js';
 import { getDispatchActor, recordDispatch, hasSuccessorOf, launchQueued, recordQueued, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS } from '../db/runs/claim.js';
@@ -1248,12 +1250,10 @@ export async function endLeasedRun(
     ...update, completed_at: now,
   }, { worker: worker.principal, dispatchedBy: row.dispatchedBy, now }, errorCode, context);
   if (statement === null) return { ended: false, reason: 'the lease is no longer held' };
-  const accounting = settleAttemptCostStatement(env.db,{projectId:run.projectId},run.runId,row.dispatchedBy,worker.principal,now,
+  const accounting = settleAttemptCostStatement({projectId:run.projectId},run.runId,row.dispatchedBy,worker.principal,now,
     typeof update.cost_usd==='number'?update.cost_usd:null,typeof update.cost_source==='string'?update.cost_source:null);
-  const [, changed, retired] = await env.db.batch([accounting, statement, revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, {
-    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')}))`,
-    params: [run.projectId, run.runId, row.dispatchedBy, ...TERMINAL_RUN_STATUSES],
-  })]);
+  const [, changed, retired] = await env.db.batch([prepareBound(env.db, accounting), statement,
+    revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, endedUnderAttempt(run.projectId, run.runId, row.dispatchedBy))]);
   if (changed!.results.length === 0) return { ended: false, reason: 'the lease is no longer held' };
   emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.results.length === 1 });
   if (unmet !== null) {

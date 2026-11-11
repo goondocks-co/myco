@@ -1,7 +1,7 @@
 import { PublicationOwnership } from './ownership.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ChunkRow, PageRow } from '../../content/document-reader.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import { jsonPages } from '../json-pages.js';
 import { read, readSet } from '../index.js';
 

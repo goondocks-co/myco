@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { releaseNow } from './helpers/release-now.js';
 import {
@@ -176,7 +177,7 @@ test('a restored session whose prompt was archived publishes the prompt read fro
     const blobs = memoryBlobStore();
     await captureDocumentSession(db, 'project', 'archived', { blobs });
     const row = await cleanupCandidate(db, { project_id: 'project', resource_id: uuid(2), resource_kind: 'event' }, true);
-    await db.batch(bundleArchiveStatements(db, (await prepareArchive({ db, blobs }, 'event', row!, Date.now())).bundle));
+    await commit(db, ...bundleArchiveStatements(db, (await prepareArchive({ db, blobs }, 'event', row!, Date.now())).bundle));
     const rows: { t: string; r: Record<string, unknown> }[] = [];
     for (const t of ['members', 'member_credentials', 'sessions', 'blobs', 'archive_bundles', 'registered_content_proofs', 'events', 'raw_credentials'])
       for (const r of (await db.prepare(`SELECT * FROM ${t}`).all<Record<string, unknown>>()).results) rows.push({ t, r });

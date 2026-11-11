@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import { describe,expect,it } from 'bun:test';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
@@ -74,7 +75,7 @@ describe('resumable content scan',()=>{
         if(step.status==='ready') {
           expect(body.startsWith(step.archive.preview)).toBe(true);
           expect(new TextEncoder().encode(step.archive.preview).byteLength).toBeLessThanOrEqual(2048);
-          await db.batch(eventArchiveStatements(db,row!,step.archive));
+          await commit(db, ...eventArchiveStatements(db,row!,step.archive));
           break;
         }
         pending++;
@@ -109,7 +110,7 @@ describe('resumable content scan',()=>{
           await expect(prepareArchiveStep(f.serverEnv,'event',row!,NOW)).rejects.toThrow('interrupted');
           const retry=await prepareArchiveStep(f.serverEnv,'event',row!,NOW);
           expect(retry.status).toBe('ready');
-          if(retry.status==='ready') await f.db.batch(eventArchiveStatements(f.db,row!,retry.archive));
+          if(retry.status==='ready') await commit(f.db, ...eventArchiveStatements(f.db,row!,retry.archive));
           expect(await eventContent(f.serverEnv,PROJECT,id)).toBe(changed);
           return;
         }
