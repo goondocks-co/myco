@@ -21,7 +21,9 @@ import { parseSessionContextIdentity } from '@goondocks/myco-shared/recall';
 import { resolveSemanticSearch } from '../core/search.js';
 import { settingsWriter } from '../core/settings.js';
 import { classify, emit, refusal } from '../telemetry.js';
-import { startTurnStatement, turnStartedAt, turnStartedAtAsk } from '../ingest/turns.js';
+import { turnStartedAt, turnStartedAtAsk } from '../ingest/turns.js';
+import { commit } from '../db/index.js';
+import { startTurn } from '../db/sessions/turns.js';
 import { refused } from '../ingest/events.js';
 import { sessionWriteAdmission } from '../ingest/projections.js';
 import type { AskNaming } from '../core/injection.js';
@@ -64,7 +66,7 @@ export function noteTurnStarted(env: ServerEnv, ctx: RouteContext, sessionId: st
     env.afterResponse(async () => {
       try {
         const at = askedAt !== null ? turnStartedAtAsk(askedAt, ctx.now) : promptId === null ? null : turnStartedAt(promptId, ctx.now);
-        if (at !== null) await startTurnStatement(env.db, { projectId: ctx.projectId, sessionId, machineId: ctx.machineId, at }).run();
+        if (at !== null) await commit(env.db, startTurn({ projectId: ctx.projectId, sessionId, machineId: ctx.machineId, at }));
       } catch (err) {
         unrecorded(err);
       }
@@ -112,7 +114,7 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
     return Response.json(refused(ctx, refusal(named.ok ? 'prompt context requires sessionId, promptId and text' : named.reason, 'parse')));
   }
   // Registered first and never awaited: the turn opens whatever becomes of the compose below. It opens only a turn of a
-  // session this machine holds (`startTurnStatement`).
+  // session this machine holds (`startTurn`).
   noteTurnStarted(env, ctx, sessionId, named.naming.promptId, named.naming.askProtocol === 'v1' ? named.naming.askedAt : null);
   // Records naming a session are written only by the machine that holds it, as its events are: read here, and held
   // again on every write the compose below makes.

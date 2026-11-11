@@ -7,7 +7,7 @@ import type { CredentialContext, OwnerContext } from '../context.js';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { emptyBodyRoute } from '../auth/members.js';
 import { latestMeasurements, type MeasurementName, type StoreMeasurement } from '../core/store-maintenance.js';
-import { storedBytes } from '../ingest/live-credential.js';
+import { storedBytes } from '../db/identity/capture-credential.js';
 import { transcriptRetentionFact } from '../ingest/retention.js';
 import { databaseReadStatus, schemaVersion } from '../read/meta.js';
 import { statusMetadata } from '../db/documents/failure-head.js';

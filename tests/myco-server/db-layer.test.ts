@@ -62,14 +62,10 @@ const PENDING: ReadonlySet<string> = new Set([
   'ingest/document-restore.ts',
   'ingest/document-summaries.ts',
   'ingest/events.ts',
-  'ingest/live-credential.ts',
   'ingest/parse.ts',
   'ingest/projections.ts',
-  'ingest/projects.ts',
   'ingest/publish.ts',
   'ingest/session-edits.ts',
-  'ingest/turns.ts',
-  'ingest/uncaptured.ts',
   'mcp/definitions.ts',
   'platform/bun/env.ts',
   'read/blobs.ts',
@@ -107,7 +103,6 @@ const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
   'core/object-release.ts',
   'core/raw-claims.ts',
   'core/remotes.ts',
-  'ingest/uncaptured.ts',
 ]);
 
 const source = (text: string) => ts.createSourceFile('core/example.ts', text, ts.ScriptTarget.Latest, true);
