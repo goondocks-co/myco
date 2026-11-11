@@ -27,7 +27,7 @@ const CODES = JSON.stringify([null, null, 'machine_unresponsive', 'lease_lapsed'
 /** Runs that finished inside the page's widest read: the last two weeks. */
 const RECENT = 400;
 
-it('pulled work on one Project or an all-Projects page costs D1 the same as unrelated Projects grow', async () => {
+it('pulled work costs D1 the same as unrelated live runs and its own ready backlog grow', async () => {
   const page = Array.from({ length: NOW_PROJECTS_MAX }, (_, i) => `proj_visible_${i}`);
   const work = async (db: RelationalStore, project: string) => {
     await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
@@ -41,6 +41,7 @@ it('pulled work on one Project or an all-Projects page costs D1 the same as unre
     sizes: [500, 5_000],
     setup: async db => {
       await completeBudgetMigration(db, NOW);
+      await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('load-agent','load','built-in',1,1)").run();
       await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner'),('agent.learning_history_enabled','true',1,'owner')").run();
       for (const project of page) await work(db, project);
     },
@@ -51,6 +52,12 @@ it('pulled work on one Project or an all-Projects page costs D1 the same as unre
       await eachUnit(db, from, to, "UPDATE learning_sessions SET next_model_due_at=?3,card_promoted_at=?3 WHERE project_id IN (SELECT 'proj_unrelated_'||i FROM n)", NOW - HOUR);
       await eachUnit(db, from, to, "INSERT INTO project_capabilities SELECT 'proj_unrelated_'||i,'spore_curation',1,1,'owner' FROM n");
       await eachUnit(db, from, to, "INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) SELECT 'proj_unrelated_'||i,'group','[]',?3 FROM n", NOW - HOUR);
+      await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,origin,queued_at,started_at)
+        SELECT 'proj_unrelated_'||i,'busy-'||i,'load-agent','title-summary',CASE WHEN i%2=0 THEN 'queued' ELSE 'running' END,'manual',?3,CASE WHEN i%2=1 THEN ?3 END FROM n`, NOW - HOUR);
+      await eachUnit(db, from, to, `INSERT INTO learning_sessions(project_id,session_id,init_state,counted,source_activity_at,pending_cards,next_model_due_at,quiet_at,card_promoted_at,eligible_at,learning_promoted_at)
+        SELECT ?3,'own-'||i,'ready',1,?4,1,?5,?5,?5,?5,?5 FROM n`, page[0], NOW - 2 * HOUR, NOW - 45 * 60_000);
+      await eachUnit(db, from, to, "UPDATE learning_sessions SET next_model_due_at=?4,card_promoted_at=?4 WHERE project_id=?3 AND session_id IN (SELECT 'own-'||i FROM n)", page[0], NOW - 45 * 60_000);
+      await eachUnit(db, from, to, "INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) SELECT ?3,'own-'||i,'[]',?4 FROM n", page[0], NOW - 45 * 60_000);
     },
     cases: [
       { name: 'one Project with all pulled stages on', run: async db => {
@@ -62,7 +69,8 @@ it('pulled work on one Project or an all-Projects page costs D1 the same as unre
         expect(rows.every(row => row.projectId === page[0])).toBe(true);
       } },
       { name: 'the bounded all-Projects page with all pulled stages on', run: async db => {
-        const rows = await readPulledWaiting({ db }, { projects: page, now: NOW, cutoff: NOW - HOUR / 2 });
+        const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() } as never);
+        const rows = await readPulledWaiting(env, { projects: page, now: NOW, cutoff: NOW - HOUR / 2 });
         expect(new Set(rows.map(row => row.projectId))).toEqual(new Set(page));
       } },
     ],

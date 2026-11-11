@@ -4,6 +4,7 @@ import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
 import { budgetHold } from '../db/runs/budget-policy.js';
 import { pullBudgetAvailable, pullCapacityAvailable } from './pulled-admission.js';
+import { fleetExecution } from './fleet-execution.js';
 import { BUDGET_WORKER_TASKS } from './budget-policy.js';
 import {
   pulledStages,
@@ -99,11 +100,9 @@ import {
   capabilityOn,
   CLAIM_SETTING_LEAVES,
   claimSettings,
-  fleetSelection,
   RUNTIME_SERVED_TASKS,
   availableLogin,
   selectExecution,
-  type FleetReport,
   type LoginStep,
   type OfferedHarness,
 } from './worker-selection.js';
@@ -955,12 +954,6 @@ async function recordProfileHolds(env: ServerEnv, worker: { principal: WorkerPri
   }
 }
 
-/** What `reports` would run `task` under at a claim now, or the holder a queued run of it waits under (`fleetSelection`). */
-export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>,
-  login = availableLogin(harnessCredentialAvailability(env.db, env.wrappingKey))) {
-  return fleetSelection(task, reports, settings, () => login);
-}
-
 /** Whether a recent eligible worker can execute this repository task with its required profile and capabilities. */
 export async function repositoryWorkerAvailable(env: ServerEnv, task: string, now: number): Promise<boolean> {
   const [reports, settings] = await Promise.all([recentWorkerReports(env.db, now), claimSettings(env)]);
@@ -1173,8 +1166,7 @@ async function pullAtClaim(
     if (selection === null) return null;
     const { stage, item } = selection;
     const chosen = executions.get(stage.task)!;
-    const price = await estimateForClaim(env.db, item.projectId, stage.task, chosen.harness, chosen.profile);
-    if (!(await pullBudgetAvailable(env.db, stage.task, worker.now, { estimate: price.estimate, activation: read.activation }))) return null;
+    if (!(await pullBudgetAvailable(env.db, { projectId: item.projectId, task: stage.task, now: worker.now, execution: chosen, activation: read.activation }))) return null;
     const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
     const resolvesTo = await catalogResolution(env.db, catalogOwner, chosen.harness, chosen.profile.model, worker.now);
     const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };

@@ -12,6 +12,8 @@ import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
 import { LAST_REQUEST_KEY } from '@myco-server-worker/core/activity.js';
+import { estimateKey } from '@myco-server-worker/core/budget-estimates.js';
+import { PROFILE_HARNESSES } from '@goondocks/myco-shared/execution-profile';
 
 const NOW = 1_800_000_000_000;
 const MINUTE = 60_000;
@@ -66,7 +68,7 @@ describe('Myco’s work now', () => {
     expect(await needs()).toEqual([]);
   });
 
-  it('names learning and curation waiting since their due dates and drops disabled work', async () => {
+  it('uses learned prices to hold a learning head and cheaper curation, and drops disabled work', async () => {
     const h = harness();
     await completeBudgetMigration(h.fixture.db, NOW);
     h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
@@ -79,6 +81,21 @@ describe('Myco’s work now', () => {
       { what: 'Learn from sessions has waited 60 minutes with no machine taking it', at: NOW - HOUR },
       { what: 'Curate overlapping spores has waited 45 minutes with no machine taking it', at: NOW - 45 * MINUTE },
     ]);
+    h.sqlite.run("INSERT INTO runners(id,name,created_at) VALUES('rn_price','priced runner',1)");
+    h.sqlite.run("INSERT INTO runner_credentials(id,runner_id,token_hash,epoch,issued_at,expires_at,lineage_root) VALUES('rc_price','rn_price','priced-fixture',1,?1,?2,'rc_price')", [NOW, NOW + HOUR]);
+    h.sqlite.run("INSERT INTO runner_contacts(runner_id,offers,capabilities,last_reason,last_seen_at,updated_at) VALUES('rn_price',?1,?2,'no_work',?3,?3)",
+      [JSON.stringify([offeredHarness('claude-code')]), JSON.stringify(WORKER_CAPABILITIES), NOW]);
+    h.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,1)");
+    const key = estimateKey('extract-curate', 'claude-code', { tier: 'default', model: PROFILE_HARNESSES['claude-code']!.models.default! });
+    h.sqlite.run("INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES('proj_1','myco-agent',?1,?2,?3)", [key, JSON.stringify({ estimate: 0.9 }), NOW]);
+    h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.budget.daily_usd','1',1,'owner')");
+    h.run('proj_2', 'spent', 'title-summary', 'completed', NOW - MINUTE);
+    h.sqlite.run("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,cost_usd,cost_source) VALUES('proj_2','spent','priced-spend','fixture',?,0.2,'actual')", [NOW - MINUTE]);
+    const held = await h.read();
+    expect(held.unavailable).toEqual([]);
+    expect(held.needsYou.filter(item => item.key.startsWith('pulled:'))).toEqual([]);
+    h.sqlite.run("UPDATE agent_state SET value=?1 WHERE key=?2", [JSON.stringify({ estimate: 0.4 }), key]);
+    expect((await h.read()).needsYou.filter(item => item.key.startsWith('pulled:'))).toHaveLength(2);
     h.sqlite.run("UPDATE project_capabilities SET enabled=0 WHERE capability='spore_curation'");
     h.sqlite.run("UPDATE deployment_settings SET value='false' WHERE leaf='agent.scheduled_tasks_enabled'");
     expect((await h.read()).needsYou).toEqual([]);

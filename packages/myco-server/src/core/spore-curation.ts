@@ -189,7 +189,7 @@ function curationStage(estimateKey?: string): PulledStage {
   return {
     level: 5, task: CURATION_TASK, policy:curationPolicy, estimateKey, switchedOn: curationAnyEnabledSql(), withEstimate: curationStage,
     due: (project, now) => ({ sql: curationAdmissionSql(project, now, estimateKey), params: [] }),
-    waiting: curationWaiting,
+    waiting: (db, scope) => curationWaiting(db, scope, estimateKey),
     head: async (db, projectId, now) => {
       const row = await readCurationDueHead(db, projectId, now);
       return row === null ? null : { projectId, subject: curationSubject(projectId, row.cluster_key), key: row.cluster_key, observed: row.due_at };
