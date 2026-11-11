@@ -193,13 +193,14 @@ function agentVersionOf(printed: string | null): string | undefined {
  */
 const versions = new Map<string, { version: string | undefined } | 'asking'>();
 const probes = new Set<OwnedProcess>();
+let probesStopping = new AbortController();
 const MAX_VERSION_OUTPUT_CHARS = 4096;
 
 function askVersion(at: string, key: string): void {
   versions.set(key, 'asking');
   let owned: OwnedProcess;
   // Its input is closed: an agent that reads its input for a session reads none and ends, rather than waiting out the probe.
-  try { owned = spawnOwnedGroup(at, ['--version'], { env: probeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }, AbortSignal.timeout(PROBE_TIMEOUT_MS)); }
+  try { owned = spawnOwnedGroup(at, ['--version'], { env: probeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }, AbortSignal.any([probesStopping.signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)])); }
   catch { versions.set(key, { version: undefined }); return; }
   probes.add(owned);
   let printed = '';
@@ -213,6 +214,8 @@ function askVersion(at: string, key: string): void {
 
 /** Stop every version probe still running, its helpers included, and wait until they are gone. */
 export async function stopVersionProbes(): Promise<void> {
+  probesStopping.abort();
+  probesStopping = new AbortController();
   await Promise.all([...probes].map((owned) => owned.dispose().catch(() => undefined)));
 }
 
