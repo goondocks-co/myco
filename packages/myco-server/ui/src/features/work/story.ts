@@ -342,9 +342,9 @@ const DAY_MS = 86_400_000;
 export const TRY_WINDOW_MS = DAY_MS;
 
 /**
- * One piece of work across its tries: the failed runs of the task right before this one, this run, and, when it
- * failed, the runs right after it up to the first that did not fail. `after` counts only when its page is whole, so a
- * later run is never named the next try past one the page left out.
+ * One piece of work across its tries: the failed runs right before this one (`before`, newest first), this run, and,
+ * when it failed, the runs right after it (`after`, oldest first) up to the first that did not fail. Both lists start
+ * next to this run, so a bounded page never skips a try between them.
  */
 export function triesOf(current: Try, before: readonly Try[], after: readonly Try[] | null): Try[] {
   const earlier: Try[] = [];
@@ -355,7 +355,7 @@ export function triesOf(current: Try, before: readonly Try[], after: readonly Tr
   }
   const later: Try[] = [];
   if (current.status === 'failed' && after !== null) {
-    for (const run of [...after].reverse()) {
+    for (const run of after) {
       if (run.id === current.id) continue;
       later.push(run);
       if (run.status !== 'failed') break;

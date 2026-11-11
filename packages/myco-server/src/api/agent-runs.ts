@@ -63,7 +63,10 @@ export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Prom
   const until = instantParam(ctx.url, 'until');
   if (until instanceof Response) return until;
   if (since !== undefined && until !== undefined && since >= until) return badRequest('since must be before until');
-  const answer = await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until, includeSignIn: isAdmin(ctx.member.role) });
+  const order = ctx.url.searchParams.get('order') ?? 'newest';
+  if (order !== 'newest' && order !== 'oldest') return badRequest(`order must be newest or oldest, not ${JSON.stringify(order.slice(0, 40))}`);
+  if (order === 'oldest' && since === undefined) return badRequest('order=oldest reads a window: give since (and optionally until)');
+  const answer = await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until, order, includeSignIn: isAdmin(ctx.member.role) });
   const waits = await fleetWaits(env, answer.rows.filter(row => row.status === 'queued').map(row => row.task), ctx.now, isAdmin(ctx.member.role));
   return ok({ ...answer, rows: answer.rows.map(row => row.status === 'queued' ? { ...row, fleetWait: waits.get(row.task) } : row) });
 }

@@ -9,12 +9,13 @@ import { RUN_WRITE_EVENT } from '../db/runs/evidence.js';
 export type RunResult = 'produced' | 'unchanged' | 'failed' | 'failed_with_output';
 
 /**
- * Where a task's run records that it changed something: spores it authored, a landed write through one tool, spore
- * lineage it authored, or a positive count in the report its runtime files.
+ * Where a task's run records that it changed something: spores it authored, a landed write through one tool (with a
+ * positive count in that write's record, where the write records one), spore lineage it authored, or a positive count
+ * in the report its runtime files.
  */
 type RunOutput =
   | { kind: 'spores' }
-  | { kind: 'write'; tool: string }
+  | { kind: 'write'; tool: string; count?: string }
   | { kind: 'lineage' }
   | { kind: 'reported'; action: string; count: string };
 
@@ -24,14 +25,16 @@ const TASK_OUTPUT: Readonly<Record<RetainedTask, RunOutput>> = {
   [SEEDING_TASK]: { kind: 'spores' },
   [TITLING_TASK]: { kind: 'write', tool: TITLE_WRITE_TOOL },
   [MAP_TASK]: { kind: 'write', tool: MAP_WRITE_TOOL },
-  [CARD_TASK]: { kind: 'write', tool: CARD_TOOL },
+  // A card write on an already-complete assignment lands with nothing written; only cards it wrote count.
+  [CARD_TASK]: { kind: 'write', tool: CARD_TOOL, count: '$.written' },
   [CURATION_TASK]: { kind: 'lineage' },
   [EMBEDDING_TASK]: { kind: 'reported', action: EMBEDDING_REPORT_ACTION, count: '$.processed' },
 };
 
 const wroteSpores = (a: string): string => `EXISTS (SELECT 1 FROM spores sp WHERE sp.project_id = ${a}.project_id AND sp.author = ${a}.id)`;
-const recordedWrite = (a: string, tool: string): string => `EXISTS (SELECT 1 FROM agent_run_events e
-  WHERE e.project_id = ${a}.project_id AND e.run_id = ${a}.id AND e.event_type = '${RUN_WRITE_EVENT}' AND e.tool_name = '${tool}')`;
+const recordedWrite = (a: string, tool: string, count?: string): string => `EXISTS (SELECT 1 FROM agent_run_events e
+  WHERE e.project_id = ${a}.project_id AND e.run_id = ${a}.id AND e.event_type = '${RUN_WRITE_EVENT}' AND e.tool_name = '${tool}'${
+  count === undefined ? '' : ` AND json_valid(e.payload) AND json_extract(e.payload, '${count}') > 0`})`;
 const wroteLineage = (a: string): string => `EXISTS (SELECT 1 FROM resolution_events re WHERE re.project_id = ${a}.project_id AND re.author = ${a}.id)`;
 const reportedCount = (a: string, action: string, count: string): string => `EXISTS (SELECT 1 FROM agent_reports rp
   WHERE rp.project_id = ${a}.project_id AND rp.run_id = ${a}.id AND rp.action = '${action}' AND json_valid(rp.details) AND json_extract(rp.details, '${count}') > 0)`;
@@ -39,7 +42,7 @@ const reportedCount = (a: string, action: string, count: string): string => `EXI
 function outputSql(a: string, output: RunOutput): string {
   switch (output.kind) {
     case 'spores': return wroteSpores(a);
-    case 'write': return recordedWrite(a, output.tool);
+    case 'write': return recordedWrite(a, output.tool, output.count);
     case 'lineage': return wroteLineage(a);
     case 'reported': return reportedCount(a, output.action, output.count);
   }

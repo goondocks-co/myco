@@ -51,6 +51,8 @@ export interface RunFields {
   id: string;
   agentId: string;
   task: string | null;
+  /** The piece of work the run's claim named, as a curation run names its cluster; null for a task that names none. */
+  subject: string | null;
   status: string;
   model: string | null;
   startedAt: number | null;

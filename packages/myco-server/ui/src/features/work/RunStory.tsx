@@ -105,25 +105,26 @@ export function AskedVersusDid({ answer }: { answer: RunDetailAnswer }) {
   );
 }
 
-const asTry = (row: RunPageRow, runner: (row: RunPageRow) => string | null): Try => ({
-  id: row.id, completedAt: row.completedAt, status: row.status, result: row.result, runner: runner(row), current: false,
+const asTry = (row: RunPageRow): Try => ({
+  id: row.id, completedAt: row.completedAt, status: row.status, result: row.result, runner: runnerOf(row), current: false,
 });
 const runnerOf = (row: Pick<RunPageRow, 'worker'>): string | null => row.worker?.runner?.name ?? row.worker?.machineName ?? null;
 
 /**
- * "Tries": the runs of the same task right before and after this one, read from the task's run list, when they make one
- * piece of work: failures leading up to it, and after a failure, the runs up to the first that did not fail.
+ * "Tries": the runs of the same task and subject right before and after this one, read from the task's run list, when
+ * they make one piece of work: failures leading up to it, and after a failure, the nearest later runs up to the first
+ * that did not fail.
  */
 export function Tries({ answer, projectId, now }: { answer: RunDetailAnswer; projectId: string; now: number }) {
   const { run } = answer;
   const at = run.completedAt;
   const finished = (run.status === 'completed' || run.status === 'failed') && run.task !== null && at !== null;
   const before = useTaskRuns(projectId, run.task ?? '', false, finished, { since: (at ?? 0) - TRY_WINDOW_MS, until: at ?? 0 });
-  const after = useTaskRuns(projectId, run.task ?? '', false, finished && run.status === 'failed', { since: (at ?? 0) + 1, until: (at ?? 0) + TRY_WINDOW_MS });
+  const after = useTaskRuns(projectId, run.task ?? '', false, finished && run.status === 'failed', { since: (at ?? 0) + 1, until: (at ?? 0) + TRY_WINDOW_MS, oldestFirst: true });
   if (!finished || before.data === undefined) return null;
   const current: Try = { id: run.id, completedAt: at, status: run.status, result: run.result, runner: runnerOf(run), current: true };
-  const later = after.data === undefined || after.data.cursor !== null ? null : after.data.rows.map((row) => asTry(row, runnerOf));
-  const tries = triesOf(current, before.data.rows.map((row) => asTry(row, runnerOf)), later);
+  const same = (rows: readonly RunPageRow[]) => rows.filter((row) => (row.subject ?? null) === (run.subject ?? null)).map(asTry);
+  const tries = triesOf(current, same(before.data.rows), after.data === undefined ? null : same(after.data.rows));
   if (tries.length < 2) return null;
   return (
     <section aria-label="Tries" className="flex flex-col gap-s2" data-run-tries="">
@@ -138,7 +139,7 @@ export function Tries({ answer, projectId, now }: { answer: RunDetailAnswer; pro
           );
         })}
       </ol>
-      <p className="t-meta text-muted">Linked by task and project: a run of the same task right before or after this one reads as another try.</p>
+      <p className="t-meta text-muted">Linked by project, task and what it worked on: a run of the same work right before or after this one reads as another try.</p>
     </section>
   );
 }

@@ -99,7 +99,9 @@ describe('run panel recorded evidence', () => {
       f.sqlite.run(`INSERT INTO resolution_events (project_id, id, agent_id, spore_id, action, created_at, author) VALUES ('proj_1', 'retire-older', 'audit_agent', 'older', 'obsolete', ?, 'curated')`, [NOW]);
       f.run('carded', 'turn-cards');
       f.run('carded_nothing', 'turn-cards');
-      f.event('carded', 'run_write', 'myco_run_cards', 'written', {});
+      f.run('carded_already_done', 'turn-cards');
+      f.event('carded', 'run_write', 'myco_run_cards', 'written', { op: 'write', written: 2 });
+      f.event('carded_already_done', 'run_write', 'myco_run_cards', 'written', { op: 'write', written: 0 });
       f.run('indexed', 'embedding-reconcile');
       f.run('index_current', 'embedding-reconcile');
       f.run('index_failed', 'embedding-reconcile', 'failed');
@@ -108,7 +110,7 @@ describe('run panel recorded evidence', () => {
       report('index_failed', 'embedding', { processed: 12, phase: 'pending' });
       const listed = await f.get('/api/projects/proj_1/runs');
       for (const [id, result] of [
-        ['curated', 'produced'], ['kept_apart', 'unchanged'], ['carded', 'produced'], ['carded_nothing', 'unchanged'],
+        ['curated', 'produced'], ['kept_apart', 'unchanged'], ['carded', 'produced'], ['carded_nothing', 'unchanged'], ['carded_already_done', 'unchanged'],
         ['indexed', 'produced'], ['index_current', 'unchanged'], ['index_failed', 'failed_with_output'],
       ]) {
         expect({ id, result: (await f.get(`/api/projects/proj_1/runs/${id}`)).run.result }).toEqual({ id, result });
@@ -166,12 +168,16 @@ it('orders the window list by the outcome time, including a run queued long ago'
   const f = await fixture();
   try {
     f.run('long_wait', 'canopy-map', 'completed', NOW - 10);
-    f.sqlite.run(`UPDATE agent_runs SET queued_at = ? WHERE id = 'long_wait'`, [NOW - 2 * DAY]);
+    f.sqlite.run(`UPDATE agent_runs SET queued_at = ?, subject = 'cluster-7' WHERE id = 'long_wait'`, [NOW - 2 * DAY]);
     f.run('earlier_finish', 'canopy-map', 'completed', NOW - 100);
     const first = await f.get(`/api/projects/proj_1/runs?since=${NOW - DAY}&until=${NOW}&limit=1`);
     expect(first.rows[0].id).toBe('long_wait');
     const second = await f.get(`/api/projects/proj_1/runs?since=${NOW - DAY}&until=${NOW}&limit=1&cursor=${encodeURIComponent(first.cursor)}`);
     expect(second.rows[0].id).toBe('earlier_finish');
+    const oldest = await f.get(`/api/projects/proj_1/runs?since=${NOW - DAY}&until=${NOW}&limit=1&order=oldest`);
+    expect(oldest.rows[0].id).toBe('earlier_finish');
+    const next = await f.get(`/api/projects/proj_1/runs?since=${NOW - DAY}&until=${NOW}&limit=1&order=oldest&cursor=${encodeURIComponent(oldest.cursor)}`);
+    expect({ rows: next.rows.map((row: Answer) => [row.id, row.subject]), cursor: next.cursor }).toEqual({ rows: [['long_wait', 'cluster-7']], cursor: null });
   } finally { f.sqlite.close(); }
 });
 

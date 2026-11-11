@@ -265,22 +265,42 @@ describe('the facts the panel states', () => {
 });
 
 describe('Tries', () => {
-  it('links one piece of work across its tries from the task’s run list', async () => {
+  it('links one piece of work across its tries, through the try that finished it on a busy day', async () => {
     const cutOff = searchRunCutOff();
     const ended = cutOff.run.completedAt!;
-    const earlier = runRow({ id: 'run_embed1904', task: 'embedding-reconcile', status: 'failed', failed: true, completedAt: ended - 10 * MINUTE });
-    const before = runRow({ id: 'run_embed1800', task: 'embedding-reconcile', status: 'completed', completedAt: ended - 70 * MINUTE });
-    const later = runRow({ id: 'run_embed1931', task: 'embedding-reconcile', status: 'completed', completedAt: ended + 11 * MINUTE });
+    const embed = (id: string, status: string, at: number, subject: string | null = null) =>
+      runRow({ id, task: 'embedding-reconcile', status, failed: status === 'failed', completedAt: at, subject });
+    const otherWork = embed('run_embed1910', 'failed', ended - 5 * MINUTE, 'another-piece');
+    const earlier = embed('run_embed1904', 'failed', ended - 10 * MINUTE);
+    const before = embed('run_embed1800', 'completed', ended - 70 * MINUTE);
+    // Eight later runs, oldest first: one more failure, the run that worked, then six more after it.
+    const later = [embed('run_embed1920', 'failed', ended + 5 * MINUTE), embed('run_embed1931', 'completed', ended + 11 * MINUTE),
+      ...Array.from({ length: 6 }, (_, i) => embed(`run_embed20${i}`, 'completed', ended + (20 + i) * MINUTE))];
+    // A page of six, as the server answers it: nearest first when asked oldest first, else the newest.
     const panel = await open('run_embed1914', cutOff, (url) => url.searchParams.get('task') !== 'embedding-reconcile' ? []
-      : Number(url.searchParams.get('until')) <= ended ? [earlier, before] : [later]);
+      : Number(url.searchParams.get('until')) <= ended ? [otherWork, earlier, before]
+      : url.searchParams.get('order') === 'oldest' ? later.slice(0, 6) : [...later].reverse().slice(0, 6));
     const tries = await within(panel).findByRole('region', { name: 'Tries' });
-    expect(tries.textContent).toContain('One piece of work, 3 tries');
+    expect(tries.textContent).toContain('One piece of work, 4 tries');
     const links = within(tries).getAllByRole('link');
-    expect(links.map((link) => link.getAttribute('href'))).toEqual([`/p/${P}/work/runs/run_embed1904`, `/p/${P}/work/runs/run_embed1931`]);
-    expect(tries.textContent).toContain('failed');
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['run_embed1904', 'run_embed1920', 'run_embed1931'].map((id) => `/p/${P}/work/runs/${id}`));
     expect(tries.textContent).toContain('(this one)');
     expect(tries.textContent).toContain('worked');
-    expect(tries.textContent).not.toContain('run_embed1800');
+  });
+
+  it('reads two pieces of work of one task as separate, by what each worked on', async () => {
+    const cutOff = searchRunCutOff();
+    const ended = cutOff.run.completedAt!;
+    const asked = new Set<string>();
+    const panel = await open('run_embed1914', { ...cutOff, run: { ...cutOff.run, subject: 'cluster-a' } }, (url) => {
+      if (url.searchParams.get('task') !== 'embedding-reconcile') return [];
+      const earlier = Number(url.searchParams.get('until')) <= ended;
+      asked.add(earlier ? 'before' : 'after');
+      return [runRow({ id: earlier ? 'run_b1' : 'run_b2', task: 'embedding-reconcile', status: earlier ? 'failed' : 'completed', failed: earlier, completedAt: ended + (earlier ? -MINUTE : MINUTE), subject: 'cluster-b' })];
+    });
+    await waitFor(() => expect(asked.size).toBe(2));
+    await waitFor(() => expect(story(panel).textContent).toContain('past its time limit'));
+    expect(within(panel).queryByRole('region', { name: 'Tries' })).toBeNull();
   });
 
   it('shows no tries for a run whose neighbours are separate pieces of work', async () => {

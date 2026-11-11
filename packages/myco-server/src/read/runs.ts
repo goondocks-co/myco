@@ -6,7 +6,7 @@ import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, keyset, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
-import { runDetailRow, runIsVisible, runListRows } from '../db/runs/history.js';
+import { runDetailRow, runIsVisible, runListRows, type RunListOrder } from '../db/runs/history.js';
 import { readSet } from '../db/index.js';
 import { queuedWaits, type QueuedWait } from '../db/runs/queue.js';
 import { getRun, isTerminalRunStatus } from '../db/runs/lifecycle.js';
@@ -35,6 +35,8 @@ interface RunListRow {
   id: string;
   agentId: string;
   task: string | null;
+  /** The piece of work a run's claim named, as a curation run names its cluster; null for a task that names none. */
+  subject: string | null;
   status: string;
   provider: string | null;
   model: string | null;
@@ -215,6 +217,8 @@ interface RunFilters {
   cursor?: string;
   since?: number;
   until?: number;
+  /** A windowed read only: oldest first finds the runs nearest after `since`. */
+  order?: RunListOrder;
 }
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
@@ -251,6 +255,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     id: row.id as string,
     agentId: row.agent_id as string,
     task: text(row.task),
+    subject: text(row.subject),
     status: row.status as string,
     ...runAccounting(row.usage_data, row.cost_provenance),
     provider: text(row.provider),
@@ -350,7 +355,7 @@ export function phasesOf(raw: string | null): PhaseRow[] | null {
 }
 
 /**
- * A project's runs, newest first, one page at a time; `status` and `task` narrow the set before the cursor applies.
+ * A project's runs, newest first (or, windowed, oldest first), one page at a time; `status` and `task` narrow the set before the cursor applies.
  * Each row carries what it came to, read for the page in one more round trip, and its machine's name as of `nowMs`.
  */
 export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: number, viewerId: string, opts: RunFilters = {}): Promise<Page<RunPageRow>> {
@@ -358,7 +363,7 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: num
   const limit = clampLimit(opts.limit);
   const cursor = opts.cursor === undefined ? undefined : decodeCursor(opts.cursor);
   if (cursor === null) return { rows: [], cursor: null };
-  const results = await runListRows(db, scope, { status: opts.status, task: opts.task, agentId: opts.agentId, since: opts.since, until: opts.until }, limit + 1,
+  const results = await runListRows(db, scope, { status: opts.status, task: opts.task, agentId: opts.agentId, since: opts.since, until: opts.until, order: opts.order }, limit + 1,
     cursor === undefined ? undefined : { at: cursor.createdAt, id: cursor.id });
   const listed = page(results, limit, (r) => ({ createdAt: (windowed ? num(r.completed_at) : null) ?? num(r.queued_at) ?? num(r.started_at) ?? 0, id: r.id as string }));
   const ids = listed.rows.map((r) => r.id as string);
