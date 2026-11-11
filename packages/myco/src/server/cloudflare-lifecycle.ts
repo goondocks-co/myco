@@ -348,7 +348,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   if (summary.workerStop !== undefined) {
     lines.push(summary.workerStop.message);
   }
-  if (typeof summary.upload !== 'string' && (summary.worker !== 'applied' || summary.record !== 'updated' || summary.workerStop !== undefined)) {
+  if (summary.worker !== 'applied' && (typeof summary.upload !== 'string' || summary.upload === 'attempted; outcome unknown')) {
     lines.push('Finish the update before editing secrets: run: myco server update --target cloudflare. Wrangler refuses secret edits while the newest Worker version is undeployed.');
   }
   const observedSchema = summary.schemaReached ?? summary.schemaBefore;

@@ -578,7 +578,7 @@ describe('update', () => {
     f.failures.triggers.push({ code: 1, stdout: '', stderr: 'Authentication error [code: 10000]' });
     await expect(f.update()).rejects.toThrow('Zone / Workers Routes Edit for configured routes or custom domains');
     expect(readDeploymentRecord(f.home)!.versionId).toBe(version);
-    expect(f.lines.join('\n')).toContain('Finish the update before editing secrets');
+    expect(f.lines.join('\n')).not.toContain('Finish the update before editing secrets');
   });
 });
 
