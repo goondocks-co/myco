@@ -78,6 +78,7 @@ const settleSet = (named: string, attempt: number, at: number) => `UPDATE agent_
     dispatched_by = CASE WHEN subject IS NOT NULL THEN dispatched_by ELSE NULL END,
     started_at = CASE WHEN subject IS NOT NULL THEN started_at ELSE NULL END,
     held_by = CASE WHEN subject IS NOT NULL THEN NULL ELSE 'worker' END,
+    queue_entered_at = CASE WHEN subject IS NOT NULL THEN queue_entered_at ELSE ?1 END,
     leased_by = NULL, leased_runner_id = NULL, leased_runner_credential_id = NULL, lease_expires_at = NULL
   WHERE project_id = ?2 AND id = ?3 AND status = 'running' AND ${named} AND dispatched_by IS ?${attempt} AND lease_expires_at <= ?${at} RETURNING id`;
 type SettleBase = [now: number, project: string, run: string];

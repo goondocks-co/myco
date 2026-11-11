@@ -113,20 +113,28 @@ describe('Runs page', () => {
     expect(within(spell).getByText('homelab-mini and studio-m4 checked in.')).toBeTruthy();
   });
 
-  it('reads a quiet spell as worth a look when runs waited through it, or work queued before it still waits', async () => {
+  it('reads a quiet spell as worth a look when queued work waited through it, taken or not, or work queued before it still waits', async () => {
     mount('/runs', undefined, { ...HOURS, waits: [
-      { queuedHour: SINCE + 2 * HOUR, takenHour: SINCE + 5 * HOUR, runs: 7 },
-      { queuedHour: SINCE + 3 * HOUR, takenHour: UNTIL - 3 * HOUR, runs: 2 },
-      { queuedHour: SINCE, takenHour: SINCE, runs: 4 },
+      { enteredHour: SINCE + 2 * HOUR, leftHour: SINCE + 5 * HOUR, taken: true, waits: 7 },
+      { enteredHour: SINCE + 3 * HOUR, leftHour: UNTIL - 3 * HOUR, taken: false, waits: 2 },
+      { enteredHour: SINCE, leftHour: SINCE, taken: true, waits: 4 },
     ] });
     const spell = await openSpell();
     expect(within(spell).getByText('Worth a look')).toBeTruthy();
-    expect(within(spell).getByText('Worth a look: 9 runs waited')).toBeTruthy();
+    expect(within(spell).getByText('Worth a look: queued work waited 9 times')).toBeTruthy();
+    expect(within(spell).getByText('Queued work waited 9 times during it: a machine took the run 7 times; it left the queue without a machine twice.')).toBeTruthy();
     cleanup();
     mount('/runs', undefined, { ...HOURS, stillWaiting: [{ since: SINCE + 4 * HOUR, runs: 3 }] });
     const still = await openSpell();
     expect(within(still).getByText('Worth a look: work queued before it ended still waits')).toBeTruthy();
     expect(within(still).getByText('Work queued before it ended still waits: 3 runs queued now.')).toBeTruthy();
+  });
+
+  it('reads a quiet spell over a run that waited and expired unclaimed as worth a look, though no machine took it', async () => {
+    mount('/runs', undefined, { ...HOURS, waits: [{ enteredHour: SINCE, leftHour: UNTIL - 2 * HOUR, taken: false, waits: 1 }] });
+    const spell = await openSpell();
+    expect(within(spell).getByText('Worth a look: queued work waited once')).toBeTruthy();
+    expect(within(spell).getByText('Queued work waited once during it: it left the queue without a machine once.')).toBeTruthy();
   });
 
   it('reads a quiet spell as worth a look when no runner checked in, and gives no reading before check-ins were recorded', async () => {

@@ -72,29 +72,38 @@ function names(list: readonly string[]): string {
   return `${list.slice(0, 2).join(', ')} and ${list.length - 2} more`;
 }
 
+/** "once", "twice", "9 times". */
+const times = (n: number) => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n.toLocaleString()} times`);
+
 /**
- * A quiet spell read from the counters alone: the runs machines took after waiting through part of it (queued before
- * it ended, taken after it began), whether queued work from before its end still waits, and which runners checked in.
- * It looks normal only when nothing waited and a runner checked in; it is worth a look when work waited or no runner
- * checked in. A spell that starts before check-ins and waits were recorded reads as not recorded, never as a verdict.
+ * A quiet spell read from the counters alone: the waits in the queue that overlapped it (a stay that began before it
+ * ended and ended after it began, whether a machine took the run or it left the queue unclaimed), whether queued work
+ * from before its end still waits, and which runners checked in. The unit is a wait, one stay of a run in the queue: a
+ * run that went back to the queue waits again. It looks normal only when nothing waited and a runner checked in; it is
+ * worth a look when work waited or no runner checked in. A spell that starts before check-ins and waits were recorded
+ * reads as not recorded, never as a verdict.
  */
 export function gapReading(answer: Pick<RunHoursAnswer, 'lanes' | 'recordedSince' | 'waits' | 'stillWaiting'>, spell: Pick<QuietSpell, 'from' | 'to'>, now: number): GapReading {
   if (answer.recordedSince === null || spell.from < answer.recordedSince) {
     return { verdict: 'unrecorded', facts: [],
       headline: answer.recordedSince === null ? 'Not recorded: no runner check-ins are kept yet.' : `Not recorded: Myco keeps check-ins and waits from ${shortTime(answer.recordedSince, now)}.` };
   }
-  const waited = answer.waits.filter((w) => w.takenHour >= spell.from && w.queuedHour < spell.to).reduce((n, w) => n + w.runs, 0);
+  const overlapping = answer.waits.filter((w) => w.leftHour >= spell.from && w.enteredHour < spell.to);
+  const waited = overlapping.reduce((n, w) => n + w.waits, 0);
+  const taken = overlapping.filter((w) => w.taken).reduce((n, w) => n + w.waits, 0);
   const still = answer.stillWaiting.filter((w) => w.since < spell.to);
   const checkedIn = answer.lanes.filter((lane) => lane.runnerId !== null && lane.checkins.some((hour) => hour >= spell.from && hour < spell.to)).map((lane) => lane.name ?? 'A runner no longer registered');
+  const ended = [taken > 0 ? `a machine took the run ${times(taken)}` : null, waited - taken > 0 ? `it left the queue without a machine ${times(waited - taken)}` : null]
+    .filter((part) => part !== null).join('; ');
   const facts = [
-    waited === 0 ? (still.length === 0 ? 'Nothing was waiting.' : 'No run that waited was taken during it.') : `${runs(waited)} waited during it; machines took them later.`,
+    waited === 0 ? (still.length === 0 ? 'Nothing was waiting.' : 'Nothing that has since left the queue waited during it.') : `Queued work waited ${times(waited)} during it: ${ended}.`,
     ...(still.length === 0 ? [] : [`Work queued before it ended still waits: ${runs(still.reduce((n, w) => n + w.runs, 0))} queued now.`]),
     checkedIn.length === 0 ? 'No runner checked in.' : `${names(checkedIn)} checked in.`,
   ];
   if (waited === 0 && still.length === 0 && checkedIn.length > 0) {
     return { verdict: 'normal', facts, headline: `Looks normal: nothing was waiting, ${checkedIn.length === 1 ? '1 runner' : `${checkedIn.length} runners`} checked in` };
   }
-  const why = [waited > 0 ? `${runs(waited)} waited` : null, still.length > 0 ? `${waited > 0 ? 'and ' : ''}work queued before it ended still waits` : null]
+  const why = [waited > 0 ? `queued work waited ${times(waited)}` : null, still.length > 0 ? `${waited > 0 ? 'and ' : ''}work queued before it ended still waits` : null]
     .filter((part) => part !== null).join(', ');
   return { verdict: 'look', facts, headline: `Worth a look: ${why === '' ? 'no runner checked in' : why}` };
 }

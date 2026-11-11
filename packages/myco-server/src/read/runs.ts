@@ -174,6 +174,8 @@ export interface RunAttemptRow {
   steps: { total: number; received: number; overflow: number; unrecognized: UnrecognizedCount | null } | null;
   /** The hold its run waited under in the queue before this attempt took it; null when it waited under none or was never queued. */
   waitedFor: string | null;
+  /** When the stay in the queue this attempt ended began; null when the run was never queued or it was not recorded. */
+  waitedSince: number | null;
 }
 
 /** One step a worker observed, metadata only: never file contents or command output. */
@@ -478,6 +480,7 @@ const attemptOf = (received: ReadonlyMap<string, number> | null, includeSignIn =
   executor: row.ownerKind === 'runner' && row.runnerId !== null ? { kind: 'runner', runnerId: row.runnerId, name: row.runnerName } : { kind: 'legacy-worker', memberId: row.memberId },
   steps: row.total === null || received === null ? null : { total: Number(row.total), received: received.get(row.attemptId) ?? 0, overflow: Number(row.overflow ?? 0), unrecognized: unrecognizedOf(row.unrecognized) },
   waitedFor: visibleRunHolder(row.waitedFor, includeSignIn),
+  waitedSince: row.waitedSince === null ? null : Number(row.waitedSince),
 });
 
 /**

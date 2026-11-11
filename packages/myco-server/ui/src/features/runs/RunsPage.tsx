@@ -25,7 +25,7 @@ export interface RunHoursAnswer {
   lanes: { runnerId: string | null; name: string | null; hours: (Counts & { hour: number })[]; checkins: number[] }[];
   failures: Record<Dimension, FailureGroup[]>;
   recordedSince: number | null;
-  waits: { queuedHour: number; takenHour: number; runs: number }[];
+  waits: { enteredHour: number; leftHour: number; taken: boolean; waits: number }[];
   stillWaiting: { since: number; runs: number }[];
 }
 /** One run of `GET /api/runs/finished`. */

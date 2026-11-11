@@ -1,7 +1,7 @@
 /**
  * The Runs page: when runs finished, per runner and hour, and what failed, grouped by cause, runner, agent and task
  * with each group's count in the window, in the window before it and per slice of the window; beside each runner's
- * runs, the hours it checked in, and the runs that waited by the hours they were queued and taken, so a quiet spell can
+ * runs, the hours it checked in, and the waits in the queue by the hours they began and ended, so a quiet spell can
  * say whether anything waited and who checked in. Every number is a sum of hourly counters or the queue's own counts;
  * nothing here reads a run.
  */
@@ -41,8 +41,11 @@ export interface RunHoursAnswer {
   lanes: { runnerId: string | null; name: string | null; hours: (Counts & { hour: number })[]; checkins: number[] }[];
   /** The earliest hour check-ins and waits are recorded for; hours before it say nothing about either. Null when none is. */
   recordedSince: number | null;
-  /** Runs a machine took in the window after waiting, by the hour each was queued and the hour it was taken. */
-  waits: { queuedHour: number; takenHour: number; runs: number }[];
+  /**
+   * Waits in the queue that ended in the window: one per stay of a run in the queue, by the hour it began and the hour it
+   * ended, and whether a machine took the run (else it expired, was cancelled, skipped or deleted while waiting).
+   */
+  waits: { enteredHour: number; leftHour: number; taken: boolean; waits: number }[];
   /** Queued work still waiting now: per Project, task and origin, since its oldest was queued and how many wait. */
   stillWaiting: { since: number; runs: number }[];
   /** Per dimension, the groups that failed in this window or the one before it, most failures first. */
@@ -104,7 +107,7 @@ export async function readRunHours(db: RelationalStore, set: ProjectSet, name: R
       checkins: (checked.get(runnerId) ?? []).sort((a, b) => a - b),
     })).sort((a, b) => (a.name ?? '￿').localeCompare(b.name ?? '￿')),
     recordedSince,
-    waits: waits.map((row) => ({ queuedHour: row.queued_hour, takenHour: row.claimed_hour, runs: row.runs })),
+    waits: waits.map((row) => ({ enteredHour: row.entered_hour, leftHour: row.left_hour, taken: row.taken === 1, waits: row.waits })),
     stillWaiting: waiting.map((row) => ({ since: row.since, runs: row.runs })),
     failures: Object.fromEntries(FAILURE_DIMENSIONS.map((dimension) => [dimension, [...groups[dimension]]
       .map(([key, group]) => ({ key: named(key), name: nameOf(dimension, key), ...group }))

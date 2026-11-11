@@ -4,10 +4,10 @@ import { contactHourSchemaStatements } from './runners/contact-hours.js';
 import { waitHourSchemaStatements } from './runs/wait-hours.js';
 
 /**
- * A run keeps when its lease was last renewed, and each attempt the hold its run waited under before a machine took it;
- * each runner's check-ins are counted by the hour as its contact is recorded, and the runs that waited by the hours they
- * were queued and taken as a claim records its attempt. Every one rides a write Myco already makes, and history starts
- * here: what was not recorded before cannot be counted.
+ * A run keeps when its lease was last renewed and when its current stay in the queue began, and each attempt the hold
+ * its run waited under and since when; each runner's check-ins are counted by the hour as its contact is recorded, and
+ * each stay in the queue by the hours it began and ended as the run leaves the queue, whatever takes it out. Every one
+ * rides a write Myco already makes, and history starts here: what was not recorded before cannot be counted.
  */
 export const RUN_LIVENESS_STEPS: readonly SchemaStep[] = [
   {
@@ -15,13 +15,15 @@ export const RUN_LIVENESS_STEPS: readonly SchemaStep[] = [
     statements: [
       'ALTER TABLE agent_runs ADD COLUMN last_renewed_at INTEGER',
       'ALTER TABLE agent_runs ADD COLUMN waited_for TEXT',
+      'ALTER TABLE agent_runs ADD COLUMN queue_entered_at INTEGER',
       'ALTER TABLE agent_run_attempts ADD COLUMN waited_for TEXT',
+      'ALTER TABLE agent_run_attempts ADD COLUMN waited_since INTEGER',
       ...contactHourSchemaStatements(),
       ...waitHourSchemaStatements(),
     ],
     reaches: [
-      ...changing(['agent_runs'], 'A renewal records when it renewed the lease, and a claim the hold the run waited under.'),
-      ...changing(['agent_run_attempts'], 'An attempt keeps the hold its run waited under, and its insert counts the wait by the hour.'),
+      ...changing(['agent_runs'], 'A renewal records when it renewed the lease, a return to the queue when the stay began, a claim the hold the run waited under, and a run leaving the queue counts its stay by the hour.'),
+      ...changing(['agent_run_attempts'], 'An attempt keeps the hold its run waited under and when that wait began.'),
       ...reaching(['runner_contacts'], 'A recorded runner contact counts its check-in by the hour.'),
     ],
   },

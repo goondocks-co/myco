@@ -28,8 +28,8 @@ const runnerNames = read<[ids: string], { id: string; name: string }>({ name: 'r
 
 /**
  * The hourly counts of the visible Projects in [since, until), whether every earlier run is counted yet, and the runners
- * they name; each runner's check-in hours from `checkinsSince`, the earliest hour check-ins are kept for, the runs taken
- * after waiting from `checkinsSince` by their queued and taken hours, and the queued work still waiting.
+ * they name; each runner's check-in hours from `checkinsSince`, the earliest hour check-ins are kept for, the waits in
+ * the queue that ended from `checkinsSince` by the hours they began and ended, and the queued work still waiting.
  */
 export async function runHourWindow(db: RelationalStore, set: ProjectSet, { since, until, checkinsSince }: { since: number; until: number; checkinsSince: number }) {
   const projects = setValue(set);

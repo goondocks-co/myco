@@ -6,7 +6,8 @@
  * narrowed page reads only the runs that match its first filter, and a page narrowed twice inspects a bounded number of
  * them however many other runs share its first filter. Each runner's check-ins and the runs that waited, which a quiet
  * spell is read from, cost the same when a Deployment holds ten times their history outside the window, and so does
- * a runner's contact counting its check-in.
+ * a runner's contact counting its check-in. One Project's waiting work costs the same however many other Projects'
+ * queues hold work.
  */
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -165,7 +166,7 @@ async function recentContacts(db: RelationalStore) {
     await eachUnit(db, 0, 7 * 24, `INSERT INTO runner_contact_hour(hour,runner_id,contacts,first_seen_at,last_seen_at)
       SELECT ?3-i*${HOUR},'rn_${i}',4,?3-i*${HOUR},?3-i*${HOUR}+1000 FROM n`, NOW - (NOW % HOUR));
   }
-  await eachUnit(db, 0, 7 * 24, `INSERT INTO run_wait_hour(claimed_hour,queued_hour,project_id,runs) SELECT ?3-i*${HOUR},?3-(i+1)*${HOUR},'proj_'||(i%2),2 FROM n`, NOW - (NOW % HOUR));
+  await eachUnit(db, 0, 7 * 24, `INSERT INTO run_wait_hour(left_hour,entered_hour,project_id,taken,waits) SELECT ?3-i*${HOUR},?3-(i+1)*${HOUR},'proj_'||(i%2),i%2,2 FROM n`, NOW - (NOW % HOUR));
   await commit(db, runnerContactWrite(db, { runnerId: 'rn_0', now: NOW }));
 }
 
@@ -173,8 +174,8 @@ async function recentContacts(db: RelationalStore) {
 async function olderContacts(db: RelationalStore, from: number, to: number) {
   await eachUnit(db, from, to, `INSERT INTO runner_contact_hour(hour,runner_id,contacts,first_seen_at,last_seen_at)
     SELECT ?3-(i%500)*${HOUR},'rn_old_'||(i/500),1,?3-(i%500)*${HOUR},?3-(i%500)*${HOUR} FROM n`, NOW - (NOW % HOUR) - 8 * DAY);
-  await eachUnit(db, from, to, `INSERT INTO run_wait_hour(claimed_hour,queued_hour,project_id,runs)
-    SELECT ?3-(i%500)*${HOUR},?3-(i%500)*${HOUR}-(i/500+1)*${HOUR},'proj_'||(i%2),1 FROM n`, NOW - (NOW % HOUR) - 8 * DAY);
+  await eachUnit(db, from, to, `INSERT INTO run_wait_hour(left_hour,entered_hour,project_id,taken,waits)
+    SELECT ?3-(i%500)*${HOUR},?3-(i%500)*${HOUR}-(i/500+1)*${HOUR},'proj_'||(i%2),1,1 FROM n`, NOW - (NOW % HOUR) - 8 * DAY);
 }
 
 it('check-ins and waits on the Runs page, and a contact counting its check-in, cost D1 the same as their history grows', async () => {
@@ -197,6 +198,28 @@ it('check-ins and waits on the Runs page, and a contact counting its check-in, c
         expect(week.recordedSince).not.toBeNull();
       } },
       { name: 'one Project’s waits', run: async (db) => expect((await readRunHours(db, { all: false, projectIds: ['proj_1'] }, 'week', NOW)).waits.length).toBeGreaterThan(0) },
+    ],
+  }));
+}, 240_000);
+
+/** Each unit is another Project whose queue holds work, beside the one Project the page reads. */
+async function unrelatedQueues(db: RelationalStore, from: number, to: number) {
+  await eachUnit(db, from, to, "INSERT INTO projects(project_id,name,created_at) SELECT 'proj_queue_'||i,'other',1 FROM n");
+  await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,held_by)
+    SELECT 'proj_queue_'||i,'waiting-'||i,'agent','embedding-reconcile','queued',?3,'worker' FROM n`, NOW - 2 * HOUR);
+}
+
+it('one Project’s waiting work on the Runs page costs D1 the same as other Projects’ queues fill', async () => {
+  expectTwoScale(await d1TwoScale({
+    sizes: [500, 5_000],
+    setup: recentContacts,
+    grow: unrelatedQueues,
+    cases: [
+      { name: 'one Project’s still-waiting work and waits', run: async (db) => {
+        const week = await readRunHours(db, { all: false, projectIds: ['proj_1'] }, 'week', NOW);
+        expect(week.stillWaiting.length).toBeGreaterThan(0);
+        expect(week.waits.length).toBeGreaterThan(0);
+      } },
     ],
   }));
 }, 240_000);

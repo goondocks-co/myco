@@ -104,18 +104,19 @@ function waitedNote(hold: string | null | undefined): string | null {
 
 function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null, memberName: (id: string) => string | null): StoryRow[] {
   const total = attemptCount ?? attempts.length;
-  return attempts.map((attempt, index) => {
+  return attempts.flatMap((attempt, index) => {
     const ordinal = total - attempts.length + index + 1;
     const position = total > 1 ? ` (attempt ${ordinal.toLocaleString()} of ${total.toLocaleString()})` : '';
-    // The first attempt's wait reads on its own row after "Queued"; a later attempt waited after going back to the queue.
-    const waited = ordinal > 1 ? waitedNote(attempt.waitedFor) : null;
-    const note = waited === null ? null : `It went back to the queue first. ${waited}`;
+    // The first attempt's wait begins at "Queued"; a later attempt's began when the run went back to the queue.
+    const requeued = ordinal > 1 && attempt.waitedSince !== null
+      ? [row({ key: `requeued-${attempt.attemptId}`, at: attempt.waitedSince, words: 'Back in the queue', source: 'saw', note: waitedNote(attempt.waitedFor) })]
+      : [];
     if (attempt.executor.kind === 'runner') {
       const name = attempt.executor.name ?? 'a runner';
-      return row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', note, runner: { id: attempt.executor.runnerId, name } });
+      return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', runner: { id: attempt.executor.runnerId, name } })];
     }
     const member = attempt.executor.memberId === null ? null : memberName(attempt.executor.memberId);
-    return row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw', note });
+    return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw' })];
   });
 }
 
@@ -198,17 +199,21 @@ export function runStory({ answer, calls, callsComplete, steps, startedBy, cause
   let called: number | null = null;
   const silence = (until: number, key: string) => {
     if (!callsComplete || heard === null || until - heard <= SILENCE_MS || (renewed !== null && until <= renewed)) return;
-    story.push(row({
+    // Without a recorded renewal, a gap in the calls is not known to be silence: the machine may have renewed its hold.
+    story.push(renewed === null ? row({
+      key, words: `No call, step or report for ${spanWords(until - heard)}`, source: 'saw',
+      note: 'Renewals of its hold were not recorded for this run, so whether its machine stayed in touch in this time is not known.',
+    }) : row({
       key, words: `Silence for ${spanWords(until - heard)}`, source: 'saw',
-      note: renewed === null
-        ? 'Myco recorded nothing from this run in this time. Whether its runner kept checking in is not recorded for a run.'
-        : 'Myco heard nothing from this run in this time: no call, step, report or renewal of its hold.',
+      note: 'Myco heard nothing from this run in this time: no call, step, report or renewal of its hold.',
     }));
   };
   const first = answer.attempts.length > 0 && (answer.attemptCount ?? answer.attempts.length) === answer.attempts.length ? answer.attempts[0]! : null;
   for (const entry of timed) {
-    if (story.at(-1)?.key === 'queued' && heard !== null && entry.at! - heard > SILENCE_MS) {
-      story.push(row({ key: 'waited', words: `Waited ${spanWords(entry.at! - heard)} to be taken`, source: 'saw', note: waitedNote(first?.waitedFor) }));
+    const before = story.at(-1)?.key ?? '';
+    if ((before === 'queued' || before.startsWith('requeued-')) && heard !== null) {
+      // Time in the queue is a wait, never a silence.
+      if (entry.at! - heard > SILENCE_MS) story.push(row({ key: before === 'queued' ? 'waited' : `waited-${before}`, words: `Waited ${spanWords(entry.at! - heard)} to be taken`, source: 'saw', note: before === 'queued' ? waitedNote(first?.waitedFor) : null }));
     } else silence(entry.at!, `silence-${entry.key}`);
     story.push(entry);
     const covered = entry.key === 'steps' ? stepEnd! : entry.calls?.at(-1)?.recordedAt ?? entry.at!;
