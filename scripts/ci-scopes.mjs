@@ -37,6 +37,7 @@ export const HEAVY_AND_SCALE_SUITES = [
   'tests/myco-server/restore-job-pacing.test.ts',
   'tests/myco-server/restore-job.test.ts',
   'tests/myco-server/run-list-read-cost.test.ts',
+  'tests/myco-server/runs-page-cost.test.ts',
   'tests/myco-server/search-read-cost.test.ts',
   'tests/myco-server/session-deletion-cost.test.ts',
   'tests/myco-server/session-long.test.ts',

@@ -64,7 +64,10 @@ describe('Myco’s work now', () => {
       VALUES ('proj_1', 'd1', '[]', 1, ?, 'keep', 'kept apart', ?), ('proj_1', 'd2', '[]', 1, ?, 'resolved', 'merged', ?)`, [NOW - 5 * HOUR, NOW - 5 * HOUR, NOW - 3 * HOUR, NOW - 3 * HOUR]);
     h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
     h.run('proj_1', 'map_1', 'canopy-map', 'completed', NOW - 2 * HOUR);
-    const byWhat = new Map((await h.read()).waiting.map((item) => [item.what, item]));
+    const answer = await h.read();
+    const byWhat = new Map(answer.waiting.map((item) => [item.what, item]));
+    expect(answer.needsYou.filter((item) => item.key.startsWith('unclaimed:'))).toEqual([{ key: 'unclaimed:proj_1:title-summary', projectId: 'proj_1',
+      what: 'Title and summarize sessions has waited 60 minutes with no machine taking it', why: `One run is due. ${HELD_BY_WORDS.worker}`, at: NOW - HOUR, runId: 'run_title', retryAt: null }]);
     expect(byWhat.get('Learn from sessions')).toMatchObject({ projectId: 'proj_1', count: 1, why: HELD_BY_WORDS.budget, since: NOW - HOUR });
     expect(byWhat.get('Title and summarize sessions')?.why).toBe('No recently seen runner can currently take this work.');
     expect(byWhat.get('Curation')).toMatchObject({ why: 'Paused: 2 of 2 new curation groups started in the last 24 hours. The next starts as the earliest leaves that window; a group that failed retries meanwhile.', nextAt: NOW - 5 * HOUR + 24 * HOUR });
@@ -74,6 +77,15 @@ describe('Myco’s work now', () => {
     expect((await h.read({ all: true })).waiting.find((item) => item.what === 'Code map')).toMatchObject({
       projectId: 'proj_1', why: 'It refreshes every 6 hours. New session material has arrived since the last refresh.', nextAt: NOW - 2 * HOUR + 6 * HOUR });
     expect(byWhat.size).toBe(4);
+  });
+
+  it('names queued work no machine took, and not work its Project turned off or a busy fleet holds', async () => {
+    const h = harness();
+    h.sqlite.run("INSERT INTO project_capabilities VALUES ('proj_1','canopy',0,1,'fixture')");
+    h.run('proj_1', 'run_map', 'canopy-map', 'queued', NOW - HOUR, { heldBy: 'worker' });
+    h.run('proj_1', 'run_busy', 'title-summary', 'queued', NOW - HOUR, { heldBy: 'fleet' });
+    h.run('proj_2', 'run_title', 'title-summary', 'queued', NOW - HOUR, { heldBy: 'worker' });
+    expect((await h.read({ all: true }, NOW)).needsYou.filter((item) => item.key.startsWith('unclaimed:')).map((item) => item.key)).toEqual(['unclaimed:proj_2:title-summary']);
   });
 
   it('says a runner can’t sign in, and names a failure by its own refusal until a later run succeeds', async () => {
