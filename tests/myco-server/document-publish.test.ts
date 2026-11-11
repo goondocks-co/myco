@@ -13,7 +13,7 @@ import { blobHeld } from '@myco-server-worker/db/storage/blob-held.js';
 import { stoppedTranscripts, TRANSCRIPT_PARSE_MALFORMED_LIMIT, TRANSCRIPT_IDLE_MS } from '@myco-server-worker/ingest/parse.js';
 import { rereadTranscripts } from './helpers/reread.js';
 import { documentBody } from '@myco-server-worker/content/session-pages.js';
-import { expect, test } from 'bun:test';
+import { afterAll, expect, test } from 'bun:test';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { publishDocuments, RETIRED_OBJECT_GRACE_MS } from '@myco-server-worker/ingest/publish.js';
 import { LOCATE_CHUNKS_PER_WAKE, locatePrompts } from '@myco-server-worker/ingest/document-locators.js';
@@ -37,7 +37,10 @@ import { CONTENT_BLOB_LIMIT, measuredContentEnv } from '@myco-server-worker/core
 import { documentPublicationStoppedFinding, documentPublishFailureFinding } from '@myco-server-worker/core/attention-state.js';
 import { statusMetadata } from '@myco-server-worker/db/documents/failure-head.js';
 import { WAKE_JOB_STATEMENT_LIMIT } from '@myco-server-worker/core/tick.js';
-import { captureDocumentSession, captureDocumentTranscript, withDocumentStores } from './helpers/document-stores.js';
+import { captureDocumentSession, captureDocumentTranscript, documentFileStores } from './helpers/document-stores.js';
+
+const withDocumentStores = documentFileStores(20);
+afterAll(() => withDocumentStores.close());
 import { envelope, memoryBlobStore, uuid, readFixtureRecords } from './helpers/fixtures.js';
 import { MIN, tx, item, user, reply, call, output, limits, one, counters, ran, seedRecords, queueLocatorRepair } from './helpers/document-publication.js';
 
