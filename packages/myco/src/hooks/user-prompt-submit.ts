@@ -81,8 +81,8 @@ function advertised(run: Pick<HookRun, 'credential' | 'mycoHome'>, feature: type
 }
 
 /** The ask this prompt's text is sent with: a `v1` ask carries the marker, and its prompt's id (and its scheme) or why it names none. */
-function promptAsk(naming: PromptNaming, text: string, at: number): ContextAskRequest {
-  const base = { kind: 'prompt' as const, text: text.slice(0, PROMPT_ASK_MAX_CHARS), at };
+function promptAsk(naming: PromptNaming, text: string, at: number, agent: string): ContextAskRequest {
+  const base = { kind: 'prompt' as const, text: text.slice(0, PROMPT_ASK_MAX_CHARS), at, agent };
   if (naming.version === 'legacy') return { ...base, promptId: naming.promptId };
   return naming.shared
     ? { ...base, identity: ASK_IDENTITY_MARKER, promptId: naming.promptId, ...(naming.scheme === undefined ? {} : { promptScheme: naming.scheme }) }
@@ -182,7 +182,7 @@ export async function main(opts: HookMainOptions = {}) {
         },
         response: served.response,
         // The helper asks the Deployment with this prompt's text; its answer is the next prompt's context.
-        ask: promptAsk(naming, text, run.now()),
+        ask: promptAsk(naming, text, run.now(), agent),
       };
     };
     const optional = (): OptionalHookCapture => ({

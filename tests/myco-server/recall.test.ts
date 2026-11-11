@@ -31,6 +31,7 @@ import {
 } from '@myco-server-worker/core/recall.js';
 import { projectLine, sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
+import { hookRecordPages } from '@myco-server-worker/db/documents/turn-hooks.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { CURATE_LINE } from '@myco-server-worker/core/injection.js';
 import { type SporeInsert } from '@myco-server-worker/core/spores.js';
@@ -239,6 +240,51 @@ describe('the plan nudge', () => {
     ]);
     expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'plan-nudge', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'repeat' });
     expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'cortex', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'recorded' });
+  });
+});
+
+const TASK_NOTIFICATION = '<task-notification>\n<task-id>tid-1</task-id>\n<status>completed</status>\n<summary>selector finished</summary>\n</task-notification>';
+
+describe('a harness system notification', () => {
+  it('records an empty answer and serves nothing, and still serves a person the same spores', async () => {
+    const { db, sqlite } = store();
+    sqlite.query(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent) VALUES (?, 'sess_recorded', 'machine_1', 'fixture', ?, ?, 'claude-code')`).run(SCOPE.projectId, NOW, NOW);
+    await insertSpore(db, SCOPE, spore('a', { observationType: 'decision', content: 'recency is the whole selector' }));
+    const ask = (sessionId: string, promptId: string, text: string, agent?: string) => composePromptContext(
+      db, SCOPE, ON, true,
+      { sessionId, admission: admit(SCOPE.projectId, sessionId), promptId, text, now: NOW, ...(agent === undefined ? {} : { agent }) },
+      async () => { throw new Error('selection ran'); },
+    );
+
+    const held = await ask(SESSION, 'note', TASK_NOTIFICATION, 'claude-code');
+    expect(held).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['notification'] });
+    const stored = (await hookRecordPages(db, SCOPE.projectId, SESSION, ['note'])).answers[0];
+    expect({
+      outcome: stored?.outcome,
+      skipped: JSON.parse(stored?.skipped ?? 'null'),
+      failures: JSON.parse(stored?.failures ?? 'null'),
+      chars: stored?.context_chars,
+    }).toEqual({ outcome: 'empty', skipped: ['notification'], failures: [], chars: 0 });
+
+    const person = await composePromptContext(
+      db, SCOPE, ON, true,
+      { sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'person', text: `${PROMPT}\n${TASK_NOTIFICATION}`, now: NOW, agent: 'claude-code' },
+      semanticRecall(db, SCOPE),
+    );
+    expect(person.context).toContain('recency is the whole selector');
+    expect(person.parts).toEqual([{ kind: 'spores', sporeIds: ['a'], planIds: [] }]);
+    expect(person.skipped).not.toContain('notification');
+
+    const undeclared = await composePromptContext(
+      db, SCOPE, ON, true,
+      { sessionId: 'sess_codex', admission: admit(SCOPE.projectId, 'sess_codex'), promptId: 'codex', text: TASK_NOTIFICATION, now: NOW, agent: 'codex' },
+      semanticRecall(db, SCOPE),
+    );
+    expect(undeclared.context).toContain('recency is the whole selector');
+    expect(undeclared.skipped).not.toContain('notification');
+
+    const recorded = await ask('sess_recorded', 'recorded', TASK_NOTIFICATION);
+    expect(recorded).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['notification'] });
   });
 });
 
@@ -858,6 +904,21 @@ describe('POST /context/prompt', () => {
     const answer = await response.json();
     expect(contextTiming(response).total).toBeGreaterThanOrEqual(0);
     expect(answer).toEqual({ persisted: true, answerId: expect.any(String), context: '', parts: [], skipped: ['capability'] });
+  });
+
+  it('abstains when the hook names Claude Code on a task notification', async () => {
+    const { e, token } = await member();
+    admit(e);
+    const response = await worker.fetch(post(token, { sessionId: 's1', promptId: 'n1', text: TASK_NOTIFICATION, agent: 'claude-code' }), e.env);
+    expect(response.status).toBe(200);
+    const answer = await response.json() as { persisted: boolean; context: string; parts: unknown[]; skipped: string[]; answerId: string };
+    expect(answer).toEqual({ persisted: true, answerId: expect.any(String), context: '', parts: [], skipped: ['notification'] });
+    const stored = (await hookRecordPages(e.db, 'proj_1', 's1', ['n1'])).answers[0];
+    expect({ outcome: stored?.outcome, skipped: JSON.parse(stored?.skipped ?? 'null'), failures: JSON.parse(stored?.failures ?? 'null') })
+      .toEqual({ outcome: 'empty', skipped: ['notification'], failures: [] });
+    const person = await worker.fetch(post(token, { sessionId: 's1', promptId: 'u1', text: `${PROMPT}\n${TASK_NOTIFICATION}`, agent: 'claude-code' }), e.env);
+    const served = await person.json() as { skipped: string[] };
+    expect(served.skipped).not.toContain('notification');
   });
 
   it('reports only total when the prompt is too short for recall', async () => {

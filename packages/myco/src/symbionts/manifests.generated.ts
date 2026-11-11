@@ -538,6 +538,9 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "timestamp",
         "pasted_content"
       ],
+      "notificationEnvelopes": [
+        "task-notification"
+      ],
       "transcriptTimestamps": "recorded",
       "prompts": {
         "shapes": [

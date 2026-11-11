@@ -206,6 +206,12 @@ const CaptureManifestSchema = z.object({
   rules: z.array(CaptureRuleSchema).default([]),
   /** Envelope tags used only to present stored prompts, without changing capture rules. */
   displayEnvelopeTags: z.array(z.string().regex(/^[\w-]+$/)).default([]),
+  /**
+   * Tags of system-notification envelopes. `origin.kind` is the tag; `turnOrigin`
+   * is the tag with hyphens written as underscores. A prompt that opens with one
+   * is not injected. Absent means this harness declares none.
+   */
+  notificationEnvelopes: z.array(z.string().regex(/^[\w-]+$/)).optional(),
   /** Whether transcript ordering instants are recorded by the harness or synthesized by the parser. */
   transcriptTimestamps: z.enum(['recorded', 'synthetic']).default('recorded'),
   prompts: CapturePromptsSchema.optional(),

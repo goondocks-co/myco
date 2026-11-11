@@ -198,6 +198,17 @@ describe('claude-v2 ownership', () => {
     ]);
   });
 
+  it('labels a task notification from the opener fields the transcript records', async () => {
+    const events = await parse([
+      user('n1', 'N1', '<task-notification><status>completed</status></task-notification>', { origin: { kind: 'task-notification' } }),
+      user('n2', 'N2', '<task-notification><status>completed</status></task-notification>', { turnOrigin: 'task_notification' }),
+    ]);
+    expect(events.filter((e) => e.kind === 'prompt').map((e) => [e.payload.promptKind, e.payload.origin])).toEqual([
+      ['task_notification', 'system'],
+      ['task_notification', 'system'],
+    ]);
+  });
+
   it('counts a turn opener whose field has an unknown shape, and never drops it as marker text', async () => {
     const events = await parse([
       user('m1', 'K1', [{ type: 'text', text: '[Request interrupted by user]' }], { origin: 'human' }),

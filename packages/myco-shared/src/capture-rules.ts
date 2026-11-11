@@ -11,6 +11,8 @@ export interface CaptureRuleBundle {
   displayEnvelopeTags?: readonly string[];
   /** The tags whose envelopes in a reply hold a plan, from its manifest's `capture.planTags`. */
   planTags?: readonly string[];
+  /** Tags of system-notification envelopes this harness declares. Absent means it declares none. */
+  notificationEnvelopes?: readonly string[];
   transcriptTimestamps?: 'recorded' | 'synthetic';
   /** How the agent's prompts are named, from its manifest's `promptIdentity`. */
   promptIdentity: PromptIdentityDeclaration;
@@ -29,6 +31,18 @@ export function promptIdentityOf(bundles: readonly CaptureRuleBundle[], agent: s
 
 export function sourceTimestampsRecorded(bundles: readonly CaptureRuleBundle[], agent: string | null): boolean {
   return bundles.find(bundle => bundle.name === agent)?.transcriptTimestamps !== 'synthetic';
+}
+
+/** The notification envelopes `agent` declares, or none when it declares none or no manifest names it. */
+export function notificationEnvelopes(bundles: readonly CaptureRuleBundle[], agent: string | null): readonly string[] {
+  if (agent === null || agent === '') return [];
+  return bundles.find((bundle) => bundle.name === agent)?.notificationEnvelopes ?? [];
+}
+
+/** A prompt whose text opens with a system-notification envelope its harness declares. */
+export function isHarnessSystemNotification(bundles: readonly CaptureRuleBundle[], agent: string | null, text: string): boolean {
+  const tags = notificationEnvelopes(bundles, agent);
+  return tags.length > 0 && envelopeTagAtStart(text, tags);
 }
 
 export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boolean {

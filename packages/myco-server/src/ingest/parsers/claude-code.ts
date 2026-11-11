@@ -30,7 +30,7 @@
  */
 import { toolResultDeclarationOf, toolResultFailed } from '@goondocks/myco-shared/tool-result';
 import { MAIN_THREAD, type ClaudePromptShape, type PromptClaim } from '@goondocks/myco-shared/prompt-identity';
-import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
+import { evaluatePromptRules, notificationEnvelopes } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import type { WirePromptOrigin } from '@goondocks/myco-shared/member-protocol';
 import {
@@ -64,8 +64,12 @@ const INTERRUPT_MARKERS: ReadonlySet<string> = new Set(['[Request interrupted by
 
 /** Who opened a turn, as a record's `origin.kind`, `turnOrigin` or `promptSource` names it. */
 type OpenerClass = 'human' | 'notification' | 'peer' | 'coordinator' | 'scheduled' | 'sdk';
-const ORIGIN_KINDS: Readonly<Record<string, OpenerClass>> = { human: 'human', 'task-notification': 'notification', peer: 'peer', coordinator: 'coordinator' };
-const TURN_ORIGINS: Readonly<Record<string, OpenerClass>> = { human: 'human', task_notification: 'notification', peer: 'peer', scheduled: 'scheduled', sdk: 'sdk' };
+/** This harness's notification envelopes. `origin.kind` is the tag; `turnOrigin` writes its hyphens as underscores. */
+const NOTIFICATION_TAGS = notificationEnvelopes(CAPTURE_RULE_BUNDLES, 'claude-code');
+const notificationClass = (key: (tag: string) => string): Record<string, OpenerClass> =>
+  Object.fromEntries(NOTIFICATION_TAGS.map((tag): [string, OpenerClass] => [key(tag), 'notification']));
+const ORIGIN_KINDS: Readonly<Record<string, OpenerClass>> = { human: 'human', ...notificationClass((tag) => tag), peer: 'peer', coordinator: 'coordinator' };
+const TURN_ORIGINS: Readonly<Record<string, OpenerClass>> = { human: 'human', ...notificationClass((tag) => tag.replace(/-/g, '_')), peer: 'peer', scheduled: 'scheduled', sdk: 'sdk' };
 const PROMPT_SOURCES: Readonly<Record<string, OpenerClass>> = { typed: 'human', queued: 'human', suggestion_accepted: 'human', sdk: 'sdk', system: 'notification' };
 const CLASS_LABEL: Readonly<Record<OpenerClass, { kind: string; origin: WirePromptOrigin }>> = {
   human: { kind: 'user_prompt', origin: 'user' },
