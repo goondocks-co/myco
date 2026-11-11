@@ -30,7 +30,7 @@ it('materializes a staging into a verified artifact that preserves rows, schema 
         expect(rows(recovered)).toBe(rows(f.source.sqlite));
       }
       expect(recovered.query('SELECT * FROM recovery_fixture').get()).toEqual({ id: 3, body: f.body, bytes: f.bytes });
-      expect(recovered.query("SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'Recovered'").all()).toHaveLength(1);
+      expect(recovered.query("SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH 'Recovered'").all()).toHaveLength(1);
       expect(recovered.query('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally { recovered.close(); }
 
