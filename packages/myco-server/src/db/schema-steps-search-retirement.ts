@@ -28,8 +28,7 @@ export const RETIRED_SEARCH_TABLES: readonly string[] = [...RECORD_INDEXES, 'sea
  * Unified search reads one index; these steps drop the structures it replaced. The triggers go first, so session, spore,
  * plan and card writes stop maintaining them at once, with the vocabularies over the indexes, the revision counters and
  * the indexer's partial plan index. The word indexes drop in the next step, and the indexer's chunks, the largest of
- * these tables, then its queue in the last, child ahead of parent. Each step is one transaction; on a local D1 holding
- * 100k sessions and spores and 200k cards the slowest statement, the chunks, took 170 ms.
+ * these tables, then its queue in the last, child ahead of parent. Each step is one transaction.
  */
 export const SEARCH_RETIREMENT_STEPS: readonly SchemaStep[] = [
   {
