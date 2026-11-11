@@ -15,6 +15,7 @@ import { Database } from 'bun:sqlite';
 import { CAPTURE_RECEIPT_GRAIN_MS, namedCaptureHeadSelect, unnamedCaptureHeadSelect } from '@myco-server-worker/db/schema-v708.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import type { CaptureRecencyRow } from '@myco-server-worker/db/capture/recency.js';
 import { captureRecencyWindow, CAPTURE_WINDOW_MS } from '@myco-server-worker/read/capture.js';
 
 /** The member-role account the tests act as, as the capture rows name it. */
@@ -107,7 +108,7 @@ describe('capture recency', () => {
       expect(latest).toBeDefined();
       expect(namedPlan.some(row => row.parent === latest?.parent && row.detail.includes('TEMP B-TREE'))).toBe(false);
       const matches = async () => {
-        const expected = sqlite.query<Record<string, unknown>, [number]>(`SELECT machine_id,agent,last_received_at AS last_event_at,project_id FROM (
+        const expected = sqlite.query<CaptureRecencyRow, [number]>(`SELECT machine_id,agent,last_received_at AS last_event_at,project_id FROM (
           SELECT *,ROW_NUMBER() OVER (PARTITION BY machine_id,agent ORDER BY last_received_at / ? DESC,project_id,session_id) AS position
           FROM sessions WHERE machine_id IS NOT NULL) WHERE position=1 ORDER BY last_event_at DESC,machine_id,agent`).all(CAPTURE_RECEIPT_GRAIN_MS);
         expect(await captureRecencyWindow(db, 100)).toEqual(expected);

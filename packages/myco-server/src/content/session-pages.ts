@@ -5,16 +5,13 @@ import { recordMycoFields } from './tool-rollup.js';
  * read once in a request is not read again.
  */
 import type { ContentStore } from '../core/adapters.js';
-import { registeredObjectKeySql } from '../db/storage/registered-object-key.js';
 import { toolInputPreview } from '../core/tool-input.js';
 import type { DocRecord, Page } from './document.js';
+import { liveChunk, liveDocumentGeneration, ownerLastPage, ownerPageRows, pageChunksAfter, pageChunksBefore } from '../db/documents/live-document.js';
 import { readBodyChunk, readPageChunk, type ChunkRow } from './document-reader.js';
 
 /** Pages of one turn a turn read opens at most. */
 export const TURN_PAGES = 4;
-
-const CHUNK_COLUMNS = `c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key`;
-const LIVE = `FROM session_documents d JOIN session_chunks c ON c.project_id=d.project_id AND c.session_id=d.session_id AND c.generation=d.generation`;
 
 /** Where a record sits: its owner's page, in the live generation. */
 export interface PageLocator { generation: number; owner: string; page: number; revision?: string }
@@ -29,11 +26,12 @@ export class SessionDocument {
 
   private constructor(private readonly env: ContentStore, readonly projectId: string, readonly sessionId: string, readonly generation: number) {}
 
+  private get ref() { return { project: this.projectId, session: this.sessionId, generation: this.generation }; }
+
   /** The live document of a session, or null while it has none. */
   static async open(env: ContentStore, projectId: string, sessionId: string): Promise<SessionDocument | null> {
-    const row = await env.db.prepare(`SELECT generation FROM session_documents WHERE project_id=? AND session_id=? AND state='live'`)
-      .bind(projectId, sessionId).first<{ generation: number | null }>();
-    return row?.generation == null ? null : new SessionDocument(env, projectId, sessionId, row.generation);
+    const generation = await liveDocumentGeneration(env.db, projectId, sessionId);
+    return generation === null ? null : new SessionDocument(env, projectId, sessionId, generation);
   }
 
   private pagesIn(row: ChunkRow): Promise<LocatedPage[]> {
@@ -48,17 +46,12 @@ export class SessionDocument {
 
   /** The number of an owner's last page, or null when it holds none. */
   async lastPage(owner: string): Promise<number | null> {
-    const row = await this.env.db.prepare(`SELECT MAX(page) AS page FROM session_pages WHERE project_id=? AND session_id=? AND generation=? AND owner=?`)
-      .bind(this.projectId, this.sessionId, this.generation, owner).first<{ page: number | null }>();
-    return row?.page ?? null;
+    return ownerLastPage(this.env.db, this.ref, owner);
   }
 
   /** An owner's pages from `from` on, at most `limit`, each with its records; `more` says whether pages remain. */
   async ownerPages(owner: string, from: number, limit: number): Promise<{ pages: LocatedPage[]; more: boolean }> {
-    const rows = (await this.env.db.prepare(`SELECT p.page,${CHUNK_COLUMNS} ${LIVE}
-        JOIN session_pages p ON p.project_id=c.project_id AND p.session_id=c.session_id AND p.generation=c.generation AND p.chunk_no=c.chunk_no
-      WHERE d.project_id=? AND d.session_id=? AND d.state='live' AND d.generation=? AND p.owner=? AND p.page>=? ORDER BY p.page LIMIT ?`)
-      .bind(this.projectId, this.sessionId, this.generation, owner, from, limit + 1).all<ChunkRow & { page: number }>()).results;
+    const rows = await ownerPageRows(this.env.db, this.ref, { owner, from, limit: limit + 1 });
     const pages: LocatedPage[] = [];
     for (const row of rows.slice(0, limit)) {
       const page = (await this.pagesIn(row)).find((held) => held.owner === owner && held.page === row.page);
@@ -70,9 +63,7 @@ export class SessionDocument {
 
   /** The page chunks after `after`, in chunk order, at most `limit`, each with its pages. */
   async chunksAfter(after: number, limit: number): Promise<{ chunks: { chunkNo: number; pages: LocatedPage[] }[]; more: boolean }> {
-    const rows = (await this.env.db.prepare(`SELECT ${CHUNK_COLUMNS} ${LIVE}
-      WHERE d.project_id=? AND d.session_id=? AND d.state='live' AND d.generation=? AND c.kind='page' AND c.chunk_no>? ORDER BY c.chunk_no LIMIT ?`)
-      .bind(this.projectId, this.sessionId, this.generation, after, limit + 1).all<ChunkRow>()).results;
+    const rows = await pageChunksAfter(this.env.db, this.ref, { after, limit: limit + 1 });
     const chunks = [];
     for (const row of rows.slice(0, limit)) chunks.push({ chunkNo: row.chunk_no, pages: await this.pagesIn(row) });
     return { chunks, more: rows.length > limit };
@@ -80,9 +71,7 @@ export class SessionDocument {
 
   /** The page chunks before `before`, newest first, at most `limit`, each with its pages. */
   async chunksBefore(before: number, limit: number): Promise<{ chunks: { chunkNo: number; pages: LocatedPage[] }[]; more: boolean }> {
-    const rows = (await this.env.db.prepare(`SELECT ${CHUNK_COLUMNS} ${LIVE}
-      WHERE d.project_id=? AND d.session_id=? AND d.state='live' AND d.generation=? AND c.kind='page' AND c.chunk_no<? ORDER BY c.chunk_no DESC LIMIT ?`)
-      .bind(this.projectId, this.sessionId, this.generation, before, limit + 1).all<ChunkRow>()).results;
+    const rows = await pageChunksBefore(this.env.db, this.ref, { before, limit: limit + 1 });
     const chunks = [];
     for (const row of rows.slice(0, limit)) chunks.push({ chunkNo: row.chunk_no, pages: await this.pagesIn(row) });
     return { chunks, more: rows.length > limit };
@@ -92,9 +81,7 @@ export class SessionDocument {
   async body(record: DocRecord, field: string): Promise<string | null> {
     const ref = record.bodies?.[field];
     if (ref === undefined) return typeof record[field] === 'string' ? (record[field] as string) : null;
-    const row = await this.env.db.prepare(`SELECT ${CHUNK_COLUMNS} ${LIVE}
-      WHERE d.project_id=? AND d.session_id=? AND d.state='live' AND d.generation=? AND c.chunk_no=?`)
-      .bind(this.projectId, this.sessionId, this.generation, ref.chunk).first<ChunkRow>();
+    const row = await liveChunk(this.env.db, this.ref, ref.chunk);
     if (row === null) throw new Error('document_object_missing');
     this.gets += 1;
     return readBodyChunk(this.env, row);

@@ -50,25 +50,12 @@ export function clampLimit(limit: number | undefined): number {
   return Math.min(limit, MAX_PAGE);
 }
 
-/** How a keyset page is ordered: the column no later write moves, the tie-breaking id, and the direction. */
-interface KeysetSpec {
-  order: string;
-  id: string;
-  direction: 'ASC' | 'DESC';
-}
-
-/** The page size and the cursor's predicate for one keyset read, or null for a malformed cursor — refused rather than treated as absent. `where` is empty on page one; `params` bind it. */
-export function keyset(opts: { limit?: number; cursor?: string }, spec: KeysetSpec): { limit: number; where: string; params: readonly (number | string)[] } | null {
+/** The page size and the key the cursor names, or null for a malformed cursor — refused rather than treated as absent. `after` is null on page one. */
+export function keysetPage(opts: { limit?: number; cursor?: string }): { limit: number; after: { createdAt: number; id: string } | null } | null {
   const limit = clampLimit(opts.limit);
-  if (opts.cursor === undefined) return { limit, where: '', params: [] };
+  if (opts.cursor === undefined) return { limit, after: null };
   const after = decodeCursor(opts.cursor);
-  if (after === null) return null;
-  const cmp = spec.direction === 'DESC' ? '<' : '>';
-  return {
-    limit,
-    where: `${spec.order} ${cmp}= ? AND (${spec.order} ${cmp} ? OR (${spec.order} = ? AND ${spec.id} ${cmp} ?))`,
-    params: [after.createdAt, after.createdAt, after.createdAt, after.id],
-  };
+  return after === null ? null : { limit, after };
 }
 
 /** The most ids one statement names in an `IN (…)` list. The hosted store admits 100 bound parameters per statement; the scope's own binding takes one, and a margin keeps a statement that binds a few more still under the ceiling. */

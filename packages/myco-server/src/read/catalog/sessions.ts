@@ -1,14 +1,12 @@
 import { readSessionDetail } from '../../db/sessions/publication.js';
-import type { PreparedStatement as sessions_import_PreparedStatement } from "../../core/adapters.js";
+import {
+  documentCountRows, existingProjectIds, heldSessionRows, importerOwnedSessions, projectExists, projectListRows, sessionCountsRow, sessionDurationRow,
+  sessionHasTitle, sessionInProject, sessionLifecycleRow, sessionOnMachine, sessionsHoldingImportedPrompts,
+} from '../../db/sessions/session-reads.js';
 import type { RelationalStore as sessions_import_RelationalStore } from "../../core/adapters.js";
-import type { RunResult as sessions_import_RunResult } from "../../core/adapters.js";
-import { inListChunks as sessions_import_inListChunks } from "../scope.js";
 import { page as sessions_import_page, clampLimit as sessions_import_clampLimit, decodeCursor as sessions_import_decodeCursor } from "../scope.js";
 import { decodeSessionsAcrossCursor as sessions_import_decodeAcrossCursor, sessionsAcrossPage as sessions_import_acrossPage } from "../project-cursor.js";
 import {
-  firstPromptSql as sessions_import_firstPromptSql,
-  PRESENTED_ENDED_AT as sessions_import_PRESENTED_ENDED_AT,
-  PRESENTED_STARTED_AT as sessions_import_PRESENTED_STARTED_AT,
   readSessionPage as sessions_import_readSessionPage,
   SESSION_OCCURRED_AT as sessions_import_SESSION_OCCURRED_AT,
   WORKING_CAP_MS as sessions_import_WORKING_CAP_MS,
@@ -16,11 +14,8 @@ import {
 import type { Page as sessions_import_Page } from "../scope.js";
 import type { ProjectSet as sessions_import_ProjectSet } from "../scope.js";
 import type { ReadScope as sessions_import_ReadScope } from "../scope.js";
-import { notTombstonedSql as sessions_import_notTombstonedSql } from "../../db/session-read-model.js";
-import { NOT_TOMBSTONED_PARAMS as sessions_import_NOT_TOMBSTONED_PARAMS } from "../../db/session-read-model.js";
 import { CAPTURE_RULE_BUNDLES as sessions_import_CAPTURE_RULE_BUNDLES } from "@goondocks/myco-shared/capture-rules-data";
 import { sourceTimestampsRecorded as sessions_import_sourceTimestampsRecorded } from "@goondocks/myco-shared/capture-rules";
-import { queryRows } from './shared.js';
 
 interface sessions_ProjectRow {
   projectId: string;
@@ -94,10 +89,6 @@ interface sessions_SessionCounts {
 /** The longest label the fallback rule produces. */
 const sessions_LABEL_MAX_CHARS = 80;
 
-const sessions_firstPromptSql = sessions_import_firstPromptSql;
-
-const sessions_FIRST_PROMPT_SQL = sessions_firstPromptSql('s');
-
 /** What a label shows for a session with no title, typed prompt or agent, where an id fragment must never reach the reader. */
 const sessions_UNTITLED_SESSION_LABEL = 'Untitled session';
 
@@ -125,12 +116,7 @@ function sessions_relatedSessionLabel(title: string | null, firstPrompt: string 
   return sessions_namedLabel(title, firstPrompt, agent) ?? sessions_UNTITLED_SESSION_LABEL;
 }
 
-const sessions_PRESENTED_STARTED_AT = sessions_import_PRESENTED_STARTED_AT;
-const sessions_PRESENTED_ENDED_AT = sessions_import_PRESENTED_ENDED_AT;
 const sessions_WORKING_CAP_MS = sessions_import_WORKING_CAP_MS;
-
-/** A deleted session is absent from session reads, project counts, and latest activity. */
-const sessions_LIVE_SESSION = sessions_import_notTombstonedSql('s');
 
 const sessions_text = (value: unknown): string | null => (value as string | null) ?? null;
 
@@ -168,29 +154,17 @@ function sessions_toSession(row: Record<string, unknown>, nowMs?: number): sessi
   };
 }
 
-/** The Project listing reads one maintained count and at most one live activity receipt per Project. */
-function sessions_listProjectsSql(includeArchived = false): string {
-  return `SELECT p.project_id, p.name, p.created_at, p.archived_at, p.archived_by,
-    COALESCE(c.session_count, 0) AS session_count,
-    (SELECT f.last_received_at FROM session_read_facts f
-      WHERE f.project_id = p.project_id AND f.has_session = 1 AND f.tombstoned = 0
-      ORDER BY f.last_received_at DESC LIMIT 1) AS last_activity_at
-    FROM projects p LEFT JOIN project_session_counts c ON c.project_id = p.project_id
-    ${includeArchived ? '' : 'WHERE p.archived_at IS NULL'}
-    ORDER BY last_activity_at DESC NULLS LAST, p.created_at DESC`;
-}
-
 /** Every project with its live session count and most recent live receipt, most recently active first; a project with no live session still lists with a count of zero. Unscoped: the caller decides which projects its credential may see. */
 async function sessions_listProjects(db: sessions_import_RelationalStore, opts: { includeArchived?: boolean } = {}): Promise<sessions_ProjectRow[]> {
-  const { results } = await db.prepare(sessions_listProjectsSql(opts.includeArchived)).all<Record<string, unknown>>();
-  return results.map((row) => ({
-    projectId: row.project_id as string,
-    name: row.name as string,
-    createdAt: row.created_at as number,
-    sessionCount: row.session_count as number,
-    lastActivityAt: (row.last_activity_at as number | null) ?? null,
-    archivedAt: (row.archived_at as number | null) ?? null,
-    archivedBy: (row.archived_by as string | null) ?? null,
+  const rows = await projectListRows(db, opts.includeArchived === true);
+  return rows.map((row) => ({
+    projectId: row.project_id,
+    name: row.name,
+    createdAt: row.created_at,
+    sessionCount: row.session_count,
+    lastActivityAt: row.last_activity_at ?? null,
+    archivedAt: row.archived_at ?? null,
+    archivedBy: row.archived_by ?? null,
   }));
 }
 
@@ -313,12 +287,7 @@ function sessions_mergeSessionPages(a: Record<string, unknown>[], b: Record<stri
 
 /** Elapsed source time, or observed time when a recorded endpoint anchors it. Synthetic transcript bounds establish neither. */
 async function sessions_sessionDurationMs(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<number | null> {
-  const row = await db.prepare(`SELECT agent, started_at, ended_at, ended_by, occurred_started_at, occurred_ended_at,
-    first_received_at, last_received_at FROM sessions WHERE project_id = ? AND session_id = ?`)
-    .bind(scope.projectId, sessionId).first<{
-      agent: string | null; started_at: number | null; ended_at: number | null; ended_by: string | null;
-      occurred_started_at: number | null; occurred_ended_at: number | null; first_received_at: number; last_received_at: number;
-    }>();
+  const row = await sessionDurationRow(db, scope.projectId, sessionId);
   if (row === null) return null;
   const recorded = sessions_import_sourceTimestampsRecorded(sessions_import_CAPTURE_RULE_BUNDLES, row.agent);
   const start = recorded ? row.occurred_started_at ?? row.started_at : row.occurred_started_at === null ? row.started_at : null;
@@ -341,39 +310,30 @@ interface sessions_SessionLifecycle {
 }
 
 async function sessions_sessionLifecycle(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<sessions_SessionLifecycle | null> {
-  const row = await db.prepare(`SELECT s.machine_id, s.created_by_token_id, s.started_at, s.ended_at, s.first_received_at
-                FROM sessions s WHERE s.project_id = ? AND s.session_id = ? AND ${sessions_LIVE_SESSION}`)
-    .bind(scope.projectId, sessionId)
-    .first<Record<string, unknown>>();
+  const row = await sessionLifecycleRow(db, scope.projectId, sessionId);
   return row === null ? null : {
-    machineId: sessions_text(row.machine_id),
-    createdByTokenId: row.created_by_token_id as string,
-    startedAt: sessions_num(row.started_at),
-    endedAt: sessions_num(row.ended_at),
-    firstReceivedAt: row.first_received_at as number,
+    machineId: row.machine_id,
+    createdByTokenId: row.created_by_token_id,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    firstReceivedAt: row.first_received_at,
   };
 }
 
 /** The counts a list shows beside each session: the counters its document's catalog row keeps. */
 type sessions_ListCounts = Omit<sessions_SessionCounts, 'attachments'>;
 
-/** The catalog counters of every named session, one statement per run of ids; a session with no live document counts zero. */
+/** The catalog counters of every named session; a session with no live document counts zero. */
 async function sessions_sessionCountsFor(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): Promise<Map<string, sessions_ListCounts>> {
-  const read = sessions_countStatements(db, scope, sessionIds);
-  return read.parse(read.statements.length === 0 ? [] : await db.batch(read.statements));
+  const [rows] = await documentCountRows(db, [{ project: scope.projectId, sessions: sessionIds }]);
+  return sessions_countsOf(sessionIds, rows ?? []);
 }
 
-/** The statements `sessionCountsFor` sends, and how their results read, so a caller may send them in a batch of its own. */
-function sessions_countStatements(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): { statements: sessions_import_PreparedStatement[]; parse: (results: readonly sessions_import_RunResult[]) => Promise<Map<string, sessions_ListCounts>> } {
-  const statements = sessions_import_inListChunks(sessionIds).map(ids => db.prepare(`SELECT d.session_id, d.prompts, d.tool_calls, d.replies, d.plans
-    FROM session_documents d WHERE d.project_id = ? AND d.session_id IN (SELECT value FROM json_each(?)) AND d.state = 'live'`).bind(scope.projectId, JSON.stringify(ids)));
-  return { statements, parse: async results => {
-    const out = new Map<string, sessions_ListCounts>(sessionIds.map(id => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0 }]));
-    for (const result of results) for (const row of result.results as Record<string, unknown>[]) out.set(String(row.session_id), {
-      prompts: Number(row.prompts), toolCalls: Number(row.tool_calls), responses: Number(row.replies), plans: Number(row.plans),
-    });
-    return out;
-  } };
+/** The counters of the sessions whose documents the rows describe; every other named session counts zero. */
+function sessions_countsOf(sessionIds: readonly string[], rows: readonly { session_id: string; prompts: number; tool_calls: number; replies: number; plans: number }[]): Map<string, sessions_ListCounts> {
+  const out = new Map<string, sessions_ListCounts>(sessionIds.map(id => [id, { prompts: 0, toolCalls: 0, responses: 0, plans: 0 }]));
+  for (const row of rows) out.set(String(row.session_id), { prompts: Number(row.prompts), toolCalls: Number(row.tool_calls), responses: Number(row.replies), plans: Number(row.plans) });
+  return out;
 }
 
 /** A session row with the counts the rail shows beside it. */
@@ -413,12 +373,9 @@ async function sessions_listSessionSummariesAcrossImpl(db: sessions_import_Relat
   const listed = await sessions_listSessionsAcross(db, set, { fidelity: 'any', now: nowMs, ...opts });
   const byProject = new Map<string, string[]>();
   for (const row of listed.rows) byProject.set(row.projectId, [...(byProject.get(row.projectId) ?? []), row.sessionId]);
-  const reads = [...byProject].map(([projectId, ids]) => ({ projectId, counts: sessions_countStatements(db, { projectId }, ids) }));
-  const statements = reads.flatMap((r) => r.counts.statements);
-  const results = statements.length === 0 ? [] : await db.batch(statements);
-  const counts = new Map<string, Map<string, sessions_ListCounts>>();
-  let at = 0;
-  for (const read of reads) counts.set(read.projectId, await read.counts.parse(results.slice(at, at += read.counts.statements.length)));
+  const projects = [...byProject];
+  const found = await documentCountRows(db, projects.map(([project, sessions]) => ({ project, sessions })));
+  const counts = new Map<string, Map<string, sessions_ListCounts>>(projects.map(([projectId, ids], at) => [projectId, sessions_countsOf(ids, found[at]!)]));
   return {
     cursor: listed.cursor,
     rows: listed.rows.map((row) => {
@@ -429,26 +386,16 @@ async function sessions_listSessionSummariesAcrossImpl(db: sessions_import_Relat
 }
 
 /** True when the project exists. The core answers what is there; a facade decides whether its caller may see it. */
-async function sessions_projectExists(db: sessions_import_RelationalStore, projectId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM projects WHERE project_id = ?`).bind(projectId).first<{ present: number }>();
-  return row !== null;
-}
+const sessions_projectExists = projectExists;
 
-/** Which of these Project ids name a Project, in one statement. At most `MAX_IN_LIST` ids. */
+/** Which of these Project ids name a Project, in one statement. */
 async function sessions_existingProjects(db: sessions_import_RelationalStore, projectIds: readonly string[]): Promise<Set<string>> {
-  if (projectIds.length === 0) return new Set();
-  const { results } = await db.prepare(`SELECT project_id FROM projects WHERE project_id IN (${projectIds.map(() => '?').join(', ')})`)
-    .bind(...projectIds)
-    .all<{ project_id: string }>();
-  return new Set(results.map((r) => r.project_id));
+  return new Set(await existingProjectIds(db, projectIds));
 }
 
 /** True when the session exists inside the scope. `sessions` is keyed `(project_id, session_id)`, so containment is the only safe question to ask of a session id. */
 async function sessions_sessionInScope(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND ${sessions_import_NOT_TOMBSTONED_PARAMS}`)
-    .bind(scope.projectId, sessionId, scope.projectId, sessionId)
-    .first<{ present: number }>();
-  return row !== null;
+  return sessionInProject(db, scope.projectId, sessionId);
 }
 
 /**
@@ -459,67 +406,30 @@ async function sessions_sessionInScope(db: sessions_import_RelationalStore, scop
  * learns nothing about whether that id exists.
  */
 async function sessions_sessionHeldByMachine(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string, machineId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND machine_id = ? AND ${sessions_import_NOT_TOMBSTONED_PARAMS}`)
-    .bind(scope.projectId, sessionId, machineId, scope.projectId, sessionId)
-    .first<{ present: number }>();
-  return row !== null;
+  return sessionOnMachine(db, scope.projectId, sessionId, machineId);
 }
 
 /** True when the Project holds this session, whichever machine captured it: what a run's dispatch-named session is checked against before a write names it. */
-async function sessions_projectHoldsSession(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS present FROM sessions WHERE project_id = ? AND session_id = ? AND ${sessions_import_NOT_TOMBSTONED_PARAMS}`)
-    .bind(scope.projectId, sessionId, scope.projectId, sessionId)
-    .first<{ present: number }>();
-  return row !== null;
-}
+const sessions_projectHoldsSession = async (db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<boolean> => sessionInProject(db, scope.projectId, sessionId);
 
 /** Whether a session inside the scope carries a title. The row a titling run owed, as the store holds it. */
 async function sessions_sessionCarriesTitle(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<boolean> {
-  const row = await db.prepare(`SELECT 1 AS one FROM sessions WHERE project_id = ? AND session_id = ? AND title IS NOT NULL`)
-    .bind(scope.projectId, sessionId)
-    .first<{ one: number }>();
-  return row !== null;
+  return sessionHasTitle(db, scope.projectId, sessionId);
 }
 
 /** Which of these sessions the Project holds a row for, whatever their state. */
 async function sessions_heldSessionIds(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[]): Promise<Set<string>> {
-  const out = new Set<string>();
-  for (const run of sessions_import_inListChunks(sessionIds)) {
-    const { results } = await db.prepare(`SELECT session_id FROM sessions WHERE project_id = ? AND session_id IN (${run.map(() => '?').join(', ')})`)
-      .bind(scope.projectId, ...run)
-      .all<{ session_id: string }>();
-    for (const r of results) out.add(r.session_id);
-  }
-  return out;
+  return new Set(await heldSessionRows(db, scope.projectId, sessionIds));
 }
 
 /** Sessions whose original facts were recorded by a named importer. */
 async function sessions_sessionsOwnedByImporter(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[], producer: string): Promise<Set<string>> {
-  const out = new Set<string>();
-  for (const run of sessions_import_inListChunks(sessionIds)) {
-    const { results } = await db.prepare(`SELECT s.session_id FROM sessions s JOIN events e ON e.project_id = s.project_id AND e.event_id = s.facts_event_id
-       WHERE s.project_id = ? AND s.session_id IN (${run.map(() => '?').join(', ')}) AND e.channel = 'import' AND e.producer_adapter = ?
-         AND NOT EXISTS (SELECT 1 FROM events live WHERE live.project_id = s.project_id AND live.session_id = s.session_id
-           AND live.channel <> 'import' AND live.kind IN ('session.start', 'session.end', 'transcript.segment'))`).bind(scope.projectId, ...run, producer).all<{ session_id: string }>();
-    for (const row of results) out.add(row.session_id);
-  }
-  return out;
+  return new Set(await importerOwnedSessions(db, scope.projectId, sessionIds, producer));
 }
 
 /** Which of these sessions hold a prompt `producer` sent on the import channel. */
-const sessions_IMPORTED_PROMPT_SESSIONS_SQL = `SELECT offered.value AS session_id FROM json_each(?) offered
-  WHERE EXISTS (SELECT 1 FROM events e WHERE e.project_id = ? AND e.session_id = offered.value
-    AND e.kind = 'prompt' AND e.channel = 'import' AND e.producer_adapter = ?)`;
-
 async function sessions_sessionsWithImportedPrompts(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionIds: readonly string[], producer: string): Promise<Set<string>> {
-  const out = new Set<string>();
-  for (const run of sessions_import_inListChunks(sessionIds)) {
-    const { results } = await db.prepare(sessions_IMPORTED_PROMPT_SESSIONS_SQL)
-      .bind(JSON.stringify(run), scope.projectId, producer)
-      .all<{ session_id: string }>();
-    for (const r of results) out.add(r.session_id);
-  }
-  return out;
+  return new Set(await sessionsHoldingImportedPrompts(db, scope.projectId, sessionIds, producer));
 }
 
 /** One session inside the scope, or null — including when the session exists under another project. */
@@ -531,12 +441,7 @@ async function sessions_sessionsWithImportedPrompts(db: sessions_import_Relation
 
 /** How many of each child a session holds. One statement per table rather than a join: the projections have no common key and a five-way LEFT JOIN would multiply rows. */
  async function sessions_sessionCounts(db: sessions_import_RelationalStore, scope: sessions_import_ReadScope, sessionId: string): Promise<sessions_SessionCounts> {
-  const row = await db.prepare(`SELECT d.prompts, d.tool_calls toolCalls, d.replies responses, d.plans,
-      (SELECT COUNT(*) FROM attachments a WHERE a.project_id=d.project_id AND a.session_id=d.session_id) attachments
-    FROM session_documents d WHERE d.project_id=? AND d.session_id=? AND d.state='live'
-      AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id=d.project_id AND t.session_id=d.session_id)`)
-    .bind(scope.projectId, sessionId).first<sessions_SessionCounts>();
-  return row ?? { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 };
+  return await sessionCountsRow(db, scope.projectId, sessionId) ?? { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 };
 }
 
 export {
@@ -544,10 +449,7 @@ export {
   type sessions_SessionRow,
   sessions_sessionLabel,
   sessions_relatedSessionLabel,
-  sessions_PRESENTED_STARTED_AT,
-  sessions_PRESENTED_ENDED_AT,
   sessions_WORKING_CAP_MS,
-  sessions_listProjectsSql,
   sessions_listProjects,
   type sessions_SessionFilters,
   sessions_SESSION_OCCURRED_AT,
@@ -569,6 +471,4 @@ export {
   sessions_heldSessionIds,
   sessions_sessionsOwnedByImporter,
   sessions_sessionsWithImportedPrompts,
-  sessions_FIRST_PROMPT_SQL,
-  sessions_firstPromptSql,
 };

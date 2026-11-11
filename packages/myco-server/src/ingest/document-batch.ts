@@ -29,7 +29,7 @@ import { sessionEditPaths } from '../db/documents/edit-paths.js';
 import { prepareBound } from '../db/kernel/statement.js';
 import { catalogAfterPublication, catalogAfterRestore, type CatalogDelta } from '../db/documents/catalog-row.js';
 import type { Holder } from '../db/documents/retired-holders.js';
-import { heldToolCalls, turnStatisticsStatements, type StatisticsChange } from '../content/tool-statistics.js';
+import { heldToolCalls, turnStatisticsStatements, type StatisticsChange } from '../db/documents/turn-statistics.js';
 
 export { SESSION_PATHS_LIMIT } from '../db/document-tables.js';
 /** Statements and blob calls a pass keeps for its registration and commit, above the wake's reserve for later jobs. */
@@ -687,7 +687,7 @@ export class DocumentBatch {
         FROM j WHERE project_id=?2 AND session_id=?3 AND generation=?4 AND prompt_id=j.id AND prompt_id IN (SELECT id FROM j)`)
         .bind(JSON.stringify(page), p, s, g));
     }
-    statements.push(...turnStatisticsStatements(db, [p, s, g], statistics, statistics.map(change => change.id)));
+    statements.push(...turnStatisticsStatements([p, s, g], statistics, statistics.map(change => change.id)).map(bound => prepareBound(db, bound)));
     if (chunkState === 'live' && (this.writer.touched.size > 0 || this.transcriptPlans.size > 0)) statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
       statements.push(...sessionEditPaths(p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)).map(bound => prepareBound(db, bound)));

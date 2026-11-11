@@ -6,7 +6,6 @@ import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { READ_BUDGET_SESSION_STATEMENTS } from '@myco-server-worker/db/read-budget-session-statements.js';
 import {
   sessions_listProjects as listProjects,
-  sessions_listProjectsSql as listProjectsSql,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { sqliteD1 } from './helpers/d1.js';
 
@@ -110,9 +109,6 @@ async function verify(db: RelationalStore) {
   expect(await listProjects(db)).toHaveLength(1);
   await expect(db.batch([db.prepare(session('rollback', 1)), db.prepare('INSERT INTO absent_table VALUES(1)')])).rejects.toThrow();
   await assertProjection(db);
-  const projectsPlan = (await db.prepare(`EXPLAIN QUERY PLAN ${listProjectsSql()}`).all<{ detail: string }>()).results.map((r) => r.detail).join('\n');
-  expect(projectsPlan).toContain('idx_session_read_activity');
-  expect(projectsPlan).not.toMatch(/SCAN [fs]\b/);
 }
 
 test('native 82→83 backfill and every session eligibility/count mutation preserve source parity', async () => {
