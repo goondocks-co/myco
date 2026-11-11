@@ -23,12 +23,15 @@ const STOP_NAMES = {
 
 export class WorkerUpdateStopped extends Error {
   readonly outcome;
+  readonly activationUnconfirmed;
 
   constructor(readonly phase: WorkerPhase, readonly reason: StopReason, cause: unknown) {
     const outcome = STOP_NAMES[reason];
     super(`${outcome} during ${phase}: ${describeFailure(cause)}. Next: run: ${NEXT_UPDATE}`, { cause });
     this.name = 'WorkerUpdateStopped';
     this.outcome = outcome;
+    this.activationUnconfirmed = phase === 'deploy'
+      && (reason === 'out_of_time' || cause instanceof CommandTimedOut || connectionFailure(cause));
   }
 }
 
@@ -44,7 +47,7 @@ function transientWorkerFailure(error: unknown): boolean {
     || /\b5\d\d\s+(?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Tim(?:eout|e-out))\b/i.test(output);
 }
 
-/** Worker commands share a budget of command time and backoff; D1 has its own pacing budget. */
+/** Each instance owns one budget of command time and backoff. */
 export class CloudflareWorkerUpdate {
   private leftMs = WORKER_UPDATE_RETRY_MS;
   private readonly now;

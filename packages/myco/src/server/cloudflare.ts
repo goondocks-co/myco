@@ -143,7 +143,7 @@ export class CloudflareAuthenticationError extends CommandFailed {
     const resource = product !== undefined && product in permissions ? product : 'Worker';
     const permission = permissions[product ?? ''] ?? 'Workers Scripts Read for reads, or Workers Scripts Edit for changes';
     this.message = `Cloudflare Authentication error [code: 10000] on ${resource}${accountId === undefined ? '' : ` in account ${accountId}`}. `
-      + `Wrangler is using ${cloudflareCredentialSource(env)}. Likely missing permission: ${permission}${routes && product === 'deploy' ? ', plus Zone / Workers Routes Edit for configured routes or custom domains' : ''}, or access to this account/resource. `
+      + `Wrangler is using ${cloudflareCredentialSource(env)}. Likely missing permission: ${permission}${routes ? ', plus Zone / Workers Routes Edit for configured routes or custom domains' : ''}, or access to this account/resource. `
       + `For the deployment account OAuth login, ${OAUTH_ENV_FIX} in this shell and retry; `
       + 'for CI, grant the environment credential access to the deployment account and the named resource. '
       + authenticationDiagnostic(result, env);
@@ -156,7 +156,8 @@ function credentialRunner(runner: CommandRunner, env: NodeJS.ProcessEnv, account
     async run(command, args, options) {
       const result = await runner.run(command, args, options);
       if (isCloudflareAuthenticationRefusal(result)) {
-        throw new CloudflareAuthenticationError(command, args, result, env, accountId, args[2] === 'deploy' && hasRoutes?.());
+        const changesRoutes = args[2] === 'deploy' || (args[2] === 'triggers' && args[3] === 'deploy');
+        throw new CloudflareAuthenticationError(command, args, result, env, accountId, changesRoutes && hasRoutes?.());
       }
       return result;
     },

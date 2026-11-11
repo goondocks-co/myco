@@ -333,7 +333,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
     `  Schema: ${summary.schema} (target ${summary.schemaTarget}${summary.schemaReached === undefined ? '' : `; live schema ${summary.schemaReached}`}).`,
     `  Worker: ${summary.worker} (target release ${summary.releaseTarget}).`,
     typeof summary.upload === 'string' ? `  Worker upload: ${summary.workerStop?.phase === 'upload' ? summary.workerStop.outcome : summary.upload}.`
-      : `  Worker version ${summary.upload.versionId} uploaded without activation.`,
+      : `  Worker version ${summary.upload.versionId} uploaded ${summary.worker === 'applied' ? 'and activated' : 'without activation'}.`,
     `  Local deployment record: ${summary.record}.`,
     `  Resources: ${summary.resources.length === 0 ? 'no changes attempted' : summary.resources.map((r) => `${r.operation}: ${r.state}`).join('; ')}.`,
     summary.bookmark === undefined ? '  No new recovery bookmark recorded.' : `  Bookmark ${summary.bookmark} recorded in ${summary.recordPath}.`,
@@ -348,11 +348,14 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
   if (summary.workerStop !== undefined) {
     lines.push(summary.workerStop.message);
   }
+  if (typeof summary.upload !== 'string' && (summary.worker !== 'applied' || summary.record !== 'updated' || summary.workerStop !== undefined)) {
+    lines.push('Finish the update before editing secrets: run: myco server update --target cloudflare. Wrangler refuses secret edits while the newest Worker version is undeployed.');
+  }
   const observedSchema = summary.schemaReached ?? summary.schemaBefore;
   const servingSchema = summary.workerSchemaBefore ?? summary.schemaBefore;
   if (summary.worker !== 'applied' && (summary.schema === 'applied' || (observedSchema !== null && servingSchema !== null && observedSchema > servingSchema))) {
     lines.push('The schema has advanced. The Deployment refuses requests until the Worker lands; members are spooling capture so nothing is lost.');
-    if (summary.workerStop?.phase === 'deploy') lines.push('Activation was not acknowledged and may still have landed. Check: myco server status --target cloudflare');
+    if (summary.workerStop?.activationUnconfirmed) lines.push('Activation was not acknowledged and may still have landed. Check: myco server status --target cloudflare');
   }
   if (summary.worker === 'applied' && summary.record === 'not updated') {
     lines.push('The Worker is live; the local record was not updated; rerun myco server update --target cloudflare or check myco server status --target cloudflare.');
@@ -393,7 +396,8 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     await preflight(options);
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
-    const worker = new CloudflareWorkerUpdate({ ...withConfig, report: options.report, workerRetry: options.workerRetry });
+    const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
+    const uploader = new CloudflareWorkerUpdate(workerOptions);
     let uploadedVersion: string | undefined;
     record = await applyCloudflareSchema({ ...withConfig, record,
       persist: (next) => {
@@ -411,13 +415,14 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
         await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
         await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
         summary.upload = 'attempted; outcome unknown';
-        uploadedVersion = await worker.upload();
+        uploadedVersion = await uploader.upload();
         summary.upload = { versionId: uploadedVersion };
         return admitted;
       },
     });
     summary.worker = 'attempted; outcome unknown';
     if (uploadedVersion === undefined) throw new Error('Worker activation refused: no uploaded version');
+    const worker = new CloudflareWorkerUpdate(workerOptions);
     await worker.deploy(uploadedVersion);
     summary.worker = 'applied';
 

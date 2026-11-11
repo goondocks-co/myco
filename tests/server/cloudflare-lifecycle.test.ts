@@ -16,9 +16,10 @@ import {
   rollbackCloudflareDeployment,
   destroyCloudflareDeployment,
   updateCloudflareDeployment,
+  cloudflareUpdateLines,
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
-import { stagingDir } from '@myco/server/cloudflare-stage.js';
+import { stagingDir, stagingRoot } from '@myco/server/cloudflare-stage.js';
 import { cloudflareResources } from '@myco/server/cloudflare-resources.js';
 import { deployedWorkerSecretNames, ensureSecretsStore, findSecretsStore, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
@@ -291,6 +292,12 @@ describe('create', () => {
     expect(result.createdResources).toEqual(['d1 myco-server', 'r2 myco-server-blobs', 'r2 myco-server-recovery', 'secrets store', 'store secret myco-secret-wrap-key', 'worker secret SESSION_SECRET']);
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId, version: record.versionId }).toEqual({ db: DB_ID, store: STORE, version: '16a2423e-af96-4310-b61b-4e2b5fd1310b' });
+    const flat = calls.map((c) => c.args.join(' '));
+    // The absence the issue asks for: nothing on this machine builds, and no
+    // command reaches a container runtime or a checkout.
+    for (const forbidden of ['containers build', 'run build:ui', 'run harness:bundle', 'docker']) {
+      expect({ forbidden, ran: flat.some((a) => a.includes(forbidden)) }).toEqual({ forbidden, ran: false });
+    }
   });
 
   it('GATE: a deploy failure leaves the record on disk naming what exists', async () => {
@@ -299,6 +306,46 @@ describe('create', () => {
     await expect(createCloudflareDeployment({ ...options, runner: failing })).rejects.toThrow();
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId }).toEqual({ db: DB_ID, store: STORE });
+  });
+
+  it('GATE: every verb runs every command in a directory this binary owns, never the one the operator stands in', async () => {
+    // Wrangler walks UP from its working directory looking for a config, so a
+    // command run from wherever the operator happens to be can pick up a
+    // checkout's wrangler.toml — the second config source staging removes. Each
+    // verb is driven, because a verb that skips `bareCommand` is exactly the
+    // way this comes back.
+    const { home, dir, options } = setup();
+    const root = stagingRoot(home);
+
+    /** Every command recorded since the last check ran where the binary put it. */
+    const ranWhereOwned = (verb: string): void => {
+      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
+      for (const call of calls) {
+        const where = call.cwd ?? '';
+        expect({ verb, args: call.args.join(' '), owned: where === dir || where === root, cwd: where === process.cwd() ? 'the operator\'s' : 'owned' })
+          .toEqual({ verb, args: call.args.join(' '), owned: true, cwd: 'owned' });
+      }
+      // Every command reading a config reads the staged one.
+      for (const call of calls.filter((c) => c.args.includes('-c'))) {
+        expect({ verb, args: call.args.join(' '), cwd: call.cwd }).toEqual({ verb, args: call.args.join(' '), cwd: dir });
+      }
+      calls = [];
+    };
+
+    await createCloudflareDeployment({ ...options, runner: runner() });
+    ranWhereOwned('create');
+
+    await updateCloudflareDeployment({ ...options, runner: runner() });
+    ranWhereOwned('update');
+
+    await cloudflareDeploymentStatus({ ...options, runner: runner() });
+    ranWhereOwned('status');
+
+    await rollbackCloudflareDeployment({ ...options, runner: runner(), versionId: 'a'.repeat(8) });
+    ranWhereOwned('rollback');
+
+    await destroyCloudflareDeployment({ ...options, runner: runner() });
+    ranWhereOwned('destroy');
   });
 
   it('puts the Deployment on the domain the operator named, in the record and in the config it deploys', async () => {
@@ -427,7 +474,7 @@ describe('update', () => {
     const { home, options } = setup();
     recordFor(home);
     const remote = { schema: SERVER_SCHEMA_VERSION - 1, worker: 'old-version', uploaded: false };
-    const failures: { upload: CommandResult[]; deploy: CommandResult[]; stall?: boolean } = { upload: [], deploy: [] };
+    const failures: { upload: Array<CommandResult & { elapsedMs?: number }>; deploy: CommandResult[]; triggers: CommandResult[]; uploadSuccessMs?: number; stall?: boolean } = { upload: [], deploy: [], triggers: [] };
     const lines: string[] = [];
     const responses: number[] = [];
     let time = 0;
@@ -439,6 +486,7 @@ describe('update', () => {
           time += runOptions!.timeoutMs!;
           throw new CommandTimedOut(command, args, runOptions!.timeoutMs!, 'ended');
         }
+        if (phase === 'upload') time += failures.upload[0]?.elapsedMs ?? failures.uploadSuccessMs ?? 0;
         const failure = failures[phase].shift();
         if (failure) return failure;
         if (phase === 'upload') {
@@ -449,6 +497,7 @@ describe('update', () => {
           responses.push(remote.schema === SERVER_SCHEMA_VERSION ? 200 : 503);
         }
       }
+      if (args[2] === 'triggers' && failures.triggers.length > 0) return failures.triggers.shift()!;
       if (args[2] === 'd1' && args[3] === 'migrations') remote.schema = SERVER_SCHEMA_VERSION;
       return provider.run(command, args, runOptions);
     } };
@@ -466,12 +515,24 @@ describe('update', () => {
     expect(readDeploymentRecord(f.home)).toMatchObject({ versionId: version, schemaUpdates: [{ appliedAt: expect.any(String), workerVersionBefore: 'old-version' }] });
     expect(f.lines.join('\n')).toContain('Worker upload: attempt 3 succeeded');
     expect(f.lines.join('\n')).toContain('Worker upload: attempt 2 failed transiently');
+    expect(cloudflareUpdateLines(result.summary).join('\n')).toContain(`Worker version ${version} uploaded and activated.`);
   });
 
   it('retries a transient activation failure and ends applied', async () => {
     const f = updateFixture();
     f.failures.deploy.push({ code: 1, stdout: '', stderr: 'HTTP 503 Service Unavailable' });
     expect((await f.update()).summary.worker).toBe('applied');
+    expect(f.remote.worker).toBe(version);
+    expect(f.lines.join('\n')).toContain('Worker deploy: attempt 2 succeeded');
+  });
+
+  it('gives activation a fresh budget after an upload consumes almost ten minutes', async () => {
+    const f = updateFixture();
+    f.failures.upload.push(...Array.from({ length: 4 }, () => ({ ...uploadFailure, elapsedMs: 90_000 })));
+    f.failures.uploadSuccessMs = 73_000;
+    f.failures.deploy.push({ code: 1, stdout: '', stderr: 'HTTP 503 Service Unavailable' });
+    expect((await f.update()).summary.worker).toBe('applied');
+    expect(f.elapsed).toBeGreaterThan(WORKER_UPDATE_RETRY_MS);
     expect(f.remote.worker).toBe(version);
     expect(f.lines.join('\n')).toContain('Worker deploy: attempt 2 succeeded');
   });
@@ -485,9 +546,8 @@ describe('update', () => {
     expect(f.lines.join('\n')).toContain('Next: run: myco server update --target cloudflare');
   });
 
-  it('stops by name when activation exhausts the shared time after migration, naming the refusal gap and retained recovery point', async () => {
+  it('stops by name when activation exhausts its time after migration, naming the refusal gap and retained recovery point', async () => {
     const f = updateFixture();
-    f.failures.upload.push(uploadFailure, uploadFailure);
     f.failures.stall = true;
     const stopped = await f.update().catch(error => error);
     expect(stopped).toBeInstanceOf(WorkerUpdateStopped);
@@ -501,6 +561,24 @@ describe('update', () => {
     expect(text).toContain('Deployment refuses requests until the Worker lands');
     expect(text).toContain('members are spooling capture so nothing is lost');
     expect(text).toContain('Next: run: myco server update --target cloudflare');
+    expect(text).toContain('may still have landed');
+    expect(text).toContain('Finish the update before editing secrets');
+  });
+
+  it('reports a permanent activation refusal without an unconfirmed-activation warning', async () => {
+    const f = updateFixture();
+    f.failures.deploy.push({ code: 1, stdout: '', stderr: 'Authentication error [code: 10000]' });
+    await expect(f.update()).rejects.toThrow('stopped: Worker refused during deploy');
+    expect(f.lines.join('\n')).not.toContain('may still have landed');
+  });
+
+  it('names the routes permission on a trigger refusal and retains the activated Worker record', async () => {
+    const f = updateFixture();
+    writeDeploymentRecord({ ...readDeploymentRecord(f.home)!, url: 'https://myco.example.com' }, f.home);
+    f.failures.triggers.push({ code: 1, stdout: '', stderr: 'Authentication error [code: 10000]' });
+    await expect(f.update()).rejects.toThrow('Zone / Workers Routes Edit for configured routes or custom domains');
+    expect(readDeploymentRecord(f.home)!.versionId).toBe(version);
+    expect(f.lines.join('\n')).toContain('Finish the update before editing secrets');
   });
 });
 
@@ -554,6 +632,36 @@ describe('rollback', () => {
  * that skips the preflight is exactly how this comes back.
  */
 describe('the prerequisites every verb checks first', () => {
+  it('GATE: every command spawns into a directory that is on disk', async () => {
+    for (const { verb, run } of EVERY_VERB) {
+      calls = [];
+      const home = freshHome();
+      // `create` starts from nothing at all; the verbs that read a record get
+      // one, and writing it is itself the only thing that has touched the home.
+      if (verb !== 'create') recordFor(home);
+      await run({ accountId: ACCOUNT, mycoHome: home }, runner());
+      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
+      for (const call of calls) {
+        expect({ verb, args: call.args.join(' '), cwdOnDisk: call.cwdOnDisk })
+          .toEqual({ verb, args: call.args.join(' '), cwdOnDisk: true });
+      }
+    }
+  });
+
+  it('GATE: every npx invocation leads with --no-install, so no verb can fetch a wrangler', async () => {
+    for (const { verb, run } of EVERY_VERB) {
+      calls = [];
+      const home = freshHome();
+      if (verb !== 'create') recordFor(home);
+      await run({ accountId: ACCOUNT, mycoHome: home }, runner());
+      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
+      for (const call of calls) {
+        expect({ verb, args: call.args.join(' '), leads: call.args[0] })
+          .toEqual({ verb, args: call.args.join(' '), leads: '--no-install' });
+      }
+    }
+  });
+
   it('GATE: with no wrangler installed, every verb refuses by name and runs nothing else', async () => {
     const absent = () => runner({ 'wrangler --version': { code: 1, stderr: 'npx: command not found: wrangler' } });
     for (const { verb, run } of EVERY_VERB) {
