@@ -38,9 +38,10 @@ import { documentRecord } from '../content/document-records.js';
 import { openPublication, publicationTranscripts, PUBLICATION_QUEUE_PAGE as PUBLISH_QUEUE_PER_PASS, type DocumentRow, type TranscriptRow, type QueuedRow } from '../db/documents/open.js';
 import {
   commitAdmitted, DocumentBatch, DocumentPassFull, PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, publicationStatement,
-  releaseHolders, reserveReached, type ChunkVersion, type Holder,
+  releaseHolders, reserveReached, type ChunkVersion,
 } from './document-batch.js';
 import { repairPublicationMetadata } from '../db/documents/metadata-catchup.js';
+import { liveGenerationHolderGuard, retiredHoldersDue } from '../db/documents/retired-holders.js';
 import {
   PublicationDependenciesBuilding, clearDependenciesStatement, consumeQueuedStatement, continueWakeStatement, earliestReadRoot, heldPrerequisites, holdQueuedStatement,
   recordDependenciesStatement, releasedDependents, wakeDependentsStatement,
@@ -193,8 +194,7 @@ export async function runPublishWake(env: ServerEnv, now: number): Promise<{ cha
 
 /** Releases the holders past their grace. */
 async function retireSupersededObjects(db: RelationalStore, now: number): Promise<number> {
-  const rows = (await db.prepare(`SELECT project_id p,session_id s,blob_key k,source_id i FROM retired_objects
-    WHERE retired_at<=? ORDER BY retired_at LIMIT ${RETIRE_PAGE}`).bind(now - RETIRED_OBJECT_GRACE_MS).all<Holder>()).results;
+  const rows = await retiredHoldersDue(db, now - RETIRED_OBJECT_GRACE_MS, RETIRE_PAGE);
   if (rows.length === 0) return 0;
   await releaseHolders(db, rows, now);
   return rows.length;
@@ -320,11 +320,8 @@ class SessionPublication {
     await this.publishQueued(queued);
     const placed = this.batch.writer.changed || this.continuationChanged || this.consumed.length > 0 || this.failedQueued.length > 0 || this.batch.writer.sealing().length > 0;
     if (leads && this.full && !placed) throw new Error('document_pass_unaffordable');
-    const written = await this.batch.commit(this.batch.writer.changed || this.continuationChanged, 'live', this.now, (version) => ({
-      sql: `EXISTS (SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND state='live' AND generation=?)
-        AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,
-      params: [this.projectId, this.sessionId, doc.generation, this.projectId, this.sessionId, version.key, version.sourceId],
-    }), (versions) => this.frontier(versions));
+    const written = await this.batch.commit(this.batch.writer.changed || this.continuationChanged, 'live', this.now, (version) =>
+      liveGenerationHolderGuard(this.projectId, this.sessionId, doc.generation, version.key, version.sourceId), (versions) => this.frontier(versions));
     if (written > 0) emit({ kind: 'document_published', projectId: this.projectId, sessionId: this.sessionId, records: this.batch.records, chunks: written });
     const fault = this.publications.find((publication) => publication.fault !== undefined)?.fault
       ?? this.failedQueued.find(row => row.error !== undefined)?.code;
@@ -652,8 +649,7 @@ class SessionPublication {
     ];
     const scanDue = laterDue.length === 0 ? null : Math.min(...laterDue);
     const dueAt = behind || this.more ? 0 : scanDue;
-    const set = this.batch.documentSet(this.now);
-    after.push(db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id=? AND session_id=?`).bind(...set.params, p, s));
+    after.push(this.batch.catalogStatement(this.now));
     after.push(settlePublication(db, p, s, this.after, this.after === null ? null : scanDue, dueAt));
     if (holders.length > 0) after.push(continueWakeStatement(db, p, s, JSON.stringify(holders)));
     return { before, after };

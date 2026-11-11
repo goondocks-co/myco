@@ -5,7 +5,8 @@ import { kindSpec, parsePayload, type KindSpec, type Bound } from './kinds.js';
 
 import { boundDerivedEvent } from './parsers/bounds.js';
 
-import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
+import type { RelationalStore } from '../core/adapters.js';
+import { sourceReceiptRows } from '../db/documents/source-receipts.js';
 
 import type { DerivedEvent } from './parsers/index.js';
 
@@ -18,21 +19,6 @@ export class RecordRefused extends Error {
     this.name = 'RecordRefused';
   }
 }
-
-
-
-/** The receipt-time read for source offsets a cache does not hold yet. */
-function receiptRead(db: RelationalStore, project: string, transcript: string, missing: readonly number[]): PreparedStatement {
-  return db
-    .prepare(
-      `SELECT j.value offset,COALESCE(
-    (SELECT s.received_at FROM transcript_segments s WHERE s.project_id=? AND s.transcript_id=? AND s.base_offset<=j.value AND s.base_offset+s.length>j.value ORDER BY s.base_offset DESC LIMIT 1),
-    (SELECT r.received_at FROM raw_archive_refs r WHERE r.project_id=? AND r.transcript_id=? AND r.source_kind='transcript' AND r.disposition='archived'
-      AND r.base_offset<=j.value AND r.base_offset+r.length>j.value ORDER BY r.base_offset DESC LIMIT 1)) received_at FROM json_each(?) j`,
-    )
-    .bind(project, transcript, project, transcript, JSON.stringify(missing));
-}
-
 
 
 
@@ -57,7 +43,7 @@ export async function sourceReceipts(
 ): Promise<Map<number, number>> {
   const missing = [...new Set(offsets)].filter((offset) => !cache.has(offset));
   if (!missing.length) return cache;
-  const rows = (await receiptRead(db, project, transcript, missing).all<{ offset: number; received_at: number | null }>()).results;
+  const rows = await sourceReceiptRows(db, project, transcript, missing);
   return heldReceipts(rows, cache);
 }
 

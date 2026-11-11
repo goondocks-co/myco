@@ -43,10 +43,7 @@ async function place(env: ContentStore, session: string, records: DocRecord[]) {
   const batch = new DocumentBatch(env, 'project', session, docs!.results[0] as BatchDocument);
   await batch.open();
   await batch.place(records, null);
-  await batch.commit(true, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => {
-    const set = batch.documentSet(Date.now());
-    return { before: [], after: [db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id='project' AND session_id=?`).bind(...set.params, session)] };
-  });
+  await batch.commit(true, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => ({ before: [], after: [batch.catalogStatement(Date.now())] }));
 }
 
 /** A codex session of `turns` turns, published: the first turn calls a tool whose input is larger than a page. */

@@ -24,7 +24,10 @@ import { DocumentWriter, type DocumentLayout, type SealedRecord, type WriterMark
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { ensureSessionLifecycle, presentedDatesAfterPublication, settlePublishedTurn } from '../db/documents/lifecycle.js';
 import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
-import { sessionEditStatements } from './session-edits.js';
+import { sessionEditPaths } from '../db/documents/edit-paths.js';
+import { prepareBound } from '../db/kernel/statement.js';
+import { catalogAfterPublication, catalogAfterRestore, type CatalogDelta } from '../db/documents/catalog-row.js';
+import type { Holder } from '../db/documents/retired-holders.js';
 import { heldToolCalls, turnStatisticsStatements, type StatisticsChange } from '../content/tool-statistics.js';
 
 export { SESSION_PATHS_LIMIT } from '../db/document-tables.js';
@@ -58,9 +61,6 @@ export function commitAdmitted(db: RelationalStore, versions: number, statements
 export class DocumentPassFull extends Error {
   constructor() { super('document_pass_full'); }
 }
-
-/** A row of `retired_objects`: a chunk version's holder until a live directory row adopts it. */
-export interface Holder { p: string; s: string; k: string; i: string }
 
 /**
  * Deletes the holders that still stand, each with the proofs registered under its own source unless a live chunk names
@@ -689,7 +689,7 @@ export class DocumentBatch {
     statements.push(...turnStatisticsStatements(db, [p, s, g], statistics, statistics.map(change => change.id)));
     if (chunkState === 'live' && (this.writer.touched.size > 0 || this.transcriptPlans.size > 0)) statements.push(...sessionRowStatements(db, p, s, g, this.doc.token_id, this.transcriptPlans, this.latestUserPrompt, this.lastRecordAt, now));
     if (this.paths.size > 0) {
-      statements.push(...sessionEditStatements(db, p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)));
+      statements.push(...sessionEditPaths(p, s, g, [...this.paths].filter(([, held]) => held.edits > 0).map(([path]) => path)).map(bound => prepareBound(db, bound)));
       for (const page of jsonPages([...this.paths].filter(([, held]) => held.n <= 0).map(([path, held]) => ({ path, ...held })))) {
         const rows = JSON.stringify(page);
         statements.push(db.prepare(`UPDATE session_paths SET tool_calls=tool_calls+json_extract(j.value,'$.n'),edits=edits+json_extract(j.value,'$.edits'),
@@ -748,24 +748,22 @@ export class DocumentBatch {
     ];
   }
 
-  /** The counter, chunk numbering and turn fields of the session's catalog row, as SET terms and their parameters. */
-  documentSet(now: number): { sql: string; params: unknown[] } {
+  /** What this batch adds to the session's catalog row: its counters, chunk numbering and turn fields. */
+  private catalogDelta(now: number): CatalogDelta {
     const c = this.counts;
-    const rewritten = this.rewrittenBefore;
-    const restart = rewritten === null ? '0' : `(rollup_after IS NOT NULL AND (rollup_after>=${rewritten}
-      OR ((rollup_page>0 OR rollup_record>0) AND ${rewritten}=(SELECT c.chunk_no FROM session_chunks c
-        WHERE c.project_id=session_documents.project_id AND c.session_id=session_documents.session_id AND c.generation=session_documents.generation
-          AND c.kind='page' AND c.chunk_no>session_documents.rollup_after ORDER BY c.chunk_no LIMIT 1))))`;
-    return {
-      sql: `prompts=prompts+?,user_prompts=user_prompts+?,replies=replies+?,tool_calls=tool_calls+?,failed_tools=failed_tools+?,plans=plans+?,myco_calls=myco_calls+?,
-        rollup_after=CASE WHEN ${restart} THEN -1 ELSE rollup_after END,
-        rollup_page=CASE WHEN ${restart} THEN 0 ELSE rollup_page END,rollup_record=CASE WHEN ${restart} THEN 0 ELSE rollup_record END,
-        rollup_epoch=rollup_epoch+CASE WHEN ${restart} THEN 1 ELSE 0 END,
-        paths_build=CASE WHEN ${restart} THEN NULL ELSE paths_build END,myco_build=CASE WHEN ${restart} THEN 0 ELSE myco_build END,
-        first_prompt=?,open_turn_key=?,last_record_at=MAX(COALESCE(last_record_at,0),COALESCE(?,0)),next_chunk=?,updated_at=?`,
-      params: [c.prompts, c.user_prompts, c.replies, c.tool_calls, c.failed_tools, c.plans, c.myco_calls, this.firstPrompt, this.openTurn, this.lastRecordAt,
-        this.writer.nextChunk, now],
-    };
+    return { prompts: c.prompts, userPrompts: c.user_prompts, replies: c.replies, toolCalls: c.tool_calls, failedTools: c.failed_tools, plans: c.plans,
+      mycoCalls: c.myco_calls, firstPrompt: this.firstPrompt, openTurn: this.openTurn, lastRecordAt: this.lastRecordAt, nextChunk: this.writer.nextChunk,
+      now, rewrittenBefore: this.rewrittenBefore };
+  }
+
+  /** The session's catalog row after a publication commit. */
+  catalogStatement(now: number): PreparedStatement {
+    return prepareBound(this.db, catalogAfterPublication(this.projectId, this.sessionId, this.catalogDelta(now)));
+  }
+
+  /** The session's catalog row after a restore commit, live at the restored generation. */
+  restoredCatalogStatement(now: number, restore: { generation: number; build: string | null }): PreparedStatement {
+    return prepareBound(this.db, catalogAfterRestore(this.projectId, this.sessionId, this.catalogDelta(now), restore));
   }
 
   /**
