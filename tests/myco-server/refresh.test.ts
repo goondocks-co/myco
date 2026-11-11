@@ -9,24 +9,7 @@ import { BLOB_RESERVATION_TTL_MS, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_P
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, journaled, memberHeaders, memberPost, noOutboundFetch, RETIRED_BYTE_CEILING, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
-import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
-
-/** A store that answers every read and fails every batch that writes. */
-function refusingWrites(db: RelationalStore, message: string): RelationalStore {
-  const writing = new WeakSet<PreparedStatement>();
-  const track = (statement: PreparedStatement, write: boolean): PreparedStatement => {
-    const tracked: PreparedStatement = { ...statement, bind: (...values) => track(statement.bind(...values), write) };
-    if (write) writing.add(tracked);
-    return tracked;
-  };
-  return { ...db,
-    prepare: (sql) => track(db.prepare(sql), /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)),
-    batch: async (statements) => {
-      if (statements.some(statement => writing.has(statement))) throw new Error(message);
-      return db.batch(statements);
-    },
-  };
-}
+import { refusingWrites } from './helpers/refusing-writes.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const T0 = 1_700_000_000_000;
