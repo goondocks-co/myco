@@ -6,22 +6,46 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { recordedNodeDurations } from './node-test-durations.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
 /** Pull request node runner time the build job allows. The planned time after demotion, rounded up to 5 minutes. */
 export const PR_NODE_RUNNER_BUDGET_MS = 7_200_000;
+/** A pull request file with no recorded CI time is charged at least this much. */
+export const UNRECORDED_PR_FILE_FLOOR_MS = 5_000;
 
 export function roundUpFiveMinutes(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new Error(`Planned runner time must be a nonnegative number, got ${milliseconds}`);
   return Math.ceil(milliseconds / FIVE_MINUTES_MS) * FIVE_MINUTES_MS;
 }
 
-/** Sum of planned node phase time in a shard-planner matrix. DOM phases are not included. */
-export function plannedNodeRunnerMs(matrix) {
+/** Node files in a shard-planner matrix. DOM phases are not included. */
+export function nodePlanFiles(matrix) {
   const shards = (matrix?.ordinary ?? []).filter((entry) => entry.kind === 'node');
-  return shards.reduce((sum, shard) => sum + shard.phases.reduce((phaseSum, phase) => phaseSum + phase.estimatedMs, 0), 0);
+  return shards.flatMap((shard) => (shard.phases ?? []).flatMap((phase) => phase.files ?? []));
+}
+
+/**
+ * Charge each pull request file at the larger of its declared weight and its recorded CI time.
+ * A file with no recorded time is charged at least `floor`. `atFloor` names those files.
+ */
+export function chargeNodeFiles(files, declared, recorded, floor = UNRECORDED_PR_FILE_FLOOR_MS) {
+  const atFloor = [];
+  let total = 0;
+  for (const file of files) {
+    const declaredMs = declared?.[file];
+    const known = Number.isFinite(declaredMs) && declaredMs > 0 ? declaredMs : 0;
+    const recordedMs = recorded?.[file];
+    if (recordedMs === undefined) {
+      if (known < floor) atFloor.push(file);
+      total += Math.max(known, floor);
+    } else {
+      total += Math.max(known, recordedMs);
+    }
+  }
+  return { total, atFloor };
 }
 
 export function formatRunnerTime(milliseconds) {
@@ -31,32 +55,44 @@ export function formatRunnerTime(milliseconds) {
   return `${seconds}s (${minutes}m ${rest}s)`;
 }
 
-export function runnerBudgetRefusal(actualMs, budgetMs = PR_NODE_RUNNER_BUDGET_MS) {
-  return `Pull request node runner time is ${formatRunnerTime(actualMs)}, over the ${formatRunnerTime(budgetMs)} budget. `
+export function runnerBudgetRefusal(actualMs, budgetMs = PR_NODE_RUNNER_BUDGET_MS, floorFiles = []) {
+  const floorNote = floorFiles.length === 0 ? ''
+    : ` Files charged at the ${formatRunnerTime(UNRECORDED_PR_FILE_FLOOR_MS)} floor, because they have no recorded CI time: ${floorFiles.join(', ')}.`;
+  return `Pull request node runner time is ${formatRunnerTime(actualMs)}, over the ${formatRunnerTime(budgetMs)} budget.${floorNote} `
     + 'Make room by deleting or demoting tests, never by raising the budget.';
 }
 
 /** Throws the runner-time refusal when the plan is over the budget. */
-export function assertRunnerBudget(actualMs, budgetMs = PR_NODE_RUNNER_BUDGET_MS) {
+export function assertRunnerBudget(actualMs, budgetMs = PR_NODE_RUNNER_BUDGET_MS, floorFiles = []) {
   if (actualMs <= budgetMs) return;
-  throw new Error(runnerBudgetRefusal(actualMs, budgetMs));
+  throw new Error(runnerBudgetRefusal(actualMs, budgetMs, floorFiles));
 }
 
 export function isTestLineFile(file) {
-  return /^tests\/.*\.(?:ts|tsx|mjs)$/.test(file);
+  return /^tests\/.*\.(?:ts|tsx|mts|cts|js|mjs|cjs|jsx)$/.test(file);
 }
 
 export function isProductLineFile(file) {
   if (file.includes('.generated.')) return false;
-  return /^packages\/[^/]+\/src\//.test(file) || /^packages\/[^/]+\/ui\/src\//.test(file);
+  return /^packages\/[^/]+\/src\/.*\.(?:ts|tsx)$/.test(file) || /^packages\/[^/]+\/ui\/src\/.*\.(?:ts|tsx)$/.test(file);
 }
 
-/** Physical lines in a file body. An empty file is zero. A missing trailing newline still counts the last line. */
+/** Non-blank lines that are not a comment. An empty file is zero. */
 export function countLines(text) {
   if (text.length === 0) return 0;
   let lines = 0;
-  for (let index = 0; index < text.length; index += 1) if (text.charCodeAt(index) === 10) lines += 1;
-  if (text.charCodeAt(text.length - 1) !== 10) lines += 1;
+  let start = 0;
+  const consider = (line) => {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*') || trimmed.startsWith('*/')) return;
+    lines += 1;
+  };
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) !== 10) continue;
+    consider(text.slice(start, index));
+    start = index + 1;
+  }
+  if (start < text.length) consider(text.slice(start));
   return lines;
 }
 
@@ -155,15 +191,22 @@ function mergeBase(repo, base) {
  * Check one repository. `plan` skips the shard planner. Returns refusal strings; an empty list is a pass.
  * @param {{ repo?: string, base?: string, plan?: object, budgetMs?: number, skipRatio?: boolean, skipPlan?: boolean }} options
  */
+function weightsIn(repo) {
+  const declared = JSON.parse(fs.readFileSync(path.join(repo, 'scripts/test-durations.json'), 'utf8')).files ?? {};
+  const workload = JSON.parse(fs.readFileSync(path.join(repo, 'tests/fixtures/runner/node-ci-durations.json'), 'utf8'));
+  return { declared, recorded: recordedNodeDurations(workload) };
+}
+
 export function checkTestBudget(options = {}) {
   const repo = options.repo ?? repoRoot;
   const refusals = [];
   if (!options.skipPlan) {
     const matrix = options.plan ?? pullRequestPlan(repo);
-    const actual = plannedNodeRunnerMs(matrix);
+    const weights = options.declared && options.recorded ? { declared: options.declared, recorded: options.recorded } : weightsIn(repo);
+    const charge = chargeNodeFiles(nodePlanFiles(matrix), weights.declared, weights.recorded);
     const budget = options.budgetMs ?? PR_NODE_RUNNER_BUDGET_MS;
-    if (actual > budget) refusals.push(runnerBudgetRefusal(actual, budget));
-    else console.log(`Pull request node runner time ${formatRunnerTime(actual)} is within ${formatRunnerTime(budget)}.`);
+    if (charge.total > budget) refusals.push(runnerBudgetRefusal(charge.total, budget, charge.atFloor));
+    else console.log(`Pull request node runner time ${formatRunnerTime(charge.total)} is within ${formatRunnerTime(budget)}.`);
   }
   if (!options.skipRatio) {
     const base = mergeBase(repo, options.base ?? 'origin/main');

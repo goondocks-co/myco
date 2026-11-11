@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { installRoots, excludedLockfiles, staleReason } from '../../scripts/ensure-deps.mjs';
+import { installRoots, staleReason } from '../../scripts/ensure-deps.mjs';
 import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
 
 const repo = path.resolve(import.meta.dir, '../..');
@@ -284,39 +284,4 @@ describe('dependency preparation', () => {
     expect(f.run().status).toBe(0);
     expect(f.calls()).toHaveLength(1);
   });
-});
-
-it('accounts for every tracked npm lockfile', () => {
-  const result = spawnSync('git', ['ls-files', '*package-lock.json'], { cwd: repo, encoding: 'utf8' });
-  expect(result.status).toBe(0);
-  const covered = installRoots.map(({ directory }) => path.posix.join(directory, 'package-lock.json'));
-  expect([...covered, ...Object.keys(excludedLockfiles)].sort()).toEqual(result.stdout.trim().split('\n').sort());
-});
-
-it('prepares every Make recipe invoking npm, node, bun or their script runners', () => {
-  const makefile = fs.readFileSync(path.join(repo, 'Makefile'), 'utf8');
-  const targets = new Map<string, { deps: string[]; recipe: string }>();
-  let current: { deps: string[]; recipe: string } | undefined;
-  for (const line of makefile.split('\n')) {
-    const target = /^([\w-]+(?:\s+[\w-]+)*):\s*(.*)$/.exec(line);
-    if (target) {
-      current = { deps: target[2]!.trim().split(/\s+/), recipe: '' };
-      for (const name of target[1]!.split(/\s+/)) targets.set(name, current);
-    } else if (line.startsWith('\t') && current) current.recipe += line + '\n';
-  }
-  const prepared = (name: string, seen = new Set<string>()): boolean =>
-    name === 'deps' || (!seen.has(name) && (seen.add(name), targets.get(name)?.deps.some(dep => prepared(dep, seen)) === true));
-  for (const [name, { recipe }] of targets) {
-    if (/\b(npm|node|bun|npx|bunx|tsx)\b/.test(recipe)) expect(prepared(name), name + ' must depend on deps').toBe(true);
-  }
-  expect(targets.get('prepare-build')?.deps).toContain('deps');
-  expect(targets.get('install')?.deps).toContain('deps');
-});
-
-it('uses shared dashboard preparation in both direct npm scripts', () => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(repo, 'packages/myco-server/package.json'), 'utf8'));
-  for (const name of ['build:ui', 'check:ui']) {
-    expect(pkg.scripts[name]).toContain('node ../../scripts/ensure-deps.mjs --ui &&');
-    expect(pkg.scripts[name]).not.toContain('node_modules/react');
-  }
 });

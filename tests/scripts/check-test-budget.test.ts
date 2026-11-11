@@ -3,10 +3,10 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { infrastructureFaultSignature, infrastructureRetrySummary } from '../../scripts/infrastructure-faults.mjs';
+import { failureStackInFile, infrastructureFaultSignature, infrastructureRetrySummary, logHasUncarriedError, retryableInfrastructureFaults } from '../../scripts/infrastructure-faults.mjs';
 import {
-  assertRunnerBudget, checkTestBudget, countLines, formatRatio, lineCountsAt, plannedNodeRunnerMs,
-  PR_NODE_RUNNER_BUDGET_MS, ratioRefusal, ratioRoseAboveOne,
+  assertRunnerBudget, checkTestBudget, formatRatio, lineCountsAt,
+  PR_NODE_RUNNER_BUDGET_MS, ratioRefusal, ratioRoseAboveOne, UNRECORDED_PR_FILE_FLOOR_MS,
 } from '../../scripts/check-test-budget.mjs';
 
 const SAMPLES: [string, string | null][] = [
@@ -22,22 +22,33 @@ const SAMPLES: [string, string | null][] = [
 
 test('classifies an infrastructure fault and refuses every other failure', () => {
   for (const [log, signature] of SAMPLES) expect(infrastructureFaultSignature(log)).toBe(signature);
+  const connect = 'TypeError: Unable to connect\n      at a.test.ts:2:117\n';
+  expect(failureStackInFile(connect, 'a.test.ts')).toBe(true);
+  expect(retryableInfrastructureFaults({ failures: [{ file: 'a.test.ts', body: connect }] }))
+    .toEqual([{ file: 'a.test.ts', signature: 'TypeError: Unable to connect' }]);
+  const blamedOnNeighbor = 'Error: real B2 late failure\n      at b2.test.ts:3:60\n';
+  expect(retryableInfrastructureFaults({ failures: [{ file: 'c.test.ts', body: blamedOnNeighbor }] })).toEqual([]);
+  expect(logHasUncarriedError(' 1 pass\n 2 fail\n 1 error\n# Unhandled error between tests\n')).toBe(true);
+  expect(logHasUncarriedError(' 1 pass\n 0 fail\n')).toBe(false);
   expect(infrastructureRetrySummary('tests/a.test.ts', 'TypeError: Unable to connect'))
     .toBe('- Infrastructure retry: tests/a.test.ts (TypeError: Unable to connect)');
 });
 
 test('the pull request plan refuses runner time over the budget and accepts time within it', () => {
   const plan = { ordinary: [
-    { kind: 'node', shard: '1/2', phases: [{ estimatedMs: 70_000 }, { estimatedMs: 20_000 }] },
-    { kind: 'dom', shard: '1/1', phases: [{ estimatedMs: 500_000 }] },
+    { kind: 'node', shard: '1/2', phases: [{ files: ['tests/recorded.test.ts', 'tests/new.test.ts'] }] },
+    { kind: 'dom', shard: '1/1', phases: [{ files: ['tests/dom.test.tsx'], estimatedMs: 500_000 }] },
   ] };
-  expect(plannedNodeRunnerMs(plan)).toBe(90_000);
-  const over = checkTestBudget({ plan, skipRatio: true, budgetMs: 60_000 });
+  const declared = { 'tests/recorded.test.ts': 1, 'tests/new.test.ts': 1 };
+  const recorded = { 'tests/recorded.test.ts': 70_000 };
+  const over = checkTestBudget({ plan, declared, recorded, skipRatio: true, budgetMs: 60_000 });
   expect(over).toHaveLength(1);
-  expect(over[0]).toContain('90s (1m 30s)');
+  expect(over[0]).toContain('75s (1m 15s)');
   expect(over[0]).toContain('60s (1m 0s)');
+  expect(over[0]).toContain('tests/new.test.ts');
+  expect(over[0]).toContain(`${UNRECORDED_PR_FILE_FLOOR_MS / 1000}s`);
   expect(over[0]).toContain('Make room by deleting or demoting tests, never by raising the budget.');
-  expect(checkTestBudget({ plan, skipRatio: true, budgetMs: 90_000 })).toEqual([]);
+  expect(checkTestBudget({ plan, declared, recorded, skipRatio: true, budgetMs: 75_000 })).toEqual([]);
   expect(() => assertRunnerBudget(PR_NODE_RUNNER_BUDGET_MS + 1)).toThrow(/never by raising the budget/);
   expect(() => assertRunnerBudget(PR_NODE_RUNNER_BUDGET_MS)).not.toThrow();
 });
@@ -53,14 +64,14 @@ test('the line ratio may not rise while it is above 1, and states both ratios an
   try {
     const source = (...parts: string[]) => path.join(...parts);
     git('init', '-q');
-    write(source('tests', 'a.test.ts'), 'one\ntwo\n');
+    write(source('tests', 'a.test.ts'), 'one\n\n// note\ntwo\n');
     write(source('packages', 'demo', 'src', 'app.ts'), 'a\nb\nc\nd\n');
     write(source('packages', 'demo', 'src', 'skip.generated.ts'), 'not\ncounted\nas\nproduct\n');
+    write(source('packages', 'demo', 'src', 'notes.json'), 'not\ncounted\nas\nproduct\n');
     git('add', '.');
     git('commit', '-q', '-m', 'base');
     const base = git('rev-parse', 'HEAD').trim();
     expect(lineCountsAt(fixture, base)).toEqual({ test: 2, product: 4 });
-    expect(countLines('a\nb')).toBe(2);
     write(source('tests', 'b.test.ts'), '1\n2\n3\n4\n');
     git('add', '.');
     git('commit', '-q', '-m', 'grew');

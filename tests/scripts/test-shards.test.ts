@@ -10,8 +10,11 @@ import parityWorkload from '../fixtures/runner/parity-ci-9777180d.json';
 import completeParityWorkload from '../fixtures/runner/parity-ci-f2c7ecc5.json';
 import nodeWorkloadFixture from '../fixtures/runner/node-ci-durations.json';
 import { mergeNodeDurationWeights, assertTestCaseHeadroom, declaredTestTimeout, testDurationSamples, assertNodeShardHeadroom, nodeDurationSamples, nodeGroupBudget, recordedNodeDurations, type NodeGroup, type NodeWorkload } from '../../scripts/node-test-durations.mjs';
+
 const nodeWorkload: NodeWorkload = nodeWorkloadFixture;
+
 describe('test shard selection', () => {
+
   test('keeps heavy isolated files apart when small files are inserted before either journey', () => {
     const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
     const budget = nodeGroupBudget(workflow.jobs.tests['timeout-minutes'] * 60_000);
@@ -37,6 +40,7 @@ describe('test shard selection', () => {
       expect(journeys).not.toContain(local);
     }
   });
+
   test('isolates an oversized file and names it in the headroom refusal', () => {
     const budget = nodeGroupBudget(900_000);
     const weights: Record<string, number> = { small: 1, oversized: budget + 1, exact: budget };
@@ -53,6 +57,7 @@ describe('test shard selection', () => {
     expect(() => groupByDuration([1], budget, () => NaN)).toThrow('weights');
     expect(() => groupByDuration([1], budget, () => 1, 0)).toThrow('item limit');
   });
+
   test('caps node shards at eleven minutes of measured work within the job timeout', () => {
     const weights: Record<string, number> = { first: 220_000, second: 220_000, third: 220_000 };
     const groups = Object.entries(weights).map(([file, estimatedMs]) => ({ label: file, files: [file], estimatedMs }));
@@ -62,12 +67,14 @@ describe('test shard selection', () => {
     const over = [groups.map(group => ({ ...group, estimatedMs: excessive[group.label]! })), ...plans.slice(1)];
     expect(() => assertNodeShardHeadroom(over, 900_000, excessive, { runs: [] })).toThrow('with headroom');
   });
+
   test('retains recorded node process wall time when splitting a file into balancing units', () => {
     for (const [index, sample] of nodeDurationSamples(nodeWorkload).entries()) {
       const elapsed = nodeWorkload.runs[index]!.shards.flatMap(shard => shard.groups).reduce((sum, group) => sum + group.milliseconds, 0);
       expect(Object.values(sample.files).reduce((sum, milliseconds) => sum + milliseconds, 0)).toBeCloseTo(elapsed, 5);
     }
   });
+
   test('rejects incomplete measurements, missing weights and exhausted group headroom', () => {
     const group = { label: 'fixture', files: ['first', 'second'], estimatedMs: 20 };
     const plans = [[group], [], [], [], []];
@@ -81,6 +88,7 @@ describe('test shard selection', () => {
     const incomplete = { runs: [{ ...workload.runs[0]!, shardCount: 2 }] };
     expect(() => assertNodeShardHeadroom(plans, 900_000, { first: 10, second: 10 }, incomplete)).toThrow('incomplete node workload');
   });
+
   test('fits the recorded parity workload with startup allowance and headroom on every CI shard', () => {
     const workflow = parseYaml(fs.readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8'));
     const count = workflow.jobs.parity.strategy.matrix.shard.length;
@@ -129,6 +137,7 @@ describe('test shard selection', () => {
     expect(Math.max(...partitions.map((partition) => partition.reduce((sum, weight) => sum + weight, 0)))).toBe(100);
     expect(selectShard(groups, parseShard(undefined))).toEqual(groups);
   });
+
   test('refuses invalid and empty shards instead of reporting false success', () => {
     for (const value of ['', '0/4', '5/4', '1/0', '1/2x', '1.5/4', '1/257']) {
       expect(() => parseShard(value)).toThrow('Invalid shard');
@@ -137,10 +146,12 @@ describe('test shard selection', () => {
     expect(() => selectShard(['one'], parseShard('1/1'), () => NaN)).toThrow('weights');
   });
 });
+
 test('rejects the recorded main lineage case before the parent-column split', () => {
   const baseline = nodeWorkloadFixture.baselineTestRuns;
   expect(() => assertTestCaseHeadroom(baseline, () => baseline[0]!.tests[0]!.timeoutMs)).toThrow('111388.52ms exceeds 80% of its 120000ms test timeout');
 });
+
 test('gates recorded per-test CI timings against their own declared timeout', () => {
   const root = path.resolve(import.meta.dir, '../..');
   expect(() => assertTestCaseHeadroom(nodeWorkloadFixture.testRuns, test => declaredTestTimeout(root, test))).not.toThrow();
@@ -151,6 +162,7 @@ test('gates recorded per-test CI timings against their own declared timeout', ()
   expect(() => assertTestCaseHeadroom([{ source: 'overrun', tests: [{ ...test, milliseconds: timeoutMs * 0.8 + 1 }] }], value => declaredTestTimeout(root, value))).toThrow('80%');
   expect(() => declaredTestTimeout(root, { ...test, name: 'unrecorded test' })).toThrow('matching its recorded name');
 });
+
 test('the CI per-test command rejects an overrun from actual JUnit evidence', () => {
   const reports = fs.mkdtempSync(path.join(os.tmpdir(), 'per-test-evidence-'));
   try {
@@ -192,6 +204,7 @@ test('the CI per-test command rejects an overrun from actual JUnit evidence', ()
     expect(run().status).not.toBe(0);
   } finally { fs.rmSync(reports, { recursive: true, force: true }); }
 });
+
 test('transfers an introduced split duration floor once and preserves measured floors on refresh', () => {
   const workload: NodeWorkload = { runs: [{ source: 'recorded split', shardCount: 1, shards: [{ shard: 1, groups: [
     { label: 'combined', milliseconds: 250, files: { original: 250 }, splits: { original: { file: 'introduced', milliseconds: 125 } } },
@@ -202,6 +215,7 @@ test('transfers an introduced split duration floor once and preserves measured f
   expect(mergeNodeDurationWeights(weights, workload)).toEqual(weights);
   expect(mergeNodeDurationWeights({ original: 150, introduced: 200 }, workload)).toEqual({ original: 150, introduced: 200 });
 });
+
 
 test('replays a five-shard recording against a six-shard plan', () => {
   const shards = Array.from({ length: 5 }, (_, index) => ({

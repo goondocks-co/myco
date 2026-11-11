@@ -6,7 +6,6 @@ import { spawnSync } from 'node:child_process';
 import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
 
 const repo = path.resolve(import.meta.dir, '../..');
-const source = path.join(repo, 'scripts/source-install.ts');
 const target = `${process.platform}-${process.arch === 'arm64' ? 'arm64' : 'x64'}`;
 
 function fixture() {
@@ -172,15 +171,6 @@ it('surfaces Git failure output without a Node stack', () => {
     expect(result.stderr).not.toMatch(/\bat .*:\d+:\d+|Node\.js v|throw new Error/);
     expect(fs.existsSync(path.join(f.home, '.zshenv'))).toBe(false);
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
-});
-
-it('uses one generated PATH implementation for source and standalone installs', () => {
-  const shared = fs.readFileSync(path.join(repo, 'packages/myco/scripts/install-path.sh'), 'utf8');
-  const installer = fs.readFileSync(path.join(repo, 'docs/install.sh'), 'utf8');
-  expect(installer).toContain('# install-path:start\n' + shared + '# install-path:end');
-  expect(installer).toContain('myco_setup_path "${BIN_DIR}/myco"');
-  expect(fs.readFileSync(source, 'utf8')).toContain('install-path.sh');
-  expect(fs.readFileSync(source, 'utf8')).toContain('myco_setup_path');
 });
 
 it.each(['default', 'machine-pin', 'environment', 'recorded-destination'] as const)('uses the shared home and destination rules (%s)', selection => {

@@ -1,4 +1,4 @@
-// A failed test file is rerun once when its failure is only one of these infrastructure faults.
+// A failed test file is rerun once when its own JUnit failure is only an infrastructure fault.
 import { stripVTControlCharacters } from 'node:util';
 
 const MINIFLARE_PROXY = /miniflare|proxy\.worker|workerd/i;
@@ -23,42 +23,41 @@ function hasUnrelatedFailure(log) {
     || /(?:^|\n)error:\s+expect\(/.test(log);
 }
 
+/** A stack frame in `file`, as Bun writes it inside a `<failure>` body. */
+export function failureStackInFile(text, file) {
+  const base = file.split(/[/\\]/).pop();
+  if (!base) return false;
+  const quoted = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(?:^|\\n)\\s*at [^\\n]*(?:${quoted(file)}|${quoted(base)}):\\d+`);
+  return pattern.test(stripVTControlCharacters(text));
+}
+
 /**
- * Files in one phase whose own failure text is only an infrastructure fault.
- * `failures` are `{ file, message }`. A phase of one file uses the whole log.
- * A failure that names no file is not retried.
+ * Files whose every JUnit failure body is only an infrastructure fault and names a stack frame in that file.
+ * `failures` are `{ file, body }`. A log is never read here.
  */
-export function retryableInfrastructureFaults({ log, failures, files }) {
+export function retryableInfrastructureFaults({ failures }) {
   const grouped = new Map();
   for (const failure of failures) {
-    const file = failure.file || (files.length === 1 ? files[0] : '');
-    if (!file) continue;
-    const messages = grouped.get(file) ?? [];
-    messages.push(failure.message ?? '');
-    grouped.set(file, messages);
-  }
-  if (grouped.size === 0 && files.length === 1 && infrastructureFaultSignature(log)) {
-    grouped.set(files[0], ['']);
+    if (!failure.file) continue;
+    const bodies = grouped.get(failure.file) ?? [];
+    bodies.push(failure.body ?? '');
+    grouped.set(failure.file, bodies);
   }
   const retry = [];
-  for (const [file, messages] of grouped) {
-    const text = files.length === 1 ? `${messages.join('\n')}\n${log}` : excerptForFile(log, file, messages.join('\n'));
-    const signature = infrastructureFaultSignature(text);
-    if (signature) retry.push({ file, signature });
+  for (const [file, bodies] of grouped) {
+    const signatures = bodies.map((body) => infrastructureFaultSignature(body));
+    if (signatures.some((signature) => !signature)) continue;
+    if (bodies.some((body) => !failureStackInFile(body, file))) continue;
+    retry.push({ file, signature: signatures[0] });
   }
   return retry;
 }
 
-function excerptForFile(log, file, message) {
-  const lines = log.split('\n');
-  const name = file.split('/').pop();
-  const chunks = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    if (lines[index].includes(file) || (name && lines[index].includes(name))) {
-      chunks.push(lines.slice(Math.max(0, index - 8), Math.min(lines.length, index + 20)).join('\n'));
-    }
-  }
-  return [message, chunks.join('\n')].filter(Boolean).join('\n');
+/** Bun reported an error the JUnit file does not carry: `N error` with N > 0, or a load error between tests. */
+export function logHasUncarriedError(log) {
+  const text = stripVTControlCharacters(log);
+  return /^\s*[1-9]\d*\s+error\b/m.test(text) || text.includes('# Unhandled error between tests');
 }
 
 /** One step-summary line for a file rerun. */
@@ -66,13 +65,19 @@ export function infrastructureRetrySummary(file, signature) {
   return `- Infrastructure retry: ${file} (${signature})`;
 }
 
-/** Join passing rerun reports into one JUnit document the runner can score. */
-export function combineJunitReports(xmls) {
-  const suites = [];
-  for (const xml of xmls) {
-    const found = xml.match(/<testsuite\b[^>]*>[\s\S]*?<\/testsuite>/g);
-    if (!found?.length) throw new Error('retry report has no testsuite');
-    suites.push(...found);
-  }
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n${suites.join('\n')}\n</testsuites>\n`;
+/** Replace one file's `<testsuite>` entries with the suites from its rerun. Other suites stay. */
+export function replaceFileSuites(xml, file, rerunXml) {
+  const replacement = rerunXml.match(/<testsuite\b[^>]*>[\s\S]*?<\/testsuite>/g);
+  if (!replacement?.length) throw new Error('retry report has no testsuite');
+  const base = file.split(/[/\\]/).pop();
+  let replaced = 0;
+  const next = xml.replace(/<testsuite\b[^>]*>[\s\S]*?<\/testsuite>/g, (suite) => {
+    const attr = suite.match(/\bfile="([^"]*)"/)?.[1] ?? '';
+    const matches = attr === file || attr === base || (base && (attr.endsWith(`/${base}`) || attr.endsWith(`\\${base}`)));
+    if (!matches) return suite;
+    replaced += 1;
+    return replaced === 1 ? replacement.join('\n') : '';
+  });
+  if (replaced === 0) throw new Error(`retry report has no suite for ${file}`);
+  return next;
 }

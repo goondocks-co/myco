@@ -4,7 +4,9 @@ The CI workflow has two scopes, and the `check` job is the one required result o
 a parity smoke (`scripts/ci-scopes.mjs`), a small UI smoke, a Windows smoke, hook startup checks and container checks.
 Darwin release-recipe build and verification jobs run when build or release inputs change. The build job also runs
 `npm run check:test-budget`. That fails a change whose pull request plan is over the node runner budget in
-`scripts/check-test-budget.mjs`, or whose test-to-product line ratio rises while the ratio is above 1.0. Make room by
+`scripts/check-test-budget.mjs`, or whose test-to-product line ratio rises while the ratio is above 1.0. Each plan
+file is charged at the larger of its declared weight and its recorded CI time, and a file with no recorded time is
+charged at least the floor beside that budget. The ratio counts non-blank, non-comment lines. Make room by
 deleting or demoting tests, never by raising the budget.
 
 **The full run** (nightly on main through `.github/workflows/nightly.yml`, a `full-ci` pull request label, or a release
