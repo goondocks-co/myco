@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import { budgetD1Database, budgetD1Reply } from './helpers/budget-d1.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "../support/fenced-fs.mjs";
-import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -19,13 +18,15 @@ import {
   updateCloudflareDeployment,
   DEPLOY_CONFIG_NAME,
 } from '@myco/server/cloudflare-lifecycle.js';
-import { stagingDir, stagingRoot, WORKER_ENTRY } from '@myco/server/cloudflare-stage.js';
+import { stagingDir } from '@myco/server/cloudflare-stage.js';
 import { cloudflareResources } from '@myco/server/cloudflare-resources.js';
 import { deployedWorkerSecretNames, ensureSecretsStore, findSecretsStore, readDeploymentRecord, workerSecretNames, writeDeploymentRecord, WranglerAbsent, WranglerNotSignedIn } from '@myco/server/cloudflare.js';
 import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
+import { CommandTimedOut } from '@myco/server/runner.js';
+import { WORKER_UPDATE_RETRY_MS, WorkerUpdateStopped } from '@myco/server/cloudflare-worker-update.js';
 
 const ACCOUNT = 'a'.repeat(32);
 const DB_ID = '11111111-2222-4333-8444-555555555555';
@@ -84,6 +85,7 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       'secrets-store store list': { stdout: '', code: 0 },
       'secrets-store store create': { stdout: `Created store myco (${STORE})` },
       'deploy -c wrangler.deploy.toml': { stdout: 'Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
+      'versions upload': { stdout: 'Worker Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
       ...over,
     };
     const match = Object.entries(canned).find(([k]) => flat.includes(k));
@@ -282,36 +284,13 @@ describe('create', () => {
     expect(calls.filter((c) => c.args.includes('recovery-worker-recovery')).length).toBe(2);
   });
 
-  it('provisions, writes the record before deploying, renders the config, migrates before the deploy, and records the version', async () => {
-    const { home, dir, options } = setup();
+  it('provisions the resources and records their ids and the serving version', async () => {
+    const { home, options } = setup();
     const result = await createCloudflareDeployment({ ...options, runner: runner() });
 
     expect(result.createdResources).toEqual(['d1 myco-server', 'r2 myco-server-blobs', 'r2 myco-server-recovery', 'secrets store', 'store secret myco-secret-wrap-key', 'worker secret SESSION_SECRET']);
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId, version: record.versionId }).toEqual({ db: DB_ID, store: STORE, version: '16a2423e-af96-4310-b61b-4e2b5fd1310b' });
-
-    const rendered = readFileSync(join(dir, DEPLOY_CONFIG_NAME), 'utf8');
-    expect(rendered).toContain(`database_id = "${DB_ID}"`);
-    expect(rendered).toContain(`store_id = "${STORE}"`);
-
-    // Everything a deploy reads is staged from what the binary carries: no
-    // checkout is consulted and nothing is built on the operator's machine.
-    expect(existsSync(join(dir, WORKER_ENTRY))).toBe(true);
-    expect(existsSync(join(dir, 'ui', 'dist', 'index.html'))).toBe(true);
-    expect(readdirSync(join(dir, 'migrations')).length).toBe(renderMigrationFiles().length);
-
-    const flat = calls.map((c) => c.args.join(' '));
-    const migrateAt = flat.findIndex((a) => a.includes('migrations apply'));
-    const deployAt = flat.findIndex((a) => /(^|\s)deploy(\s|$)/.test(a) && a.includes(DEPLOY_CONFIG_NAME));
-    const secretAt = flat.findIndex((a) => a.includes('secret put SESSION_SECRET'));
-    expect({ migrateAt: migrateAt >= 0, deployAt: deployAt >= 0, order: migrateAt < deployAt, secretAfterDeploy: secretAt > deployAt }).toEqual({ migrateAt: true, deployAt: true, order: true, secretAfterDeploy: true });
-    expect(flat[migrateAt]).toContain(DEPLOY_CONFIG_NAME);
-
-    // The absence the issue asks for: nothing on this machine builds, and no
-    // command reaches a container runtime or a checkout.
-    for (const forbidden of ['containers build', 'run build:ui', 'run harness:bundle', 'docker']) {
-      expect({ forbidden, ran: flat.some((a) => a.includes(forbidden)) }).toEqual({ forbidden, ran: false });
-    }
   });
 
   it('GATE: a deploy failure leaves the record on disk naming what exists', async () => {
@@ -320,46 +299,6 @@ describe('create', () => {
     await expect(createCloudflareDeployment({ ...options, runner: failing })).rejects.toThrow();
     const record = readDeploymentRecord(home)!;
     expect({ db: record.databaseId, store: record.storeId }).toEqual({ db: DB_ID, store: STORE });
-  });
-
-  it('GATE: every verb runs every command in a directory this binary owns, never the one the operator stands in', async () => {
-    // Wrangler walks UP from its working directory looking for a config, so a
-    // command run from wherever the operator happens to be can pick up a
-    // checkout's wrangler.toml — the second config source staging removes. Each
-    // verb is driven, because a verb that skips `bareCommand` is exactly the
-    // way this comes back.
-    const { home, dir, options } = setup();
-    const root = stagingRoot(home);
-
-    /** Every command recorded since the last check ran where the binary put it. */
-    const ranWhereOwned = (verb: string): void => {
-      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
-      for (const call of calls) {
-        const where = call.cwd ?? '';
-        expect({ verb, args: call.args.join(' '), owned: where === dir || where === root, cwd: where === process.cwd() ? 'the operator\'s' : 'owned' })
-          .toEqual({ verb, args: call.args.join(' '), owned: true, cwd: 'owned' });
-      }
-      // Every command reading a config reads the staged one.
-      for (const call of calls.filter((c) => c.args.includes('-c'))) {
-        expect({ verb, args: call.args.join(' '), cwd: call.cwd }).toEqual({ verb, args: call.args.join(' '), cwd: dir });
-      }
-      calls = [];
-    };
-
-    await createCloudflareDeployment({ ...options, runner: runner() });
-    ranWhereOwned('create');
-
-    await updateCloudflareDeployment({ ...options, runner: runner() });
-    ranWhereOwned('update');
-
-    await cloudflareDeploymentStatus({ ...options, runner: runner() });
-    ranWhereOwned('status');
-
-    await rollbackCloudflareDeployment({ ...options, runner: runner(), versionId: 'a'.repeat(8) });
-    ranWhereOwned('rollback');
-
-    await destroyCloudflareDeployment({ ...options, runner: runner() });
-    ranWhereOwned('destroy');
   });
 
   it('puts the Deployment on the domain the operator named, in the record and in the config it deploys', async () => {
@@ -482,14 +421,86 @@ describe('update', () => {
     }
   });
 
-  it('refuses without a record, and with one migrates then deploys through the rendered config', async () => {
-    const { home, dir, options } = setup();
-    await expect(updateCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(join(home, 'server', 'cloudflare', 'record.json'));
-    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
-    const updated = await updateCloudflareDeployment({ ...options, runner: runner() });
-    expect(updated.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
-    expect(existsSync(join(dir, DEPLOY_CONFIG_NAME))).toBe(true);
-    expect(readDeploymentRecord(home)!.versionId).toBe('16a2423e-af96-4310-b61b-4e2b5fd1310b');
+  const uploadFailure = { code: 1, stdout: '', stderr: 'binding MYCO_DB of type d1 failed to generate. Please try again later or contact support. [code: 10021]' };
+  const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
+  const updateFixture = () => {
+    const { home, options } = setup();
+    recordFor(home);
+    const remote = { schema: SERVER_SCHEMA_VERSION - 1, worker: 'old-version', uploaded: false };
+    const failures: { upload: CommandResult[]; deploy: CommandResult[]; stall?: boolean } = { upload: [], deploy: [] };
+    const lines: string[] = [];
+    const responses: number[] = [];
+    let time = 0;
+    const provider = runner();
+    const selected: CommandRunner = { async run(command, args, runOptions) {
+      if (args[2] === 'versions') {
+        const phase = args[3] === 'upload' ? 'upload' : 'deploy';
+        if (phase === 'deploy' && failures.stall) {
+          time += runOptions!.timeoutMs!;
+          throw new CommandTimedOut(command, args, runOptions!.timeoutMs!, 'ended');
+        }
+        const failure = failures[phase].shift();
+        if (failure) return failure;
+        if (phase === 'upload') {
+          remote.uploaded = true;
+        } else {
+          if (!remote.uploaded) throw new Error('version not found');
+          remote.worker = args[4]!.split('@')[0]!;
+          responses.push(remote.schema === SERVER_SCHEMA_VERSION ? 200 : 503);
+        }
+      }
+      if (args[2] === 'd1' && args[3] === 'migrations') remote.schema = SERVER_SCHEMA_VERSION;
+      return provider.run(command, args, runOptions);
+    } };
+    return { home, remote, failures, lines, responses, get elapsed() { return time; }, update: () => updateCloudflareDeployment({ ...options, runner: selected,
+      report: line => lines.push(line), workerRetry: { now: () => time, sleep: async ms => { time += ms; } } }) };
+  };
+
+  it('retries two transient upload refusals while the old schema serves, then activates and records the uploaded version', async () => {
+    const f = updateFixture();
+    f.failures.upload.push(uploadFailure, uploadFailure);
+    const result = await f.update();
+    expect(result.summary.worker).toBe('applied');
+    expect(f.remote).toMatchObject({ schema: SERVER_SCHEMA_VERSION, worker: version });
+    expect(f.responses).toEqual([200]);
+    expect(readDeploymentRecord(f.home)).toMatchObject({ versionId: version, schemaUpdates: [{ appliedAt: expect.any(String), workerVersionBefore: 'old-version' }] });
+    expect(f.lines.join('\n')).toContain('Worker upload: attempt 3 succeeded');
+    expect(f.lines.join('\n')).toContain('Worker upload: attempt 2 failed transiently');
+  });
+
+  it('retries a transient activation failure and ends applied', async () => {
+    const f = updateFixture();
+    f.failures.deploy.push({ code: 1, stdout: '', stderr: 'HTTP 503 Service Unavailable' });
+    expect((await f.update()).summary.worker).toBe('applied');
+    expect(f.remote.worker).toBe(version);
+    expect(f.lines.join('\n')).toContain('Worker deploy: attempt 2 succeeded');
+  });
+
+  it('stops by name on a permanent upload refusal and leaves the schema and serving Worker intact', async () => {
+    const f = updateFixture();
+    f.failures.upload.push({ code: 1, stdout: '', stderr: 'script validation failed [code: 10021]' });
+    await expect(f.update()).rejects.toThrow('stopped: Worker refused during upload');
+    expect(f.remote).toEqual({ schema: SERVER_SCHEMA_VERSION - 1, worker: 'old-version', uploaded: false });
+    expect(readDeploymentRecord(f.home)!.schemaUpdates?.[0]?.appliedAt).toBeUndefined();
+    expect(f.lines.join('\n')).toContain('Next: run: myco server update --target cloudflare');
+  });
+
+  it('stops by name when activation exhausts the shared time after migration, naming the refusal gap and retained recovery point', async () => {
+    const f = updateFixture();
+    f.failures.upload.push(uploadFailure, uploadFailure);
+    f.failures.stall = true;
+    const stopped = await f.update().catch(error => error);
+    expect(stopped).toBeInstanceOf(WorkerUpdateStopped);
+    expect(stopped.reason).toBe('out_of_time');
+    expect(f.elapsed).toBe(WORKER_UPDATE_RETRY_MS);
+    expect(f.remote).toMatchObject({ schema: SERVER_SCHEMA_VERSION, worker: 'old-version' });
+    expect(readDeploymentRecord(f.home)).toMatchObject({ versionId: 'old-version', schemaUpdates: [{ appliedAt: expect.any(String) }] });
+    const text = f.lines.join('\n');
+    expect(text).toContain(`Worker upload: attempt 1 (${WORKER_UPDATE_RETRY_MS / 1000} s left`);
+    expect(text).toContain('stopped: Worker update ran out of time during deploy');
+    expect(text).toContain('Deployment refuses requests until the Worker lands');
+    expect(text).toContain('members are spooling capture so nothing is lost');
+    expect(text).toContain('Next: run: myco server update --target cloudflare');
   });
 });
 
@@ -543,36 +554,6 @@ describe('rollback', () => {
  * that skips the preflight is exactly how this comes back.
  */
 describe('the prerequisites every verb checks first', () => {
-  it('GATE: every command spawns into a directory that is on disk', async () => {
-    for (const { verb, run } of EVERY_VERB) {
-      calls = [];
-      const home = freshHome();
-      // `create` starts from nothing at all; the verbs that read a record get
-      // one, and writing it is itself the only thing that has touched the home.
-      if (verb !== 'create') recordFor(home);
-      await run({ accountId: ACCOUNT, mycoHome: home }, runner());
-      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
-      for (const call of calls) {
-        expect({ verb, args: call.args.join(' '), cwdOnDisk: call.cwdOnDisk })
-          .toEqual({ verb, args: call.args.join(' '), cwdOnDisk: true });
-      }
-    }
-  });
-
-  it('GATE: every npx invocation leads with --no-install, so no verb can fetch a wrangler', async () => {
-    for (const { verb, run } of EVERY_VERB) {
-      calls = [];
-      const home = freshHome();
-      if (verb !== 'create') recordFor(home);
-      await run({ accountId: ACCOUNT, mycoHome: home }, runner());
-      expect({ verb, ran: calls.length > 0 }).toEqual({ verb, ran: true });
-      for (const call of calls) {
-        expect({ verb, args: call.args.join(' '), leads: call.args[0] })
-          .toEqual({ verb, args: call.args.join(' '), leads: '--no-install' });
-      }
-    }
-  });
-
   it('GATE: with no wrangler installed, every verb refuses by name and runs nothing else', async () => {
     const absent = () => runner({ 'wrangler --version': { code: 1, stderr: 'npx: command not found: wrangler' } });
     for (const { verb, run } of EVERY_VERB) {

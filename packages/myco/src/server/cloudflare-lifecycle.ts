@@ -51,10 +51,11 @@ import { renderDeployConfig } from './deploy-config.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { cloudflareOperation } from './cloudflare-operation.js';
 import { applyCloudflareSchema } from './cloudflare-schema.js';
-import { schemaStopLines, SchemaUpdateStopped, type OverloadRetry, type SchemaStop, type WorkerLeft } from './cloudflare-migration-pacing.js';
+import { schemaStopLines, SchemaUpdateStopped, workerSchemaEvidence, type OverloadRetry, type SchemaStop, type WorkerLeft } from './cloudflare-migration-pacing.js';
 import { getPluginVersion } from '../version.js';
 import { systemRunner } from './runner.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { CloudflareWorkerUpdate, WorkerUpdateStopped, type WorkerRetry } from './cloudflare-worker-update.js';
 
 export { DEPLOY_CONFIG_NAME } from './cloudflare-stage.js';
 
@@ -64,6 +65,8 @@ export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' |
   report?: (line: string) => void;
   /** How an overloaded D1 is waited out between migration attempts. */
   overloadRetry?: OverloadRetry;
+  /** Clock and backoff for the bounded Worker upload and activation retries. */
+  workerRetry?: WorkerRetry;
 }
 
 /** Admit the held Deployment's account before a lifecycle command can reach a provider. */
@@ -287,13 +290,10 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
 });
 
 /**
- * Migrate then deploy, in the order the fail-closed schema window expects, and
- * record the version.
+ * Upload without activation, migrate, then activate the exact uploaded version.
  *
- * Nothing is waited for: the Worker carries no runtime, so a deploy replaces
- * nothing that holds a run. A request in flight finishes on the version that
- * took it, and a run executes on a worker attached from elsewhere that this
- * command never touches.
+ * A request in flight finishes on the version that took it. Runs execute on
+ * registered runners, which this command never touches.
  */
 export interface CloudflareUpdateSummary {
   releaseBefore: string | undefined;
@@ -305,7 +305,10 @@ export interface CloudflareUpdateSummary {
   schemaReached?: number;
   /** Why the schema stopped short, and the Worker the update left serving. */
   schemaStop?: { stop: SchemaStop; worker: WorkerLeft };
-  worker: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied';
+  worker: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | WorkerUpdateStopped['outcome'];
+  upload: 'not attempted' | 'attempted; outcome unknown' | { versionId: string };
+  workerStop?: WorkerUpdateStopped;
+  workerSchemaBefore?: number;
   record: 'updated' | 'not updated';
   resources: Array<{ operation: string; state: 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'already exists' }>;
   recordPath: string;
@@ -329,17 +332,28 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
     `Cloudflare update (releases recorded before update or acknowledged by deploy; schemas observed or acknowledged): from ${summary.releaseBefore ?? 'unknown'}/${summary.schemaBefore ?? 'unknown'} to ${resultingRelease}/${resultingSchema}.`,
     `  Schema: ${summary.schema} (target ${summary.schemaTarget}${summary.schemaReached === undefined ? '' : `; live schema ${summary.schemaReached}`}).`,
     `  Worker: ${summary.worker} (target release ${summary.releaseTarget}).`,
+    typeof summary.upload === 'string' ? `  Worker upload: ${summary.workerStop?.phase === 'upload' ? summary.workerStop.outcome : summary.upload}.`
+      : `  Worker version ${summary.upload.versionId} uploaded without activation.`,
     `  Local deployment record: ${summary.record}.`,
     `  Resources: ${summary.resources.length === 0 ? 'no changes attempted' : summary.resources.map((r) => `${r.operation}: ${r.state}`).join('; ')}.`,
     summary.bookmark === undefined ? '  No new recovery bookmark recorded.' : `  Bookmark ${summary.bookmark} recorded in ${summary.recordPath}.`,
   ];
   if (['not attempted', 'refused: not applied'].includes(summary.worker) && ['not attempted', 'unchanged', 'refused: not applied', 'failed: not applied'].includes(summary.schema)
-    && summary.resources.every((r) => ['already exists', 'refused: not applied'].includes(r.state))) {
+    && summary.upload === 'not attempted' && summary.resources.every((r) => ['already exists', 'refused: not applied'].includes(r.state))) {
     lines.push('Nothing changed in Cloudflare; a rerun is safe. A recorded bookmark is a recovery point, not an applied migration.');
-  } else if (summary.schema.includes('unknown') || summary.worker.includes('unknown') || summary.resources.some((r) => r.state.includes('unknown'))) {
+  } else if (summary.workerStop === undefined && (summary.schema.includes('unknown') || summary.worker.includes('unknown') || summary.resources.some((r) => r.state.includes('unknown')))) {
     lines.push('An attempted change has an unknown outcome; run myco server status --target cloudflare before retrying.');
   }
   if (summary.schemaStop !== undefined) lines.push(...schemaStopLines(summary.schemaStop.stop, summary.schemaStop.worker));
+  if (summary.workerStop !== undefined) {
+    lines.push(summary.workerStop.message);
+  }
+  const observedSchema = summary.schemaReached ?? summary.schemaBefore;
+  const servingSchema = summary.workerSchemaBefore ?? summary.schemaBefore;
+  if (summary.worker !== 'applied' && (summary.schema === 'applied' || (observedSchema !== null && servingSchema !== null && observedSchema > servingSchema))) {
+    lines.push('The schema has advanced. The Deployment refuses requests until the Worker lands; members are spooling capture so nothing is lost.');
+    if (summary.workerStop?.phase === 'deploy') lines.push('Activation was not acknowledged and may still have landed. Check: myco server status --target cloudflare');
+  }
   if (summary.worker === 'applied' && summary.record === 'not updated') {
     lines.push('The Worker is live; the local record was not updated; rerun myco server update --target cloudflare or check myco server status --target cloudflare.');
   }
@@ -349,7 +363,7 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
 export const updateCloudflareDeployment = lifecycleOperation('update', async (options: LifecycleOptions, held): Promise<{ versionId: string | null; summary: CloudflareUpdateSummary }> => {
   const summary: CloudflareUpdateSummary = {
     releaseBefore: undefined, releaseTarget: getPluginVersion(), schemaBefore: null, schemaTarget: SERVER_SCHEMA_VERSION,
-    schema: 'not attempted', worker: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
+    schema: 'not attempted', worker: 'not attempted', upload: 'not attempted', record: 'not updated', resources: [], recordPath: deploymentRecordPath(options.mycoHome),
   };
   const runner = options.runner ?? systemRunner();
   options = { ...options, runner: {
@@ -375,9 +389,12 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     let record = held;
     if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} \`myco server create --target cloudflare --account-id <id>\` provisions one.`);
     summary.releaseBefore = record.release;
+    summary.workerSchemaBefore = workerSchemaEvidence(record)?.schema;
     await preflight(options);
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
+    const worker = new CloudflareWorkerUpdate({ ...withConfig, report: options.report, workerRetry: options.workerRetry });
+    let uploadedVersion: string | undefined;
     record = await applyCloudflareSchema({ ...withConfig, record,
       persist: (next) => {
         writeDeploymentRecord(next, options.mycoHome);
@@ -393,25 +410,34 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
       prepare: async (admitted) => {
         await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
         await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
+        summary.upload = 'attempted; outcome unknown';
+        uploadedVersion = await worker.upload();
+        summary.upload = { versionId: uploadedVersion };
         return admitted;
       },
     });
     summary.worker = 'attempted; outcome unknown';
-    const deployed = await deployWorker(withConfig);
+    if (uploadedVersion === undefined) throw new Error('Worker activation refused: no uploaded version');
+    await worker.deploy(uploadedVersion);
     summary.worker = 'applied';
 
     writeDeploymentRecord({
       ...record, recoveryBucketName: resources.recoveryBucketName,
-      release: summary.releaseTarget, versionId: deployed.versionId, deployedAt: new Date().toISOString(),
+      release: summary.releaseTarget, versionId: uploadedVersion, deployedAt: new Date().toISOString(),
     }, options.mycoHome);
     summary.record = 'updated';
+    await worker.triggers();
     try {
       if (!(await workerSecretNames({ ...bareCommand(options), workerName: record.workerName })).includes(BACKUP_CREDENTIAL_NAME)) options.report?.(BACKUP_CREDENTIAL_HINT);
     } catch {
       options.report?.(`Update completed, but the backup access key could not be checked. Run \`${BACKUP_CREDENTIAL_COMMAND}\` on the machine that manages this server to check and replace it.`);
     }
-    return { versionId: deployed.versionId, summary };
+    return { versionId: uploadedVersion, summary };
   } catch (cause) {
+    if (cause instanceof WorkerUpdateStopped) {
+      summary.workerStop = cause;
+      if (cause.phase === 'deploy') summary.worker = cause.outcome;
+    }
     if (cause instanceof CloudflareAuthenticationError) {
       if (summary.worker === 'attempted; outcome unknown') summary.worker = 'refused: not applied';
     }
