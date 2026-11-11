@@ -3,6 +3,9 @@ import { admissionReady } from '../db/runs/live.js';
 import { todayProjects, todayRunning, todayQueued, type ProjectCursor } from '../db/runs/now.js';
 import { failureReasons, unresolvedFailures, NOW_WATCHED_TASKS } from '../db/runs/outcomes.js';
 import { unclaimedDue } from '../db/runs/unclaimed.js';
+import { readPulledWaiting } from './pulled-waiting.js';
+import { currentPulledBudgetHold } from '../db/runs/pulled-budget-hold.js';
+import { pulledStages } from '../core/pulled-stages.js';
 import { todaySchedules, curationDispositions } from '../db/learning/curation-now.js';
 import { todayMarks } from '../db/meta/marks.js';
 /** Current work, waits and unresolved failures, with exact live totals and explicit page coverage. */
@@ -232,10 +235,12 @@ async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly Wo
   recovery: RecoveryProducerStatus | null): Promise<NowWaiting[]> {
   const waiting: NowWaiting[] = [];
   const holds = await readBudgetHolds(env.db);
+  const pulledHold = await currentPulledBudgetHold(env.db, { levels: pulledStages().map(stage => stage.level), now });
   const held = holds.heldHeads ?? [];
-  const tooSmall = held.find((head) => head.reason === 'budget_too_small');
-  if (held.length > 0) {
-    waiting.push({ key: 'budget', projectId: null, what: 'Automatic work', count: null, since: null, nextAt: null,
+  const tooSmall = held.find((head) => head.reason === 'budget_too_small')
+    ?? (pulledHold !== null && pulledHold.requiredUsd > holds.dailyUsd ? pulledHold : undefined);
+  if (held.length > 0 || pulledHold !== null) {
+    waiting.push({ key: 'budget', projectId: null, what: 'Automatic work', count: null, since: pulledHold?.at ?? null, nextAt: null,
       why: tooSmall !== undefined && tooSmall.requiredUsd !== null
         ? `The next ${taskName(tooSmall.task).toLowerCase()} run needs about $${tooSmall.requiredUsd.toFixed(2)}, more than the whole daily budget of $${holds.dailyUsd.toFixed(2)}. Raise the daily budget in Settings.`
         : 'Paused: the rolling 24-hour budget has no room for the next automatic run. It resumes as earlier spending leaves the window.' });
@@ -266,6 +271,7 @@ const waitedWords = (ms: number): string => ms < 120 * MINUTE_MS ? plural(Math.f
 
 async function readNeeds(env: ServerEnv, projects: readonly string[], failingGroups: readonly FailingGroup[], fleet: readonly WorkerFleetRow[], now: number): Promise<NowNeed[]> {
   const unclaimed = await unclaimedDue(env.db, projects, now - UNCLAIMED_WAIT_MS);
+  const pulled = await readPulledWaiting(env, { projects, now, cutoff: now - UNCLAIMED_WAIT_MS });
   const pairs = projects.flatMap((projectId) => NOW_WATCHED_TASKS.map((task) => ({ projectId, task })));
   const failing = (await unresolvedFailures(env.db, pairs)).filter(failure =>
     failure.at >= now - OUTCOME_LOOKBACK_MS &&
@@ -312,6 +318,12 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
       what: `${taskName(due.task)} has waited ${waitedWords(now - due.since)} with no machine taking it`,
       why: `${due.runs === 1 ? 'One run is' : `${due.runs} runs are`} due. ${HELD_BY_WORDS.worker}`,
       at: due.since, runId: due.run_id, retryAt: null,
+    })),
+    ...pulled.map((due): NowNeed => ({
+      key: `pulled:${due.projectId}:${due.task}`, projectId: due.projectId,
+      what: `${due.task === CARD_TASK ? 'Summarize session turns' : taskName(due.task)} has waited ${waitedWords(now - due.since)} with no machine taking it`,
+      why: 'Open Runners to check that a machine is available and signed in to a coding agent.',
+      at: due.since, runId: null, retryAt: null,
     })),
   ];
 }

@@ -12,6 +12,7 @@ import type { BudgetHolds } from './budget.js';
 import type { RunErrorCode } from '../../core/reader-codes.js';
 import type { BindValue } from '../index.js';
 import { budgetClaimPredicate, type ClaimBudget } from './budget-policy.js';
+import { taskBudgetHeads } from './budget-heads.js';
 
 /** Readiness is read from the projection and never stored on a run. */
 export function storedQueueHold(holder: string): string | null {
@@ -103,15 +104,9 @@ export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, r
 }
 
 const budgetLeaf = read<[], { budget: number }>({ name: 'runs.taskBudgetLimit', sql: `SELECT ${effectiveBudgetSql()} AS budget` });
-const budgetHeads = read<[], { projectId: string; runId: string; task: string; requiredUsd: unknown; quotedAt: unknown }>({
-  name: 'runs.taskBudgetHeads', sql: `SELECT h.project_id AS projectId,h.oldest_run_id AS runId,h.task,
-    ${contextValue(BUDGET_QUOTE_USD_KEY)} AS requiredUsd,${contextValue(BUDGET_QUOTE_AT_KEY)} AS quotedAt
-    FROM task_runtime h JOIN agent_runs r ON r.project_id=h.project_id AND r.id=h.oldest_run_id
-    WHERE h.queued_count>0 AND ${taskHoldSql('h.hold_reason', 'h.origin')}='budget'`,
-});
 export async function readTaskBudgetHolds(db: RelationalStore): Promise<BudgetHolds> {
   const activation = await budgetActivation(db);
-  const [limits, heads] = await readSet(db, budgetLeaf.bind(), budgetHeads.bind());
+  const [limits, heads] = await readSet(db, budgetLeaf.bind(), taskBudgetHeads());
   const dailyUsd = limits[0]!.budget;
   return { ...activation, dailyUsd, heldHeads: activation.active ? heads.map(head => {
     const requiredUsd = typeof head.requiredUsd === 'number' && Number.isFinite(head.requiredUsd) && head.requiredUsd >= 0 ? head.requiredUsd : null;

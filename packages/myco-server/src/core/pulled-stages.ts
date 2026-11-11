@@ -23,6 +23,10 @@ interface SqlTerm { sql: string; params: unknown[] }
 /** One due item: its Project, the single-flight subject its run carries, and what its stage reasserts at the write. */
 export interface PulledItem { projectId: string; subject: string; key: string; observed: string | number | null }
 
+/** The bounded Project page already selected for the current work read, and its two distinct instants. */
+export interface PulledWaitScope { projects: readonly string[]; now: number; cutoff: number }
+export interface PulledWait { projectId: string; since: number }
+
 export interface PulledStage {
   /** Strict priority: a lower level is pulled before any higher one within E(worker). */
   readonly level: number;
@@ -38,6 +42,8 @@ export interface PulledStage {
   readonly candidates?: string;
   /** The Project's head at this stage. */
   head(db: RelationalStore, projectId: string, now: number): Promise<PulledItem | null>;
+  /** Due work's oldest deadline per requested Project, with readiness and admission evaluated now. */
+  waiting?(db: RelationalStore, scope: PulledWaitScope): Promise<PulledWait[]>;
   /** The run's input for the item, or null when it offers nothing to do. */
   build(env: ServerEnv, item: PulledItem, now: number): Promise<ClaimedInput | null>;
   /** What the claim's batch adds for the item; each statement holds its own condition on the run row the batch wrote. */
