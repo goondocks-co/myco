@@ -5,7 +5,7 @@ import { read, readSet } from '../index.js';
 export type ToolCallEventRow = { id: number; tool: string | null; durationMs: number | null; outcome: string | null; payload: string | null; recordedAt: number };
 export interface AttemptRecord {
   attemptId: string; claimedAt: number; total: number | null; overflow: number | null; unrecognized: string | null;
-  ownerKind: 'member' | 'runner'; runnerId: string | null; runnerName: string | null; memberId: string | null;
+  ownerKind: 'member' | 'runner'; runnerId: string | null; runnerName: string | null; memberId: string | null; waitedFor: string | null; waitedSince: number | null;
 }
 export interface CanopyMapRecord { revision: string; branch: string; commitId: string; generatedAt: number; sourceRunId: string; wroteMap: number }
 
@@ -18,7 +18,7 @@ const callsFirst = read<[project: string, run: string, event: string, limit: num
 const callsAfter = read<[project: string, run: string, event: string, limit: number, at: number, id: string], ToolCallEventRow>({ name: 'runDetail.callsAfter', sql:
   `${CALLS} AND recorded_at >= ?5 AND (recorded_at > ?5 OR (recorded_at = ?5 AND id > ?6)) ORDER BY recorded_at ASC, id ASC LIMIT ?4` });
 
-const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
+const ATTEMPT_COLUMNS = `a.attempt_id AS attemptId, a.claimed_at AS claimedAt, a.waited_for AS waitedFor, a.waited_since AS waitedSince, a.steps_total AS total, a.steps_overflow AS overflow, a.unrecognized,
   a.owner_kind AS ownerKind, a.runner_id AS runnerId, (SELECT r.name FROM runners r WHERE r.id = a.runner_id) AS runnerName,
   CASE WHEN a.owner_kind = 'member' THEN (SELECT c.member_id FROM member_credentials c WHERE c.id = a.leased_by) END AS memberId`;
 const latestAttempts = read<[project: string, run: string, limit: number], AttemptRecord>({ name: 'runDetail.latestAttempts', sql:

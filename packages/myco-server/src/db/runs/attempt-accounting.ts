@@ -10,7 +10,7 @@ import { workerLeaseAuthority } from '../runners/lease-authority.js';
 import { leaseShape, shapedStatements } from './statement-shapes.js';
 
 /** Restored attempt columns a destination may fill where its own row holds nothing. */
-export const RESTORE_CLAIM_FIELDS: ReadonlySet<string> = new Set(['claimed_at', 'leased_by', 'machine_id', 'owner_kind', 'runner_id', 'estimate_usd', 'cost_usd', 'cost_source', 'profile_json']);
+export const RESTORE_CLAIM_FIELDS: ReadonlySet<string> = new Set(['claimed_at', 'leased_by', 'machine_id', 'owner_kind', 'runner_id', 'estimate_usd', 'cost_usd', 'cost_source', 'profile_json', 'waited_for', 'waited_since']);
 
 const settlements = shapedStatements<Statement<BindValue[], never, 'write'>>();
 

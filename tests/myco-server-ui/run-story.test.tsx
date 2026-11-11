@@ -60,7 +60,7 @@ async function open(runId: string, detail: unknown, taskRuns: (url: URL) => RunP
 }
 
 const runner = (runnerId: string, name: string): RunAttempt['executor'] => ({ kind: 'runner', runnerId, name });
-const attempt = (attemptId: string, claimedAt: number, executor: RunAttempt['executor'], steps: RunAttempt['steps'] = null): RunAttempt => ({ attemptId, claimedAt, executor, steps });
+const attempt = (attemptId: string, claimedAt: number, executor: RunAttempt['executor'], steps: RunAttempt['steps'] = null): RunAttempt => ({ attemptId, claimedAt, executor, steps, waitedFor: null, waitedSince: null });
 const routeCall = (id: number, at: number): RunCall => ({ id, tool: '/runs/embedding-step', op: null, recordedAt: at, durationMs: null, status: 'success' });
 const story = (panel: HTMLElement) => within(panel).getByRole('region', { name: 'What happened' });
 const line = (panel: HTMLElement, key: string) => story(panel).querySelector<HTMLElement>(`[data-story-row="${key}"]`)!;
@@ -91,7 +91,10 @@ describe('What happened', () => {
     expect(grouped).toHaveLength(1);
     expect(grouped[0]!.textContent).toContain('Advanced the search index 8 times');
     expect(grouped[0]!.textContent).toContain('What each call did and how long it took were not recorded.');
-    expect(text).toContain('Silence for 6 min 46 s');
+    // No renewal was recorded for this run, so the gap in its calls is not told as silence.
+    expect(text).not.toContain('Silence for');
+    expect(line(panel, 'silence-end').textContent).toContain('No call, step or report for 6 min 46 s');
+    expect(line(panel, 'silence-end').textContent).toContain('Renewals of its hold were not recorded for this run');
     const inferred = line(panel, 'inferred');
     expect(inferred.textContent).toContain('No call for 6 min 46 s, past its time limit, so Myco ended it');
     expect(inferred.querySelector('[data-source]')!.textContent).toContain('Myco inferred');
@@ -104,6 +107,32 @@ describe('What happened', () => {
     expect(exact).toContain('att_5e13c0b7');
     expect(exact).toContain('rn_7f3a91c2');
     expect(exact).toContain('machine_unresponsive');
+  });
+
+  it('measures the silence from the last renewal of the run’s hold, and names how long Myco heard nothing before it ended the run', async () => {
+    const cutOff = searchRunCutOff();
+    const renewed = cutOff.run.completedAt! - 6 * MINUTE - 46 * SECOND;
+    const panel = await open('run_embed1914', { ...cutOff, run: { ...cutOff.run, lastRenewedAt: renewed } });
+    const rows = [...story(panel).querySelectorAll<HTMLElement>('[data-story-row]')].map((row) => row.dataset.storyRow);
+    expect(rows.slice(rows.indexOf('renewed'))).toEqual(['renewed', 'silence-end', 'inferred', 'end', 'no-steps']);
+    expect(line(panel, 'renewed').textContent).toContain('Last renewed its hold on this run');
+    expect(line(panel, 'renewed').querySelector('[data-source]')!.textContent).toContain('Myco saw');
+    expect(line(panel, 'silence-end').textContent).toContain('Silence for 6 min 46 s');
+    expect(line(panel, 'inferred').textContent).toContain('Myco heard nothing for 6 min 46 s and its time limit passed, so Myco ended it');
+    expect(rows.filter((key) => key!.startsWith('silence-'))).toEqual(['silence-end']);
+  });
+
+  it('says what a run waited for in the queue and for how long, from the hold its claim recorded', async () => {
+    const queued = NOW - 40 * MINUTE;
+    const claimed = queued + 12 * MINUTE;
+    const detail = runDetail(runRow({ id: 'run_title01', task: 'title-summary', status: 'completed', queuedAt: queued, startedAt: claimed, completedAt: claimed + 30 * SECOND, result: 'produced' }), {
+      attempts: [{ ...attempt('att_title', claimed, runner('rn_c04d11e8', 'studio-m4')), waitedFor: 'budget' }], attemptCount: 1,
+      outcomeEvidence: { hasReport: true, hasAudit: null, artifactPresent: null, skipSupported: null, targetSessionId: null },
+    });
+    const panel = await open('run_title01', detail);
+    const waited = line(panel, 'waited');
+    expect(waited.textContent).toContain('Waited 12 min to be taken');
+    expect(waited.textContent).toContain('While it waited, Myco said: “Waiting until the daily budget has room for this run.”');
   });
 
   it('says in reader words what each recorded route call did and how long it took, under one row or beside a single call', async () => {
@@ -236,12 +265,13 @@ describe('the facts the panel states', () => {
     expect(keptWords).not.toContain('stopped before writing anything');
   });
 
-  it('marks a silence Myco measured between its own records as Myco saw, and an ending that changed nothing as Myco inferred', async () => {
+  it('marks a gap Myco measured between its own records as Myco saw, never as silence where renewals were not recorded, and an ending that changed nothing as Myco inferred', async () => {
     const cutOff = await open('run_embed1914', searchRunCutOff());
-    const silence = story(cutOff).querySelector('[data-story-row="silence-end"]')!;
-    expect(silence.textContent).toContain('Silence for 6 min 46 s');
-    expect(silence.querySelector('[data-source]')!.textContent).toContain('Myco saw');
-    expect(silence.textContent).toContain('Whether its runner kept checking in is not recorded');
+    const gap = story(cutOff).querySelector('[data-story-row="silence-end"]')!;
+    expect(gap.textContent).toContain('No call, step or report for 6 min 46 s');
+    expect(gap.textContent).not.toContain('Silence');
+    expect(gap.querySelector('[data-source]')!.textContent).toContain('Myco saw');
+    expect(gap.textContent).toContain('whether its machine stayed in touch in this time is not known');
     cleanup();
 
     const idle = await open('run_idle_index', searchRun('run_idle_index', { status: 'completed', result: 'unchanged' }));
@@ -256,6 +286,35 @@ describe('the facts the panel states', () => {
     });
     const panel = await open('run_lapsed', lapsed);
     expect(line(panel, 'inferred').textContent).toContain('Its hold on the run ran out, so Myco ended it');
+    expect(panel.textContent).not.toContain('stopped renewing');
+  });
+
+  it('tells a run that went back to the queue as a second wait, never as silence', async () => {
+    const queued = NOW - 6 * 60 * MINUTE;
+    const first = queued + 60 * MINUTE;
+    const back = first + 3 * 60 * MINUTE;
+    const second = back + 30 * MINUTE;
+    const detail = runDetail(runRow({ id: 'run_again', task: 'title-summary', status: 'completed', queuedAt: queued, startedAt: second, completedAt: second + 30 * SECOND, result: 'produced' }), {
+      run: { lastRenewedAt: second + 20 * SECOND },
+      attempts: [{ ...attempt('att_one', first, runner('rn_c04d11e8', 'studio-m4')), waitedFor: 'worker', waitedSince: queued },
+        { ...attempt('att_two', second, runner('rn_c04d11e8', 'studio-m4')), waitedFor: 'worker', waitedSince: back }], attemptCount: 2,
+      outcomeEvidence: { hasReport: true, hasAudit: null, artifactPresent: null, skipSupported: null, targetSessionId: null },
+    });
+    const panel = await open('run_again', detail);
+    const rows = [...story(panel).querySelectorAll<HTMLElement>('[data-story-row]')].map((row) => row.dataset.storyRow);
+    expect(rows.slice(0, 6)).toEqual(['queued', 'waited', 'claim-att_one', 'requeued-att_two', 'waited-requeued-att_two', 'claim-att_two']);
+    expect(line(panel, 'requeued-att_two').textContent).toContain('Back in the queue');
+    expect(line(panel, 'waited-requeued-att_two').textContent).toContain('Waited 30 min to be taken');
+  });
+
+  it('names how long Myco heard nothing before a lapsed hold ended the run, where the latest renewal was kept', async () => {
+    const claimed = NOW - 70 * MINUTE;
+    const lapsed = runDetail(runRow({ id: 'run_lapsed', task: 'extract-curate', status: 'failed', failed: true, result: 'failed', startedAt: claimed, completedAt: claimed + 3 * MINUTE }), {
+      run: { errorCode: 'lease_lapsed', error: 'the lease lapsed', lastRenewedAt: claimed + 90 * SECOND },
+      attempts: [attempt('att_lapsed', claimed, runner('rn_b82ef603', 'cloud-vm-1'))], attemptCount: 1,
+    });
+    const panel = await open('run_lapsed', lapsed);
+    expect(line(panel, 'inferred').textContent).toContain('Myco heard nothing for 1 min 30 s and its hold on the run ran out, so Myco ended it');
     expect(panel.textContent).not.toContain('stopped renewing');
   });
 

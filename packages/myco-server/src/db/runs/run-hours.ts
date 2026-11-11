@@ -12,8 +12,7 @@
  *
  * A value a run never recorded (no task, runner, agent or error code) is stored as '' and read as "none recorded".
  */
-import type { RelationalStore } from '../../core/adapters.js';
-import { commit, write } from '../index.js';
+import { write } from '../index.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { jsonKeys, trigger, type Trigger } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
@@ -104,12 +103,5 @@ const expiredFacts = write<[before: number, limit: number], { gone: number }>({ 
 const expiredHours = write<[before: number, limit: number], { gone: number }>({ name: 'runHours.pruneHours', sql: `DELETE FROM run_hour WHERE (${BUCKET.join(',')}) IN
   (SELECT ${BUCKET.join(',')} FROM run_hour WHERE hour<?1 ORDER BY hour LIMIT ?2) RETURNING 1 AS gone` });
 
-/**
- * Drop up to `limit` facts and up to `limit` hour rows from before the start of the hour holding `before`, oldest first:
- * how many went, and whether more wait. Facts and counts share that whole-hour boundary, so a kept fact keeps its count.
- */
-export async function pruneRunHours(db: RelationalStore, before: number, limit: number): Promise<{ changed: number; more: boolean }> {
-  const boundary = before - (before % HOUR_MS);
-  const [facts, hours] = await commit(db, expiredFacts.bind(boundary, limit), expiredHours.bind(boundary, limit));
-  return { changed: facts.results.length + hours.results.length, more: facts.results.length === limit || hours.results.length === limit };
-}
+/** Up to `limit` facts and up to `limit` hour rows from before the whole hour `boundary`, oldest first. */
+export const pruneRunHourStatements = (boundary: number, limit: number) => [expiredFacts.bind(boundary, limit), expiredHours.bind(boundary, limit)] as const;

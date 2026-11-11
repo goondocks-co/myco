@@ -110,6 +110,8 @@ export interface RunDetailFields extends RunFields {
   estimatedCostUsd: number | null;
   actualCostUsd: number | null;
   errorCode?: string | null;
+  /** When the machine holding it last renewed its hold on the run; absent or null when never recorded. */
+  lastRenewedAt?: number | null;
   /** Why the run failed in the reader's words, where the worker that ran it gave one. */
   errorReason?: string | null;
   error: string | null;
@@ -149,6 +151,10 @@ export interface RunAttempt {
   /** Who took the attempt: a runner by name, or the member whose worker credential claimed it. */
   executor: { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'legacy-worker'; memberId: string | null };
   steps: { total: number; received: number; overflow: number; unrecognized: UnrecognizedCount | null } | null;
+  /** The hold its run waited under in the queue before this attempt took it; null when none was recorded. */
+  waitedFor: string | null;
+  /** When the stay in the queue this attempt ended began; null when the run was never queued or it was not recorded. */
+  waitedSince: number | null;
 }
 
 /** One step a worker observed, metadata only: its target in its shaped form, where `…` marks words not kept. */
