@@ -4,24 +4,12 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript-v6';
 import { boundaryInventory, boundarySites, boundaryViolations, changeCountInventory, changeCountSites, changeCountViolations, gatedSites, staleStoreAllowances } from './helpers/db-boundary.js';
 
-/**
- * Files still allowed raw SQL or direct store calls. The coordinator owns this set: a lane only removes a file once it
- * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
- */
-const PENDING: ReadonlySet<string> = new Set([
-  'core/backup.ts',
-]);
-
-/** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
-const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
-]);
-
 const source = (text: string) => ts.createSourceFile('core/example.ts', text, ts.ScriptTarget.Latest, true);
 const inventory = (text: string) => new Map([['core/example.ts', boundarySites(source(text))]]);
 
-it('keeps SQL producers and store execution inside db, with a shrinking set of temporary exceptions', () => {
+it('keeps SQL producers and store execution inside db, naming every site outside it', () => {
   const root = fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url));
-  expect(boundaryViolations(boundaryInventory(root), PENDING)).toEqual([]);
+  expect(boundaryViolations(boundaryInventory(root))).toEqual([]);
 });
 
 it('names only allowances that still reach the store', () => {
@@ -33,7 +21,7 @@ it('counts direct store calls inside db but not SQL text, and leaves allowed and
   expect(gatedSites('db/runs/example.ts', sites).map(site => site.kind)).toEqual(['prepare', 'batch']);
   expect(gatedSites('db/kernel/commit.ts', sites)).toEqual([]);
   expect(gatedSites('db/schema-v117.ts', sites)).toEqual([]);
-  expect(boundaryViolations(new Map([['db/runs/example.ts', gatedSites('db/runs/example.ts', sites)]]), new Set())).toEqual([
+  expect(boundaryViolations(new Map([['db/runs/example.ts', gatedSites('db/runs/example.ts', sites)]]))).toEqual([
     'db/runs/example.ts: direct store calls at line 1 (prepare), line 1 (batch); use a kernel definition and commit',
   ]);
 });
@@ -62,9 +50,9 @@ it('counts a call compiling a Bound outside db under a known name or by its sign
   expect(boundarySites(file, program.getTypeChecker()).map(site => site.line)).toEqual([10, 12, 13, 14]);
 });
 
-it('keeps change-count reads to the store adapters, with a shrinking set of temporary exceptions', () => {
+it('keeps change-count reads to the store adapters', () => {
   const root = fileURLToPath(new URL('../../packages/myco-server/src', import.meta.url));
-  expect(changeCountViolations(changeCountInventory(root), PENDING_CHANGE_COUNTS)).toEqual([]);
+  expect(changeCountViolations(changeCountInventory(root))).toEqual([]);
 });
 
 it('catches the ordinary spellings of a change-count read, and leaves unrelated changes and written results alone', () => {
@@ -81,13 +69,10 @@ it('catches the ordinary spellings of a change-count read, and leaves unrelated 
   `));
   expect(sites.map(site => site.line)).toEqual([3, 4, 5, 6, 7]);
   const reads = new Map([['core/example.ts', sites]]);
-  expect(changeCountViolations(reads, new Set())).toEqual([
+  expect(changeCountViolations(reads)).toEqual([
     'core/example.ts: .meta.changes reads at line 3 (changes), line 4 (changes), line 5 (changes), line 6 (changes), line 7 (changes); decide the outcome from a RETURNING row or an in-batch assertion',
   ]);
-  expect(changeCountViolations(reads, new Set(['core/example.ts']))).toEqual([]);
-  expect(changeCountViolations(new Map([['core/example.ts', []]]), new Set(['core/example.ts']))).toEqual([
-    'core/example.ts: no .meta.changes reads left; remove it from PENDING_CHANGE_COUNTS',
-  ]);
+  expect(changeCountViolations(new Map([['core/example.ts', []]]))).toEqual([]);
 });
 
 it('catches a change-count read through an alias of the metadata by its type', () => {
@@ -106,16 +91,16 @@ it('catches a change-count read through an alias of the metadata by its type', (
   expect(changeCountSites(file, program.getTypeChecker()).map(site => site.line)).toEqual([5]);
 });
 
-it('fails a raw site in a file outside the set, and a listed file with no site left, but not a listed file that keeps some', () => {
+it('fails every raw site outside db, naming each, and passes a file with none', () => {
   const call = 'db.prepare(sql);';
-  expect(boundaryViolations(inventory(call), new Set())).toEqual([
+  expect(boundaryViolations(inventory(call))).toEqual([
     'core/example.ts: boundary sites at line 1 (prepare); move SQL and store execution into db/',
   ]);
-  const listed = new Set(['core/example.ts']);
-  expect(boundaryViolations(inventory(call + call), listed)).toEqual([]);
-  expect(boundaryViolations(inventory(''), listed)).toEqual(['core/example.ts: no boundary sites left; remove it from PENDING']);
-  expect(boundaryViolations(new Map(), new Set(['core/deleted.ts']))).toEqual(['core/deleted.ts: no boundary sites left; remove it from PENDING']);
-  expect(boundaryViolations(inventory('export const fragment = `SELECT id FROM sessions WHERE project_id = ?`;'), new Set())).toEqual([
+  expect(boundaryViolations(inventory(call + call))).toEqual([
+    'core/example.ts: boundary sites at line 1 (prepare), line 1 (prepare); move SQL and store execution into db/',
+  ]);
+  expect(boundaryViolations(inventory(''))).toEqual([]);
+  expect(boundaryViolations(inventory('export const fragment = `SELECT id FROM sessions WHERE project_id = ?`;'))).toEqual([
     'core/example.ts: boundary sites at line 1 (sql); move SQL and store execution into db/',
   ]);
 });

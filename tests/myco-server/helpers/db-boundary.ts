@@ -190,28 +190,26 @@ export function changeCountInventory(root: string): Map<string, BoundarySite[]> 
   return new Map([...files].filter(([key]) => !INFRASTRUCTURE.has(key)).map(([key, file]) => [key, changeCountSites(file, checker)]));
 }
 
-interface ExceptionWording { readonly sites: string; readonly remedy: string; readonly set: string }
+interface SiteWording { readonly sites: string; readonly remedy: string }
 
 const describeSites = (sites: readonly BoundarySite[]): string => sites.map(site => `line ${site.line} (${site.kind})`).join(', ');
 
-/** A listed file may keep raw sites until it is fully migrated; an unlisted file may have none, and a listed file with none must leave the set. */
-function exceptionViolations(actual: ReadonlyMap<string, readonly BoundarySite[]>, pending: ReadonlySet<string>, wording: (file: string) => ExceptionWording): string[] {
-  const errors: string[] = [];
-  for (const file of [...new Set([...actual.keys(), ...pending])].sort()) {
+/** Every file holding a site, in path order, each naming its sites and the remedy. */
+function siteViolations(actual: ReadonlyMap<string, readonly BoundarySite[]>, wording: (file: string) => SiteWording): string[] {
+  return [...actual.keys()].sort().flatMap(file => {
     const sites = actual.get(file) ?? [];
-    const { sites: noun, remedy, set } = wording(file);
-    if (!pending.has(file) && sites.length > 0) errors.push(`${file}: ${noun} at ${describeSites(sites)}; ${remedy}`);
-    else if (pending.has(file) && sites.length === 0) errors.push(`${file}: no ${noun} left; remove it from ${set}`);
-  }
-  return errors;
+    if (sites.length === 0) return [];
+    const { sites: noun, remedy } = wording(file);
+    return [`${file}: ${noun} at ${describeSites(sites)}; ${remedy}`];
+  });
 }
 
-const OUTSIDE_DB: ExceptionWording = { sites: 'boundary sites', remedy: 'move SQL and store execution into db/', set: 'PENDING' };
-const INSIDE_DB: ExceptionWording = { sites: 'direct store calls', remedy: 'use a kernel definition and commit', set: 'PENDING' };
-const CHANGE_COUNTS: ExceptionWording = { sites: '.meta.changes reads', remedy: 'decide the outcome from a RETURNING row or an in-batch assertion', set: 'PENDING_CHANGE_COUNTS' };
+const OUTSIDE_DB: SiteWording = { sites: 'boundary sites', remedy: 'move SQL and store execution into db/' };
+const INSIDE_DB: SiteWording = { sites: 'direct store calls', remedy: 'use a kernel definition and commit' };
+const CHANGE_COUNTS: SiteWording = { sites: '.meta.changes reads', remedy: 'decide the outcome from a RETURNING row or an in-batch assertion' };
 
-export const boundaryViolations = (actual: ReadonlyMap<string, readonly BoundarySite[]>, pending: ReadonlySet<string>): string[] =>
-  exceptionViolations(actual, pending, file => file.startsWith('db/') ? INSIDE_DB : OUTSIDE_DB);
+export const boundaryViolations = (actual: ReadonlyMap<string, readonly BoundarySite[]>): string[] =>
+  siteViolations(actual, file => file.startsWith('db/') ? INSIDE_DB : OUTSIDE_DB);
 
-export const changeCountViolations = (actual: ReadonlyMap<string, readonly BoundarySite[]>, pending: ReadonlySet<string>): string[] =>
-  exceptionViolations(actual, pending, () => CHANGE_COUNTS);
+export const changeCountViolations = (actual: ReadonlyMap<string, readonly BoundarySite[]>): string[] =>
+  siteViolations(actual, () => CHANGE_COUNTS);

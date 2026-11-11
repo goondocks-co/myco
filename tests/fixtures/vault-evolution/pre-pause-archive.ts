@@ -1,7 +1,7 @@
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { measuredContentEnv, remainingContentBudget } from '@myco-server-worker/core/content-budget.js';
 import { prepareDerivedContent, prepareDerivedStream, type DerivedContentSource } from '@myco-server-worker/core/registered-content.js';
-import { contentAssertion } from '@myco-server-worker/db/storage/content-guard.js';
+import { contentGuard } from '@myco-server-worker/db/storage/content-guard.js';
 import { verifiedContentSql } from '@myco-server-worker/db/storage/content-source.js';
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareArchiveStep, type ContentRow } from '@myco-server-worker/core/event-content.js';
@@ -11,6 +11,10 @@ import { observedSettingsGuard } from '@myco-server-worker/core/settings.js';
 import { effectiveRawOwnerSql } from '@myco-server-worker/db/raw/claims.js';
 import { emit } from '@myco-server-worker/telemetry.js';
 import { prepareBound } from '@myco-server-worker/db/kernel/statement.js';
+
+/** The content guard compiled for this fixture's prepared-statement batches. */
+const contentAssertion = (db: RelationalStore, sql: string, params: readonly unknown[]): PreparedStatement[] =>
+  contentGuard(sql, params).map(guard => prepareBound(db, guard));
 
 const DAY_MS = 86_400_000;
 const PAGE = 20;

@@ -1,5 +1,4 @@
-import type { RelationalStore } from '../core/adapters.js';
-import { prepareBound, write, type BindValue } from './kernel/statement.js';
+import { write, type BindValue, type Bound } from './kernel/statement.js';
 
 export const EVENT_REFERENCE_COLUMNS = 'project_id,event_id,session_id,kind,record_id,blob,output_blob';
 export const eventReferenceUpdates = (preferExisting: boolean): string => ['record_id','blob','output_blob'].map(field=>
@@ -15,8 +14,8 @@ const restoreKeepingHeld = restoreReference('eventRefs.restoreKeepingHeld', true
 const restoreTakingIncoming = restoreReference('eventRefs.restoreTakingIncoming', false);
 
 /** A restored event's references use its persisted Project, session and kind. */
-export function eventReferenceStatement(db: RelationalStore, row: Readonly<Record<string,unknown>>, preferExisting: boolean) {
+export function eventReferenceStatement(row: Readonly<Record<string,unknown>>, preferExisting: boolean): Bound<{ event_id: string }, 'write'> {
   const value = (field: string) => (row[field] ?? null) as BindValue;
-  return prepareBound(db, (preferExisting ? restoreKeepingHeld : restoreTakingIncoming).bind(
-    value('record_id'), value('blob'), value('output_blob'), value('project_id'), value('event_id'), value('session_id')));
+  return (preferExisting ? restoreKeepingHeld : restoreTakingIncoming).bind(
+    value('record_id'), value('blob'), value('output_blob'), value('project_id'), value('event_id'), value('session_id'));
 }
