@@ -18,18 +18,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'ingest/document-batch.ts',
   'ingest/document-restore.ts',
   'ingest/document-summaries.ts',
-  'mcp/definitions.ts',
-  'platform/bun/env.ts',
-  'read/catalog/children.ts',
-  'read/catalog/embedding.ts',
-  'read/catalog/hook-placement.ts',
-  'read/catalog/lineage.ts',
-  'read/catalog/processed.ts',
-  'read/catalog/sessions.ts',
-  'read/catalog/shared.ts',
-  'read/catalog/turns.ts',
-  'read/document-catalog.ts',
-  'read/runs.ts',
   // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
   'db/runs/change.ts', // A terminal run update commits with the credential retirement auth/tokens still prepares.
 ]);
