@@ -9,15 +9,10 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
  * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
  */
 const PENDING: ReadonlySet<string> = new Set([
-  'auth/tokens.ts',
   'core/backup.ts',
-  'core/content-budget.ts',
-  'core/harness.ts',
   'ingest/document-batch.ts',
   'ingest/document-restore.ts',
   'ingest/document-summaries.ts',
-  // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
-  'db/runs/change.ts', // A terminal run update commits with the credential retirement auth/tokens still prepares.
 ]);
 
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */

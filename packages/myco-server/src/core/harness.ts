@@ -23,8 +23,6 @@ import {
 } from '../db/runs/queue.js';
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
-import { endedUnderAttempt } from '../db/runs/attempt-accounting.js';
-import { prepareBound } from '../db/kernel/statement.js';
 import { NOTHING_DUE } from './learning-sessions.js';
 import { harnessCredentialAvailability } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
@@ -68,7 +66,9 @@ import {
 } from '@goondocks/myco-shared/run-holds';
 import type { ServerEnv } from './adapters.js';
 import { ensureMember, ensureMemberWrite as ensureMemberStatement } from '../auth/enrollment.js';
-import { mintWrite, NO_RUNTIME_CLAIMS, revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
+import { mintWrite, NO_RUNTIME_CLAIMS, revokeCredentialOfMember } from '../auth/tokens.js';
+import { retireEndedAttemptCredentialWrite } from '../db/identity/member-credential-retirement.js';
+import { commit } from '../db/index.js';
 import { type ProjectCapability, observedSettingsGuard } from './settings.js';
 import { projectWorkEnabled } from '../db/settings/admission.js';
 import { HARNESS_MEMBER_ID, WORKER_LEASE_MS, MAX_RUN_ERROR_CHARS, RUN_ID_PREFIX } from '../constants.js';
@@ -1252,8 +1252,8 @@ export async function endLeasedRun(
   if (statement === null) return { ended: false, reason: 'the lease is no longer held' };
   const accounting = settleAttemptCostStatement({projectId:run.projectId},run.runId,row.dispatchedBy,worker.principal,now,
     typeof update.cost_usd==='number'?update.cost_usd:null,typeof update.cost_source==='string'?update.cost_source:null);
-  const [, changed, retired] = await env.db.batch([prepareBound(env.db, accounting), prepareBound(env.db, statement),
-    revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, row.dispatchedBy, now, endedUnderAttempt(run.projectId, run.runId, row.dispatchedBy))]);
+  const [, changed, retired] = await commit(env.db, accounting, statement,
+    retireEndedAttemptCredentialWrite(now, HARNESS_MEMBER_ID, { tokenId: row.dispatchedBy, projectId: run.projectId, runId: run.runId }));
   if (changed!.results.length === 0) return { ended: false, reason: 'the lease is no longer held' };
   emit({ kind: 'credential_revoked', tokenId: row.dispatchedBy, revokedBy: HARNESS_MEMBER_ID, revoked: retired!.results.length === 1 });
   if (unmet !== null) {

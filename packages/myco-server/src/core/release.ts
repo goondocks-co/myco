@@ -4,7 +4,8 @@ import type { RunErrorCode } from './reader-codes.js';
 import { emit } from '../telemetry.js';
 import type { ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
-import { revokeCredentialOfMemberStatement, revokeCredentialOfMember } from '../auth/tokens.js';
+import { revokeCredentialOfMember } from '../auth/tokens.js';
+import { retireEndedAttemptCredentialWrite } from '../db/identity/member-credential-retirement.js';
 import { drainQueue } from './harness.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 
@@ -35,7 +36,7 @@ export async function commitRunUpdate(env: ServerEnv, scope: ReadScope, runId: s
   if (statement === null) return 0;
   const terminal = isTerminalRunStatus(update.status);
   const { changed, following } = await commitRunChange(env.db, statement, terminal ? [
-    revokeCredentialOfMemberStatement(env.db, HARNESS_MEMBER_ID, options.caller.tokenId, options.now, { sql: 'changes() = 1', params: [] }),
+    retireEndedAttemptCredentialWrite(options.now, HARNESS_MEMBER_ID, { tokenId: options.caller.tokenId, projectId: scope.projectId, runId }),
   ] : []);
   const retired = following[0];
   if (retired !== undefined) emit({ kind: 'credential_revoked', tokenId: options.caller.tokenId, revokedBy: HARNESS_MEMBER_ID, revoked: retired.results.length === 1 });

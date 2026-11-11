@@ -18,11 +18,12 @@ export const INFRASTRUCTURE = new Map<string, string>([
   ['platform/cloudflare/recovery-producer-object.ts', 'Recovery Durable Object coordination storage: ctx.storage.sql'],
 ]);
 
-/** Inside db/, only these may reach the store directly; everything else is a kernel definition run through commit. */
+/** Only these may reach the store directly beside the adapters; everything else is a kernel definition run through commit. */
 export const DB_STORE_ALLOWED = new Map<string, string>([
   ['db/kernel/statement.ts', 'Kernel: compiles every Bound'],
   ['db/kernel/commit.ts', 'Kernel: runs and reports every named batch and its guards'],
   ['db/kernel/guarded-store.ts', 'Kernel: a store decorator whose guarded batches carry their guard statements'],
+  ['core/content-budget.ts', 'Store decorator: meters and refuses every prepare and batch a content operation runs'],
   ['db/migrate.ts', 'Migrations: reads the version before any step applies'],
   ['db/meta/budget-activation.ts', 'Operator path: runs generated activation steps in order'],
 ]);

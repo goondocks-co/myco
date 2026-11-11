@@ -7,7 +7,6 @@ import type { LeaseHolder } from '../../core/worker-lease.js';
 import { write, type BindValue, type Bound, type Statement } from '../index.js';
 import { restoredColumnStatements, restoredValues } from '../recovery/restored-columns.js';
 import { workerLeaseAuthority } from '../runners/lease-authority.js';
-import { TERMINAL_RUN_STATUSES } from './lifecycle.js';
 import { leaseShape, shapedStatements } from './statement-shapes.js';
 
 /** Restored attempt columns a destination may fill where its own row holds nothing. */
@@ -50,12 +49,4 @@ export function restoreAttemptRow(row: Readonly<Record<string, unknown>>, column
     WHERE ${updates.map(column => `${desired(column)} IS NOT agent_run_attempts.${column}`).join(' OR ')} RETURNING rowid` });
   });
   return definition.bind(...restoredValues(row, columns));
-}
-
-/** Holds while the run has ended under the attempt `dispatchedBy` names: the condition an ended attempt's credential is retired under. */
-export function endedUnderAttempt(projectId: string, runId: string, dispatchedBy: string): { sql: string; params: unknown[] } {
-  return {
-    sql: `EXISTS (SELECT 1 FROM agent_runs WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status IN (${TERMINAL_RUN_STATUSES.map(() => '?').join(', ')}))`,
-    params: [projectId, runId, dispatchedBy, ...TERMINAL_RUN_STATUSES],
-  };
 }
