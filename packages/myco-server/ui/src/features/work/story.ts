@@ -1,5 +1,5 @@
 import { EFFORT_UNAPPLIED, profileModelVerdict } from '@goondocks/myco-shared/execution-profile';
-import { callWords } from './call-words';
+import { callStepWords, callWords } from './call-words';
 import { displayModel } from './ModelSummary';
 import { count } from '../today/words';
 import type { RunAttempt, RunCall, RunCloseEvidence, RunDetailAnswer, RunPageRow, RunReport, RunStep } from './wire';
@@ -48,6 +48,19 @@ export function clockWords(at: number): string {
 
 const row = (over: Partial<StoryRow> & Pick<StoryRow, 'key' | 'words' | 'source'>): StoryRow => ({ at: null, tone: null, note: null, runner: null, calls: null, ...over });
 
+/** One call in reader words: what it was, what its recorded step did where Myco has words for it, and how long it took. */
+export function callLineWords(call: RunCall): string {
+  const step = call.tool.startsWith('/') ? callStepWords(call.tool, call.op) : null;
+  return `${callWords(call.tool, call.op)}${step === null ? '' : `: ${step}`}${call.durationMs === null ? '' : ` · took ${durationWords(call.durationMs)}`}`;
+}
+
+/** Whether a call's record kept what it did or how long it took. */
+const callRecorded = (call: RunCall): boolean => call.op !== null || call.durationMs !== null || call.result !== undefined;
+
+function durationWords(ms: number): string {
+  return ms < 1_000 ? `${Math.round(ms)} ms` : `${(ms / 1_000).toFixed(1)} s`;
+}
+
 /** Consecutive calls that read the same and answered the same, oldest first. */
 function callGroups(calls: readonly RunCall[]): RunCall[][] {
   const groups: RunCall[][] = [];
@@ -73,10 +86,11 @@ function groupCalls(calls: readonly RunCall[]): StoryRow[] {
     const failed = first.status === 'failed';
     const many = group.length > 1;
     const words = `${lead}${many ? ` ${group.length} times, ${clockWords(first.recordedAt)} to ${clockWords(end.recordedAt)}` : ''}${failed ? (many ? '; Myco answered each with a failure' : '; Myco answered with a failure') : ''}`;
-    const unnamed = first.op === null && first.tool.startsWith('/');
+    const unnamed = first.tool.startsWith('/') && !group.some(callRecorded);
+    const single = !many && first.tool.startsWith('/') && callRecorded(first) ? callLineWords(first) : null;
     return row({
       key: `calls-${first.id}`, at: first.recordedAt, words, source: 'saw', tone: failed ? 'bad' : null, calls: many ? group : null,
-      note: unnamed ? `What ${many ? 'each call' : 'the call'} did and how long it took ${many ? 'were' : 'was'} not recorded.` : null,
+      note: unnamed ? `What ${many ? 'each call' : 'the call'} did and how long it took ${many ? 'were' : 'was'} not recorded.` : single !== lead ? single : null,
     });
   });
 }
@@ -342,9 +356,9 @@ const DAY_MS = 86_400_000;
 export const TRY_WINDOW_MS = DAY_MS;
 
 /**
- * One piece of work across its tries: the failed runs of the task right before this one, this run, and, when it
- * failed, the runs right after it up to the first that did not fail. `after` counts only when its page is whole, so a
- * later run is never named the next try past one the page left out.
+ * One piece of work across its tries: the failed runs right before this one (`before`, newest first), this run, and,
+ * when it failed, the runs right after it (`after`, oldest first) up to the first that did not fail. Both lists start
+ * next to this run, so a bounded page never skips a try between them.
  */
 export function triesOf(current: Try, before: readonly Try[], after: readonly Try[] | null): Try[] {
   const earlier: Try[] = [];
@@ -355,7 +369,7 @@ export function triesOf(current: Try, before: readonly Try[], after: readonly Tr
   }
   const later: Try[] = [];
   if (current.status === 'failed' && after !== null) {
-    for (const run of [...after].reverse()) {
+    for (const run of after) {
       if (run.id === current.id) continue;
       later.push(run);
       if (run.status !== 'failed') break;

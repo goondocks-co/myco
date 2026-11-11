@@ -177,11 +177,14 @@ const awaiting = read<[string], Row>({ name: 'runs.awaitingWorker', sql: `SELECT
 export const awaitingRow = async (db: RelationalStore, runtimeServed: readonly string[]): Promise<Row> => (await readSet(db, awaiting.bind(JSON.stringify(runtimeServed))))[0][0] ?? {};
 
 /** The run list's filters; a set filter narrows a page before its cursor applies. */
-interface RunListFilters { status?: string; task?: string; agentId?: string; since?: number; until?: number }
+/** A windowed page reads newest first, or oldest first to find the runs nearest after an instant. */
+export type RunListOrder = 'newest' | 'oldest';
+/** `subject` null keeps runs that name no subject; absent, it keeps every run. */
+interface RunListFilters { status?: string; task?: string; agentId?: string; since?: number; until?: number; subject?: string | null; order?: RunListOrder }
 interface RunListCursor { at: number; id: string }
 const LIST_ORDER = 'COALESCE(queued_at, started_at)';
 const WINDOW_ORDER = 'COALESCE(completed_at, queued_at, started_at)';
-const COLUMNS = `id, agent_id, task, status, provider, model, usage_data,
+const COLUMNS = `id, agent_id, task, subject, status, provider, model, usage_data,
   ${runResultSql('agent_runs')} AS result,
   ${requestedProfileValue()} AS requested_profile,
   ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
@@ -205,19 +208,23 @@ const DETAIL_COLUMNS = `${COLUMNS},
   ${contextValue(ENDED_NOTE_KEY)} AS ended_note,
   dispatched_by, actions_taken, checkpoints`;
 
-const FILTERS = [['status', 'status = ?'], ['task', 'task = ?'], ['agentId', 'agent_id = ?'], ['since', 'WINDOW >= ?'], ['until', 'WINDOW < ?']] as const;
-const pageStatement = (mask: number, order: string, keyed: boolean) => read<BindValue[], Row>({ name: `runs.listPage${order === WINDOW_ORDER ? 'Window' : 'Entry'}${mask}${keyed ? 'After' : ''}`,
+const FILTERS = [['status', 'status = ?'], ['task', 'task = ?'], ['agentId', 'agent_id = ?'], ['since', 'WINDOW >= ?'], ['until', 'WINDOW < ?'], ['subject', 'subject IS ?']] as const;
+const pageStatement = (mask: number, order: string, direction: 'ASC' | 'DESC', keyed: boolean) => read<BindValue[], Row>({ name: `runs.listPage${order === WINDOW_ORDER ? 'Window' : 'Entry'}${direction === 'ASC' ? 'Oldest' : ''}${mask}${keyed ? 'After' : ''}`,
   sql: `SELECT ${COLUMNS} FROM agent_runs WHERE NOT EXISTS (SELECT 1 FROM run_retirements x WHERE x.project_id = agent_runs.project_id AND x.run_id = agent_runs.id) AND project_id = ?${FILTERS.filter((_, bit) => mask & (1 << bit)).map(([, condition]) => ` AND ${condition.replace('WINDOW', WINDOW_ORDER)}`).join('')}
-    ${keyed ? `AND ${order} <= ? AND (${order} < ? OR (${order} = ? AND id < ?))` : ''} ORDER BY ${order} DESC, id DESC LIMIT ?` });
+    ${keyed ? (direction === 'ASC' ? `AND ${order} >= ? AND (${order} > ? OR (${order} = ? AND id > ?))` : `AND ${order} <= ? AND (${order} < ? OR (${order} = ? AND id < ?))`) : ''} ORDER BY ${order} ${direction}, id ${direction} LIMIT ?` });
 const pageStatements = Array.from({ length: 1 << FILTERS.length }, (_, mask) => ({
-  windowed: [false, true].map(keyed => pageStatement(mask, WINDOW_ORDER, keyed)),
-  entry: [false, true].map(keyed => pageStatement(mask, LIST_ORDER, keyed)),
+  windowed: [false, true].map(keyed => pageStatement(mask, WINDOW_ORDER, 'DESC', keyed)),
+  windowedOldest: [false, true].map(keyed => pageStatement(mask, WINDOW_ORDER, 'ASC', keyed)),
+  entry: [false, true].map(keyed => pageStatement(mask, LIST_ORDER, 'DESC', keyed)),
 }));
-/** One page of a Project's runs, newest first, on the entry order or, for a windowed read, on the effective-time order. */
+/**
+ * One page of a Project's runs, newest first, on the entry order or, for a windowed read, on the effective-time order;
+ * a windowed read may instead go oldest first.
+ */
 export async function runListRows(db: RelationalStore, scope: ReadScope, filters: RunListFilters, limit: number, cursor?: RunListCursor): Promise<Row[]> {
   const mask = FILTERS.reduce((bits, [key], bit) => filters[key] === undefined ? bits : bits | (1 << bit), 0);
-  const order = filters.since !== undefined || filters.until !== undefined;
-  const statement = pageStatements[mask]![order ? 'windowed' : 'entry'][Number(cursor !== undefined)]!;
+  const windowed = filters.since !== undefined || filters.until !== undefined;
+  const statement = pageStatements[mask]![!windowed ? 'entry' : filters.order === 'oldest' ? 'windowedOldest' : 'windowed'][Number(cursor !== undefined)]!;
   const filtered = FILTERS.flatMap(([key]) => filters[key] === undefined ? [] : [filters[key]!]);
   const [rows] = await readSet(db, statement.bind(scope.projectId, ...filtered, ...(cursor === undefined ? [] : [cursor.at, cursor.at, cursor.at, cursor.id]), limit));
   return rows;

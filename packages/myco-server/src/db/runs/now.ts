@@ -35,7 +35,8 @@ export async function todayProjects(db: RelationalStore, scope: TodayScope, curs
   return { read: page.map(row => row.project_id), total: total[0]!.n, hasMore,
     cursor: hasMore && last ? { priority: last.priority, activity: last.activity, projectId: last.project_id } : null };
 }
-const runningSql = `SELECT r.project_id,r.id,r.task,r.harness,r.model,r.started_at,n.name AS runner
+const runningSql = `SELECT r.project_id,r.id,r.task,r.harness,r.model,r.started_at,n.name AS runner,n.id AS runner_id,
+  (SELECT c.last_seen_at FROM runner_contacts c WHERE c.runner_id=r.leased_runner_id) AS heard_at
   FROM agent_runs r INDEXED BY idx_agent_runs_claimable LEFT JOIN runners n ON n.id=r.leased_runner_id
   WHERE r.status='running' AND ${scopeSql} ORDER BY r.queued_at,r.id LIMIT ${NOW_RUNNING_MAX}`;
 const runningPage = read<[string | null], Row>({ name: 'runs.todayRunning', sql: runningSql });

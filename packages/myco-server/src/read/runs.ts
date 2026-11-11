@@ -6,11 +6,11 @@ import { runAccounting } from './accounting.js';
 import type { RecordedIdentity, CostProvenance } from '@goondocks/myco-shared/worker-usage';
 import type { RelationalStore } from '../core/adapters.js';
 import { clampLimit, decodeCursor, keyset, MAX_PAGE, page, type Page, type ReadScope } from './scope.js';
-import { runDetailRow, runIsVisible, runListRows } from '../db/runs/history.js';
+import { runDetailRow, runIsVisible, runListRows, type RunListOrder } from '../db/runs/history.js';
 import { readSet } from '../db/index.js';
 import { queuedWaits, type QueuedWait } from '../db/runs/queue.js';
 import { getRun, isTerminalRunStatus } from '../db/runs/lifecycle.js';
-import { RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure } from '../db/runs/evidence.js';
+import { RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure, type RunCallResult } from '../db/runs/evidence.js';
 import { ownMachineNames } from './capture.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from '../db/runs/reads.js';
@@ -35,6 +35,8 @@ interface RunListRow {
   id: string;
   agentId: string;
   task: string | null;
+  /** The piece of work a run's claim named, as a curation run names its cluster; null for a task that names none. */
+  subject: string | null;
   status: string;
   provider: string | null;
   model: string | null;
@@ -148,6 +150,8 @@ interface RunToolCallRow {
   recordedAt: number;
   /** Present on a call the Deployment answered with a failure: its code, and what it said. */
   failure?: RunCallFailure;
+  /** Present on a route call whose answer the Deployment kept: its scalar fields, bounded. */
+  result?: RunCallResult;
 }
 
 /** One claim of a run, and what its worker's step log holds. */
@@ -215,6 +219,10 @@ interface RunFilters {
   cursor?: string;
   since?: number;
   until?: number;
+  /** A windowed read only: oldest first finds the runs nearest after `since`. */
+  order?: RunListOrder;
+  /** Only runs of this subject, null for runs that name none; filtered before the page's limit. */
+  subject?: string | null;
 }
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
@@ -251,6 +259,7 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     id: row.id as string,
     agentId: row.agent_id as string,
     task: text(row.task),
+    subject: text(row.subject),
     status: row.status as string,
     ...runAccounting(row.usage_data, row.cost_provenance),
     provider: text(row.provider),
@@ -350,7 +359,7 @@ export function phasesOf(raw: string | null): PhaseRow[] | null {
 }
 
 /**
- * A project's runs, newest first, one page at a time; `status` and `task` narrow the set before the cursor applies.
+ * A project's runs, newest first (or, windowed, oldest first), one page at a time; `status` and `task` narrow the set before the cursor applies.
  * Each row carries what it came to, read for the page in one more round trip, and its machine's name as of `nowMs`.
  */
 export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: number, viewerId: string, opts: RunFilters = {}): Promise<Page<RunPageRow>> {
@@ -358,7 +367,7 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: num
   const limit = clampLimit(opts.limit);
   const cursor = opts.cursor === undefined ? undefined : decodeCursor(opts.cursor);
   if (cursor === null) return { rows: [], cursor: null };
-  const results = await runListRows(db, scope, { status: opts.status, task: opts.task, agentId: opts.agentId, since: opts.since, until: opts.until }, limit + 1,
+  const results = await runListRows(db, scope, { status: opts.status, task: opts.task, agentId: opts.agentId, since: opts.since, until: opts.until, subject: opts.subject, order: opts.order }, limit + 1,
     cursor === undefined ? undefined : { at: cursor.createdAt, id: cursor.id });
   const listed = page(results, limit, (r) => ({ createdAt: (windowed ? num(r.completed_at) : null) ?? num(r.queued_at) ?? num(r.started_at) ?? 0, id: r.id as string }));
   const ids = listed.rows.map((r) => r.id as string);
@@ -400,15 +409,25 @@ function failureOf(outcome: string | null, raw: string | null): RunCallFailure |
   };
 }
 
+/** The result a route call's record kept, or null where it kept none. */
+function resultOf(raw: string | null): RunCallResult | null {
+  const result = payloadOf(raw)?.result;
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return null;
+  const kept = Object.entries(result).filter(([, value]) => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean');
+  return kept.length === 0 ? null : Object.fromEntries(kept) as RunCallResult;
+}
+
 /** One recorded admitted call, including whether its outcome can be read. */
 function toToolCall(row: Record<string, unknown>): RunToolCallRow {
   const outcome = text(row.outcome);
   const failure = failureOf(outcome, text(row.payload));
+  const result = resultOf(text(row.payload));
   return {
     id: Number(row.id), tool: String(row.tool ?? ''), op: opOfPayload(text(row.payload)),
     status: outcome === RUN_CALL_FAILED ? 'failed' : outcome === 'success' ? 'success' : 'unknown',
     durationMs: num(row.durationMs), recordedAt: Number(row.recordedAt),
     ...(failure === null ? {} : { failure }),
+    ...(result === null ? {} : { result }),
   };
 }
 

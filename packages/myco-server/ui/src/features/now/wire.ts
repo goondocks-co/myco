@@ -7,6 +7,9 @@ export interface NowRunning {
   task: string;
   what: string;
   machine: string | null;
+  /** The runner holding it, by id, and when that runner last checked in; null for a run no runner holds. */
+  runnerId: string | null;
+  heardAt: number | null;
   harness: string | null;
   model: string | null;
   startedAt: number | null;

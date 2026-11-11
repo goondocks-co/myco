@@ -6,6 +6,7 @@ import { handleDeviceStart, handleDevicePoll, handleDevicePreview, handleDeviceA
 import { handleRunnerCredentialChoice, handleRenameRunner, handleRecredentialRunner, handleRequestRunnerUpdate, handleControlRunner, handleListRunners, handleRemovedRunners, handleLegacyWorkers, handleRunnerContact, handleRunnerRotate } from './api/runners.js';
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
+import { handleRunnerRuns } from './api/runner-runs.js';
 import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
 import type { AuthorizationDeclaration } from './auth/authorization.js';
 import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, handleMemberRawClaim, handleOwnershipPreview, handleOwnership, handleMemberOwnershipPreview, handleMemberOwnership } from './api/raw-claims.js';
@@ -154,6 +155,8 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('legacy-worker', 'read', 'deployment', ['member']), method: 'GET', path: '/api/workers/legacy', auth: 'session', authority: 'member', handler: handleLegacyWorkers },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners', auth: 'session', authority: 'member', handler: handleListRunners },
   { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners/removed', auth: 'session', authority: 'member', handler: handleRemovedRunners },
+  { authorization: httpPolicy('runner', 'read', 'deployment'), method: 'GET', path: '/api/runners/{runnerId}/runs',
+    pattern: /^\/api\/runners\/(?<runnerId>[A-Za-z0-9._-]{1,64})\/runs$/, auth: 'session', authority: 'member', handler: handleRunnerRuns },
   { authorization: httpPolicy('runner', 'admin', 'runner'), method: 'POST', path: '/api/runners/{runnerId}/update',
     pattern: /^\/api\/runners\/(?<runnerId>[A-Za-z0-9._-]{1,64})\/update$/, auth: 'session', authority: 'admin', handler: handleRequestRunnerUpdate },
   ...([['sign-in', handleRunnerCredentialChoice], ['rename', handleRenameRunner], ['recredential', handleRecredentialRunner]] as const).map(([action, handler]): Route => ({

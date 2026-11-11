@@ -134,6 +134,16 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
     } finally { f.sqlite.close(); }
   });
 
+  it('records an embedding step as a call with the step it took, what it answered and how long it took', async () => {
+    const f = await fixture(target, '/runs/embedding-step');
+    try {
+      expect((await f.post(f.holder.token, OFFERS['/runs/embedding-step'])).body).toMatchObject({ persisted: true, phase: 'settled' });
+      const [call] = f.snapshot().calls as Array<{ tool_name: string; duration_ms: number | null; payload: string }>;
+      expect({ tool: call!.tool_name, payload: JSON.parse(call!.payload), timed: typeof call!.duration_ms === 'number' })
+        .toEqual({ tool: '/runs/embedding-step', payload: { op: 'settled', result: { processed: 0 } }, timed: true });
+    } finally { f.sqlite.close(); }
+  });
+
   it('refuses a worker lease on the embedding channel', async () => {
     const f = await fixture(target, '/runs/embedding-step');
     try {

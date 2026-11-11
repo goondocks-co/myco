@@ -38,14 +38,15 @@ function harness() {
 }
 
 describe('Myco’s work now', () => {
-  it('lists a running run with its machine, model and latest step in plain words', async () => {
+  it('lists a running run with its machine, its last check-in, model and latest step in plain words', async () => {
     const h = harness();
     h.run('proj_1', 'run_live', 'curate-spores', 'running', NOW - 2 * MINUTE, { runner: 'rn_mini' });
+    h.sqlite.run("INSERT INTO runner_contacts(runner_id,last_seen_at,updated_at) VALUES('rn_mini',?1,?1)", [NOW - 8_000]);
     h.call('proj_1', 'run_live', 'myco_run_spores', { op: 'list' }, NOW - 90_000);
     h.call('proj_1', 'run_live', 'myco_spores', { op: 'supersede' }, NOW - 30_000);
     const answer = await h.read();
     expect(answer.running).toEqual([{
-      runId: 'run_live', projectId: 'proj_1', task: 'curate-spores', what: 'Curate overlapping spores', machine: 'homelab-mini',
+      runId: 'run_live', projectId: 'proj_1', task: 'curate-spores', what: 'Curate overlapping spores', machine: 'homelab-mini', runnerId: 'rn_mini', heardAt: NOW - 8_000,
       harness: null, model: 'claude-sonnet-4-5', startedAt: NOW - 2 * MINUTE, step: { words: 'Replaced a spore', at: NOW - 30_000 },
     }]);
     expect(answer.unavailable).toEqual([]);
