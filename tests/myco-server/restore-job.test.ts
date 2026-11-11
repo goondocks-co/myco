@@ -187,9 +187,10 @@ describe('a restore job', () => {
 
   it('leaves every restored row projected when catch-up finishes its phases between the reset and the inserts', async () => {
     const text = await artifactOf(45);
-    /** What catch-up derives from the restored run and sessions: the run's evidence head and each session's title work. */
+    /** What catch-up derives from the restored run and sessions: the run's evidence head, its hour's count and each session's title work. */
     const projected = (f: Fixture) => ({
       runHeads: f.sqlite.query(`SELECT * FROM run_head WHERE project_id = 'proj_rs' ORDER BY run_id`).all(),
+      runHours: f.sqlite.query(`SELECT * FROM run_hour WHERE project_id = 'proj_rs' ORDER BY hour`).all(),
       titleWork: f.sqlite.query(`SELECT * FROM session_title_work WHERE project_id = 'proj_rs' ORDER BY session_id`).all(),
     });
     const restored: ReturnType<typeof projected>[] = [];
@@ -208,6 +209,7 @@ describe('a restore job', () => {
       f.sqlite.close();
     }
     expect(restored[0]!.runHeads).toHaveLength(1);
+    expect(restored[0]!.runHours.map((row) => (row as { runs: number }).runs)).toEqual([1]);
     expect(restored[1]).toEqual(restored[0]!);
   });
 

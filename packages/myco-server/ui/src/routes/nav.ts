@@ -1,8 +1,8 @@
-import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, SETTINGS_SECTIONS } from './declarations';
-export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, SETTINGS_SECTIONS } from './declarations';
+import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, SETTINGS_SECTIONS } from './declarations';
+export { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, CODE_MAP_SUFFIX, SPORE_SUFFIX, PLAN_SUFFIX, WORK_SUFFIX, TASKS_SUFFIX, RUN_SUFFIX, PROJECT_SETTINGS_SUFFIX, PEOPLE_PATH, RUNNERS_PATH, RUNS_PATH, SETTINGS_PATH, HEALTH_PATH, MY_MACHINES_PATH, SETTINGS_SECTIONS } from './declarations';
 import { INVITE_CONTROLS } from '@goondocks/myco-shared/member-protocol';
 import {
-  Activity, Bot, FolderKanban, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
+  Activity, Bot, FolderKanban, History, MessageSquare, Settings2, SlidersHorizontal, Sprout, Sun, Users, type LucideIcon,
 } from 'lucide-react';
 
 /** A page under a project, reached at `/p/:project<suffix>`. */
@@ -77,6 +77,8 @@ export interface ServerPage {
 }
 
 export const RUNNERS_PAGE: ServerPage = { label: 'Runners', icon: Bot, to: RUNNERS_PATH };
+/** Every run Myco's work finished, across projects. */
+export const RUNS_PAGE: ServerPage = { label: 'Runs', icon: History, to: RUNS_PATH };
 
 /** Where each part of Health sits on its page. */
 export const HEALTH_ANCHORS = {
@@ -103,6 +105,7 @@ export const PROJECTS_PATH = '/projects';
 export const ADMIN_PAGES: readonly ServerPage[] = [
   { label: 'Projects', icon: FolderKanban, to: PROJECTS_PATH },
   PEOPLE_PAGE,
+  RUNS_PAGE,
   RUNNERS_PAGE,
   { label: 'Settings', icon: Settings2, to: SETTINGS_PATH },
   { label: 'Health', icon: Activity, to: HEALTH_PATH },

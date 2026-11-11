@@ -9,6 +9,7 @@ export const RUN_SUFFIX = '/work/runs';
 export const PROJECT_SETTINGS_SUFFIX = '/settings';
 export const PEOPLE_PATH = '/people';
 export const RUNNERS_PATH = '/runners';
+export const RUNS_PATH = '/runs';
 export const SETTINGS_PATH = '/settings';
 export const HEALTH_PATH = '/status/health';
 export const MY_MACHINES_PATH = '/me/machines';
@@ -21,6 +22,7 @@ export const SETTINGS_SECTIONS = [
 ] as const;
 
 export const adminRoutesPaths = {
+  runs: RUNS_PATH,
   runners: RUNNERS_PATH,
   runner: `${RUNNERS_PATH}/:runnerId`,
   people: PEOPLE_PATH,

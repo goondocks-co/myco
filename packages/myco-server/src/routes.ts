@@ -7,6 +7,7 @@ import { handleRunnerCredentialChoice, handleRenameRunner, handleRecredentialRun
 import { handleCredentialRoles, handleOwnershipTransfer, handleMemberOwnershipTransfer, handleMemberRole, handleCredentialMemberRole } from './api/ownership.js';
 import { handleCancelRun } from './api/run-cancel.js';
 import { handleRunnerRuns } from './api/runner-runs.js';
+import { handleFinishedRuns, handleRunHours } from './api/runs-page.js';
 import { memberRevocationAction, httpPolicy, invitationAction, runDispatchAction, RUN_CANCEL_POLICY } from './auth/http-authorization.js';
 import type { AuthorizationDeclaration } from './auth/authorization.js';
 import { handleRawClaimPreview, handleRawClaim, handleMemberRawClaimPreview, handleMemberRawClaim, handleOwnershipPreview, handleOwnership, handleMemberOwnershipPreview, handleMemberOwnership } from './api/raw-claims.js';
@@ -324,6 +325,8 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/setup', auth: 'session', authority: 'member', handler: handleSetup },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/work', auth: 'session', authority: 'member', handler: handleWork },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/work/now', auth: 'session', authority: 'member', handler: handleWorkNow },
+  { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/runs/hours', auth: 'session', authority: 'member', handler: handleRunHours },
+  { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/runs/finished', auth: 'session', authority: 'member', handler: handleFinishedRuns },
   { authorization: httpPolicy('processed', 'read', 'deployment', ['member']), method: 'GET', path: '/api/presence', auth: 'session', authority: 'member', handler: handlePresence },
   { authorization: httpPolicy('settings', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/attention', auth: 'session', authority: 'admin', handler: handleAttention },
   { authorization: httpPolicy('settings', 'read', 'deployment', ['member']), method: 'GET', path: '/api/settings', auth: 'session', authority: 'member', handler: handleSettings },

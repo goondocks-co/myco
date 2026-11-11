@@ -12,8 +12,7 @@ import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { DispatchLimits } from './limits.js';
 import type { ClaimedInput } from './runs.js';
 import { readProjectSpend } from '../db/runs/admission.js';
-import { capabilityOnSql, projectAcceptsWorkSql } from '../db/settings/admission.js';
-import { admissionForTask } from './task-catalogue.js';
+import { taskAcceptedSql } from '../db/runs/task-acceptance.js';
 import { CURATION_STAGE } from './spore-curation.js';
 import { LEARNING_STAGES } from './learning-stages.js';
 import { advanceLearningDeadlines } from '../db/learning/ready.js';
@@ -72,11 +71,6 @@ export async function switchedOnStages(db: RelationalStore, stages: readonly Pul
 /** Reselections a claim makes after a pulled write refuses, before it answers no work. */
 export const PULL_RESELECTIONS = 3;
 
-/** A Project accepts a stage's work: live, with the task's capability on. */
-function acceptsSql(project: string, task: string): string {
-  const gate = admissionForTask(task);
-  return gate?.kind === 'capability' ? capabilityOnSql(project, `'${gate.capability}'`) : projectAcceptsWorkSql(project);
-}
 
 /** Named stage assertions share the claim transaction and its observed compatibility set. */
 function pulledAssertions(stage:PulledStage,item:PulledItem,compatible:readonly PulledStage[],limits:DispatchLimits,now:number):Bound[] {
@@ -101,7 +95,7 @@ export async function selectPulled(db: RelationalStore, eligible: readonly Pulle
     const byProject = new Map<string, PulledStage[]>();
     for (const stage of eligible.filter((candidate) => candidate.level === level)) {
       const due = stage.due('p.project_id', now);
-      for (const projectId of await dueProjects(db, stage.candidates ?? 'projects p', acceptsSql('p.project_id', stage.task), due)) byProject.set(projectId, [...(byProject.get(projectId) ?? []), stage]);
+      for (const projectId of await dueProjects(db, stage.candidates ?? 'projects p', taskAcceptedSql('p.project_id', stage.task), due)) byProject.set(projectId, [...(byProject.get(projectId) ?? []), stage]);
     }
     if (byProject.size === 0) continue;
     const projects = [...byProject.keys()];

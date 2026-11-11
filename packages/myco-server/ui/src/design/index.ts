@@ -21,6 +21,7 @@ export { HealthDot, type HealthTone, type HealthDotProps } from './primitives/He
 export { Avatar, initialsOf, type AvatarProps } from './primitives/Avatar';
 export { Card, type CardProps } from './primitives/Card';
 export { Sparkline, type SparklineProps } from './primitives/Sparkline';
+export { StackedBars, type StackedBarsProps, type StackedSlot } from './primitives/StackedBars';
 export { CopyButton, type CopyButtonProps } from './primitives/CopyButton';
 export { Lightbox, type LightboxProps } from './primitives/Lightbox';
 export { Progress, type ProgressProps } from './primitives/Progress';
