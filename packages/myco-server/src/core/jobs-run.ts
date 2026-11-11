@@ -32,6 +32,7 @@ import { failStaleRun, listLiveRunsAcrossProjects } from '../db/runs/lifecycle.j
 import { listQueuedAcrossProjects } from '../db/runs/queue.js';
 import { pruneRevokedCredentials } from '../db/credential-retention.js';
 import { pruneTerminalRuns } from '../db/runs/retention.js';
+import { pruneRunHours, RUN_HOUR_RETENTION_MS } from '../db/runs/run-hours.js';
 import { storedSettings } from './settings.js';
 import { releaseRun } from './release.js';
 import { reconcileSearchIndex } from './search-index.js';
@@ -270,6 +271,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
     return { changed, more: await searchBlobsDue(env.db, now) };
   },
   'agent-run-retention': agentRunRetention,
+  'run-hour-retention': (env, now) => pruneRunHours(env.db, now - RUN_HOUR_RETENTION_MS, JOB_BATCH),
   'run-body-move': (env, now) => moveRunBodies(env, now),
   'run-stale-sweep': runStaleSweep,
   // #1158 join UX

@@ -26,7 +26,8 @@ export async function artifactOf(reports: number, events = 0): Promise<string> {
         VALUES ('proj_rs', ?, 'm1', 'mt_seed', 1, 1)`, [session]);
     }
     source.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_rs', 'a', 'built-in', 1, 1)`);
-    source.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, status, started_at) VALUES ('proj_rs', 'run_rs', 'agent_rs', 'completed', 1)`);
+    // The run finished a minute ago, inside the hours the Runs page keeps.
+    source.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, status, started_at, completed_at) VALUES ('proj_rs', 'run_rs', 'agent_rs', 'completed', 1, ?)`, [Date.now() - 60_000]);
     const insert = source.sqlite.prepare(`INSERT INTO agent_reports (project_id, run_id, agent_id, action, summary, created_at)
       VALUES ('proj_rs', 'run_rs', 'agent_rs', 'note', ?, 1)`);
     for (let i = 0; i < reports; i++) insert.run(`report ${i}`);

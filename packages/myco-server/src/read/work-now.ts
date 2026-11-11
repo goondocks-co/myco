@@ -2,12 +2,13 @@ import { queuedWorkExists } from '../db/runs/queue.js';
 import { admissionReady } from '../db/runs/live.js';
 import { todayProjects, todayRunning, todayQueued, type ProjectCursor } from '../db/runs/now.js';
 import { failureReasons, unresolvedFailures, NOW_WATCHED_TASKS } from '../db/runs/outcomes.js';
+import { unclaimedDue } from '../db/runs/unclaimed.js';
 import { todaySchedules, curationDispositions } from '../db/learning/curation-now.js';
 import { todayMarks } from '../db/meta/marks.js';
 /** Current work, waits and unresolved failures, with exact live totals and explicit page coverage. */
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { QUEUE_REASON_WORDS } from '@goondocks/myco-shared/runner-fleet';
-import { holdSentence, visibleRunHolder } from '@goondocks/myco-shared/run-holds';
+import { HELD_BY_WORDS, holdSentence, visibleRunHolder } from '@goondocks/myco-shared/run-holds';
 import { stepWords } from '@goondocks/myco-shared/step-words';
 import { callWords } from '@goondocks/myco-shared/call-words';
 import type { StepKind } from '@goondocks/myco-shared/worker-steps';
@@ -257,7 +258,14 @@ async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly Wo
   return waiting;
 }
 
+/** How long due work may wait with no machine taking it before it needs someone. */
+export const UNCLAIMED_WAIT_MS = 30 * 60_000;
+const MINUTE_MS = 60_000;
+/** A wait as a reader says it: minutes under two hours, else hours. */
+const waitedWords = (ms: number): string => ms < 120 * MINUTE_MS ? plural(Math.floor(ms / MINUTE_MS), 'minute') : plural(Math.floor(ms / (60 * MINUTE_MS)), 'hour');
+
 async function readNeeds(env: ServerEnv, projects: readonly string[], failingGroups: readonly FailingGroup[], fleet: readonly WorkerFleetRow[], now: number): Promise<NowNeed[]> {
+  const unclaimed = await unclaimedDue(env.db, projects, now - UNCLAIMED_WAIT_MS);
   const pairs = projects.flatMap((projectId) => NOW_WATCHED_TASKS.map((task) => ({ projectId, task })));
   const failing = (await unresolvedFailures(env.db, pairs)).filter(failure =>
     failure.at >= now - OUTCOME_LOOKBACK_MS &&
@@ -299,6 +307,12 @@ async function readNeeds(env: ServerEnv, projects: readonly string[], failingGro
       return [{ key: `sign-in:${row.runner.id}`, projectId: null, what: `${row.runner.name} can’t sign in to a coding agent`,
         why: runner.readiness.reason, at: runner.readiness.observedAt ?? now, runId: null, retryAt: null }];
     }),
+    ...unclaimed.map((due): NowNeed => ({
+      key: `unclaimed:${due.project_id}:${due.task}`, projectId: due.project_id,
+      what: `${taskName(due.task)} has waited ${waitedWords(now - due.since)} with no machine taking it`,
+      why: `${due.runs === 1 ? 'One run is' : `${due.runs} runs are`} due. ${HELD_BY_WORDS.worker}`,
+      at: due.since, runId: due.run_id, retryAt: null,
+    })),
   ];
 }
 
