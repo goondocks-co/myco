@@ -142,8 +142,11 @@ it('counts store batches, exec and template producers while ignoring comments an
   expect(sites.map(site => site.kind)).toEqual(['batch', 'exec', 'prepare', 'sql']);
 });
 
-it('reads a lone statement keyword or a sentence opening with one as words and not as SQL', () => {
-  expect(boundarySites(source(`const method = 'DELETE'; const op = "delete"; const note = 'update names columns it may not set'; const q = \`WITH recent AS (SELECT 1) SELECT 2\`;`)).map(site => site.kind)).toEqual(['sql']);
+it('reads a statement or a composed fragment as SQL, and a keyword in prose or copy as words', () => {
+  const sql = ["UPDATE t AS a SET x = 1", "UPDATE OR IGNORE t AS a SET x = 1", "/* note */ -- more\nDELETE FROM t", "PRAGMA foreign_keys", "CREATE INDEX i ON t(x)", "WHERE a = ?1 AND b = ?2"];
+  const words = ["DELETE", "delete", "update names columns it may not set", "Run now or later?", "Create a project?"];
+  for (const text of sql) expect(boundarySites(source(`const a = ${JSON.stringify(text)};`)).map(site => site.kind), text).toEqual(['sql']);
+  for (const text of words) expect(boundarySites(source(`const a = ${JSON.stringify(text)};`)), text).toEqual([]);
 });
 
 it('recognizes store aliases by their type and permits unrelated batch and exec methods', () => {
