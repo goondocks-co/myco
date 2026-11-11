@@ -13,6 +13,7 @@ import { fingerprintFile } from '@myco/server/recovery-bundle.js';
 import { withRecoveryDatabaseCopy } from '@myco/server/recovery-copy.js';
 import { PRIVATE_RECOVERY_COPY_REQUIRED, withPrivateRecoveryCopy, type PrivateRecoveryCopy } from '@myco-server-worker/platform/bun/private-recovery-copy.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { schemaSqlite } from './helpers/schema-template.js';
 import {SERVER_SCHEMA_VERSION} from '@myco-server-worker/constants.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
 import { THIN_LEARNING_UPGRADE_REMEDY, THIN_LEARNING_STEPPING_STONE_REQUIRED, THIN_LEARNING_STEPPING_STONE_REMEDY, THIN_LEARNING_RUNS_TABLE_SQL, thinLearningUpgradeAdmission } from '@myco-server-worker/db/thin-learning-admission.js';
@@ -56,10 +57,11 @@ for (const [from, status] of ADMISSION_CASES) {
     const file = path.join(root, 'server.sqlite');
     const report = spyOn(console, 'warn').mockImplementation(() => {});
     try {
+      const seeded = schemaSqlite({ through: from });
+      try { fs.writeFileSync(file, seeded.serialize()); } finally { seeded.close(); }
       const db = new Database(file);
       let meta: unknown[], run: unknown;
       try {
-        for (const step of SCHEMA_STEPS.filter(step => step.version <= from)) for (const sql of step.statements) db.exec(sql);
         db.exec("INSERT INTO projects(project_id,name,created_at) VALUES('thin','Thin',1)");
         db.exec("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('thin','Thin','built-in',1,1)");
         db.query("INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at) VALUES('thin','held','thin','extract-curate',?,1,2)").run(status);

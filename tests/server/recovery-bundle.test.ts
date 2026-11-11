@@ -6,24 +6,42 @@ import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { createBackup } from '@myco-server-worker/core/backup.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import {
   copyRecoveryBundle, copyRecoveryObjects, createRecoveryBundle, preparedObjectKeys, RECOVERY_RETRY, verifyRecoveryBundle,
   type RecoveryAdapter, type RecoveryObjectDestination, type RecoveryRetryPolicy,
 } from '@myco/server/recovery-bundle.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
-import { legacyBlob } from '../myco-server/helpers/d1.js';
+import { legacyBlob, migrateAndSeed } from '../myco-server/helpers/d1.js';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
+
+const LEGACY_BODIES = ['first content', 'second content'] as const;
+
+function legacyBodies(): Map<string, string> {
+  const bodies = new Map<string, string>();
+  for (const body of LEGACY_BODIES) bodies.set(`proj_1/${createHash('sha256').update(body).digest('hex')}`, body);
+  return bodies;
+}
+
+/** The current schema with the two pre-generation blobs, migrated once and copied per case. */
+let recoveryImage: Uint8Array | null = null;
+function recoverySqlite(): Database {
+  if (recoveryImage === null) {
+    const built = migrateAndSeed(new Database(':memory:'), { beforeStep42: (db) => {
+      for (const [logical, body] of legacyBodies()) {
+        legacyBlob(db, { projectId: 'proj_1', key: logical.split('/')[1]!, size: Buffer.byteLength(body), tokenId: 'mt_fixture' });
+      }
+    } });
+    recoveryImage = built.serialize();
+    built.close();
+  }
+  const sqlite = Database.deserialize(recoveryImage);
+  sqlite.exec('PRAGMA foreign_keys = ON');
+  return sqlite;
+}
 
 function fixture() {
-  const bodies = new Map<string, string>();
-  // A source holding two blobs from before generations, seeded before step 42 as its database held them.
-  const source = sqliteEnv({ beforeStep42: (db) => {
-    for (const body of ['first content', 'second content']) {
-      const key = createHash('sha256').update(body).digest('hex');
-      bodies.set(`proj_1/${key}`, body);
-      legacyBlob(db, { projectId: 'proj_1', key, size: Buffer.byteLength(body), tokenId: 'mt_fixture' });
-    }
-  } });
+  const bodies = legacyBodies();
+  const source = sqliteEnv({ sqlite: recoverySqlite() });
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recovery-'));
   const destination = path.join(root, 'backup');
   let snapshots = 0;
@@ -66,9 +84,8 @@ const sameLengthSubstitute = (body: string): string => body.replace('lineage', '
 describe('verified recovery artifacts', () => {
   it('accepts a schema-99 snapshot with no view reference tables', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recovery-'));
-    const source = new Database(':memory:');
+    const source = schemaSqlite({ through: 99 });
     try {
-      for (const step of SCHEMA_STEPS.filter(step => step.version <= 99)) for (const sql of step.statements) source.exec(sql);
       expect(source.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: '99' });
       const result = await createRecoveryBundle(path.join(root, 'backup'), {
         source: { target: 'local', locator: 'schema99' },
@@ -456,12 +473,9 @@ describe('verified recovery artifacts', () => {
 
   it.each([116, SERVER_SCHEMA_VERSION])('records dangling event references in a schema %s recovery artifact without changing the snapshot', async version => {
     const f = fixture();
-    const sqlite = version === SERVER_SCHEMA_VERSION ? f.source.sqlite : new Database(':memory:');
+    const sqlite = version === SERVER_SCHEMA_VERSION ? f.source.sqlite : schemaSqlite({ through: version });
     try {
-      if (version !== SERVER_SCHEMA_VERSION) {
-        for (const step of SCHEMA_STEPS.filter(step => step.version <= version)) for (const sql of step.statements) sqlite.exec(sql);
-        sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','project',1)`);
-      }
+      if (version !== SERVER_SCHEMA_VERSION) sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','project',1)`);
       for (const kind of ['plan', 'attachment', 'transcript.segment', 'tool.use']) sqlite.run(`INSERT INTO events
         (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,blob_key,created_at,received_at)
         VALUES('proj_1',?,'s_probe','mt_fixture',?,'cli',json_object('blob',?),'hash',?,1,1)`, [kind, kind, 'a'.repeat(64), 'a'.repeat(64)]);

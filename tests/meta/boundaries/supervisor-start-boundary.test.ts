@@ -10,7 +10,10 @@ import { isLegacy } from '../../helpers/legacy-boundary.ts';
 const SRC = path.join(REPO_ROOT, 'packages/myco/src');
 const MYCO = 'packages/myco/src/';
 const short = (key: string): string => key.startsWith(MYCO) ? key.slice(MYCO.length) : key;
-const supervisorStarts = createSupervisorStartScanner(Object.values(walk(undefined, () => false)));
+const full = walk(undefined, () => false);
+const stopped = walk();
+const memberRuntime = walkMemberRuntime();
+const supervisorStarts = createSupervisorStartScanner(Object.values(full));
 
 it.each([
   ['launchctl start', 'member/legacy-units.ts', "execFileSync('launchctl', ['start', 'com.myco.daemon']);"],
@@ -30,7 +33,7 @@ it.each([
     ? text.replace('const plistPath = this.plistPath(label);', injected + '\nconst plistPath = this.plistPath(label);')
     : text + '\n' + injected;
   };
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length).toBeGreaterThan(0);
+  expect(supervisorStarts(full.myco, mutate).length).toBeGreaterThan(0);
 }, 120_000);
 
 it.each([
@@ -39,14 +42,14 @@ it.each([
   "const kick = (verb: string) => execFileSync('launchctl', [verb, label]); const forward = (verb: string) => kick(verb); forward('kickstart');",
 ])('follows every assignment by symbol, including wrapper parameters: %s', injected => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + injected : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec')), injected).toBe(true);
+  expect(supervisorStarts(full.myco, mutate).some(hit => hit.endsWith('supervisor exec')), injected).toBe(true);
 }, 120_000);
 
 it('resolves a renamed PowerShell host from its initializer', () => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/windows.ts')
     ? text.replaceAll('WINDOWS_TASK_HOST', 'RENAMED_TASK_HOST')
       .replace('    const command = [', "    const command = [\n      'Start-ScheduledTask -TaskName Myco',") : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+  expect(supervisorStarts(full.myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
 });
 
 it.each(['outside', 'inside', 'altered'])('rejects starts %s the owned native service reload command', location => {
@@ -56,7 +59,7 @@ it.each(['outside', 'inside', 'altered'])('rejects starts %s the owned native se
       : location === 'inside'
       ? text.replace("  '  launchctl load -w \"$unit\"',", "  'launchctl kickstart com.myco.daemon',\n  '  launchctl load -w \"$unit\"',")
       : text.replace('export function reloadServiceDetached(', "execFileSync('launchctl', ['kickstart', '-k', 'com.myco.daemon']);\nexport function reloadServiceDetached(") : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+  expect(supervisorStarts(full.myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
 });
 
 it('admits read-only joined commands and wrappers without mixing shadowed bindings', () => {
@@ -66,20 +69,20 @@ it('admits read-only joined commands and wrappers without mixing shadowed bindin
     execSync(['launchctl', 'kickstart'].join(''));
     const query = (verb: string) => execFileSync('launchctl', [verb, label]); query('print');
   ` : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate)).toEqual([]);
+  expect(supervisorStarts(full.myco, mutate)).toEqual([]);
 });
 
 it('maps a protected PowerShell runner method to its platform executable', () => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/windows.ts')
     ? text.replace('const escapedLabel = label.replace', "await this.runPowerShell(['-Command', 'Enable-ScheduledTask -TaskName Myco']);\nconst escapedLabel = label.replace") : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
+  expect(supervisorStarts(full.myco, mutate).some(hit => hit.endsWith('supervisor exec'))).toBe(true);
 }, 120_000);
 
 const forbiddenRuntime = (key: string): boolean => key.startsWith(`${MYCO}daemon/`)
   || key.startsWith(`${MYCO}db/`) || key === `${MYCO}grove/request-context.ts`;
 
 it('no 2.0 module directly imports a daemon, database or Grove request-context module', () => {
-  const { myco, server } = walk();
+  const { myco, server } = stopped;
   for (const closure of [myco, server]) {
     expect([...closure.modules.keys()].filter(forbiddenRuntime).map(key => pathToEntry(closure, key))).toEqual([]);
   }
@@ -91,23 +94,23 @@ function forbiddenRuntimePaths(closure: Closure): string[][] {
 }
 
 it('no 2.0 path transitively reaches a daemon, database or Grove request context', () => {
-  const { myco, server } = walk(undefined, () => false);
+  const { myco, server } = full;
   expect(forbiddenRuntimePaths(myco)).toEqual([]);
   expect(forbiddenRuntimePaths(server)).toEqual([]);
 }, 120_000);
 
 it('hooks, member code and MCP have no transitive daemon, database or Grove request-context dependency', () => {
-  expect(forbiddenRuntimePaths(walkMemberRuntime())).toEqual([]);
+  expect(forbiddenRuntimePaths(memberRuntime)).toEqual([]);
 }, 120_000);
 
-function supervisorReach(mutate?: (file: string, text: string) => string): string[][] {
-  const { myco, server } = walk(mutate, () => false);
+function supervisorReach(): string[][] {
+  const { myco, server } = full;
   const supervisor = /^(?:daemon\/|service\/(?:manager|scoped|self-install|launchd|systemd|windows)\.ts$)/;
   return [myco, server].flatMap(closure => [...closure.modules.keys()].filter(key => supervisor.test(short(key))).map(key => pathToEntry(closure, key)));
 }
 
 it('the CLI dispatches no 1.4 verb and has no legacy-verb walk exemption', () => {
-  const { myco } = walk();
+  const { myco } = stopped;
   expect([...myco.edges.get(MYCO + 'cli.ts') ?? []].filter(key => key.startsWith(MYCO + 'cli/') && isLegacy(key))).toEqual([]);
   expect(fs.readFileSync(path.join(REPO_ROOT, 'tests/helpers/2-0-closure.ts'), 'utf8')).not.toContain('isLegacyVerb');
 });
@@ -119,7 +122,7 @@ it('rejects a restored 1.4 CLI handler', () => {
 
 it('no 2.0 path can reach DaemonClient.ensureRunning or a 1.4 supervisor start', () => {
   expect(supervisorReach()).toEqual([]);
-  for (const closure of Object.values(walk(undefined, () => false))) expect(supervisorStarts(closure)).toEqual([]);
+  for (const closure of Object.values(full)) expect(supervisorStarts(closure)).toEqual([]);
 }, 120_000);
 
 it.each([
@@ -128,7 +131,7 @@ it.each([
   'client.ensureRunning();', 'manager.install(spec);', 'manager.bootstrap(label);',
 ])('rejects direct, computed and bound starts anywhere cutover reaches: %s', call => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, call).toBeGreaterThan(0);
+  expect(supervisorStarts(full.myco, mutate).length, call).toBeGreaterThan(0);
 }, 120_000);
 
 function startupModules(mutate?: (file: string, text: string) => string): string[] {
@@ -152,7 +155,7 @@ function migrationClosure(mutate?: (file: string, text: string) => string): Clos
 }
 
 it('cutover and every member legacy helper are retained and reach no 1.4 module', () => {
-  const { myco } = walk();
+  const { myco } = stopped;
   const retained = migrationClosure();
   expect(retained.modules.has(MYCO + 'cli/cutover.ts')).toBe(true);
   expect([...retained.via].filter(([, parent]) => parent === null).every(([key]) => myco.modules.has(key))).toBe(true);
@@ -178,7 +181,7 @@ it.each([
   "const argv = ['kickstart', '-k']; execFileSync('launchctl', [...argv, label]);",
 ])('rejects raw platform starts including const-spread arguments: %s', call => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-units.ts') ? text + '\n' + call : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(found => found.endsWith('supervisor exec')), call).toBe(true);
+  expect(supervisorStarts(full.myco, mutate).some(found => found.endsWith('supervisor exec')), call).toBe(true);
 }, 120_000);
 
 it.each([
@@ -188,7 +191,7 @@ it.each([
 ])('follows cutover through concrete methods and interface implementations: %s / %s', (needle, injected) => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
     ? text.replace(needle, needle.startsWith('return ') ? injected + needle : needle + injected) : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, injected).toBeGreaterThan(0);
+  expect(supervisorStarts(full.myco, mutate).length, injected).toBeGreaterThan(0);
 }, 120_000);
 
 it.each([
@@ -197,13 +200,13 @@ it.each([
 ])('follows object and class-expression runner implementations: %s', implementation => {
   const mutate = (file: string, text: string): string => file.endsWith('/member/legacy-service/launchd.ts')
     ? text.replace("return spawnCombinedOutput('launchctl', args);", implementation) : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).length, implementation).toBeGreaterThan(0);
+  expect(supervisorStarts(full.myco, mutate).length, implementation).toBeGreaterThan(0);
 }, 120_000);
 
 it('rejects a raw supervisor start in the Deployment closure', () => {
   const mutate = (file: string, text: string): string => file.endsWith('/myco-server/src/index.ts')
     ? text + "\nexecFileSync('launchctl', ['kickstart', '-k', 'unit']);" : text;
-  expect(supervisorStarts(walk(mutate, () => false).server, mutate).some(found => found.endsWith('supervisor exec'))).toBe(true);
+  expect(supervisorStarts(full.server, mutate).some(found => found.endsWith('supervisor exec'))).toBe(true);
 }, 120_000);
 
 it('rechecks interface callers for a structural implementation outside their import graph', () => {
@@ -215,7 +218,7 @@ it('rechecks interface callers for a structural implementation outside their imp
       }
     }
   ` : text;
-  expect(supervisorStarts(walk(mutate, () => false).myco, mutate).some(hit => hit.includes('runner/loop.ts:') && hit.endsWith('supervisor exec'))).toBe(true);
+  expect(supervisorStarts(full.myco, mutate).some(hit => hit.includes('runner/loop.ts:') && hit.endsWith('supervisor exec'))).toBe(true);
 }, 120_000);
 
 it('rechecks a wrapper reached by a new import in an overlay', () => {
