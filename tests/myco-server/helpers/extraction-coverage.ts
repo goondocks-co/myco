@@ -1,5 +1,6 @@
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { commit } from '@myco-server-worker/db/index.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { completeLearning } from '@myco-server-worker/core/learning-sessions.js';
 import { prepareLearningSlice } from './extraction.js';
@@ -124,7 +125,7 @@ export async function seedCapturedHistory(db: RelationalStore, begin = 0, end = 
       eventId: uuid(PROMPTS), sessionId: 'session', kind: 'prompt', createdAt: 0, channel: 'cli',
       producer: { adapter: 'claude-code', version: 'test' }, payload: { promptId: uuid(0), text: 'Captured material', origin: 'user' },
     });
-    if (!first.ok || !first.write.interpret(await db.batch(first.write.statements)).persisted) throw new Error('fixture first prompt failed');
+    if (!first.ok || !first.write.interpret(await commit(db, ...first.write.statements)).persisted) throw new Error('fixture first prompt failed');
   }
   const bulkStart = Math.max(begin, 1);
   if (bulkStart < end) {
@@ -151,7 +152,7 @@ export async function seedCapturedHistory(db: RelationalStore, begin = 0, end = 
       eventId: crypto.randomUUID(), sessionId: 'session', kind: 'session.end', createdAt: totalPrompts + 1, channel: 'cli',
       producer: { adapter: 'claude-code', version: 'test' }, payload: { endedAt: totalPrompts + 1 },
     });
-    if (!ended.ok || !ended.write.interpret(await db.batch(ended.write.statements)).persisted) throw new Error('fixture session end failed');
+    if (!ended.ok || !ended.write.interpret(await commit(db, ...ended.write.statements)).persisted) throw new Error('fixture session end failed');
   }
   await catalogCapturedPrompts(db, begin, end);
   console.info('EXTRACTION_FIXTURE_PROGRESS', { stage: 'capture', completed: end, total: totalPrompts });

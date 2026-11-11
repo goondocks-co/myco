@@ -16,6 +16,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import type { Database } from 'bun:sqlite';
 import { describe, expect, it } from 'bun:test';
 import { ingestEvent, planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { commit } from '@myco-server-worker/db/index.js';
 import { TokenRevokedError } from '@myco-server-worker/telemetry.js';
 import { count, envelope, sqliteEnv, bytesWritten, uuid } from './helpers/fixtures.js';
 import { issueMemberToken } from './helpers/member-token.js';
@@ -148,7 +149,7 @@ describe('planned writes', () => {
 
     let calls = 0;
     const counting = { ...db, batch: (s: Parameters<typeof db.batch>[0]) => { calls += 1; return db.batch(s); } };
-    const results = await counting.batch(planned.flatMap((w) => w.statements));
+    const results = await commit(counting, ...planned.flatMap((w) => w.statements));
 
     let at = 0;
     const outcomes = planned.map((w) => {

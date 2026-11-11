@@ -23,20 +23,26 @@ export class RecordSchemeError extends Error {
 
 const SQL_SAFE = /^[a-z0-9-]+$/;
 
-/** A registering transcript's immutable pin, selected from validated manifest declarations. */
-export function admittedRecordScheme(agent: string | null, declarations: Readonly<Record<string, unknown>> = DECLARED_RECORD_IDENTITIES): { sql: string; params: unknown[] } {
-  const arms = Object.entries(declarations).map(([name, declaration]) => {
+/** The declared record schemes by agent, each validated: an invalid declaration refuses with `record_identity_scheme_unsupported`. */
+export function recordDeclarations(declarations: Readonly<Record<string, unknown>> = DECLARED_RECORD_IDENTITIES): [agent: string, scheme: string][] {
+  return Object.entries(declarations).map(([name, declaration]) => {
     try {
       assertRecordIdentityDeclaration(name, declaration);
       if (!SQL_SAFE.test(name) || !SQL_SAFE.test(declaration.scheme)) throw new Error();
     } catch {
       throw new RecordSchemeError('record_identity_scheme_unsupported');
     }
-    return `WHEN '${name}' THEN '${declaration.scheme}'`;
+    return [name, declaration.scheme];
   });
-  return arms.length === 0
-    ? { sql: '?', params: [LEGACY_RECORD_ID_SCHEME] }
-    : { sql: `COALESCE(CASE ? ${arms.join(' ')} END, ?)`, params: [agent, LEGACY_RECORD_ID_SCHEME] };
+}
+
+/**
+ * A registering transcript's immutable pin, selected from validated manifest declarations, over the slots holding the
+ * transcript's agent and the legacy scheme an undeclared agent takes.
+ */
+export function recordSchemeSql(agent: string, legacy: string, declarations?: Readonly<Record<string, unknown>>): string {
+  const arms = recordDeclarations(declarations).map(([name, scheme]) => `WHEN '${name}' THEN '${scheme}'`);
+  return arms.length === 0 ? legacy : `COALESCE(CASE ${agent} ${arms.join(' ')} END, ${legacy})`;
 }
 
 const RESTORE_TRANSCRIPTS_PER_READ = 50;

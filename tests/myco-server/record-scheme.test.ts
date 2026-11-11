@@ -5,7 +5,7 @@ import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data'
 import { BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';
 import { restoreArtifact } from './helpers/restore-artifact.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { admittedRecordScheme, restoreRecordSchemeDecisions } from '@myco-server-worker/ingest/record-scheme.js';
+import { recordSchemeSql, restoreRecordSchemeDecisions } from '@myco-server-worker/ingest/record-scheme.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
@@ -103,16 +103,14 @@ describe('immutable record identity pin', () => {
       const declaration = CAPTURE_RULE_BUNDLES.find(bundle => bundle.name === 'cursor')!.recordIdentity!;
       const declarations = { first: declaration, second: { ...declaration, scheme: LEGACY } };
       for (const [agent, expected] of [['first', SOURCE], ['second', LEGACY], ['unknown', LEGACY], [null, LEGACY]] as const) {
-        const selected = admittedRecordScheme(agent, declarations);
-        expect(sqlite.query(`SELECT ${selected.sql} AS pin`).get(...selected.params as never[])).toEqual({ pin: expected });
+        expect(sqlite.query(`SELECT ${recordSchemeSql('?1', '?2', declarations)} AS pin`).get(agent, LEGACY)).toEqual({ pin: expected });
       }
-      const hook = admittedRecordScheme('copilot');
-      expect(sqlite.query(`SELECT ${hook.sql} AS pin`).get(...hook.params as never[])).toEqual({ pin: LEGACY });
+      expect(sqlite.query(`SELECT ${recordSchemeSql('?1', '?2')} AS pin`).get('copilot', LEGACY)).toEqual({ pin: LEGACY });
       for (const bad of [
         { first: { ...declaration, scheme: 'unknown-v1' } },
         { "unsafe'agent": declaration },
         { first: { scheme: SOURCE, schemes: {} } },
-      ]) expect(() => admittedRecordScheme('first', bad)).toThrow('record_identity_scheme_unsupported');
+      ]) expect(() => recordSchemeSql('?1', '?2', bad)).toThrow('record_identity_scheme_unsupported');
     } finally { sqlite.close(); }
   });
 });

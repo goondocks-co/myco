@@ -1,7 +1,7 @@
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../../constants.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
-import { read, readSet, write } from '../index.js';
+import { read, readSet, write, type Bound } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 import type { CatchupFamily } from '../projections/family.js';
 
@@ -189,22 +189,22 @@ export const ensureSessionLifecycle = (db: RelationalStore, project: string, ses
 
 /** Settles the session's end from its facts, or, while it builds, from its standing end and known turns. */
 interface SessionEnd { project: string; session: string; requestedAt: number | null; endedAt: number; actor: string | null; gate: LifecycleGate }
-export const settleSessionEnd = (db: RelationalStore, { project, session, requestedAt, endedAt, actor, gate }: SessionEnd): PreparedStatement =>
-  prepareBound(db, settleEnd.bind(project, session, requestedAt, gate.eventId, endedAt, actor, project, gate.eventId, gate.nonce));
+export const settleSessionEnd = ({ project, session, requestedAt, endedAt, actor, gate }: SessionEnd): Bound =>
+  settleEnd.bind(project, session, requestedAt, gate.eventId, endedAt, actor, project, gate.eventId, gate.nonce);
 
 /** A user prompt's admission settles the end from the latest turn the facts name, so a late copy of a prompt changes nothing. */
-export const settleSessionTurn = (db: RelationalStore, project: string, session: string, gate: LifecycleGate): PreparedStatement =>
-  prepareBound(db, settleTurnStatement.bind(project, session, project, gate.eventId, gate.nonce));
+export const settleSessionTurn = (project: string, session: string, gate: LifecycleGate): Bound =>
+  settleTurnStatement.bind(project, session, project, gate.eventId, gate.nonce);
 
 export const settlePublishedTurn = (db: RelationalStore, project: string, session: string): PreparedStatement =>
   prepareBound(db, settlePublished.bind(project, session));
 
-export const presentedDatesAfterEvent = (db: RelationalStore, project: string, session: string, gate: LifecycleGate): PreparedStatement =>
-  prepareBound(db, presentedEvent.bind(project, session, project, gate.eventId, gate.nonce));
+export const presentedDatesAfterEvent = (project: string, session: string, gate: LifecycleGate): Bound =>
+  presentedEvent.bind(project, session, project, gate.eventId, gate.nonce);
 
 interface SegmentDates { project: string; session: string; gate: LifecycleGate; transcriptId: string; baseOffset: number }
-export const presentedDatesAfterSegment = (db: RelationalStore, { project, session, gate, transcriptId, baseOffset }: SegmentDates): PreparedStatement =>
-  prepareBound(db, presentedSegment.bind(project, session, project, gate.eventId, gate.nonce, transcriptId, baseOffset));
+export const presentedDatesAfterSegment = ({ project, session, gate, transcriptId, baseOffset }: SegmentDates): Bound =>
+  presentedSegment.bind(project, session, project, gate.eventId, gate.nonce, transcriptId, baseOffset);
 
 export const presentedDatesAfterPublication = (db: RelationalStore, project: string, session: string, generation: number, lastRecordAt: number | null): PreparedStatement =>
   prepareBound(db, presentedPublished.bind(project, session, generation, lastRecordAt));

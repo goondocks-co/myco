@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { KINDS, kindSpec, parsePayload, blobFields, promptReferenceFields, orderingFields, idFields, PROMPT_ORIGINS, PLAN_STATUSES, MAX_ARRAY_ITEMS, MAX_TIME_MS, PROMPT_REFERENCE_COLUMNS, type Bound, type IdRole } from '@myco-server-worker/ingest/kinds.js';
-import { acceptableProjectName, basenameOf, planKind, RAW_ROW_GATE, type WriteContext } from '@myco-server-worker/ingest/projections.js';
+import { acceptableProjectName, basenameOf, planKind, type WriteContext } from '@myco-server-worker/ingest/projections.js';
 import { MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { blobCapReason, bodyCapReason, EVENT_BODY_CAP_NEXT_CALL, MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { MAX_BLOB_BYTES, MAX_CLOCK_SKEW_MS, TRANSCRIPT_PARSE_ADAPTER } from '@myco-server-worker/constants.js';
@@ -66,9 +66,6 @@ async function upload(env: ReturnType<typeof sqliteEnv>, token: string, bytes: U
   return key;
 }
 
-/** Exact projection-statement totals, pinned per payload shape: a projection that vanishes fails the gate. */
-const FULL_PROJECTION_STATEMENTS = 15;
-const REQUIRED_ONLY_PROJECTION_STATEMENTS = 14;
 /** Every field carrying the prompt-reference marker across the catalogue. */
 const PROMPT_REFERENCE_MARKERS = 11;
 /** Every blob-key field of the catalogue as `kind.field`, pinned by name; the absent-key admission gate drives each one. */
@@ -81,11 +78,6 @@ const BLOB_KEY_FIELDS = [
 const ID_ROLES = { key: 7, prompt: 11, group: 1, served: 2 };
 /** Every field carrying the time bound across the catalogue: `session.start.startedAt` and `session.end.endedAt`. */
 const ORDERING_FIELDS = 2;
-/** The projection families whose identity row carries `machine_id` are owned by that row; every other keyed table routes ownership through its session. Pinned from the catalogue's projection family, independent of the plan's own `owner`, so a flipped owner is caught by name. */
-const ROW_OWNED_PROJECTIONS = new Set(['plans', 'transcript_segments']);
-
-/** One row identity a kind's projection plan names: the column, the value under it, and who owns the row. */
-interface Identity { keyColumn: string; key: unknown; owner: string }
 
 describe('kind catalogue', () => {
   it('has a fixture, a schema, a finite ceiling on every column-mapped field, a marker on every prompt reference, and a projection for every kind', () => {
@@ -447,26 +439,6 @@ describe('kind catalogue', () => {
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
   });
 
-  /** Keyed projections that carry no row owner: a Project-shared row any member may update. Exactly these, by name. */
-  const SHARED_ROW_PROJECTIONS = new Set(['plans']);
-
-  it('derives an owned identity for every keyed column a kind projects, so a keyed table cannot enter the catalogue without its ownership check — but the named Project-shared projections, which carry none', async () => {
-    const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
-    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1', actor: null };
-    for (const spec of KINDS) {
-      const payload: Record<string,unknown> = { ...FIXTURES[spec.name].payload, blob: 'a'.repeat(64) };
-      const e = { eventId: uuid(1), sessionId: 'sess_1', kind: spec.name, createdAt: 1_000, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload, payloadJson: '{}', payloadBytes: new Uint8Array(0) } as any;
-      const plan = planKind(spec, { db: recorder, ctx, e, p: payload, contentHash: null });
-      const owner = ROW_OWNED_PROJECTIONS.has(spec.projection) ? 'row' : 'session';
-      const keyed = Object.entries(spec.fields)
-        .filter(([, f]) => ((f.bound.type === 'id' && f.role === 'key') || f.bound.type === 'transcriptId') && f.column !== undefined)
-        .map(([field, f]): Identity => ({ keyColumn: ['prompt_batches','tool_calls','responses'].includes(spec.projection)?'record_id':f.column as string, key: (payload as Record<string, unknown>)[field], owner }));
-      const expected: Identity[] = ['prompt_batches','responses','tool_calls'].includes(spec.projection) ? [{keyColumn:'record_id',key:String(payload[spec.name==='prompt'?'promptId':spec.name==='response'?'responseId':'toolCallId']),owner:'session'}] : spec.projection === 'raw' || SHARED_ROW_PROJECTIONS.has(spec.projection) ? [] : keyed;
-      const planned: Identity[] = plan.identities.map(({ keyColumn, key, owner }) => ({ keyColumn, key, owner }));
-      expect({ kind: spec.name, identities: planned }).toEqual({ kind: spec.name, identities: expected });
-    }
-  });
-
   it('binds a row keyed by its own id to the machine that owns its session: another machine cannot squat a tool call, response, or attachment id', async () => {
     const e = sqliteEnv();
     const t1 = await member(e);
@@ -538,48 +510,39 @@ describe('kind catalogue', () => {
   });
 
 
-  it('conjoins the raw-row gate into every projection statement of every kind, and binds this request\'s nonce to it', () => {
-    const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
-    const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1', actor: null };
-    // Both payload shapes are planned: every field present, and only the required ones. A statement a kind builds
-    // solely on an optional-field branch is invisible to a gate that plans one shape, so each shape is counted and
-    // the totals are pinned exactly — a projection that disappears is a failure, not a smaller number.
-    const counted: Record<string, number> = {};
-    for (const shape of ['full', 'required-only'] as const) {
-      let statements = 0;
-      for (const spec of KINDS) {
-        const full: Record<string, unknown> = { ...FIXTURES[spec.name].payload, blob: 'a'.repeat(64) };
-        const payload = shape === 'full'
-          ? full
-          : Object.fromEntries(Object.entries(full).filter(([field]) => spec.fields[field]?.required === true));
-        const e = { eventId: uuid(1), sessionId: 'sess_1', kind: spec.name, createdAt: 1_000, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload, payloadJson: '{}', payloadBytes: new Uint8Array(0) } as any;
-        const plan = planKind(spec, { db: recorder, ctx, e, p: payload, contentHash: null });
-        for (const statement of [...plan.projections, ...(plan.incidental ?? [])]) {
-          statements += 1;
-          const { sql, params } = statement as unknown as { sql: string; params: unknown[] };
-          const conjoined = sql.includes(`AND ${RAW_ROW_GATE}`) || sql.includes(`WHERE ${RAW_ROW_GATE}`);
-          // A reworded gate is caught by its own column: only the raw-row gate reads `ingest_nonce`, so a negated or alternative one is still a weakening, and a subquery over other events is not.
-          const weakened = sql.includes(`OR ${RAW_ROW_GATE}`) || sql.includes(`NOT ${RAW_ROW_GATE}`) || / (?:OR|NOT) \(*EXISTS \(SELECT 1 FROM events[^)]*ingest_nonce/.test(sql);
-          expect({ shape, kind: spec.name, conjoined, weakened, bound: params.includes(ctx.nonce) })
-            .toEqual({ shape, kind: spec.name, conjoined: true, weakened: false, bound: true });
-        }
-      }
-      counted[shape] = statements;
+  it('writes nothing for any kind whose raw row is refused: every projection and side write lands only with the row this request stored', async () => {
+    const e = sqliteEnv();
+    const t = await member(e);
+    expect((await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(950) })), e.env))).persisted).toBe(true);
+    // The session is deleted, so the raw insert of every later event naming it is refused.
+    e.sqlite.query(`INSERT INTO session_tombstones (project_id, session_id, reason, created_at, created_by) VALUES ('proj_1', 'sess_1', 'deleted', 1, 'test')`).run();
+    const written = ['events', 'sessions', 'projects', 'plans', 'tags', 'attachments', 'transcripts', 'transcript_segments', 'knowledge_git_provenance',
+      'session_lifecycle_facts', 'spore_injections', 'prompt_context_answers', 'session_injections', 'member_credentials'];
+    const rows = () => written.map((table) => e.sqlite.query(`SELECT * FROM ${table}`).all());
+    const before = rows();
+    let n = 951;
+    const refusals: Record<string, unknown>[] = [];
+    for (const spec of KINDS) {
+      // The catalogue fixtures leave a required blob and a segment's length to the test that drives them.
+      const payload = { ...FIXTURES[spec.name].payload, ...(spec.fields.blob?.required === true ? { blob: 'a'.repeat(64) } : {}),
+        ...(spec.name === 'transcript.segment' ? { length: 9 } : {}) };
+      const res = await json(await worker.fetch(memberPost(t.token, envelope({ eventId: uuid(n++), kind: spec.name, payload })), e.env));
+      refusals.push({ kind: spec.name, persisted: res.persisted, code: res.code });
     }
-    expect(counted).toEqual({ full: FULL_PROJECTION_STATEMENTS, 'required-only': REQUIRED_ONLY_PROJECTION_STATEMENTS });
+    expect(refusals).toEqual(KINDS.map((spec) => ({ kind: spec.name, persisted: false, code: 'session_tombstoned' })));
+    expect(rows()).toEqual(before);
   });
 
   it('refuses to plan an ordering from a field the catalogue does not bound as a time', () => {
     // The catalogue gate keeps today's ordering fields bounded; this keeps the planner from reading an unbounded one
     // at all, so an ordering added later cannot quietly decide a merge from a value the clock rule never reached.
-    const recorder = { prepare: (sql: string) => ({ sql, params: [] as unknown[], bind: (...params: unknown[]) => ({ sql, params }) }) } as any;
     const ctx: WriteContext = { projectId: 'proj_1', tokenId: 'mt_1', machineId: 'machine_1', now: 1, nonce: 'nonce-1', actor: null };
     const e = { eventId: uuid(1), sessionId: 'sess_1', kind: 'session.start', createdAt: 1_000, channel: 'cli', producer: { adapter: 'a', version: '1' }, payload: {}, payloadJson: '{}', payloadBytes: new Uint8Array(0) } as any;
     const spec = kindSpec('session.start')!;
     const unbounded = { ...spec, fields: { ...spec.fields, startedAt: { bound: { type: 'int', min: 0, max: MAX_TIME_MS }, column: 'started_at' } } } as typeof spec;
-    expect(() => planKind(unbounded, { db: recorder, ctx, e, p: { agent: 'claude-code' }, contentHash: null }))
+    expect(() => planKind(unbounded, { ctx, e, p: { agent: 'claude-code' }, contentHash: null }))
       .toThrow('ordering field session.start.startedAt must carry the time bound');
-    expect(() => planKind(spec, { db: recorder, ctx, e, p: { agent: 'claude-code' }, contentHash: null })).not.toThrow();
+    expect(() => planKind(spec, { ctx, e, p: { agent: 'claude-code' }, contentHash: null })).not.toThrow();
   });
 
   it('reads the session identity, then every continued row\'s, before any blob, prompt, or transcript state, so a non-owner learns nothing else — on the session, the transcript, the plan, and every own-key row alike', async () => {

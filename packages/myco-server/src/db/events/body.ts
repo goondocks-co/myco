@@ -1,6 +1,5 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { assertion, first, read, write, refusalCode } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { assertion, first, read, write, refusalCode, type Bound } from '../index.js';
 import { objectJournalSql } from '../storage/object-journal.js';
 
 /**
@@ -39,7 +38,7 @@ const clearIntent = write<[...Stored, physical: string]>({ name: 'events.clearBo
   `DELETE FROM object_settlement_intents WHERE physical=?4 AND ${STORED}` });
 
 /** The statements after the raw insert that settle a verified body: every one takes effect only when this request stored the event. */
-export function eventBodyStatements(db: RelationalStore, body: EventBody, now: number): PreparedStatement[] {
+export function eventBodyStatements(body: EventBody, now: number): Bound[] {
   const held: Stored = [body.projectId, body.eventId, body.nonce];
   const { key, size, upload } = body;
   const uploaded = upload === undefined ? [] : [
@@ -53,14 +52,7 @@ export function eventBodyStatements(db: RelationalStore, body: EventBody, now: n
   return [...uploaded,
     proof.bind(...held, key, body.envelopeHash, body.sessionId, size, now),
     provenStored.bind(...held, key, size),
-    ...settled].map(bound => prepareBound(db, bound));
-}
-
-/** What the raw insert requires of a body: the upload authority still stands, or the bytes are still registered as they were verified. */
-export function eventBodyAdmission(body: EventBody): { sql: string; params: unknown[] } {
-  return body.upload === undefined
-    ? { sql: 'EXISTS (SELECT 1 FROM blobs WHERE project_id = ? AND key = ? AND generation IS ? AND size = ?)', params: [body.projectId, body.key, body.generation, body.size] }
-    : { sql: 'EXISTS (SELECT 1 FROM blob_reservations WHERE reservation_id = ? AND project_id = ? AND key = ? AND size = ?)', params: [body.upload.reservation, body.projectId, body.key, body.size] };
+    ...settled];
 }
 
 const reservationHeld = read<[reservation: string, project: string, key: string, size: number], { held: number }>({ name: 'events.bodyReservationHeld', sql:
@@ -69,10 +61,10 @@ const registrationHeld = read<[project: string, key: string, generation: string 
   'SELECT EXISTS(SELECT 1 FROM blobs WHERE project_id=?1 AND key=?2 AND generation IS ?3 AND size=?4) AS held' });
 
 /** Read in the event's batch: whether the body the raw insert required still stands, so a lost body is told apart from a refused event. */
-export function eventBodyHeldRead(db: RelationalStore, body: EventBody): PreparedStatement {
-  return prepareBound(db, body.upload === undefined
+export function eventBodyHeldRead(body: EventBody): Bound<{ held: number }, 'read'> {
+  return body.upload === undefined
     ? registrationHeld.bind(body.projectId, body.key, body.generation, body.size)
-    : reservationHeld.bind(body.upload.reservation, body.projectId, body.key, body.size));
+    : reservationHeld.bind(body.upload.reservation, body.projectId, body.key, body.size);
 }
 
 /** One stored event's content row and, when its payload is in the object store, the object's identity from its proof. */
