@@ -1,5 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { ARTIFACT_COLUMNS, type SessionArtifactRow } from '../../core/session-artifacts.js';
+import type { SessionArtifactRow } from '../../core/session-artifacts.js';
+import { ARTIFACT_COLUMNS } from './artifacts.js';
 import { read, readSet } from '../index.js';
 
 const SELECT = `SELECT ${ARTIFACT_COLUMNS} FROM session_artifacts WHERE project_id = ?1 AND session_id = ?2`;

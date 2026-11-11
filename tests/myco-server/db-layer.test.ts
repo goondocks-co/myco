@@ -9,12 +9,10 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
  * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
  */
 const PENDING: ReadonlySet<string> = new Set([
-  'auth/device.ts',
   'auth/tokens.ts',
   'core/backup.ts',
   'core/content-budget.ts',
   'core/harness.ts',
-  'core/runner-updates.ts',
   'ingest/document-batch.ts',
   'ingest/document-restore.ts',
   'ingest/document-summaries.ts',
@@ -24,7 +22,6 @@ const PENDING: ReadonlySet<string> = new Set([
 
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
 const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
-  'api/member-projects.ts',
 ]);
 
 const source = (text: string) => ts.createSourceFile('core/example.ts', text, ts.ScriptTarget.Latest, true);
