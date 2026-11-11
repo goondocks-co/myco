@@ -4,7 +4,8 @@ import { cardHeadlineStatement, cardsMissingHeadlines } from '../db/learning/car
 import { commit } from '../db/index.js';
 import type { ServerEnv } from '../core/adapters.js';
 import { cardOutline } from '../core/turn-cards.js';
-import { sessionEditStatements } from './session-edits.js';
+import { sessionEditPaths } from '../db/documents/edit-paths.js';
+import { prepareBound } from '../db/kernel/statement.js';
 import { contentAssertion } from '../core/registered-content.js';
 import { registeredObjectKeySql } from '../core/blob-objects.js';
 import { readBodyChunk, readPageChunk, type ChunkRow } from '../content/document-reader.js';
@@ -152,7 +153,7 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
         SELECT 1 FROM json_each(?4) j LEFT JOIN session_prompts p ON p.project_id=?1 AND p.session_id=?2 AND p.generation=?3
           AND p.prompt_id=json_extract(j.value,'$.id') WHERE p.tool_revision IS NOT json_extract(j.value,'$.revision'))`,
         [...key, JSON.stringify(page)])),
-      ...sessionEditStatements(db, doc.project_id, doc.session_id, doc.generation, edited),
+      ...sessionEditPaths(doc.project_id, doc.session_id, doc.generation, edited).map(bound => prepareBound(db, bound)),
       ...jsonPages(updates).map(page => db.prepare(`UPDATE session_prompts SET rollup_build=json_extract(j.value,'$.build'),
           tool_state=COALESCE(json_extract(j.value,'$.state'),tool_state),tool_revision=tool_revision+1,
           failed_tools=COALESCE(json_extract(j.value,'$.failed'),failed_tools),myco_calls=COALESCE(json_extract(j.value,'$.myco'),myco_calls)

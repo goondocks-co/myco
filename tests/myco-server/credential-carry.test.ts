@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { carriedBytes } from '@myco-server-worker/ingest/live-credential.js';
+import { carriedBytes } from '@myco-server-worker/db/identity/capture-credential.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 it('carries a rotated credential\'s live reservations, excluding expired ones, up to a fixed number of reservations', async () => {

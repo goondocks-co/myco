@@ -4,7 +4,8 @@
  */
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { clearUncapturedStatement, heldUncapturedStatement, pruneUncaptured, recordUncapturedStatement } from '@myco-server-worker/ingest/uncaptured.js';
+import { commit } from '@myco-server-worker/db/index.js';
+import { clearUncaptured, heldUncaptured, pruneUncaptured, recordUncaptured } from '@myco-server-worker/db/sessions/uncaptured-reports.js';
 import { remoteHolder, resolveRepository } from '@myco-server-worker/core/remotes.js';
 import { connectedRoot, connectMachineRoot } from '@myco-server-worker/core/machine-settings.js';
 import { d1TwoScale, eachUnit, expectTwoScale } from './helpers/two-scale.js';
@@ -38,9 +39,9 @@ it('auto-join reports, resolutions and connections cost D1 the same as reports a
     cases: [
       { name: 'report, hold and forget a repository', run: async (db, { scale }) => {
         const key = keyOf(scale);
-        await recordUncapturedStatement(db, { machineId: 'machine_1', memberId: 'mem_1', rootKey: key, label: 'widget', remote: null, reason: 'no_remote', held: 'held', sessions: 1, now: NOW }).run();
-        await heldUncapturedStatement(db, 'machine_1', key, 'full').run();
-        await clearUncapturedStatement(db, 'machine_1', key).run();
+        await commit(db, recordUncaptured({ machineId: 'machine_1', memberId: 'mem_1', rootKey: key, label: 'widget', remote: null, reason: 'no_remote', held: 'held', sessions: 1, now: NOW }));
+        await commit(db, heldUncaptured('machine_1', key, 'full'));
+        await commit(db, clearUncaptured('machine_1', key));
       } },
       { name: 'prune stale reports', run: async (db) => expect(await pruneUncaptured(db, NOW, 100)).toBe(0) },
       {

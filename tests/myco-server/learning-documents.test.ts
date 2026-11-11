@@ -93,11 +93,7 @@ it('a refused placement leaves no transcript plan and no reopened session in the
     ], null)).rejects.toBeInstanceOf(DocumentPassFull);
     measured.usage.statements = 0;
     await batch.place([documentRecord('response', { responseId: uuid(901), promptId: uuid(20), text: 'short' }, at, { received_at: at })!], null);
-    await batch.commit(true, 'live', at, () => ({ sql: '1', params: [] }), () => {
-      const set = batch.documentSet(at);
-      return { before: [], after: [measured.env.db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id = 'project' AND session_id = 'undone'`)
-        .bind(...set.params)] };
-    });
+    await batch.commit(true, 'live', at, () => ({ sql: '1', params: [] }), () => ({ before: [], after: [batch.catalogStatement(at)] }));
     expect(await db.prepare(`SELECT replies, user_prompts FROM session_documents WHERE session_id = 'undone'`).first(), name)
       .toEqual({ replies: 2, user_prompts: 1 });
     expect(await db.prepare(`SELECT COUNT(*) AS n FROM plans WHERE plan_key = 'transcript-plan'`).first(), name).toEqual({ n: 0 });
@@ -168,10 +164,7 @@ async function placeRecords(env: { db: RelationalStore; blobs: ReturnType<typeof
   const batch = new DocumentBatch(env, 'project', sessionId, docs!.results[0] as never);
   await batch.open();
   await batch.place(records, null);
-  await batch.commit(batch.writer.changed, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => {
-    const set = batch.documentSet(Date.now());
-    return { before: [], after: [db.prepare(`UPDATE session_documents SET ${set.sql} WHERE project_id = 'project' AND session_id = ?`).bind(...set.params, sessionId)] };
-  });
+  await batch.commit(batch.writer.changed, 'live', Date.now(), () => ({ sql: '1', params: [] }), () => ({ before: [], after: [batch.catalogStatement(Date.now())] }));
 }
 
 it('a card claim reads the same catalog rows whatever the session holds', async () => {

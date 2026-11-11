@@ -88,10 +88,7 @@ test('a keyed ownership claim costs D1 the same with 100 and 1500 saved turns',a
     await batch.open();
     await batch.writer.readOwners(['new-key']);
     batch.writer.owners.set('new-key',{thread:'thread',record:'record'});
-    await batch.commit(true,'live',at+30*MIN,()=>({sql:'1',params:[]}),()=>{
-      const set=batch.documentSet(at+30*MIN);
-      return {before:[],after:[meter.db.prepare("UPDATE session_documents SET "+set.sql+" WHERE project_id='project' AND session_id='s'").bind(...set.params)]};
-    });
+    await batch.commit(true,'live',at+30*MIN,()=>({sql:'1',params:[]}),()=>({ before: [], after: [batch.catalogStatement(at+30*MIN)] }));
     costs.push({reads:meter.reads(),writes:meter.writes()});
     expect(await one(db,"SELECT source_thread,source_record FROM document_owners WHERE project_id='project' AND session_id='s' AND generation=1 AND source_key='new-key'")).toEqual({source_thread:'thread',source_record:'record'});
     expect((await db.prepare("SELECT chunk_no,blob_key FROM session_chunks WHERE kind='page' ORDER BY chunk_no").all()).results).toEqual(pages);

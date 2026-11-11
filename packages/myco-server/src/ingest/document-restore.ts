@@ -182,7 +182,6 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldD
       AND EXISTS (SELECT 1 FROM retired_objects WHERE project_id=? AND session_id=? AND blob_key=? AND source_id=?)`,
     params: [...selection, session.projectId, session.sessionId, version.key, version.sourceId],
   }), (registered) => {
-    const set = batch.documentSet(now);
     const before: PreparedStatement[] = contentAssertion(db, `(${selected})
       AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)
       ${absent ? '' : 'AND EXISTS(SELECT 1 FROM session_documents WHERE project_id=? AND session_id=? AND next_chunk=?)'}
@@ -204,8 +203,7 @@ async function mergeSession(env: Pick<ServerEnv, 'db' | 'blobs'>, session: HeldD
         first_prompt=NULL,last_record_at=NULL,open_turn_key=NULL,next_chunk=0 WHERE project_id=? AND session_id=?`)
         .bind(doc.generation,session.projectId,session.sessionId),
     );
-    return { before, after: [...(frontiers.length===0?[]:[publicationStatement(db,session.projectId,session.sessionId,doc.generation,now,frontiers)]), db.prepare(`UPDATE session_documents SET state='live',generation=?,restore_hold=NULL,due_at=0,build=?,${set.sql} WHERE project_id=? AND session_id=?`)
-      .bind(doc.generation, doc.build, ...set.params, session.projectId, session.sessionId)] };
+    return { before, after: [...(frontiers.length===0?[]:[publicationStatement(db,session.projectId,session.sessionId,doc.generation,now,frontiers)]), batch.restoredCatalogStatement(now, { generation: doc.generation, build: doc.build })] };
   });
 }
 

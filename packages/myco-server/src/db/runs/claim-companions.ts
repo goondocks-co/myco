@@ -1,5 +1,5 @@
 import { LEARNING_RETRY_KEY } from '../run-context.js';
-import { TOKEN_LIVE } from '../../ingest/live-credential.js';
+import { TOKEN_LIVE } from '../identity/capture-credential.js';
 import { write, type Bound } from '../index.js';
 import { prepareBound } from '../kernel/statement.js';
 import type { RelationalStore } from '../../core/adapters.js';

@@ -1,5 +1,8 @@
-import type { RelationalStore } from '../core/adapters.js';
-import type { Fragment } from './projections.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { first, read } from '../index.js';
+
+/** A SQL condition with its positional bindings, in the shape the capture admission conjoins. */
+interface Fragment { sql: string; params: unknown[] }
 
 /**
  * How many live upload reservations one rotation carries. A credential holding more than this at the instant it
@@ -28,9 +31,11 @@ export function credentialLive(tokenId: string): Fragment {
   return { sql: TOKEN_LIVE, params: [tokenId] };
 }
 
+const stored = read<[token: string], { bytes_written: number }>({ name: 'identity.storedBytes', sql: 'SELECT bytes_written FROM member_credentials WHERE id = ?1' });
+
 /** The bytes a credential has stored — its event bodies and blobs, and its predecessors' carried at rotation — or null when no credential row carries the id. Reported, never compared. */
 export async function storedBytes(db: RelationalStore, tokenId: string): Promise<number | null> {
-  const row = await db.prepare(`SELECT bytes_written FROM member_credentials WHERE id = ?`).bind(tokenId).first<{ bytes_written: number }>();
+  const row = await first(db, stored.bind(tokenId));
   return row?.bytes_written ?? null;
 }
 

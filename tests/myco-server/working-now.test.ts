@@ -282,7 +282,11 @@ describe('a session working now', () => {
       const stalled = { ...statement, all: () => never, first: () => never, run: () => never, raw: () => never };
       return { ...stalled, bind: (...values: unknown[]) => ({ ...statement.bind(...values), all: () => never, first: () => never, run: () => never, raw: () => never }) };
     };
-    const db = { ...inner, prepare: (sql: string) => (/SET working_since = \?/.test(sql) ? inner.prepare(sql) : hung(inner.prepare(sql))), batch: () => never };
+    // Only a batch of stamps lands; every other batch hangs.
+    const stamps = new WeakSet<object>();
+    const stamp = (statement: ReturnType<typeof inner.prepare>) => ({ bind: (...values: unknown[]) => { const bound = statement.bind(...values); stamps.add(bound); return bound; } });
+    const db = { ...inner, prepare: (sql: string) => (/SET working_since = \?/.test(sql) ? stamp(inner.prepare(sql)) : hung(inner.prepare(sql))),
+      batch: (statements: readonly object[]) => (statements.every((statement) => stamps.has(statement)) ? inner.batch(statements as never) : never) };
     const at = now - 1_000;
     let answered = false;
     void handlePromptContext({ ...bun, db } as never, {
@@ -326,12 +330,15 @@ describe('a session working now', () => {
     const r = await rig();
     const inner = r.e.env.MYCO_DB;
     const never = new Promise<never>(() => {});
-    const hanging = { ...r.e.env, MYCO_DB: { ...inner, batch: inner.batch.bind(inner), prepare: (sql: string) => {
-      const statement = inner.prepare(sql);
-      if (!/SET working_since = \?/.test(sql)) return statement;
-      const held = { ...statement, bind: (...values: unknown[]) => ({ ...statement.bind(...values), run: () => never }) };
-      return held;
-    } } };
+    // The stamp never finishes, whichever way the store is asked to run it.
+    const stamps = new WeakSet<object>();
+    const hanging = { ...r.e.env, MYCO_DB: { ...inner,
+      batch: (statements: readonly object[]) => (statements.some((statement) => stamps.has(statement)) ? never : inner.batch(statements as never)),
+      prepare: (sql: string) => {
+        const statement = inner.prepare(sql);
+        if (!/SET working_since = \?/.test(sql)) return statement;
+        return { ...statement, bind: (...values: unknown[]) => { const bound = { ...statement.bind(...values), run: () => never }; stamps.add(bound); return bound; } };
+      } } };
     const deferred = recordingDeferred();
     const res = await Promise.race([
       worker.fetch(new Request('https://s/context/prompt', {
