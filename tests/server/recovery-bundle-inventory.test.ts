@@ -8,7 +8,7 @@ import path from 'node:path';
 import { recoveryBundleInventory, RECOVERY_LOCATOR_PAGE_ROWS } from '@myco/server/recovery-bundle-inventory.js';
 import { verifyCopiedBundleEntries } from '@myco/server/recovery-bundle.js';
 import { ingestEvent } from '@myco-server-worker/ingest/events.js';
-import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
+import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
 import { sqliteEnv, envelope, uuid } from '../myco-server/helpers/fixtures.js';
 import { seedCredential } from '../myco-server/helpers/d1.js';
 

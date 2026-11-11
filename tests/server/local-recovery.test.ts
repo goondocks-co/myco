@@ -33,7 +33,8 @@ import { createBackup, setBackupPinned } from '../../packages/myco-server/src/co
 import { cloudflareVectorStore } from '../../packages/myco-server/src/platform/cloudflare/vectors.js';
 import { indexFixture } from '../myco-server/helpers/vector-index.js';
 import { createHash } from 'node:crypto';
-import { blobObjectKey, registeredObjectKeySql } from '../../packages/myco-server/src/core/blob-objects.js';
+import { blobObjectKey } from '../../packages/myco-server/src/core/blob-objects.js';
+import { registeredObjectKeySql } from '../../packages/myco-server/src/db/storage/registered-object-key.js';
 import { migrateOnly, startDeployment } from '../../packages/myco-server/src/platform/bun/server-main.js';
 import { getBlob } from '../../packages/myco-server/src/read/blobs.js';
 import { SessionDocument } from '../../packages/myco-server/src/content/session-pages.js';

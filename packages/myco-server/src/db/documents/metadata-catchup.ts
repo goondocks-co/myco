@@ -1,6 +1,6 @@
 import type { BlobStore, RelationalStore } from '../../core/adapters.js';
 import { readPageChunk, type ChunkRow } from '../../content/document-reader.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import { assertion, commit, read, readSet, refused, write, type Bound } from '../index.js';
 import { DOCUMENT_OWNERSHIP_CONFLICT, METADATA_PHASE_SOURCE, OWNERSHIP_INPUTS_READY, OWNERSHIP_READY_RECONCILE, OWNERSHIP_READY_SOURCE, PublicationOwnership } from './ownership.js';
 import { documentPassFailure } from './failure-head.js';

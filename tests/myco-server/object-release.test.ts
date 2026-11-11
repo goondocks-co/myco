@@ -3,7 +3,8 @@ import { releaseNow } from './helpers/release-now.js';
 import worker from '@myco-server-worker/index.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
-import { blobObjectKey, blobObjectKeySql, registeredObjectKeySql, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
+import { blobObjectKey, blobObjectKeySql, snapshotBlobObject } from '@myco-server-worker/core/blob-objects.js';
+import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
 import {
   acquireRecoveryHold,
   drainObjectReleases,

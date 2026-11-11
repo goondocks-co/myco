@@ -2,7 +2,7 @@ import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
 import { PublicationRestoreBuilding } from '../db/documents/readiness.js';
 import { isTombstoned, sessionPresent } from '../db/sessions/tombstones.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from '../content/document.js';
-import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { registeredObjectKeySql } from '../db/storage/registered-object-key.js';
 import { readStoredObject } from '../core/stored-object.js';
 /**
  * A backup's session documents are restored from its immutable chunks. A session without a live document is converted

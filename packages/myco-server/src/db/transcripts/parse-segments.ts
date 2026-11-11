@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import { read, rows } from '../index.js';
 
 /** One stored range of a transcript as the parser reads it: its registered object and original creation time. */

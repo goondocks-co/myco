@@ -4,7 +4,7 @@
  * never an empty result.
  */
 import type { ContentStore, RelationalStore } from '../core/adapters.js';
-import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { registeredObjectKeySql } from '../db/storage/registered-object-key.js';
 import { decodePageChunk, type DecodedChunk, type DocRecord } from './document.js';
 
 export interface ChunkRow {

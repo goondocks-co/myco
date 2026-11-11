@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
-import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
+import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
 
 /**
  * The most parameters one statement may bind on the hosted store, as its platform limits state it. Written here as

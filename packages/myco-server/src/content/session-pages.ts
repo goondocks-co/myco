@@ -5,7 +5,7 @@ import { recordMycoFields } from './tool-rollup.js';
  * read once in a request is not read again.
  */
 import type { ContentStore } from '../core/adapters.js';
-import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { registeredObjectKeySql } from '../db/storage/registered-object-key.js';
 import { toolInputPreview } from '../core/tool-input.js';
 import type { DocRecord, Page } from './document.js';
 import { readBodyChunk, readPageChunk, type ChunkRow } from './document-reader.js';

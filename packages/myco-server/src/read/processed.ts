@@ -1,6 +1,6 @@
 import { processed_processedField as processedField, type processed_ProcessedField as ProcessedField, type processed_ProcessedBodyKind as ProcessedBodyKind, type processed_ProcessedTextKind as ProcessedTextKind } from './catalog/processed.js';
 import type { ServerEnv, StoredObjectBody } from '../core/adapters.js';
-import { registeredObjectKeySql } from '../core/blob-objects.js';
+import { registeredObjectKeySql } from '../db/storage/registered-object-key.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import type { ReadScope } from './scope.js';
 
