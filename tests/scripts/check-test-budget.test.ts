@@ -92,9 +92,8 @@ test('the line ratio may not rise while it is above 1, and states both ratios an
     expect(shrunk).toEqual({ test: 5, product: 4 });
     expect(ratioRoseAboveOne(after, shrunk)).toBe(false);
     expect(checkTestBudget({ repo: fixture, base: git('rev-parse', 'HEAD~1').trim(), skipPlan: true })).toEqual([]);
-    const under = { test: 2, product: 4 };
-    const stillUnder = { test: 3, product: 4 };
-    expect(ratioRoseAboveOne(under, stillUnder)).toBe(false);
+    expect(ratioRoseAboveOne({ test: 2, product: 4 }, { test: 3, product: 4 })).toBe(false);
+    expect(ratioRoseAboveOne({ test: 6, product: 4 }, { test: 6, product: 3 })).toBe(false);
   } finally {
     fs.rmSync(fixture, { recursive: true, force: true });
   }
