@@ -22,6 +22,8 @@ export const D1_OVERLOAD_BACKOFF_MAX_MS = 120_000;
 export const D1_MIGRATION_APPLY_TIMEOUT_MS = 15 * 60_000;
 /** The whole update, waits and applies together, may take this long before it stops for the operator to rerun it. */
 export const D1_UPDATE_CEILING_MS = 2 * 60 * 60_000;
+/** The least time left in which the update still starts another apply. */
+export const D1_LAST_APPLY_MIN_MS = 60_000;
 
 export interface OverloadRetry {
   sleep?: (ms: number) => Promise<void>;
@@ -85,12 +87,15 @@ export interface SchemaStop {
   retries: number;
   /** Whether a timed-out apply may still be running, for `migration_timed_out`. */
   stillRunning?: boolean;
+  /** The time the timed-out apply was given, for `migration_timed_out`. */
+  timeoutMs?: number;
   evidence: StopEvidence;
   detail: string;
 }
 
 /** A limit in the words a person reads it in. */
-const minutes = (ms: number) => ms % 3_600_000 === 0 ? `${ms / 3_600_000} hours` : `${Math.round(ms / 60_000)} minutes`;
+const minutes = (ms: number) => ms % 3_600_000 === 0 ? `${ms / 3_600_000} hours`
+  : ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 60_000)} minutes`;
 
 /** The first sentence of a stop, after "Schema update stopped:" in a summary and inside the thrown message. */
 function stopHeadline(stop: SchemaStop): string {
@@ -101,7 +106,7 @@ function stopHeadline(stop: SchemaStop): string {
       return `migration ${stop.migration} failed twice with D1 overload (code 7429) while the migrations before it applied`;
     case 'migration_timed_out':
       return stop.stillRunning === true
-        ? `the migration command answered nothing for ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)} and could not be ended`
+        ? `the migration command answered nothing for ${minutes(stop.timeoutMs ?? D1_MIGRATION_APPLY_TIMEOUT_MS)} and could not be ended`
         : `the migration command answered nothing for ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)}, twice, with no migration applied in between; the next one is ${stop.migration}`;
     case 'out_of_time':
       return `the update ran past its ${minutes(D1_UPDATE_CEILING_MS)} limit with the schema at ${stop.reached ?? stop.lastRead} of ${stop.target}`;
@@ -155,7 +160,7 @@ export async function applyMigrationsPaced(options: {
   /** The file that failed with no schema progress, how, and how many times in a row at this live schema. */
   let suspect: { file: string; kind: 'overload' | 'timeout'; failures: number } | undefined;
   const oneLine = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
-  const stop = (reason: SchemaStop['reason'], reached: number | null, error: unknown, extra: Pick<SchemaStop, 'migration' | 'stillRunning'> = {}): never => {
+  const stop = (reason: SchemaStop['reason'], reached: number | null, error: unknown, extra: Pick<SchemaStop, 'migration' | 'stillRunning' | 'timeoutMs'> = {}): never => {
     throw new SchemaUpdateStopped({
       reason, databaseName: options.databaseName, before: options.before, target: options.target, reached, lastRead,
       retries, detail: oneLine(error), evidence: options.evidence, ...extra,
@@ -163,9 +168,10 @@ export async function applyMigrationsPaced(options: {
   };
   /** One wait before the next attempt; the reason to stop instead once the waits at this schema or the update's time are spent. */
   const wait = async (): Promise<'overloaded' | 'out_of_time' | undefined> => {
-    if (remaining() <= 0) return 'out_of_time';
+    const left = remaining();
+    if (left <= 0) return 'out_of_time';
     if (retries >= D1_OVERLOAD_RETRIES) return 'overloaded';
-    const delay = Math.min(nextDelay, remaining());
+    const delay = Math.min(nextDelay, left);
     nextDelay = Math.min(D1_OVERLOAD_BACKOFF_MAX_MS, nextDelay * 2);
     retries += 1;
     totalRetries += 1;
@@ -190,10 +196,13 @@ export async function applyMigrationsPaced(options: {
   for (;;) {
     let kind: 'overload' | 'timeout';
     let error: unknown;
-    // No attempt starts past the deadline, and none may run past it: the last one gets only the time that is left.
-    if (remaining() <= 0) return stop('out_of_time', lastRead, lastError);
+    // No attempt starts past the deadline, and none may run past it: the last one gets only the time that is left,
+    // read once so the check and the limit agree. An attempt with under a minute left would only be cut off mid-file.
+    const left = remaining();
+    if (left < D1_LAST_APPLY_MIN_MS) return stop('out_of_time', lastRead, lastError);
+    const budget = Math.min(D1_MIGRATION_APPLY_TIMEOUT_MS, left);
     try {
-      await options.apply(Math.min(D1_MIGRATION_APPLY_TIMEOUT_MS, remaining()));
+      await options.apply(budget);
       if (totalRetries > 0) report(`D1 migrations applied after ${totalRetries} ${totalRetries === 1 ? 'retry' : 'retries'}; schema ${options.target} of ${options.target}.`);
       return { kind: 'applied' };
     } catch (caught) {
@@ -203,7 +212,7 @@ export async function applyMigrationsPaced(options: {
       else return { kind: 'failed', error: caught };
     }
     if (error instanceof CommandTimedOut && (error.treeEnd === 'failed' || error.treeEnd === 'unknown')) {
-      return stop('migration_timed_out', null, error, { stillRunning: true, ...(options.fileAfter(lastRead) === undefined ? {} : { migration: options.fileAfter(lastRead)! }) });
+      return stop('migration_timed_out', null, error, { stillRunning: true, timeoutMs: error.timeoutMs, ...(options.fileAfter(lastRead) === undefined ? {} : { migration: options.fileAfter(lastRead)! }) });
     }
     lastError = error;
     const live = await readLive();
@@ -227,7 +236,7 @@ export async function applyMigrationsPaced(options: {
     suspect = progressed || !listed || next === undefined ? undefined
       : { file: next, kind, failures: suspect?.file === next && suspect.kind === kind ? suspect.failures + 1 : 1 };
     report(kind === 'timeout'
-      ? `The migration command answered nothing for ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)} and was ended: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`
+      ? `${budget < D1_MIGRATION_APPLY_TIMEOUT_MS ? `The update's time ran out after ${minutes(budget)} of this migration command, so it was ended` : `The migration command answered nothing for ${minutes(budget)} and was ended`}: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`
       : `D1 overloaded (code 7429) applying migrations: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`);
     if (remaining() <= 0) return stop('out_of_time', live.schema, error);
     if (suspect !== undefined && suspect.failures >= 2) return stop(kind === 'timeout' ? 'migration_timed_out' : 'migration_over_limit', live.schema, error, { migration: suspect.file });

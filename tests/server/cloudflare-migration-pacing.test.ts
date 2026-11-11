@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import { CommandFailed, CommandTimedOut } from '@myco/server/runner.js';
 import {
-  applyMigrationsPaced, D1_MIGRATION_APPLY_TIMEOUT_MS, D1_OVERLOAD_BACKOFF_MIN_MS, D1_OVERLOAD_RETRIES,
+  applyMigrationsPaced, D1_LAST_APPLY_MIN_MS, D1_MIGRATION_APPLY_TIMEOUT_MS, D1_OVERLOAD_BACKOFF_MIN_MS, D1_OVERLOAD_RETRIES,
   schemaStopLines, SchemaUpdateStopped,
 } from '@myco/server/cloudflare-migration-pacing.js';
 
@@ -91,4 +91,6 @@ it('settles an apply cut short by the ceiling against the live schema before cal
   const stopped = await d.run().catch((error) => error);
   expect(stopped.stop).toMatchObject({ reason: 'out_of_time', reached: 1 });
   expect(d.timeouts[1]).toBeLessThan(D1_MIGRATION_APPLY_TIMEOUT_MS);
+  expect(Math.min(...d.timeouts)).toBeGreaterThanOrEqual(D1_LAST_APPLY_MIN_MS);
+  expect(d.lines.join('\n')).toContain("The update's time ran out after");
 });
