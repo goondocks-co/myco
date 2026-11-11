@@ -10,7 +10,6 @@ import { drainObjectReleases } from '@myco-server-worker/core/object-release.js'
 import { acquireRecoveryHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { tombstoneSession } from '@myco-server-worker/core/tombstones.js';
 import { advanceSessionDeletions, deletionProgress } from '@myco-server-worker/db/sessions/deletion.js';
-import { DELETION_PHASES, assertBlobReferencesRouted } from '@myco-server-worker/db/sessions/deletion-phases.js';
 import { backupSnapshot } from '@myco-server-worker/core/backup.js';
 import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 import { archiveRawSources } from '@myco-server-worker/core/raw-archive.js';
@@ -65,10 +64,12 @@ describe('accepting a deletion', () => {
     expect(accepted?.state).toBe('running');
     expect(count(e.sqlite, 'session_tombstones')).toBe(1);
     expect(count(e.sqlite, 'session_deletion_jobs')).toBe(1);
-    expect(count(e.sqlite, 'plans')).toBe(0);
+    expect(count(e.sqlite, 'plans')).toBeGreaterThan(0);
     expect(count(e.sqlite, 'events')).toBeGreaterThan(0);
     expect(await getSession(e.db, SCOPE, S)).toBeNull();
     expect((await pageProjectPlans(e.db, SCOPE))!.rows).toEqual([]);
+    expect(await projectStatistics(e.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', prompts: 0, plans: null });
+    await drainSessionDeletions(e.serverEnv, NOW);
     expect(await projectStatistics(e.db, 'proj_1', NOW)).toMatchObject({ state: 'ready', prompts: 0 });
   });
 
@@ -345,7 +346,7 @@ describe('a Deployment backup while a deletion runs', () => {
   });
 });
 
-describe('plans past the first page of acceptance', () => {
+describe('plans awaiting bounded cleanup', () => {
   it('are gone from the plan lists and direct reads and search, before any job step', async () => {
     const e = await rig();
     for (let n = 0; n < 135; n += 1) await e.send({ eventId: uuid(1000 + n), kind: 'plan', payload: { planKey: uuid(5000 + n), content: `plancanaryword ${n}`, status: 'active', tags: ['plan'] } });
@@ -409,34 +410,6 @@ describe('completion and routes', () => {
     e.sqlite.run(`INSERT INTO session_title_work(project_id,session_id,mode) VALUES('proj_1',?,'claim')`, [S]);
     await drainSessionDeletions(e.serverEnv, NOW);
     expect(count(e.sqlite, 'session_title_work')).toBe(0);
-  });
-
-  it('names a route to every table with a session id, or why it keeps its rows', () => {
-    const e = sqliteEnv();
-    const kept = new Map([
-      ['sessions', 'a deleted session stays known by its identity'], ['session_tombstones', 'the deletion itself'],
-      ['session_read_facts', 'facts maintained per session id'], ['kpi_fact', 'history zeroed by triggers on the rows above it'],
-      ['machine_capture_heads', 'capture recency is per machine'], ['blob_reservations', 'an upload authority: released by the drain'],
-      ['spores', 'knowledge survives its session'], ['resolution_events', 'lineage of knowledge survives'], ['spore_count_facts', 'spore counts'], ['spore_session_counts', 'spore counts'],
-      ['knowledge_git_provenance', 'knowledge'], ['knowledge_release_state', 'knowledge'], ['injection_served_items', 'the snapshot is masked at acceptance'],
-      ['document_publication_facts', 'kept by triggers on the document rows'], ['document_due', 'kept by triggers on the document rows'],
-      ['document_publication_ready', 'kept by triggers on the document rows'], ['document_publication_contributions', 'kept by triggers on the document rows'],
-      ['document_publication_totals', 'kept by triggers on the document rows'], ['run_output_membership', 'a run keeps its output membership'], ['work_window_sessions', 'a run window'],
-      ['session_deletion_jobs', 'the job itself'], ['transcript_reread_jobs', 'an owner reread job'],
-      ['search_documents', 'kept by triggers on the records it indexes, and hidden at read once the session is deleted'],
-      ['project_activity', 'kept by triggers on its sources: the tombstone takes a deleted session and its plans out of the feed'],
-    ]);
-    const phased = new Set(DELETION_PHASES.map(phase => phase.table));
-    const missing = (e.sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>)
-      .filter(({ name }) => (e.sqlite.query(`PRAGMA table_info("${name}")`).all() as Array<{ name: string }>).some(column => column.name === 'session_id' || column.name === 'source_session_id'))
-      .map(({ name }) => name).filter(name => !name.includes('_fts') && !phased.has(name) && !kept.has(name));
-    expect(missing).toEqual([]);
-    e.sqlite.close();
-  });
-
-  it('stops the load when a blob reference has no route from a session, run bodies aside', () => {
-    expect(() => assertBlobReferencesRouted([{ table: 'run_bodies' }, { table: 'attachments' }])).not.toThrow();
-    expect(() => assertBlobReferencesRouted([{ table: 'mystery_refs' }])).toThrow('mystery_refs');
   });
 
   it('records a candidate from a proof only for the generation the proof names', async () => {

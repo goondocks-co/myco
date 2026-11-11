@@ -162,7 +162,10 @@ async function citationFault(db: RelationalStore, projectId: string, plan: Assig
     if (id.startsWith('plan:') && id !== planEvidence(plan.key) && await readPlanHeld(db, projectId, id.slice('plan:'.length)) !== null) continue;
     const reporter = isOutcomeId(id) ? await readOutcomeReporter(db, projectId, plan.sessions, id.slice(0, id.indexOf(':')), id.slice(id.indexOf(':') + 1)) : null;
     if (reporter !== null) {
-      return { actual: `evidence ${JSON.stringify(id)} was reported by session ${reporter.session_id} on ${day(reporter.reported_at)}, before this plan was written on ${day(plan.created)}, so it is that session's outcome, not this plan's`, repair: listed };
+      const relation = reporter.reported_at < plan.created
+        ? `, before this plan was written on ${day(plan.created)}, so it is that session's outcome, not this plan's`
+        : ", but it is not among this plan's listed outcomes";
+      return { actual: `evidence ${JSON.stringify(id)} was reported by session ${reporter.session_id} on ${day(reporter.reported_at)}${relation}`, repair: listed };
     }
     return { actual: `evidence ${JSON.stringify(id)} is not listed for this plan and names no other plan this Project holds`, repair: listed };
   }

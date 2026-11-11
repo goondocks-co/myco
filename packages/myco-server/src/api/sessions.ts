@@ -358,7 +358,9 @@ export async function handleSetPlanStatus(env: ServerEnv, ctx: OwnerContext): Pr
 
 /**
  * The project's home: what it holds, and what happened most recently, a page at a time (`nextCursor` continues it while
- * `hasMore`). `building` says existing records are still being added to the feed.
+ * `hasMore`). `building` says existing records are being added. During plan retirement, only the deleted
+ * session's activity is withheld; other activity and statistics remain visible, with a null plans count. Cursors mark a position, not a snapshot: an edited plan moves to
+ * the head and may be absent from the continuation; a fresh first page shows it.
  */
 export async function handleProjectActivity(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);

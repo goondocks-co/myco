@@ -1,4 +1,4 @@
-import type { RelationalStore, RunResult } from '../../core/adapters.js';
+import type { PreparedStatement, RelationalStore, RunResult } from '../../core/adapters.js';
 import { emit, StorageContractError } from '../../telemetry.js';
 import { abortSql, refusalCode } from './refusal.js';
 import { prepareBound, type Bound } from './statement.js';
@@ -16,12 +16,20 @@ export type NamedResults<Statements extends NamedStatements> = {
     : Statements[Key] extends readonly (infer Each)[] ? (Each extends Bound<infer Row> ? StatementResult<Row> : never)[] : never;
 };
 
+async function batch(db: RelationalStore, prepared: PreparedStatement[]): Promise<RunResult[]> {
+  try { return await db.batch(prepared); }
+  finally {
+    // Remote statement handles remain live until the batch settles.
+    prepared.length = 0;
+  }
+}
+
 /** One atomic batch, including assertions and positional results; an empty batch performs no store call. */
 export async function commit<const Statements extends readonly Bound[]>(
   db: RelationalStore, ...statements: Statements
 ): Promise<CommitResults<Statements>> {
   if (statements.length === 0) return [] as CommitResults<Statements>;
-  const results = await db.batch(statements.map(statement => prepareBound(db, statement)));
+  const results = await batch(db, statements.map(statement => prepareBound(db, statement)));
   if (results.length !== statements.length) throw new StorageContractError('batch result count differs from statement count');
   emit({
     kind: 'db_batch',
@@ -48,7 +56,7 @@ export async function commitAfter<const Statements extends readonly Bound[]>(
 ): Promise<CommitResults<Statements>> {
   if (guards.some(guard => guard.sql.includes(';'))) throw new StorageContractError('a batch guard is one condition and cannot hold a statement separator');
   const before = guards.map(guard => db.prepare(`SELECT CASE WHEN (${guard.sql}) THEN 1 ELSE ${abortSql(guardRefused)} END`).bind(...guard.params));
-  const results = await db.batch([...before, ...statements.map(statement => prepareBound(db, statement))]);
+  const results = await batch(db, [...before, ...statements.map(statement => prepareBound(db, statement))]);
   if (results.length !== before.length + statements.length) throw new StorageContractError('batch result count differs from statement count');
   emit({
     kind: 'db_batch',

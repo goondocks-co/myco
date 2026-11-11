@@ -147,7 +147,7 @@ function phase([table, spec]: readonly [string, PhaseSpec], index: number): Dele
     table === 'transcript_segments'
       ? `SELECT r.${spec.key.join(',r.')} FROM transcripts t CROSS JOIN transcript_segments r ON r.project_id=t.project_id AND r.transcript_id=t.transcript_id
           WHERE t.project_id=?1 AND t.session_id=?2 LIMIT ?3`
-      : `SELECT ${keys} FROM ${table} WHERE project_id=?1 AND session_id=?2 LIMIT ?3` });
+      : `SELECT ${keys} FROM ${table} WHERE project_id=?1 AND session_id=?2${table === 'plans' ? ' ORDER BY updated_at DESC,plan_key DESC' : ''} LIMIT ?3` });
   return {
     name: table, table, page,
     statements: (keys, session, cutoff, now) => ({
@@ -166,13 +166,10 @@ const RUN_OWNED_REFERENCE_TABLES = new Set(['run_bodies']);
 const covered = new Set(SPECS.map(([table]) => table));
 for (const table of DERIVED_TABLES) if (!covered.has(table)) throw new Error(`no deletion phase reaches ${table}`);
 /** A catalogue table a deletion cannot reach would record no candidates and say nothing, so it stops the load. */
-export function assertBlobReferencesRouted(references: readonly { table: string }[]): void {
+function assertBlobReferencesRouted(references: readonly { table: string }[]): void {
   for (const { table } of references) if (!covered.has(table) && !RUN_OWNED_REFERENCE_TABLES.has(table)) throw new Error(`no route from a session to blob references in ${table}`);
 }
 assertBlobReferencesRouted(BLOB_REFERENCES);
-
-/** The first page of the plans phase runs in acceptance's own commit; plan reads carry the tombstone for any plans past it. */
-export const PLANS_PHASE: DeletionPhase = DELETION_PHASES[0]!;
 
 /** A statement body for every table a verified completion checks: one row is enough to say the phases did not finish. */
 export const REMAINING_TABLES: readonly string[] = SPECS.map(([table]) => table);
