@@ -97,7 +97,6 @@ const REQUEST_DEADLINES: Readonly<Record<string, { calls: number; bound: string 
   'packages/myco/src/member/join-code.ts': { calls: 1, bound: 'one poll of a join code' },
   'packages/myco/src/member/legacy-daemon-stop.ts': { calls: 1, bound: 'one health request to the daemon recorded by the selected home' },
   'packages/myco/src/member/legacy-service/cooperative-shutdown.ts': { calls: 2, bound: 'one shutdown request and the health polls inside its finite drain grace' },
-  'packages/myco/src/runner/detect.ts': { calls: 1, bound: "one background version probe of an installed agent, joined to the worker's stop of its probes" },
   'packages/myco/src/runner/drivers/acp.ts': { calls: 1, bound: "the listing of the run's own tools" },
   'packages/myco/src/runner/loop.ts': { calls: 1, bound: "one worker request (claim, renewal, end), through the loop's one helper" },
   'packages/myco/src/runner/models.ts': { calls: 1, bound: "one listing of a harness's models" },

@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
 import { spawnOwnedGroup, type OwnedProcess } from './process-group.js';
+import { runnerRequest } from './request.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import type { CodexInstallationContext, CodexInstallationVerdict } from '@myco/runner/drivers/codex.js';
 
@@ -188,7 +189,7 @@ function agentVersionOf(printed: string | null): string | undefined {
 
 /**
  * Each installed binary's version, asked once per file as it stands on disk: an upgrade replaces the file and is asked
- * again. A probe runs in the background as a process group of its own, stopped with its helpers when the probe timeout
+ * again. A probe runs in the background as a process group of its own, stopped with its helpers when the runner request timeout
  * passes or the worker stops it; until it answers, the binary has no version.
  */
 const versions = new Map<string, { version: string | undefined } | 'asking'>();
@@ -198,18 +199,22 @@ const MAX_VERSION_OUTPUT_CHARS = 4096;
 
 function askVersion(at: string, key: string): void {
   versions.set(key, 'asking');
-  let owned: OwnedProcess;
+  void runnerRequest((signal) => readVersion(at, signal), probesStopping.signal)
+    .catch(() => undefined)
+    .then((version) => { versions.set(key, { version }); });
+}
+
+async function readVersion(at: string, signal: AbortSignal): Promise<string | undefined> {
   // Its input is closed: an agent that reads its input for a session reads none and ends, rather than waiting out the probe.
-  try { owned = spawnOwnedGroup(at, ['--version'], { env: probeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }, AbortSignal.any([probesStopping.signal, AbortSignal.timeout(PROBE_TIMEOUT_MS)])); }
-  catch { versions.set(key, { version: undefined }); return; }
+  const owned = spawnOwnedGroup(at, ['--version'], { env: probeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }, signal);
   probes.add(owned);
   let printed = '';
   owned.child.stdout?.setEncoding('utf8');
   owned.child.stdout?.on('data', (chunk: string) => { if (printed.length < MAX_VERSION_OUTPUT_CHARS) printed += chunk; });
-  void owned.exit.then((code) => code, () => -1).then((code) => {
-    probes.delete(owned);
-    versions.set(key, { version: code === 0 ? agentVersionOf(printed) : undefined });
-  });
+  try {
+    const code = await owned.exit.catch(() => -1);
+    return code === 0 ? agentVersionOf(printed) : undefined;
+  } finally { probes.delete(owned); }
 }
 
 /** Stop every version probe still running, its helpers included, and wait until they are gone. */
