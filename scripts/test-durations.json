@@ -804,6 +804,7 @@
     "tests/server/cloudflare-deployment.test.ts": 2959,
     "tests/server/cloudflare-lifecycle.test.ts": 36680,
     "tests/server/cloudflare-object-reader.test.ts": 1610,
+    "tests/server/cloudflare-migration-pacing.test.ts": 200,
     "tests/server/cloudflare-operation.test.ts": 210,
     "tests/server/cloudflare-owner.test.ts": 80654,
     "tests/server/cloudflare-private-commands.test.ts": 600,

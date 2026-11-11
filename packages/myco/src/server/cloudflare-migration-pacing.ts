@@ -10,17 +10,22 @@
  */
 /** D1 Time Travel keeps a database's history this long on the Workers Free plan (30 days on Paid). */
 const TIME_TRAVEL_FREE_RETENTION_MS = 7 * 24 * 60 * 60_000;
-import { CommandFailed } from './runner.js';
+import { CommandFailed, CommandTimedOut } from './runner.js';
 import type { DeploymentRecord } from './cloudflare.js';
 
-/** Waits spent on one update's overloaded database, across migration applies and live-schema reads. */
+/** Waits spent at one live schema on an overloaded database, across migration applies and live-schema reads; the count starts over whenever the schema advances. */
 export const D1_OVERLOAD_RETRIES = 8;
 /** D1 measures load over ten seconds; the first wait outlasts one window. */
 export const D1_OVERLOAD_BACKOFF_MIN_MS = 15_000;
 export const D1_OVERLOAD_BACKOFF_MAX_MS = 120_000;
+/** One migration apply that answers nothing for this long is ended. An index build on a 2 GB table took about 26 s per statement, and a call that did commit files is resumed, so one generous limit is safe. */
+export const D1_MIGRATION_APPLY_TIMEOUT_MS = 15 * 60_000;
+/** The whole update, waits and applies together, may take this long before it stops for the operator to rerun it. */
+export const D1_UPDATE_CEILING_MS = 2 * 60 * 60_000;
 
 export interface OverloadRetry {
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
 const OVERLOADED = /\[code:\s*7429\]|"code"\s*:\s*7429\b/;
@@ -66,7 +71,7 @@ export function workerSchemaEvidence(record: DeploymentRecord): { schema: number
 
 /** Why the update stopped short of its target schema, with what is known of where the database stands. */
 export interface SchemaStop {
-  reason: 'overloaded' | 'migration_over_limit';
+  reason: 'overloaded' | 'migration_over_limit' | 'migration_timed_out' | 'out_of_time';
   databaseName: string;
   before: number;
   target: number;
@@ -74,18 +79,38 @@ export interface SchemaStop {
   reached: number | null;
   /** The last live schema read during this update. */
   lastRead: number;
-  /** The file that failed twice, for `migration_over_limit`. */
+  /** The file that failed twice, for `migration_over_limit` and `migration_timed_out`. */
   migration?: string;
+  /** Waits spent at the live schema the update stopped on. */
   retries: number;
+  /** Whether a timed-out apply may still be running, for `migration_timed_out`. */
+  stillRunning?: boolean;
   evidence: StopEvidence;
   detail: string;
 }
 
+/** A limit in the words a person reads it in. */
+const minutes = (ms: number) => ms % 3_600_000 === 0 ? `${ms / 3_600_000} hours` : `${Math.round(ms / 60_000)} minutes`;
+
+/** The first sentence of a stop, after "Schema update stopped:" in a summary and inside the thrown message. */
+function stopHeadline(stop: SchemaStop): string {
+  switch (stop.reason) {
+    case 'overloaded':
+      return `D1 database ${stop.databaseName} stayed overloaded (code 7429) through ${stop.retries} retries at schema ${stop.reached ?? stop.lastRead}`;
+    case 'migration_over_limit':
+      return `migration ${stop.migration} failed twice with D1 overload (code 7429) while the migrations before it applied`;
+    case 'migration_timed_out':
+      return stop.stillRunning === true
+        ? `the migration command answered nothing for ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)} and could not be ended`
+        : `the migration command answered nothing for ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)}, twice, with no migration applied in between; the next one is ${stop.migration}`;
+    case 'out_of_time':
+      return `the update ran past its ${minutes(D1_UPDATE_CEILING_MS)} limit with the schema at ${stop.reached ?? stop.lastRead} of ${stop.target}`;
+  }
+}
+
 export class SchemaUpdateStopped extends Error {
   constructor(readonly stop: SchemaStop, options?: { cause?: unknown }) {
-    super(stop.reason === 'overloaded'
-      ? `schema update stopped: D1 database ${stop.databaseName} stayed overloaded (code 7429) through ${stop.retries} retries`
-      : `schema update stopped: migration ${stop.migration} failed twice with D1 overload (code 7429) while the migrations before it applied`, options);
+    super(`schema update stopped: ${stopHeadline(stop)}`, options);
     this.name = 'SchemaUpdateStopped';
   }
 }
@@ -99,15 +124,17 @@ export type PacedApply =
 /**
  * Run `apply` until the live schema reaches `target`, waiting out D1's overload between attempts.
  *
- * After every overloaded attempt the live schema is read (itself retried on overload) and reported as progress. The
- * update stops by name when the waits run out, or when the same file fails twice with the database answering and
- * nothing applied in between.
+ * `apply` gets the time one attempt may take. After every overloaded or timed-out attempt the live schema is read
+ * (itself retried on overload) and reported as progress; a timed-out attempt may have committed files, so it is never
+ * rerun blind. The waits at one schema are bounded, and start over when the schema advances. The update stops by name
+ * when the waits at one schema run out, when the same file fails twice with nothing applied in between, or when the
+ * whole update passes its ceiling.
  */
 export async function applyMigrationsPaced(options: {
   databaseName: string;
   before: number;
   target: number;
-  apply: () => Promise<unknown>;
+  apply: (timeoutMs: number) => Promise<unknown>;
   liveSchema: () => Promise<number>;
   /** The migration file Wrangler runs after the one that stamped `version`. */
   fileAfter: (version: number) => string | undefined;
@@ -116,67 +143,90 @@ export async function applyMigrationsPaced(options: {
   retry?: OverloadRetry;
 }): Promise<PacedApply> {
   const sleep = options.retry?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = options.retry?.now ?? Date.now;
+  const startedAt = now();
   const report = (line: string) => options.report?.(line);
+  /** Waits spent at the current live schema, and across the whole update. */
   let retries = 0;
+  let totalRetries = 0;
   let nextDelay = D1_OVERLOAD_BACKOFF_MIN_MS;
   let lastRead = options.before;
-  /** The file that failed with no schema progress, and how many times in a row at this live schema. */
-  let suspect: { file: string; failures: number } | undefined;
+  /** The file that failed with no schema progress, how, and how many times in a row at this live schema. */
+  let suspect: { file: string; kind: 'overload' | 'timeout'; failures: number } | undefined;
   const oneLine = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
-  const stop = (reason: SchemaStop['reason'], reached: number | null, error: unknown, migration?: string): never => {
+  const stop = (reason: SchemaStop['reason'], reached: number | null, error: unknown, extra: Pick<SchemaStop, 'migration' | 'stillRunning'> = {}): never => {
     throw new SchemaUpdateStopped({
       reason, databaseName: options.databaseName, before: options.before, target: options.target, reached, lastRead,
-      retries, detail: oneLine(error), evidence: options.evidence, ...(migration === undefined ? {} : { migration }),
+      retries, detail: oneLine(error), evidence: options.evidence, ...extra,
     }, { cause: error });
   };
-  /** One wait before the next attempt; false once the update has spent its waits. */
-  const wait = async (progressed: boolean): Promise<boolean> => {
-    if (retries >= D1_OVERLOAD_RETRIES) return false;
-    const delay = progressed ? D1_OVERLOAD_BACKOFF_MIN_MS : nextDelay;
+  /** One wait before the next attempt; the reason to stop instead once the waits at this schema or the update's time are spent. */
+  const wait = async (): Promise<'overloaded' | 'out_of_time' | undefined> => {
+    if (now() - startedAt >= D1_UPDATE_CEILING_MS) return 'out_of_time';
+    if (retries >= D1_OVERLOAD_RETRIES) return 'overloaded';
+    const delay = nextDelay;
     nextDelay = Math.min(D1_OVERLOAD_BACKOFF_MAX_MS, delay * 2);
     retries += 1;
-    report(`Waiting ${Math.round(delay / 1000)} s for D1's load to settle (retry ${retries} of ${D1_OVERLOAD_RETRIES}).`);
+    totalRetries += 1;
+    report(`Waiting ${Math.round(delay / 1000)} s for D1's load to settle (retry ${retries} of ${D1_OVERLOAD_RETRIES} at schema ${lastRead}).`);
     await sleep(delay);
-    return true;
+    return undefined;
   };
-  const readLive = async (): Promise<{ schema: number } | { error: unknown; overloaded: boolean }> => {
+  const readLive = async (): Promise<{ schema: number } | { error: unknown; stopReason?: 'overloaded' | 'out_of_time' }> => {
     for (;;) {
       try {
         return { schema: await options.liveSchema() };
       } catch (error) {
-        if (!isD1Overload(error)) return { error, overloaded: false };
+        if (!isD1Overload(error)) return { error };
         report(`D1 overloaded (code 7429) reading the live schema; last read ${lastRead} of ${options.target}.`);
-        if (!(await wait(false))) return { error, overloaded: true };
+        const stopReason = await wait();
+        if (stopReason !== undefined) return { error, stopReason };
       }
     }
   };
 
   for (;;) {
+    let kind: 'overload' | 'timeout';
+    let error: unknown;
     try {
-      await options.apply();
-      if (retries > 0) report(`D1 migrations applied after ${retries} ${retries === 1 ? 'retry' : 'retries'}; schema ${options.target} of ${options.target}.`);
+      await options.apply(D1_MIGRATION_APPLY_TIMEOUT_MS);
+      if (totalRetries > 0) report(`D1 migrations applied after ${totalRetries} ${totalRetries === 1 ? 'retry' : 'retries'}; schema ${options.target} of ${options.target}.`);
       return { kind: 'applied' };
-    } catch (error) {
-      if (!isD1Overload(error)) return { kind: 'failed', error };
-      const live = await readLive();
-      if ('error' in live) {
-        if (!live.overloaded) return { kind: 'failed', error };
-        return stop('overloaded', null, error);
-      }
-      if (live.schema === options.target) return { kind: 'applied', confirmed: { detail: oneLine(error), reached: live.schema } };
-      if (live.schema < lastRead || live.schema > options.target) return { kind: 'failed', error };
-      const progressed = live.schema > lastRead;
-      lastRead = live.schema;
-      // An attempt that advanced the schema may have ended on a file that committed and still answered 7429, so it says
-      // nothing about the next file. Only an attempt that listed the files and applied none of them failed on the next.
-      const next = options.fileAfter(live.schema);
-      const listed = `${error.stdout}\n${error.stderr}`.includes(MIGRATIONS_LISTED);
-      suspect = progressed || !listed || next === undefined ? undefined
-        : { file: next, failures: suspect?.file === next ? suspect.failures + 1 : 1 };
-      report(`D1 overloaded (code 7429) applying migrations: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`);
-      if (suspect !== undefined && suspect.failures >= 2) return stop('migration_over_limit', live.schema, error, suspect.file);
-      if (!(await wait(progressed))) return stop('overloaded', live.schema, error);
+    } catch (caught) {
+      error = caught;
+      if (caught instanceof CommandTimedOut) kind = 'timeout';
+      else if (isD1Overload(caught)) kind = 'overload';
+      else return { kind: 'failed', error: caught };
     }
+    if (error instanceof CommandTimedOut && (error.treeEnd === 'failed' || error.treeEnd === 'unknown')) {
+      return stop('migration_timed_out', null, error, { stillRunning: true, ...(options.fileAfter(lastRead) === undefined ? {} : { migration: options.fileAfter(lastRead)! }) });
+    }
+    const live = await readLive();
+    if ('error' in live) {
+      if (live.stopReason === undefined) return { kind: 'failed', error };
+      return stop(live.stopReason, null, error);
+    }
+    if (live.schema === options.target) return { kind: 'applied', confirmed: { detail: oneLine(error), reached: live.schema } };
+    if (live.schema < lastRead || live.schema > options.target) return { kind: 'failed', error };
+    const progressed = live.schema > lastRead;
+    lastRead = live.schema;
+    if (progressed) {
+      retries = 0;
+      nextDelay = D1_OVERLOAD_BACKOFF_MIN_MS;
+    }
+    // An overloaded attempt that advanced the schema may have ended on a file that committed and still answered 7429,
+    // so it says nothing about the next file. Only an attempt that listed the files and applied none of them failed
+    // on the next. A timed-out attempt listed nothing we can read, so it counts when nothing was applied.
+    const next = options.fileAfter(live.schema);
+    const listed = kind === 'timeout' || `${(error as CommandFailed).stdout}\n${(error as CommandFailed).stderr}`.includes(MIGRATIONS_LISTED);
+    suspect = progressed || !listed || next === undefined ? undefined
+      : { file: next, kind, failures: suspect?.file === next && suspect.kind === kind ? suspect.failures + 1 : 1 };
+    report(kind === 'timeout'
+      ? `The migration command answered nothing for ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)} and was ended: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`
+      : `D1 overloaded (code 7429) applying migrations: schema ${live.schema} of ${options.target}${suspect === undefined ? '' : `; ${suspect.file} did not apply`}.`);
+    if (suspect !== undefined && suspect.failures >= 2) return stop(kind === 'timeout' ? 'migration_timed_out' : 'migration_over_limit', live.schema, error, { migration: suspect.file });
+    const stopReason = await wait();
+    if (stopReason !== undefined) return stop(stopReason, live.schema, error);
   }
 }
 
@@ -191,7 +241,7 @@ export interface WorkerLeft {
 /** The stop, the live schema, the Worker left serving, and the exact next command. */
 export function schemaStopLines(stop: SchemaStop, worker: WorkerLeft, now = Date.now()): string[] {
   const live = stop.reached === null
-    ? `The live schema could not be read while D1 was overloaded; the last read was ${stop.lastRead} of ${stop.target}.`
+    ? `The live schema was not read ${stop.stillRunning === true ? 'because the stalled command may still be running' : 'while D1 was overloaded'}; the last read was ${stop.lastRead} of ${stop.target}.`
     : `Live schema ${stop.reached} of ${stop.target} (started at ${stop.before}).`;
   const release = `${worker.release ?? 'an unrecorded release'}${worker.versionId === null ? '' : ` (version ${worker.versionId})`}`;
   const serves = worker.schema === null
@@ -202,14 +252,20 @@ export function schemaStopLines(stop: SchemaStop, worker: WorkerLeft, now = Date
         ? `It serves schema ${worker.schema}, which is the live schema, so it keeps serving.`
         : `It serves schema ${worker.schema} only, so it refuses requests while the live schema is ${stop.reached}.`;
   const lines = [
-    stop.reason === 'overloaded'
-      ? `Schema update stopped: D1 database ${stop.databaseName} stayed overloaded (code 7429) through ${stop.retries} retries. ${live} Each migration applies whole, so a rerun resumes after the last one applied.`
-      : `Schema update stopped: migration ${stop.migration} failed twice with D1 overload (code 7429) while the migrations before it applied. A statement in it likely exceeds D1's per-query limit, so retrying will not help. ${live}`,
+    `Schema update stopped: ${stopHeadline(stop)}. ${stop.reason === 'migration_over_limit'
+      ? `A statement in it likely exceeds D1's per-query limit, so retrying will not help. ${live}`
+      : `${live} Each migration applies whole, so a rerun resumes after the last one applied.`}`,
     `The Worker was left on its old release ${release}. ${serves}`,
     `D1 said: ${stop.detail}`,
   ];
   if (stop.reason === 'overloaded') {
     lines.push('Next: wait a few minutes for D1\'s load to settle, then run: myco server update --target cloudflare');
+  } else if (stop.reason === 'out_of_time') {
+    lines.push('Next: run: myco server update --target cloudflare; the schema keeps the migrations already applied, so it carries on from there.');
+  } else if (stop.reason === 'migration_timed_out') {
+    lines.push(stop.stillRunning === true
+      ? `Next: the stalled command could not be ended and may still be running; make sure no wrangler process from this update is left, then run: myco server update --target cloudflare`
+      : `Next: check that D1 database ${stop.databaseName} is answering, then run: myco server update --target cloudflare. A rerun stops at ${stop.migration} again if that migration needs more than ${minutes(D1_MIGRATION_APPLY_TIMEOUT_MS)}. ${recoveryAdvice(stop.evidence, now)}`);
   } else {
     lines.push(`Next: a rerun stops at ${stop.migration} again. ${recoveryAdvice(stop.evidence, now)}`);
   }

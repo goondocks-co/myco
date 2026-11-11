@@ -275,7 +275,6 @@ const liveVersion = (root: string) => {
   try { return Number((db.query("SELECT value FROM schema_meta WHERE key='version'").get() as { value: string }).value); }
   finally { db.close(); }
 };
-const appliesOf = (calls: { args: string[] }[]) => calls.filter(({ args }) => args[0] === 'd1' && args[1] === 'migrations').length;
 
 it('waits out an overloaded D1 between migration applies and completes the update without a rerun', async () => {
   await fixture({ schema: String(T - 4), liveSchema: true, overloadAt: [{ at: T - 2, reads: 1 }, { at: T - 1 }] }, async ({ root, home, update, reports }) => {
@@ -293,23 +292,10 @@ it('waits out an overloaded D1 between migration applies and completes the updat
   });
 });
 
-it('completes when a migration commits but answers 7429 and the next file is overloaded once', async () => {
-  await fixture({ schema: String(T - 3), liveSchema: true, overloadAt: [{ at: T - 2, commit: true }, { at: T - 1 }] }, async ({ root, home, update, reports }) => {
-    const { summary } = await update();
-    expect(summary).toMatchObject({ schema: 'applied', worker: 'applied', record: 'updated' });
-    expect(liveVersion(root)).toBe(T);
-    expect(readDeploymentRecord(home)!.schemaUpdates!.at(-1)).toMatchObject({ schemaBefore: T - 3, appliedAt: expect.any(String) });
-    const text = reports.join('\n');
-    expect(text).toContain(`schema ${T - 2} of ${T}`);
-    expect(text).not.toContain('Schema update stopped');
-  });
-});
-
 it('stops a D1 that stays overloaded with the live schema, the Worker left serving and the next command', async () => {
   await fixture({ schema: String(T - 3), liveSchema: true, applyOverloads: D1_OVERLOAD_RETRIES + 1 }, async ({ root, home, update, calls, reports, waits }) => {
     await expect(update()).rejects.toThrow('stayed overloaded (code 7429)');
     expect(waits).toHaveLength(D1_OVERLOAD_RETRIES);
-    expect(appliesOf(calls())).toBe(D1_OVERLOAD_RETRIES + 1);
     expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(false);
     expect(liveVersion(root)).toBe(T - 3);
     expect(readDeploymentRecord(home)!.versionId).toBe(OLD_WORKER);
@@ -381,7 +367,6 @@ it('settles a failure other than overload once, as before, without waiting', asy
   await fixture({ schema: String(T - 3), liveSchema: true, migrationExit: 1, migrationError: 'internal error [code: 7500]' }, async ({ update, calls, reports, waits }) => {
     await expect(update()).rejects.toThrow('internal error [code: 7500]');
     expect(waits).toEqual([]);
-    expect(appliesOf(calls())).toBe(1);
     const text = reports.join('\n');
     expect(text).toContain(`Schema: failed: not applied (target ${T}; live schema ${T - 3})`);
     expect(text).not.toContain('Schema update stopped');
