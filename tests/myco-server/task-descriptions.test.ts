@@ -6,6 +6,7 @@ import { MEMBER_SUB, OWNER_ENV, ownerCookie, seedMemberRoleAccount, settingsRevi
 import {
   EXTRACTION_TASK,
   PULLED_ONLY_TASKS,
+  PLAN_CURATION_TASK,
   RETAINED_TASKS,
   TASK_TOOLS,
   TASK_TIERS,
@@ -81,8 +82,9 @@ describe('task description registry gates', () => {
     try {
       f.sqlite.run(`INSERT INTO project_repositories (project_id, url, branch, revision, updated_at, updated_by) VALUES ('proj_1', ?, ?, 'test', 1, 'test')`, ['{{repository.url}}', '{{repository.branch}}']);
       const tasks = await read(f);
-      // Learning's prompt names one slice of one session, and the card prompt is pulled only; neither is built here.
-      for (const task of tasks.filter((task) => task.promptTemplate !== null && task.task !== EXTRACTION_TASK && !PULLED_ONLY_TASKS.includes(task.task))) {
+      // Learning's prompt names one slice of one session, the card prompt is pulled only, and plan curation's prompt carries
+      // the Project's stale plans as its material; none of them is built here.
+      for (const task of tasks.filter((task) => task.promptTemplate !== null && task.task !== EXTRACTION_TASK && task.task !== PLAN_CURATION_TASK && !PULLED_ONLY_TASKS.includes(task.task))) {
         const params = task.task === 'title-summary' ? { session_id: '{{session.id}}', mode: 'claim' } : undefined;
         const built = await buildTaskInput(f.serverEnv, task.task, 'proj_1', 1, { params });
         expect(built !== null && !built.unchanged).toBe(true);

@@ -44,6 +44,7 @@ export const RUN_TOOLS = [
   'myco_run_cards',
   'myco_run_learning',
   'myco_run_curation',
+  'myco_run_plans',
 ] as const;
 
 export type RunTool = (typeof RUN_TOOLS)[number];
@@ -121,6 +122,7 @@ export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = 
   myco_run_cards: ['write'],
   myco_run_learning: ['complete'],
   myco_run_curation: ['material', 'complete'],
+  myco_run_plans: ['resolve'],
 };
 
 /** Whether this op of this tool writes. */

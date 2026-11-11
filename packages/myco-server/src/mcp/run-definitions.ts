@@ -22,6 +22,7 @@ import {
 import { CURATION_MATERIAL_BYTES, CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from '../core/spore-curation-contract.js';
 import { CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_COMPLETE_EXAMPLE } from '../core/spore-curation-contract.js';
 import { CARD_WRITE_BOUND } from '../core/turn-card-prompt.js';
+import { PLAN_DECISIONS, PLAN_DECISION_EVIDENCE, PLAN_DECISION_EXAMPLE, PLAN_RESOLUTION_NOTE_CHARS } from '../core/plan-curation.js';
 /**
  * The tools only a run may call.
  *
@@ -140,6 +141,7 @@ export const RUN_EXAMPLES: Record<RunTool, Record<string, unknown>> = {
   },
   myco_run_learning: { op: 'complete', handoff: 'No unresolved guidance.' },
   myco_run_curation: JSON.parse(CURATION_COMPLETE_EXAMPLE) as Record<string, unknown>,
+  myco_run_plans: PLAN_DECISION_EXAMPLE,
 };
 
 const definitions: readonly RunToolDefinition[] = [
@@ -177,6 +179,28 @@ const definitions: readonly RunToolDefinition[] = [
         [PROJECT_PIVOT]: project,
       },
       required: ['op'],
+    },
+  },
+  {
+    name: 'myco_run_plans',
+    handlerValidated: ['plan_id', 'evidence', 'superseded_by'],
+    description: `Record what became of one assigned plan, once per plan: completed, abandoned, superseded by another plan, or open. A completed, abandoned or superseded decision cites 1 to ${PLAN_DECISION_EVIDENCE} distinct evidence ids listed for that plan, or plan:<id> for another plan this Project holds; superseded also names superseded_by. note is nonempty text of at most ${PLAN_RESOLUTION_NOTE_CHARS} characters. The decision changes the plan's status and resolution, never its body, and lands only on the plan as this run read it.`,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        op: { type: 'string', enum: ['resolve'], description: 'resolve: record the decision for one assigned plan.' },
+        plan_id: { type: 'string', minLength: 1, description: 'An assigned plan, as the material names it.' },
+        decision: { type: 'string', enum: [...PLAN_DECISIONS] },
+        note: { type: 'string', minLength: 1, maxLength: PLAN_RESOLUTION_NOTE_CHARS, description: `What landed, why it was dropped, what carries it on, or what is pending: at most ${PLAN_RESOLUTION_NOTE_CHARS} characters.` },
+        evidence: {
+          type: 'array', maxItems: PLAN_DECISION_EVIDENCE, items: { type: 'string', minLength: 1 },
+          description: `The evidence ids the decision rests on, as the material lists them (progress, session:<id>, pr:<id>, issue:<id>, tag:<id>, release:<id>, deploy:<id>) or plan:<id>. At least 1 for a status change, at most ${PLAN_DECISION_EVIDENCE}. Example: ["pr:2180"].`,
+        },
+        superseded_by: { type: 'string', minLength: 1, description: 'For superseded: the later plan that carries the work on.' },
+        [PROJECT_PIVOT]: project,
+      },
+      required: ['op', 'plan_id', 'decision', 'note'],
     },
   },
   {

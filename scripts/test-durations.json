@@ -544,6 +544,8 @@
     "tests/myco-server/people-and-machines.test.ts": 2400,
     "tests/myco-server/pipeline.test.ts": 1886,
     "tests/myco-server/plan-status-intent.test.ts": 100,
+    "tests/myco-server/plan-curation-cost.test.ts": 6000,
+    "tests/myco-server/plan-curation.test.ts": 9000,
     "tests/myco-server/plans-activity-cost.test.ts": 8420,
     "tests/myco-server/plans-activity.test.ts": 4000,
     "tests/myco-server/plans-api.test.ts": 800,

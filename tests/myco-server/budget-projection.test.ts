@@ -5,8 +5,7 @@ import { readBudgetStatus } from '@myco-server-worker/db/runs/budget.js';
 import { automaticFits, budgetHold } from '@myco-server-worker/db/runs/budget-policy.js';
 import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
-import { SPEND_DUE_READ_LIMIT, SPEND_EXPIRY_PAGE, expireSpend, spendSchemaStatements, spendTriggers } from '@myco-server-worker/db/runs/admission.js';
-import { V714_STATEMENTS } from '@myco-server-worker/db/schema-v714.js';
+import { SPEND_DUE_READ_LIMIT, SPEND_EXPIRY_PAGE, expireSpend } from '@myco-server-worker/db/runs/admission.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 
@@ -168,11 +167,6 @@ describe('rolling spend accounting', () => {
       expect(await spent(f, later)).toEqual({ state: 'ready', automatic: 0.25, manual: 0, live: 0, unconfirmed: 0 });
       expect(await automaticFits(f.db, 0.1, later)).toBe(true);
     } finally { f.sqlite.close(); }
-  });
-
-  it('installs exactly the generator output in its schema step', () => {
-    expect([...V714_STATEMENTS]).toEqual(spendSchemaStatements());
-    expect(spendTriggers().every(trigger => V714_STATEMENTS.includes(trigger.sql))).toBe(true);
   });
 });
 

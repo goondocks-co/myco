@@ -1,6 +1,7 @@
 import { changed, jsonKeys, trigger } from '../ddl.js';
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { write } from '../index.js';
+import { PAST_PLAN_STATUSES } from '../plans/resolution.js';
 import type { CatchupFamily } from '../projections/family.js';
 
 /**
@@ -72,6 +73,20 @@ const SOURCE_KINDS: Readonly<Record<SourceKind['kind'], SourceKind>> = {
   },
 };
 
+/** A past plan's resolution note is part of the words it is found by. */
+const PAST = PAST_PLAN_STATUSES.map((status) => `'${status}'`).join(',');
+
+/**
+ * A plan's document as plan curation keeps it: a past plan is also found by its resolution note, so a search for what was
+ * decided reaches the closed plan that records it. A plan with no note, or one that is live again, has the words the
+ * first plan kind gave it, so introducing this kind changes no existing document.
+ */
+const RESOLVED_PLAN_KIND: SourceKind = {
+  ...SOURCE_KINDS.plan,
+  body: `CASE WHEN s.resolution_note IS NULL OR s.status NOT IN (${PAST}) THEN s.content ELSE COALESCE(s.content, '') || ' ' || s.resolution_note END`,
+  watched: [...SOURCE_KINDS.plan.watched, 'resolution_note'],
+};
+
 /**
  * The next free `doc_id` in the second of the record instant `ms`, plus `offset` for the rows one statement allocates
  * together. The instant is cast first: a bound number can arrive as a real, and a real's division would not land on a
@@ -138,7 +153,7 @@ function documentTriggers(kind: SourceKind): string[] {
  */
 const PHASES = {
   searchSessions: SOURCE_KINDS.session,
-  searchPlans: SOURCE_KINDS.plan,
+  searchPlans: RESOLVED_PLAN_KIND,
   searchSpores: SOURCE_KINDS.spore,
   searchCards: SOURCE_KINDS.card,
 } as const;
@@ -168,5 +183,13 @@ export function searchDocumentStatements(): string[] {
     ...Object.values(SOURCE_KINDS).flatMap(documentTriggers),
     ...Object.entries(PHASES).map(([phase, kind]) =>
       `INSERT INTO projection_catchup(projection, phase, done) SELECT '${SEARCH_DOCUMENTS_PROJECTION}', '${phase}', NOT EXISTS (SELECT 1 FROM ${kind.table})`),
+  ];
+}
+
+/** The plan kind's triggers rebuilt so a past plan's document carries its resolution note. No existing document changes. */
+export function resolvedPlanDocumentStatements(): string[] {
+  return [
+    ...['insert', 'update', 'delete'].map((event) => `DROP TRIGGER IF EXISTS search_documents_plan_${event}`),
+    ...documentTriggers(RESOLVED_PLAN_KIND),
   ];
 }

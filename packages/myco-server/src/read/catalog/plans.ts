@@ -35,23 +35,48 @@ interface plans_PlanListItem {
 /** A plan listed across Projects, with the Project it belongs to. */
 type plans_PlanAcrossRow = plans_PlanListItem & { projectId: string };
 
+/**
+ * How a plan was resolved: what landed, why it was dropped or what is pending, when it was resolved (null for a live
+ * plan curation reviewed and left open), the plan that superseded it, and the evidence the decision cited.
+ */
+interface plans_PlanResolution { note: string | null; resolvedAt: number | null; supersededBy: string | null; evidence: string[] }
+
 /** A plan as the Project holds it, in full: the listed fields plus its body or the object holding it. */
 interface plans_ProjectPlanRow extends plans_PlanListItem {
   content: string | null;
   blobKey: string | null;
   /** The registered object admitted by this plan's processed-field provenance, or null. */
   objectKey: string | null;
+  /** Null for a plan nobody has resolved or reviewed. */
+  resolution: plans_PlanResolution | null;
 }
+
+const resolutionOf = (row: { resolution_note: string | null; resolved_at: number | null; superseded_by: string | null; outcome_refs: string | null }): plans_PlanResolution | null =>
+  row.resolution_note === null && row.resolved_at === null ? null
+    : { note: row.resolution_note, resolvedAt: row.resolved_at, supersededBy: row.superseded_by, evidence: row.outcome_refs === null ? [] : JSON.parse(row.outcome_refs) as string[] };
 
 /** A plan's bounded metadata, including the content revision and source session. */
 interface plans_ProjectPlanSummary { planKey: string; title: string | null; status: string; sessionId: string; contentHash: string | null }
 
-/** `checked/total` over a plan body's task list, or `N/A` when it has none: what a document's own appearance of a plan shows. */
+/** A task list item: a `-`, `*`, `+` or ordered list marker, a space, then `[ ]`, `[x]` or `[X]` alone or before a space. */
+const TASK_ITEM = /^(?:[-*+]|\d{1,9}[.)]) \[([ xX])\](?: |$)/;
+const FENCE = /^(?:```|~~~)/;
+
+/**
+ * `checked/total` over a plan body's task list read as Markdown, or `N/A` when it has none: what a document's own
+ * appearance of a plan shows. The rules are those the stored progress is derived by (`db/plans/metadata.ts`): a line
+ * inside a fenced code block is an example, never an item.
+ */
 function plans_progressOf(content: string | null): string {
-  const text = content ?? '';
-  const checked = (text.match(/- \[x\]/gi) ?? []).length;
-  const unchecked = (text.match(/- \[ \]/g) ?? []).length;
-  const total = checked + unchecked;
+  let fenced = false, checked = 0, total = 0;
+  for (const raw of (content ?? '').replace(/\r/g, '').split('\n')) {
+    const line = raw.replace(/^[ \t]+/, '');
+    if (FENCE.test(line)) { fenced = !fenced; continue; }
+    const item = fenced ? null : TASK_ITEM.exec(line);
+    if (item === null) continue;
+    total += 1;
+    if (item[1] !== ' ') checked += 1;
+  }
   return total === 0 ? 'N/A' : `${checked}/${total}`;
 }
 
@@ -190,7 +215,7 @@ async function plans_getPlan(db: RelationalStore, scope: ReadScope, planKey: str
     planKey: row.plan_key, sessionId: row.session_id, promptId: row.prompt_id, title: row.title, status: row.status, content: row.content,
     blobKey: row.blob_key, objectKey: row.object_key, originPath: row.origin_path, preview: row.preview,
     progress: storedProgress(row.progress_done, row.progress_total), updatedBy: row.updated_by, createdAt: row.created_at, updatedAt: row.updated_at,
-    tags: tags.get(scope.projectId)?.get(planKey) ?? [],
+    tags: tags.get(scope.projectId)?.get(planKey) ?? [], resolution: resolutionOf(row),
   };
 }
 

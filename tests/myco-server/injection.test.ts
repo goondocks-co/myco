@@ -21,8 +21,8 @@ import type { PreparedStatement, RelationalStore } from '@myco-server-worker/cor
 import { inheritStoreContext } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
-import * as plans from '@myco-server-worker/read/catalog/plans.js';
 import { receiptPlans } from '@myco-server-worker/db/context/served-plans.js';
+import { writePlanDecision } from '@myco-server-worker/db/plans/resolution.js';
 import { cosineSimilarity } from '@myco-server-worker/core/embedding/vectors.js';
 import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { BACKUP_FORMAT, deploymentId } from '@myco-server-worker/core/backup.js';
@@ -368,16 +368,16 @@ describe('plan selection', () => {
       const snapshot = await receiptPlans(db, SCOPE, [{ receiptId: answer.receiptId!, planIds: expected }]);
       expect(snapshot.get(answer.receiptId!)?.map(plan => [plan.planKey, plan.sessionId, plan.contentHash, plan.unavailable]))
         .toEqual(expected.map(id => [id, 'history', id, false]));
-      const row = await plans.plans_getPlan(db, SCOPE, 'retry');
-      const completed = spyOn(plans, 'plans_getPlan').mockResolvedValue({ ...row!, status: 'completed' });
-      try {
-        const changed = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
-          { sessionId: 'changed', admission: admit(SCOPE.projectId, 'changed'), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
-        expect(completed).toHaveBeenCalledTimes(expected.length);
-        expect(changed.counts).toMatchObject({ planRelevant: expected.length, planHydrated: 0, budgetKept: 0 });
-        expect(changed.items).toEqual([]);
-        expect(rows(sqlite)).toHaveLength(1);
-      } finally { completed.mockRestore(); }
+      // Curation resolves both served plans: injection serves live plans only, so neither is served again.
+      for (const planKey of expected) {
+        expect(await writePlanDecision(db, { projectId: SCOPE.projectId, planKey, revision: NOW, runId: 'curation-run', now: NOW + 1, note: 'Landed.',
+          status: 'completed', supersededBy: null, evidence: '["pr:1"]' })).toBe(true);
+      }
+      const changed = await selectSporesForPrompt(db, SCOPE, { enabled: true, maxPerPrompt: 7 }, true,
+        { sessionId: 'changed', admission: admit(SCOPE.projectId, 'changed'), promptId: 'capture', promptHash: 'capture', prompt, now: NOW }, async () => semantic);
+      expect(changed.counts).toMatchObject({ planHydrated: 0, budgetKept: 0 });
+      expect(changed.items).toEqual([]);
+      expect(rows(sqlite)).toHaveLength(1);
       sqlite.exec("UPDATE plans SET title = 'Changed after serving', content_hash = 'changed'; DELETE FROM plans");
       expect(await receiptPlans(db, SCOPE, [{ receiptId: answer.receiptId!, planIds: expected }])).toEqual(snapshot);
     } finally { get.mockRestore(); sqlite.close(); }

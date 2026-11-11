@@ -677,7 +677,7 @@ describe('versioned schema steps', () => {
           : t === 'content_scan_checkpoints' && c.name === 'source_kind' ? "'event'"
           : t === 'raw_archive_refs' && c.name === 'source_kind' ? "'transcript'"
           : t === 'raw_archive_refs' && c.name === 'disposition' ? "'hot'"
-          : t === 'injection_served_items' && c.name === 'kind' ? "'plan'"
+          : t === 'injection_served_items' && c.name === 'kind' ? "'plan'" : t === 'plans' && c.name === 'outcome_refs' ? 'NULL'
           : t === 'session_artifacts' && c.name === 'kind' ? "'pr'" : t === 'session_artifacts' && c.name === 'url' ? "'https://x'"
           : t === 'prompt_context_answers' && c.name === 'outcome' ? "'empty'"
           : (t === 'embedding_source_state' || t === 'embedding_model_totals') && c.name === 'state' ? "'ready'"

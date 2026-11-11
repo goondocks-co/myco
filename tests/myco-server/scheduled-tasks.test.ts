@@ -128,7 +128,7 @@ describe('automatic maps while the Deployment stays busy', () => {
 
 describe('the schedule envelope', () => {
   it('catalogues every schedule and its precondition, excluding deterministic embedding work', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['canopy-map']);
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['canopy-map', 'curate-plans']);
     expect(TASK_SCHEDULE['embedding-reconcile']).toBeNull();
     expect(SMOKE).toEqual({ intervalSeconds: 86_400, runIn: ['sleep'], overlap: 'skip', maxRunsPerDay: 2 });
     for (const task of Object.keys(TASK_SCHEDULE)) expect({ task, catalogued: task in TASK_ADMISSION }).toEqual({ task, catalogued: true });
@@ -491,7 +491,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_clock', 'myco-agent', 'canopy-map', 'completed', ?, ?, ?)`, [NOW - 4_000, NOW - 3_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_3', 'run_other', 'myco-agent', 'canopy-map', 'completed', ?, ?, ?)`, [NOW - 1_000, NOW - 900, JSON.stringify({ actor: 'mem_owner' })]);
     const tasks = ['embedding-reconcile', 'canopy-map'];
-    expect(scheduledTasks().map(({ task }) => task)).toEqual(['canopy-map']);
+    expect(scheduledTasks().map(({ task }) => task)).toEqual(['canopy-map', 'curate-plans']);
     const whole = await readScheduleFacts(f.env, tasks, NOW);
     // The fixture holds each case the reads tell apart, so agreeing below is agreeing on each of them.
     expect([

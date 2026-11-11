@@ -17,6 +17,7 @@ import {
   EXTRACTION_TASK,
   MANUAL_ONLY_TASKS,
   OUTCOME_TASKS,
+  PLAN_CURATION_TASK,
   PULLED_ONLY_TASKS,
   RETAINED_TASKS,
   SEEDING_TASK,
@@ -38,8 +39,8 @@ const LEDGER = path.join(REPO_ROOT, 'docs', 'architecture', 'myco-2.0.md');
 /** Canopy's two tasks belong to the map task's own issue and are gated there. */
 const OWNED_ELSEWHERE = new Set(['canopy-describe', 'harness-health']);
 
-/** The learning stages close on their own write and accept no skip: a stage run is only created with work to do. */
-const STAGE_TASKS = [EXTRACTION_TASK, CARD_TASK, CURATION_TASK];
+/** The learning stages and plan curation close on their own write and accept no skip: their runs are only created with work to do. */
+const STAGE_TASKS = [EXTRACTION_TASK, CARD_TASK, CURATION_TASK, PLAN_CURATION_TASK];
 
 describe('the task catalogue', () => {
   it('names a gate for every task the ledger keeps, and none it does not', () => {
@@ -81,19 +82,19 @@ describe('the task catalogue', () => {
 
 describe('what the clock runs', () => {
   it('keeps paused extraction, seeding and titling off the clock', () => {
-    expect(scheduledTasks().map((t) => t.task)).toEqual(['canopy-map']);
+    expect(scheduledTasks().map((t) => t.task)).toEqual(['canopy-map', PLAN_CURATION_TASK]);
     expect(TASK_SCHEDULE[EXTRACTION_TASK]).toBeNull();
     for (const task of [SEEDING_TASK, TITLING_TASK]) expect({ task, schedule: TASK_SCHEDULE[task] }).toEqual({ task, schedule: null });
   });
 
   it('honors an owner’s explicit enabled schedule override', () => {
     const live = scheduledTasks({ 'canopy-map': { schedule: { enabled: true } } });
-    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map']);
+    expect(live.map((t) => t.task).sort()).toEqual(['canopy-map', PLAN_CURATION_TASK]);
     expect(live.find((t) => t.task === 'canopy-map')!.schedule).toMatchObject({ enabled: true, intervalSeconds: 21_600, maxRunsPerDay: 4, overlap: 'skip', preCondition: 'has-capture-since-map' });
   });
 
   it('takes a switched-off override away from a task the Deployment otherwise runs', () => {
-    expect(scheduledTasks({ 'canopy-map': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([]);
+    expect(scheduledTasks({ 'canopy-map': { schedule: { enabled: false } } }).map((t) => t.task)).toEqual([PLAN_CURATION_TASK]);
   });
 });
 
@@ -145,7 +146,7 @@ describe('the four run outcomes', () => {
     const workerServed = RETAINED_TASKS.filter((task) => !RUNTIME_SERVED_TASKS.includes(task)).sort();
     expect(workerServed.map(String)).toEqual([...OUTCOME_TASKS].sort());
     expect(Object.keys(INPUT_BUILDERS).sort()).toEqual(OUTCOME_TASKS.filter(task => !UNLANDED_TASKS.includes(task) && !PULLED_ONLY_TASKS.includes(task)).sort());
-    expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK, CURATION_TASK].sort());
+    expect([...OUTCOME_TASKS].sort()).toEqual([EXTRACTION_TASK, CARD_TASK, SEEDING_TASK, TITLING_TASK, MAP_TASK, CURATION_TASK, PLAN_CURATION_TASK].sort());
   });
 
   it('each close on a rule that names an artifact the server can see, and accept a skip only where the server reads to agree with it', () => {

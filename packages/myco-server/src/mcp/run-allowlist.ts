@@ -23,6 +23,7 @@ export const RUN_TOOL_MAP: Readonly<Record<string, readonly RunSurfaceTarget[]>>
   vault_update_session: [{ tool: 'myco_run_sessions', op: 'title' }],
   vault_learning: [{ tool: 'myco_run_learning', op: 'material' }, { tool: 'myco_run_learning', op: 'get' }, { tool: 'myco_run_learning', op: 'complete' }],
   vault_spore_curation: [{ tool: 'myco_run_curation', op: 'material' }, { tool: 'myco_run_curation', op: 'complete' }],
+  vault_plan_curation: [{ tool: 'myco_run_plans', op: 'resolve' }],
   vault_curate_spore: [{ tool: 'myco_spores', op: 'obsolete' }, { tool: 'myco_spores', op: 'supersede' }, { tool: 'myco_spores', op: 'consolidate' }],
   vault_turn_cards: [{ tool: 'myco_run_cards', op: 'material' }, { tool: 'myco_run_cards', op: 'write' }],
   vault_create_spore: [{ tool: 'myco_spores', op: 'save' }],

@@ -25,6 +25,7 @@ import { sporeCountSchemaStatements } from '@myco-server-worker/db/spores/counts
 import { V711 } from '@myco-server-worker/db/schema-v711.js';
 import { V712 } from '@myco-server-worker/db/schema-v712.js';
 import { V714 } from '@myco-server-worker/db/schema-v714.js';
+import { NEXT_PLAN_CURATION } from '@myco-server-worker/db/schema-vNEXT-plan-curation.js';
 import { V716 } from '@myco-server-worker/db/schema-v716.js';
 import { V717 } from '@myco-server-worker/db/schema-v717.js';
 import { V719 } from '@myco-server-worker/db/schema-v719.js';
@@ -265,7 +266,7 @@ const GENERATOR_PINS: readonly (readonly [step: number, generated: () => readonl
   [V711, () => triggerSql(kpiTriggers())],
   [V712, () => triggerSql(passedOverTriggers())],
   [V714, spendSchemaStatements],
-  [V714, () => triggerSql(spendTriggers())],
+  [NEXT_PLAN_CURATION, () => triggerSql(spendTriggers())],
   [V716, () => triggerSql(sourceStateTriggers())],
   [V717, publicationContributionSchema],
   [V719, liveSchemaStatements],

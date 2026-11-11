@@ -43,6 +43,7 @@ import { handleRunSpores } from './tools/run-spores.js';
 import { handleRunCuration } from './tools/run-curation.js';
 import { handleRunCards } from './tools/run-cards.js';
 import { handleRunLearning } from './tools/run-learning.js';
+import { handleRunPlans } from './tools/run-plans.js';
 
 /** The handlers for the run-only tools, keyed as the served registry is. */
 const runOperation = (handler: ToolHandler, action: Action): RegistryEntry => ({
@@ -73,6 +74,7 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
     defaultOp: 'complete',
     ops: { material: runOperation(handleRunCuration, 'execute'), complete: runOperation(handleRunCuration, 'execute') },
   },
+  myco_run_plans: { defaultOp: 'resolve', ops: { resolve: runOperation(handleRunPlans, 'execute') } },
   myco_run_cards: {
     defaultOp: 'material',
     ops: { material: runOperation(handleRunCards, 'read'), write: runOperation(handleRunCards, 'execute') },
