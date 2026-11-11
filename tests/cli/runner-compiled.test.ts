@@ -9,7 +9,7 @@ import { getLibsqlitePath, getVec0Path } from '@myco/runtime/native-deps.js';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-runner-compiled-'));
 const binary = path.join(root, 'myco');
 beforeAll(() => {
-  const result = spawnSync(process.execPath, ['build', '--compile', './tests/fixtures/runner/service-cli.ts', '--outfile', binary], { env: sandboxChildEnv(root), cwd: process.cwd(), encoding: 'utf8', timeout: 120000 });
+  const result = spawnSync(process.execPath, ['build', '--compile', path.resolve('tests/fixtures/runner/service-cli.ts'), '--outfile', binary], { env: sandboxChildEnv(root), cwd: fs.mkdtempSync(path.join(root, 'compile-')), encoding: 'utf8', timeout: 120000 });
   expect({ status: result.status, error: result.error?.message, stderr: result.stderr }).toMatchObject({ status: 0 });
   if (process.platform === 'darwin') expect(spawnSync('codesign', ['--force', '--sign', '-', binary], { env: sandboxChildEnv(root), cwd: root, encoding: 'utf8' }).status).toBe(0);
 }, 150000);

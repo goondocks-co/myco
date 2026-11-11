@@ -18,8 +18,8 @@ const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 beforeAll(() => {
   for (const [i, version] of versions.entries()) {
-    const result = spawnSync(process.execPath, ['build', '--compile', './tests/fixtures/runner/update-cli.ts', '--define', `MYCO_UPDATE_FIXTURE_VERSION=${JSON.stringify(version)}`, '--outfile', files[i]!],
-      { env: sandboxChildEnv(root), cwd: process.cwd(), encoding: 'utf8', timeout: 120000 });
+    const result = spawnSync(process.execPath, ['build', '--compile', path.resolve('tests/fixtures/runner/update-cli.ts'), '--define', `MYCO_UPDATE_FIXTURE_VERSION=${JSON.stringify(version)}`, '--outfile', files[i]!],
+      { env: sandboxChildEnv(root), cwd: fs.mkdtempSync(path.join(root, 'compile-')), encoding: 'utf8', timeout: 120000 });
     expect({ status: result.status, stderr: result.stderr }).toMatchObject({ status: 0 });
     if (process.platform === 'darwin') expect(spawnSync('codesign', ['--force', '--sign', '-', files[i]!], { env: sandboxChildEnv(root), cwd: root, encoding: 'utf8' }).status).toBe(0);
   }

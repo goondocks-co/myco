@@ -5,6 +5,7 @@
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stampDevelopmentVersion } from './install-marker-schema.mjs';
@@ -70,13 +71,15 @@ function buildSingleTarget() {
 
   process.stdout.write(`[build:binary] ${target} (${bunTarget}) -> ${outfile} (version ${mycoVersion})\n`);
   let status = 1;
+  let compileDir;
   try {
+    compileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-compile-'));
     const result = spawnSync(
       'bun',
       // `--splitting` makes every dynamic import a chunk the binary reads only when it is reached: a hook loads its own
       // chunk (`entries/dispatch.ts`) and never parses the rest of the CLI.
       ['build', '--compile', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', '--splitting', '--minify', `--target=${bunTarget}`, entry, '--outfile', outfile],
-      { stdio: 'inherit', cwd: pkgRoot, env: process.env },
+      { stdio: 'inherit', cwd: compileDir, env: process.env },
     );
     status = result.status ?? 1;
     if (status === 0) signExecutable({ target, outfile });
@@ -84,6 +87,7 @@ function buildSingleTarget() {
     // Restore the exact original package.json bytes so the working tree (and any
     // release-stamped version) is never left mutated by a dev build.
     if (stampedPkg) fs.writeFileSync(pkgPath, pkgRaw);
+    if (compileDir !== undefined) fs.rmSync(compileDir, { recursive: true, force: true });
   }
   process.exit(status);
 

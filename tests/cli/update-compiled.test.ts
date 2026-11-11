@@ -16,8 +16,8 @@ const releases = path.join(root, 'releases.json');
 const hash = (file: string): string => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 beforeAll(() => {
   for (const [version, binary] of [[from, old], [to, release]]) {
-    const built = spawnSync(process.execPath, ['build', '--compile', 'tests/fixtures/update/cli.ts', '--define', `FIXTURE_VERSION=${JSON.stringify(version)}`, '--outfile', binary], {
-      cwd: process.cwd(), env: sandboxChildEnv(root), encoding: 'utf8', timeout: 120_000,
+    const built = spawnSync(process.execPath, ['build', '--compile', path.resolve('tests/fixtures/update/cli.ts'), '--define', `FIXTURE_VERSION=${JSON.stringify(version)}`, '--outfile', binary], {
+      cwd: fs.mkdtempSync(path.join(root, 'compile-')), env: sandboxChildEnv(root), encoding: 'utf8', timeout: 120_000,
     });
     expect({ status: built.status, stderr: built.stderr }).toMatchObject({ status: 0 });
     if (process.platform === 'darwin') expect(spawnSync('codesign', ['--force', '--sign', '-', binary], { cwd: root, env: sandboxChildEnv(root), encoding: 'utf8' }).status).toBe(0);

@@ -38,7 +38,7 @@ function compile(version: string): string {
     '',
   ].join('\n'));
   const out = path.join(ROOT, `myco-${version}${EXE}`);
-  const built = spawnSync(process.execPath, ['build', '--compile', '--splitting', '--minify', path.join(src, 'entry.ts'), '--outfile', out], { encoding: 'utf-8' });
+  const built = spawnSync(process.execPath, ['build', '--compile', '--splitting', '--minify', path.join(src, 'entry.ts'), '--outfile', out], { cwd: ROOT, encoding: 'utf-8' });
   expect({ version, status: built.status, stderr: built.stderr.slice(0, 400) }).toEqual({ version, status: 0, stderr: built.stderr.slice(0, 400) });
   // A darwin build is signed in place before it runs, as placement signs every binary it installs.
   if (process.platform === 'darwin') expect(spawnSync('codesign', ['--force', '--sign', '-', out]).status).toBe(0);
