@@ -60,7 +60,7 @@ async function open(runId: string, detail: unknown, taskRuns: (url: URL) => RunP
 }
 
 const runner = (runnerId: string, name: string): RunAttempt['executor'] => ({ kind: 'runner', runnerId, name });
-const attempt = (attemptId: string, claimedAt: number, executor: RunAttempt['executor'], steps: RunAttempt['steps'] = null): RunAttempt => ({ attemptId, claimedAt, executor, steps });
+const attempt = (attemptId: string, claimedAt: number, executor: RunAttempt['executor'], steps: RunAttempt['steps'] = null): RunAttempt => ({ attemptId, claimedAt, executor, steps, waitedFor: null });
 const routeCall = (id: number, at: number): RunCall => ({ id, tool: '/runs/embedding-step', op: null, recordedAt: at, durationMs: null, status: 'success' });
 const story = (panel: HTMLElement) => within(panel).getByRole('region', { name: 'What happened' });
 const line = (panel: HTMLElement, key: string) => story(panel).querySelector<HTMLElement>(`[data-story-row="${key}"]`)!;
