@@ -101,12 +101,12 @@ export function formatRatio(counts) {
   return `${(counts.test / counts.product).toFixed(3)} (${counts.test} test lines / ${counts.product} product lines)`;
 }
 
-/** True when the head ratio is above 1 and higher than the base ratio. */
+/** True when test lines grew and the head ratio is above 1 and higher than the base ratio; deleting product code alone never refuses. */
 export function ratioRoseAboveOne(before, after) {
   if (!(before.product > 0) || !(after.product > 0)) return true;
   const aboveOne = after.test > after.product;
   const rose = after.test * before.product > before.test * after.product;
-  return aboveOne && rose;
+  return aboveOne && rose && after.test > before.test;
 }
 
 export function ratioRefusal(before, after) {
