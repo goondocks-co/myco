@@ -7,6 +7,7 @@ import { BUDGET_WINDOW_MS } from '@myco-server-worker/core/budget-policy.js';
 import { catchUpProjections, projectionReadiness } from '@myco-server-worker/db/projections/catchup.js';
 import { SPEND_DUE_READ_LIMIT, SPEND_EXPIRY_PAGE, expireSpend } from '@myco-server-worker/db/runs/admission.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
+import { rows } from '@myco-server-worker/db/index.js';
 import { holdSentence } from '@goondocks/myco-shared/run-holds';
 
 type Fixture = Awaited<ReturnType<typeof budgetFixture>>;
@@ -117,7 +118,7 @@ describe('rolling spend accounting', () => {
       f.sqlite.run("UPDATE agent_run_attempts SET cost_usd=NULL,cost_source=NULL WHERE attempt_id='restored'");
       expect((await spent(f, f.now + 3 * SPEND_EXPIRY_PAGE)).automatic).toBe(0.02 + 0.10);
       const restoredRow = f.sqlite.query("SELECT * FROM agent_run_attempts WHERE attempt_id='restored'").get() as Record<string, unknown>;
-      await restoreAttemptStatement(f.db, { ...restoredRow, cost_usd: 0.04, cost_source: 'actual' }).run();
+      await rows(f.db, restoreAttemptStatement({ ...restoredRow, cost_usd: 0.04, cost_source: 'actual' }));
       expect((await spent(f, f.now + 3 * SPEND_EXPIRY_PAGE)).automatic).toBe(0.06);
       // Deleting a run removes its attempts' contribution with it.
       f.sqlite.run("DELETE FROM agent_runs WHERE id='restored'");

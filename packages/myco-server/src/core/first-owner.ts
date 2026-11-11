@@ -12,6 +12,7 @@
 import type { RelationalStore } from './adapters.js';
 import { identityLinkWrites } from '../auth/identity-link.js';
 import { firstOwnerClaim, firstOwnerMemberWrite, writeAlone } from '../db/identity/enrollment.js';
+import { firstOwnerMembers, firstOwnerReceipt, firstOwnerSchemaVersion } from '../db/identity/first-owner.js';
 import { MEMBER_ID_PREFIX, SERVER_SCHEMA_VERSION } from '../constants.js';
 import { FIRST_MEMBER_KEY, FIRST_OWNER_MEMBER_LABEL } from './ownership.js';
 
@@ -34,11 +35,10 @@ interface FirstOwnerLink {
  * one whose administrator already linked an account.
  */
 export async function setupFirstOwner(db: RelationalStore, nowMs: number, schemaMismatch: string): Promise<FirstOwnerLink> {
-  const version = await db.prepare("SELECT value FROM schema_meta WHERE key = 'version'").first<{ value: string }>();
-  if (Number(version?.value) !== SERVER_SCHEMA_VERSION) throw new FirstOwnerRefused(schemaMismatch);
-  let receipt = await receiptOf(db);
-  const { results: members } = await db.prepare('SELECT id, role, github_id, revoked_at FROM members LIMIT 2')
-    .all<{ id: string; role: string; github_id: string | null; revoked_at: number | null }>();
+  const version = await firstOwnerSchemaVersion(db);
+  if (Number(version) !== SERVER_SCHEMA_VERSION) throw new FirstOwnerRefused(schemaMismatch);
+  let receipt = await firstOwnerReceipt(db, FIRST_MEMBER_KEY);
+  const members = await firstOwnerMembers(db);
   // An earlier setup's own admin, unlinked and live, or its receipt with the member not yet written, is taken again.
   const pending = receipt !== null && (members.length === 0
     || (members.length === 1 && members[0].id === receipt && members[0].role === 'admin' && members[0].github_id === null && members[0].revoked_at === null));
@@ -48,7 +48,7 @@ export async function setupFirstOwner(db: RelationalStore, nowMs: number, schema
     // The receipt is claimed only while no member exists and no other setup holds it; a setup that loses the race stops.
     const took = await writeAlone(db, firstOwnerClaim.bind(FIRST_MEMBER_KEY, claimed));
     // A claim whose answer went missing is sent again and changes nothing the second time; the receipt then names it.
-    if (took === null && (await receiptOf(db)) !== claimed) throw new FirstOwnerRefused(FIRST_OWNER_HAS_MEMBERS);
+    if (took === null && (await firstOwnerReceipt(db, FIRST_MEMBER_KEY)) !== claimed) throw new FirstOwnerRefused(FIRST_OWNER_HAS_MEMBERS);
     receipt = claimed;
   }
   const memberId = receipt;
@@ -59,7 +59,3 @@ export async function setupFirstOwner(db: RelationalStore, nowMs: number, schema
   return { memberId, key: issue.key, expiresAt: issue.expiresAt };
 }
 
-/** The member id the first-owner receipt names, or null where no setup claimed one. */
-async function receiptOf(db: RelationalStore): Promise<string | null> {
-  return (await db.prepare('SELECT value FROM schema_meta WHERE key = ?').bind(FIRST_MEMBER_KEY).first<{ value: string }>())?.value ?? null;
-}

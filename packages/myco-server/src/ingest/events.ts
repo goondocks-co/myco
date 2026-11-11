@@ -21,7 +21,7 @@ import {
 } from './projections.js';
 import type { Delivery } from '../core/injection.js';
 import { DOCUMENT_TEXT_FIELDS, documentText } from './document-text.js';
-import { prepareContextDelivery } from '../core/context-writes.js';
+import { prepareContextDelivery } from '../db/context/delivery.js';
 
 import {
   CONTEXT_DELIVERED_KIND,

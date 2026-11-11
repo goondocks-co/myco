@@ -1,7 +1,6 @@
 /** The estimator's Deployment-wide progress: its epoch, cycle, watermark and refresh stamp. */
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { read, readSet, write } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import { read, readSet, write, type Bound } from '../index.js';
 import { BUDGET_ENABLED } from './budget-activation.js';
 
 const REFRESHED_KEY = 'budget.estimates_refreshed_at';
@@ -65,18 +64,32 @@ const sampleWrite = write<[project: string, agent: string, key: string, value: s
 });
 
 /** A page publishes a sample only while its progress revision still stands. */
-export function estimateSampleStatement(db: RelationalStore, projectId: string, agentId: string, key: string, value: string, now: number, revision: string): PreparedStatement {
-  return prepareBound(db, sampleWrite.bind(projectId, agentId, key, value, now, revision));
+export function estimateSampleStatement(projectId: string, agentId: string, key: string, value: string, now: number, revision: string): Bound<never, 'write'> {
+  return sampleWrite.bind(projectId, agentId, key, value, now, revision);
 }
 
 /** Answers a row when this page took the progress record, and none when another refresh or an invalidation won. */
-export function estimateAdvanceStatement(db: RelationalStore, held: string | null, next: string, epoch: string | null, refreshedBefore: number): PreparedStatement {
-  return prepareBound(db, held === null ? startProgress.bind(next, epoch, refreshedBefore) : advanceProgress.bind(next, held));
+export function estimateAdvanceStatement(held: string | null, next: string, epoch: string | null, refreshedBefore: number): Bound<{ key: string }, 'write'> {
+  return held === null ? startProgress.bind(next, epoch, refreshedBefore) : advanceProgress.bind(next, held);
 }
 
-export function estimateCompletionStatements(db: RelationalStore, until: number, now: number, revision: string): PreparedStatement[] {
-  return [stampWatermark.bind(String(until), revision), stampRefreshed.bind(String(now), revision), clearProgress.bind(revision)]
-    .map(bound => prepareBound(db, bound));
+export function estimateCompletionStatements(until: number, now: number, revision: string): Bound<never, 'write'>[] {
+  return [stampWatermark.bind(String(until), revision), stampRefreshed.bind(String(now), revision), clearProgress.bind(revision)];
+}
+
+export interface EstimateSettlement { seq: number; projectId: string; task: string; profile: string; cost: number; estimate: number | null }
+const settlementPage = read<[after: number, until: number, floor: number, limit: number], EstimateSettlement>({
+  name: 'meta.estimateSettlements',
+  sql: `SELECT a.settled_seq AS seq,a.project_id AS projectId,r.task,a.profile_json AS profile,
+    a.cost_usd AS cost,a.estimate_usd AS estimate FROM agent_run_attempts a INDEXED BY idx_attempts_settled JOIN agent_runs r ON r.project_id=a.project_id AND r.id=a.run_id
+    WHERE a.settled_seq>?1 AND a.settled_seq<=?2 AND a.claimed_at>=?3 AND a.profile_json IS NOT NULL AND a.cost_usd IS NOT NULL
+    ORDER BY a.settled_seq LIMIT ?4`,
+});
+
+/** Priced attempts settled after `after` through `until`, claimed at or after `floor`, oldest first. */
+export async function estimateSettlements(db: RelationalStore, after: number, until: number, floor: number, limit: number): Promise<EstimateSettlement[]> {
+  const [rows] = await readSet(db, settlementPage.bind(after, until, floor, limit));
+  return rows;
 }
 
 /** Restarts the estimator's cycle while a restore's own guard, written against the rows it replaces, still holds. */

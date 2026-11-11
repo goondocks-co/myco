@@ -23,7 +23,8 @@ import { RETIRED_SEARCH_TABLES } from '../db/schema-steps-search-retirement.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
-import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
+import { restoreAuthorityReceipt, restoreSelectsOwner } from '../db/identity/restored-authority.js';
+import { prepareBound } from '../db/kernel/statement.js';
 import { restoreOwnership } from '../db/identity/ownership.js';
 import { restoreTableKey } from '../db/recovery/restore-keys.js';
 import { effectiveRawOwnerSql, reserveRawRestore } from './raw-claims.js';
@@ -57,7 +58,7 @@ import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureC
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
 import { restoreArchivedEvent } from './event-content-restore.js';
 import { clearDeletedParentsStatement } from '../db/sessions/tombstones.js';
-import { restoreExtractionAckStatement } from './extraction-acks.js';
+import { restoreExtractionAck } from '../db/learning/extraction-ack-restore.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 import { restoredPin, restoreSchemeDecisions, restoreRecordSchemeDecisions } from '../db/documents/restore-pins.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
@@ -526,10 +527,10 @@ type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, decided: Restore
 
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
-  agent_state: restoreAgentStateStatement,
+  agent_state: (db, row) => prepareBound(db, restoreAgentStateStatement(row)),
   run_bodies: restoreRunBodyStatement,
-  agent_run_attempts: restoreAttemptStatement,
-  extraction_acks: restoreExtractionAckStatement,
+  agent_run_attempts: (db, row) => prepareBound(db, restoreAttemptStatement(row)),
+  extraction_acks: (db, row) => prepareBound(db, restoreExtractionAck(row)),
   transcript_segments: restoreTranscriptSegmentStatement,
   session_artifacts: restoreSessionArtifactStatement,
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
@@ -1363,9 +1364,9 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
     }
     const inserts=statements.length;
     statements.push(...chunk.map((row) => {
-      if (table === 'deployment_ownership_audit') return restoreAuthorityAuditStatement(db, table, row, prepared.ownership);
-      if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
-        prepared.byTable.get('members')?.find(member => member.id === row.member_id));
+      if (table === 'deployment_ownership_audit') return prepareBound(db, restoreAuthorityReceipt(table, row, prepared.ownership));
+      if (table === 'member_role_audit') return prepareBound(db, restoreAuthorityReceipt(table, row,
+        prepared.byTable.get('members')?.find(member => member.id === row.member_id)));
       const restoreOwned = OWNED_ROW_RESTORERS[table];
       if (restoreOwned !== undefined) return restoreOwned(db, row, decided);
       const columns = Object.keys(row);
@@ -1382,8 +1383,9 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
     }
     let applied;
     try {
-      applied = table === 'members'
-        ? await restoreMembershipBatch(db, statements, chunk.some(row => row.id !== HARNESS_MEMBER_ID))
+      // Every restored human membership commits the explicit-selection marker with its rows.
+      applied = table === 'members' && chunk.some(row => row.id !== HARNESS_MEMBER_ID)
+        ? (await db.batch([prepareBound(db, restoreSelectsOwner.bind()), ...statements])).slice(1)
         : await db.batch(statements);
     } catch (err) {
       if (err instanceof RestoreAuthorizationError) throw err;

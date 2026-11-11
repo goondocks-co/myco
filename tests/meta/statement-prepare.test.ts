@@ -15,7 +15,7 @@ import { seededSqlite } from '../myco-server/helpers/d1.js';
 
 const DB = resolve('packages/myco-server/src/db');
 /** Statements needing an index the operator path builds, named so the exception goes stale when that changes. */
-const NEEDS_OPERATOR_INDEX: Readonly<Record<string, string>> = { 'meta.estimateCursor': 'idx_attempts_settled' };
+const NEEDS_OPERATOR_INDEX: Readonly<Record<string, string>> = { 'meta.estimateCursor': 'idx_attempts_settled', 'meta.estimateSettlements': 'idx_attempts_settled' };
 
 const modules = (dir: string): string[] => readdirSync(dir).flatMap(name => {
   const file = join(dir, name);

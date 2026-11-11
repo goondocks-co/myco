@@ -16,6 +16,7 @@ import { schemaSqlite } from './helpers/schema-template.js';
 import { engineAssertions,runTick } from '@myco-server-worker/core/tick.js';
 import { estimateInvalidationStatements } from '@myco-server-worker/db/meta/budget-estimates.js';
 import { restoreAttemptStatement } from '@myco-server-worker/core/attempt-accounting.js';
+import { rows } from '@myco-server-worker/db/index.js';
 import worker from '@myco-server-worker/index.js';
 import { asOwner,OWNER_ENV } from './helpers/owner.js';
 import { migrateOnly } from '@myco-server-worker/platform/bun/server-main.js';
@@ -171,22 +172,22 @@ it('enriches unknown canonical attempt evidence and refuses conflicting prices o
     f.history('unknown',null);
     f.sqlite.run("UPDATE agent_run_attempts SET steps_total=9 WHERE attempt_id='unknown'");
     const row=f.sqlite.query<Record<string,unknown>,[]>("SELECT * FROM agent_run_attempts WHERE attempt_id='unknown'").get()!;
-    expect(()=>restoreAttemptStatement(f.db,{...row,cost_source:'actual'})).toThrow('known attempt cost');
+    expect(()=>restoreAttemptStatement({...row,cost_source:'actual'})).toThrow('known attempt cost');
     const settled={...row,cost_usd:0.70,cost_source:'actual',steps_total:0};
-    expect((await restoreAttemptStatement(f.db,settled).all()).results).toHaveLength(1);
-    expect((await restoreAttemptStatement(f.db,settled).all()).results).toHaveLength(0);
+    expect((await rows(f.db, restoreAttemptStatement(settled)))).toHaveLength(1);
+    expect((await rows(f.db, restoreAttemptStatement(settled)))).toHaveLength(0);
     expect(f.sqlite.query("SELECT steps_total FROM agent_run_attempts WHERE attempt_id='unknown'").get()).toEqual({steps_total:9});
-    await expect(restoreAttemptStatement(f.db,{...settled,cost_usd:0.10}).run()).rejects.toThrow('settled attempt cost evidence conflicts');
-    await expect(restoreAttemptStatement(f.db,{...settled,profile_json:JSON.stringify({harness:'other',profile:PROFILE})}).run()).rejects.toThrow('claim evidence');
-    await expect(restoreAttemptStatement(f.db,{...settled,leased_by:'other-worker'}).run()).rejects.toThrow('owner that claimed');
+    await expect(rows(f.db, restoreAttemptStatement({...settled,cost_usd:0.10}))).rejects.toThrow('settled attempt cost evidence conflicts');
+    await expect(rows(f.db, restoreAttemptStatement({...settled,profile_json:JSON.stringify({harness:'other',profile:PROFILE})}))).rejects.toThrow('claim evidence');
+    await expect(rows(f.db, restoreAttemptStatement({...settled,leased_by:'other-worker'}))).rejects.toThrow('owner that claimed');
     f.sqlite.run("UPDATE agent_run_attempts SET machine_id='known-machine' WHERE attempt_id='unknown'");
-    await expect(restoreAttemptStatement(f.db,{...settled,machine_id:'other-machine'}).run()).rejects.toThrow('claim machine');
+    await expect(rows(f.db, restoreAttemptStatement({...settled,machine_id:'other-machine'}))).rejects.toThrow('claim machine');
     f.history('missing-source',0.4);
     f.sqlite.run("DROP TRIGGER agent_attempt_cost_fixed");
     f.sqlite.run("UPDATE agent_run_attempts SET cost_source=NULL WHERE attempt_id='missing-source'");
     f.sqlite.run(V103_STATEMENTS.find(sql=>sql.includes('CREATE TRIGGER IF NOT EXISTS agent_attempt_cost_fixed'))!);
     const missing=f.sqlite.query<Record<string,unknown>,[]>("SELECT * FROM agent_run_attempts WHERE attempt_id='missing-source'").get()!;
-    await restoreAttemptStatement(f.db,{...missing,cost_source:'actual'}).run();
+    await rows(f.db, restoreAttemptStatement({...missing,cost_source:'actual'}));
     expect(f.sqlite.query("SELECT cost_usd,cost_source FROM agent_run_attempts WHERE attempt_id='unknown'").get()).toEqual({cost_usd:0.70,cost_source:'actual'});
   }finally{f.sqlite.close();}
 });
@@ -391,7 +392,7 @@ it('retains a monotonic settlement cursor across attempt retention and tied clai
     expect(await refreshEstimates(f.db,f.now+3_600_000)).toMatchObject({more:false});
     expect((await estimateForClaim(f.db,'proj_1','title-summary','codex',PROFILE)).estimate).toBeCloseTo(0.2);
     expect(()=>f.sqlite.exec("UPDATE agent_run_attempts SET settled_seq=999 WHERE attempt_id='second'")).toThrow('settlement order');
-    expect((await restoreAttemptStatement(f.db,{...second,settled_seq:999}).all()).results).toHaveLength(0);
+    expect((await rows(f.db, restoreAttemptStatement({...second,settled_seq:999})))).toHaveLength(0);
     expect(f.sqlite.query("SELECT settled_seq FROM agent_run_attempts WHERE attempt_id='second'").get()).toEqual({settled_seq:second.settled_seq});
   }finally{f.sqlite.close();}
 });
