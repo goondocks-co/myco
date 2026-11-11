@@ -31,6 +31,7 @@ import {
 } from '@myco-server-worker/core/recall.js';
 import { projectLine, sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
+import { hookRecordPages } from '@myco-server-worker/db/documents/turn-hooks.js';
 import { INSTRUCTIONS_TEMPLATE_LEAF, settingsWriter } from '@myco-server-worker/core/settings.js';
 import { CURATE_LINE } from '@myco-server-worker/core/injection.js';
 import { type SporeInsert } from '@myco-server-worker/core/spores.js';
@@ -239,6 +240,32 @@ describe('the plan nudge', () => {
     ]);
     expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'plan-nudge', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'repeat' });
     expect(await recordSessionInjection(db, SCOPE, 'sess_a', 'cortex', NOW, admit(SCOPE.projectId, 'sess_a'))).toEqual({ outcome: 'recorded' });
+  });
+});
+
+const TASK_NOTIFICATION = '<task-notification>\n<task-id>tid-1</task-id>\n<status>completed</status>\n<summary>selector finished</summary>\n</task-notification>';
+
+describe('a harness system notification', () => {
+  it('records an empty answer, and still serves a pasted notification followed by a question', async () => {
+    const { db } = store();
+    await insertSpore(db, SCOPE, spore('a', { observationType: 'decision', content: 'recency is the whole selector' }));
+    const held = await composePromptContext(db, SCOPE, ON, true, {
+      sessionId: SESSION, admission: admit(SCOPE.projectId, SESSION), promptId: 'note', text: TASK_NOTIFICATION, now: NOW, agent: 'claude-code',
+    }, async () => { throw new Error('selection ran'); });
+    expect(held).toEqual({ answerId: expect.any(String), context: '', parts: [], skipped: ['notification'] });
+    const stored = (await hookRecordPages(db, SCOPE.projectId, SESSION, ['note'])).answers[0];
+    expect({ outcome: stored?.outcome, skipped: JSON.parse(stored?.skipped ?? 'null'), failures: JSON.parse(stored?.failures ?? 'null') })
+      .toEqual({ outcome: 'empty', skipped: ['notification'], failures: [] });
+    const pasted = await composePromptContext(db, SCOPE, ON, true, {
+      sessionId: 'sess_pasted', admission: admit(SCOPE.projectId, 'sess_pasted'), promptId: 'pasted', text: `${TASK_NOTIFICATION}\nPlease explain this XML.`, now: NOW, agent: 'claude-code',
+    }, semanticRecall(db, SCOPE));
+    expect(pasted.context).toContain('recency is the whole selector');
+    expect(pasted.skipped).not.toContain('notification');
+    const undeclared = await composePromptContext(db, SCOPE, ON, true, {
+      sessionId: 'sess_codex', admission: admit(SCOPE.projectId, 'sess_codex'), promptId: 'codex', text: TASK_NOTIFICATION, now: NOW, agent: 'codex',
+    }, semanticRecall(db, SCOPE));
+    expect(undeclared.context).toContain('recency is the whole selector');
+    expect(undeclared.skipped).not.toContain('notification');
   });
 });
 
