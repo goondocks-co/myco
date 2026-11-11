@@ -1,5 +1,7 @@
 import { CAPTURE_RULE_BUNDLES } from './capture-rules.generated.js';
 
+export const UNTITLED_SESSION_LABEL = 'Untitled session';
+
 /**
  * A block the agent adds around or instead of what a person typed. Cursor
  * names every one in snake_case (`<git_status>`, `<image_files>`,
