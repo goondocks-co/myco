@@ -25,6 +25,10 @@ import type { RelationalStore } from '../core/adapters.js';
 import { sha256Hex } from '../hash.js';
 import type { Page, ReadScope } from '../read/scope.js';
 import { grantPage } from '../db/identity/access-pages.js';
+import {
+  expireGrantRows, grantByKeyHash, grantsExpiringRows, insertGrantWithAgent, liveGrantWindow, revokeGrantRow, rotateGrantRows, touchGrantRow,
+  type GrantAgentNames,
+} from '../db/identity/grants.js';
 import { emit } from '../telemetry.js';
 
 /** The bearer's prefix: a log line names the class, and the member-token pattern never matches it. */
@@ -81,18 +85,8 @@ type GrantRefusal = 'revoked' | 'expired';
 const freshKey = (): string => `${GRANT_KEY_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(GRANT_KEY_BYTES)))}`;
 const freshId = (): string => `${GRANT_ID_PREFIX}${toBase64Url(crypto.getRandomValues(new Uint8Array(GRANT_ID_BYTES)))}`;
 
-/**
- * The `agents` row a grant writes under, taken from the grant row itself.
- *
- * The name follows the grant's label, and the statement inserts nothing when
- * the grant row is absent — which is how a rotation that matched no live
- * predecessor leaves no agent row behind.
- */
-export const grantAgent = (db: RelationalStore, grantId: string, nowMs: number) =>
-  db.prepare(`INSERT INTO agents (id, name, source, enabled, created_at, updated_at)
-              SELECT id, COALESCE(label, ?), ?, 1, ?, ? FROM external_grants WHERE id = ?
-              ON CONFLICT (id) DO NOTHING`)
-    .bind(GRANT_AGENT_FALLBACK_NAME, GRANT_AGENT_SOURCE, nowMs, nowMs, grantId);
+/** The `agents` row a grant writes under is named by its label, and by this fallback when it has none. */
+const GRANT_AGENT_NAMES: GrantAgentNames = { fallbackName: GRANT_AGENT_FALLBACK_NAME, source: GRANT_AGENT_SOURCE };
 
 /** Mints a grant for the scope's Project, with its agent row. The key is answered once; only its digest is stored. */
 export async function issueExternalGrant(
@@ -102,12 +96,7 @@ export async function issueExternalGrant(
   const key = freshKey();
   const id = freshId();
   const expiresAt = nowMs + ttlDays * DAY_MS;
-  await db.batch([
-    db.prepare(`INSERT INTO external_grants (id, project_id, key_hash, label, created_by, created_at, expires_at, last_used_at, revoked_at, revoked_by, rotated_to)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)`)
-      .bind(id, scope.projectId, await sha256Hex(key), label, createdBy, nowMs, expiresAt),
-    grantAgent(db, id, nowMs),
-  ]);
+  await insertGrantWithAgent(db, { id, project: scope.projectId, keyHash: await sha256Hex(key), label, createdBy, now: nowMs, expiresAt }, GRANT_AGENT_NAMES);
   emit({ kind: 'grant_issued', grantId: id, projectId: scope.projectId, createdBy, expiresAt });
   return { key, id, expiresAt };
 }
@@ -134,12 +123,8 @@ export async function listExternalGrants(db: RelationalStore, scope: ReadScope, 
 
 /** Live grants whose expiry falls after `nowMs` and at or before `byMs`, soonest first, across every Project; read on the expiry index. */
 export async function grantsExpiringBy(db: RelationalStore, nowMs: number, byMs: number): Promise<{ id: string; projectId: string; label: string | null; expiresAt: number }[]> {
-  const { results } = await db
-    .prepare(`SELECT id, project_id, label, expires_at FROM external_grants
-                WHERE revoked_at IS NULL AND expires_at > ? AND expires_at <= ? ORDER BY expires_at, id`)
-    .bind(nowMs, byMs)
-    .all<Record<string, unknown>>();
-  return results.map((r) => ({ id: r.id as string, projectId: r.project_id as string, label: (r.label as string | null) ?? null, expiresAt: r.expires_at as number }));
+  const found = await grantsExpiringRows(db, nowMs, byMs);
+  return found.map((r) => ({ id: r.id, projectId: r.project_id, label: r.label ?? null, expiresAt: r.expires_at }));
 }
 
 /**
@@ -156,36 +141,20 @@ export async function grantsExpiringBy(db: RelationalStore, nowMs: number, byMs:
 export async function rotateExternalGrant(
   db: RelationalStore, scope: ReadScope, grantId: string, actor: string, nowMs: number,
 ): Promise<IssuedGrant | null> {
-  const live = await db
-    .prepare(`SELECT created_at, expires_at FROM external_grants
-               WHERE id = ? AND project_id = ? AND revoked_at IS NULL AND expires_at > ?`)
-    .bind(grantId, scope.projectId, nowMs)
-    .first<{ created_at: number; expires_at: number }>();
+  const live = await liveGrantWindow(db, scope.projectId, grantId, nowMs);
   if (live === null) return null;
   const key = freshKey();
   const id = freshId();
   const expiresAt = nowMs + (live.expires_at - live.created_at);
-  const results = await db.batch([
-    db.prepare(`INSERT INTO external_grants (id, project_id, key_hash, label, created_by, created_at, expires_at, last_used_at, revoked_at, revoked_by, rotated_to)
-                SELECT ?, project_id, ?, label, ?, ?, ?, NULL, NULL, NULL, NULL FROM external_grants
-                 WHERE id = ? AND project_id = ? AND revoked_at IS NULL AND expires_at > ? RETURNING id`)
-      .bind(id, await sha256Hex(key), actor, nowMs, expiresAt, grantId, scope.projectId, nowMs),
-    grantAgent(db, id, nowMs),
-    db.prepare(`UPDATE external_grants SET revoked_at = ?, revoked_by = ?, rotated_to = ?
-                 WHERE id = ? AND project_id = ? AND revoked_at IS NULL`)
-      .bind(nowMs, actor, id, grantId, scope.projectId),
-  ]);
-  if (results[0]?.results.length !== 1) return null;
+  const rotated = await rotateGrantRows(db, { successor: id, keyHash: await sha256Hex(key), actor, now: nowMs, expiresAt, predecessor: grantId, project: scope.projectId }, GRANT_AGENT_NAMES);
+  if (!rotated) return null;
   emit({ kind: 'grant_rotated', grantId, successorId: id, projectId: scope.projectId, actor });
   return { key, id, expiresAt };
 }
 
 /** Revokes a live grant of the scope's Project, naming who. `revoked` is false when no live row of this Project matched. */
 export async function revokeExternalGrant(db: RelationalStore, scope: ReadScope, grantId: string, actor: string, nowMs: number): Promise<{ revoked: boolean }> {
-  const revoked = await db
-    .prepare(`UPDATE external_grants SET revoked_at = ?, revoked_by = ? WHERE id = ? AND project_id = ? AND revoked_at IS NULL RETURNING id`)
-    .bind(nowMs, actor, grantId, scope.projectId)
-    .first() !== null;
+  const revoked = await revokeGrantRow(db, { grant: grantId, project: scope.projectId, actor, now: nowMs });
   if (revoked) emit({ kind: 'grant_revoked', grantId, projectId: scope.projectId, actor });
   return { revoked };
 }
@@ -201,10 +170,7 @@ export async function revokeExternalGrant(db: RelationalStore, scope: ReadScope,
  * absent `expires_at` is refused with the lapsed ones — every row carries one.
  */
 export async function authenticateGrant(db: RelationalStore, keyHash: string, nowMs: number): Promise<{ grantId: string; projectId: string } | null> {
-  const row = await db
-    .prepare(`SELECT id, project_id, revoked_at, expires_at FROM external_grants WHERE key_hash = ?`)
-    .bind(keyHash)
-    .first<{ id: string; project_id: string; revoked_at: number | null; expires_at: number | null }>();
+  const row = await grantByKeyHash(db, keyHash);
   if (row === null) return null;
   const refusal: GrantRefusal | null = row.revoked_at !== null ? 'revoked'
     : row.expires_at === null || row.expires_at <= nowMs ? 'expired'
@@ -218,10 +184,7 @@ export async function authenticateGrant(db: RelationalStore, keyHash: string, no
 
 /** Records use of a live grant, at most once per `GRANT_TOUCH_INTERVAL_MS`; the throttle is the statement's own predicate. */
 export async function touchGrant(db: RelationalStore, grantId: string, nowMs: number): Promise<{ touched: boolean }> {
-  const touched = await db
-    .prepare(`UPDATE external_grants SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at < ?) RETURNING id`)
-    .bind(nowMs, grantId, nowMs - GRANT_TOUCH_INTERVAL_MS)
-    .first() !== null;
+  const touched = await touchGrantRow(db, grantId, nowMs, nowMs - GRANT_TOUCH_INTERVAL_MS);
   return { touched };
 }
 
@@ -240,11 +203,6 @@ export async function touchGrant(db: RelationalStore, grantId: string, nowMs: nu
  * SQLite option and not offered by every store this runs against.
  */
 export async function expireGrants(db: RelationalStore, nowMs: number, limit: number): Promise<number> {
-  const result = await db
-    .prepare(`UPDATE external_grants SET revoked_at = COALESCE(expires_at, ?), revoked_by = ?
-               WHERE id IN (SELECT id FROM external_grants
-                             WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at <= ?) LIMIT ?) RETURNING id`)
-    .bind(nowMs, GRANT_EXPIRY_ACTOR, nowMs, limit)
-    .run();
-  return result.results.length;
+  return expireGrantRows(db, nowMs, GRANT_EXPIRY_ACTOR, limit);
 }
+

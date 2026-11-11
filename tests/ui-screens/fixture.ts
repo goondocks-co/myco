@@ -26,7 +26,8 @@ import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 import { Database } from 'bun:sqlite';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { revisionHeaders } from '../parity/settings-revision.ts';
-import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
+import { commit as commitWrites } from '@myco-server-worker/db/index.js';
+import { memberAccountBind } from '@myco-server-worker/db/identity/member-standing.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { uuidv5 } from '@myco-server-worker/hash.js';
@@ -246,7 +247,7 @@ export async function seedIdentities(databasePath: string, now: number): Promise
     const db = sqliteRelationalStore(sqlite);
     for (const member of [OWNER, READER]) {
       sqlite.query('INSERT INTO members (id, label, created_at, revoked_at, role) VALUES (?, ?, ?, NULL, ?)').run(member.id, member.label, now - 60 * DAY, member.role);
-      await linkStatement(db, member.id, member.githubSub).run();
+      await commitWrites(db, memberAccountBind(member.id, member.githubSub));
     }
     await bootstrapOwnership(db, OWNER.id, OWNER.id, '0', now);
     const tokens: Record<string, string> = {};

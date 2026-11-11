@@ -9,11 +9,7 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
  * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
  */
 const PENDING: ReadonlySet<string> = new Set([
-  'auth/authorization.ts',
   'auth/device.ts',
-  'auth/grants.ts',
-  'auth/identity-link.ts',
-  'auth/members-admin.ts',
   'auth/tokens.ts',
   'content/document-reader.ts',
   'content/session-pages.ts',

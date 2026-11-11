@@ -1,4 +1,4 @@
-import { memberWritePredicate } from '../../auth/authorization.js';
+import { memberWritePredicate } from './write-predicates.js';
 import { assertion, refusalCode } from '../index.js';
 
 export const CREDENTIAL_ENDED = refusalCode('credential_ended');

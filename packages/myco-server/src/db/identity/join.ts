@@ -1,5 +1,5 @@
 import { MEMBER_ROLES_SQL } from '../../auth/roles.js';
-import { enrollmentAuthorityPredicate } from '../../auth/authorization.js';
+import { enrollmentAuthorityPredicate } from '../auth/write-predicates.js';
 import { GITHUB_LOGIN_KEY_PREFIX } from './member-naming.js';
 import { memberLive } from '../liveness.js';
 import { assertion, read, refusalCode, write, type Bound } from '../index.js';

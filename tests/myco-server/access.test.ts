@@ -15,7 +15,9 @@ import { tmpdir } from 'node:os';
 import worker from '@myco-server-worker/index.js';
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { joinMember } from '@myco-server-worker/auth/join.js';
-import { issueIdentityLinkAuthority, linkStatement, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
+import { issueIdentityLinkAuthority, spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
+import { commit } from '@myco-server-worker/db/index.js';
+import { memberAccountBind } from '@myco-server-worker/db/identity/member-standing.js';
 import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js';
 import { revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { authenticateServerMemberToken } from '@myco-server-worker/auth/tokens.js';
@@ -255,7 +257,7 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
       if (reason === 'member_revoked') {
         e.sqlite.query("UPDATE members SET revoked_at=? WHERE id='mem_machine_2'").run(NOW);
       } else {
-        await linkStatement(e.db, 'mem_machine_2', '9002').run();
+        await commit(e.db, memberAccountBind('mem_machine_2', '9002'));
       }
       const members = () => e.sqlite.query('SELECT id,role,github_id,revoked_at FROM members ORDER BY id').all();
       const before = members();
@@ -276,10 +278,10 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
       }
     }
     expect(writes.sort()).toEqual([
-      'src/auth/identity-link.ts: github_id = ?',
       'src/db/identity/link.ts: github_id=?2',
       'src/db/identity/member-naming.ts: label = ?',
       'src/db/identity/member-revocation.ts: revoked_at=?2,revoked_by=?3',
+      'src/db/identity/member-standing.ts: github_id = ?1',
       'src/db/identity/ownership.ts: role=?1,role_revision=role_revision+1,revoked_at=NULL,revoked_by=NULL',
     ]);
   });
@@ -302,13 +304,13 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     }
     expect(outsideIdentity.sort(), 'Members-write SQL constants belong to db/identity').toEqual([]);
     expect(writers.sort()).toEqual([
-      'src/auth/identity-link.ts: UPDATE',
       'src/db/identity/enrollment.ts: enrollment.firstOwnerIdentity',
       'src/db/identity/enrollment.ts: enrollment.memberIdentityInsert',
       'src/db/identity/join.ts: enrollment.joinMember',
       'src/db/identity/link.ts: identity.linkBind',
       'src/db/identity/member-naming.ts: identity.nameFromLogin',
       'src/db/identity/member-revocation.ts: memberRevocation.member',
+      'src/db/identity/member-standing.ts: memberStanding.bindAccount',
       'src/db/identity/ownership.ts: ownership.roleChange',
       'src/db/schema.ts: INSERT OR IGNORE INTO',
     ]);
@@ -334,7 +336,7 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
 
   it('changes the last admin\'s account through the break-glass statement and leaves the Deployment with a linked admin', async () => {
     const e = sqliteEnv();
-    await linkStatement(e.db, 'mem_machine_1', '4040').run();
+    await commit(e.db, memberAccountBind('mem_machine_1', '4040'));
     expect(e.sqlite.query(`SELECT id, role, github_id FROM members WHERE github_id IS NOT NULL`).all()).toEqual([{ id: 'mem_machine_1', role: 'admin', github_id: '4040' }]);
     expect(await issueIdentityLinkAuthority(e.db, 'mem_machine_2', NOW)).toBeNull();
   });

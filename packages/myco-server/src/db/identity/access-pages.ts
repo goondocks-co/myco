@@ -1,4 +1,4 @@
-import { enrollmentAuthorityPredicate } from '../../auth/authorization.js';
+import { enrollmentAuthorityPredicate } from '../auth/write-predicates.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { deploymentOwnerSql } from './ownership-policy.js';
 import type { Page } from '../../read/scope.js';

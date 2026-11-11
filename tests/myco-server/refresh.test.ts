@@ -9,6 +9,24 @@ import { BLOB_RESERVATION_TTL_MS, PROTOCOL_HEADER, RETRY_AFTER_SECONDS, SERVER_P
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, journaled, memberHeaders, memberPost, noOutboundFetch, RETIRED_BYTE_CEILING, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
+import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
+
+/** A store that answers every read and fails every batch that writes. */
+function refusingWrites(db: RelationalStore, message: string): RelationalStore {
+  const writing = new WeakSet<PreparedStatement>();
+  const track = (statement: PreparedStatement, write: boolean): PreparedStatement => {
+    const tracked: PreparedStatement = { ...statement, bind: (...values) => track(statement.bind(...values), write) };
+    if (write) writing.add(tracked);
+    return tracked;
+  };
+  return { ...db,
+    prepare: (sql) => track(db.prepare(sql), /^\s*(?:INSERT|UPDATE|DELETE|REPLACE)\b/i.test(sql)),
+    batch: async (statements) => {
+      if (statements.some(statement => writing.has(statement))) throw new Error(message);
+      return db.batch(statements);
+    },
+  };
+}
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const T0 = 1_700_000_000_000;
@@ -293,10 +311,7 @@ describe('token refresh', () => {
   it('answers a constraint failure as retryable on refresh and capture alike, whatever the credential has stored: no failure reads as a quota refusal', async () => {
     const r = await rig();
     r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = ? WHERE id = ?`).run(RETIRED_BYTE_CEILING, r.root.tokenId);
-    r.e.env.MYCO_DB = {
-      ...r.e.db,
-      batch: async () => { throw new Error('CHECK constraint failed: member_tokens_quota'); },
-    };
+    r.e.env.MYCO_DB = refusingWrites(r.e.db, 'CHECK constraint failed: member_tokens_quota');
     r.clock.now = WINDOW_OPENS;
     const res = await r.refresh(r.root.token);
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
@@ -479,7 +494,7 @@ describe('token refresh', () => {
   it('answers a storage failure on the refresh route with 503 in the refreshed shape and retry-after', async () => {
     const r = await rig();
     r.clock.now = WINDOW_OPENS;
-    r.e.env.MYCO_DB = { ...r.e.db, batch: async () => { throw new Error('D1_ERROR: boom'); } };
+    r.e.env.MYCO_DB = refusingWrites(r.e.db, 'D1_ERROR: boom');
     const res = await r.refresh(r.root.token);
     expect({ status: res.status, retry: res.headers.get('retry-after'), body: await json(res) }).toEqual({ status: 503, retry: String(RETRY_AFTER_SECONDS), body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
   });
