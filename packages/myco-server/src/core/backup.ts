@@ -19,6 +19,7 @@ import { restoreAttemptStatement,restoreAgentStateStatement,attemptRestoreCompar
 import { LAST_RELEASE_RESTORING_RETIRED_FORMAT } from './retired-format-release.js';
 import { DOCUMENT_SESSION_TABLES, DOCUMENT_ARTIFACT_TABLES } from '../db/document-tables.js';
 import { DROPPED_CONTENT_TABLES } from '../db/schema-v265.js';
+import { RETIRED_SEARCH_TABLES } from '../db/schema-steps-search-retirement.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
@@ -92,10 +93,14 @@ export const BACKUP_TABLES: readonly string[] = [
 /** The content tables of the format before session documents; an artifact holding any of their rows is refused as retired. */
 const RETIRED_FORMAT_TABLES: readonly string[] = ['prompt_batches', 'responses', 'tool_calls', 'fact_classes', 'transcript_parser_state_chunks', 'prompt_key_owners'];
 
-/** Artifact names of the content storage schema steps 265 to 464 dropped; their rows are skipped unless they are legacy document input. */
+/**
+ * Artifact names of tables later steps dropped: the content storage tables of steps 265 to 464, and the search structures
+ * unified search replaced. A restore admits the names and skips their rows.
+ */
 export const RETIRED_INPUT_TABLES: ReadonlySet<string> = new Set([
   ...DROPPED_CONTENT_TABLES,
-  ...DROPPED_CONTENT_TABLES.filter(table => table.endsWith('_fts')).flatMap(table => ['_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
+  ...RETIRED_SEARCH_TABLES,
+  ...[...DROPPED_CONTENT_TABLES, ...RETIRED_SEARCH_TABLES].filter(table => table.endsWith('_fts')).flatMap(table => ['_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
 ]);
 
 /** Artifact tables whose data class is retired by a numbered schema step. */
@@ -132,18 +137,16 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'document_failure_contributions', 'document_failure_totals', 'document_failure_head', 'publication_dependency_totals', 'document_locator_repair',
   'document_publication_ready', 'document_publication_contributions', 'document_publication_totals',
   'setting_revisions', 'embedding_passed_over', 'change_marks', 'member_naming_failures', 'embedding_source_state', 'embedding_model_totals', 'embedding_attempt_clock', 'embedding_resets', 'embedding_eligible_sources', 'embedding_work_attention', 'embedding_work_audit',
-  'credential_lineages', 'storage_usage', 'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'run_head', 'attempt_head', 'run_body_failures', 'run_retirements', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'plan_metadata', 'project_activity', 'session_title_work', 'session_title_work_counts', 'search_revisions', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due', 'legacy_contact_exports',
+  'credential_lineages', 'storage_usage', 'kpi_fact', 'kpi_daily', 'kpi_lineage', 'projection_catchup', 'work_run_contribution', 'work_daily', 'run_output_membership', 'work_window_sessions', 'work_window_totals', 'run_head', 'attempt_head', 'run_body_failures', 'run_retirements', 'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'plan_metadata', 'project_activity', 'session_title_work', 'session_title_work_counts', 'attempt_spend', 'budget_totals', 'admission_contribution', 'run_live', 'task_runtime', 'task_due', 'legacy_contact_exports',
   'spore_resolution_edges', 'learning_project_counts', 'learning_ready_projects', 'learning_quiet_policy', 'project_settings', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_clock',
   'learning_sessions',
   ...DOCUMENT_SESSION_TABLES.filter(table=>!(DOCUMENT_ARTIFACT_TABLES as readonly string[]).includes(table)),
-  'search_blob_queue', 'search_blob_chunks', 'plans_search_terms','blob_search_terms',
   'search_documents', 'search_blob_refs', 'search_blobs', 'search_index_status', 'search_result_windows',
   'session_read_facts', 'session_served_items', 'project_session_counts', 'session_statistics', 'session_attachment_counts', 'project_session_days', 'context_placements', 'context_placement_days', 'machine_capture_heads',
   'embedding_retirement_queue','embedding_models','embedding_due','embedding_hubness_commits','embedding_hubness_revision','embedding_calibration_state','embedding_calibration_population','embedding_vector_pages','embedding_provider_holds',
   'document_due','document_status_totals','document_difference_totals','document_publication_facts',
   'embedding_work_state', 'embedding_versions', 'embedding_receipts', 'embedding_cursors', 'embedding_hubness_members', 'embedding_switches', 'embedding_source_failures', 'local_vectors',
-  ...[...['spores', 'plans', 'sessions', 'search_blob_chunks', 'turn_cards', 'search_documents'].map(table => `${table}_fts`)]
-    .flatMap(table => ['', '_data', '_idx', '_docsize', '_config'].map(suffix => table + suffix)),
+  ...['', '_data', '_idx', '_docsize', '_config'].map(suffix => `search_documents_fts${suffix}`),
   'raw_restore_revisions', 'schema_meta', 'member_tokens', 'blob_reservations', 'step_up_authorities', 'identity_link_redemptions', 'active_project_count',
   'backup_week_heads', 'backup_retention_state', 'deployment_settings', 'deployment_setting_resets', 'retired_deployment_settings', 'machine_settings', 'project_capabilities', 'project_repositories', 'project_release_provenance', 'deployment_secrets', 'backups',
   'backup_restore_progress', 'restore_jobs', 'backup_publications', 'recovery_forget_commands', 'session_deletion_jobs', 'transcript_reread_jobs',

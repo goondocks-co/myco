@@ -56,7 +56,7 @@ it('backs up committed WAL data and exact blob bytes, reading each blob from the
     const restored = new Database(path.join(destination, 'myco.sqlite'), { readonly: true });
     try {
       expect(restored.query("SELECT title FROM sessions WHERE session_id='s_backup'").get()).toEqual({ title: 'Committed WAL title' });
-      expect(restored.query("SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'Committed'").all()).toHaveLength(1);
+      expect(restored.query("SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH 'Committed'").all()).toHaveLength(1);
       expect(restored.query('PRAGMA foreign_key_check').all()).toEqual([]);
       expect(restored.query('SELECT pinned, size_bytes FROM backups').get()).toEqual({ pinned: 1, size_bytes: Buffer.byteLength(backupBody) });
     } finally { restored.close(); }
