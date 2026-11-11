@@ -10,7 +10,7 @@ import {
   restoreTranscriptSegmentStatement,
 } from '../db/documents/ranges.js';
 import { excludeDeletedRestoreRows, excludeDeletedSnapshotRows, excludeRetiredRuns, restoreBlobReferences } from './restore-rows.js';
-import { contentAssertion } from './registered-content.js';
+import { contentAssertion } from '../db/storage/content-guard.js';
 import { eventReferenceStatement } from '../db/event-references.js';
 import { archivedEventMetadata } from '../db/document-tables.js';
 import { estimateInvalidationStatements } from '../db/meta/budget-estimates.js';

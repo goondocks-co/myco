@@ -8,8 +8,9 @@ import { blobObjectKey } from './blob-objects.js';
 
 import { readStoredObject } from './stored-object.js';
 import { sha256HexOf, utf8 } from '../hash.js';
-import { prepareDerivedContent, prepareDerivedStream, verifiedContentSql,
+import { prepareDerivedContent, prepareDerivedStream,
   type ContentPublicationGuard, type DerivedContentSource, type VerifiedContent } from './registered-content.js';
+import { verifiedContentSql } from '../db/storage/content-source.js';
 import { sourceBytes, measureSource, type ContentRow } from './event-content.js';
 import { releaseBlobs } from './object-release.js';
 import { BLOB_RESERVATION_TTL_MS } from '../constants.js';

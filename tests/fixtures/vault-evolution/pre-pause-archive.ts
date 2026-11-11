@@ -1,6 +1,8 @@
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { measuredContentEnv, remainingContentBudget } from '@myco-server-worker/core/content-budget.js';
-import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql, type DerivedContentSource } from '@myco-server-worker/core/registered-content.js';
+import { prepareDerivedContent, prepareDerivedStream, type DerivedContentSource } from '@myco-server-worker/core/registered-content.js';
+import { contentAssertion } from '@myco-server-worker/db/storage/content-guard.js';
+import { verifiedContentSql } from '@myco-server-worker/db/storage/content-source.js';
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareArchiveStep, type ContentRow } from '@myco-server-worker/core/event-content.js';
 import { bundleArchiveStatements, discardArchiveBundle, prepareArchiveBundle } from '@myco-server-worker/core/archive-bundle.js';

@@ -23,7 +23,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'core/backup.ts',
   'core/content-budget.ts',
   'core/harness.ts',
-  'core/registered-content.ts',
   'core/restore-authorization.ts',
   'core/restore-rows.ts',
   'core/run-write-store.ts',

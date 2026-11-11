@@ -7,7 +7,8 @@ import { jsonPages, STATEMENT_JSON_BYTES } from '../db/json-pages.js';
  * conversion each add their own guard and frontier statements and commit the whole as one batch.
  */
 import type { PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
-import { contentAssertion, prepareDerivedStream, type ContentPublicationGuard, type DerivedContentSource } from '../core/registered-content.js';
+import { prepareDerivedStream, type ContentPublicationGuard, type DerivedContentSource } from '../core/registered-content.js';
+import { contentAssertion } from '../db/storage/content-guard.js';
 import { CONTENT_WAKE_JOB_RESERVE, remainingInvocationBudget } from '../core/content-budget.js';
 import { releaseBlobs } from '../core/object-release.js';
 import { registeredBlobsGuard, recordHolderCandidates } from '../db/storage/release-queue.js';
