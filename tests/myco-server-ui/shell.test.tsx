@@ -236,8 +236,7 @@ describe('the nav', () => {
     server({ ...signedIn(), '/api/attention': () => Response.json({ items: [], unavailable: [] }) });
     mount('/p/alpha/sessions');
     const quiet = await screen.findByRole('navigation', { name: 'Admin' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(within(quiet).getByRole('link', { name: 'Health' })).toBeTruthy();
+    expect(await within(quiet).findByRole('link', { name: 'Health' })).toBeTruthy();
   });
 
   it('leads the old addresses to the pages that hold them now, keeping a measures window', async () => {

@@ -1,8 +1,14 @@
 import { deadlineBudget, type HookBudget } from '../member/budget.js';
+import { CONNECT_TIMEOUT_CAP_MS } from '../member/constants.js';
 import { observedFetch, runImport, type ImportDeps } from '../member/import.js';
 import type { FetchLike } from '../member/transport.js';
 
-const SIGNIN_CAPTURE_TIMEOUT_MS = 3_000;
+const DEFAULT_SIGNIN_CAPTURE_TIMEOUT_MS = 3_000;
+
+function signinCaptureTimeoutMs(): number {
+  const parsed = Number(process.env.MYCO_SIGNIN_CAPTURE_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SIGNIN_CAPTURE_TIMEOUT_MS;
+}
 
 interface SignInCapture {
   fetch: FetchLike;
@@ -15,13 +21,19 @@ export async function withSignInCapture<T>(
   deps: { fetch?: FetchLike; now?: () => number; stdout: (line: string) => void },
   work: (capture: SignInCapture) => Promise<T>,
 ): Promise<T> {
-  deps.stdout(`  Checking waiting capture (up to ${SIGNIN_CAPTURE_TIMEOUT_MS / 1000} seconds)…`);
+  const timeoutMs = signinCaptureTimeoutMs();
+  deps.stdout(`  Checking waiting capture (up to ${Math.round(timeoutMs / 1000)} seconds)…`);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('Sign-in capture deadline reached')), SIGNIN_CAPTURE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(new Error('Sign-in capture deadline reached')), timeoutMs);
   try {
     return await work({
       fetch: observedFetch(deps.fetch ?? globalThis.fetch, { signal: controller.signal }).fetch,
-      budget: { ...deadlineBudget((deps.now ?? Date.now)() + SIGNIN_CAPTURE_TIMEOUT_MS), signal: controller.signal, deferOnTimeout: true },
+      budget: {
+        ...deadlineBudget((deps.now ?? Date.now)() + timeoutMs),
+        connectTimeoutMs: Math.min(CONNECT_TIMEOUT_CAP_MS, Math.max(1, Math.floor(timeoutMs / 3))),
+        signal: controller.signal,
+        deferOnTimeout: true,
+      },
       signal: controller.signal,
     });
   } finally {

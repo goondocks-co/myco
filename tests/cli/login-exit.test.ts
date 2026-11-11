@@ -20,7 +20,7 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
   it.skipIf(tty && process.platform === 'win32')(`${operation} exits after its capture summary with ${stalled ? 'stalled' : 'responsive'} backlog (${tty ? 'TTY' : 'pipe'})`, async () => {
     const isSetup = operation.startsWith('setup');
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-login-exit-'));
-    const env = sandboxChildEnv(home);
+    const env = sandboxChildEnv(home, { MYCO_SIGNIN_CAPTURE_TIMEOUT_MS: '1000' });
     for (const dir of [env.CODEX_HOME!, env.CLAUDE_CONFIG_DIR!, path.join(home, '.codeium/windsurf')]) fs.mkdirSync(dir, { recursive: true });
     const e = sqliteEnv();
     e.sqlite.run("UPDATE members SET role = 'admin', github_id = '770001' WHERE id = 'mem_machine_2'");

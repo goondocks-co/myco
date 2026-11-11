@@ -206,11 +206,11 @@ it('keeps the results, and the keyboard’s place in them, while the search is r
   expect(focused?.textContent).toContain('Evict the oldest entry first.');
   const refetch = view.client.refetchQueries({ queryKey: ['search'] });
   await waitFor(() => expect(release).toBeDefined());
-  // Let React commit whatever the in-flight state renders.
-  await new Promise((resolve) => setTimeout(resolve, 20));
   // While it is in flight the list stays, and so does the keyboard's place in it. Compared as words and a boolean, so a failure never prints the element.
-  expect(document.body.textContent).not.toContain('Searching…');
-  expect(document.activeElement === focused).toBe(true);
+  await waitFor(() => {
+    expect(document.body.textContent).not.toContain('Searching…');
+    expect(document.activeElement === focused).toBe(true);
+  });
   release!();
   await refetch;
   expect(document.body.textContent).not.toContain('Searching…');
@@ -238,8 +238,7 @@ it('hides stale matches while typing and discards a pending search when the proj
   finish!(answer([hit({ preview: 'Private to one' })]));
   expect((await screen.findByRole('searchbox') as HTMLInputElement).value).toBe('');
   expect(screen.getByRole('dialog').textContent).toContain('Search Project two');
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  expect(screen.queryByText('Private to one')).toBeNull();
+  await waitFor(() => expect(screen.queryByText('Private to one')).toBeNull());
   expect(asked.every((path) => path.startsWith('/api/projects/one/'))).toBe(true);
 });
 

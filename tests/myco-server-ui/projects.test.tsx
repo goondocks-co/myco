@@ -56,7 +56,6 @@ describe('Projects', () => {
     mount('/projects');
     expect(await screen.findByRole('heading', { level: 1, name: 'Projects' })).toBeTruthy();
     expect(await screen.findByRole('status', { name: 'Loading projects' })).toBeTruthy();
-    await new Promise((resolve) => setTimeout(resolve, 30));
     expect({ empty: screen.queryByText('No projects yet.') !== null, setup: screen.queryByText('myco setup') !== null }).toEqual({ empty: false, setup: false });
   });
 

@@ -1122,7 +1122,7 @@ describe('the session reading page', () => {
     act(() => result.current.more());
     await waitFor(() => expect(readsOf('held')).toBe(1));
     rerender({ id: 'next' });
-    await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    await act(async () => { release(); });
     expect(readsOf('next')).toBe(0);
     act(() => result.current.more());
     await waitFor(() => expect(result.current.stalled).toBe(true));

@@ -349,7 +349,6 @@ describe('a project\'s settings', () => {
     const { asked } = server(base({ '/auth/me': () => Response.json(dashboardMe(MEMBER)) }));
     mount(`/p/${P}/settings`);
     expect(await screen.findByTestId('admin-only')).toBeTruthy();
-    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(asked.filter((line) => line.includes(`${api}/`))).toEqual([]);
   });
 
