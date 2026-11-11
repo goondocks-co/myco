@@ -10,9 +10,6 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
  */
 const PENDING: ReadonlySet<string> = new Set([
   'core/backup.ts',
-  'ingest/document-batch.ts',
-  'ingest/document-restore.ts',
-  'ingest/document-summaries.ts',
 ]);
 
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */

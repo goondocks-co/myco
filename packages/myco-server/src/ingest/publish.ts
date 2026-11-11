@@ -27,7 +27,8 @@ import { PublicationOwnershipBuilding } from '../db/documents/ownership.js';
  * leading records hold anything else, such as a real result where a close placed a failure, places them all again, and
  * each merges into the record it already is.
  */
-import type { ContentStore, PreparedStatement, RelationalStore, ServerEnv } from '../core/adapters.js';
+import type { ContentStore, RelationalStore, ServerEnv } from '../core/adapters.js';
+import type { Bound } from '../db/index.js';
 import { bundleContentEnv } from '../core/archive-bundle.js';
 import { eventContent } from '../core/event-content.js';
 import { emit } from '../telemetry.js';
@@ -615,31 +616,30 @@ class SessionPublication {
   }
 
   /** The guard and frontier statements a publication commits around the batch's catalog writes. */
-  private frontier(versions: readonly ChunkVersion[]): { before: PreparedStatement[]; after: PreparedStatement[] } {
-    const db = this.db;
+  private frontier(versions: readonly ChunkVersion[]): { before: Bound[]; after: Bound[] } {
     const p = this.projectId, s = this.sessionId, g = this.doc.generation;
     const publications = this.publications.filter((publication) => publication.changed);
     const expectedOffsets = publications.map((publication) => ({ t: publication.transcript.transcript_id, o: publication.held }));
     const consumed = JSON.stringify(this.consumed);
     const settled = JSON.stringify([...this.consumed, ...this.failedQueued].map(({ r, c, e, t, w }) => ({ r, c, e, t, w })));
-    const before = publicationGuard(db, { project: p, session: s, generation: g, nextChunk: this.doc.next_chunk,
+    const before = publicationGuard({ project: p, session: s, generation: g, nextChunk: this.doc.next_chunk,
       revision: this.doc.publication_input_revision, after: this.doc.publication_after, chunks: this.batch.expectedChunks(versions),
       offsets: JSON.stringify(expectedOffsets), queue: settled, queued: this.consumed.length + this.failedQueued.length });
-    const after: PreparedStatement[] = [];
-    if (publications.length > 0) after.push(publicationStatement(db, p, s, g, this.now, publications.map((pub) => ({
+    const after: Bound[] = [];
+    if (publications.length > 0) after.push(publicationStatement(p, s, g, this.now, publications.map((pub) => ({
       t: pub.transcript.transcript_id, o: pub.offset, l: pub.segmentLines, p: pub.openPromptId, u: pub.unfinished, r: pub.replyUnfinished,
       a: pub.replyLatestAt, ps: pub.promptScheme, rs: pub.recordScheme, s: pub.state, f: pub.failure, w: pub.awaitedSize,
       n: pub.placedRecords, d: pub.placedDigest, diag: pub.diagnostic===undefined?null:JSON.stringify(pub.diagnostic),
     }))));
-    if (this.consumed.length > 0) after.push(consumeQueuedStatement(db, p, s, consumed));
+    if (this.consumed.length > 0) after.push(consumeQueuedStatement(p, s, consumed));
     const heldChildren = [...this.consumed, ...this.failedQueued].map(({ e }) => e);
-    if (heldChildren.length > 0) after.push(clearDependenciesStatement(db, p, JSON.stringify(heldChildren)));
-    if (this.failedQueued.length > 0) after.push(holdQueuedStatement(db, p, s, JSON.stringify(this.failedQueued.map(({ r, c, e, failure, retry, cause }) => ({ r, c, e, failure, retry, cause })))));
+    if (heldChildren.length > 0) after.push(clearDependenciesStatement(p, JSON.stringify(heldChildren)));
+    if (this.failedQueued.length > 0) after.push(holdQueuedStatement(p, s, JSON.stringify(this.failedQueued.map(({ r, c, e, failure, retry, cause }) => ({ r, c, e, failure, retry, cause })))));
     const dependencies = this.dependencyRows();
-    if (dependencies.length > 0) after.push(recordDependenciesStatement(db, p, s, this.now, JSON.stringify(dependencies)));
+    if (dependencies.length > 0) after.push(recordDependenciesStatement(p, s, this.now, JSON.stringify(dependencies)));
     const holders = [...new Set([...this.consumed.map(({ e }) => e), ...this.failedQueued.filter(row => row.failure !== null).map(({ e }) => e),
       ...(this.doc.publication_wake === null ? [] : JSON.parse(this.doc.publication_wake) as string[])])];
-    if (holders.length > 0) after.push(wakeDependentsStatement(db, p, s, JSON.stringify(holders)));
+    if (holders.length > 0) after.push(wakeDependentsStatement(p, s, JSON.stringify(holders)));
     const behind = this.publications.some((pub) => pub.state === 'active' && pub.fault === undefined && pub.offset < pub.transcript.size);
     const laterDue = [
       ...(this.scanDue === null ? [] : [this.scanDue]),
@@ -650,8 +650,8 @@ class SessionPublication {
     const scanDue = laterDue.length === 0 ? null : Math.min(...laterDue);
     const dueAt = behind || this.more ? 0 : scanDue;
     after.push(this.batch.catalogStatement(this.now));
-    after.push(settlePublication(db, p, s, this.after, this.after === null ? null : scanDue, dueAt));
-    if (holders.length > 0) after.push(continueWakeStatement(db, p, s, JSON.stringify(holders)));
+    after.push(settlePublication(p, s, this.after, this.after === null ? null : scanDue, dueAt));
+    if (holders.length > 0) after.push(continueWakeStatement(p, s, JSON.stringify(holders)));
     return { before, after };
   }
 }

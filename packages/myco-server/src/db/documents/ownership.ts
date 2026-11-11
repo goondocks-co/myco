@@ -1,5 +1,4 @@
-import { prepareBound } from '../kernel/statement.js';
-import type { RelationalStore, PreparedStatement } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, read, readSet, refusalCode, write, type Bound } from '../index.js';
 import { jsonPages } from '../json-pages.js';
 
@@ -54,10 +53,7 @@ export class PublicationOwnership {
     if(initialize)statements.push(activate.bind(...this.scope));
     return statements;
   }
-  retain(number:number):PreparedStatement {return prepareBound(this.db,retain.bind(...this.scope,number));}
-  statements(shards:readonly MetadataShard[],initialize:boolean):PreparedStatement[] {
-    return this.bindings(shards,initialize).map(bound=>prepareBound(this.db,bound));
-  }
+  retain(number:number):Bound {return retain.bind(...this.scope,number);}
 }
 
 export const METADATA_PHASE_SOURCE = {table:'session_chunks',columns:['project_id','session_id','generation','chunk_no'],where:"(kind='page' OR metadata=1)",pageSize:1};

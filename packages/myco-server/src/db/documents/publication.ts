@@ -1,6 +1,5 @@
-import { prepareBound } from '../kernel/statement.js';
 import type { RelationalStore } from '../../core/adapters.js';
-import { assertion, commit, read, readSet, write } from '../index.js';
+import { assertion, commit, read, readSet, write, type Bound } from '../index.js';
 
 export interface DueSession { project_id: string; session_id: string; revision: number; due_at: number }
 export const PUBLISH_BACKOFF_MIN_MS = 60_000;
@@ -34,8 +33,8 @@ const settle = write<[string, string, string | null, number | null, number | nul
     UNION ALL SELECT (SELECT retry_at FROM publish_queue WHERE project_id=?1 AND session_id=?2 AND failure IS NULL AND retry_cause IS NOT NULL ORDER BY retry_at,rank,created_at,event_id LIMIT 1))) END
   WHERE project_id=?1 AND session_id=?2` });
 
-export function settlePublication(db: RelationalStore, project: string, session: string, after: string | null, scanDue: number | null, dueAt: number | null) {
-  return prepareBound(db, settle.bind(project, session, after, scanDue, dueAt));
+export function settlePublication(project: string, session: string, after: string | null, scanDue: number | null, dueAt: number | null): Bound {
+  return settle.bind(project, session, after, scanDue, dueAt);
 }
 
 interface PublicationObservation {
@@ -59,15 +58,15 @@ const unchanged = assertion<[string, string, number, number, number, string | nu
 const observeInput = write<[string, string, number]>({ name: 'publication.observeCommitInput', sql: `UPDATE session_documents
   SET publication_pass_changed=(publication_input_revision<>?3) WHERE project_id=?1 AND session_id=?2` });
 
-export function publicationGuard(db: RelationalStore, held: PublicationObservation) {
-  return [prepareBound(db, unchanged.bind(held.project, held.session, held.generation, held.nextChunk, held.revision,
-    held.after, held.chunks, held.offsets, held.queue, held.queued)), prepareBound(db, observeInput.bind(held.project, held.session, held.revision))];
+export function publicationGuard(held: PublicationObservation): Bound[] {
+  return [unchanged.bind(held.project, held.session, held.generation, held.nextChunk, held.revision,
+    held.after, held.chunks, held.offsets, held.queue, held.queued), observeInput.bind(held.project, held.session, held.revision)];
 }
 
 const published = write<[string, string, number]>({ name: 'publication.advancePublishedRevision', sql: `UPDATE session_documents
   SET published_revision=published_revision+1 WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND state='live'` });
 
 /** Every committed live chunk layout advances the session's published revision. */
-export function publishedDocument(db: RelationalStore, project: string, session: string, generation: number) {
-  return prepareBound(db, published.bind(project, session, generation));
+export function publishedDocument(project: string, session: string, generation: number): Bound {
+  return published.bind(project, session, generation);
 }
