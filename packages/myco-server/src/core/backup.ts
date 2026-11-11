@@ -531,7 +531,7 @@ const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> =
   run_bodies: restoreRunBodyStatement,
   agent_run_attempts: (db, row) => prepareBound(db, restoreAttemptStatement(row)),
   extraction_acks: (db, row) => prepareBound(db, restoreExtractionAck(row)),
-  transcript_segments: restoreTranscriptSegmentStatement,
+  transcript_segments: (db, row) => prepareBound(db, restoreTranscriptSegmentStatement(row)),
   session_artifacts: restoreSessionArtifactStatement,
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
   transcripts(db, row, decided) {
@@ -1111,9 +1111,9 @@ async function releaseUnusedBundle(db: RelationalStore, header: BackupHeader, bu
   const unused = `NOT (${bundleHeld('?', '?')})`;
   const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
   const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
-  const candidates = recordBlobCandidates(db,pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id,archiveKey:bundle.archiveKey}});
+  const candidates = recordBlobCandidates(pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id,archiveKey:bundle.archiveKey}});
   const results = await db.batch([
-    ...candidates,
+    ...candidates.map(candidate => prepareBound(db, candidate)),
     db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=?
       AND ((source_kind='bundle' AND source_id=?) OR (source_kind='receipt' AND source_id=?))
       AND ${unused}`).bind(bundle.projectId,bundle.archiveKey,`bundle:${bundle.archiveKey}`,...guardValues),
@@ -1376,7 +1376,7 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
         .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
     }));
     if (table === 'raw_archive_refs') statements.push(...chunk.filter(row => row.source_kind === 'transcript' && row.disposition === 'archived' && typeof row.transcript_id === 'string')
-      .map(row => clearArchivedTranscriptRanges(db, row.project_id as string, row.transcript_id as string, row.base_offset as number)));
+      .map(row => prepareBound(db, clearArchivedTranscriptRanges(row.project_id as string, row.transcript_id as string, row.base_offset as number))));
     if (table === 'sessions' || table === 'session_tombstones') statements.push(...deletedParentClears(db, chunk));
     if (ordered) {
       statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}

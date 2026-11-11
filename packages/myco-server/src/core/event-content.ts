@@ -1,5 +1,7 @@
 import { SHA256 } from '@stablelib/sha256';
-import type { PreparedStatement, RelationalStore, ContentStore } from './adapters.js';
+import type { RelationalStore, ContentStore } from './adapters.js';
+import type { Bound } from '../db/index.js';
+import { dropScanCheckpoint, inlineBodySlice, readScanCheckpoint, writeScanCheckpoint } from '../db/events/content-scan.js';
 import { prepareArchiveBundle,bundleArchiveStatements,readBundleEntry,type PreparedBundle } from './archive-bundle.js';
 import { readVerifiedContentText, type DerivedContentSource, type VerifiedContent } from './registered-content.js';
 import { blobObjectKey } from './blob-objects.js';
@@ -33,7 +35,7 @@ interface PreparedArchive {
 }
 
 type SourceKind = 'event';
-type ScanCheckpoint = ContentRow & { scanned_bytes: number; hash_state: string; preview_bytes: string };
+type ScanCheckpoint = Pick<ContentRow,'session_id'|'event_id'|'token_id'|'envelope_hash'|'content_revision'|'bytes'> & { scanned_bytes: number; hash_state: string; preview_bytes: string };
 type HashSnapshot = { state: number[]; buffer: number[] | null; bufferLength: number; bytesHashed: number };
 
 const snapshot = (hash: SHA256): HashSnapshot => {
@@ -60,12 +62,6 @@ const sameSource = (held: ScanCheckpoint, row: ContentRow): boolean => held.sess
   && held.event_id === row.event_id && held.token_id === row.token_id && held.envelope_hash === row.envelope_hash
   && held.content_revision === row.content_revision && held.bytes === row.bytes;
 
-const sourceGuard = (row: ContentRow): { sql: string; params: unknown[] } => ({
-  sql: `EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=? AND session_id=? AND token_id=?
-    AND envelope_hash=? AND content_revision=? AND payload_format='inline' AND length(CAST(payload AS BLOB))=?)`,
-  params:[row.project_id,row.event_id,row.session_id,row.token_id,row.envelope_hash,row.content_revision,row.bytes],
-});
-
 /** One complete source revision, sought and sliced by UTF-8 bytes. */
 export function sourceBytes(db: RelationalStore, _kind: SourceKind, row: ContentRow): () => ReadableStream<Uint8Array> {
   return () => {
@@ -74,12 +70,9 @@ export function sourceBytes(db: RelationalStore, _kind: SourceKind, row: Content
       async pull(controller) {
         if (at >= row.bytes) { controller.close(); return; }
         const length = Math.min(CONTENT_SLICE_BYTES, row.bytes-at);
-        const held = await db.prepare(`SELECT substr(CAST(payload AS BLOB),?,?) AS bytes FROM events
-          WHERE project_id=? AND event_id=? AND content_revision=? AND payload_format='inline' AND envelope_hash=?`)
-          .bind(at+1, length, row.project_id, row.resource_id, row.content_revision,row.envelope_hash)
-          .first<{ bytes: Uint8Array | number[] }>();
+        const held = await inlineBodySlice(db, row, at+1, length);
         if (held === null) throw new Error('content_source_changed');
-        const bytes = new Uint8Array(held.bytes);
+        const bytes = new Uint8Array(held);
         if (bytes.byteLength !== length) throw new Error('content_source_changed');
         at += length;
         controller.enqueue(bytes);
@@ -125,14 +118,9 @@ export async function prepareArchiveStep(env: Pick<ContentStore,'db'|'blobs'>,ki
   Promise<{status:'pending';scanned:number}|{status:'ready';archive:PreparedArchive & {preview:string}}> {
   if(row.bytes<=CONTENT_SCAN_BYTES_PER_PASS) return {status:'ready',archive:await prepareArchive(env,kind,row,now)};
   const db=env.db;
-  let held=await db.prepare(`SELECT session_id,event_id,token_id,envelope_hash,content_revision,bytes,
-    scanned_bytes,hash_state,preview_bytes FROM content_scan_checkpoints
-    WHERE project_id=? AND source_kind=? AND resource_id=?`)
-    .bind(row.project_id,kind,row.resource_id).first<ScanCheckpoint>();
+  let held:ScanCheckpoint|null=await readScanCheckpoint(db,row.project_id,kind,row.resource_id);
   if(held!==null&&!sameSource(held,row)) {
-    await db.prepare(`DELETE FROM content_scan_checkpoints WHERE project_id=? AND source_kind=? AND resource_id=?
-      AND content_revision=? AND envelope_hash=? AND scanned_bytes=?`)
-      .bind(row.project_id,kind,row.resource_id,held.content_revision,held.envelope_hash,held.scanned_bytes).run();
+    await dropScanCheckpoint(db,row.project_id,kind,row.resource_id,held);
     held=null;
   }
   const at=held?.scanned_bytes??0;
@@ -155,36 +143,23 @@ export async function prepareArchiveStep(env: Pick<ContentStore,'db'|'blobs'>,ki
     const end=Math.min(row.bytes,at+CONTENT_SCAN_BYTES_PER_PASS);
     while(next<end) {
       const length=Math.min(CONTENT_SLICE_BYTES,end-next);
-      const read=await db.prepare(`SELECT substr(CAST(payload AS BLOB),?,?) AS bytes FROM events
-        WHERE project_id=? AND event_id=? AND content_revision=? AND envelope_hash=? AND payload_format='inline'`)
-        .bind(next+1,length,row.project_id,row.resource_id,row.content_revision,row.envelope_hash).first<{bytes:Uint8Array|number[]}>();
+      const read=await inlineBodySlice(db,row,next+1,length);
       if(read===null) throw new Error('content_source_changed');
-      const bytes=new Uint8Array(read.bytes);
+      const bytes=new Uint8Array(read);
       if(bytes.byteLength!==length) throw new Error('content_source_changed');
       hash.update(bytes);
       if(preview.length<TOOL_INPUT_PREVIEW_BYTES) preview.push(...bytes.subarray(0,TOOL_INPUT_PREVIEW_BYTES-preview.length));
       next+=length;
     }
-    const guard=sourceGuard(row);
-    const state=JSON.stringify(snapshot(hash));
-    const prefix=JSON.stringify(preview);
-    const write=held===null
-      ? db.prepare(`INSERT INTO content_scan_checkpoints(project_id,source_kind,resource_id,session_id,event_id,token_id,
-          envelope_hash,content_revision,bytes,scanned_bytes,hash_state,preview_bytes,updated_at)
-          SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE ${guard.sql} RETURNING 1 AS stored`)
-        .bind(row.project_id,kind,row.resource_id,row.session_id,row.event_id,row.token_id,row.envelope_hash,
-          row.content_revision,row.bytes,next,state,prefix,now,...guard.params)
-      : db.prepare(`UPDATE content_scan_checkpoints SET scanned_bytes=?,hash_state=?,preview_bytes=?,updated_at=?
-          WHERE project_id=? AND source_kind=? AND resource_id=? AND scanned_bytes=? AND content_revision=? AND envelope_hash=?
-          AND ${guard.sql} RETURNING 1 AS stored`)
-        .bind(next,state,prefix,now,row.project_id,kind,row.resource_id,at,row.content_revision,row.envelope_hash,...guard.params);
-    if((await write.all()).results.length!==1) throw new Error('content_scan_source_changed');
+    const stored=await writeScanCheckpoint(db,kind,row,{scanned:next,state:JSON.stringify(snapshot(hash)),preview:JSON.stringify(preview),
+      now,heldAt:held===null?null:at});
+    if(!stored) throw new Error('content_scan_source_changed');
     return {status:'pending',scanned:next-at};
   } finally {hash.clean();}
 }
 
 /** Installs lifecycle facts and the discriminator together with the exact archived body. */
-export function eventArchiveStatements(db: RelationalStore, row: ContentRow, archive: PreparedArchive): PreparedStatement[] {
+export function eventArchiveStatements(db: RelationalStore, row: ContentRow, archive: PreparedArchive): Bound<never,'write'>[] {
   if(!archive.bundle.items.some(item=>item.kind==='event'&&item.row.project_id===row.project_id&&item.row.event_id===row.event_id))
     throw new Error('content_bundle_entry_invalid');
   return bundleArchiveStatements(db,archive.bundle);

@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import { expect, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { backupArtifact, createBackup, deploymentId } from '@myco-server-worker/core/backup.js';
@@ -278,7 +279,7 @@ test('archive selection clears only its named range at the same store cost as th
       for(const offset of [from,from+1])await db.prepare(`INSERT INTO raw_archive_refs(project_id,source_kind,source_id,session_id,size,received_at,transcript_id,base_offset,length,token_id,eligible_at,disposition)
         VALUES('project','transcript',?,'session',1,1,?,?,1,?,1,'archived') ON CONFLICT(project_id,source_kind,source_id) DO UPDATE SET disposition='archived'`).bind(`${transcript}:${offset}`,transcript,offset,row.token_id).run();
       const observed=observeRestoreStore(db);
-      await clearArchivedTranscriptRanges(observed.db,'project',transcript,from).run();
+      await commit(observed.db,clearArchivedTranscriptRanges('project',transcript,from));
       expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(),target).toEqual({n:segmentCount-scale-1});
       expect(await db.prepare('SELECT base_offset FROM transcript_segments WHERE base_offset=?').bind(from+1).first(),target).toEqual({base_offset:from+1});
       reads.push(observed.reads());

@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 /**
  * A session's lifecycle facts are the same whichever order its events arrive in, and survive duplicate delivery,
  * a document reset and a catch-up that builds them from history in bounded pages.
@@ -127,7 +128,7 @@ describe('session lifecycle facts', () => {
       const before = await db.prepare("SELECT facts_event_id,started_at FROM sessions WHERE session_id='archived'").first();
       expect(before, target).toEqual({ facts_event_id: uuid(201), started_at: 100 });
       const source = await cleanupCandidate(db, { project_id: 'project', resource_id: uuid(201), resource_kind: 'event' }, true);
-      await db.batch(eventArchiveStatements(db, source!, await prepareArchive(env as never, 'event', source!, Date.now())));
+      await commit(db, ...eventArchiveStatements(db, source!, await prepareArchive(env as never, 'event', source!, Date.now())));
       await rebuild(db);
       expect(await db.prepare("SELECT facts_event_id,started_at FROM sessions WHERE session_id='archived'").first(), target).toEqual(before);
     });

@@ -1,3 +1,5 @@
+import { prepareBound } from '@myco-server-worker/db/kernel/statement.js';
+import { commit } from '@myco-server-worker/db/index.js';
 import { describe, expect, it } from 'bun:test';
 import { recordCurrent, releaseNow } from './helpers/release-now.js';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
@@ -420,7 +422,7 @@ describe('ordered release queues', () => {
         VALUES('proj_a','archive',?,'bundle','archive','event','hash','s','digest',1,1,1)`).bind(GENERATION(1)).run();
       await db.prepare(`INSERT INTO prepared_archive_bundles(preparation_id,project_id,archive_key,receipt_key,expires_at) VALUES('prep','proj_a','archive',NULL,?)`).bind(NOW).run();
       const guard = { preparationId: 'prep', projectId: 'proj_a', archiveKey: 'archive', receiptKey: null, expiresAt: NOW, agedAt: null };
-      await db.batch(recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'archive' }], NOW, guard));
+      await commit(db, ...recordBlobCandidates([{ projectId: 'proj_a', key: 'archive' }], NOW, guard));
       expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(0);
     });
   }, 120_000);
@@ -428,7 +430,7 @@ describe('ordered release queues', () => {
   it.each(stores)('a pass that read an earlier generation, or a bundle already gone, records nothing against a replacement upload on %s', async target => {
     await withStore(target, async db => {
       await register(db, { project: 'proj_a', key: 'again', size: 1 }, GENERATION(2));
-      await db.batch([...recordObservedCandidates(db, [{ projectId: 'proj_a', key: 'again', generation: GENERATION(1) }], NOW), ...recordBlobCandidates(db, [{ projectId: 'proj_a', key: 'again' }], NOW, { bundle: { projectId: 'proj_a', bundleId: 404, archiveKey: 'again' } })]);
+      await db.batch([...recordObservedCandidates(db, [{ projectId: 'proj_a', key: 'again', generation: GENERATION(1) }], NOW), ...recordBlobCandidates([{ projectId: 'proj_a', key: 'again' }], NOW, { bundle: { projectId: 'proj_a', bundleId: 404, archiveKey: 'again' } }).map(candidate => prepareBound(db, candidate))]);
       expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(0);
       await db.batch(recordObservedCandidates(db, [{ projectId: 'proj_a', key: 'again', generation: GENERATION(2) }], NOW));
       expect((await db.prepare('SELECT COUNT(*) n FROM blob_release_candidates').first<{ n: number }>())!.n).toBe(1);

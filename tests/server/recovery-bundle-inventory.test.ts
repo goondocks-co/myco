@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import { cleanupCandidate } from '@myco-server-worker/core/storage-cleanup.js';
 import { prepareArchive,eventArchiveStatements } from '@myco-server-worker/core/event-content.js';
 import { expect, it, spyOn } from 'bun:test';
@@ -57,7 +58,7 @@ it('operator recovery examines each historical identity once and searches its te
           payload: { toolCallId: uuid(i+100), toolName: 'Write', input: 'exact input '.repeat(300), success: true } }),
         f.serverEnv)).toMatchObject({ persisted: true, projected: true });
       const candidate=await cleanupCandidate(f.db,{project_id:'proj_1',resource_kind:'event',resource_id:uuid(i+1)},true);
-      await f.db.batch(eventArchiveStatements(f.db,candidate!,await prepareArchive(f.serverEnv,'event',candidate!,now)));
+      await commit(f.db, ...eventArchiveStatements(f.db,candidate!,await prepareArchive(f.serverEnv,'event',candidate!,now)));
     }
     f.sqlite.exec(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
       VALUES('proj_1','sess_history','m','t',0,0)`);
@@ -120,7 +121,7 @@ it('operator recovery refuses a bundle outside the bounded entry format',async()
       envelope({eventId:uuid(90),kind:'tool.use',payload:{toolCallId:uuid(91),toolName:'Read',
         input:'format bound'.repeat(300),success:true}}),f.serverEnv)).toMatchObject({persisted:true,projected:true});
     const candidate=await cleanupCandidate(f.db,{project_id:'proj_1',resource_kind:'event',resource_id:uuid(90)},true);
-    await f.db.batch(eventArchiveStatements(f.db,candidate!,await prepareArchive(f.serverEnv,'event',candidate!,now)));
+    await commit(f.db, ...eventArchiveStatements(f.db,candidate!,await prepareArchive(f.serverEnv,'event',candidate!,now)));
     f.sqlite.exec('UPDATE archive_bundles SET entry_count=65');
     const sourceKey=(key:string)=>{
       const [project,digest]=key.split('/');

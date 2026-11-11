@@ -1,16 +1,17 @@
-import { archivedEventPayloadSql } from '../db/document-tables.js';
 import { SHA256 } from '@stablelib/sha256';
-import type { ContentStore, PreparedStatement, RelationalStore } from './adapters.js';
+import type { ContentStore, RelationalStore } from './adapters.js';
+import type { Bound } from '../db/index.js';
+import { agedArchivePreparations, bundleArchive, bundleRegistrations, contentProofHeld, preparationLiveGuard, preparationReceiptGuard,
+  readArchivePreparation, readStoredBundle, recordArchivePreparation, releaseArchivePreparationRows, stampArchivePreparationReceipt,
+  storedBundleEvidence } from '../db/storage/archive-bundles.js';
 import { blobObjectKey } from './blob-objects.js';
 
 import { readStoredObject } from './stored-object.js';
 import { sha256HexOf, utf8 } from '../hash.js';
-import { contentAssertion, prepareDerivedContent, prepareDerivedStream, verifiedContentSql,
+import { prepareDerivedContent, prepareDerivedStream, verifiedContentSql,
   type ContentPublicationGuard, type DerivedContentSource, type VerifiedContent } from './registered-content.js';
 import { sourceBytes, measureSource, type ContentRow } from './event-content.js';
 import { releaseBlobs } from './object-release.js';
-import { recordBlobCandidates } from '../db/storage/release-queue.js';
-import { effectiveRawOwnerSql } from './raw-claims.js';
 import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 
 const ARCHIVE_BUNDLE_VERSION = 1;
@@ -104,24 +105,16 @@ export async function prepareArchiveBundle(env: Pick<ContentStore,'db'|'blobs'>,
   const source:DerivedContentSource={projectId:header.projectId,sessionId:header.sessionId,tokenId:header.tokenId,
     eventId:first.row.event_id,envelopeHash:first.row.envelope_hash,sourceKind:'bundle',resourceId:digest,memberTokenId};
   const preparationId=crypto.randomUUID();
-  await env.db.prepare(`INSERT INTO prepared_archive_bundles(preparation_id,project_id,archive_key,expires_at)
-    VALUES(?,?,?,?)`).bind(preparationId,source.projectId,digest,now+BLOB_RESERVATION_TTL_MS).run();
+  await recordArchivePreparation(env.db,preparationId,source.projectId,digest,now+BLOB_RESERVATION_TTL_MS);
   try {
-    const bodyGuard={sql:`EXISTS (SELECT 1 FROM prepared_archive_bundles
-      WHERE preparation_id=? AND project_id=? AND archive_key=? AND expires_at>?)`,
-      params:()=>[preparationId,source.projectId,digest,Date.now()]};
-    const body=await prepareDerivedStream(env,source,{size,digest,stream},now,bodyGuard);
+    const body=await prepareDerivedStream(env,source,{size,digest,stream},now,preparationLiveGuard(preparationId,source.projectId,digest));
     const receiptText=JSON.stringify({version:ARCHIVE_BUNDLE_VERSION,header,body});
     const receiptKey=await sha256HexOf(utf8(receiptText));
-    const updated=await env.db.prepare(`UPDATE prepared_archive_bundles SET receipt_key=?,expires_at=?
-      WHERE preparation_id=? AND project_id=? AND archive_key=?`)
-      .bind(receiptKey,Math.max(now,Date.now())+BLOB_RESERVATION_TTL_MS,preparationId,source.projectId,digest).run();
-    if(updated.meta.changes!==1)throw new Error('content_preparation_expired');
-    const receiptGuard={sql:`EXISTS (SELECT 1 FROM prepared_archive_bundles
-      WHERE preparation_id=? AND project_id=? AND archive_key=? AND receipt_key=? AND expires_at>?)`,
-      params:()=>[preparationId,source.projectId,digest,receiptKey,Date.now()]};
+    const stamped=await stampArchivePreparationReceipt(env.db,{preparationId,projectId:source.projectId,archiveKey:digest},
+      receiptKey,Math.max(now,Date.now())+BLOB_RESERVATION_TTL_MS);
+    if(!stamped)throw new Error('content_preparation_expired');
     const receipt=await prepareDerivedContent(env,{...source,sourceKind:'receipt',resourceId:'bundle:'+body.key},
-      receiptText,now,receiptGuard);
+      receiptText,now,preparationReceiptGuard(preparationId,source.projectId,digest,receiptKey));
     return {preparationId,source,body,receipt,entries,items:items.map((item,i)=>({...item,preview:measures[i]!.preview})),
       metadataBytes:metadataBytes(source,body,receipt,entries.length)};
   } catch(error) {
@@ -130,84 +123,20 @@ export async function prepareArchiveBundle(env: Pick<ContentStore,'db'|'blobs'>,
   }
 }
 
-/** Publication evidence and all source revisions are checked in the adopting transaction. */
-function bundlePublicationStatements(db:RelationalStore,bundle:PreparedBundle,
-  adoption?:{sql:string;params:readonly unknown[]}):PreparedStatement[] {
-  const body=verifiedContentSql(bundle.source,bundle.body);
-  const receipt=verifiedContentSql({...bundle.source,sourceKind:'receipt',resourceId:'bundle:'+bundle.body.key},bundle.receipt);
-  return [
-    ...contentAssertion(db,`EXISTS (SELECT 1 FROM prepared_archive_bundles
-      WHERE preparation_id=? AND project_id=? AND archive_key=? AND receipt_key=? AND expires_at>?)`,
-      [bundle.preparationId,bundle.source.projectId,bundle.body.key,bundle.receipt.key,Date.now()],adoption),
-    ...contentAssertion(db,`${body.sql} AND ${receipt.sql} AND NOT EXISTS
-      (SELECT 1 FROM session_tombstones WHERE project_id=? AND session_id=?)`,
-      [...body.params,...receipt.params,bundle.source.projectId,bundle.source.sessionId],adoption),
-    db.prepare(`INSERT INTO archive_bundles(project_id,session_id,token_id,event_id,envelope_hash,
-      archive_key,receipt_key,digest,size,version,entry_count) SELECT ?,?,?,?,?,?,?,?,?,?,?
-      ${adoption===undefined?'':`WHERE (${adoption.sql})`} ON CONFLICT(project_id,archive_key) DO NOTHING`)
-      .bind(bundle.source.projectId,bundle.source.sessionId,bundle.source.tokenId,bundle.source.eventId,bundle.source.envelopeHash,
-        bundle.body.key,bundle.receipt.key,bundle.body.digest,bundle.body.size,ARCHIVE_BUNDLE_VERSION,bundle.entries.length,...(adoption?.params??[])),
-    ...contentAssertion(db,`EXISTS (SELECT 1 FROM archive_bundles WHERE project_id=? AND archive_key=? AND receipt_key=?
-      AND session_id=? AND token_id=? AND digest=? AND size=? AND entry_count=?)`,
-      [bundle.source.projectId,bundle.body.key,bundle.receipt.key,bundle.source.sessionId,bundle.source.tokenId,
-        bundle.body.digest,bundle.body.size,bundle.entries.length],adoption),
-    db.prepare(`DELETE FROM prepared_archive_bundles WHERE preparation_id=? AND project_id=? AND archive_key=? AND receipt_key=?
-      ${adoption===undefined?'':`AND (${adoption.sql})`}`)
-      .bind(bundle.preparationId,bundle.source.projectId,bundle.body.key,bundle.receipt.key,...(adoption?.params??[])),
-  ];
-}
-
-/** Existing rows carry compact locators; no per-entry catalogue or index is created. */
-export function bundleArchiveStatements(db:RelationalStore,bundle:PreparedBundle):PreparedStatement[] {
+/** Publishes the bundle and moves its source rows onto compact locators, in the caller's transaction; no per-entry catalogue or index is created. */
+export function bundleArchiveStatements(_db:RelationalStore,bundle:PreparedBundle):Bound<never,'write'>[] {
   if(bundle.items.length===0||bundle.items.length>ARCHIVE_BUNDLE_ENTRIES)throw new Error('content_bundle_page_invalid');
   if (bundle.items.some(item => item.kind !== 'event')) throw new Error('content_bundle_kind_unsupported');
   const sources=JSON.stringify(bundle.items.map(item=>({kind:item.kind,...item.row})));
-  const sourceGuard=`NOT EXISTS (SELECT 1 FROM json_each(?) j
-    LEFT JOIN events e ON e.project_id=json_extract(j.value,'$.project_id') AND e.event_id=json_extract(j.value,'$.event_id')
-    LEFT JOIN raw_credentials c ON c.token_id=json_extract(j.value,'$.token_id')
-
-    WHERE e.event_id IS NULL OR e.session_id<>json_extract(j.value,'$.session_id')
-      OR e.envelope_hash<>json_extract(j.value,'$.envelope_hash') OR (json_extract(j.value,'$.kind')='event' AND e.token_id<>json_extract(j.value,'$.token_id'))
-      OR COALESCE(e.raw_revision,0)<>COALESCE(json_extract(j.value,'$.raw_revision'),0)
-      OR (json_type(j.value,'$.raw_owner') IS NOT NULL AND ${effectiveRawOwnerSql('c.owner_member_id','c.provenance','e.raw_revision')}
-        IS NOT json_extract(j.value,'$.raw_owner'))
-      OR (json_type(j.value,'$.raw_provenance') IS NOT NULL AND c.provenance IS NOT json_extract(j.value,'$.raw_provenance'))
-      OR e.payload_format<>'inline' OR e.content_revision<>json_extract(j.value,'$.content_revision')
-        OR length(CAST(e.payload AS BLOB))<>json_extract(j.value,'$.bytes'))`;
-  const statements=[...contentAssertion(db,sourceGuard,[sources]),...bundlePublicationStatements(db,bundle)];
   const locators=JSON.stringify(bundle.items.map((item,entry)=>({kind:item.kind,project:item.row.project_id,
     id:item.row.resource_id,entry,preview:item.preview,bytes:item.row.bytes})));
-  for(const kind of ['event'] as const){
-    if(!bundle.items.some(item=>item.kind===kind))continue;
-    const table='events';const id='event_id';
-    const value=(field:string)=>`(SELECT json_extract(j.value,'$.${field}') FROM json_each(?) j
-      WHERE json_extract(j.value,'$.kind')='${kind}' AND json_extract(j.value,'$.project')=${table}.project_id
-        AND json_extract(j.value,'$.id')=${table}.${id})`;
-    const identity=`rowid IN (SELECT r.rowid FROM json_each(?) j CROSS JOIN ${table} r
-      WHERE json_extract(j.value,'$.kind')='${kind}' AND r.project_id=json_extract(j.value,'$.project')
-        AND r.${id}=json_extract(j.value,'$.id'))`;
-    if(kind==='event')statements.push(db.prepare(`UPDATE events SET
-      archived_ended_at=COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload,'$.endedAt') END,created_at),
-      archived_title_only_end=CASE WHEN kind='session.end' AND json_valid(payload) AND json_type(payload,'$.endedAt') IS NULL
-        AND json_type(payload,'$.title') IS NOT NULL THEN 1 ELSE 0 END,
-      archived_prompt_origin=CASE WHEN json_valid(payload) THEN json_extract(payload,'$.origin') END,
-      bundle_id=(SELECT id FROM archive_bundles WHERE project_id=? AND archive_key=?),bundle_entry=${value('entry')},
-      payload=${archivedEventPayloadSql()},payload_format='archived',payload_bytes=0 WHERE ${identity}`)
-      .bind(bundle.source.projectId,bundle.body.key,locators,locators));
-
-  }
-  statements.push(db.prepare(`DELETE FROM content_scan_checkpoints WHERE rowid IN
-    (SELECT c.rowid FROM json_each(?) j CROSS JOIN content_scan_checkpoints c
-      WHERE c.project_id=json_extract(j.value,'$.project_id')
-        AND c.source_kind=json_extract(j.value,'$.kind')
-        AND c.resource_id=json_extract(j.value,'$.resource_id')
-        AND c.content_revision=json_extract(j.value,'$.content_revision')
-        AND c.envelope_hash=json_extract(j.value,'$.envelope_hash'))`).bind(sources));
-  statements.push(db.prepare(`DELETE FROM storage_cleanup_omissions WHERE rowid IN
-    (SELECT o.rowid FROM json_each(?) j CROSS JOIN storage_cleanup_omissions o
-      WHERE o.project_id=json_extract(j.value,'$.project_id') AND o.resource_kind=json_extract(j.value,'$.kind')
-        AND o.resource_id=json_extract(j.value,'$.resource_id'))`).bind(sources));
-  return statements;
+  return bundleArchive({preparationId:bundle.preparationId,projectId:bundle.source.projectId,sessionId:bundle.source.sessionId,
+    tokenId:bundle.source.tokenId,eventId:bundle.source.eventId,envelopeHash:bundle.source.envelopeHash,
+    archiveKey:bundle.body.key,receiptKey:bundle.receipt.key,digest:bundle.body.digest,size:bundle.body.size,
+    version:ARCHIVE_BUNDLE_VERSION,entries:bundle.entries.length,
+    body:verifiedContentSql(bundle.source,bundle.body),
+    receipt:verifiedContentSql({...bundle.source,sourceKind:'receipt',resourceId:'bundle:'+bundle.body.key},bundle.receipt)},
+  sources,locators);
 }
 
 type BundleEnv=Pick<ContentStore,'db'|'blobs'>;
@@ -258,10 +187,7 @@ async function parseBundleObjects(blobs:BundleEnv['blobs'],row:BundleRecord,body
 }
 
 async function loadBundle(env:BundleEnv,projectId:string,bundleId:number):Promise<Loaded>{
-  const row=await env.db.prepare(`SELECT a.*,b.generation,rb.generation AS receipt_generation,rb.size AS receipt_size
-    FROM archive_bundles a JOIN blobs b ON b.project_id=a.project_id AND b.key=a.archive_key AND b.size=a.size
-    JOIN blobs rb ON rb.project_id=a.project_id AND rb.key=a.receipt_key WHERE a.project_id=? AND a.id=?`)
-    .bind(projectId,bundleId).first<BundleRecord & {generation:string|null;receipt_generation:string|null;receipt_size:number}>();
+  const row=await readStoredBundle(env.db,projectId,bundleId);
   if(!row) throw new Error('event_content_reference_invalid');
   const source:DerivedContentSource={projectId,sessionId:row.session_id,tokenId:row.token_id,eventId:row.event_id,
     envelopeHash:row.envelope_hash,sourceKind:'bundle',resourceId:row.archive_key};
@@ -269,12 +195,10 @@ async function loadBundle(env:BundleEnv,projectId:string,bundleId:number):Promis
   for(const [key,generation,size,kind,id] of [[row.archive_key,row.generation,row.size,'bundle',row.archive_key],
     [row.receipt_key,row.receipt_generation,row.receipt_size,'receipt','bundle:'+row.archive_key]] as const){
     const proof=verifiedContentSql({...source,sourceKind:kind,resourceId:id},{key,generation,size,digest:key});
-    if(!(await env.db.prepare(`SELECT 1 AS ok WHERE ${proof.sql}`).bind(...proof.params).first())) throw new Error('event_content_reference_invalid');
+    if(!(await contentProofHeld(env.db,proof))) throw new Error('event_content_reference_invalid');
     evidence.push(proof);
   }
-  evidence.push({sql:`EXISTS(SELECT 1 FROM archive_bundles WHERE project_id=? AND id=? AND archive_key=? AND receipt_key=?
-    AND session_id=? AND token_id=? AND event_id=? AND envelope_hash=? AND digest=? AND size=? AND version=? AND entry_count=?)`,
-    params:[projectId,bundleId,row.archive_key,row.receipt_key,row.session_id,row.token_id,row.event_id,row.envelope_hash,row.digest,row.size,row.version,row.entry_count]});
+  evidence.push(storedBundleEvidence(projectId,bundleId,row));
   const loaded=await parseBundleObjects(env.blobs,row,{generation:row.generation,size:row.size},
     {generation:row.receipt_generation,size:row.receipt_size});
   return {...loaded,evidence};
@@ -296,9 +220,7 @@ async function readEntry(loaded:Loaded,identity:BundleEntryIdentity):Promise<str
 /** Verify imported publication evidence and all requested entries before inserting relational rows. */
 export async function verifyBundleArtifact(env:BundleEnv,row:BundleRecord,proofs:readonly Record<string,unknown>[],
   locators:readonly BundleEntryIdentity[]):Promise<ReadonlyMap<string,string>>{
-  const registrations=await env.db.batch([row.archive_key,row.receipt_key].map(key=>
-    env.db.prepare(`SELECT generation,size FROM blobs WHERE project_id=? AND key=?`).bind(row.project_id,key)));
-  const [body,receipt]=registrations.map(result=>result.results[0] as Registration|undefined);
+  const {body,receipt}=await bundleRegistrations(env.db,row.project_id,row.archive_key,row.receipt_key);
   if(body===undefined||receipt===undefined||body.size!==row.size)throw new Error('event_content_reference_invalid');
   for(const [key,kind,sourceId,size] of [[row.archive_key,'bundle',row.archive_key,body.size],
     [row.receipt_key,'receipt',`bundle:${row.archive_key}`,receipt.size]] as const){
@@ -325,43 +247,12 @@ export async function readBundleEntry(env:BundleEnv,identity:BundleEntryIdentity
   return readEntry(loaded,identity);
 }
 
-type PreparationRecord={preparation_id:string;project_id:string;archive_key:string;receipt_key:string|null;expires_at:number};
-
 /** Releases one preparation's exact evidence through the object-release owner. */
 async function releaseArchivePreparation(db:RelationalStore,preparationId:string,now:number,agedOnly=false):Promise<number>{
-  const row=await db.prepare(`SELECT preparation_id,project_id,archive_key,receipt_key,expires_at
-    FROM prepared_archive_bundles WHERE preparation_id=?`).bind(preparationId).first<PreparationRecord>();
+  const row=await readArchivePreparation(db,preparationId);
   if(row===null||(agedOnly&&row.expires_at>now))return 0;
-  const pairs=[row.archive_key,row.receipt_key].filter((key):key is string=>key!==null)
-    .map(key=>({projectId:row.project_id,key}));
-  const current={sql:`EXISTS (SELECT 1 FROM prepared_archive_bundles p
-    WHERE p.preparation_id=? AND p.project_id=? AND p.archive_key=? AND p.receipt_key IS ?
-      AND p.expires_at=?${agedOnly?' AND p.expires_at<=?':''})`,
-    params:[row.preparation_id,row.project_id,row.archive_key,row.receipt_key,row.expires_at,...(agedOnly?[now]:[])]};
-  const candidates=recordBlobCandidates(db,pairs,now,{preparationId:row.preparation_id,projectId:row.project_id,archiveKey:row.archive_key,
-      receiptKey:row.receipt_key,expiresAt:row.expires_at,agedAt:agedOnly?now:null});
-  const results=await db.batch([
-    ...candidates,
-    db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=? AND source_kind='bundle'
-      AND source_id=? AND key=? AND NOT EXISTS
-        (SELECT 1 FROM archive_bundles WHERE project_id=? AND archive_key=?)
-      AND NOT EXISTS (SELECT 1 FROM prepared_archive_bundles
-        WHERE project_id=? AND archive_key=? AND preparation_id<>?) AND ${current.sql}`)
-      .bind(row.project_id,row.archive_key,row.archive_key,row.project_id,row.archive_key,
-        row.project_id,row.archive_key,row.preparation_id,...current.params),
-    ...(row.receipt_key===null?[]:[db.prepare(`DELETE FROM registered_content_proofs
-      WHERE project_id=? AND source_kind='receipt' AND source_id=? AND key=? AND NOT EXISTS
-        (SELECT 1 FROM archive_bundles WHERE project_id=? AND receipt_key=?)
-      AND NOT EXISTS (SELECT 1 FROM prepared_archive_bundles
-        WHERE project_id=? AND receipt_key=? AND preparation_id<>?) AND ${current.sql}`)
-      .bind(row.project_id,'bundle:'+row.archive_key,row.receipt_key,row.project_id,row.receipt_key,
-        row.project_id,row.receipt_key,row.preparation_id,...current.params)]),
-    db.prepare(`DELETE FROM prepared_archive_bundles WHERE preparation_id=? AND project_id=?
-      AND archive_key=? AND receipt_key IS ? AND expires_at=? ${agedOnly?'AND expires_at<=?':''}`)
-      .bind(...current.params),
-  ]);
-  if(results.at(-1)?.meta.changes!==1)return 0;
-  await releaseBlobs(db,pairs,now);
+  if(!await releaseArchivePreparationRows(db,row,now,agedOnly))return 0;
+  await releaseBlobs(db,[row.archive_key,row.receipt_key].filter((key):key is string=>key!==null).map(key=>({projectId:row.project_id,key})),now);
   return 1;
 }
 
@@ -374,19 +265,15 @@ export async function discardArchiveBundle(env:BundleEnv,bundle:PreparedBundle,n
 export async function reconcileArchivePreparations(db:RelationalStore,now:number,page=ARCHIVE_PREPARATION_PAGE,
   clock:()=>number=Date.now):Promise<number>{
   const deadline=clock()+ARCHIVE_PREPARATION_WALL_MS;
-  const {results}=await db.prepare(`SELECT preparation_id FROM prepared_archive_bundles
-    WHERE expires_at<=? ORDER BY expires_at,preparation_id LIMIT ?`)
-    .bind(now,page).all<{preparation_id:string}>();
   let released=0;
-  for(const [index,row] of results.entries()){
+  for(const [index,preparationId] of (await agedArchivePreparations(db,now,page)).entries()){
     if(index>0&&clock()>=deadline)break;
-    released+=await releaseArchivePreparation(db,row.preparation_id,now,true);
+    released+=await releaseArchivePreparation(db,preparationId,now,true);
   }
   return released;
 }
 
 /** Whether the age index still holds work for the next wake. */
 export async function archivePreparationsPending(db:RelationalStore,now:number):Promise<boolean>{
-  return await db.prepare(`SELECT 1 AS pending FROM prepared_archive_bundles
-    WHERE expires_at<=? ORDER BY expires_at,preparation_id LIMIT 1`).bind(now).first()!==null;
+  return (await agedArchivePreparations(db,now,1)).length>0;
 }

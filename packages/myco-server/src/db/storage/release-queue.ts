@@ -112,12 +112,12 @@ const decision = (page: string, now: number, deleteDueAt = now) => ({
  * while `guard` stands. Recorded in that same transaction, a candidate outlives any interruption before it is decided:
  * the drain decides what a caller did not.
  */
-export function recordBlobCandidates(db: RelationalStore, pairs: readonly BlobRef[], now: number, guard: CandidateGuard): PreparedStatement[] {
-  const statements: PreparedStatement[] = [];
+export function recordBlobCandidates(pairs: readonly BlobRef[], now: number, guard: CandidateGuard): Bound<never, 'write'>[] {
+  const statements: Bound<never, 'write'>[] = [];
   for (let at = 0; at < pairs.length; at += RELEASE_PAGE) {
     const page = pageOf(pairs.slice(at, at + RELEASE_PAGE));
-    statements.push(prepareBound(db, 'preparationId' in guard ? recordForPreparation.bind(page, now, guard.preparationId, guard.projectId, guard.archiveKey, guard.receiptKey, guard.expiresAt, guard.agedAt)
-      : recordForBundle.bind(page, now, guard.bundle.projectId, guard.bundle.bundleId, guard.bundle.archiveKey)));
+    statements.push('preparationId' in guard ? recordForPreparation.bind(page, now, guard.preparationId, guard.projectId, guard.archiveKey, guard.receiptKey, guard.expiresAt, guard.agedAt)
+      : recordForBundle.bind(page, now, guard.bundle.projectId, guard.bundle.bundleId, guard.bundle.archiveKey));
   }
   return statements;
 }
