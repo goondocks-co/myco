@@ -71,12 +71,16 @@ function imageThrough(through: number): Uint8Array {
   } finally { sqlite.close(); }
 }
 
-/** Restamp the clock and random cells this database actually has. Older versions lack the later tables and keys. */
+/**
+ * Restamp the clock and random cells this database actually has. Older versions lack the later tables and keys.
+ * Learning pause and resume rows, where present, take the unixepoch milliseconds those inserts use.
+ */
 function restampCopy(sqlite: Database): void {
   const names = new Set((sqlite.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((row) => row.name));
   if (names.has('schema_meta')) {
     sqlite.exec(RESTAMP_SQL[0]!);
     sqlite.exec(RESTAMP_SQL[1]!);
+    sqlite.exec(`UPDATE schema_meta SET value = CAST(unixepoch()*1000 AS TEXT) WHERE key IN ('learning_paused_at', 'learning_resumed_at')`);
   }
   if (names.has('object_store_reconciliation')) sqlite.exec(RESTAMP_SQL[2]!);
 }

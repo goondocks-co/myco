@@ -84,7 +84,7 @@ const sameLengthSubstitute = (body: string): string => body.replace('lineage', '
 describe('verified recovery artifacts', () => {
   it('accepts a schema-99 snapshot with no view reference tables', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-recovery-'));
-    const source = schemaSqlite({ through: 99 });
+    const source = schemaSqlite({ through: 99, foreignKeys: false });
     try {
       expect(source.query("SELECT value FROM schema_meta WHERE key='version'").get()).toEqual({ value: '99' });
       const result = await createRecoveryBundle(path.join(root, 'backup'), {
@@ -473,7 +473,7 @@ describe('verified recovery artifacts', () => {
 
   it.each([116, SERVER_SCHEMA_VERSION])('records dangling event references in a schema %s recovery artifact without changing the snapshot', async version => {
     const f = fixture();
-    const sqlite = version === SERVER_SCHEMA_VERSION ? f.source.sqlite : schemaSqlite({ through: version });
+    const sqlite = version === SERVER_SCHEMA_VERSION ? f.source.sqlite : schemaSqlite({ through: version, foreignKeys: false });
     try {
       if (version !== SERVER_SCHEMA_VERSION) sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','project',1)`);
       for (const kind of ['plan', 'attachment', 'transcript.segment', 'tool.use']) sqlite.run(`INSERT INTO events
