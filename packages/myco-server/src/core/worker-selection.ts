@@ -33,8 +33,7 @@ export function capabilityOf(task: string): ProjectCapability | null {
 
 /** Whether a Project has turned a capability on. */
 export async function capabilityOn(db: ServerEnv['db'], projectId: string, capability: ProjectCapability): Promise<boolean> {
-  const read = enabledCapabilities(db, [capability], projectId);
-  return read.read((await read.statement.all<Record<string, unknown>>()).results).length > 0;
+  return (await enabledCapabilities(db, [capability], projectId)).length > 0;
 }
 
 /** A harness a worker has, and whether it is logged in. A worker offers these; the Deployment chooses among them. */

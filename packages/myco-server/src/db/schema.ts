@@ -71,7 +71,7 @@ import { PUBLICATION_QUEUE_STEPS } from './schema-v501.js';
 import { PUBLICATION_FACT_STEPS } from './schema-v467.js';
 import { V466_STATEMENTS, V466_REACHES } from './schema-v466.js';
 import { MAX_PAYLOAD_BYTES } from '../ingest/envelope.js';
-import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from '../core/raw-provenance.js';
+import { rawCredentialOwner, rawCredentialProvenance, rawTranscriptOwner, rawTranscriptProvenance, rawTranscriptClaimMember } from './raw/provenance.js';
 import { PROCESSED_FIELDS, processedReferenceSql } from './processed-resources.js';
 import { blobObjectKeySql } from '../core/blob-objects.js';
 import { TITLING_TASK } from '../core/task-catalogue.js';

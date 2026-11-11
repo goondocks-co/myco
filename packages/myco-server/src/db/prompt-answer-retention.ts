@@ -1,5 +1,4 @@
-import { commit, write } from './index.js';
-import { prepareBound } from './kernel/statement.js';
+import { commit, read, rows, write } from './index.js';
 import type { RelationalStore } from '../core/adapters.js';
 
 export interface ExpiredPromptAnswer {
@@ -7,6 +6,14 @@ export interface ExpiredPromptAnswer {
   session_id: string;
   id: string;
 }
+
+const expired = read<[cutoff: number, limit: number], ExpiredPromptAnswer>({ name: 'promptAnswer.expired', sql: `SELECT a.project_id,a.session_id,a.id
+  FROM projects p CROSS JOIN prompt_context_answers a
+  WHERE a.project_id=p.project_id AND a.created_at<?1 LIMIT ?2` });
+
+/** At most `limit` answers across the Deployment's Projects created before `cutoff`. */
+export const expiredPromptAnswers = (db: RelationalStore, cutoff: number, limit: number): Promise<ExpiredPromptAnswer[]> =>
+  rows(db, expired.bind(cutoff, limit));
 
 const current = `SELECT a.project_id,a.session_id,a.id
     FROM json_each(?) j CROSS JOIN prompt_context_answers a
@@ -25,12 +32,4 @@ export async function pruneSelectedPromptAnswers(
 ): Promise<number> {
   const results = await commit(db, remove.bind(JSON.stringify(targets), cutoff));
   return results[0]!.results.length;
-}
-
-export function promptAnswerRetentionStatements(
-  db: RelationalStore,
-  targets: readonly ExpiredPromptAnswer[],
-  cutoff: number,
-) {
-  return [prepareBound(db, remove.bind(JSON.stringify(targets), cutoff))];
 }

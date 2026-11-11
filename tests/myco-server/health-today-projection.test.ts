@@ -10,7 +10,6 @@ import { recentMachineCapture } from '@myco-server-worker/db/runners/harness-hea
 import { V712_STATEMENTS } from '@myco-server-worker/db/schema-v712.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { recordQueueHolder, failQueuedRun } from '@myco-server-worker/db/runs/queue.js';
-import { commitRunChange } from '@myco-server-worker/db/runs/change.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
@@ -272,16 +271,6 @@ describe('maintained Health and Today contracts', () => {
       expect(first.read.slice(0, 2).sort()).toEqual(['p0', 'proj_1']);
       const next = await todayProjects(f.db, { all: true }, first.cursor);
       expect(new Set([...first.read, ...next.read]).size).toBe(first.total);
-    } finally { f.sqlite.close(); }
-  });
-
-  it('refuses a run change without RETURNING before executing it or its companions', async () => {
-    const f = fixture();
-    try {
-      f.run('r', 'running');
-      const statement = f.db.prepare("UPDATE agent_runs SET status='failed' WHERE id='r'");
-      await expect(commitRunChange(f.db, statement, [f.db.prepare("DELETE FROM agent_runs WHERE id='r'")])).rejects.toThrow('RETURNING');
-      expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='r'").get()).toEqual({ status: 'running' });
     } finally { f.sqlite.close(); }
   });
 

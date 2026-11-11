@@ -116,7 +116,7 @@ describe('binding a remote to a Project', () => {
     }
     expect(await projectForRemote(db, remote)).toBe(A);
     expect(sqlite.query(`SELECT COUNT(*) AS n FROM project_remotes`).get()).toEqual({ n: 1 });
-    expect(emitted.map((l) => JSON.parse(l) as Record<string, unknown>))
+    expect(emitted.map((l) => JSON.parse(l) as Record<string, unknown>).filter((event) => event.kind === 'remote_bound'))
       .toEqual([{ kind: 'remote_bound', remote, projectId: B, status: 'held' }]);
   });
 

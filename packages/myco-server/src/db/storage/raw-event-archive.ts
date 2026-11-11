@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { learningHoldsSql } from '../learning/hold.js';
-import { effectiveRawOwnerSql } from '../../core/raw-claims.js';
+import { effectiveRawOwnerSql } from '../raw/claims.js';
 import { first, read, rows } from '../index.js';
 
 /**

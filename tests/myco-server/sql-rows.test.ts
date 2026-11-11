@@ -6,7 +6,7 @@
 import { expect, it } from 'bun:test';
 import {
   endStatements, feedStatements, insertedRow, newStatementScan, sqlValue,
-} from '@myco-server-worker/core/sql-statements.js';
+} from '@myco-server-worker/db/sql-statements.js';
 
 const kept = (sql: string, tables: readonly string[]): string[] => {
   const scan = newStatementScan();

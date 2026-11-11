@@ -1,14 +1,16 @@
 import { expect, it } from 'bun:test';
-import { isSelectStatement } from '@myco-server-worker/core/sql-statements.js';
-import { writeGuardStore } from '@myco-server-worker/core/write-guard-store.js';
+import { isSelectStatement } from '@myco-server-worker/db/sql-statements.js';
+import { assertion } from '@myco-server-worker/db/index.js';
+import { boundWriteGuardStore } from '@myco-server-worker/db/kernel/guarded-store.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 
 it('common table SELECTs keep their read path while common table mutations require authority', async () => {
   const { db } = sqliteEnv();
   let assertions = 0;
-  const guarded = writeGuardStore(db, () => {
+  const refuse = assertion<[]>({ name: 'writeGuardTest.refuse', sql: `SELECT json_extract('[]','$[write_refused]')` });
+  const guarded = boundWriteGuardStore(db, () => {
     assertions++;
-    return db.prepare(`SELECT json_extract('[]','$[write_refused]')`);
+    return refuse.bind();
   }, () => { throw new Error('write refused'); });
   for (const sql of [
     'SELECT 1 AS n',

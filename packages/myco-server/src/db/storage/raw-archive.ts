@@ -3,7 +3,7 @@
  * its source changes with the cursor advance, and each advance holds only while the cursor is exactly as read.
  */
 import type { RelationalStore } from '../../core/adapters.js';
-import { effectiveRawOwnerSql } from '../../core/raw-claims.js';
+import { effectiveRawOwnerSql } from '../raw/claims.js';
 import { clearArchivedTranscriptRanges } from '../documents/ranges.js';
 import { commit, first, read, rows, write, type Bound } from '../index.js';
 import { learningHoldsSql } from '../learning/hold.js';

@@ -1,6 +1,7 @@
 /** The estimator's Deployment-wide progress: its epoch, cycle, watermark and refresh stamp. */
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { read, readSet, write, type Bound } from '../index.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { composedStatements } from '../composed-statements.js';
+import { read, readSet, write, type BindValue, type Bound } from '../index.js';
 import { BUDGET_ENABLED } from './budget-activation.js';
 
 const REFRESHED_KEY = 'budget.estimates_refreshed_at';
@@ -92,12 +93,15 @@ export async function estimateSettlements(db: RelationalStore, after: number, un
   return rows;
 }
 
+const invalidations = composedStatements<never, 'write'>('meta.estimateInvalidation');
+const composedWrite = (text: string) => invalidations(text, name => write<BindValue[]>({ name, sql: text }));
+
 /** Restarts the estimator's cycle while a restore's own guard, written against the rows it replaces, still holds. */
-export function estimateInvalidationStatements(db: RelationalStore, guard: { sql: string; params: unknown[] }, restoredFloor?: number): PreparedStatement[] {
+export function estimateInvalidationStatements(guard: { sql: string; params: readonly BindValue[] }, restoredFloor?: number): Bound<never, 'write'>[] {
   return [
-    db.prepare(`INSERT OR REPLACE INTO schema_meta(key,value) SELECT '${EPOCH_KEY}',? WHERE ${guard.sql}`).bind(crypto.randomUUID(), ...guard.params),
-    db.prepare(`DELETE FROM schema_meta WHERE key IN ('${REFRESHED_KEY}','${PROGRESS_KEY}','${WATERMARK_KEY}') AND (${guard.sql})`).bind(...guard.params),
-    ...(restoredFloor === undefined ? [] : [db.prepare(`INSERT INTO schema_meta(key,value) SELECT '${RESTORED_FLOOR_KEY}',? WHERE ${guard.sql}
+    composedWrite(`INSERT OR REPLACE INTO schema_meta(key,value) SELECT '${EPOCH_KEY}',? WHERE ${guard.sql}`).bind(crypto.randomUUID(), ...guard.params),
+    composedWrite(`DELETE FROM schema_meta WHERE key IN ('${REFRESHED_KEY}','${PROGRESS_KEY}','${WATERMARK_KEY}') AND (${guard.sql})`).bind(...guard.params),
+    ...(restoredFloor === undefined ? [] : [composedWrite(`INSERT INTO schema_meta(key,value) SELECT '${RESTORED_FLOOR_KEY}',? WHERE ${guard.sql}
       ON CONFLICT(key) DO UPDATE SET value=CAST(MIN(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)`)
       .bind(String(restoredFloor), ...guard.params)]),
   ];

@@ -11,7 +11,7 @@ import { readStoredObject } from '../core/stored-object.js';
  */
 import type { PreparedStatement, ServerEnv } from '../core/adapters.js';
 import { sha256HexOf } from '../hash.js';
-import { contentAssertion } from '../core/registered-content.js';
+import { contentAssertion } from '../db/storage/content-guard.js';
 import { SessionDocument } from '../content/session-pages.js';
 import { generationHasChunks } from '../db/documents/directory.js';
 import { DocumentBatch, publicationStatement, type BatchDocument } from './document-batch.js';

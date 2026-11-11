@@ -1,8 +1,6 @@
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
 import { lastTaskEntryQueries, taskEntriesSql } from './claim.js';
-import { read as defineRead, type BindValue, type Statement } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import { read as defineRead, type BindValue, type Bound, type Statement } from '../index.js';
 import { shapedStatements } from './statement-shapes.js';
 
 const taskFactsRead = shapedStatements<Statement<BindValue[], Record<string, unknown>, 'read'>>();
@@ -12,13 +10,12 @@ export const taskFactsKey = (projectId: string, task: string): string => `${proj
 
 /** Latest entries, live admission and the rolling window use separate indexed questions for each eligible Project. */
 export function taskRunFacts(
-  db: RelationalStore,
   tasks: readonly string[],
   sinceMs: number,
   actor: string,
   projectId?: string | readonly string[],
 ): {
-  statement: PreparedStatement;
+  statement: Bound<Record<string, unknown>, 'read'>;
   read: (rows: ReadonlyArray<Record<string, unknown>>) => Map<string, TaskRunFacts>;
 } {
   const latest = lastTaskEntryQueries({ projectId: '' }, '', actor, { project: 'p.project_id', task: 't.value' });
@@ -36,13 +33,13 @@ export function taskRunFacts(
     (${taskEntriesSql('p.project_id', 't.value', actor)}) AS entriesSince
     FROM projects p CROSS JOIN json_each(?) t WHERE 1=1 ${projects}
       AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=p.project_id AND task=t.value LIMIT 1)` }));
-  const statement = prepareBound(db, definition.bind(
+  const statement = definition.bind(
     ...latest.flatMap(({ binds }) => binds as BindValue[]),
     sinceMs,
     actor,
     JSON.stringify(tasks),
     ...(projectId === undefined ? [] : [typeof projectId === 'string' ? projectId : JSON.stringify(projectId)]),
-  ));
+  );
   const read = (rows: ReadonlyArray<Record<string, unknown>>): Map<string, TaskRunFacts> =>
     new Map(
       rows.map((row) => [

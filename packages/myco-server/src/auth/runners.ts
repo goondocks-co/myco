@@ -29,7 +29,7 @@ import { refused } from '../db/index.js';
  */
 import { toBase64Url } from '../base64.js';
 import type { RelationalStore } from '../core/adapters.js';
-import { boundWriteGuardStore } from '../core/write-guard-store.js';
+import { boundWriteGuardStore } from '../db/kernel/guarded-store.js';
 import { storedRunnerCredentialChoices, parseRunnerCredentialChoices, type StoredRunnerCredentialChoices, type RunnerCredentialChoices, type RunnerCredentialChoice } from '@goondocks/myco-shared/runner-fleet';
 import { SERVER_SCHEMA_VERSION } from '../constants.js';
 import { sha256Hex } from '../hash.js';

@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { rawCredentialOwner } from '../../core/raw-provenance.js';
+import { rawCredentialOwner } from '../raw/provenance.js';
 import { assertion, commitAfter, commitNamed, read, readSet, write, refusalCode, type BatchGuard } from '../index.js';
 import { objectJournalSql } from './object-journal.js';
 import { clearSettledIntent, beginUploadIntentStatement } from './object-lifecycle.js';

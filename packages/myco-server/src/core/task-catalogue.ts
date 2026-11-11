@@ -155,5 +155,5 @@ export const TASK_WORDS: Readonly<Record<RetainedTask, { name: string; descripti
   [SEEDING_TASK]: { name: 'Seed project memory', description: 'Read the connected code and git history to write the project’s first spores.' },
   [TITLING_TASK]: { name: 'Title and summarize sessions', description: 'Read a session’s prompts and write a title and summary of what was accomplished.' },
   [MAP_TASK]: { name: 'Keep the code map', description: 'Read the connected code to keep a grounded guide to its directories and key files.' },
-  'embedding-reconcile': { name: 'Keep search current', description: 'Update the search index for project memory so similar knowledge can be found.' },
+  'embedding-reconcile': { name: 'Keep search current', description: 'Keep the search index for project memory current so similar knowledge can be found.' },
 };

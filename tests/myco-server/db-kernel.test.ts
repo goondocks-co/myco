@@ -4,7 +4,7 @@ import { read, write, assertion, commit, readSet, MAX_SQL_BYTES } from '@myco-se
 import { bindSlots } from '@myco-server-worker/db/kernel/limits.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { RELATIONAL_CONTEXT, type RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { writeGuardStore } from '@myco-server-worker/core/write-guard-store.js';
+import { boundWriteGuardStore } from '@myco-server-worker/db/kernel/guarded-store.js';
 import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
 import { excludeDeletedRestoreRows } from '@myco-server-worker/core/restore-rows.js';
 import { containsPattern } from '@myco-server-worker/read/scope.js';
@@ -17,6 +17,8 @@ const update = write<[id: string, n: number]>({ name: 'kernelTest.update', sql: 
 const rows = read<[], Item>({ name: 'kernelTest.rows', sql: 'SELECT id,n FROM items ORDER BY id' });
 const count = read<[], { n: number }>({ name: 'kernelTest.count', sql: 'SELECT COUNT(*) AS n FROM items' });
 const revision = assertion<[id: string, n: number]>({ name: 'kernelTest.revision', sql: `SELECT CASE WHEN EXISTS(SELECT 1 FROM items WHERE id=? AND n=?) THEN 1 ELSE json_extract('[]','$[assertion_refused]') END AS admitted` });
+const pass = assertion<[]>({ name: 'kernelTest.pass', sql: 'SELECT 1' });
+const firstUnchanged = assertion<[]>({ name: 'kernelTest.firstUnchanged', sql: `SELECT CASE WHEN (SELECT n FROM items WHERE id='a')=1 THEN 1 ELSE json_extract('[]','$[refused]') END` });
 const pattern = read<[pattern: string], Item>({ name: 'kernelTest.pattern', sql: `SELECT id,n FROM items WHERE id LIKE ? ESCAPE '\'`, like: [1] });
 
 const handles: Database[] = [];
@@ -63,11 +65,12 @@ it('prepares a reusable Bound through the supplied guards and content meter at e
   Object.assign(db, { [RELATIONAL_CONTEXT]: context });
   const bound = insert.bind('b', 2);
   let assertions = 0;
-  const guarded = writeGuardStore(db, () => {
+  const counted = () => {
     assertions++;
-    return db.prepare('SELECT 1');
-  }, error => { throw error; }, { assertAfter: true });
-  const nested = writeGuardStore(guarded, () => guarded.prepare('SELECT 1'), error => { throw error; });
+    return pass.bind();
+  };
+  const guarded = boundWriteGuardStore(db, counted, error => { throw error; }, { after: () => [counted()] });
+  const nested = boundWriteGuardStore(guarded, () => pass.bind(), error => { throw error; });
   expect(Reflect.get(nested, RELATIONAL_CONTEXT)).toBe(context);
   expect((await commit(nested, bound))[0].results).toEqual([{ id: 'b', n: 2 }]);
   expect(assertions).toBe(2);
@@ -100,8 +103,9 @@ it('preserves nested guard domain refusals and rolls back a failed post-assertio
   const { db } = fixture();
   class DomainRefusal extends Error {}
   const refusal = new DomainRefusal('not_authorized');
-  const guarded = writeGuardStore(db, () => db.prepare(`SELECT CASE WHEN (SELECT n FROM items WHERE id='a')=1 THEN 1 ELSE json_extract('[]','$[refused]') END`), () => { throw refusal; }, { assertAfter: true });
-  const nested = writeGuardStore(guarded, () => guarded.prepare('SELECT 1'), error => { throw error; });
+  const unchanged = () => firstUnchanged.bind();
+  const guarded = boundWriteGuardStore(db, unchanged, () => { throw refusal; }, { after: () => [unchanged()] });
+  const nested = boundWriteGuardStore(guarded, () => pass.bind(), error => { throw error; });
   try {
     await commit(nested, update.bind('a', 2), insert.bind('c', 3));
     throw new Error('expected refusal');

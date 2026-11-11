@@ -1,4 +1,4 @@
-import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
+import { significantStatement } from '../../packages/myco-server/src/db/sql-statements.js';
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';

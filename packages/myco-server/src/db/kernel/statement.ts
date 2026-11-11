@@ -1,5 +1,5 @@
 import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { isSelectStatement } from '../../core/sql-statements.js';
+import { isSelectStatement } from '../sql-statements.js';
 import { checkLikePattern, checkStatement } from './limits.js';
 import { abortSql, type RefusalCode } from './refusal.js';
 

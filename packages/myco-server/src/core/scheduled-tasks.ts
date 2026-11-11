@@ -25,7 +25,9 @@ import { ensureAgent } from '../db/runs/state.js';
 import { INPUT_UNCHANGED } from '../db/schedule-entry.js';
 import { recordSkipped } from '../db/runs/claim.js';
 import { taskFactsKey, taskRunFacts, type TaskRunFacts } from '../db/runs/task-facts.js';
-import { enabledCapabilities, type ProjectCapability } from './settings.js';
+import { type ProjectCapability } from './settings.js';
+import { enabledCapabilitiesRead } from '../db/settings/admission.js';
+import { readSet } from '../db/index.js';
 import { type TaskSchedule } from './jobs.js';
 import { declared } from './declared.js';
 import { admissionForTask, runTimeoutForTask } from './task-catalogue.js';
@@ -135,19 +137,12 @@ export async function readScheduleFacts(
       }),
     ),
   ];
-  const runs = taskRunFacts(env.db, tasks, now - DAY_MS, CLOCK_ACTOR, projectId);
-  const capabilities =
-    gated.length === 0 ? null : enabledCapabilities(env.db, gated, typeof projectId === 'string' ? projectId : undefined);
-  const [runRows, capabilityRows] = await env.db.batch([runs.statement, ...(capabilities === null ? [] : [capabilities.statement])]);
+  const runs = taskRunFacts(tasks, now - DAY_MS, CLOCK_ACTOR, projectId);
+  const [runRows, capabilityRows = []] = gated.length === 0 ? await readSet(env.db, runs.statement)
+    : await readSet(env.db, runs.statement, enabledCapabilitiesRead(gated, typeof projectId === 'string' ? projectId : undefined));
   return {
-    runs: runs.read(runRows!.results as ReadonlyArray<Record<string, unknown>>),
-    capabilities: new Set(
-      capabilities === null
-        ? []
-        : capabilities
-            .read(capabilityRows!.results as ReadonlyArray<Record<string, unknown>>)
-            .map(({ projectId: held, capability }) => taskFactsKey(held, capability)),
-    ),
+    runs: runs.read(runRows),
+    capabilities: new Set(capabilityRows.map(({ projectId: held, capability }) => taskFactsKey(held, capability))),
   };
 }
 
