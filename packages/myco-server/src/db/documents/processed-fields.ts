@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import { PROCESSED_FIELDS, processedResourceProofSql } from '../processed-resources.js';
 import { read, readSet } from '../index.js';
 

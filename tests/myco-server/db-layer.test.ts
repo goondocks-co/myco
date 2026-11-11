@@ -11,10 +11,6 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
 const PENDING: ReadonlySet<string> = new Set([
   'auth/device.ts',
   'auth/tokens.ts',
-  'content/document-reader.ts',
-  'content/session-pages.ts',
-  'content/session-turns.ts',
-  'content/tool-statistics.ts',
   'core/backup.ts',
   'core/content-budget.ts',
   'core/harness.ts',

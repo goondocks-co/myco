@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ChunkRow, PageRow } from '../../content/document-reader.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import { read, readSet } from '../index.js';
 
 const CHUNK_COLUMNS = `c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,${registeredObjectKeySql('c.project_id', 'c.blob_key')} object_key`;
