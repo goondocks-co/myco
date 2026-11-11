@@ -301,7 +301,13 @@ function setupJourneyWords(journey: SetupAnswers): string {
 function statusRepository(cwd: string): string | undefined {
   const verdict = repoVerdict(cwd, process.env, { mycoHome: null });
   if (verdict === null) return undefined;
-  if (runGitAnswer(['rev-parse', '--is-inside-work-tree'], cwd) !== 'true') return undefined;
+  try {
+    if (runGitAnswer(['rev-parse', '--is-inside-work-tree'], cwd) !== 'true') return undefined;
+  } catch (error) {
+    const stderr = (error as { stderr?: string | Buffer }).stderr?.toString() ?? '';
+    if (/^fatal: (?:not a git repository\b|gitfile does not point to a valid repository:)/m.test(stderr)) return undefined;
+    throw error;
+  }
   if (verdict === UNUSUAL) return path.resolve(cwd, runGitAnswer(['rev-parse', '--git-common-dir'], cwd), '..');
   return verdict.from === 'files' ? path.dirname(verdict.layout.commonDir) : verdict.root;
 }

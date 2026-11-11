@@ -38,6 +38,7 @@ const deps = () => ({
   fetch: Object.assign(async () => { throw new Error('status must not call the network'); }, { preconnect: () => {} }),
   worker: { runner: () => { throw new Error('status must not query services'); } },
 });
+
 function snapshot(directory: string): unknown {
   return fs.readdirSync(directory).sort().map(name => {
     const file = path.join(directory, name);
@@ -67,9 +68,15 @@ it('observes an unconnected folder on a separate filesystem without a fatal Git 
 });
 
 for (const args of [[], ['--join', STATUS_URL]]) for (const inside of [false, true]) {
-  it(`observes twelve repositories ${inside ? 'inside' : 'outside'} a repository with ${args.length ? '--join' : 'no journey flags'}`, async () => {
+  it(`observes twelve repositories ${inside ? 'inside a repository' : 'under a stray git entry'} with ${args.length ? '--join' : 'no journey flags'}`, async () => {
+    const cwd = inside ? fixture.repositories[3] : path.join(scratch, 'child');
+    if (!inside) {
+      fs.mkdirSync(cwd);
+      if (args.length === 0) fs.mkdirSync(path.join(scratch, '.git'));
+      else fs.writeFileSync(path.join(scratch, '.git'), 'gitdir: missing-repository\n');
+    }
     const before = snapshot(scratch);
-    expect(await run(['--status', ...args], { ...deps(), cwd: inside ? fixture.repositories[3] : scratch })).toBe(3);
+    expect(await run(['--status', ...args], { ...deps(), cwd })).toBe(3);
     const text = lines.join('\n');
     expect(text).toContain(`Deployment ${STATUS_URL}`);
     expect(text).toContain('Signed in: This machine is signed in');
