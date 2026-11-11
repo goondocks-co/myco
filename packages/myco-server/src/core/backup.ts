@@ -533,7 +533,7 @@ const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> =
   agent_run_attempts: (db, row) => prepareBound(db, restoreAttemptStatement(row)),
   extraction_acks: (db, row) => prepareBound(db, restoreExtractionAck(row)),
   transcript_segments: (db, row) => prepareBound(db, restoreTranscriptSegmentStatement(row)),
-  session_artifacts: restoreSessionArtifactStatement,
+  session_artifacts: (db, row) => prepareBound(db, restoreSessionArtifactStatement(row)),
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
   transcripts(db, row, decided) {
     const columns = Object.keys(row).filter((column) => column !== 'prompt_identity_scheme');

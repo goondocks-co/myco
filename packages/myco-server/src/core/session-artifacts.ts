@@ -14,7 +14,7 @@
  * lands before the deletion's batch, which then removes it, or writes nothing.
  */
 import type { RelationalStore } from './adapters.js';
-import { NOT_TOMBSTONED_PARAMS } from '../db/session-read-model.js';
+import { heldSessionCount, insertReportedArtifact, reportedArtifact, restoreArtifactStatement } from '../db/sessions/artifacts.js';
 import type { ReadScope } from '../read/scope.js';
 
 export const ARTIFACT_KINDS = ['pr', 'issue', 'tag', 'release', 'deploy'] as const;
@@ -93,27 +93,16 @@ type ReportOutcome =
   | { outcome: 'refused'; reason: string }
   | { outcome: 'no_session' };
 
-export const ARTIFACT_COLUMNS = `id, session_id AS sessionId, kind, artifact_id AS artifactId, url, author, reported_at AS reportedAt`;
-
 /** Record one reported artifact once it is admitted, or answer the one already reported under the same session, kind and id. */
 export async function reportSessionArtifact(db: RelationalStore, scope: ReadScope, report: ArtifactReport): Promise<ReportOutcome> {
   const admitted = admitArtifact(report, 'report');
   if (!admitted.ok) return { outcome: 'refused', reason: admitted.reason };
   const { kind, artifactId, url } = admitted.artifact;
   const { projectId } = scope;
-  const inserted = await db.prepare(`INSERT INTO session_artifacts (project_id, id, session_id, kind, artifact_id, url, author, reported_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?
-      WHERE EXISTS (SELECT 1 FROM sessions WHERE project_id = ? AND session_id = ?) AND ${NOT_TOMBSTONED_PARAMS}
-      ON CONFLICT (project_id, session_id, kind, artifact_id) DO NOTHING
-      RETURNING ${ARTIFACT_COLUMNS}`)
-    .bind(projectId, crypto.randomUUID(), report.sessionId, kind, artifactId, url, report.author, report.reportedAt,
-      projectId, report.sessionId, projectId, report.sessionId)
-    .first<SessionArtifactRow>();
+  const inserted = await insertReportedArtifact(db, { projectId, id: crypto.randomUUID(), sessionId: report.sessionId, kind, artifactId, url,
+    author: report.author, reportedAt: report.reportedAt });
   if (inserted !== null) return { outcome: 'created', artifact: inserted };
-  const existing = await db.prepare(`SELECT ${ARTIFACT_COLUMNS} FROM session_artifacts
-      WHERE project_id = ? AND session_id = ? AND kind = ? AND artifact_id = ?`)
-    .bind(projectId, report.sessionId, kind, artifactId)
-    .first<SessionArtifactRow>();
+  const existing = await reportedArtifact(db, projectId, report.sessionId, kind, artifactId);
   if (existing === null) return { outcome: 'no_session' };
   return { outcome: existing.url === url ? 'existing' : 'conflict', artifact: existing };
 }
@@ -146,18 +135,13 @@ export async function admitRestoredArtifacts(db: RelationalStore, rows: readonly
     unresolved.set(row.project_id, (unresolved.get(row.project_id) ?? new Set()).add(row.session_id));
   }
   for (const [projectId, ids] of unresolved) {
-    const { results } = await db.prepare(`SELECT session_id FROM sessions WHERE project_id = ? AND session_id IN (SELECT value FROM json_each(?))`)
-      .bind(projectId, JSON.stringify([...ids])).all<{ session_id: string }>();
-    if (results.length !== ids.size) throw new ArtifactRestoreRefused('a reported artifact names a session neither the artifact nor this Deployment holds');
+    const held = await heldSessionCount(db, projectId, [...ids]);
+    if (held !== ids.size) throw new ArtifactRestoreRefused('a reported artifact names a session neither the artifact nor this Deployment holds');
   }
 }
 
 /** Restore one admitted artifact, excluding a session the destination has deleted or does not hold. */
-export function restoreSessionArtifactStatement(db: RelationalStore, row: Record<string, unknown>) {
+export function restoreSessionArtifactStatement(row: Record<string, unknown>) {
   admitStored(row);
-  const columns = Object.keys(row);
-  return db.prepare(`INSERT OR IGNORE INTO session_artifacts (${columns.join(', ')})
-    SELECT ${columns.map(() => '?').join(', ')}
-    WHERE EXISTS (SELECT 1 FROM sessions WHERE project_id = ? AND session_id = ?) AND ${NOT_TOMBSTONED_PARAMS} RETURNING rowid`)
-    .bind(...columns.map((column) => row[column] ?? null), row.project_id, row.session_id, row.project_id, row.session_id);
+  return restoreArtifactStatement(row);
 }
