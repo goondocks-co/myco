@@ -52,6 +52,9 @@ async function rig() {
   e.sqlite.run(`INSERT OR IGNORE INTO members (id, label, created_at, role) VALUES (?, 'harness runtime', ?, 'member')`, [HARNESS_MEMBER_ID, NOW]);
   e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_1', 'proj_1', ?)`, [NOW]);
   e.sqlite.run(`INSERT OR REPLACE INTO project_repositories (project_id, revision, url, branch, username, secret_slot, updated_at, updated_by) VALUES ('proj_1', 'rev_1', 'https://github.com/goondocks-co/myco', 'main', NULL, NULL, ?, 'mem_x')`, [NOW]);
+  // A live plan nobody has touched for a month, which plan curation reads.
+  e.sqlite.run(`INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+    VALUES ('proj_1', 'stale-plan', 's-plan', 'e-plan', 'm1', 'Stale plan', '- [ ] pending', 'h', 'active', ?1, ?1, 'tok_1', ?1)`, [NOW - 30 * 86_400_000]);
   await ensureMember(e.db, 'mem_worker', NOW, 'admin', 'a worker');
   const workerToken = (await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId;
   const queued = (id: string, task: string, instruction: string | null, context: Record<string, unknown> = {}) => {

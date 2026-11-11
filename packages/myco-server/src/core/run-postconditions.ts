@@ -51,7 +51,8 @@ import { sessions_sessionCarriesTitle as sessionCarriesTitle } from '../read/cat
 import { sporeAuthoredBy } from '../db/spores/records.js';
 import { activeSporesAtLeast } from '../db/spores/counts.js';
 import { CARD_TOOL, LEARNING_TOOL, TITLE_WRITE_TOOL } from './tool-catalogue.js';
-import { CURATION_TASK, EXTRACTION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { CURATION_TASK, EXTRACTION_TASK, PLAN_CURATION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { planCurationCompletedBy } from './plan-curation.js';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { SEEDED_SPORE_FLOOR } from './seeding-params.js';
 import { EMBEDDING_REPORT_ACTION, EMBEDDING_TASK } from './embedding/task.js';
@@ -151,6 +152,7 @@ async function titleStands(db: RelationalStore, scope: ReadScope, run: RunRow): 
 /** What each task's run must have left behind, by task. Every retained task appears. */
 export const RUN_CLOSE_RULES: Readonly<Record<string, RunCloseRule>> = {
   'curate-spores': { description: ['A revision-bound decision with its reason for the assigned cluster, and a curation report.'], reports: ['curated'], artifact: curationCompletedBy },
+  [PLAN_CURATION_TASK]: { description: ['A revision-bound decision with its note for every assigned plan, each status change citing its evidence, and a curation report with its audit.'], reports: ['curated'], artifact: planCurationCompletedBy, audited: true },
   [MAP_TASK]: { description: ['A report with its audit and a code map written by this run, or a report with its audit that the map is unchanged.'], reports: [MAP_ACTION, MAP_UNCHANGED_ACTION], artifact: canopyMapWrittenBy, audited: true },
   [EMBEDDING_TASK]: { description: ['A report of the search index update.'], reports: [EMBEDDING_REPORT_ACTION] },
   // The whole product of a titling run is the title on the session its dispatch

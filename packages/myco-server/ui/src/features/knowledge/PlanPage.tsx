@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ActionLink, Breadcrumbs, Button, Card, CopyButton, ErrorState, FactRow, FactsPanel, LoadingState, Progress, Select, StatusChip, TypeChip } from '../../design';
 import { useMembers } from '../../hooks/use-access';
-import { usePlan } from '../../hooks/use-knowledge';
+import { planPagePath, usePlan } from '../../hooks/use-knowledge';
 import { useMe } from '../../hooks/use-me';
 import { useSession, useSetPlanStatus } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
@@ -14,7 +14,7 @@ import { PageScope } from '../../routes/scope';
 import { TextOrBlob } from '../sessions/StoredText';
 import { dateTime } from '../sessions/words';
 import type { PlanFields } from './wire';
-import { ago, authorName, PLAN_COLUMNS, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, type PlanStatus } from './words';
+import { ago, authorName, PLAN_COLUMNS, planStateWord, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
 
 export interface PlanPageProps {
   projectId: string;
@@ -56,7 +56,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
         <div className="flex min-w-0 max-w-measure flex-col gap-s5">
           <header className="flex flex-col gap-s3">
             <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
-              <StatusChip tone={planStatusTone(plan.status)} data-plan-status="">{planStatusWord(plan.status)}</StatusChip>
+              <StatusChip tone={planStatusTone(plan.status)} data-plan-status="">{planStateWord(plan)}</StatusChip>
               <span className="font-medium text-ink-2">{projectName}</span>
               <span aria-hidden>·</span>
               <span>updated {ago(plan.updatedAt, now)}</span>
@@ -80,9 +80,15 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
           <FactsPanel title="Facts" actions={<CopyButton value={plan.planKey} label="Copy plan key" variant="secondary" />}>
             <FactRow term="Project">{projectName}</FactRow>
             <FactRow term="Status">
-              {canSetStatus ? <StatusControl projectId={projectId} plan={plan} /> : planStatusWord(plan.status)}
+              {canSetStatus ? <StatusControl projectId={projectId} plan={plan} /> : planStateWord(plan)}
             </FactRow>
             {setBy !== null && <FactRow term="Status set by">{setBy}</FactRow>}
+            {plan.supersededBy != null && (
+              <FactRow term="Superseded by">
+                <ActionLink to={planPagePath(projectId, { planKey: plan.supersededBy.planKey })}>{supersedingTitle(plan.supersededBy)}</ActionLink>
+              </FactRow>
+            )}
+            {plan.resolution?.note != null && <FactRow term="Outcome">{plan.resolution.note}</FactRow>}
             <FactRow term="Written">{dateTime(plan.createdAt, now)}</FactRow>
             {plan.updatedAt !== plan.createdAt && <FactRow term="Updated">{dateTime(plan.updatedAt, now)}</FactRow>}
             {plan.originPath !== null && plan.originPath.trim() !== '' && <FactRow term="File" mono>{plan.originPath}</FactRow>}

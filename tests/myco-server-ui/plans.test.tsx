@@ -243,6 +243,28 @@ describe('a plan’s page', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
+  it('says a plan a later plan carries on is Superseded, names that plan on its card and its page, and shows its outcome', async () => {
+    const LATER = '66666666-2222-4333-8444-555555555555';
+    const superseded = { status: 'abandoned', supersededBy: { planKey: LATER, title: 'Export format, second pass' } };
+    server(base({
+      ...columns('', { abandoned: () => board([plan(superseded)]) }),
+      [PLAN]: () => onePlan({ ...superseded, resolution: { note: 'The second pass carries it on.', resolvedAt: NOW - HOUR } }),
+      [`/api/projects/${MYCO}/sessions/s1`]: sessionAnswer,
+    }));
+    mount('/knowledge/plans');
+    await waitFor(() => expect(document.querySelectorAll('[data-plan]')).toHaveLength(1));
+    const later = within(column('abandoned')).getByRole('link', { name: 'Export format, second pass' });
+    expect(later.getAttribute('href')).toBe(`/p/${MYCO}/plans/${LATER}`);
+    expect(column('abandoned').querySelector('[data-plan-superseded]')!.textContent).toBe('Superseded by Export format, second pass');
+    cleanup();
+    mount(planPagePath(MYCO, { planKey: KEY }));
+    await screen.findByRole('heading', { level: 1 });
+    const page = document.querySelector('[data-plan-page]') as HTMLElement;
+    expect(page.querySelector('[data-plan-status]')!.textContent).toBe('Superseded');
+    expect(within(page).getByRole('link', { name: 'Export format, second pass' }).getAttribute('href')).toBe(`/p/${MYCO}/plans/${LATER}`);
+    expect(page.textContent).toContain('The second pass carries it on.');
+  });
+
   it('reads a spilled plan through its typed identity while generic storage downloads are unavailable', async () => {
     const { requested } = server(base({
       [PLAN]: () => onePlan({ content: null, blobKey: 'a'.repeat(64) }),

@@ -42,5 +42,10 @@
     "vault_search_semantic",
     "vault_curate_spore",
     "vault_report"
+  ],
+  "curate-plans": [
+    "vault_plan_curation",
+    "vault_search_fts",
+    "vault_report"
   ]
 }

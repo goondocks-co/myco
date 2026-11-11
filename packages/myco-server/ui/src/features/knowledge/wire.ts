@@ -80,15 +80,24 @@ export interface PlanListFields {
   progress: string | null;
   /** The member behind its last status change; null when a capture wrote last. */
   updatedBy: string | null;
+  /** The later plan that carries an abandoned plan's work on, with its title; null for every other plan. */
+  supersededBy?: { planKey: string; title: string | null } | null;
   createdAt: number;
   updatedAt: number;
   tags: string[];
+}
+
+/** How a finished plan was resolved: what landed or why it stopped, and when. Null for a plan still being worked. */
+export interface PlanResolution {
+  note: string | null;
+  resolvedAt: number | null;
 }
 
 /** The fields a plan's page reads: the listed fields and its body, or the stored object holding it. */
 export interface PlanFields extends PlanListFields {
   content: string | null;
   blobKey: string | null;
+  resolution?: PlanResolution | null;
 }
 
 /** A plan listed across Projects. */

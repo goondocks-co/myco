@@ -1,0 +1,152 @@
+import { afterEach, describe, expect, it } from 'bun:test';
+import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import worker from '@myco-server-worker/entry/cloudflare.js';
+import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
+import { claimNextRun, dispatchTask, endLeasedRun } from '@myco-server-worker/core/harness.js';
+import { savePlan } from '@myco-server-worker/core/plans.js';
+import { plans_pageProjectPlans as pageProjectPlans } from '@myco-server-worker/read/catalog/plans.js';
+import { reportSessionArtifact } from '@myco-server-worker/core/session-artifacts.js';
+import { PLAN_CURATION_TASK } from '@myco-server-worker/core/task-catalogue.js';
+import { PLAN_CURATION_STALE_MS } from '@myco-server-worker/core/plan-curation.js';
+import { RUN_CLOSE_ARTIFACT_ERROR } from '@myco-server-worker/core/run-postconditions.js';
+import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
+import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
+import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { issueMemberToken } from './helpers/member-token.js';
+import { legacyWorker } from './helpers/worker-principal.js';
+import { offeredHarness } from './helpers/offered-harness.js';
+import { RUN_AUDIT } from '../helpers/run-audit.ts';
+
+const ORIGIN = 'https://s';
+const NOW = 1_800_000_000_000;
+const STALE = NOW - PLAN_CURATION_STALE_MS - 86_400_000;
+const scope = { projectId: 'proj_1' };
+const cleanups: Array<() => void> = [];
+afterEach(() => { for (const close of cleanups.splice(0)) close(); });
+
+/**
+ * A Project with three plans nobody has touched for longer than curation waits: `writer`, whose session launched a
+ * session that reported pull request 2180 (its own session reported pull request 2000 before writing it); `idle`, whose
+ * session reported nothing; and `replaced`, whose work a later plan, `successor`, carries on.
+ */
+async function rig() {
+  const e = sqliteEnv({ workerLogin: true });
+  cleanups.push(() => e.sqlite.close());
+  await ensureMember(e.db, 'mem_worker', STALE, 'admin', 'worker');
+  const member = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, STALE);
+  e.sqlite.run(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,?)`, [STALE]);
+  e.sqlite.run(`INSERT OR IGNORE INTO projects (project_id,name,created_at) VALUES ('proj_1','proj_1',?)`, [STALE]);
+  e.sqlite.run(`INSERT INTO project_capabilities (project_id,capability,enabled,updated_at,updated_by) VALUES ('proj_1','spore_curation',1,?,'test')`, [STALE]);
+  e.sqlite.run(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,launch_parent_session_id)
+    VALUES('proj_1','planning','m1',?1,?2,?2,NULL),('proj_1','landing','m1',?1,?2,?2,'planning'),('proj_1','quiet','m1',?1,?2,?2,NULL)`, [member.tokenId, STALE]);
+  const save = async (sessionId: string, planKey: string, title: string, content: string, at = STALE) => {
+    const saved = await savePlan(e.serverEnv, { machineId: 'm1', tokenId: member.tokenId }, scope, { sessionId, planKey, title, content }, at);
+    if (!saved.ok) throw new Error(saved.error);
+    return saved.row.planKey;
+  };
+  const ids = {
+    writer: await save('planning', 'writer', 'Plan writer revert', '- [x] one writer\n- [ ] board revert'),
+    idle: await save('quiet', 'idle', 'Quiet cache sweep', '- [ ] sweep the cache'),
+    replaced: await save('quiet', 'replaced', 'Old export format', '- [ ] export'),
+    successor: await save('quiet', 'successor', 'Export format, second pass', '- [ ] export', NOW - 86_400_000),
+  };
+  for (const [sessionId, artifactId, reportedAt] of [['landing', '2180', STALE + 1], ['planning', '2000', STALE - 10]] as const) {
+    expect(await reportSessionArtifact(e.db, scope, { sessionId, kind: 'pr', artifactId, url: `https://example.test/repo/pull/${artifactId}`, author: 'mem_worker', reportedAt }))
+      .toMatchObject({ outcome: 'created' });
+  }
+
+  const call = async (token: string, name: string, input: Record<string, unknown>) => {
+    const res = await worker.fetch(new Request(`${ORIGIN}/mcp`, {
+      method: 'POST', headers: memberHeaders(token, { [PROJECT_HEADER]: 'proj_1' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }),
+    }), e.env);
+    const body = await res.json() as { result?: { content?: Array<{ text?: string }> }; error?: { message?: string } };
+    if (body.error !== undefined) return { failed: body.error.message } as Record<string, unknown>;
+    return JSON.parse(body.result?.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+  };
+  const workerToken = await issueMemberToken(e.db, { memberId: 'mem_worker', machineId: 'm1' }, NOW);
+  const principal = legacyWorker(workerToken.tokenId, 'm1');
+  const claimCuration = async () => {
+    expect(await dispatchTask(e.serverEnv, PLAN_CURATION_TASK, 'proj_1', { serverUrl: ORIGIN, actor: 'mem_worker' }, NOW)).toMatchObject({ dispatched: true, queued: true });
+    const claimed = await claimNextRun(e.serverEnv, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now: NOW + 1 });
+    if (!claimed.claimed) throw new Error(`the curation run was not claimed: ${claimed.reason}`);
+    return claimed.run;
+  };
+  const end = async (runId: string) => {
+    await endLeasedRun(e.serverEnv, { principal, now: NOW + 3 }, { projectId: 'proj_1', runId, status: 'completed' });
+    return getRun(e.db, scope, runId);
+  };
+  return { e, member, ids, call, claimCuration, end };
+}
+
+describe('plan curation', () => {
+  it('completes a plan only on an outcome of its own, supersedes one by a later plan, keeps a plan with no evidence open, and the board can revert it', async () => {
+    const r = await rig();
+    const run = await r.claimCuration();
+    expect(run.instruction).toContain('"pr:2180"');
+    expect(run.instruction).not.toContain('"pr:2000"');
+    const resolve = (input: Record<string, unknown>) => r.call(run.runToken, 'myco_run_plans', { op: 'resolve', ...input });
+    const refused = async (input: Record<string, unknown>, says: string, next = `{"op":"resolve","plan_id":"${String(input.plan_id)}"}`) => {
+      const answer = await resolve(input);
+      expect(answer).toEqual({ ok: false, error: expect.stringContaining(says) });
+      expect(answer.error).toContain(`Next call: myco_run_plans ${next}`);
+    };
+
+    await refused({ plan_id: r.ids.idle, decision: 'completed', note: 'Swept.', evidence: [] }, 'a completed decision cites 0 evidence ids; it cites at least 1');
+    await refused({ plan_id: r.ids.idle, decision: 'completed', note: 'Swept.', evidence: ['pr:2180'] }, 'evidence "pr:2180" is not listed for this plan');
+    await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: ['pr:2180', 'pr:2180'] }, 'evidence lists "pr:2180" twice');
+    await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: ['pr:2000'] }, 'evidence "pr:2000" was reported by session planning');
+    // A session, an unfinished checklist or another plan shows where work happened, never that it landed.
+    for (const id of ['session:planning', 'progress', `plan:${r.ids.idle}`]) {
+      await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: [id] }, `a completed decision cites ["${id}"], none of them an outcome of this plan`);
+    }
+    await refused({ plan_id: r.ids.successor, decision: 'open', note: 'Fresh.' }, 'is not one of this run\'s 3 assigned plans', '{"op":"resolve","plan_id":');
+    await refused({ plan_id: r.ids.replaced, decision: 'superseded', note: 'Carried on.', superseded_by: r.ids.idle }, 'a plan is superseded only by a later plan');
+    expect(await r.call(r.member.token, 'myco_plans', { op: 'get', id: r.ids.writer })).toMatchObject({ status: 'active' });
+
+    expect(await resolve({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed #2180: one plan writer.', evidence: ['pr:2180'] }))
+      .toMatchObject({ resolved: true, plan_id: r.ids.writer, decision: 'completed' });
+    expect(await resolve({ plan_id: r.ids.replaced, decision: 'superseded', note: 'The second pass carries it on.', superseded_by: r.ids.successor }))
+      .toMatchObject({ resolved: true, remaining: [r.ids.idle] });
+    expect(await resolve({ plan_id: r.ids.idle, decision: 'open', note: 'The cache sweep is still pending.' }))
+      .toMatchObject({ resolved: true, remaining: [], next: { tool: 'myco_run', op: 'report' } });
+    expect(await r.call(run.runToken, 'myco_run', { op: 'report', action: 'curated', summary: 'One completed, one superseded, one open.', audit: RUN_AUDIT })).toMatchObject({ recorded: true });
+    expect(await r.end(run.id)).toMatchObject({ status: 'completed' });
+
+    const token = r.member.token;
+    expect(await r.call(token, 'myco_plans', { op: 'get', id: r.ids.writer }))
+      .toMatchObject({ status: 'completed', resolution: { note: 'Landed #2180: one plan writer.', superseded_by: null, evidence: ['pr:2180'] } });
+    expect(await r.call(token, 'myco_plans', { op: 'get', id: r.ids.replaced }))
+      .toMatchObject({ status: 'abandoned', resolution: { superseded_by: r.ids.successor, evidence: [`plan:${r.ids.successor}`] } });
+    // A plan kept open shows no resolution: it reads as it did before the review.
+    const open = await r.call(token, 'myco_plans', { op: 'get', id: r.ids.idle });
+    expect({ status: open.status, resolution: open.resolution }).toEqual({ status: 'active', resolution: undefined });
+    // The plan list names the later plan an abandoned plan was superseded by.
+    const listed = (await pageProjectPlans(r.e.db, scope, { status: 'abandoned' }))!.rows;
+    expect(listed.map(plan => [plan.planKey, plan.supersededBy])).toEqual([[r.ids.replaced, { planKey: r.ids.successor, title: 'Export format, second pass' }]]);
+
+    // The past plan is found by the words of its outcome, and its hit reads that outcome.
+    const found = await r.call(token, 'myco_search', { query: 'landed', type: 'plan', mode: 'fts' }) as { hits: Array<{ id: string; preview: string }> };
+    expect(found.hits.map(hit => hit.id)).toEqual([r.ids.writer]);
+    expect(found.hits[0]!.preview).toMatch(/^Completed \d{4}-\d{2}-\d{2}: Landed #2180: one plan writer\.$/);
+
+    expect(await r.call(token, 'myco_plans', { op: 'save', id: r.ids.writer, status: 'active', session_id: 'planning', project: 'proj_1' })).toMatchObject({ ok: true, status: 'active' });
+    const reverted = await r.call(token, 'myco_plans', { op: 'get', id: r.ids.writer });
+    expect({ status: reverted.status, resolution: reverted.resolution }).toEqual({ status: 'active', resolution: undefined });
+  });
+
+  it('closes a run that recorded no decision as failed, and leaves every plan as it was', async () => {
+    const r = await rig();
+    const run = await r.claimCuration();
+    expect(await r.call(run.runToken, 'myco_run', { op: 'report', action: 'curated', summary: 'Nothing decided.', audit: RUN_AUDIT })).toMatchObject({ recorded: true });
+    expect(await r.end(run.id)).toMatchObject({ status: 'failed', error: RUN_CLOSE_ARTIFACT_ERROR });
+    for (const id of [r.ids.writer, r.ids.idle, r.ids.replaced]) expect(await r.call(r.member.token, 'myco_plans', { op: 'get', id })).toMatchObject({ status: 'active' });
+  });
+
+  it('counts every Markdown task list item outside fenced examples as plan progress', async () => {
+    const r = await rig();
+    const content = ['- [x] dash', '* [ ] star', '+ [X] plus', '1. [ ] ordered', '12) [x] parenthesis', '```', '- [ ] an example', '```', '  - [ ] nested', '- [] not an item'].join('\n');
+    expect(await savePlan(r.e.serverEnv, { machineId: 'm1', tokenId: r.member.tokenId }, scope, { sessionId: 'quiet', planKey: 'markdown', title: 'Markdown', content }, NOW))
+      .toMatchObject({ ok: true, row: { progress: '3/6' } });
+  });
+});

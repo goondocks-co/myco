@@ -70,7 +70,9 @@ export async function handlePlans(input: ToolInput, ctx: ToolContext): Promise<u
     if (id === undefined) return failure('id is required for op: get');
     const row = await getPlan(db, scope, id);
     if (row === null) return failure('Plan not found');
-    return { ...summary(row), content: await processedBody(ctx.env, scope, 'plan', row.planKey) };
+    const resolution = row.resolution === null ? {} : { resolution: { note: row.resolution.note, resolved_at: row.resolution.resolvedAt,
+      superseded_by: row.resolution.supersededBy, evidence: row.resolution.evidence } };
+    return { ...summary(row), ...resolution, content: await processedBody(ctx.env, scope, 'plan', row.planKey) };
   }
 
   if (op === 'save') return save(input, ctx, scope);

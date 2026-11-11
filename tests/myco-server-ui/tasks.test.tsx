@@ -195,7 +195,7 @@ describe('starting a task from the Tasks view', () => {
   const startable = TASK_DESCRIPTIONS.filter((task) => task.startable);
 
   it('offers Run now on every task a person may start by hand, and on no other', async () => {
-    expect(startable.map((task) => task.task).sort()).toEqual(['canopy-map', 'extract-curate', 'vault-seed']);
+    expect(startable.map((task) => task.task).sort()).toEqual(['canopy-map', 'curate-plans', 'extract-curate', 'vault-seed']);
     for (const path of [`/p/${P}/work/tasks`, '/work/tasks']) for (const member of [false, true]) {
       server(TASK_DESCRIPTIONS, { member });
       mount(path);

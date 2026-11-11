@@ -12,6 +12,7 @@ import { TASK_SCHEDULE, type ScheduleState, type TaskSchedule } from './jobs.js'
 import { EXTRACTION_TASK } from './task-catalogue.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { capturedSinceMap } from './canopy.js';
+import { hasStalePlans } from './plan-curation.js';
 
 /** The 1.4 defaults for the recency gates, applied where the leaves are unset. */
 export const COLD_PROJECT_THRESHOLD_DAYS_DEFAULT = 14;
@@ -112,6 +113,7 @@ const condition = (description: string, check: ScheduleCondition): ScheduleCondi
 
 export const PRE_CONDITIONS: Readonly<Record<string, ScheduleCondition & { description: string }>> = {
   'has-capture-since-map': condition('Only after new session material arrives.', ({ db, projectId }) => capturedSinceMap(db, { projectId })),
+  'has-stale-plans': condition('Only while a live plan has gone two weeks without an edit or a review.', ({ db, projectId, now }) => hasStalePlans(db, projectId, now)),
 };
 
 /** Named accelerators: a count of pending work that shortens a task's interval, read over the same store and looked up the same way. */

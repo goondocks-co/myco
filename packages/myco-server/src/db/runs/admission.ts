@@ -133,7 +133,7 @@ export function spendTriggers(): SpendTrigger[] {
   ];
 }
 
-/** Tables, indexes, triggers and readiness: the statements the schema step freezes. */
+/** Tables, indexes and readiness as the accounting step froze them; the triggers are rebuilt whenever the worker tasks change (`spendTriggers`). */
 export function spendSchemaStatements(): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS attempt_spend(project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),run_id TEXT NOT NULL,attempt_id TEXT NOT NULL,claimed_at INTEGER NOT NULL,
@@ -145,7 +145,6 @@ export function spendSchemaStatements(): string[] {
     `CREATE TABLE IF NOT EXISTS budget_totals(project_id TEXT NOT NULL CHECK (${PROJECT_ID_GRAMMAR}),origin TEXT NOT NULL,
       ${MONEY.map(column => `${column} REAL NOT NULL DEFAULT 0,${column}_carry REAL NOT NULL DEFAULT 0`).join(',')},unconfirmed INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(project_id,origin)) WITHOUT ROWID`,
-    ...spendTriggers().map(trigger => trigger.sql),
     `INSERT INTO projection_catchup(projection,phase,done) SELECT '${BUDGET_PROJECTION}','attempts',NOT EXISTS (SELECT 1 FROM agent_run_attempts)`,
   ];
 }
