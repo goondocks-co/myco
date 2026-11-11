@@ -56,7 +56,7 @@ import { BUNDLE_REFERENCES } from './blob-references.js';
 import { bundleHeld } from '../db/storage/blob-held.js';
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
-import { restoreArchivedEvent } from './event-content-restore.js';
+import { archivedEventRestore } from '../db/events/archived-event-restore.js';
 import { clearDeletedParentsStatement } from '../db/sessions/tombstones.js';
 import { restoreExtractionAck } from '../db/learning/extraction-ack-restore.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
@@ -1221,7 +1221,9 @@ async function restoreTable(context: TablePassContext, table: string, all: Row[]
           if (bundle === undefined) throw new BackupApplyError(table, 'an archived event lacks its bundle');
           const restoredId = await restoredBundleId(context, transcriptIdentity(row.project_id,row.bundle_id));
           if (restoredId === undefined) throw new BackupApplyError(table, 'an archived event lacks its restored bundle');
-          inserted += await restoreArchivedEvent(db, {...row,bundle_id:restoredId}, {...bundle,id:restoredId}, references);
+          const restore = archivedEventRestore({...row,bundle_id:restoredId}, {...bundle,id:restoredId});
+          const applied = await db.batch([...references, ...restore.map(statement => prepareBound(db, statement))]);
+          inserted += applied[references.length]!.results.length;
         } else {
           const columns = Object.keys(row);
           const statements = [...references,
