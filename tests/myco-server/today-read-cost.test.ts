@@ -19,7 +19,7 @@ import {
 } from '@myco-server-worker/db/runs/claim.js';
 import { createProject } from '@myco-server-worker/db/storage/projects.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { d1TwoScale, eachUnit, expectReportedWalk, expectTwoScale, type CostCase } from './helpers/two-scale.js';
+import { d1TwoScale, eachUnit, expectTwoScale, type CostCase } from './helpers/two-scale.js';
 
 const NOW = 1_790_000_000_000;
 const MINUTE = 60_000;
@@ -77,14 +77,6 @@ async function grow(db: RelationalStore, from: number, to: number) {
 
 /** Sizes of the history, in units. */
 const SIZES = [600, 6_000] as const;
-/**
- * Reads reported for walking what they should seek, with the rows each may read per unit of history until it is keyed:
- * capture recency reads every machine claim with its member and every unrevoked credential of the Deployment, expired
- * ones too, to name the few machines it shows (#2174).
- */
-const REPORTED_WALKS: Record<string, { issue: string; perUnit: number }> = {
-  'capture recency': { issue: '#2174', perUnit: 3.5 },
-};
 
 it('Today reads and an actor\'s task entries cost D1 the same as the Deployment\'s history grows', async () => {
   const costs = await d1TwoScale({
@@ -123,10 +115,7 @@ it('Today reads and an actor\'s task entries cost D1 the same as the Deployment\
     ],
     warm: true,
   });
-  expectTwoScale(costs.filter((cost) => !(cost.name in REPORTED_WALKS)));
-  for (const cost of costs.filter((cost) => cost.name in REPORTED_WALKS)) {
-    expectReportedWalk(cost, { ...REPORTED_WALKS[cost.name]!, units: SIZES[1] - SIZES[0] });
-  }
+  expectTwoScale(costs);
 }, 180_000);
 
 it('answers every across-Projects read naming the most Projects a read may and every filter it takes, on both stores', async () => {
