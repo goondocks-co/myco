@@ -1,8 +1,7 @@
 import { RUN_CONTROL_REFUSAL_WORDS } from '@goondocks/myco-shared/run-control';
-import type { PreparedStatement, RelationalStore, RunResult } from '../../core/adapters.js';
+import type { RelationalStore, RunResult } from '../../core/adapters.js';
 import { composedStatements } from '../composed-statements.js';
 import { commit, write, type BindValue, type Bound } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
 import type { RunErrorCode } from '../../core/reader-codes.js';
 import { workerLeaseAuthority } from '../runners/lease-authority.js';
 import type { ReadScope } from '../../read/scope.js';
@@ -21,15 +20,10 @@ function runChangeStatement(sql: string, values: readonly unknown[]): Bound<{ id
   return runChanges(text, name => write<BindValue[], { id: string }>({ name, sql: text })).bind(...values as BindValue[]);
 }
 
-/**
- * Commits the change with its companions and answers how many runs it moved, read from its RETURNING rows. Companions
- * still built outside the kernel commit in the same batch.
- */
-export async function commitRunChange(db: RelationalStore, statement: Bound<{ id: string }, 'write'>, after: readonly Bound[] | readonly PreparedStatement[] = []):
+/** Commits the change with its companions in one batch and answers how many runs it moved, read from its RETURNING rows. */
+export async function commitRunChange(db: RelationalStore, statement: Bound<{ id: string }, 'write'>, after: readonly Bound[] = []):
 Promise<{ changed: number; following: RunResult[] }> {
-  const named = after.every(companion => 'kind' in companion);
-  const [changed, ...following] = named ? await commit(db, statement, ...after as readonly Bound[])
-    : await db.batch([prepareBound(db, statement), ...after as readonly PreparedStatement[]]);
+  const [changed, ...following] = await commit(db, statement, ...after);
   if (changed === undefined) throw new Error('Run change result is missing');
   return { changed: changed.results.length, following };
 }

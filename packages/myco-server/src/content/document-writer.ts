@@ -19,6 +19,7 @@ import { SESSION_OWNER } from '../db/document-tables.js';
 import { mergeRecord } from './document-records.js';
 import type { ChunkRow } from './document-reader.js';
 import type { PublicationDirectory } from '../db/documents/directory.js';
+import type { Bound } from '../db/index.js';
 import { TURN_PAGES } from './session-pages.js';
 
 interface PageChunkWrite { metadata?: number; chunkNo: number; chunk: DecodedChunk; previous: ChunkRow | undefined }
@@ -177,11 +178,11 @@ export class DocumentWriter {
 
   get metadataSource() { return this.legacyMetadata === null ? [] : [{n:this.legacyMetadata.number,k:this.directory.chunks.get(this.legacyMetadata.number)!.blob_key}]; }
 
-  metadataStatements(layout: DocumentLayout | null) {
+  metadataStatements(layout: DocumentLayout | null): Bound[] {
     const shards: MetadataShard[] = (layout?.pageChunks ?? []).filter(write => write.metadata === 1).map(write => ({
       chunkNo: write.chunkNo, states: [...write.chunk.states.keys()], owners: write.chunk.owners ?? [], plans: write.chunk.plans ?? [],
     }));
-    return [...this.directory.ownership.statements(shards, !this.metadataSeparated),
+    return [...this.directory.ownership.bindings(shards, !this.metadataSeparated),
       ...(layout !== null && this.legacyMetadata !== null ? [this.directory.ownership.retain(this.legacyMetadata.number)] : [])];
   }
 

@@ -3,6 +3,7 @@
  * dependents, the cycle job reports a cycle, and held retry causes translate through catch-up.
  */
 import { expect, test } from 'bun:test';
+import { commit } from '@myco-server-worker/db/index.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
 import { readDocumentStatus } from '@myco-server-worker/db/documents/status.js';
@@ -142,10 +143,10 @@ test('a holder with more dependents than one page wakes them across commits', as
     await db.batch(rows);
     await db.prepare(`INSERT INTO session_documents(project_id,session_id,state,generation,updated_at,due_at) VALUES('project','s','live',1,1,NULL)`).run();
     const holders = JSON.stringify(['holder']);
-    await db.batch([wakeDependentsStatement(db, 'project', 's', holders), continueWakeStatement(db, 'project', 's', holders)]);
+    await commit(db, wakeDependentsStatement('project', 's', holders), continueWakeStatement('project', 's', holders));
     expect(await db.prepare(`SELECT COUNT(*) n FROM publication_dependencies`).first(), target).toEqual({ n: 5 });
     expect(await db.prepare(`SELECT publication_wake,due_at FROM session_documents WHERE session_id='s'`).first(), target).toEqual({ publication_wake: holders, due_at: 0 });
-    await db.batch([wakeDependentsStatement(db, 'project', 's', holders), continueWakeStatement(db, 'project', 's', holders)]);
+    await commit(db, wakeDependentsStatement('project', 's', holders), continueWakeStatement('project', 's', holders));
     expect(await db.prepare(`SELECT COUNT(*) n FROM publication_dependencies`).first(), target).toEqual({ n: 0 });
     expect(await db.prepare(`SELECT publication_wake FROM session_documents WHERE session_id='s'`).first(), target).toEqual({ publication_wake: null });
   });

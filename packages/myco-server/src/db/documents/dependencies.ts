@@ -1,7 +1,6 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import { emit } from '../../telemetry.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
 import { jsonKeys } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
 
@@ -112,13 +111,12 @@ const continueWake = write<[string, string, string]>({ name: 'publication.contin
   due_at=CASE WHEN EXISTS(SELECT 1 FROM json_each(?3) j CROSS JOIN publication_dependencies d ON d.project_id=?1 AND d.session_id=?2 AND d.holder_event_id=j.value) THEN 0 ELSE due_at END
   WHERE project_id=?1 AND session_id=?2 AND (publication_wake IS NOT NULL OR EXISTS(SELECT 1 FROM json_each(?3) j CROSS JOIN publication_dependencies d ON d.project_id=?1 AND d.session_id=?2 AND d.holder_event_id=j.value))` });
 
-const stmt = (db: RelationalStore, bound: Bound): PreparedStatement => prepareBound(db, bound);
-export const consumeQueuedStatement = (db: RelationalStore, project: string, session: string, rows: string) => stmt(db, consumeQueue.bind(project, session, rows));
-export const holdQueuedStatement = (db: RelationalStore, project: string, session: string, rows: string) => stmt(db, holdQueue.bind(project, session, rows));
-export const clearDependenciesStatement = (db: RelationalStore, project: string, children: string) => stmt(db, clearDeps.bind(project, children));
-export const recordDependenciesStatement = (db: RelationalStore, project: string, session: string, now: number, rows: string) => stmt(db, recordDeps.bind(project, session, now, rows));
-export const wakeDependentsStatement = (db: RelationalStore, project: string, session: string, holders: string) => stmt(db, wake.bind(project, session, holders));
-export const continueWakeStatement = (db: RelationalStore, project: string, session: string, holders: string) => stmt(db, continueWake.bind(project, session, holders));
+export const consumeQueuedStatement = (project: string, session: string, rows: string): Bound => consumeQueue.bind(project, session, rows);
+export const holdQueuedStatement = (project: string, session: string, rows: string): Bound => holdQueue.bind(project, session, rows);
+export const clearDependenciesStatement = (project: string, children: string): Bound => clearDeps.bind(project, children);
+export const recordDependenciesStatement = (project: string, session: string, now: number, rows: string): Bound => recordDeps.bind(project, session, now, rows);
+export const wakeDependentsStatement = (project: string, session: string, holders: string): Bound => wake.bind(project, session, holders);
+export const continueWakeStatement = (project: string, session: string, holders: string): Bound => continueWake.bind(project, session, holders);
 
 interface Edge { project_id: string; session_id: string; child_event_id: string; child_rank: number; child_created_at: number; prerequisite_id: string; holder_event_id: string | null; inspect_after: string | null; inspect_hops: number }
 const dueEdges = read<[number], Edge>({ name: 'publication.inspectionDue', sql: `SELECT project_id,session_id,child_event_id,child_rank,child_created_at,prerequisite_id,holder_event_id,inspect_after,inspect_hops

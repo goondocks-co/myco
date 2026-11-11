@@ -1,5 +1,4 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { prepareBound } from '../kernel/statement.js';
 import { read, readSet, write, type Bound } from '../index.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
@@ -45,9 +44,9 @@ const insertSession = write<[project: string, session: string]>({
 /** A published session's learning row, ready; a batch that has just inserted its cards still gets the exact count. */
 export const learningSessionStatement = (project: string, session: string): Bound => insertSession.bind(project, session);
 
-/** The learning row and its progress for the publisher's unmigrated batch. */
-export function publicationProgressStatements(db: RelationalStore, project: string, session: string, now: number) {
-  return [prepareBound(db, learningSessionStatement(project, session)), prepareBound(db, sessionProgressStatement(project, session, now))];
+/** The learning row and its progress, written with a publication. */
+export function publicationProgressStatements(project: string, session: string, now: number): Bound[] {
+  return [learningSessionStatement(project, session), sessionProgressStatement(project, session, now)];
 }
 
 const held = read<[project: string, session: string], { revision: number; handoff: string | null }>({

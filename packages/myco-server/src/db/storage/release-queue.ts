@@ -135,9 +135,9 @@ export function recordObservedCandidates(db: RelationalStore, observed: readonly
 interface HolderRef { p: string; s: string; k: string; i: string }
 
 /** Statements that record the blobs of those holders that still stand, ahead of the statement removing them. */
-export function recordHolderCandidates(db: RelationalStore, holders: readonly HolderRef[], now: number): PreparedStatement[] {
-  const statements: PreparedStatement[] = [];
-  for (let at = 0; at < holders.length; at += RELEASE_PAGE) statements.push(prepareBound(db, recordForHolders.bind(JSON.stringify(holders.slice(at, at + RELEASE_PAGE)), now, now - BLOB_RESERVATION_TTL_MS)));
+export function recordHolderCandidates(holders: readonly HolderRef[], now: number): Bound[] {
+  const statements: Bound[] = [];
+  for (let at = 0; at < holders.length; at += RELEASE_PAGE) statements.push(recordForHolders.bind(JSON.stringify(holders.slice(at, at + RELEASE_PAGE)), now, now - BLOB_RESERVATION_TTL_MS));
   return statements;
 }
 
@@ -214,8 +214,13 @@ const referenceGuard = write<[page: string]>({ name: 'storage.registeredBlobsGua
  * writes the rows naming them, it makes the registration check and those writes one transaction: a release that
  * commits first fails the batch, and one that commits after sees the new references and keeps the blob.
  */
+export function registeredBlobsWrite(pairs: readonly BlobRef[]): Bound {
+  return referenceGuard.bind(pageOf(pairs));
+}
+
+/** `registeredBlobsWrite` compiled for a batch still built from prepared statements. */
 export function registeredBlobsGuard(db: RelationalStore, pairs: readonly BlobRef[]): PreparedStatement {
-  return prepareBound(db, referenceGuard.bind(pageOf(pairs)));
+  return prepareBound(db, registeredBlobsWrite(pairs));
 }
 
 const EVIDENCE_CLOSED = `NOT EXISTS (
