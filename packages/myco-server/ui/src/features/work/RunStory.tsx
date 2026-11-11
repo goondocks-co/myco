@@ -2,10 +2,10 @@ import { CopyButton, Disclosure, FactRow, FactsPanel, ItemLink } from '../../des
 import { useIsAdmin } from '../../hooks/use-me';
 import { useTaskRuns } from '../../hooks/use-work';
 import { cn } from '../../lib/cn';
-import { RUNNERS_PATH, runPath } from '../../routes/nav';
+import { runnerPath, runPath } from '../../routes/nav';
 import { InkLink, PartLabel } from './OutcomeCard';
 import {
-  askedRows, clockWords, exactDetails, SOURCE_WORDS, TRY_WINDOW_MS, triesOf, tryResultWords, verdictOf,
+  askedRows, callDetailWords, clockWords, exactDetails, SOURCE_WORDS, TRY_WINDOW_MS, triesOf, tryResultWords, verdictOf,
   type Source, type StoryRow, type Tone, type Try,
 } from './story';
 import { atWords } from './words';
@@ -29,7 +29,7 @@ function StoryLine({ entry }: { entry: StoryRow }) {
   const admin = useIsAdmin();
   const silent = entry.at === null;
   const words = entry.runner !== null && admin
-    ? <>{entry.words.slice(0, entry.words.indexOf(entry.runner.name))}<InkLink to={`${RUNNERS_PATH}#runner-${encodeURIComponent(entry.runner.id)}`}>{entry.runner.name}</InkLink>{entry.words.slice(entry.words.indexOf(entry.runner.name) + entry.runner.name.length)}</>
+    ? <>{entry.words.slice(0, entry.words.indexOf(entry.runner.name))}<InkLink to={runnerPath(entry.runner.id)}>{entry.runner.name}</InkLink>{entry.words.slice(entry.words.indexOf(entry.runner.name) + entry.runner.name.length)}</>
     : entry.words;
   return (
     <li className={cn('flex gap-s3 py-s2', silent && 'border-l-2 border-dashed border-line pl-s2')} data-story-row={entry.key} data-story-tone={entry.tone ?? undefined}>
@@ -44,7 +44,10 @@ function StoryLine({ entry }: { entry: StoryRow }) {
           <Disclosure summary={`Show the ${entry.calls.length.toLocaleString()} calls`}>
             <div className="flex flex-col gap-s2 pt-s1">
               <ul className="flex flex-col gap-s1 t-small text-muted">
-                {entry.calls.map((call) => <li key={call.id}><span className="tabular-nums">{clockWords(call.recordedAt)}</span> {callWords(call.tool, call.op)}</li>)}
+                {entry.calls.map((call) => {
+                  const detail = callDetailWords(call);
+                  return <li key={call.id}><span className="tabular-nums">{clockWords(call.recordedAt)}</span> {callWords(call.tool, call.op)}{detail === null ? '' : ` · ${detail}`}</li>;
+                })}
               </ul>
               <FactsPanel>
                 <FactRow term="Myco call" mono>{entry.calls[0]!.tool}{entry.calls[0]!.op === null ? '' : ` / ${entry.calls[0]!.op}`}</FactRow>

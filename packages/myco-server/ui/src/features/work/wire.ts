@@ -181,6 +181,8 @@ export interface RunCall {
   recordedAt: number;
   /** Present on a call the Deployment answered with a failure. */
   failure?: { code: string; message: string };
+  /** Present on a route call whose answer the Deployment kept: its scalar fields. */
+  result?: Readonly<Record<string, string | number | boolean>>;
 }
 
 /** A spore as a run's outcome lists it: its line, never its body. */

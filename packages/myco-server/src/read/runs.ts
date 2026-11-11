@@ -10,7 +10,7 @@ import { runDetailRow, runIsVisible, runListRows, type RunListOrder } from '../d
 import { readSet } from '../db/index.js';
 import { queuedWaits, type QueuedWait } from '../db/runs/queue.js';
 import { getRun, isTerminalRunStatus } from '../db/runs/lifecycle.js';
-import { RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure } from '../db/runs/evidence.js';
+import { RUN_CALL_FAILED, RUN_TOOL_EVENT, RUN_WRITE_EVENT, type RunCallFailure, type RunCallResult } from '../db/runs/evidence.js';
 import { ownMachineNames } from './capture.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { runOutcomeCounts, type RunOutcomeCounts } from '../db/runs/reads.js';
@@ -150,6 +150,8 @@ interface RunToolCallRow {
   recordedAt: number;
   /** Present on a call the Deployment answered with a failure: its code, and what it said. */
   failure?: RunCallFailure;
+  /** Present on a route call whose answer the Deployment kept: its scalar fields, bounded. */
+  result?: RunCallResult;
 }
 
 /** One claim of a run, and what its worker's step log holds. */
@@ -405,15 +407,25 @@ function failureOf(outcome: string | null, raw: string | null): RunCallFailure |
   };
 }
 
+/** The result a route call's record kept, or null where it kept none. */
+function resultOf(raw: string | null): RunCallResult | null {
+  const result = payloadOf(raw)?.result;
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) return null;
+  const kept = Object.entries(result).filter(([, value]) => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean');
+  return kept.length === 0 ? null : Object.fromEntries(kept) as RunCallResult;
+}
+
 /** One recorded admitted call, including whether its outcome can be read. */
 function toToolCall(row: Record<string, unknown>): RunToolCallRow {
   const outcome = text(row.outcome);
   const failure = failureOf(outcome, text(row.payload));
+  const result = resultOf(text(row.payload));
   return {
     id: Number(row.id), tool: String(row.tool ?? ''), op: opOfPayload(text(row.payload)),
     status: outcome === RUN_CALL_FAILED ? 'failed' : outcome === 'success' ? 'success' : 'unknown',
     durationMs: num(row.durationMs), recordedAt: Number(row.recordedAt),
     ...(failure === null ? {} : { failure }),
+    ...(result === null ? {} : { result }),
   };
 }
 

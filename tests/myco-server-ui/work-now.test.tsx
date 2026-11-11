@@ -24,7 +24,7 @@ const MYCO = 'proj_6d79636f3a3e1c0b8a2f4e7d9c150a11';
 
 const ANSWER: WorkNowAnswer = {
   observedAt: NOW, scope: 'project', unavailable: [], marks: { runs: 'r1', sessions: 's1', knowledge: 'k1', recovery: 'b1', fleet: 'f1' }, projects: { read: 1, total: 1, hasMore: false, cursor: null }, runningTotal: 1, runningHasMore: false,
-  running: [{ runId: 'run_live', projectId: MYCO, task: 'curate-spores', what: 'Curate overlapping spores', machine: 'homelab-mini',
+  running: [{ runId: 'run_live', projectId: MYCO, task: 'curate-spores', what: 'Curate overlapping spores', machine: 'homelab-mini', runnerId: 'rn_mini', heardAt: NOW - 8_000,
     harness: 'claude-code', model: 'claude-sonnet-4-5', startedAt: NOW - 130_000, step: { words: 'Read a spore', at: NOW - 5_000 } }],
   waiting: [
     { key: 'learning', projectId: null, what: 'Learning from sessions', count: 3, why: 'Waiting for a runner that can sign in.', since: null, nextAt: null },
@@ -47,7 +47,7 @@ describe('Myco’s work now', () => {
     render(<WorkNow answer={ANSWER} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => 'Myco'} />, { wrapper: wrap(new QueryClient()) });
     const running = screen.getByText('Curate overlapping spores').closest('a')!;
     expect(running.getAttribute('href')).toBe(`/p/${MYCO}/work/runs/run_live`);
-    expect(within(running).getByText('Now: Read a spore')).toBeTruthy();
+    expect(within(running).getByText('Now: Read a spore · homelab-mini checked in just now')).toBeTruthy();
     expect(within(running).getByText(/homelab-mini · /)).toBeTruthy();
     expect(within(running).getByText('2m 10s')).toBeTruthy();
     const waiting = document.querySelector('[data-now-part="waiting"]') as HTMLElement;

@@ -48,6 +48,21 @@ export function clockWords(at: number): string {
 
 const row = (over: Partial<StoryRow> & Pick<StoryRow, 'key' | 'words' | 'source'>): StoryRow => ({ at: null, tone: null, note: null, runner: null, calls: null, ...over });
 
+/** What a route call did and how long it took, as its record kept them; null where it kept neither. */
+export function callDetailWords(call: RunCall): string | null {
+  if (!call.tool.startsWith('/')) return call.durationMs === null ? null : `took ${durationWords(call.durationMs)}`;
+  const parts = [
+    ...(call.op === null ? [] : [call.op.replace(/[_-]+/g, ' ')]),
+    ...Object.entries(call.result ?? {}).map(([key, value]) => `${key.replace(/_+/g, ' ')} ${String(value)}`),
+    ...(call.durationMs === null ? [] : [`took ${durationWords(call.durationMs)}`]),
+  ];
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
+function durationWords(ms: number): string {
+  return ms < 1_000 ? `${Math.round(ms)} ms` : `${(ms / 1_000).toFixed(1)} s`;
+}
+
 /** Consecutive calls that read the same and answered the same, oldest first. */
 function callGroups(calls: readonly RunCall[]): RunCall[][] {
   const groups: RunCall[][] = [];
@@ -73,7 +88,7 @@ function groupCalls(calls: readonly RunCall[]): StoryRow[] {
     const failed = first.status === 'failed';
     const many = group.length > 1;
     const words = `${lead}${many ? ` ${group.length} times, ${clockWords(first.recordedAt)} to ${clockWords(end.recordedAt)}` : ''}${failed ? (many ? '; Myco answered each with a failure' : '; Myco answered with a failure') : ''}`;
-    const unnamed = first.op === null && first.tool.startsWith('/');
+    const unnamed = group.every((call) => call.op === null && call.durationMs === null && call.result === undefined) && first.tool.startsWith('/');
     return row({
       key: `calls-${first.id}`, at: first.recordedAt, words, source: 'saw', tone: failed ? 'bad' : null, calls: many ? group : null,
       note: unnamed ? `What ${many ? 'each call' : 'the call'} did and how long it took ${many ? 'were' : 'was'} not recorded.` : null,

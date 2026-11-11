@@ -8,7 +8,7 @@ import { permissionOf, useMe } from '../../../hooks/use-me';
 import { fetchJson, postJson, type RunnerRow, type WorkerRow } from '../../../lib/api';
 import { formatRelative } from '../../../lib/format';
 import { harnessLabel } from '../../../lib/harness';
-import { runPath } from '../../../routes/nav';
+import { runnerPath, runPath } from '../../../routes/nav';
 import { AdminPage, AdminSection } from '../AdminFrame';
 import { machineOfWorker, useMachines } from '../machines';
 import { LEGACY_WORKER_LABEL, REASON_WORDS, taskWords } from '../workers';
@@ -137,6 +137,7 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
           </div>
           <p className="mt-s1 t-small text-ink-2">{runner.awaitingReplacement && runner.state === 'enabled' ? 'Waiting for the replacement to check in' : outcome(runner)}</p>
           <p className="mt-s1 t-meta text-muted">{runner.version ?? 'Version unavailable'}{runner.updateAvailable === true && <span className="ml-s2 text-ink">Update available</span>}</p>
+          <p className="mt-s1 t-small"><Link className="underline underline-offset-2" to={runnerPath(runner.id)}>Recent runs and check-ins</Link></p>
           {runner.updateRequest !== null && <p role="status" className="mt-s1 t-small text-muted">Update requested · {runner.busy === null ? 'waiting for the machine' : 'waiting for the current task to finish'}.</p>}
           {state?.phase === 'updating' && <p role="status" className="mt-s1 t-small text-ink">Updating · waiting to resume work</p>}
         </div>

@@ -195,6 +195,7 @@
   "session:member GET /api/projects/{projectId}/spores/{sporeId}",
   "session:member GET /api/runners",
   "session:member GET /api/runners/removed",
+  "session:member GET /api/runners/{runnerId}/runs",
   "session:member GET /api/search",
   "session:member GET /api/sessions",
   "session:member GET /api/settings",

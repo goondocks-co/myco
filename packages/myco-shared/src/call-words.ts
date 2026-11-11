@@ -16,5 +16,5 @@ const labels = new Map(Object.entries(CALL_WORDS).flatMap(([tool, ops]) => Objec
 
 /** A call's operation in reader words; unfamiliar operations make no claim about their effect. */
 export function callWords(tool: string, op: string | null): string {
-  return labels.get(`${tool}/${op ?? '*'}`) ?? 'Called Myco';
+  return labels.get(`${tool}/${op ?? '*'}`) ?? labels.get(`${tool}/*`) ?? 'Called Myco';
 }

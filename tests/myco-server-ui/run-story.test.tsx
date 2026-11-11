@@ -86,7 +86,7 @@ describe('What happened', () => {
     const panel = await open('run_embed1914', searchRunCutOff());
     const text = story(panel).textContent!;
     expect(text).toContain('Queued, on its schedule');
-    expect(within(line(panel, 'claim-att_5e13c0b7')).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/runners#runner-rn_7f3a91c2');
+    expect(within(line(panel, 'claim-att_5e13c0b7')).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/runners/rn_7f3a91c2');
     const grouped = story(panel).querySelectorAll('[data-story-row^="calls-"]');
     expect(grouped).toHaveLength(1);
     expect(grouped[0]!.textContent).toContain('Advanced the search index 8 times');
@@ -104,6 +104,17 @@ describe('What happened', () => {
     expect(exact).toContain('att_5e13c0b7');
     expect(exact).toContain('rn_7f3a91c2');
     expect(exact).toContain('machine_unresponsive');
+  });
+
+  it('lists what each recorded route call did and how long it took, under one row', async () => {
+    const cutOff = searchRunCutOff();
+    const calls = cutOff.toolCalls.map((call, i) => ({ ...call, op: 'sources', durationMs: 340, result: { processed: i + 1 } }));
+    const panel = await open('run_embed1914', { ...cutOff, toolCalls: calls });
+    const grouped = story(panel).querySelector<HTMLElement>('[data-story-row^="calls-"]')!;
+    expect(grouped.textContent).toContain('Advanced the search index 8 times');
+    expect(grouped.textContent).not.toContain('not recorded');
+    fireEvent.click(within(grouped).getByRole('button', { name: /Show the 8 calls/ }));
+    expect(grouped.textContent).toContain('Advanced the search index · sources · processed 8 · took 340 ms');
   });
 
   it('marks each claim with whose word it rests on: Myco’s record, the runner’s step log, the agent’s report, and what was never recorded', async () => {
