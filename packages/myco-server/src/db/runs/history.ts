@@ -179,7 +179,8 @@ export const awaitingRow = async (db: RelationalStore, runtimeServed: readonly s
 /** The run list's filters; a set filter narrows a page before its cursor applies. */
 /** A windowed page reads newest first, or oldest first to find the runs nearest after an instant. */
 export type RunListOrder = 'newest' | 'oldest';
-interface RunListFilters { status?: string; task?: string; agentId?: string; since?: number; until?: number; order?: RunListOrder }
+/** `subject` null keeps runs that name no subject; absent, it keeps every run. */
+interface RunListFilters { status?: string; task?: string; agentId?: string; since?: number; until?: number; subject?: string | null; order?: RunListOrder }
 interface RunListCursor { at: number; id: string }
 const LIST_ORDER = 'COALESCE(queued_at, started_at)';
 const WINDOW_ORDER = 'COALESCE(completed_at, queued_at, started_at)';
@@ -207,7 +208,7 @@ const DETAIL_COLUMNS = `${COLUMNS},
   ${contextValue(ENDED_NOTE_KEY)} AS ended_note,
   dispatched_by, actions_taken, checkpoints`;
 
-const FILTERS = [['status', 'status = ?'], ['task', 'task = ?'], ['agentId', 'agent_id = ?'], ['since', 'WINDOW >= ?'], ['until', 'WINDOW < ?']] as const;
+const FILTERS = [['status', 'status = ?'], ['task', 'task = ?'], ['agentId', 'agent_id = ?'], ['since', 'WINDOW >= ?'], ['until', 'WINDOW < ?'], ['subject', 'subject IS ?']] as const;
 const pageStatement = (mask: number, order: string, direction: 'ASC' | 'DESC', keyed: boolean) => read<BindValue[], Row>({ name: `runs.listPage${order === WINDOW_ORDER ? 'Window' : 'Entry'}${direction === 'ASC' ? 'Oldest' : ''}${mask}${keyed ? 'After' : ''}`,
   sql: `SELECT ${COLUMNS} FROM agent_runs WHERE NOT EXISTS (SELECT 1 FROM run_retirements x WHERE x.project_id = agent_runs.project_id AND x.run_id = agent_runs.id) AND project_id = ?${FILTERS.filter((_, bit) => mask & (1 << bit)).map(([, condition]) => ` AND ${condition.replace('WINDOW', WINDOW_ORDER)}`).join('')}
     ${keyed ? (direction === 'ASC' ? `AND ${order} >= ? AND (${order} > ? OR (${order} = ? AND id > ?))` : `AND ${order} <= ? AND (${order} < ? OR (${order} = ? AND id < ?))`) : ''} ORDER BY ${order} ${direction}, id ${direction} LIMIT ?` });

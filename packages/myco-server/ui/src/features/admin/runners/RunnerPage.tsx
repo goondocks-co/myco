@@ -24,6 +24,9 @@ const OUTCOME_WORDS: Readonly<Record<RunnerRunOutcome, { words: string; tone: He
   other: { words: 'Ended', tone: 'faint' },
 };
 
+/** One claim on the page: an attempt id is the claiming credential's, so the run names the claim. */
+const runKey = (run: RunnerRun): string => `${run.projectId}\u0000${run.runId}\u0000${run.attemptId}`;
+
 /** "N of the last M finished runs worked", over the runs the page has loaded. */
 export function workedWords(rows: readonly Pick<RunnerRun, 'outcome'>[]): string | null {
   const finished = rows.filter((row) => row.outcome === 'worked' || row.outcome === 'changed_nothing' || row.outcome === 'failed');
@@ -36,7 +39,7 @@ export function workedWords(rows: readonly Pick<RunnerRun, 'outcome'>[]): string
 export function RunnerPage() {
   const runnerId = useParams().runnerId ?? '';
   const now = Date.now();
-  const runs = usePaged<RunnerRun, RunnerRunsPage>(['runners', runnerId, 'runs'], `/api/runners/${encodeURIComponent(runnerId)}/runs`, { freshness: { follows: ['fleet', 'runs'] }, rowKey: (row) => row.attemptId });
+  const runs = usePaged<RunnerRun, RunnerRunsPage>(['runners', runnerId, 'runs'], `/api/runners/${encodeURIComponent(runnerId)}/runs`, { freshness: { follows: ['fleet', 'runs'] }, rowKey: runKey });
   const runner = runs.pages?.[0]?.runner;
   const worked = workedWords(runs.rows);
   return (
@@ -61,7 +64,7 @@ export function RunnerPage() {
           {runs.rows.map((run) => {
             const outcome = OUTCOME_WORDS[run.outcome];
             return (
-              <li key={run.attemptId} data-runner-run={run.outcome}>
+              <li key={runKey(run)} data-runner-run={run.outcome}>
                 <ListRow
                   to={runPath(run.projectId, run.runId)}
                   leading={<HealthDot tone={outcome.tone} label={outcome.words} />}

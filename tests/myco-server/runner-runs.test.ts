@@ -22,11 +22,11 @@ async function fixture() {
   for (const id of ['rn_mini', 'rn_other']) f.sqlite.run('INSERT INTO runners (id, name, created_at) VALUES (?, ?, ?)', [id, id === 'rn_mini' ? 'homelab-mini' : 'studio', NOW]);
   f.sqlite.run(`INSERT INTO runner_contacts (runner_id, version, last_seen_at, updated_at) VALUES ('rn_mini', '2.0.0-alpha.24', ?, ?)`, [NOW - 8_000, NOW - 8_000]);
   /** A run in `project`, and each claim of it in order, by the runners named. */
-  const run = (project: string, id: string, status: string, claims: string[], at: number) => {
+  const run = (project: string, id: string, status: string, claims: string[], at: number, attempt = (index: number) => `${id}-${index}`) => {
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, started_at, completed_at)
       VALUES (?, ?, 'agent', 'canopy-map', ?, ?, ?, ?)`, [project, id, status, at - 1_000, at, status === 'running' ? null : at + 500]);
     claims.forEach((runner, index) => f.sqlite.run(`INSERT INTO agent_run_attempts (project_id, run_id, attempt_id, leased_by, claimed_at, owner_kind, runner_id)
-      VALUES (?, ?, ?, 'credential', ?, 'runner', ?)`, [project, id, `${id}-${index}`, at + index * 10, runner]));
+      VALUES (?, ?, ?, 'credential', ?, 'runner', ?)`, [project, id, attempt(index), at + index * 10, runner]));
   };
   const get = async (path: string): Promise<{ status: number; body: Answer }> => {
     const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(f.db, Date.now()), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
@@ -55,15 +55,20 @@ describe('a runner’s recent runs', () => {
     } finally { f.sqlite.close(); }
   });
 
-  it('pages by cursor with no run listed twice or left out, and refuses what it cannot answer', async () => {
+  it('pages by cursor with no run listed twice or left out, claims at one instant by one credential included, and refuses what it cannot answer', async () => {
     const f = await fixture();
     try {
-      for (let i = 0; i < 5; i++) f.run('proj_1', `run-${i}`, 'completed', ['rn_mini'], NOW - i * MINUTE);
-      const first = await f.get('/api/runners/rn_mini/runs?limit=2');
-      const second = await f.get(`/api/runners/rn_mini/runs?limit=2&cursor=${encodeURIComponent(first.body.cursor)}`);
-      const third = await f.get(`/api/runners/rn_mini/runs?limit=2&cursor=${encodeURIComponent(second.body.cursor)}`);
-      expect([first, second, third].flatMap((page) => page.body.rows.map((row: Answer) => row.runId))).toEqual(['run-0', 'run-1', 'run-2', 'run-3', 'run-4']);
-      expect(third.body.cursor).toBeNull();
+      for (let i = 0; i < 3; i++) f.run('proj_1', `run-${i}`, 'completed', ['rn_mini'], NOW - i * MINUTE);
+      // Two runs one credential claimed at the same instant: the page boundary falls between them.
+      for (const id of ['same-a', 'same-b']) f.run('proj_1', id, 'completed', ['rn_mini'], NOW - 10 * MINUTE, () => 'credential-attempt');
+      const pages: Answer[] = [];
+      let cursor: string | null = null;
+      do {
+        const page: Answer = (await f.get(`/api/runners/rn_mini/runs?limit=2${cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`}`)).body;
+        pages.push(page);
+        cursor = page.cursor;
+      } while (cursor !== null);
+      expect(pages.flatMap((page) => page.rows.map((row: Answer) => row.runId))).toEqual(['run-0', 'run-1', 'run-2', 'same-b', 'same-a']);
       expect((await f.get('/api/runners/rn_unknown/runs')).status).toBe(404);
       const tooMany = await f.get(`/api/runners/rn_mini/runs?limit=${RUNNER_RUNS_PAGE + 1}`);
       expect({ status: tooMany.status, says: tooMany.body.reason.includes(`1 to ${RUNNER_RUNS_PAGE}`) }).toEqual({ status: 400, says: true });
@@ -92,7 +97,8 @@ it('a page of a runner’s runs costs D1 the same as its history grows', async (
     grow,
     cases: [
       { name: 'newest page of a runner’s runs', run: async (db) => expect(await runnerAttempts(db, 'rn_mini', RUNNER_RUNS_PAGE + 1)).toHaveLength(RUNNER_RUNS_PAGE + 1) },
-      { name: 'a later page of a runner’s runs', run: async (db) => expect(await runnerAttempts(db, 'rn_mini', RUNNER_RUNS_PAGE + 1, { claimedAt: NOW - 2 * RUNNER_RUNS_PAGE * MINUTE - 100 * MINUTE, attemptId: 'old-100' })).toHaveLength(RUNNER_RUNS_PAGE + 1) },
+      { name: 'a later page of a runner’s runs', run: async (db) => expect(await runnerAttempts(db, 'rn_mini', RUNNER_RUNS_PAGE + 1,
+        { claimedAt: NOW - 2 * RUNNER_RUNS_PAGE * MINUTE - 100 * MINUTE, attemptId: 'old-100', projectId: 'proj_0', runId: 'old-100' })).toHaveLength(RUNNER_RUNS_PAGE + 1) },
       { name: 'the runner and its last check-in', run: async (db) => expect(await runnerFacts(db, 'rn_mini')).toMatchObject({ last_seen_at: NOW }) },
     ],
   }));

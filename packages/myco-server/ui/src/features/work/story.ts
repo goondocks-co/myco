@@ -1,5 +1,5 @@
 import { EFFORT_UNAPPLIED, profileModelVerdict } from '@goondocks/myco-shared/execution-profile';
-import { callWords } from './call-words';
+import { callStepWords, callWords } from './call-words';
 import { displayModel } from './ModelSummary';
 import { count } from '../today/words';
 import type { RunAttempt, RunCall, RunCloseEvidence, RunDetailAnswer, RunPageRow, RunReport, RunStep } from './wire';
@@ -48,16 +48,14 @@ export function clockWords(at: number): string {
 
 const row = (over: Partial<StoryRow> & Pick<StoryRow, 'key' | 'words' | 'source'>): StoryRow => ({ at: null, tone: null, note: null, runner: null, calls: null, ...over });
 
-/** What a route call did and how long it took, as its record kept them; null where it kept neither. */
-export function callDetailWords(call: RunCall): string | null {
-  if (!call.tool.startsWith('/')) return call.durationMs === null ? null : `took ${durationWords(call.durationMs)}`;
-  const parts = [
-    ...(call.op === null ? [] : [call.op.replace(/[_-]+/g, ' ')]),
-    ...Object.entries(call.result ?? {}).map(([key, value]) => `${key.replace(/_+/g, ' ')} ${String(value)}`),
-    ...(call.durationMs === null ? [] : [`took ${durationWords(call.durationMs)}`]),
-  ];
-  return parts.length === 0 ? null : parts.join(' · ');
+/** One call in reader words: what it was, what its recorded step did where Myco has words for it, and how long it took. */
+export function callLineWords(call: RunCall): string {
+  const step = call.tool.startsWith('/') ? callStepWords(call.tool, call.op) : null;
+  return `${callWords(call.tool, call.op)}${step === null ? '' : `: ${step}`}${call.durationMs === null ? '' : ` · took ${durationWords(call.durationMs)}`}`;
 }
+
+/** Whether a call's record kept what it did or how long it took. */
+const callRecorded = (call: RunCall): boolean => call.op !== null || call.durationMs !== null || call.result !== undefined;
 
 function durationWords(ms: number): string {
   return ms < 1_000 ? `${Math.round(ms)} ms` : `${(ms / 1_000).toFixed(1)} s`;
@@ -88,10 +86,11 @@ function groupCalls(calls: readonly RunCall[]): StoryRow[] {
     const failed = first.status === 'failed';
     const many = group.length > 1;
     const words = `${lead}${many ? ` ${group.length} times, ${clockWords(first.recordedAt)} to ${clockWords(end.recordedAt)}` : ''}${failed ? (many ? '; Myco answered each with a failure' : '; Myco answered with a failure') : ''}`;
-    const unnamed = group.every((call) => call.op === null && call.durationMs === null && call.result === undefined) && first.tool.startsWith('/');
+    const unnamed = first.tool.startsWith('/') && !group.some(callRecorded);
+    const single = !many && first.tool.startsWith('/') && callRecorded(first) ? callLineWords(first) : null;
     return row({
       key: `calls-${first.id}`, at: first.recordedAt, words, source: 'saw', tone: failed ? 'bad' : null, calls: many ? group : null,
-      note: unnamed ? `What ${many ? 'each call' : 'the call'} did and how long it took ${many ? 'were' : 'was'} not recorded.` : null,
+      note: unnamed ? `What ${many ? 'each call' : 'the call'} did and how long it took ${many ? 'were' : 'was'} not recorded.` : single !== lead ? single : null,
     });
   });
 }

@@ -1,1 +1,1 @@
-export { callWords } from '@goondocks/myco-shared/call-words';
+export { callStepWords, callWords } from '@goondocks/myco-shared/call-words';

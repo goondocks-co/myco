@@ -221,6 +221,8 @@ interface RunFilters {
   until?: number;
   /** A windowed read only: oldest first finds the runs nearest after `since`. */
   order?: RunListOrder;
+  /** Only runs of this subject, null for runs that name none; filtered before the page's limit. */
+  subject?: string | null;
 }
 
 const text = (value: unknown): string | null => (value as string | null) ?? null;
@@ -365,7 +367,7 @@ export async function listRuns(db: RelationalStore, scope: ReadScope, nowMs: num
   const limit = clampLimit(opts.limit);
   const cursor = opts.cursor === undefined ? undefined : decodeCursor(opts.cursor);
   if (cursor === null) return { rows: [], cursor: null };
-  const results = await runListRows(db, scope, { status: opts.status, task: opts.task, agentId: opts.agentId, since: opts.since, until: opts.until, order: opts.order }, limit + 1,
+  const results = await runListRows(db, scope, { status: opts.status, task: opts.task, agentId: opts.agentId, since: opts.since, until: opts.until, subject: opts.subject, order: opts.order }, limit + 1,
     cursor === undefined ? undefined : { at: cursor.createdAt, id: cursor.id });
   const listed = page(results, limit, (r) => ({ createdAt: (windowed ? num(r.completed_at) : null) ?? num(r.queued_at) ?? num(r.started_at) ?? 0, id: r.id as string }));
   const ids = listed.rows.map((r) => r.id as string);

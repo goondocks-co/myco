@@ -49,6 +49,25 @@ function filterParam(url: URL, name: string): string | undefined | Response {
   return raw;
 }
 
+/** The widest window a subject filter reads: the runs of one task in it are walked until a page of that subject fills. */
+export const SUBJECT_WINDOW_MS = 86_400_000;
+
+/**
+ * The subject filter: `subject=<value>`, or `noSubject=1` for runs that name none. It reads one task's runs inside a
+ * window of at most `SUBJECT_WINDOW_MS`, so the runs it passes over are bounded by that task's runs in one day.
+ */
+function subjectParam(url: URL, task: string | undefined, since: number | undefined, until: number | undefined): string | null | undefined | Response {
+  const named = filterParam(url, 'subject');
+  if (named instanceof Response) return named;
+  const none = url.searchParams.get('noSubject');
+  if (none !== null && none !== '1') return badRequest('noSubject must be 1 when given');
+  if (named === undefined && none === null) return undefined;
+  if (named !== undefined && none !== null) return badRequest('give subject or noSubject=1, not both');
+  if (task === undefined || since === undefined || until === undefined || until - since > SUBJECT_WINDOW_MS)
+    return badRequest(`a subject filter needs task, since and until at most ${SUBJECT_WINDOW_MS} ms apart; got ${task === undefined ? 'no task' : `task ${task}`}, ${since === undefined || until === undefined ? 'no full window' : `a window of ${until - since} ms`}`);
+  return named ?? null;
+}
+
 export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
   if (scope === null) return notFound();
@@ -66,7 +85,9 @@ export async function handleProjectRuns(env: ServerEnv, ctx: OwnerContext): Prom
   const order = ctx.url.searchParams.get('order') ?? 'newest';
   if (order !== 'newest' && order !== 'oldest') return badRequest(`order must be newest or oldest, not ${JSON.stringify(order.slice(0, 40))}`);
   if (order === 'oldest' && since === undefined) return badRequest('order=oldest reads a window: give since (and optionally until)');
-  const answer = await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until, order, includeSignIn: isAdmin(ctx.member.role) });
+  const subject = subjectParam(ctx.url, task, since, until);
+  if (subject instanceof Response) return subject;
+  const answer = await listRuns(env.db, scope, ctx.now, ctx.member.id, { ...page, status, task, since, until, order, subject, includeSignIn: isAdmin(ctx.member.role) });
   const waits = await fleetWaits(env, answer.rows.filter(row => row.status === 'queued').map(row => row.task), ctx.now, isAdmin(ctx.member.role));
   return ok({ ...answer, rows: answer.rows.map(row => row.status === 'queued' ? { ...row, fleetWait: waits.get(row.task) } : row) });
 }

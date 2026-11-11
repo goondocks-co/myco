@@ -14,6 +14,27 @@ const CALL_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
 };
 const labels = new Map(Object.entries(CALL_WORDS).flatMap(([tool, ops]) => Object.entries(ops).map(([op, words]) => [`${tool}/${op}`, words] as const)));
 
+/** What a route call's recorded step did, in reader words, by route and step; a step not named here is not described. */
+const STEP_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  '/runs/embedding-step': {
+    missing: 'made a new source searchable',
+    stale: 'refreshed a changed source',
+    switch: 'prepared a source for the new search model',
+    'passed-over': 'set aside a source it could not index',
+    orphans: 'removed an entry whose source is gone',
+    hubness: 'checked how evenly search ranks results',
+    'vector-page': 'checked part of the index',
+    visibility: 'checked what search can find',
+    settled: 'found the index up to date',
+    scan: 'looked for work to do',
+  },
+};
+
+/** A route call's recorded step in reader words, or null where its step is unrecorded or not described. */
+export function callStepWords(tool: string, op: string | null): string | null {
+  return op === null ? null : STEP_WORDS[tool]?.[op] ?? null;
+}
+
 /** A call's operation in reader words; unfamiliar operations make no claim about their effect. */
 export function callWords(tool: string, op: string | null): string {
   return labels.get(`${tool}/${op ?? '*'}`) ?? labels.get(`${tool}/*`) ?? 'Called Myco';

@@ -29,14 +29,21 @@ const columns = `a.attempt_id,a.claimed_at,a.project_id,(SELECT p.name FROM proj
     AND (l.claimed_at>a.claimed_at OR (l.claimed_at=a.claimed_at AND l.attempt_id>a.attempt_id))) AS latest`;
 const attempts = (keyed: boolean) => `SELECT ${columns}
   FROM agent_run_attempts a INDEXED BY idx_runner_attempt_history CROSS JOIN agent_runs r ON r.project_id=a.project_id AND r.id=a.run_id
-  WHERE a.runner_id=?1 ${keyed ? 'AND (a.claimed_at<?3 OR (a.claimed_at=?3 AND a.attempt_id<?4))' : ''} AND ${runNotRetiring('a.project_id', 'a.run_id')}
-  ORDER BY a.claimed_at DESC,a.attempt_id DESC LIMIT ?2`;
+  WHERE a.runner_id=?1 ${keyed ? 'AND a.claimed_at<=?3 AND (a.claimed_at,a.attempt_id,a.project_id,a.run_id)<(?3,?4,?5,?6)' : ''} AND ${runNotRetiring('a.project_id', 'a.run_id')}
+  ORDER BY a.claimed_at DESC,a.attempt_id DESC,a.project_id DESC,a.run_id DESC LIMIT ?2`;
 const firstPage = read<[runner: string, limit: number], RunnerAttemptRow>({ name: 'runners.recentRuns', sql: attempts(false) });
-const laterPage = read<[runner: string, limit: number, claimedAt: number, attemptId: string], RunnerAttemptRow>({ name: 'runners.recentRunsAfter', sql: attempts(true) });
+const laterPage = read<[runner: string, limit: number, claimedAt: number, attemptId: string, projectId: string, runId: string], RunnerAttemptRow>({ name: 'runners.recentRunsAfter', sql: attempts(true) });
+
+/**
+ * One claim's place in a runner's history. An attempt id is the claiming credential's, shared by every run that
+ * credential claimed, so the run's own key settles claims made at one instant.
+ */
+export interface RunnerAttemptKey { claimedAt: number; attemptId: string; projectId: string; runId: string }
 
 /** Up to `limit` of a runner's attempts, newest claim first, after `cursor` where one is given. */
-export async function runnerAttempts(db: RelationalStore, runnerId: string, limit: number, cursor?: { claimedAt: number; attemptId: string }): Promise<RunnerAttemptRow[]> {
-  const [rows] = await readSet(db, cursor === undefined ? firstPage.bind(runnerId, limit) : laterPage.bind(runnerId, limit, cursor.claimedAt, cursor.attemptId));
+export async function runnerAttempts(db: RelationalStore, runnerId: string, limit: number, cursor?: RunnerAttemptKey): Promise<RunnerAttemptRow[]> {
+  const [rows] = await readSet(db, cursor === undefined ? firstPage.bind(runnerId, limit)
+    : laterPage.bind(runnerId, limit, cursor.claimedAt, cursor.attemptId, cursor.projectId, cursor.runId));
   return rows;
 }
 

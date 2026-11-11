@@ -5,11 +5,10 @@ import { cn } from '../../lib/cn';
 import { runnerPath, runPath } from '../../routes/nav';
 import { InkLink, PartLabel } from './OutcomeCard';
 import {
-  askedRows, callDetailWords, clockWords, exactDetails, SOURCE_WORDS, TRY_WINDOW_MS, triesOf, tryResultWords, verdictOf,
+  askedRows, callLineWords, clockWords, exactDetails, SOURCE_WORDS, TRY_WINDOW_MS, triesOf, tryResultWords, verdictOf,
   type Source, type StoryRow, type Tone, type Try,
 } from './story';
 import { atWords } from './words';
-import { callWords } from './call-words';
 import type { RunDetailAnswer, RunPageRow } from './wire';
 
 const SOURCE_ICON: Readonly<Record<Source, string>> = { saw: '●', runner: '◐', agent: '○', inferred: '◇', none: '–' };
@@ -44,13 +43,10 @@ function StoryLine({ entry }: { entry: StoryRow }) {
           <Disclosure summary={`Show the ${entry.calls.length.toLocaleString()} calls`}>
             <div className="flex flex-col gap-s2 pt-s1">
               <ul className="flex flex-col gap-s1 t-small text-muted">
-                {entry.calls.map((call) => {
-                  const detail = callDetailWords(call);
-                  return <li key={call.id}><span className="tabular-nums">{clockWords(call.recordedAt)}</span> {callWords(call.tool, call.op)}{detail === null ? '' : ` · ${detail}`}</li>;
-                })}
+                {entry.calls.map((call) => <li key={call.id}><span className="tabular-nums">{clockWords(call.recordedAt)}</span> {callLineWords(call)}</li>)}
               </ul>
               <FactsPanel>
-                <FactRow term="Myco call" mono>{entry.calls[0]!.tool}{entry.calls[0]!.op === null ? '' : ` / ${entry.calls[0]!.op}`}</FactRow>
+                <FactRow term="Myco call" mono>{entry.calls[0]!.tool}{entry.calls[0]!.op === null || entry.calls[0]!.tool.startsWith('/') ? '' : ` / ${entry.calls[0]!.op}`}</FactRow>
               </FactsPanel>
             </div>
           </Disclosure>
@@ -122,12 +118,12 @@ export function Tries({ answer, projectId, now }: { answer: RunDetailAnswer; pro
   const { run } = answer;
   const at = run.completedAt;
   const finished = (run.status === 'completed' || run.status === 'failed') && run.task !== null && at !== null;
-  const before = useTaskRuns(projectId, run.task ?? '', false, finished, { since: (at ?? 0) - TRY_WINDOW_MS, until: at ?? 0 });
-  const after = useTaskRuns(projectId, run.task ?? '', false, finished && run.status === 'failed', { since: (at ?? 0) + 1, until: (at ?? 0) + TRY_WINDOW_MS, oldestFirst: true });
+  const subject = run.subject ?? null;
+  const before = useTaskRuns(projectId, run.task ?? '', false, finished, { since: (at ?? 0) - TRY_WINDOW_MS, until: at ?? 0, subject });
+  const after = useTaskRuns(projectId, run.task ?? '', false, finished && run.status === 'failed', { since: (at ?? 0) + 1, until: (at ?? 0) + TRY_WINDOW_MS, oldestFirst: true, subject });
   if (!finished || before.data === undefined) return null;
   const current: Try = { id: run.id, completedAt: at, status: run.status, result: run.result, runner: runnerOf(run), current: true };
-  const same = (rows: readonly RunPageRow[]) => rows.filter((row) => (row.subject ?? null) === (run.subject ?? null)).map(asTry);
-  const tries = triesOf(current, same(before.data.rows), after.data === undefined ? null : same(after.data.rows));
+  const tries = triesOf(current, before.data.rows.map(asTry), after.data === undefined ? null : after.data.rows.map(asTry));
   if (tries.length < 2) return null;
   return (
     <section aria-label="Tries" className="flex flex-col gap-s2" data-run-tries="">

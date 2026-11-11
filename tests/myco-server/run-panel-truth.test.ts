@@ -22,9 +22,9 @@ async function fixture() {
     f.sqlite.run(`INSERT INTO agent_run_events (project_id, run_id, event_type, tool_name, outcome, duration_ms, payload, recorded_at)
       VALUES ('proj_1', ?, ?, ?, ?, 12, ?, ?)`, [id, type, tool, outcome, JSON.stringify(payload), at]);
   };
-  const get = async (path: string): Promise<Answer> => {
+  const get = async (path: string, status = 200): Promise<Answer> => {
     const res = await worker.fetch(new Request(`https://s${path}`, { headers: { cookie: await ownerCookie(f.db, Date.now()), 'cf-connecting-ip': '1.2.3.4' } }), { ...f.env, ...OWNER_ENV });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(status);
     return await res.json() as Answer;
   };
   return { ...f, run, event, get };
@@ -178,6 +178,22 @@ it('orders the window list by the outcome time, including a run queued long ago'
     expect(oldest.rows[0].id).toBe('earlier_finish');
     const next = await f.get(`/api/projects/proj_1/runs?since=${NOW - DAY}&until=${NOW}&limit=1&order=oldest&cursor=${encodeURIComponent(oldest.cursor)}`);
     expect({ rows: next.rows.map((row: Answer) => [row.id, row.subject]), cursor: next.cursor }).toEqual({ rows: [['long_wait', 'cluster-7']], cursor: null });
+  } finally { f.sqlite.close(); }
+});
+
+it('filters a day of one task by subject before the page fills, null matching null, and refuses an unbounded subject read', async () => {
+  const f = await fixture();
+  try {
+    for (let i = 0; i < 6; i++) f.run(`other_${i}`, 'curate-spores', 'failed', NOW - 1_000 + i);
+    f.run('same', 'curate-spores', 'completed', NOW - 100);
+    f.run('none', 'curate-spores', 'completed', NOW - 50);
+    for (let i = 0; i < 6; i++) f.sqlite.run('UPDATE agent_runs SET subject = ? WHERE id = ?', [`cluster-${i}`, `other_${i}`]);
+    f.sqlite.run(`UPDATE agent_runs SET subject = 'cluster-a' WHERE id = 'same'`);
+    const window = `task=curate-spores&since=${NOW - DAY}&until=${NOW}&order=oldest&limit=6`;
+    expect((await f.get(`/api/projects/proj_1/runs?${window}&subject=cluster-a`)).rows.map((row: Answer) => row.id)).toEqual(['same']);
+    expect((await f.get(`/api/projects/proj_1/runs?${window}&noSubject=1`)).rows.map((row: Answer) => row.id)).toEqual(['none']);
+    const refused = await f.get('/api/projects/proj_1/runs?task=curate-spores&subject=cluster-a', 400);
+    expect(refused.reason).toContain('needs task, since and until');
   } finally { f.sqlite.close(); }
 });
 
