@@ -1,6 +1,7 @@
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { commit } from '@myco-server-worker/db/index.js';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { uuid } from './helpers/fixtures.js';
@@ -38,7 +39,7 @@ it('a response names its prompt\'s owner at the same D1 cost as a Project\'s ses
           producer: { adapter: 'fixture', version: '1' }, payload: { promptId: uuid(prompt), responseId: uuid(95 + scale), text: 'Fixed' },
         });
         if (!planned.ok) throw new Error(JSON.stringify(planned));
-        expect(planned.write.interpret(await db.batch(planned.write.statements))).toMatchObject({ persisted: true });
+        expect(planned.write.interpret(await commit(db, ...planned.write.statements))).toMatchObject({ persisted: true });
       },
     }],
     warm: true,

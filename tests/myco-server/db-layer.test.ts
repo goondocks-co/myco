@@ -46,8 +46,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'ingest/document-batch.ts',
   'ingest/document-restore.ts',
   'ingest/document-summaries.ts',
-  'ingest/events.ts',
-  'ingest/projections.ts',
   'mcp/definitions.ts',
   'platform/bun/env.ts',
   'read/blobs.ts',

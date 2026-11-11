@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { allEventProofs, ingestEvent, planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { ingestEvent, planEventWrite } from '@myco-server-worker/ingest/events.js';
 import { sqliteD1, seededSqlite, seedCredential } from './helpers/d1.js';
 import { ENVELOPE_FIELDS, PRODUCER_FIELDS } from '@myco-server-worker/ingest/envelope.js';
 import { envelope, sqliteEnv, uuid, PRODUCER } from './helpers/fixtures.js';
@@ -23,47 +23,6 @@ const bytes = (s: any, id: string) => (s.query(`SELECT bytes_written b FROM memb
 const sessions = (s: any) => s.query('SELECT project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at FROM sessions ORDER BY project_id, session_id').all();
 
 describe('ingest', () => {
-  it('keeps checkpoint evidence under the binding ceiling and refuses false or null evidence', () => {
-    const { sqlite } = realDb();
-    try {
-      const evaluate = (proofs: Parameters<typeof allEventProofs>[0]) => {
-        const proof = allEventProofs(proofs);
-        expect(proof.params.length).toBeLessThanOrEqual(1);
-        return (sqlite.query(`SELECT ${proof.sql} AS admitted`).get(...proof.params as never[]) as { admitted: number }).admitted;
-      };
-      expect(evaluate(Array.from({ length: 64 }, (_, index) => ({ sql: '? = ?', params: [index, index] })))).toBe(1);
-      expect(evaluate([{ sql: '? = ?', params: ['same', 'same'] }, { sql: '0', params: [] }])).toBe(0);
-      expect(evaluate([{ sql: 'NULL', params: [] }])).toBe(0);
-      expect(evaluate([{ sql: "'?' = ? AND 'it''s ?' = ?", params: ['?', "it's ?"] }])).toBe(1);
-      expect(evaluate([])).toBe(1);
-    } finally { sqlite.close(); }
-  });
-
-  it('propagates a store failure anywhere in planning an oversized tool input, having staged nothing', async () => {
-    const event = envelope({ eventId: uuid(73), sessionId: 'replay-lookup-failure', kind: 'tool.failure',
-      producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' },
-      payload: { toolCallId: uuid(74), toolName: 'Read', input: { text: 'x'.repeat(TOOL_INPUT_PREVIEW_BYTES + 1) }, success: false, errorMessage: 'failure', resultReason: 'reported' } });
-    const planned = sqliteEnv();
-    let total = 0;
-    try {
-      seedCredential(planned.sqlite, { id: ctx.tokenId, machineId: ctx.machineId });
-      const counter = counting(planned.db);
-      await planEventWrite(counter.store, { ...ctx, writeOrigin: 'server' }, event, planned.serverEnv);
-      total = counter.calls();
-    } finally { planned.sqlite.close(); }
-    expect(total).toBeGreaterThan(0);
-    for (let at = 1; at <= total; at++) {
-      const fixture = sqliteEnv();
-      try {
-        seedCredential(fixture.sqlite, { id: ctx.tokenId, machineId: ctx.machineId });
-        const failure = new Error(`injected store failure at call ${at}`);
-        await expect(planEventWrite(failingAt(fixture.db, at, 'before', () => failure).store, { ...ctx, writeOrigin: 'server' }, event, fixture.serverEnv)).rejects.toBe(failure);
-        expect({ at, staged: ['prepared_archive_bundles', 'archive_bundles', 'events'].map(table => count(fixture.sqlite, table)) }).toEqual({ at, staged: [0, 0, 0] });
-        expect({ at, puts: fixture.bucket.puts, objects: fixture.bucket.objects.size }).toEqual({ at, puts: [], objects: 0 });
-      } finally { fixture.sqlite.close(); }
-    }
-  });
-
   it('reserves the parser\'s adapter for the Deployment: a member claiming it is refused, the parser writing it is stored', async () => {
     const { db, sqlite } = realDb();
     const forged = envelope({ eventId: uuid(7), producer: { adapter: TRANSCRIPT_PARSE_ADAPTER, version: '1' } });

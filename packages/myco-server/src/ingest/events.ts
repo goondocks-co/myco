@@ -1,27 +1,16 @@
 import { DOCUMENT_EVENT_KINDS } from '../db/document-tables.js';
 
-import type { RelationalStore, PreparedStatement, ServerEnv } from '../core/adapters.js';
+import type { RelationalStore, ServerEnv } from '../core/adapters.js';
 import type { RouteContext } from '../context.js';
 import { sha256Hex, sha256HexOf, utf8 } from '../hash.js';
 import { emit, refusal, StorageContractError, TokenRevokedError, type Classifier, type Refusal } from '../telemetry.js';
 import { parseEnvelope, type CaptureEnvelope, type Refused } from './envelope.js';
-import { kindSpec, parsePayload, type KindSpec, type Payload } from './kinds.js';
+import { blobFields, kindSpec, parsePayload, promptReferenceFields, type KindSpec, type Payload } from './kinds.js';
 import { searchBlobsDue } from '../db/search/blob-index.js';
 import { TRANSCRIPT_PARSE_ADAPTER } from '../constants.js';
 import { RecordSchemeError } from './record-scheme.js';
-import {
-  planKind,
-  projectLive,
-  RAW_ROW_GATE,
-  sharedChecks,
-  type Fragment,
-  type KindPlan,
-  type ReadRows,
-  type WriteContext,
-} from './projections.js';
-import type { Delivery } from '../core/injection.js';
+import { checkRefusal, planKind, type KindPlan, type ReadRows, type WriteContext } from './projections.js';
 import { DOCUMENT_TEXT_FIELDS, documentText } from './document-text.js';
-import { prepareContextDelivery } from '../db/context/delivery.js';
 
 import {
   CONTEXT_DELIVERED_KIND,
@@ -29,15 +18,16 @@ import {
   isPromptIdScheme,
   type PromptScopeReason,
 } from '@goondocks/myco-shared/prompt-identity';
-import { ALWAYS, credentialLive } from '../db/identity/capture-credential.js';
 import { endsTurn, turnStartFrom } from './turns.js';
 import { endTurn, startTurnFromEvent } from '../db/sessions/turns.js';
-import { prepareBound } from '../db/kernel/statement.js';
+import { commit, first, type Bound } from '../db/index.js';
+import { captureChecks, eventAdmitted, rawEventInsert, type CaptureFacts } from '../db/capture/admission.js';
+import { deliverAnswer, deliverInjection, deliverSessionRecord, type Delivered } from '../db/capture/deliveries.js';
+import { chargeStoredBytes, credentialStillLive, liveReceipt, sessionReceipt, storedEvent } from '../db/capture/event-write.js';
 
-import { materialFields, materialMerge } from './material-mutation.js';
 import { EVENT_INLINE_PAYLOAD_BYTES, retainedEventPayload } from './event-payload.js';
 import { prepareEventBody, settleUnstoredEventBody } from '../core/event-body.js';
-import { eventBodyAdmission, eventBodyHeldRead, eventBodyStatements, type EventBody } from '../db/events/body.js';
+import { eventBodyHeldRead, eventBodyStatements, type EventBody } from '../db/events/body.js';
 
 /** The held size and segment count of a transcript, answered on every outcome of a `transcript.segment`. */
 interface TranscriptExtra {
@@ -109,30 +99,29 @@ function spilledKey(spec: KindSpec, p: Payload): string | null {
  * A delivery's effect on the rows it names, through the modules that own them: each is marked delivered at the event's
  * own instant, in its own session, once, and only when this request stored the event.
  */
-function deliveryStatements(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope, p: Payload) {
-  if (e.kind !== CONTEXT_DELIVERED_KIND) return { statements: [] };
-  const gate = { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce] };
-  const delivered: Omit<Delivery, 'id'> = {
+function deliveryStatements(ctx: WriteContext, e: CaptureEnvelope, p: Payload): Bound[] {
+  if (e.kind !== CONTEXT_DELIVERED_KIND) return [];
+  const delivered: Delivered = {
     projectId: ctx.projectId,
     sessionId: e.sessionId,
     at: e.createdAt,
     promptId: typeof p.renderedIn === 'string' ? p.renderedIn : null,
     scopeReason: typeof p.renderedScopeReason === 'string' ? (p.renderedScopeReason as PromptScopeReason) : null,
     scheme: isPromptIdScheme(p.renderedScheme) ? p.renderedScheme : null,
+    eventId: e.eventId,
+    nonce: ctx.nonce,
   };
-  const to = (id: string): Delivery => ({ ...delivered, id });
   // The session record by its own key; from a member that names only the answer, through the answer while it is held.
   const record = isDeliveredSessionRecord(p.sessionRecord)
-    ? [prepareContextDelivery(db, 'session-record', { ...delivered, id: p.sessionRecord }, gate)]
+    ? [deliverSessionRecord(delivered, p.sessionRecord)]
     : typeof p.answerId === 'string'
-      ? [prepareContextDelivery(db, 'session-record', { ...delivered, id: 'plan-nudge' }, gate, p.answerId)]
+      ? [deliverSessionRecord(delivered, 'plan-nudge', p.answerId)]
       : [];
-  const writes = [
-    ...(typeof p.receiptId === 'string' ? [prepareContextDelivery(db, 'injection', to(p.receiptId), gate)] : []),
-    ...(typeof p.answerId === 'string' ? [prepareContextDelivery(db, 'answer', to(p.answerId), gate)] : []),
+  return [
+    ...(typeof p.receiptId === 'string' ? [deliverInjection(delivered, p.receiptId)] : []),
+    ...(typeof p.answerId === 'string' ? [deliverAnswer(delivered, p.answerId)] : []),
     ...record,
   ];
-  return { statements: writes.map((write) => write.statement) };
 }
 
 /** Stores one event in a single transaction. The raw insert carries every admission precondition — the credential still live (`credentialLive`; never a volume: capture is not refused for the bytes a credential has stored), the shared checks derived from the catalogue and the kind's declared identities (session identity, the continued rows the kind names, referenced blobs present, referenced prompts owned by this machine — in that order) and the kind's own — so a refused event leaves no row and no count; the byte count, the session receipt, and the kind's projections apply only to the raw row this request wrote, named by a per-request nonce; same-batch reads decide the response. A stored event is read through its session's machine, so a duplicate or a conflict is answered only to the machine that wrote it and another machine's event id is refused like any other unstored one. */
@@ -145,105 +134,38 @@ export async function ingestEvent(
   const planned = await planEventWrite(db, ctx, body, env);
   if (!planned.ok) return refused(ctx, planned);
   try {
-    const results = await db.batch(planned.write.statements);
+    const results = await commit(db, ...planned.write.statements);
     return planned.write.interpret(results);
   } finally {
     await planned.write.settleBody?.();
   }
 }
 
-/** The statements one event needs and how to read their answers, without executing them. Callers with one event run their own batch; a caller with many concatenates the statements of each into ONE batch and interprets each write's own slice — the difference between one database call per event and one per pass. */
+/** What one statement of an event's batch answers: the rows it returned. */
+type BatchResult = { results: unknown[] };
+
+/** The statements one event needs, run as one batch, and how to read their answers. */
 interface EventWrite {
-  proof: Fragment;
-  replayAdmission?: Fragment;
-  statements: PreparedStatement[];
-  interpret(results: BatchResult[]): IngestResult;
+  statements: Bound[];
+  interpret(results: readonly BatchResult[]): IngestResult;
   /** Consumes a body's upload authority when its event did not store it; the caller runs it on every exit. */
   settleBody?: () => Promise<void>;
 }
 
 type PlannedWrite = { ok: true; write: EventWrite } | Refused;
 
-/** Evidence that one canonical event is held with the expected raw bytes. */
-function eventProof(projectId: string, eventId: string, hash: string): Fragment {
+/** The facts one event is admitted, read and refused by: every condition its raw insert carries is set from these. */
+function captureFacts(spec: KindSpec, write: WriteContext, e: CaptureEnvelope, p: Payload, plan: KindPlan, charged: boolean): CaptureFacts {
+  const named = (fields: string[]) => fields.map((field) => (typeof p[field] === 'string' ? (p[field] as string) : null));
   return {
-    sql: 'EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND envelope_hash = ?)',
-    params: [projectId, eventId, hash],
+    project: write.projectId, session: e.sessionId, machine: write.machineId, token: write.tokenId, event: e.eventId,
+    charged, imported: e.channel === 'import', processing: write.processing === true,
+    identities: plan.identities,
+    blobs: named(blobFields(spec)),
+    retainedPlan: spec.name === 'plan' && typeof p.planKey === 'string' ? p.planKey : null,
+    prompts: named(promptReferenceFields(spec)),
+    segment: plan.segment ?? null,
   };
-}
-
-/** Conjoins event evidence with one JSON binding across a bounded checkpoint batch. */
-export function allEventProofs(proofs: readonly Fragment[]): Fragment {
-  if (proofs.length === 0) return { sql: '1', params: [] };
-  const cases = proofs.map((proof, index) => {
-    let position = 0;
-    const sql = proof.sql.replace(/'(?:''|[^'])*'|"(?:""|[^"])*"|\?/g, (token) =>
-      token === '?' ? `json_extract(proof.value, '$[${position++}]')` : token,
-    );
-    if (position !== proof.params.length)
-      throw new StorageContractError('Event proof bindings do not match its predicate');
-    return `WHEN ${index} THEN (${sql})`;
-  });
-  return {
-    sql: `NOT EXISTS (SELECT 1 FROM json_each(?) proof WHERE CASE CAST(proof.key AS INTEGER)
-    ${cases.join(' ')} ELSE 0 END IS NOT 1)`,
-    params: [JSON.stringify(proofs.map((proof) => proof.params))],
-  };
-}
-
-/** What `db.batch` answers per statement; the shape the interpreter reads. */
-type BatchResult = { results: unknown[]; meta: { changes: number } };
-
-/** Pins a replay to the verified envelope already held, or the raw row this request will write. */
-async function replaySourceProof(db: RelationalStore, ctx: WriteContext, e: CaptureEnvelope): Promise<Fragment> {
-  const held = await db
-    .prepare(
-      `SELECT session_id,kind,channel,payload,created_at,producer_adapter,producer_version,envelope_hash
-    FROM events WHERE project_id = ? AND event_id = ?`,
-    )
-    .bind(ctx.projectId, e.eventId)
-    .first<{
-      session_id: string;
-      kind: string;
-      channel: string;
-      payload: string;
-      created_at: number;
-      producer_adapter: string;
-      producer_version: string;
-      envelope_hash: string;
-    }>();
-  if (held === null) return { sql: RAW_ROW_GATE, params: [ctx.projectId, e.eventId, ctx.nonce] };
-  const original = parseEnvelope(
-    {
-      eventId: e.eventId,
-      sessionId: held.session_id,
-      kind: held.kind,
-      channel: held.channel,
-      createdAt: held.created_at,
-      producer: { adapter: held.producer_adapter, version: held.producer_version },
-      payload: JSON.parse(held.payload),
-    },
-    ctx.now,
-  );
-  return original.ok && (await envelopeHash(original.value)) === held.envelope_hash
-    ? {
-        sql: `EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND envelope_hash = ?
-        AND session_id = ? AND kind = ? AND channel = ? AND payload = ? AND created_at = ?
-        AND producer_adapter = ? AND producer_version = ?)`,
-        params: [
-          ctx.projectId,
-          e.eventId,
-          held.envelope_hash,
-          held.session_id,
-          held.kind,
-          held.channel,
-          held.payload,
-          held.created_at,
-          held.producer_adapter,
-          held.producer_version,
-        ],
-      }
-    : { sql: '0', params: [] };
 }
 
 export async function planEventWrite(
@@ -282,13 +204,9 @@ export async function planEventWrite(
   };
   const digest = await envelopeHash(e);
   const contentHash = await contentHashOf(spec, p);
-  const sourceProof =
-    write.processing && e.kind === 'tool.failure' && p.resultReason !== undefined
-      ? await replaySourceProof(db, write, e)
-      : undefined;
   let plan: KindPlan;
   try {
-    plan = planKind(spec, { db, ctx: write, e, p, contentHash, envelopeHash: digest });
+    plan = planKind(spec, { ctx: write, e, p, contentHash, envelopeHash: digest });
   } catch (error) {
     if (!(error instanceof RecordSchemeError) || error.code !== 'record_identity_scheme_unsupported') throw error;
     return { ok: false, ...refusal('Record identity scheme is unsupported', error.code) };
@@ -296,19 +214,16 @@ export async function planEventWrite(
   // A server-origin write is counted nothing and consults no credential's
   // liveness: the bytes it derives from were accepted and counted when the
   // member shipped them, and that member's credential rotates on its own
-  // schedule. `ALWAYS` keeps the admission's shape so the raw insert and the
-  // same-batch read stay one expression.
+  // schedule. The admission keeps one shape either way: the liveness
+  // condition is switched off, so the raw insert and the same-batch read stay
+  // one expression.
   const charged = (ctx.writeOrigin ?? 'member') === 'member';
-  const liveAdmission = charged ? credentialLive(ctx.tokenId) : ALWAYS;
-  const checks = [projectLive(write), ...sharedChecks(spec, write, e, p, plan.identities)];
-  const admission: Fragment[] = [liveAdmission, ...checks.map((c) => c.admission), ...plan.admission];
+  const facts = captureFacts(spec, write, e, p, plan, charged);
   const textKeys = Object.keys(DOCUMENT_TEXT_FIELDS[e.kind] ?? {}).flatMap(field => typeof p[field] === 'string' ? [p[field] as string] : []);
   const overCeiling = e.payloadBytes.byteLength > EVENT_INLINE_PAYLOAD_BYTES;
   let eventBody: EventBody | undefined;
   if (textKeys.length > 0 || overCeiling) {
-    const permitted = await db.prepare(`SELECT 1 AS admitted WHERE ${admission.map(fragment => `(${fragment.sql})`).join(' AND ')}
-      AND NOT EXISTS (SELECT 1 FROM events WHERE project_id=? AND event_id=?)`)
-      .bind(...admission.flatMap(fragment => fragment.params), ctx.projectId, e.eventId).first();
+    const permitted = await first(db, eventAdmitted(spec, facts));
     if (permitted !== null) {
       if (env === undefined) throw new StorageContractError('Document text or payload body admission requires a content store');
       for (const key of new Set(textKeys)) {
@@ -325,182 +240,50 @@ export async function planEventWrite(
       }, ctx.now) ?? undefined;
     }
   }
-  const replayChecks = plan.replay === undefined ? undefined : [...admission, plan.replay.compatible, sourceProof!];
-  const replayGate: Fragment | undefined =
-    replayChecks === undefined
-      ? undefined
-      : {
-          sql: replayChecks.map((fragment) => `(${fragment.sql})`).join(' AND '),
-          params: replayChecks.flatMap((fragment) => fragment.params),
-        };
 
-  const rawProof = eventProof(ctx.projectId, e.eventId, digest);
-  const proof: Fragment =
-    replayGate === undefined
-      ? rawProof
-      : {
-          sql: `(${rawProof.sql}) OR ((${replayGate.sql}) AND (${plan.replay!.effect.sql}))`,
-          params: [...rawProof.params, ...replayGate.params, ...plan.replay!.effect.params],
-        };
+  const raw = rawEventInsert(spec, facts, {
+    kind: e.kind, channel: e.channel, payload: eventBody === undefined ? e.payloadJson : retainedEventPayload(e.payload),
+    payloadFormat: eventBody === undefined ? 'inline' : 'blob', envelopeHash: digest, createdAt: e.createdAt, receivedAt: ctx.now,
+    producerAdapter: e.producer.adapter, producerVersion: e.producer.version, blobKey: spilledKey(spec, p), payloadBytes: e.payloadBytes.byteLength,
+    nonce: write.nonce, actor: write.actor,
+  }, eventBody === undefined ? null : { key: eventBody.key, size: eventBody.size, generation: eventBody.generation, reservation: eventBody.upload?.reservation ?? null });
 
-  const rawMaterial = materialMerge({
-    kind: 'event',
-    table: 'events',
-    keyColumn: 'event_id',
-    assignments: [],
-    incoming: materialFields(
-      {
-        project_id: ctx.projectId,
-        event_id: e.eventId,
-        session_id: e.sessionId,
-        token_id: ctx.tokenId,
-        kind: e.kind,
-        channel: e.channel,
-        payload: eventBody === undefined ? e.payloadJson : retainedEventPayload(e.payload),
-        payload_format: eventBody === undefined ? 'inline' : 'blob',
-        envelope_hash: digest,
-        created_at: e.createdAt,
-        received_at: ctx.now,
-        producer_adapter: e.producer.adapter,
-        producer_version: e.producer.version,
-        blob_key: spilledKey(spec, p),
-        payload_bytes: e.payloadBytes.byteLength,
-        ingest_nonce: write.nonce,
-        actor: write.actor,
-      },
-      ['created_at', 'received_at', 'payload_bytes'],
-    ),
-  });
-  const rawAdmission = eventBody === undefined ? admission : [...admission, eventBodyAdmission(eventBody)];
-  const raw = db
-    .prepare(
-      `INSERT INTO events (${rawMaterial.insert.columns.join(',')})
-      SELECT ${rawMaterial.insert.sql} WHERE ${rawAdmission.map((a) => a.sql).join(' AND ')}
-      ON CONFLICT(project_id,event_id) DO NOTHING`,
-    )
-    .bind(...rawMaterial.insert.params, ...rawAdmission.flatMap((a) => a.params));
-
-  const counted = charged
-    ? db
-        .prepare(`UPDATE member_credentials SET bytes_written = bytes_written + (? * changes()) WHERE id = ?`)
-        .bind(ctx.bodyBytes, ctx.tokenId)
-    : db.prepare(`SELECT 1 AS uncharged`);
+  const counted = chargeStoredBytes(charged, ctx.bodyBytes, ctx.tokenId);
 
   // A receipt records when a MEMBER last made contact. The Deployment reading
   // its own stored bytes is not contact: a parse advancing the stamp would date
   // a month-old backfilled session to now, and would hold the Deployment awake
   // on its own housekeeping. A server write still opens a session row that is
   // absent, so a derived event is never refused for want of one.
-  const receipt = charged
-    ? db
-        .prepare(
-          `INSERT INTO sessions
-          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
-        SELECT ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
-        ON CONFLICT (project_id, session_id) DO UPDATE SET last_received_at = excluded.last_received_at`,
-        )
-        .bind(
-          ctx.projectId,
-          e.sessionId,
-          ctx.machineId,
-          ctx.tokenId,
-          ctx.now,
-          ctx.now,
-          e.kind === 'session.start' ? p.agent : null,
-          ctx.projectId,
-          e.eventId,
-          write.nonce,
-        )
-    : db
-        .prepare(
-          `INSERT INTO sessions
-          (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
-        SELECT ?, ?, ?, ?, ?, ?, ?
-         WHERE EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)
-        ON CONFLICT (project_id, session_id) DO NOTHING`,
-        )
-        .bind(
-          ctx.projectId,
-          e.sessionId,
-          ctx.machineId,
-          ctx.tokenId,
-          e.createdAt,
-          e.createdAt,
-          e.kind === 'session.start' ? p.agent : null,
-          ctx.projectId,
-          e.eventId,
-          write.nonce,
-        );
+  const writer = { project: ctx.projectId, session: e.sessionId, machine: ctx.machineId, token: ctx.tokenId, event: e.eventId, nonce: write.nonce };
+  const receipt = sessionReceipt(writer, { charged, now: ctx.now, createdAt: e.createdAt, agent: e.kind === 'session.start' ? (p.agent as string) : null });
 
-  // The nonce, not a change count, decides whether THIS write stored the row.
-  // A batch carrying several events reports its counts per driver rather than
-  // per statement, and the nonce is written by the insert itself: reading it
-  // back asks the store what happened instead of asking the driver.
-  const stored = db
-    .prepare(
-      `SELECT ev.envelope_hash, ev.ingest_nonce, ${replayGate ? `(${replayGate.sql})` : '0'} AS replayed FROM events ev
-        JOIN sessions s ON s.project_id = ev.project_id AND s.session_id = ev.session_id
-       WHERE ev.project_id = ? AND ev.event_id = ? AND s.machine_id IS ?`,
-    )
-    .bind(...(replayGate?.params ?? []), ctx.projectId, e.eventId, ctx.machineId);
-
-  const admitted = db.prepare(`SELECT ${liveAdmission.sql} AS live`).bind(...liveAdmission.params);
-  const shared = checks.map((c) => db.prepare(c.read.sql).bind(...c.read.params));
+  // The nonce, not a change count, decides whether THIS write stored the row: reading it back asks the store what
+  // happened instead of asking the driver.
+  const stored = storedEvent(ctx.projectId, e.eventId, ctx.machineId);
+  const admitted = credentialStillLive(charged, ctx.tokenId);
+  const checks = captureChecks(spec, facts);
   const priors = plan.priors ?? [];
   // Beside the projections in the batch, outside the evidence a conflict is read from.
   // A turn's end moves the session's last turn end and closes its open turn, unless the turn started after it.
   const turnEnd = endsTurn(e, ctx.turnEnd === true, p)
-    ? [
-        prepareBound(db, endTurn({
-          projectId: ctx.projectId,
-          sessionId: e.sessionId,
-          eventId: e.eventId,
-          endedAt: e.createdAt,
-          nonce: write.nonce,
-        })),
-      ]
+    ? [endTurn({ projectId: ctx.projectId, sessionId: e.sessionId, eventId: e.eventId, endedAt: e.createdAt, nonce: write.nonce })]
     : [];
   // A turn start opens the session's turn at its own instant, after the receipt has opened the session row it names.
   const startedAt = turnStartFrom(e, p, ctx.now);
-  const turnStart =
-    startedAt === null
-      ? []
-      : [
-          prepareBound(db, startTurnFromEvent({
-            projectId: ctx.projectId,
-            sessionId: e.sessionId,
-            machineId: ctx.machineId,
-            at: startedAt,
-            eventId: e.eventId,
-            nonce: write.nonce,
-          })),
-        ];
-  const liveCapture =
-    e.channel === 'import'
-      ? []
-      : [
-          db
-            .prepare(
-              `UPDATE sessions
-      SET last_live_received_at = MAX(COALESCE(last_live_received_at, 0), ?)
-      WHERE project_id = ? AND session_id = ?
-        AND EXISTS (SELECT 1 FROM events WHERE project_id = ? AND event_id = ? AND ingest_nonce = ?)`,
-            )
-            .bind(ctx.now, ctx.projectId, e.sessionId, ctx.projectId, e.eventId, write.nonce),
-        ];
-  const replayWrites = replayGate ? plan.replay!.project(replayGate) : [];
-  const delivery = deliveryStatements(db, write, e, p);
+  const turnStart = startedAt === null
+    ? []
+    : [startTurnFromEvent({ projectId: ctx.projectId, sessionId: e.sessionId, machineId: ctx.machineId, at: startedAt, eventId: e.eventId, nonce: write.nonce })];
+  const liveCapture = e.channel === 'import' ? [] : [liveReceipt(writer, ctx.now)];
   const incidental = [
-    ...replayWrites,
     ...(plan.incidental ?? []),
     ...turnEnd,
     ...turnStart,
     ...liveCapture,
-    ...delivery.statements,
-    ...(eventBody === undefined ? [] : eventBodyStatements(db, eventBody, ctx.now)),
+    ...deliveryStatements(write, e, p),
+    ...(eventBody === undefined ? [] : eventBodyStatements(eventBody, ctx.now)),
   ];
-  const statements: PreparedStatement[] = [
+  const statements: Bound[] = [
     raw,
     counted,
     receipt,
@@ -509,13 +292,13 @@ export async function planEventWrite(
     ...incidental,
     stored,
     admitted,
-    ...shared,
+    ...checks.map((c) => c.read),
     ...plan.reads,
-    ...(eventBody === undefined ? [] : [eventBodyHeldRead(db, eventBody)]),
+    ...(eventBody === undefined ? [] : [eventBodyHeldRead(eventBody)]),
   ];
 
   let landed = false;
-  const interpret = (results: BatchResult[]): IngestResult => {
+  const interpret = (results: readonly BatchResult[]): IngestResult => {
     if (results.length !== statements.length)
       throw new StorageContractError(`batch answered ${results.length} results for ${statements.length} statements`);
 
@@ -523,10 +306,8 @@ export async function planEventWrite(
     const priorRows: ReadRows = results.slice(3, base).map((r) => r.results as Record<string, unknown>[]);
     const projectionResults = results.slice(base, base + plan.projections.length);
     const afterWrites = base + plan.projections.length + incidental.length;
-    const storedRow = results[afterWrites].results[0] as
-      | { envelope_hash?: string; ingest_nonce?: string; replayed: number }
-      | undefined;
-    const liveRow = results[afterWrites + 1].results[0] as { live: number } | undefined;
+    const storedRow = results[afterWrites]!.results[0] as { envelope_hash?: string; ingest_nonce?: string } | undefined;
+    const liveRow = results[afterWrites + 1]!.results[0] as { live: number } | undefined;
     const allReads: ReadRows = results.slice(afterWrites + 2).map((r) => r.results as Record<string, unknown>[]);
     const sharedRows = allReads.slice(0, checks.length);
     const bodyRead = eventBody === undefined ? [] : allReads.slice(-1);
@@ -535,11 +316,7 @@ export async function planEventWrite(
 
     if (storedRow?.ingest_nonce === write.nonce) {
       landed = true;
-      if (
-        plan.projections.length > 0 &&
-        storedRow.replayed !== 1 &&
-        projectionResults.every((r) => r.results.length === 0)
-      ) {
+      if (plan.projections.length > 0 && projectionResults.every((r) => r.results.length === 0)) {
         const reason = plan.conflict ? plan.conflict(reads) : 'projection did not apply';
         emit({ kind: 'projection_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
         return { persisted: true, projected: false, code: 'projection_conflict', reason, ...extra };
@@ -551,19 +328,9 @@ export async function planEventWrite(
         : { persisted: true, ...extra };
     }
     if (storedRow) {
-      if (
-        storedRow.envelope_hash === digest ||
-        (storedRow.replayed === 1 &&
-          results
-            .slice(base + plan.projections.length, base + plan.projections.length + replayWrites.length)
-            .every((result) => result.results.length === 0))
-      ) {
+      if (storedRow.envelope_hash === digest) {
         emit({ kind: 'ingest_duplicate', projectId: ctx.projectId, tokenId: ctx.tokenId });
         return { persisted: true, duplicate: true, ...extra };
-      }
-      if (storedRow.replayed === 1) {
-        emit({ kind: 'ingest_ok', projectId: ctx.projectId, tokenId: ctx.tokenId, eventKind: e.kind });
-        return { persisted: true, projected: true, ...extra };
       }
       emit({ kind: 'ingest_conflict', projectId: ctx.projectId, tokenId: ctx.tokenId });
       return { persisted: false, code: 'event_id_conflict', reason: 'event id conflict', ...extra };
@@ -578,15 +345,13 @@ export async function planEventWrite(
     // request at fault, so no terminal refusal. The pipeline answers 503 and the
     // retry meets the revocation at authentication.
     if (liveRow?.live !== 1) throw new TokenRevokedError(ctx.tokenId);
-    const sharedRefusal = checks.map((c, i) => c.refusal(sharedRows[i]?.[0])).find((r) => r !== null) ?? null;
+    const sharedRefusal = checks.map((c, i) => checkRefusal(c.check, ctx.machineId, sharedRows[i]?.[0])).find((r) => r !== null) ?? null;
     return { ...refused(ctx, sharedRefusal ?? plan.refusal(reads)), ...extra };
   };
 
   return {
     ok: true,
     write: {
-      proof,
-      replayAdmission: replayGate,
       statements,
       interpret,
       ...(eventBody === undefined ? {} : { settleBody: async () => { if (!landed) await settleUnstoredEventBody(db, eventBody!, ctx.now); } }),

@@ -394,6 +394,7 @@
     "tests/myco-server/canopy.test.ts": 96,
     "tests/myco-server/capability-default-on.test.ts": 700,
     "tests/myco-server/capture-recency.test.ts": 11711,
+    "tests/myco-server/capture-write-cost.test.ts": 8640,
     "tests/myco-server/card-settlement.test.ts": 29817,
     "tests/myco-server/codes.test.ts": 1966,
     "tests/myco-server/content-lifecycle.test.ts": 6062,
