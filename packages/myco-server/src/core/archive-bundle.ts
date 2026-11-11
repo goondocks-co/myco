@@ -251,7 +251,7 @@ export async function readBundleEntry(env:BundleEnv,identity:BundleEntryIdentity
 async function releaseArchivePreparation(db:RelationalStore,preparationId:string,now:number,agedOnly=false):Promise<number>{
   const row=await readArchivePreparation(db,preparationId);
   if(row===null||(agedOnly&&row.expires_at>now))return 0;
-  if(!await releaseArchivePreparationRows(db,row,now,agedOnly))return 0;
+  if(!await releaseArchivePreparationRows(db,row,now,{agedOnly}))return 0;
   await releaseBlobs(db,[row.archive_key,row.receipt_key].filter((key):key is string=>key!==null).map(key=>({projectId:row.project_id,key})),now);
   return 1;
 }

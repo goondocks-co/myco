@@ -17,13 +17,14 @@ const settlements = shapedStatements<Statement<BindValue[], never, 'write'>>();
 
 /** Cost can settle only while this exact attempt remains under the authenticated live lease. */
 export function settleAttemptCost(
-  projectId: string, runId: string, attemptId: string, worker: LeaseHolder, now: number, cost: number | null, source: string | null,
+  attempt: { projectId: string; runId: string; attemptId: string; worker: LeaseHolder }, now: number, settled: { cost: number | null; source: string | null },
 ): Bound<never, 'write'> {
+  const { projectId, runId, attemptId, worker } = attempt;
   const authority = workerLeaseAuthority(worker, now, attemptId, true);
   const definition = settlements(leaseShape(worker, attemptId), shape => write<BindValue[]>({ name: `runs.settleAttemptCost${shape}`, sql:
     `UPDATE agent_run_attempts SET cost_usd=?,cost_source=? WHERE project_id=? AND run_id=? AND attempt_id=?
     AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND ${authority.sql})` }));
-  return definition.bind(cost, source, projectId, runId, attemptId, projectId, runId, ...(authority.params as BindValue[]));
+  return definition.bind(settled.cost, settled.source, projectId, runId, attemptId, projectId, runId, ...(authority.params as BindValue[]));
 }
 
 const agentStateRestores = restoredColumnStatements<{ rowid: number }, 'write'>('runs.restoreAgentState');

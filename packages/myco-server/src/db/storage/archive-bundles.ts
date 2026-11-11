@@ -205,7 +205,7 @@ const RELEASES = { fresh: releaseStatements(false), aged: releaseStatements(true
  * Release one preparation's publication evidence while it is exactly as read, recording the blobs it named as release
  * candidates in the same transaction; the preparation's own row goes last. False when the preparation moved.
  */
-export async function releaseArchivePreparationRows(db: RelationalStore, row: PreparationRecord, now: number, agedOnly: boolean): Promise<boolean> {
+export async function releaseArchivePreparationRows(db: RelationalStore, row: PreparationRecord, now: number, { agedOnly }: { agedOnly: boolean }): Promise<boolean> {
   const pairs = [row.archive_key, row.receipt_key].filter((key): key is string => key !== null).map(key => ({ projectId: row.project_id, key }));
   const statements = agedOnly ? RELEASES.aged : RELEASES.fresh;
   const params: ReleaseParams = [row.preparation_id, row.project_id, row.archive_key, row.receipt_key, row.expires_at, ...(agedOnly ? [now] : [])];

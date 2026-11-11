@@ -44,7 +44,7 @@ export function settleAttemptCostStatement(
   now: number, cost: number | null, source: string | null,
 ): Bound<never,'write'> {
   if (cost !== null && (!Number.isFinite(cost) || cost < 0)) throw new Error('Attempt cost must be finite and nonnegative');
-  return settleAttemptCost(scope.projectId,runId,attemptId,worker,now,cost,source);
+  return settleAttemptCost({projectId:scope.projectId,runId,attemptId,worker},now,{cost,source});
 }
 
 /** Restored attempt evidence is additive and keeps its canonical identity. */
