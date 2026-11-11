@@ -226,6 +226,9 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
       "timestamp",
       "pasted_content"
     ],
+    "notificationEnvelopes": [
+      "task-notification"
+    ],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
       "kind": "harness-key",

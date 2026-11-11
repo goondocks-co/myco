@@ -78,7 +78,7 @@ export type ContextAskRequest =
    * it by for a Deployment that names `prompt-scheme`, or says why it names none (`scopeReason`); an ask without the
    * marker comes from an older hook and names the id that hook minted.
    */
-  | { kind: 'prompt'; promptId?: string; promptScheme?: PromptIdScheme; scopeReason?: PromptScopeReason; identity?: typeof ASK_IDENTITY_MARKER; text: string; at: number };
+  | { kind: 'prompt'; promptId?: string; promptScheme?: PromptIdScheme; scopeReason?: PromptScopeReason; identity?: typeof ASK_IDENTITY_MARKER; text: string; at: number; agent?: string };
 
 /** An ask as session state holds it until the helper has asked: the request, and the id `withAsk` minted for it. */
 export type ContextAsk = ContextAskRequest & { id: string };

@@ -51,6 +51,8 @@ export interface HookConfigEntry {
   mcpReconnectNotice?: string;
   capturePrompts?: CapturePrompts;
   captureRules?: CaptureRule[];
+  /** Tags of system-notification envelopes this harness declares. A prompt that is only one is not injected. */
+  notificationEnvelopes?: string[];
   subagentParentPath?: string;
   subagentThreadIdPath?: string;
   subagentLabelPath?: string;
@@ -399,6 +401,9 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "trim": true,
         "set_origin": "system"
       }
+    ],
+    "notificationEnvelopes": [
+      "task-notification"
     ],
     "sessionContinuation": {
       "parentSessionIdPath": "session_id",

@@ -109,6 +109,11 @@ export const recall: ParityScenario = {
     expect(answers.filter((answer) => answer.outcome === 'empty')).toHaveLength(2);
     expect(answers.filter((answer) => answer.outcome === 'empty').every((answer) => JSON.parse(answer.skipped).includes('plan-nudge:repeat'))).toBe(true);
 
+    const notice = `<task-notification>\n<task-id>${stamp}</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>`;
+    const abstained = await served(session, crypto.randomUUID(), notice);
+    expect({ context: abstained.context, parts: abstained.parts, skipped: abstained.skipped }).toEqual({ context: '', parts: [], skipped: ['notification'] });
+    expect((await served(session, crypto.randomUUID(), `${notice}\nwhat did we settle about ${stamp}`)).skipped).not.toContain('notification');
+
     // The record of what the prompt was served reaches the turn body under that prompt.
     interface Turn { injection: { sporeIds: string[]; spores: { id: string }[] } | null }
     await documentsPublished(target, session);

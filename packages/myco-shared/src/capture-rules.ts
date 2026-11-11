@@ -11,6 +11,8 @@ export interface CaptureRuleBundle {
   displayEnvelopeTags?: readonly string[];
   /** The tags whose envelopes in a reply hold a plan, from its manifest's `capture.planTags`. */
   planTags?: readonly string[];
+  /** Tags of system-notification envelopes this harness declares. Absent means it declares none. */
+  notificationEnvelopes?: readonly string[];
   transcriptTimestamps?: 'recorded' | 'synthetic';
   /** How the agent's prompts are named, from its manifest's `promptIdentity`. */
   promptIdentity: PromptIdentityDeclaration;
@@ -29,6 +31,28 @@ export function promptIdentityOf(bundles: readonly CaptureRuleBundle[], agent: s
 
 export function sourceTimestampsRecorded(bundles: readonly CaptureRuleBundle[], agent: string | null): boolean {
   return bundles.find(bundle => bundle.name === agent)?.transcriptTimestamps !== 'synthetic';
+}
+
+/** The notification envelopes `agent` declares, or none when it declares none or no manifest names it. */
+export function notificationEnvelopes(bundles: readonly CaptureRuleBundle[], agent: string | null): readonly string[] {
+  if (agent === null || agent === '') return [];
+  return bundles.find((bundle) => bundle.name === agent)?.notificationEnvelopes ?? [];
+}
+
+/** A prompt that is one complete system-notification envelope its harness declares, with nothing after the closing tag. */
+export function isHarnessSystemNotification(bundles: readonly CaptureRuleBundle[], agent: string | null, text: string): boolean {
+  const tags = notificationEnvelopes(bundles, agent);
+  return tags.length > 0 && isCompleteEnvelope(text, tags);
+}
+
+/** The whole prompt is one envelope of a declared tag: its opening tag through the matching close, or one empty tag, and nothing else. */
+function isCompleteEnvelope(text: string, tags: readonly string[]): boolean {
+  const body = text.trim();
+  return tags.some((tag) => {
+    const name = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const open = `<${name}(?:\\s[^>]*)?>`;
+    return new RegExp(`^${open}[\\s\\S]*</${name}>$`).test(body) || new RegExp(`^<${name}(?:\\s[^>]*)?/>$`).test(body);
+  });
 }
 
 export function envelopeTagAtStart(prompt: string, tags: readonly string[]): boolean {

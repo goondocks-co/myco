@@ -44,6 +44,9 @@ import type { SessionWriteAdmission } from '../ingest/projections.js';
 import type { Refusal } from '../telemetry.js';
 import { classify, emit, type ErrorClass } from '../telemetry.js';
 import { BLOCK_JOIN, projectLine, sessionInjectionKind, type SessionContextRequest, type SessionContextIdentity } from '@goondocks/myco-shared/recall';
+import { isHarnessSystemNotification } from '@goondocks/myco-shared/capture-rules';
+import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
+import { sessionAgent } from '../db/documents/turn-catalog.js';
 import { promptKeyHash, type DeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
 
 /** The most text one prompt is served. A part that would cross it is dropped whole. */
@@ -176,6 +179,7 @@ type CortexSkip = 'off' | 'empty';
  */
 export type RecallSkip =
   | 'capability'
+  | 'notification'
   | 'repeat'
   | 'spores'
   | 'plan-nudge'
@@ -311,6 +315,10 @@ export function partsWithinBound<Part>(
   return kept;
 }
 
+const HARNESS_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** A harness name the ask may carry. Anything else is unread, and the session's recorded agent is used. */
+const harnessName = (value: unknown): string | null => (typeof value === 'string' && HARNESS_NAME.test(value) ? value : null);
+
 /**
  * The block one prompt is served, and the records of having served it.
  *
@@ -318,13 +326,18 @@ export function partsWithinBound<Part>(
  * sent, not by the prompt event's own content hash: a prompt long enough to
  * spill carries its blob key as that hash, so one text inline and the same text
  * spilled read as two different contents and each serves the session again.
+ *
+ * A prompt that is only a system-notification envelope its harness declares
+ * is answered empty, with `notification` named, and no contributor runs. The
+ * ask names that harness; an ask that names none uses the session's recorded
+ * agent. A harness that declares none is answered by the contributors below.
  */
 export async function composePromptContext(
   db: RelationalStore,
   scope: ReadScope,
   leaves: RecallLeaves,
   capabilityOn: boolean,
-  input: { sessionId: string; text: string; now: number; admission: SessionWriteAdmission } & Partial<AskNaming>,
+  input: { sessionId: string; text: string; now: number; admission: SessionWriteAdmission; agent?: unknown } & Partial<AskNaming>,
   resolveSemantic?: () => Promise<SemanticSearch | null>,
   classifyError?: ErrorClassifier,
   timings?: ContextTimings,
@@ -333,6 +346,11 @@ export async function composePromptContext(
   const identity = { projectId: scope.projectId, sessionId: input.sessionId, promptId: naming.promptId };
   let counts = emptyInjectionCounts();
   let receiptId: string | undefined;
+  const asked = harnessName(input.agent);
+  const agent = asked ?? (await sessionAgent(db, scope.projectId, input.sessionId))?.agent ?? null;
+  if (isHarnessSystemNotification(CAPTURE_RULE_BUNDLES, agent, input.text)) {
+    return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['notification'] }, [], counts, input.now, classifyError);
+  }
   if (!capabilityOn) return recordPromptAnswer(db, identity, naming, input.admission, { context: '', parts: [], skipped: ['capability'] }, [], counts, input.now, classifyError);
 
   const skipped: RecallSkip[] = [];

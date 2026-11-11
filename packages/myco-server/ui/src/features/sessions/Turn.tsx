@@ -367,7 +367,7 @@ function Contribution({ label }: { label: string }) {
 }
 
 const SKIP_WORDS: Record<string, string> = {
-  capability: 'Project context is turned off', repeat: 'Context already prepared',
+  capability: 'Project context is turned off', notification: 'This prompt is a task notification', repeat: 'Context already prepared',
   'spores:disabled': 'Spore suggestions are turned off', 'spores:short_prompt': 'Prompt too short to match',
   'spores:empty': 'No relevant memories found', 'spores:repeat': 'Relevant memories already served',
   'spores:zero_max': 'Memory limit is zero', 'spores:capability': 'Project context is turned off',

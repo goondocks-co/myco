@@ -130,7 +130,7 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
     settingsWriter(env.db).capabilityEnabled(ctx.projectId, 'cortex'),
   ]);
   const served = await composePromptContext(env.db, { projectId: ctx.projectId }, leaves, capabilityOn, {
-    sessionId, text, now: ctx.now, admission, ...naming,
+    sessionId, text, now: ctx.now, admission, agent: body.agent, ...naming,
   }, () => resolveSemanticSearch(env), env.platform?.classifyError, ctx.contextTimings);
   if (served.refusal !== undefined) return Response.json(refused(ctx, served.refusal));
   return Response.json({ persisted: true, ...served });
