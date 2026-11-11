@@ -38,6 +38,51 @@ function harness() {
 }
 
 describe('Myco’s work now', () => {
+  it('names pulled work by its real deadline and Project, only while current capacity and budget admit it', async () => {
+    const h = harness();
+    await completeBudgetMigration(h.fixture.db, NOW);
+    h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
+    const pending = (project: string, deadline: number) => {
+      h.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at) VALUES(?1,?1,'m1','tok_1',?2,?2,?2)", [project, NOW - 2 * HOUR]);
+      h.sqlite.run("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at) VALUES(?1,?1,'ready',?2)", [project, NOW - 2 * HOUR]);
+      h.sqlite.run("INSERT INTO turn_cards(project_id,session_id,turn_key,due_at,created_at) VALUES(?1,?1,'turn',?2,?3)", [project, deadline, NOW - 2 * HOUR]);
+    };
+    pending('proj_1', NOW - MINUTE);
+    pending('proj_2', NOW - HOUR);
+    const needs = async (scope?: Parameters<typeof h.read>[0]) => (await h.read(scope)).needsYou.filter(item => item.key.startsWith('pulled:'));
+    expect(await needs()).toEqual([]);
+    h.sqlite.run("UPDATE turn_cards SET due_at=? WHERE project_id='proj_1'", [NOW - HOUR]);
+    expect(await needs()).toEqual([{ key: 'pulled:proj_1:turn-cards', projectId: 'proj_1',
+      what: 'Summarize session turns has waited 60 minutes with no machine taking it', why: 'Open Runners to check that a machine is available and signed in to a coding agent.',
+      at: NOW - HOUR, runId: null, retryAt: null }]);
+    expect((await needs({ all: true })).map(item => item.projectId).sort()).toEqual(['proj_1', 'proj_2']);
+    h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.limits.concurrent_runs','1',1,'owner')");
+    h.run('proj_2', 'busy', 'title-summary', 'running', NOW - MINUTE);
+    expect(await needs()).toEqual([]);
+    h.sqlite.run("UPDATE agent_runs SET status='completed',completed_at=? WHERE id='busy'", [NOW]);
+    expect(await needs()).toHaveLength(1);
+    h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.budget.daily_usd','1',1,'owner')");
+    h.sqlite.run("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,cost_usd,cost_source) VALUES('proj_2','busy','spent','fixture',?,1,'actual')", [NOW - MINUTE]);
+    expect(await needs()).toEqual([]);
+  });
+
+  it('names learning and curation waiting since their due dates and drops disabled work', async () => {
+    const h = harness();
+    await completeBudgetMigration(h.fixture.db, NOW);
+    h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
+    h.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at) VALUES('proj_1','learn','m1','tok_1',?1,?1,?1)", [NOW - 2 * HOUR]);
+    h.sqlite.run(`INSERT INTO learning_sessions(project_id,session_id,init_state,counted,source_activity_at,eligible_at,quiet_at,learning_promoted_at)
+      VALUES('proj_1','learn','ready',1,?1,?2,?2,?2)`, [NOW - 2 * HOUR, NOW - HOUR]);
+    h.sqlite.run("INSERT INTO project_capabilities VALUES('proj_1','spore_curation',1,1,'owner')");
+    h.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES('proj_1','group','[]',?)", [NOW - 45 * MINUTE]);
+    expect((await h.read()).needsYou.filter(item => item.key.startsWith('pulled:'))).toMatchObject([
+      { what: 'Learn from sessions has waited 60 minutes with no machine taking it', at: NOW - HOUR },
+      { what: 'Curate overlapping spores has waited 45 minutes with no machine taking it', at: NOW - 45 * MINUTE },
+    ]);
+    h.sqlite.run("UPDATE project_capabilities SET enabled=0 WHERE capability='spore_curation'");
+    h.sqlite.run("UPDATE deployment_settings SET value='false' WHERE leaf='agent.scheduled_tasks_enabled'");
+    expect((await h.read()).needsYou).toEqual([]);
+  });
   it('lists a running run with its machine, its last check-in, model and latest step in plain words', async () => {
     const h = harness();
     h.run('proj_1', 'run_live', 'curate-spores', 'running', NOW - 2 * MINUTE, { runner: 'rn_mini' });

@@ -12,6 +12,12 @@ import { readFinishedRuns, readRunHours, runWindow, FINISHED_RUNS_PAGE } from '@
 import { failStaleRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { unclaimedDue } from '@myco-server-worker/db/runs/unclaimed.js';
 import { d1TwoScale, eachUnit, expectTwoScale } from './helpers/two-scale.js';
+import { readPulledWaiting } from '@myco-server-worker/read/pulled-waiting.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
+import { NOW_PROJECTS_MAX } from '@myco-server-worker/db/runs/now.js';
+import { readWorkNow } from '@myco-server-worker/read/work-now.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -20,6 +26,48 @@ const TASKS = JSON.stringify(['embedding-reconcile', 'title-summary', 'canopy-ma
 const CODES = JSON.stringify([null, null, 'machine_unresponsive', 'lease_lapsed']);
 /** Runs that finished inside the page's widest read: the last two weeks. */
 const RECENT = 400;
+
+it('pulled work on one Project or an all-Projects page costs D1 the same as unrelated Projects grow', async () => {
+  const page = Array.from({ length: NOW_PROJECTS_MAX }, (_, i) => `proj_visible_${i}`);
+  const work = async (db: RelationalStore, project: string) => {
+    await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
+    await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,counted,source_activity_at,pending_cards,next_model_due_at,quiet_at,card_promoted_at,eligible_at,learning_promoted_at) VALUES(?1,'waiting','ready',1,?2,1,?3,?3,?3,?3,?3)")
+      .bind(project, NOW - 2 * HOUR, NOW - HOUR).run();
+    await db.prepare("UPDATE learning_sessions SET next_model_due_at=?2,card_promoted_at=?2 WHERE project_id=?1").bind(project, NOW - HOUR).run();
+    await db.prepare("INSERT INTO project_capabilities VALUES(?1,'spore_curation',1,1,'owner')").bind(project).run();
+    await db.prepare("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES(?1,'group','[]',?2)").bind(project, NOW - HOUR).run();
+  };
+  expectTwoScale(await d1TwoScale({
+    sizes: [500, 5_000],
+    setup: async db => {
+      await completeBudgetMigration(db, NOW);
+      await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner'),('agent.learning_history_enabled','true',1,'owner')").run();
+      for (const project of page) await work(db, project);
+    },
+    grow: async (db, from, to) => {
+      await eachUnit(db, from, to, "INSERT INTO projects(project_id,name,created_at) SELECT 'proj_unrelated_'||i,'other',1 FROM n");
+      await eachUnit(db, from, to, `INSERT INTO learning_sessions(project_id,session_id,init_state,counted,source_activity_at,pending_cards,next_model_due_at,quiet_at,card_promoted_at,eligible_at,learning_promoted_at)
+        SELECT 'proj_unrelated_'||i,'waiting','ready',1,?3,1,?4,?4,?4,?4,?4 FROM n`, NOW - 2 * HOUR, NOW - HOUR);
+      await eachUnit(db, from, to, "UPDATE learning_sessions SET next_model_due_at=?3,card_promoted_at=?3 WHERE project_id IN (SELECT 'proj_unrelated_'||i FROM n)", NOW - HOUR);
+      await eachUnit(db, from, to, "INSERT INTO project_capabilities SELECT 'proj_unrelated_'||i,'spore_curation',1,1,'owner' FROM n");
+      await eachUnit(db, from, to, "INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) SELECT 'proj_unrelated_'||i,'group','[]',?3 FROM n", NOW - HOUR);
+    },
+    cases: [
+      { name: 'one Project with all pulled stages on', run: async db => {
+        const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() } as never);
+        const answer = await readWorkNow(env, { projectId: page[0]! }, NOW, true);
+        expect(answer.unavailable).toEqual([]);
+        const rows = answer.needsYou.filter(row => row.key.startsWith('pulled:'));
+        expect(rows).toHaveLength(3);
+        expect(rows.every(row => row.projectId === page[0])).toBe(true);
+      } },
+      { name: 'the bounded all-Projects page with all pulled stages on', run: async db => {
+        const rows = await readPulledWaiting({ db }, { projects: page, now: NOW, cutoff: NOW - HOUR / 2 });
+        expect(new Set(rows.map(row => row.projectId))).toEqual(new Set(page));
+      } },
+    ],
+  }));
+}, 240_000);
 
 /** Finished runs `[from, to)` ending `step` apart back from `end`, across two Projects, three runners, four tasks and both ends. */
 const finished = (db: RelationalStore, prefix: string, from: number, to: number, end: number, step: number) => eachUnit(db, from, to, `INSERT INTO agent_runs

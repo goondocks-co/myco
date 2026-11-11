@@ -2,8 +2,9 @@ import { queuedPriority, queuedAdmissible } from '../db/runs/pull-policy.js';
 import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
-import { automaticFits, budgetHold } from '../db/runs/budget-policy.js';
-import { reserveForStage, BUDGET_WORKER_TASKS } from './budget-policy.js';
+import { budgetHold } from '../db/runs/budget-policy.js';
+import { pullBudgetAvailable, pullCapacityAvailable } from './pulled-admission.js';
+import { BUDGET_WORKER_TASKS } from './budget-policy.js';
 import {
   pulledStages,
   PULL_RESELECTIONS,
@@ -1167,13 +1168,13 @@ async function pullAtClaim(
     }
     const limits = attempt === 0 ? read.limits : await readDispatchLimits(env);
     const eligible: PulledStage[] = [];
-    for (const stage of compatible) if (heldBy(await dispatchLoad(env.db, stage.task, worker.now), limits) === null) eligible.push(stage);
+    for (const stage of compatible) if (await pullCapacityAvailable(env.db, stage.task, limits, worker.now)) eligible.push(stage);
     const selection = await selectPulled(env.db, eligible, compatible, limits, worker.now);
     if (selection === null) return null;
     const { stage, item } = selection;
     const chosen = executions.get(stage.task)!;
     const price = await estimateForClaim(env.db, item.projectId, stage.task, chosen.harness, chosen.profile);
-    if (!(await automaticFits(env.db, price.estimate, worker.now, reserveForStage(stage.task), read.activation))) return null;
+    if (!(await pullBudgetAvailable(env.db, stage.task, worker.now, { estimate: price.estimate, activation: read.activation }))) return null;
     const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
     const resolvesTo = await catalogResolution(env.db, catalogOwner, chosen.harness, chosen.profile.model, worker.now);
     const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };

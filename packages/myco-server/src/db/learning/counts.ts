@@ -2,6 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet, write } from '../index.js';
 import { jsonKeys } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
+import { readyLearningProject } from './project-ready.js';
 
 const PAGE_KEYS = jsonKeys(['project_id', 'session_id']);
 const COUNT_PAGE = 25;
@@ -42,13 +43,12 @@ const ROLLUP = 'COALESCE(SUM(pending_cards),0) AS pending_cards,COALESCE(SUM(due
 const deploymentRollup = read<[], LearningRollup>({ name: 'learningCounts.deployment', sql: `SELECT ${ROLLUP} FROM learning_project_counts` });
 const projectRollup = read<[project: string], LearningRollup>({ name: 'learningCounts.project', sql: `SELECT ${ROLLUP} FROM learning_project_counts WHERE project_id=?1` });
 const readyProjects = read<[], { n: number }>({ name: 'learningCounts.readyProjects', sql: 'SELECT COUNT(*) AS n FROM (SELECT DISTINCT project_id FROM learning_ready_projects WHERE ready>0)' });
-const readyInProject = read<[project: string], { n: number }>({ name: 'learningCounts.readyProject', sql: 'SELECT COUNT(*) AS n FROM (SELECT 1 FROM learning_ready_projects WHERE project_id=?1 AND ready>0 LIMIT 1)' });
 
 /** One read of the maintained rollup, Deployment-wide or for one Project, and how many Projects have ready work. */
 export async function readLearningRollup(db: RelationalStore, scope: { projectId: string } | undefined): Promise<LearningRollup & { readyProjects: number }> {
   const [rollup, ready] = scope === undefined
     ? await readSet(db, deploymentRollup.bind(), readyProjects.bind())
-    : await readSet(db, projectRollup.bind(scope.projectId), readyInProject.bind(scope.projectId));
+    : await readSet(db, projectRollup.bind(scope.projectId), readyLearningProject(scope.projectId));
   return { ...rollup[0]!, readyProjects: ready[0]?.n ?? 0 };
 }
 

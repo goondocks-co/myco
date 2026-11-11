@@ -5,30 +5,31 @@ import { NOW_WATCHED_TASKS, unresolvedFailureRows } from './outcomes.js';
 import { RUN_TOOL_EVENT } from './evidence.js';
 import { read, readSet } from '../index.js';
 
-const NOW_PROJECTS_MAX = 25;
+export const NOW_PROJECTS_MAX = 25;
 const NOW_RUNNING_MAX = 20;
 type TodayScope = { projectId: string } | { all: true };
 export interface ProjectCursor { priority: number; activity: number; projectId: string }
 type Row = Record<string, unknown>;
 const scopeSql = `(?1 IS NULL AND EXISTS(SELECT 1 FROM projects p WHERE p.project_id=r.project_id AND p.archived_at IS NULL) OR r.project_id=?1)`;
-const projectScope = '(?1 IS NULL AND p.archived_at IS NULL OR p.project_id=?1)';
-const projectRows = `WITH live AS MATERIALIZED (SELECT DISTINCT project_id FROM agent_runs INDEXED BY idx_agent_runs_claimable
-    WHERE ${IN_FLIGHT_RUN_STATUSES})
+const projectScope = ({ all }: { all: boolean }) => all ? '?1 IS NULL AND p.archived_at IS NULL' : 'p.project_id=?1';
+const projectRows = ({ all }: { all: boolean }) => `WITH live AS MATERIALIZED (SELECT DISTINCT project_id FROM agent_runs INDEXED BY idx_agent_runs_claimable
+    WHERE ${IN_FLIGHT_RUN_STATUSES}${all ? '' : ' AND project_id=?1'})
   SELECT p.project_id,CASE WHEN EXISTS(SELECT 1 FROM live WHERE live.project_id=p.project_id)
     OR EXISTS(SELECT 1 FROM json_each('${JSON.stringify(NOW_WATCHED_TASKS)}') t
       WHERE EXISTS(SELECT 1 FROM (${unresolvedFailureRows('p.project_id', 't.value')}))) THEN 1 ELSE 0 END AS priority,
     COALESCE((SELECT f.last_received_at FROM session_read_facts f
       WHERE f.project_id=p.project_id AND f.has_session=1 AND f.tombstoned=0 ORDER BY f.last_received_at DESC LIMIT 1),p.created_at) AS activity
-    FROM projects p WHERE ${projectScope}`;
-const projects = read<[string | null, number | null, number | null, string | null], { project_id: string; priority: number; activity: number }>({
-  name: 'runs.todayProjects', sql: `SELECT * FROM (${projectRows}) WHERE ?2 IS NULL OR priority<?2
+    FROM projects p WHERE ${projectScope({ all })}`;
+const projects = [true, false].map(all => read<[project: string | null, priority: number | null, activity: number | null, after: string | null], { project_id: string; priority: number; activity: number }>({
+  name: `runs.todayProjects${all ? 'All' : 'Named'}`, sql: `SELECT * FROM (${projectRows({ all })}) WHERE ?2 IS NULL OR priority<?2
     OR (priority=?2 AND (activity<?3 OR (activity=?3 AND project_id>?4)))
     ORDER BY priority DESC,activity DESC,project_id LIMIT ${NOW_PROJECTS_MAX + 1}`,
-});
-const projectTotal = read<[string | null], { n: number }>({ name: 'runs.todayProjectTotal', sql: `SELECT COUNT(*) AS n FROM projects p WHERE ${projectScope}` });
+}));
+const projectTotal = [true, false].map(all => read<[project: string | null], { n: number }>({ name: `runs.todayProjectTotal${all ? 'All' : 'Named'}`, sql: `SELECT COUNT(*) AS n FROM projects p WHERE ${projectScope({ all })}` }));
 export async function todayProjects(db: RelationalStore, scope: TodayScope, cursor: ProjectCursor | null = null) {
   const id = 'projectId' in scope ? scope.projectId : null;
-  const [rows, total] = await readSet(db, projects.bind(id, cursor?.priority ?? null, cursor?.activity ?? null, cursor?.projectId ?? null), projectTotal.bind(id));
+  const index = 'projectId' in scope ? 1 : 0;
+  const [rows, total] = await readSet(db, projects[index]!.bind(id, cursor?.priority ?? null, cursor?.activity ?? null, cursor?.projectId ?? null), projectTotal[index]!.bind(id));
   const page = rows.slice(0, NOW_PROJECTS_MAX);
   const last = page.at(-1);
   const hasMore = rows.length > NOW_PROJECTS_MAX;

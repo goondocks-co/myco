@@ -16,7 +16,8 @@ import { FRESH_LEARNING_MS, learningRangeSql } from '../runs/learning-policy.js'
  * source has gone past the freshness window, and promotion classifies the row it promotes the same way, so a session
  * promoted before the age page reaches it never reads as fresh. Every statement is capped, so a backlog drains over several passes.
  */
-export type LearningStage = 'cardsFresh' | 'cardsHistory' | 'learningFresh' | 'learningHistory';
+export const LEARNING_STAGE_NAMES = ['cardsFresh', 'cardsHistory', 'learningFresh', 'learningHistory'] as const;
+export type LearningStage = typeof LEARNING_STAGE_NAMES[number];
 export const stageOf = (kind: 'cards' | 'learning', fresh: boolean): LearningStage =>
   `${kind}${fresh ? 'Fresh' : 'History'}` as LearningStage;
 
@@ -67,7 +68,7 @@ export async function learningDeadlinesPending(db: RelationalStore, now: number)
 
 const taskOf = (kind: 'cards' | 'learning') => kind === 'cards' ? CARD_TASK : EXTRACTION_TASK;
 const subjectPrefix = (kind: 'cards' | 'learning') => kind === 'cards' ? 'cards:' : 'session:';
-const notInFlight = (kind: 'cards' | 'learning') => `NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live
+export const learningNotInFlight = (kind: 'cards' | 'learning') => `NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live
   WHERE r.task='${taskOf(kind)}' AND r.${IN_FLIGHT_RUN_STATUSES} AND r.subject='${subjectPrefix(kind)}'||l.session_id)`;
 const readyIndex = (kind: 'cards' | 'learning') => kind === 'cards' ? 'idx_learning_card_ready' : 'idx_learning_stage_ready';
 const stageColumn = (kind: 'cards' | 'learning') => kind === 'cards' ? 'card_stage' : 'learning_stage';
@@ -85,7 +86,7 @@ export function learningEligible(kind: 'cards' | 'learning', fresh: boolean, now
 
 /** A session of this stage in the Project the SQL expression `project` names is ready and has no run in flight. */
 export const learningDue = (kind: 'cards' | 'learning', fresh: boolean, project: string, now: string): string =>
-  `EXISTS(SELECT 1 FROM learning_sessions l INDEXED BY ${readyIndex(kind)} WHERE l.project_id=${project} AND ${learningEligible(kind, fresh, now)} AND ${notInFlight(kind)})`;
+  `EXISTS(SELECT 1 FROM learning_sessions l INDEXED BY ${readyIndex(kind)} WHERE l.project_id=${project} AND ${learningEligible(kind, fresh, now)} AND ${learningNotInFlight(kind)})`;
 
 /** The Projects a stage's ready rows can come from: the summary of promoted rows, joined to the Project row. */
 export const learningReadyProjects = (kind: 'cards' | 'learning', fresh: boolean): string =>
@@ -95,7 +96,7 @@ const heads = Object.fromEntries((['cards', 'learning'] as const).flatMap(kind =
   name: `learningReady.head${stageOf(kind, fresh)}`,
   sql: `SELECT l.session_id AS sessionId,l.${kind === 'cards' ? 'source_activity_at' : 'eligible_at'} AS observed
     FROM learning_sessions l INDEXED BY ${readyIndex(kind)}
-    WHERE l.project_id=?1 AND l.${kind === 'cards' ? 'card' : 'learning'}_deadline<=?2 AND ${learningEligible(kind, fresh, '?2')} AND ${notInFlight(kind)}
+    WHERE l.project_id=?1 AND l.${kind === 'cards' ? 'card' : 'learning'}_deadline<=?2 AND ${learningEligible(kind, fresh, '?2')} AND ${learningNotInFlight(kind)}
     ORDER BY l.source_activity_at DESC,l.session_id LIMIT 1`,
 })]))) as Record<LearningStage, ReturnType<typeof read<[string, number], Head>>>;
 type Head = { sessionId: string; observed: number };
