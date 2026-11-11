@@ -2,7 +2,7 @@ import type { ErrorClassifier, RelationalStore } from '../../core/adapters.js';
 import type { BlobRef } from '../../core/blob-references.js';
 import { assertion, commitNamed, first, read, readSet, refusalCode, refused, rows, write } from '../index.js';
 import { RELEASE_PAGE, HOLD_OPEN, decideRecordedBlobs } from '../storage/release-queue.js';
-import { DELETION_PAGE, DELETION_PHASES, PLANS_PHASE, RESERVATION_CUTOFF, REMAINING_TABLES, remainingTerm, type DeletionPhase, type RecordedCandidate } from './deletion-phases.js';
+import { DELETION_PAGE, DELETION_PHASES, RESERVATION_CUTOFF, REMAINING_TABLES, remainingTerm, type DeletionPhase, type RecordedCandidate } from './deletion-phases.js';
 import { sessionFactsCleared, sessionPresent } from './tombstones.js';
 import { classify, emit } from '../../telemetry.js';
 
@@ -96,22 +96,17 @@ export interface DeletionAccept { projectId: string; sessionId: string; by: stri
 
 /**
  * Accepts a session's deletion, in one commit: the tombstone that hides it from every read and refuses further capture,
- * the facts it says of itself, its snapshots in other sessions' receipts, the rows project-wide reads show, and the job that owns the
- * rest. Answers the job as it stands, or null when the Project holds no such session.
+ * the facts it says of itself, its snapshots in other sessions' receipts, and the job that owns bounded cleanup.
+ * Answers the job as it stands, or null when the Project holds no such session.
  */
 export async function acceptSessionDeletion(db: RelationalStore, accept: DeletionAccept): Promise<DeletionProgress | null> {
   const { projectId, sessionId, by, reason, now } = accept;
   if (!await sessionPresent(db, projectId, sessionId)) return null;
-  const [plans] = await readSet(db, PLANS_PHASE.page.bind(projectId, sessionId, DELETION_PAGE));
-  const planPage = pageStatements(PLANS_PHASE, plans, sessionId, now);
-  const { status, recorded } = await commitNamed(db, {
+  const { status } = await commitNamed(db, {
     tombstone: insertTombstone.bind(projectId, sessionId, reason ?? null, now, by),
     job: insertJob.bind(projectId, sessionId, firstPhase, now),
     facts: sessionFactsCleared(projectId, sessionId),
     served: maskServedItems.bind(projectId, sessionId),
-    planTags: planPage.before,
-    recorded: planPage.recorded,
-    plans: planPage.removed,
     cards: removePendingCards.bind(projectId, sessionId),
     learning: removeLearning.bind(projectId, sessionId),
     document: removeDocument.bind(projectId, sessionId, now),
@@ -119,8 +114,6 @@ export async function acceptSessionDeletion(db: RelationalStore, accept: Deletio
   });
   const row = status.results[0];
   if (row === undefined) return null;
-  const candidates = CANDIDATES(recorded.map(result => result.results));
-  if (candidates.length > 0) await decideCandidates(db, candidates, now);
   return progressOf(row);
 }
 

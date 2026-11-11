@@ -53,12 +53,13 @@ export interface ProjectStatistics {
   sessionsLast7d: number;
   prompts: number;
   toolCalls: number;
-  plans: number;
+  /** Null while plan contributions are being counted or retired. */
+  plans: number | null;
   attachments: number;
   lastActivityAt: number | null;
 }
 
-/** The statistics of a Project, from its counters; `building` until existing sessions, attachments and plans have been counted. */
+/** The statistics of a Project, from its counters; `building` until existing sessions and attachments have been counted. */
 export type ProjectStatisticsAnswer = { state: 'building' } | ({ state: 'ready' } & ProjectStatistics);
 
 /** One Project's statistics in a fixed number of small reads, whatever it holds. */
@@ -69,7 +70,7 @@ export async function projectStatistics(db: RelationalStore, projectId: string, 
     planStatusTotals(db, { projectId }),
   ]);
   const [done, count, days, last] = held;
-  if (done.length !== Object.keys(PROJECT_STATISTICS_CATCHUP.phases).length || done.some(phase => phase.done !== 1) || plans.state === 'building') return { state: 'building' };
+  if (done.length !== Object.keys(PROJECT_STATISTICS_CATCHUP.phases).length || done.some(phase => phase.done !== 1)) return { state: 'building' };
   const row = count[0];
   return {
     state: 'ready',
@@ -78,7 +79,7 @@ export async function projectStatistics(db: RelationalStore, projectId: string, 
     sessionsLast7d: days.reduce((sum, day) => sum + day.n, 0),
     prompts: row?.prompts ?? 0,
     toolCalls: row?.tool_calls ?? 0,
-    plans: Object.values(plans.value).reduce((sum, n) => sum + n, 0),
+    plans: plans.state === 'ready' ? Object.values(plans.value).reduce((sum, n) => sum + n, 0) : null,
     attachments: row?.attachments ?? 0,
     lastActivityAt: last[0]?.last_received_at ?? null,
   };

@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
+import { retiringPlansSql } from '../plans/retirement.js';
 import { read, readSet } from '../index.js';
 import { firstPromptSql } from '../sessions/browse.js';
 import { everyPhaseDone } from '../projections/family.js';
@@ -14,12 +15,13 @@ export interface ActivityKey { sortAt: number; kind: string; sourceId: string }
 export interface ActivitySessionLabel { session_id: string; title: string | null; first_prompt: string | null; agent: string | null }
 
 const COLUMNS = 'kind,source_id,sort_at,preview,session_id';
+const VISIBLE = `NOT ${retiringPlansSql('j.project_id=a.project_id AND j.session_id=a.session_id')}`;
 const ORDER = 'ORDER BY sort_at DESC,kind DESC,source_id DESC';
 
 const FIRST = read<[project: string, limit: number], ActivityRow>({ name: 'activityFeed.first',
-  sql: `SELECT ${COLUMNS} FROM project_activity INDEXED BY idx_project_activity_feed WHERE project_id=?1 ${ORDER} LIMIT ?2` });
+  sql: `SELECT ${COLUMNS} FROM project_activity a INDEXED BY idx_project_activity_feed WHERE a.project_id=?1 AND ${VISIBLE} ${ORDER} LIMIT ?2` });
 const AFTER = read<[project: string, limit: number, sortAt: number, kind: string, sourceId: string], ActivityRow>({ name: 'activityFeed.after',
-  sql: `SELECT ${COLUMNS} FROM project_activity INDEXED BY idx_project_activity_feed WHERE project_id=?1
+  sql: `SELECT ${COLUMNS} FROM project_activity a INDEXED BY idx_project_activity_feed WHERE a.project_id=?1 AND ${VISIBLE}
     AND sort_at<=?3 AND (sort_at<?3 OR (sort_at=?3 AND (kind<?4 OR (kind=?4 AND source_id<?5)))) ${ORDER} LIMIT ?2` });
 const PHASES = read<[projection: string], { phase: string; done: number }>({ name: 'activityFeed.phases',
   sql: 'SELECT phase,done FROM projection_catchup WHERE projection=?1' });
@@ -30,6 +32,7 @@ const SESSION_LABELS = read<[project: string, sessions: string], ActivitySession
 /**
  * One feed page, newest first, at most `limit` + 1 rows after `after`, the labels of the sessions on it, and whether
  * every existing source has been added yet: until then the page holds only what was added or written since.
+ * Rows belonging to a session whose plans are retiring are withheld; unrelated activity remains visible.
  */
 export async function readActivityPage(db: RelationalStore, request: { projectId: string; after: ActivityKey | null; limit: number }): Promise<{
   rows: ActivityRow[]; sessions: Map<string, ActivitySessionLabel>; building: boolean;

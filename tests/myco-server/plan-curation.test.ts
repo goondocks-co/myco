@@ -95,7 +95,9 @@ describe('plan curation', () => {
     await refused({ plan_id: r.ids.idle, decision: 'completed', note: 'Swept.', evidence: [] }, 'a completed decision cites 0 evidence ids; it cites at least 1');
     await refused({ plan_id: r.ids.idle, decision: 'completed', note: 'Swept.', evidence: ['pr:2180'] }, 'evidence "pr:2180" is not listed for this plan');
     await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: ['pr:2180', 'pr:2180'] }, 'evidence lists "pr:2180" twice');
-    await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: ['pr:2000'] }, 'evidence "pr:2000" was reported by session planning');
+    await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: ['pr:2000'] }, 'before this plan was written');
+    await reportSessionArtifact(r.e.db, scope, { sessionId: 'planning', kind: 'pr', artifactId: '2200', url: 'https://example.test/repo/pull/2200', author: 'mem_worker', reportedAt: STALE + 2 });
+    await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: ['pr:2200'] }, "but it is not among this plan's listed outcomes");
     // A session, an unfinished checklist or another plan shows where work happened, never that it landed.
     for (const id of ['session:planning', 'progress', `plan:${r.ids.idle}`]) {
       await refused({ plan_id: r.ids.writer, decision: 'completed', note: 'Landed.', evidence: [id] }, `a completed decision cites ["${id}"], none of them an outcome of this plan`);

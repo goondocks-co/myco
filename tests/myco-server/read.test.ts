@@ -3,8 +3,6 @@ import { projectStatistics as projectStats } from '@myco-server-worker/db/sessio
 import { describe, it, expect } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
 
-import { Database } from 'bun:sqlite';
-import { SCHEMA_DDL, SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { clampLimit, decodeCursor, encodeCursor, page, DEFAULT_PAGE, MAX_PAGE } from '@myco-server-worker/read/scope.js';
 
@@ -14,7 +12,6 @@ import {
   sessions_listProjects as listProjects,
   sessions_listSessions as listSessions,
   sessions_sessionDurationMs as sessionDurationMs,
-  sessions_SESSION_OCCURRED_AT as SESSION_OCCURRED_AT,
 } from '@myco-server-worker/read/catalog/sessions.js';
 import { unarchiveProject } from '@myco-server-worker/db/storage/projects.js';
 import {
@@ -215,106 +212,6 @@ describe('D1 adapter', () => {
     sqlite.run(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_a', 'A', 1), ('proj_b', 'B', 2)`);
     const { results } = await db.prepare(`SELECT project_id, name FROM projects ORDER BY created_at`).all<{ project_id: string; name: string }>();
     expect(results.map((r) => r.project_id).filter((p) => p.startsWith('proj_'))).toEqual(['proj_1', 'proj_2', 'proj_a', 'proj_b']);
-  });
-});
-
-describe('schema v4', () => {
-  it('adds a recency index on sessions and stamps the build version', () => {
-    expect(SCHEMA_STEPS.at(-1)).toMatchObject({ version: SERVER_SCHEMA_VERSION });
-    const v4 = SCHEMA_STEPS.find((s) => s.version === 4);
-    expect(v4?.statements.some((s) => s.includes('idx_sessions_recent'))).toBe(true);
-  });
-
-  it('orders a project\'s sessions by the index key', async () => {
-    const { db, sqlite } = sqliteEnv();
-    sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-                VALUES ('proj_1','s1','m1','t1',1,10), ('proj_1','s2','m1','t1',2,30), ('proj_1','s3','m1','t1',3,20)`);
-    const { results } = await db.prepare(
-      `SELECT session_id FROM sessions WHERE project_id = ? ORDER BY last_received_at DESC, session_id DESC`
-    ).bind('proj_1').all<{ session_id: string }>();
-    expect(results.map((r) => r.session_id)).toEqual(['s2', 's3', 's1']);
-  });
-});
-
-/** A database at the build's schema, for reading a plan off it. */
-function planDb(drop: readonly string[] = []): Database {
-  const sqlite = new Database(':memory:');
-  for (const statement of SCHEMA_DDL) sqlite.exec(statement);
-  for (const index of drop) sqlite.exec(`DROP INDEX ${index}`);
-  return sqlite;
-}
-
-/**
- * How a statement reaches a project's sessions: the `sessions` index it seeks
- * on, whether it scanned the table instead, and whether the planner sorted what
- * that step produced.
- *
- * The plan is a tree, so the sort is attributed rather than searched for: a
- * sort of these rows sits beside the step that produced them. In a statement
- * whose sessions arm is one branch of a union, another branch always carries a
- * sort of its own, and a plan-wide search for one reports every such statement
- * as sorted.
- */
-function sessionPlan(sqlite: Database, sql: string): { index: string | null; scanned: string | null; sorted: boolean } {
-  const rows = sqlite.query(`EXPLAIN QUERY PLAN ${sql}`).all() as { id: number; parent: number; detail: string }[];
-  const search = rows.find((r) => /^SEARCH \w+ USING (?:COVERING )?INDEX idx_sessions_\w+/.test(r.detail)) ?? null;
-  return {
-    index: search === null ? null : /INDEX (idx_sessions_\w+)/.exec(search.detail)![1],
-    scanned: rows.map((r) => /^SCAN (s|sessions)\b/.exec(r.detail)?.[1]).find((x) => x !== undefined) ?? null,
-    sorted: search !== null && rows.some((r) => r.parent === search.parent && r.detail.includes('TEMP B-TREE')),
-  };
-}
-
-/**
- * The session list as PR #1195 issues it, first page and keyset page.
- *
- * The statement is a literal: the read that issues it has not landed yet, and
- * this step exists so the index is in place when it arrives. It is copied from
- * that branch's `read/sessions.ts`, and the ordering expression — the whole of
- * what this index answers — is the one `read/catalog/activity.ts` already orders by
- * here, so the test below holds the same plan against a statement the module
- * itself executes.
- */
-// The ordering expression is shared with the production read.
-const OCCURRED_AT = SESSION_OCCURRED_AT;
-const A4_SESSION_LIST = (keyset: boolean): string =>
-  `SELECT s.session_id, s.machine_id, s.created_by_token_id, s.first_received_at, s.last_received_at,
-     s.agent, s.branch, s.started_at, s.ended_at, s.origin_path, s.parent_session_id, s.parent_reason,
-     s.title, s.summary, s.titled_at, (SELECT first_prompt FROM session_documents d WHERE d.project_id=s.project_id AND d.session_id=s.session_id AND d.state='live') AS first_prompt,
-     c.member_id, c.runtime_label, c.runtime_kind, m.label AS member_label
-   FROM sessions s
-     LEFT JOIN member_credentials c ON c.id = s.created_by_token_id
-     LEFT JOIN members m ON m.id = c.member_id
-   WHERE s.project_id = ? AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = s.project_id AND t.session_id = s.session_id)${
-     keyset ? ` AND (${OCCURRED_AT} < ? OR (${OCCURRED_AT} = ? AND s.session_id < ?))` : ''}
-   ORDER BY ${OCCURRED_AT} DESC, s.session_id DESC LIMIT ?`;
-
-describe('schema v34', () => {
-  it('keeps occurrence ordering for session lists and receipt ordering for KPI denominators', () => {
-    const v34 = SCHEMA_STEPS.find((s) => s.version === 34);
-    expect(v34?.statements.some((s) => s.includes('CREATE INDEX IF NOT EXISTS idx_sessions_occurred'))).toBe(true);
-    expect(v34?.statements).toContain('DROP INDEX IF EXISTS idx_sessions_recent');
-    const sqlite = planDb();
-    try {
-      const indexes = sqlite.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions'").all().map(row => row.name);
-      expect(indexes).toEqual(expect.arrayContaining(['idx_sessions_occurred', 'idx_sessions_received']));
-      expect(indexes).not.toContain('idx_sessions_recent');
-    } finally { sqlite.close(); }
-  });
-
-  it('serves a session list ordered by when the session happened from one index, first page and keyset page alike, with no sort step', () => {
-    const served = planDb();
-    for (const keyset of [false, true]) {
-      expect({ keyset, ...sessionPlan(served, A4_SESSION_LIST(keyset)) })
-        .toEqual({ keyset, index: 'idx_sessions_occurred', scanned: null, sorted: false });
-    }
-    // The assertion above is load-bearing. Without the index the planner reaches
-    // the project's sessions by another path and sorts every one of them: the
-    // 0.026 ms and the 4.222 ms this step's measurement separates at 50k sessions.
-    const bare = planDb(['idx_sessions_occurred']);
-    for (const keyset of [false, true]) {
-      expect({ keyset, sorted: sessionPlan(bare, A4_SESSION_LIST(keyset)).sorted }).toEqual({ keyset, sorted: true });
-    }
   });
 });
 

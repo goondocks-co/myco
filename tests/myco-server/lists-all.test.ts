@@ -186,6 +186,14 @@ describe('the plan list across Projects', () => {
     plan('proj_3', '00000000-0000-4000-8000-000000000003', NOW);
     plan('proj_2', '00000000-0000-4000-8000-000000000004', NOW - 1);
     expect((await get('/api/plans?project=proj_2&project=proj_3')).body.plans.map((p: any) => p.planKey.slice(-1))).toEqual(['3', '2', '4']);
+    const named: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await get(`/api/plans?project=proj_2&project=proj_3&since=${NOW - 1}&limit=1${cursor === null ? '' : `&cursor=${encodeURIComponent(cursor)}`}`);
+      named.push(...page.body.plans.map((p: any) => p.planKey.slice(-1)));
+      cursor = page.body.cursor;
+    } while (cursor !== null);
+    expect(named).toEqual(['3', '2', '4']);
     expect((await get('/api/plans?project=absent')).status).toBe(404);
     const first = await get('/api/plans?limit=2');
     expect(first.body.plans.map((p: any) => p.planKey.slice(-1))).toEqual(['3', '2']);

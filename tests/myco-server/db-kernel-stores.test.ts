@@ -33,10 +33,21 @@ const DDL = ['CREATE TABLE items(id TEXT PRIMARY KEY,n INTEGER NOT NULL CHECK(n<
 const stores: [string, RelationalStore][] = [];
 let mf: Miniflare;
 let native: Database;
+let delayDelivery = false;
 
 beforeAll(async () => {
   native = new Database(':memory:');
   mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default {fetch(){return new Response("ok")}}', compatibilityDate: '2026-08-01', d1Databases: ['DB'] }));
+  const dispatch = mf.dispatchFetch;
+  mf.dispatchFetch = async (...args) => {
+    if (delayDelivery) {
+      delayDelivery = false;
+      await Bun.sleep(0);
+      Bun.gc(true);
+      await Bun.sleep(250);
+    }
+    return dispatch(...args);
+  };
   stores.push(['native', sqliteRelationalStore(native)], ['D1', await mf.getD1Database('DB')]);
   for (const [, db] of stores) await db.batch(DDL.map(sql => db.prepare(sql)));
 });
@@ -165,6 +176,16 @@ describe.each([['native'], ['D1']])('kernel executors on %s', target => {
       expect(named).toEqual([['kernelStores.present', 'kernelStores.bump'], ['kernelStores.one']]);
     } finally { emit.mockRestore(); }
   });
+});
+
+it('commits and reads D1 rows when GC runs before asynchronous delivery', async () => {
+  const db = stores.find(([name]) => name === 'D1')![1];
+  await reset(db);
+  delayDelivery = true;
+  const [result] = await commitAfter(db, [{ sql: '1', params: [] }], bump.bind('a'));
+  expect(result.results).toEqual([{ n: 2 }]);
+  delayDelivery = true;
+  expect(await first(db, one.bind('a'))).toEqual({ id: 'a', n: 2 });
 });
 
 describe('refusal identity', () => {

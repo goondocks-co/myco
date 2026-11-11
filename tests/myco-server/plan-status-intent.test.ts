@@ -1,32 +1,36 @@
 import { expect, it } from 'bun:test';
+import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { savePlan, changePlanStatus } from '@myco-server-worker/core/plans.js';
-import { sqliteEnv } from './helpers/fixtures.js';
-import { seedCredential, sqliteD1 } from './helpers/d1.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
+import { sqliteD1 } from './helpers/d1.js';
+import { schemaSqlite, schemaD1Root } from './helpers/schema-template.js';
+import { issueMemberToken } from './helpers/member-token.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
-it('a title-only save retains an administrator status written after its read', async () => {
-  const f = sqliteEnv();
+it('a title-only save retains a concurrent administrator status, on native SQLite and D1', async () => {
+  const sqlite = schemaSqlite();
+  const mf = new Miniflare(convertV4MiniflareOptions({ modules: true, script: 'export default { fetch() { return new Response(null); } }',
+    compatibilityDate: '2026-08-01', d1Databases: ['DB'], resourcePersistencePath: await schemaD1Root() }));
   try {
-    seedCredential(f.sqlite, { id: 't', expiresAt: 1000 });
-    const scope = { projectId: 'proj_1' };
-    const member = { machineId: 'machine_1', tokenId: 't' };
-    const created = await savePlan(f.serverEnv, member, scope, { sessionId: 's', planKey: 'key', content: 'body', title: 'Old' }, 100);
-    expect(created.ok).toBe(true);
-    if (!created.ok) throw new Error(created.error);
-    // An administrator's status edit lands between the save's read of the plan and its write: on the statement after the read.
-    let read = false;
-    let raced = false;
-    const db = sqliteD1(f.sqlite, { onSql(sql) {
-      if (read && !raced) {
-        raced = true;
-        f.sqlite.query("UPDATE plans SET status = 'completed', updated_by = 'admin', updated_at = 150 WHERE plan_key = ?").run(created.row.planKey);
-      }
-      if (sql.includes('FROM plans')) read = true;
-    } });
-    const updated = await savePlan({ ...f.serverEnv, db }, member, scope, { id: created.row.planKey, sessionId: 's', title: 'New' }, 200);
-    expect(raced).toBe(true);
-    expect(updated.ok && { title: updated.row.title, status: updated.row.status }).toEqual({ title: 'New', status: 'completed' });
-    const explicit = await savePlan(f.serverEnv, member, scope, { id: created.row.planKey, sessionId: 's', status: 'in_progress' }, 201);
-    expect(explicit.ok && explicit.row.status).toBe('in_progress');
-    expect((await changePlanStatus({ ...f.serverEnv, db }, scope, created.row.planKey, 'completed', 'admin', 202))?.status).toBe('completed');
-  } finally { f.sqlite.close(); }
-});
+    for (const db of [sqliteD1(sqlite), await mf.getD1Database('DB')]) {
+      await db.batch([
+        db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','Project',1)"),
+        db.prepare("INSERT INTO members(id,label,created_at) VALUES('member','Member',1)"),
+        db.prepare("INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES('machine','member',1)"),
+      ]);
+      const token = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, 1);
+      const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: memoryBlobStore(), SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
+      const scope = { projectId: 'proj_1' };
+      const member = { machineId: 'machine', tokenId: token.tokenId };
+      const created = await savePlan(env, member, scope, { sessionId: 's', planKey: 'key', content: 'body', title: 'Old' }, 100);
+      if (!created.ok) throw new Error(created.error);
+      const race = changingAtStatement(db, 'capture.planUpsert', () => changePlanStatus(env, scope, created.row.planKey, 'completed', 'admin', 150));
+      const updated = await savePlan({ ...env, db: race.store }, member, scope, { id: created.row.planKey, sessionId: 's', title: 'New' }, 200);
+      expect(race.landed()).toBe(true);
+      expect(updated.ok && { title: updated.row.title, status: updated.row.status }).toEqual({ title: 'New', status: 'completed' });
+      const explicit = await savePlan(env, member, scope, { id: created.row.planKey, sessionId: 's', status: 'in_progress' }, 201);
+      expect(explicit.ok && explicit.row.status).toBe('in_progress');
+    }
+  } finally { sqlite.close(); await mf.dispose(); }
+}, 120_000);

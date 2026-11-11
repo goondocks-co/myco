@@ -1,7 +1,6 @@
 import { launchParentSession } from '@myco/member/session-lineage.js';
 import { expect } from 'bun:test';
 import {
-  lineage_sessionLineage as sessionLineage,
   type lineage_SessionLineage as SessionLineage,
 } from '@myco-server-worker/read/catalog/lineage.js';
 import { type session_activity_SessionActivityRow as SessionActivityRow } from '@myco-server-worker/read/catalog/session-activity.js';
@@ -9,7 +8,7 @@ import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '..
 
 /** Launch and continuation parents recorded by `session.start`, read back as a family and as agent activity on both front doors. */
 export const sessionLineageParity: ParityScenario = {
-  name: 'session lineage: launch and continuation parents, unresolved parents, children reads on their indexes',
+  name: 'session lineage: launch and continuation parents, unresolved parents, ordered child pages',
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const id = (name: string) => `parity-lineage-${name}-${stamp}`;
@@ -57,5 +56,13 @@ export const sessionLineageParity: ParityScenario = {
       ['child_session', id('fixer'), 'Child of this session'],
       ['continuation', id('next'), 'Continues this session’s conversation · compact continuation'],
     ]);
+
+    await start('unicode-\ue000', stamp + 10, launched('unicode-\ue000', 'root'));
+    await start('unicode-😀', stamp + 10, launched('unicode-😀', 'root'));
+    const first = await read<{ rows: SessionActivityRow[]; cursor: string }>('root', 'activity?limit=1');
+    expect(first.rows.map(row => row.sessionId)).toEqual([id('unicode-😀')]);
+    const later = await read<{ rows: SessionActivityRow[] }>('root', `activity?limit=1&cursor=${encodeURIComponent(first.cursor)}`);
+    expect(later.rows.map(row => row.sessionId)).toEqual([id('unicode-\ue000')]);
+
   },
 };

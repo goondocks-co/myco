@@ -38,6 +38,8 @@ const clampLimit = (raw: string | null): number => {
  * The plans this Project holds, newest edit first, a page at a time (`cursor` names the next, `hasMore` says one
  * follows), optionally one status. Each row is the plan's metadata, a preview and its progress; the body is read from
  * the plan's own route.
+ * Cursors mark a position, not a snapshot: a plan edited between pages moves to the head and may be absent from
+ * the continuation; a fresh first page shows it.
  *
  * A status outside the catalogue is refused rather than answered empty: a filter
  * nothing matches and a filter nothing could match read the same on a page, and

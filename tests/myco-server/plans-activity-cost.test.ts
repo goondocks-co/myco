@@ -6,9 +6,12 @@ import {
   plans_pagePlansAcross as pagePlansAcross,
   plans_pageProjectPlans as pageProjectPlans,
   plans_pageSessionPlans as pageSessionPlans,
+  plans_planTotals as planTotals,
 } from '@myco-server-worker/read/catalog/plans.js';
 import { activity_activityFeed as activityFeed } from '@myco-server-worker/read/catalog/activity.js';
 import { session_activity_sessionEdges as sessionEdges } from '@myco-server-worker/read/catalog/session-activity.js';
+import { acceptSessionDeletion, advanceSessionDeletions } from '@myco-server-worker/db/sessions/deletion.js';
+import { sessions_listSessions as listSessions } from '@myco-server-worker/read/catalog/sessions.js';
 import { encodeCursor } from '@myco-server-worker/read/scope.js';
 import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
 import { d1TwoScale, eachUnit, expectTwoScale, type CostCase } from './helpers/two-scale.js';
@@ -43,7 +46,7 @@ async function setup(db: RelationalStore): Promise<void> {
   await db.prepare("UPDATE sessions SET parent_session_id='root',parent_reason='resume' WHERE project_id='proj_a' AND session_id='target'").run();
   for (const n of [1, 2, 3]) {
     await db.prepare(`INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
-      VALUES('proj_a',?1,'target',?1,'machine','Target','- [x] a','h','active',?2,?2,'credential',?2)`).bind(`target-${n}`, NOW + n).run();
+      VALUES('proj_a',?1,'target',?1,'machine','Target','- [x] a','h','completed',?2,?2,'credential',?2)`).bind(`target-${n}`, NOW + n).run();
   }
 }
 
@@ -53,6 +56,12 @@ async function grow(db: RelationalStore, from: number, to: number): Promise<void
       SELECT ?3,'plan-'||i,'history-'||i,'e-'||i,'machine','History '||i,'- [x] one'||char(10)||'- [ ] two','h',
         CASE i%4 WHEN 0 THEN 'abandoned' WHEN 1 THEN 'completed' WHEN 2 THEN 'in_progress' ELSE 'active' END,?4-i,?4-i,'credential',?4 FROM n`, project, NOW - 1_000);
   }
+  await eachUnit(db, from, to, `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
+    SELECT 'proj_w','excluded-'||i,'writer','excluded-'||i,'machine','Excluded','body','h','abandoned',?3,?3,'credential',?3 FROM n`, NOW + 1_000);
+  await eachUnit(db, from, to, `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,title,content,content_hash,status,created_at,updated_at,token_id,received_at)
+    SELECT 'proj_a','tied-'||printf('%06d',i),'target','tied-'||i,'machine','Tied','body','h','active',?3,?3,'credential',?3 FROM n`, NOW);
+  await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,launch_parent_session_id,parent_session_id)
+    SELECT 'proj_a','family-'||printf('%06d',i),'machine','credential',?3,?3,'target','target' FROM n`, NOW - 1_000);
   // History sessions have parents of their own: other sessions' lineage grows, the target's does not.
   await eachUnit(db, from, to, `INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,launch_parent_session_id,parent_session_id)
     SELECT 'proj_a','history-'||i,'machine','credential',?3-i,?3-i,'history-'||(i/10),'history-'||(i/7) FROM n`, NOW - 1_000);
@@ -77,12 +86,17 @@ const CASES: CostCase[] = [
     }
   } },
   { name: "a session's plans", run: async (db) => {
-    await twoPages(cursor => pageSessionPlans(db, A, 'target', { limit: 2, ...(cursor === undefined ? {} : { cursor }) }));
+    for (const status of [undefined, 'completed']) {
+      const options = { limit: 2, ...(status === undefined ? {} : { status }) };
+      await twoPages(cursor => pageSessionPlans(db, A, 'target', { ...options, ...(cursor === undefined ? {} : { cursor }) }));
+      await twoPages(cursor => pageProjectPlans(db, A, { ...options, sessionId: 'target', ...(cursor === undefined ? {} : { cursor }) }));
+    }
+    expect((await pageSessionPlans(db, A, 'target', { limit: 2, cursor: encodeCursor(NOW, 'tied-000200') })).rows.length).toBeGreaterThan(0);
   } },
   { name: 'plan pages across Projects: every Project, named Projects, one named Project, with and without a status', run: async (db) => {
     for (const set of [{ all: true } as const, { all: false, projectIds: ['proj_a', 'proj_b'] } as const, { all: false, projectIds: ['proj_b'] } as const]) {
       for (const status of [undefined, 'abandoned']) {
-        await twoPages(cursor => pagePlansAcross(db, set, { limit: PAGE, ...(status === undefined ? {} : { status }), ...(cursor === undefined ? {} : { cursor }) }));
+        await twoPages(cursor => pagePlansAcross(db, set, { limit: PAGE, since: NOW - 10_000, ...(status === undefined ? {} : { status }), ...(cursor === undefined ? {} : { cursor }) }));
       }
     }
   } },
@@ -91,7 +105,10 @@ const CASES: CostCase[] = [
     expect(all.map(row => row.id)).toEqual(['continued_by:cont-2', 'continued_by:cont-1', 'child:child-2', 'child:child-1']);
     for (const type of ['child_session', 'continuation'] as const) expect((await sessionEdges(db, A, 'target', { type })).length).toBeGreaterThan(0);
     const last = all[2]!;
-    expect((await sessionEdges(db, A, 'target', { limit: 3, cursor: encodeCursor(last.at, last.id) })).map(row => row.id)).toEqual(['child:child-1', 'continues:root']);
+    expect((await sessionEdges(db, A, 'target', { limit: 3, cursor: encodeCursor(last.at, last.id) })).map(row => row.id).slice(0, 2)).toEqual(['child:child-1', 'continues:root']);
+  } },
+  { name: 'session list occurrence order, first and later pages', run: async db => {
+    await twoPages(cursor => listSessions(db, A, { limit: PAGE, ...(cursor === undefined ? {} : { cursor }) }));
   } },
   { name: 'activity feed, first page', run: async (db) => {
     const feed = (await activityFeed(db, A, { limit: PAGE }))!;
@@ -115,4 +132,24 @@ const CASES: CostCase[] = [
 
 it('plan lists, the activity feed and the plan writer cost D1 the same as the Deployment\'s history grows', async () => {
   expectTwoScale(await d1TwoScale({ sizes: SIZES, setup, grow, cases: CASES, warm: true }));
+}, 300_000);
+
+it('accepting deletion and checking totals stay bounded as the deleted session grows', async () => {
+  expectTwoScale(await d1TwoScale({ sizes: [40, 400], setup, grow: async (db, from, to) => {
+    if (from > 0) for (let wake = 0; wake < 100 && (await advanceSessionDeletions(db, NOW)).more; wake++) { /* drain */ }
+    for (const session of from === 0 ? ['small-delete', 'large-delete'] : ['large-delete']) {
+      await db.prepare(`INSERT OR IGNORE INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
+        VALUES('proj_w',?1,'machine','credential',1,1)`).bind(session).run();
+      await eachUnit(db, from, to, `INSERT INTO plans(project_id,plan_key,session_id,event_id,machine_id,content,content_hash,status,created_at,updated_at,token_id,received_at)
+        SELECT 'proj_w',?3||'-'||i,?3,?3||'-'||i,'machine','body','h','active',1,1,'credential',1 FROM n`, session);
+    }
+  }, cases: [
+    { name: 'deletion acceptance', run: async (db, { scale }) => {
+      expect(await acceptSessionDeletion(db, { projectId: 'proj_w', sessionId: scale === 0 ? 'small-delete' : 'large-delete', by: 'member', now: NOW }))
+        .toMatchObject({ state: 'running' });
+    } },
+    { name: 'totals while contributions retire', run: async db => {
+      expect(await planTotals(db, WRITTEN)).toEqual({ state: 'building' });
+    } },
+  ] }));
 }, 300_000);
