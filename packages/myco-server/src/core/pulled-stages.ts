@@ -8,7 +8,7 @@ import type { Bound } from '../db/index.js';
  * queued head selects the best due item for its worker and creates the run row through the claim capability's pulled
  * form, whose write reasserts the selection (`core/worker-claim.ts`).
  */
-import type { PreparedStatement, RelationalStore, ServerEnv } from './adapters.js';
+import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { DispatchLimits } from './limits.js';
 import type { ClaimedInput } from './runs.js';
 import { readProjectSpend } from '../db/runs/admission.js';
@@ -17,6 +17,7 @@ import { admissionForTask } from './task-catalogue.js';
 import { CURATION_STAGE } from './spore-curation.js';
 import { LEARNING_STAGES } from './learning-stages.js';
 import { advanceLearningDeadlines } from '../db/learning/ready.js';
+import { dueProjects, stageSwitches } from '../db/runs/pulled-stage-reads.js';
 
 interface SqlTerm { sql: string; params: unknown[] }
 
@@ -63,7 +64,7 @@ export function installPulledStages(stages: readonly PulledStage[]): () => void 
 export async function switchedOnStages(db: RelationalStore, stages: readonly PulledStage[]): Promise<PulledStage[]> {
   if (stages.length === 0) return [];
   const switches = [...new Set(stages.map(stage => stage.switchedOn))];
-  const on = await db.prepare(`SELECT ${switches.map((sql, i) => `(${sql}) AS enabled${i}`).join(',')}`).first<Record<string, number>>();
+  const on = await stageSwitches(db, switches);
   if (on === null) throw new Error('Pulled stage switches are unavailable');
   return stages.filter(stage => on[`enabled${switches.indexOf(stage.switchedOn)}`] === 1);
 }
@@ -100,9 +101,7 @@ export async function selectPulled(db: RelationalStore, eligible: readonly Pulle
     const byProject = new Map<string, PulledStage[]>();
     for (const stage of eligible.filter((candidate) => candidate.level === level)) {
       const due = stage.due('p.project_id', now);
-      const { results } = await db.prepare(`SELECT p.project_id AS projectId FROM ${stage.candidates ?? 'projects p'} WHERE ${acceptsSql('p.project_id', stage.task)} AND ${due.sql}`)
-        .bind(...due.params).all<{ projectId: string }>();
-      for (const { projectId } of results) byProject.set(projectId, [...(byProject.get(projectId) ?? []), stage]);
+      for (const projectId of await dueProjects(db, stage.candidates ?? 'projects p', acceptsSql('p.project_id', stage.task), due)) byProject.set(projectId, [...(byProject.get(projectId) ?? []), stage]);
     }
     if (byProject.size === 0) continue;
     const projects = [...byProject.keys()];

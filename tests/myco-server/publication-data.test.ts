@@ -9,7 +9,7 @@ import { DocumentBatch, DocumentPassFull, PASS_CLOSING_STATEMENTS, VERSION_STATE
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
-import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
+import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
 import { measuredContentEnv, CONTENT_WAKE_JOB_RESERVE } from '@myco-server-worker/core/content-budget.js';
 import { STATEMENT_JSON_BYTES } from '@myco-server-worker/db/json-pages.js';
 import { envelope, readFixtureRecords, sqliteEnv, uuid } from './helpers/fixtures.js';

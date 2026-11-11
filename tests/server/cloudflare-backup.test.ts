@@ -12,7 +12,7 @@ import { writeDeploymentRecord, type CloudflareFetch, type OperatorObjectTimeout
 import { abandonRecoveryHold, RECOVERY_RETRY, verifyRecoveryBundle, type RecoveryRetryPolicy } from '@myco/server/recovery-bundle.js';
 import { CommandTimedOut, type CommandRunner } from '@myco/server/runner.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
-import { recoveryHoldSql } from '@myco-server-worker/core/object-release.js';
+import { recoveryHoldSql } from '@myco-server-worker/db/recovery/holds.js';
 import { SCHEMA_QUERY } from '@myco/server/recovery-schema.js';
 import { recoveryConfigurationOf } from '@myco/server/cloudflare-resources.js';
 import { HOSTED_RECOVERY_CREDENTIAL_NAMES } from '@myco-server-worker/core/recovery-staging.js';

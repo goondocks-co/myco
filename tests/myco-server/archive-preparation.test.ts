@@ -1,3 +1,4 @@
+import { commit } from '@myco-server-worker/db/index.js';
 import { describe, expect, it } from 'bun:test';
 import { prepareArchive, eventArchiveStatements, eventContent } from '@myco-server-worker/core/event-content.js';
 import { cleanupCandidate, storageCleanup, storageCleanupPending } from '@myco-server-worker/core/storage-cleanup.js';
@@ -106,7 +107,7 @@ describe('archive preparation lifecycle',()=>{
       expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM registered_content_proofs WHERE key=?').get(digest)).toEqual({n:0});
       const archive=await prepareArchive(rig.serverEnv,'event',row,now);
       expect(await reconcileArchivePreparations(rig.db,agedAt(rig,archive.bundle.preparationId),16)).toBe(1);
-      await expect(rig.db.batch(eventArchiveStatements(rig.db,row,archive))).rejects.toThrow();
+      await expect(commit(rig.db, ...eventArchiveStatements(rig.db,row,archive))).rejects.toThrow();
       expect(rig.sqlite.query('SELECT payload_format FROM events WHERE event_id=?').get(eventId)).toEqual({payload_format:'inline'});
     } finally {rig.sqlite.close();}
   });
@@ -129,7 +130,7 @@ describe('archive preparation lifecycle',()=>{
       expect(rig.bucket.objects.has(receiptPhysical)).toBe(false);
       expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM registered_content_proofs WHERE source_kind='event' AND source_id='other-source'").get()).toEqual({n:1});
       const adopted=await prepareArchive(rig.serverEnv,'event',row,now);
-      await rig.db.batch(eventArchiveStatements(rig.db,row,adopted));
+      await commit(rig.db, ...eventArchiveStatements(rig.db,row,adopted));
       expect(await reconcileArchivePreparations(rig.db,now+BLOB_RESERVATION_TTL_MS+1,16)).toBe(0);
       await settle(rig,now+BLOB_RESERVATION_TTL_MS+1);
       expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(1400)}));
@@ -147,7 +148,7 @@ describe('archive preparation lifecycle',()=>{
       expect(newer.receipt.key).toBe(older.receipt.key);
       await discardArchiveBundle(rig.serverEnv,older.bundle,now);
       expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM registered_content_proofs WHERE source_kind IN ('bundle','receipt')").get()).toEqual({n:2});
-      await rig.db.batch(eventArchiveStatements(rig.db,row,newer));
+      await commit(rig.db, ...eventArchiveStatements(rig.db,row,newer));
       await settle(rig,now+BLOB_RESERVATION_TTL_MS+1);
       expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(1400)}));
     } finally {rig.sqlite.close();}
@@ -159,7 +160,7 @@ describe('archive preparation lifecycle',()=>{
       const row=await source(rig);
       const adopted=await prepareArchive(rig.serverEnv,'event',row,now);
       const sibling=await prepareArchive(rig.serverEnv,'event',row,now);
-      await rig.db.batch(eventArchiveStatements(rig.db,row,adopted));
+      await commit(rig.db, ...eventArchiveStatements(rig.db,row,adopted));
       expect(rig.sqlite.query('SELECT preparation_id FROM prepared_archive_bundles').get()).toEqual({preparation_id:sibling.bundle.preparationId});
       const aged=agedAt(rig,sibling.bundle.preparationId);
       expect(await reconcileArchivePreparations(rig.db,aged,16)).toBe(1);
@@ -219,7 +220,7 @@ describe('archive preparation lifecycle',()=>{
       expect(renewed).toBe(true);
       expect(rig.sqlite.query('SELECT COUNT(*) AS n FROM prepared_archive_bundles').get()).toEqual({n:1});
       expect(rig.sqlite.query("SELECT COUNT(*) AS n FROM registered_content_proofs WHERE source_kind IN ('bundle','receipt')").get()).toEqual({n:2});
-      await rig.db.batch(eventArchiveStatements(rig.db,row,archive));
+      await commit(rig.db, ...eventArchiveStatements(rig.db,row,archive));
       expect(await eventContent(rig.serverEnv,projectId,eventId)).toBe(JSON.stringify({responseId:eventId,text:'original'.repeat(1400)}));
     } finally {rig.sqlite.close();}
   });

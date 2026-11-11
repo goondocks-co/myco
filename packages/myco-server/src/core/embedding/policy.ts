@@ -151,7 +151,7 @@ export function resolveEmbedding(stored: StoredEmbedding, target: DeploymentTarg
     if (legacy) {
       base = held.endpoint as string;
       credential = null;
-      endpointAnswer = answer(base, 'configured', 'invalid', `${spec.label} with an endpoint of its own is no longer offered. Search keeps sending requests to ${base}, without your ${spec.label} key, until you reset this to use ${spec.label}'s own endpoint and key, or choose ${EMBEDDING_CATALOGUE['openai-compatible'].label}.`);
+      endpointAnswer = answer(base, 'configured', 'invalid', `An endpoint of its own for ${spec.label} is no longer offered. Search keeps sending requests to ${base}, without your ${spec.label} key, until you reset this to use ${spec.label}'s own endpoint and key, or choose ${EMBEDDING_CATALOGUE['openai-compatible'].label}.`);
     } else {
       endpointAnswer = held.endpoint === undefined ? answer(base, base === null ? 'platform' : 'default', 'active')
         : answer(base, base === null ? 'platform' : 'default', 'not-applicable', `${spec.label} uses its own endpoint, so this is not used. Reset it.`);

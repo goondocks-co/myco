@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import type { ProjectSet } from '../../read/scope.js';
 import { assertion, commit, read, readSet, refusalCode, refused, write, type Bound } from '../index.js';
 import { SEARCH_BLOB_WORK } from './blob-index-schema.js';

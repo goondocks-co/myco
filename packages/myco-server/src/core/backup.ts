@@ -23,7 +23,8 @@ import { RETIRED_SEARCH_TABLES } from '../db/schema-steps-search-retirement.js';
 import { RETIRED_BACKUP_TABLES, retiredBackupNotice, retiredBackupTable } from '@goondocks/myco-shared/backup-words';
 import { expireCarriedDeviceRequest } from '../auth/device.js';
 import { FOREIGN_LINEAGE_REVOKER, HARNESS_MEMBER_ID } from '../constants.js';
-import { restoreAuthorityAuditStatement, restoreMembershipBatch } from './ownership.js';
+import { restoreAuthorityReceipt, restoreSelectsOwner } from '../db/identity/restored-authority.js';
+import { prepareBound } from '../db/kernel/statement.js';
 import { restoreOwnership } from '../db/identity/ownership.js';
 import { restoreTableKey } from '../db/recovery/restore-keys.js';
 import { effectiveRawOwnerSql, reserveRawRestore } from './raw-claims.js';
@@ -55,9 +56,9 @@ import { BUNDLE_REFERENCES } from './blob-references.js';
 import { bundleHeld } from '../db/storage/blob-held.js';
 import { assertArchivedContentClosure, assertBundleObjectClosure, assertCaptureClosure, relationalSnapshot, RelationalSnapshotTooLargeError } from './relational-snapshot.js';
 import { verifyBundleArtifact, type BundleEntryIdentity } from './archive-bundle.js';
-import { restoreArchivedEvent } from './event-content-restore.js';
+import { archivedEventRestore } from '../db/events/archived-event-restore.js';
 import { clearDeletedParentsStatement } from '../db/sessions/tombstones.js';
-import { restoreExtractionAckStatement } from './extraction-acks.js';
+import { restoreExtractionAck } from '../db/learning/extraction-ack-restore.js';
 import { admitRestoredArtifacts, ArtifactRestoreRefused, restoreSessionArtifactStatement } from './session-artifacts.js';
 import { restoredPin, restoreSchemeDecisions, restoreRecordSchemeDecisions } from '../db/documents/restore-pins.js';
 import type { PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
@@ -526,11 +527,11 @@ type OwnedRowRestorer = (db: RelationalStore, row: ArtifactRow, decided: Restore
 
 /** Owned state restores through the capability that admits its writes. */
 const OWNED_ROW_RESTORERS: Readonly<Partial<Record<string, OwnedRowRestorer>>> = {
-  agent_state: restoreAgentStateStatement,
+  agent_state: (db, row) => prepareBound(db, restoreAgentStateStatement(row)),
   run_bodies: restoreRunBodyStatement,
-  agent_run_attempts: restoreAttemptStatement,
-  extraction_acks: restoreExtractionAckStatement,
-  transcript_segments: restoreTranscriptSegmentStatement,
+  agent_run_attempts: (db, row) => prepareBound(db, restoreAttemptStatement(row)),
+  extraction_acks: (db, row) => prepareBound(db, restoreExtractionAck(row)),
+  transcript_segments: (db, row) => prepareBound(db, restoreTranscriptSegmentStatement(row)),
   session_artifacts: restoreSessionArtifactStatement,
   // A transcript is pinned with its insert, to the scheme its group is admitted to over the whole artifact.
   transcripts(db, row, decided) {
@@ -1110,9 +1111,9 @@ async function releaseUnusedBundle(db: RelationalStore, header: BackupHeader, bu
   const unused = `NOT (${bundleHeld('?', '?')})`;
   const guardValues = BUNDLE_REFERENCES.flatMap(() => [bundle.projectId,bundle.id]);
   const pairs = [{projectId:bundle.projectId,key:bundle.archiveKey},{projectId:bundle.projectId,key:bundle.receiptKey}];
-  const candidates = recordBlobCandidates(db,pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id,archiveKey:bundle.archiveKey}});
+  const candidates = recordBlobCandidates(pairs,header.createdAt,{bundle:{projectId:bundle.projectId,bundleId:bundle.id,archiveKey:bundle.archiveKey}});
   const results = await db.batch([
-    ...candidates,
+    ...candidates.map(candidate => prepareBound(db, candidate)),
     db.prepare(`DELETE FROM registered_content_proofs WHERE project_id=?
       AND ((source_kind='bundle' AND source_id=?) OR (source_kind='receipt' AND source_id=?))
       AND ${unused}`).bind(bundle.projectId,bundle.archiveKey,`bundle:${bundle.archiveKey}`,...guardValues),
@@ -1220,7 +1221,9 @@ async function restoreTable(context: TablePassContext, table: string, all: Row[]
           if (bundle === undefined) throw new BackupApplyError(table, 'an archived event lacks its bundle');
           const restoredId = await restoredBundleId(context, transcriptIdentity(row.project_id,row.bundle_id));
           if (restoredId === undefined) throw new BackupApplyError(table, 'an archived event lacks its restored bundle');
-          inserted += await restoreArchivedEvent(db, {...row,bundle_id:restoredId}, {...bundle,id:restoredId}, references);
+          const restore = archivedEventRestore({...row,bundle_id:restoredId}, {...bundle,id:restoredId});
+          const applied = await db.batch([...references, ...restore.map(statement => prepareBound(db, statement))]);
+          inserted += applied[references.length]!.results.length;
         } else {
           const columns = Object.keys(row);
           const statements = [...references,
@@ -1363,9 +1366,9 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
     }
     const inserts=statements.length;
     statements.push(...chunk.map((row) => {
-      if (table === 'deployment_ownership_audit') return restoreAuthorityAuditStatement(db, table, row, prepared.ownership);
-      if (table === 'member_role_audit') return restoreAuthorityAuditStatement(db, table, row,
-        prepared.byTable.get('members')?.find(member => member.id === row.member_id));
+      if (table === 'deployment_ownership_audit') return prepareBound(db, restoreAuthorityReceipt(table, row, prepared.ownership));
+      if (table === 'member_role_audit') return prepareBound(db, restoreAuthorityReceipt(table, row,
+        prepared.byTable.get('members')?.find(member => member.id === row.member_id)));
       const restoreOwned = OWNED_ROW_RESTORERS[table];
       if (restoreOwned !== undefined) return restoreOwned(db, row, decided);
       const columns = Object.keys(row);
@@ -1373,7 +1376,7 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
         .bind(...columns.map((c) => row[c] ?? null), ...(ordered ? [table, hash, at] : []));
     }));
     if (table === 'raw_archive_refs') statements.push(...chunk.filter(row => row.source_kind === 'transcript' && row.disposition === 'archived' && typeof row.transcript_id === 'string')
-      .map(row => clearArchivedTranscriptRanges(db, row.project_id as string, row.transcript_id as string, row.base_offset as number)));
+      .map(row => prepareBound(db, clearArchivedTranscriptRanges(row.project_id as string, row.transcript_id as string, row.base_offset as number))));
     if (table === 'sessions' || table === 'session_tombstones') statements.push(...deletedParentClears(db, chunk));
     if (ordered) {
       statements.push(db.prepare(`UPDATE backup_restore_progress SET next_row = ?, verified = ${restoredRowsMatch(table, chunk)}
@@ -1382,8 +1385,9 @@ async function restoreChunks(context: TablePassContext, table: string, all: Row[
     }
     let applied;
     try {
-      applied = table === 'members'
-        ? await restoreMembershipBatch(db, statements, chunk.some(row => row.id !== HARNESS_MEMBER_ID))
+      // Every restored human membership commits the explicit-selection marker with its rows.
+      applied = table === 'members' && chunk.some(row => row.id !== HARNESS_MEMBER_ID)
+        ? (await db.batch([prepareBound(db, restoreSelectsOwner.bind()), ...statements])).slice(1)
         : await db.batch(statements);
     } catch (err) {
       if (err instanceof RestoreAuthorizationError) throw err;

@@ -1,5 +1,5 @@
 import type { ServerEnv as processed_import_ServerEnv } from "../../core/adapters.js";
-import { registeredObjectKeySql as processed_import_registeredObjectKeySql } from "../../core/blob-objects.js";
+import { registeredObjectKeySql as processed_import_registeredObjectKeySql } from "../../db/storage/registered-object-key.js";
 import { PROCESSED_FIELDS as processed_import_PROCESSED_FIELDS } from "../../db/processed-resources.js";
 import { processedResourceProofSql as processed_import_processedResourceProofSql } from "../../db/processed-resources.js";
 import type { ReadScope as processed_import_ReadScope } from "../scope.js";

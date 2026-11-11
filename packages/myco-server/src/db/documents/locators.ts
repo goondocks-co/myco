@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { registeredObjectKeySql } from '../../core/blob-objects.js';
+import { registeredObjectKeySql } from '../storage/registered-object-key.js';
 import type { ChunkRow } from '../../content/document-reader.js';
 import { SESSION_OWNER } from '../document-tables.js';
 import { assertion, commit, first, read, readSet, refusalCode, refused, write } from '../index.js';

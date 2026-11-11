@@ -1,6 +1,4 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { write } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import { write, type Bound } from '../index.js';
 
 /** A logical transcript range selects its archived representation once that transition commits. */
 export const archivedTranscriptRangeSql = (project: string, transcript: string, offset: string): string =>
@@ -17,11 +15,11 @@ const restore = write<[string,string,number,number,string,string,number,number,s
   ON CONFLICT DO NOTHING RETURNING rowid`});
 
 /** Archive selection and removal of its hot representation share the caller's transaction. */
-export function clearArchivedTranscriptRanges(db: RelationalStore, project: string, transcript: string, offset: number): PreparedStatement {
-  return prepareBound(db,clear.bind(project,transcript,offset));
+export function clearArchivedTranscriptRanges(project: string, transcript: string, offset: number): Bound<never, 'write'> {
+  return clear.bind(project,transcript,offset);
 }
 /** Additive restore admits a hot range only while no archived selection or tombstone owns it. */
-export function restoreTranscriptSegmentStatement(db:RelationalStore,row:Record<string,unknown>):PreparedStatement {
-  return prepareBound(db,restore.bind(row.project_id as string,row.transcript_id as string,row.base_offset as number,row.length as number,
-    row.blob_key as string,row.event_id as string,row.created_at as number,row.received_at as number,row.token_id as string));
+export function restoreTranscriptSegmentStatement(row:Record<string,unknown>):Bound<{rowid:number},'write'> {
+  return restore.bind(row.project_id as string,row.transcript_id as string,row.base_offset as number,row.length as number,
+    row.blob_key as string,row.event_id as string,row.created_at as number,row.received_at as number,row.token_id as string);
 }

@@ -1,9 +1,8 @@
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
+import type { RelationalStore } from '../../core/adapters.js';
 import type { ContentRow } from '../../core/event-content.js';
 import { effectiveRawOwnerSql } from '../../core/raw-claims.js';
 import { archivedEventPayloadSql } from '../document-tables.js';
-import { commit, read, readSet, write } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import { commit, read, readSet, write, type Bound } from '../index.js';
 
 export interface CleanupState {
   phase: number; cursor_project: string; cursor_id: string; cursor_session: string; cursor_created: number; cursor_rowid: number;
@@ -79,22 +78,21 @@ const advance = write<[number, string, string, string, number, number, number, n
     metadata_added_bytes=metadata_added_bytes+?17,updated_at=?18,failure=NULL WHERE id=1 AND ${GUARD}` });
 
 /** Clear, compact representation, queue release and sweep progress share one commit. */
-export async function commitCleanupPage(db: RelationalStore, current: CleanupState, ids: readonly CleanupCandidate[], writes: readonly PreparedStatement[], now: number,
+export async function commitCleanupPage(db: RelationalStore, current: CleanupState, ids: readonly CleanupCandidate[], writes: readonly Bound<never, 'write'>[], now: number,
   converted = 0, cleared = 0, metadata = 0, advancePhase = false): Promise<void> {
   const queue = current.phase === 2 || current.phase === 4;
   const last = ids.at(-1);
   const next = advancePhase ? current.phase + 1 : current.phase;
   const guard = guardParams(current);
-  await db.batch([
-    prepareBound(db, stateHeld.bind(...guard)), prepareBound(db, stateHeldClear.bind()), ...writes, prepareBound(db, dequeue.bind(JSON.stringify(ids))),
-    prepareBound(db, advance.bind(...guard, next,
+  await commit(db,
+    stateHeld.bind(...guard), stateHeldClear.bind(), ...writes, dequeue.bind(JSON.stringify(ids)),
+    advance.bind(...guard, next,
       advancePhase ? '' : queue ? current.cursor_project : last?.project_id ?? current.cursor_project,
       advancePhase ? '' : queue ? current.cursor_id : last?.resource_id ?? current.cursor_id,
       advancePhase ? '' : queue ? current.cursor_session : last?.session_id ?? current.cursor_session,
       advancePhase ? -1 : queue ? current.cursor_created : last?.created_at ?? current.cursor_created,
       advancePhase ? -1 : queue ? current.cursor_rowid : last?.source_rowid ?? current.cursor_rowid,
-      next === 4 ? 1 : 0, converted, cleared, metadata, now)),
-  ]);
+      next === 4 ? 1 : 0, converted, cleared, metadata, now));
 }
 
 const omit = write<[now: number, items: string]>({ name: 'storage.cleanupOmissions', sql:
@@ -102,7 +100,7 @@ const omit = write<[now: number, items: string]>({ name: 'storage.cleanupOmissio
     SELECT json_extract(value,'$.project_id'),json_extract(value,'$.kind'),json_extract(value,'$.resource_id'),
       'retained-inline:net-gain',? FROM json_each(?) WHERE true
     ON CONFLICT(project_id,resource_kind,resource_id) DO UPDATE SET reason=excluded.reason,observed_at=excluded.observed_at` });
-export const cleanupOmissionStatement = (db: RelationalStore, now: number, items: string): PreparedStatement => prepareBound(db, omit.bind(now, items));
+export const cleanupOmissionStatement = (_db: RelationalStore, now: number, items: string): Bound<never, 'write'> => omit.bind(now, items);
 
 const setPaused = write<[paused: number, now: number], { id: number }>({ name: 'storage.cleanupSetPaused', sql:
   'UPDATE storage_cleanup_state SET paused=?,revision=revision+1,updated_at=? WHERE id=1 RETURNING id' });

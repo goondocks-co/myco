@@ -27,7 +27,7 @@ import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { cardsWrittenBy } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { LEARNING_STAGES, buildHandStartLearning } from '@myco-server-worker/core/learning-stages.js';
-import { registeredObjectKeySql } from '@myco-server-worker/core/blob-objects.js';
+import { registeredObjectKeySql } from '@myco-server-worker/db/storage/registered-object-key.js';
 import { NOW, HOUR, DAY, enable, capture, publish, GOTCHAS, EMPTY_CARD, cardWorker, cardRun, plainTurns } from './helpers/learning-stages.ts';
 
 it('with learning due and dispatch refused at the spend ceiling, claims and ticks read no session document', async () => {

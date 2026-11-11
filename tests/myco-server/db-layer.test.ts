@@ -20,23 +20,9 @@ const PENDING: ReadonlySet<string> = new Set([
   'content/session-pages.ts',
   'content/session-turns.ts',
   'content/tool-statistics.ts',
-  'core/archive-bundle.ts',
-  'core/attempt-accounting.ts',
   'core/backup.ts',
-  'core/blob-objects.ts',
-  'core/budget-estimates.ts',
   'core/content-budget.ts',
-  'core/context-writes.ts',
-  'core/embedding/policy.ts',
-  'core/event-content-restore.ts',
-  'core/event-content.ts',
-  'core/extraction-acks.ts',
-  'core/first-owner.ts',
   'core/harness.ts',
-  'core/object-release.ts',
-  'core/ownership.ts',
-  'core/pulled-stages.ts',
-  'core/raw-archive.ts',
   'core/raw-backfill.ts',
   'core/raw-claims.ts',
   'core/raw-provenance.ts',
@@ -89,14 +75,11 @@ const PENDING: ReadonlySet<string> = new Set([
   'db/meta/budget-estimates.ts', // A restore's guard is composed from the columns of the rows it replaces.
   'db/runs/attribution.ts', // Learning completion passes companions core still composes.
   'db/runs/change.ts', // A run update's column set varies with the caller; its companions are core statements.
-  'db/storage/cleanup.ts', // A page commits core/archive-bundle statements.
 ]);
 
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
 const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
   'api/member-projects.ts',
-  'core/archive-bundle.ts',
-  'core/object-release.ts',
   'core/raw-claims.ts',
   'core/remotes.ts',
 ]);

@@ -11,9 +11,8 @@ import { describe, expect, it } from 'bun:test';
 import { releaseNow } from './helpers/release-now.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { RecoveryProducerPort } from '@myco-server-worker/core/recovery-producer.js';
-import {
-  acquireRecoveryHold, drainObjectReleases, OPERATOR_HOLD_DEFERS_MS, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold,
-} from '@myco-server-worker/core/object-release.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
+import { acquireRecoveryHold, OPERATOR_HOLD_DEFERS_MS, openRecoveryHold, readRecoveryHold, releaseOperatorHold, releaseRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import {
   acquireOperatorHold, inspectOperatorHold, openOperatorHold, openHoldForAdmission, recoveryHoldRelease, settleOperatorHold, settleOpenHold,
 } from '@myco-server-worker/core/recovery-hold.js';
