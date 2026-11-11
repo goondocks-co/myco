@@ -145,9 +145,10 @@ test('restoring a hot transcript range after archival keeps one selected range',
     const { parseEnvelope } = await import('@myco-server-worker/ingest/envelope.js');
     const parsed = parseEnvelope(envelope({eventId:String(hot.event_id),sessionId:'session',kind:'transcript.segment',payload}),now);
     if (!parsed.ok) throw new Error(parsed.reason);
-    const plan = planKind(kindSpec('transcript.segment')!, { db, ctx: { projectId:'project', machineId:'machine', tokenId:String(hot.token_id), now,
+    const plan = planKind(kindSpec('transcript.segment')!, { ctx: { projectId:'project', machineId:'machine', tokenId:String(hot.token_id), now,
       nonce:String(originalEvent.ingest_nonce), actor:null }, e:parsed.value, p:payload, contentHash:null });
-    await db.batch(plan.projections);
+    const { commit } = await import('@myco-server-worker/db/index.js');
+    await commit(db, ...plan.projections);
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
     const coldRows = (await Promise.all(['raw_archive_refs','blobs','registered_content_proofs'].map(async t =>
       (await db.prepare(`SELECT * FROM ${t}`).all<Record<string,unknown>>()).results.map(r => ({t,r}))))).flat();

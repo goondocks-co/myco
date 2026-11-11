@@ -7,6 +7,7 @@ import {
 } from '@myco-server-worker/core/embedding/jobs.js';
 import { hasEmbeddingWork } from '@myco-server-worker/core/embedding/work.js';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { commit } from '@myco-server-worker/db/index.js';
 import { runTick, tickPacer } from '@myco-server-worker/core/tick.js';
 import { lastTaskEntryAt } from '@myco-server-worker/db/runs/claim.js';
 import { calibrationPending } from '@myco-server-worker/core/embedding/hubness.js';
@@ -108,7 +109,7 @@ test('caught-up D1 embedding wake reads stay constant as the corpus grows, with 
           payload: kind === 'session.start' ? { agent: 'claude-code', startedAt: NOW } : { endedAt: NOW },
         });
         if (!written.ok) throw new Error(JSON.stringify(written));
-        expect(written.write.interpret(await measured.db.batch(written.write.statements))).toEqual({ persisted: true, projected: true });
+        expect(written.write.interpret(await commit(measured.db, ...written.write.statements))).toEqual({ persisted: true, projected: true });
         measured.reset();
         expect(await hasEmbeddingWork(measured.db, 'p', MODEL, NOW + 20_001)).toBe(false);
         checks.push(measured.reads());

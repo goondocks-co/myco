@@ -4,6 +4,7 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { preparePromptAcknowledgement } from './helpers/extraction.js';
 import { expect, it } from 'bun:test';
 import { planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { commit } from '@myco-server-worker/db/index.js';
 import { handleBlob, type BlobResult } from '@myco-server-worker/ingest/blobs.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { rawMemberResourceSql } from '@myco-server-worker/db/raw/resources.js';
@@ -43,7 +44,7 @@ async function admitPrompt(db: RelationalStore, store: RelationalStore, blobs: R
     producer: { adapter: 'claude-code', version: '1' }, payload: { promptId: crypto.randomUUID(), blob: BLOB, origin: 'user' },
   }, { db, blobs });
   if (!planned.ok) throw new Error(JSON.stringify(planned));
-  expect(planned.write.interpret(await db.batch(planned.write.statements))).toEqual({ persisted: true, projected: true });
+  expect(planned.write.interpret(await commit(db, ...planned.write.statements))).toEqual({ persisted: true, projected: true });
   expect(await store.prepare('SELECT owner_member_id,provenance FROM raw_credentials WHERE token_id=?').bind('credential').first())
     .toEqual({ owner_member_id: 'member', provenance: 'recorded' });
   expect((await store.prepare('SELECT raw_revision FROM events WHERE project_id=? AND event_id=?').bind(PROJECT, eventId).first<{ raw_revision: number }>())!.raw_revision).toBeGreaterThan(0);
@@ -135,7 +136,7 @@ it('D1 capture writes cost the same as the Deployment\'s history grows, in the c
       producer: { adapter: 'claude-code', version: '1' }, payload,
     });
     if (!planned.ok) throw new Error(JSON.stringify(planned));
-    expect(planned.write.interpret(await db.batch(planned.write.statements)))
+    expect(planned.write.interpret(await commit(db, ...planned.write.statements)))
       .toEqual(kind === 'notification' ? { persisted: true } : { persisted: true, projected: true });
   };
   const repeat = (count: number, act: (i: number) => Promise<unknown>) => async () => { for (let i = 0; i < count; i++) await act(i); };

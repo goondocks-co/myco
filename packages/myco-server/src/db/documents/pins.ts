@@ -11,7 +11,7 @@ import { PublicationRestoreBuilding } from './readiness.js';
  * them hold (a replaced file, a continuation) is named one way. The group's existing pins and the scheme that already
  * read any of its unpinned transcripts are what it needs; with none, the agent's declaration; with two or more, none,
  * and the transcript is not read (`parse.ts` `scheme_conflict`). Registration decides it in its own insert
- * (`admittedScheme`), and restore over the whole artifact before it writes a row (`core/backup.ts`).
+ * (`admittedSchemeSql`), and restore over the whole artifact before it writes a row (`core/backup.ts`).
  */
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { hookScheme, isPromptIdScheme, PROMPT_ID_SCHEMES, type DeclarableScheme, type PromptIdScheme, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
@@ -86,12 +86,11 @@ export function pinDecision(agent: string, group = 'g'): string {
       ELSE ${schemeByAgent(DECLARED_SCHEMES, agent)} END
     WHEN ${group}.read_before=1 AND ${group}.scheme<>${schemeByAgent(READ_BEFORE_PIN, agent)} THEN NULL ELSE ${group}.scheme END`;
 }
-export function admittedScheme(projectId: string, sessionId: string, agent: string | null): { sql: string; params: unknown[] } {
-  return { sql: `(SELECT CASE WHEN EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication_pins' AND phase='publicationPinGroups' AND done=1)
-    THEN ${pinDecision('r.agent')} END FROM (SELECT ? project_id,? session_id,? agent) r
-    LEFT JOIN document_group_pins g ON (g.project_id,g.session_id,g.agent)=(r.project_id,r.session_id,COALESCE(r.agent,'')))`,
-    params: [projectId,sessionId,agent] };
-}
+/** The scheme a transcript registering now is pinned to (`pinDecision` over its group), over the slots naming its session and agent. */
+export const admittedSchemeSql = (project: string, session: string, agent: string): string =>
+  `(SELECT CASE WHEN EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication_pins' AND phase='publicationPinGroups' AND done=1)
+    THEN ${pinDecision('r.agent')} END FROM (SELECT ${project} project_id,${session} session_id,${agent} agent) r
+    LEFT JOIN document_group_pins g ON (g.project_id,g.session_id,g.agent)=(r.project_id,r.session_id,COALESCE(r.agent,'')))`;
 
 /** The group a transcript row belongs to. */
 export const schemeGroupKey = (row: Record<string, unknown>): string => JSON.stringify([row.project_id, row.session_id, row.agent ?? null]);
@@ -189,22 +188,24 @@ const HOOK_DECLARED_SCHEMES: Readonly<Record<string, string>> = Object.fromEntri
  * session has a primary transcript, every primary transcript of it is pinned to that scheme: one pinned to another,
  * or pinned to none (it names no agent this Deployment declares), names its prompts some other way or not at all.
  * Before one is registered, the scheme the session's agent declares, which its transcript will be pinned to; a session
- * whose agent this build declares nothing for takes the scheme as named. Bound as `(projectId, sessionId, scheme)` by
- * `schemeSharedParams`.
+ * whose agent this build declares nothing for takes the scheme as named. `project` and `session` are the slots naming the
+ * session and `hook` the slot holding the scheme as its hook names it (`hookScheme`); positionally, `SCHEME_SHARED_SQL` is
+ * bound as `(projectId, sessionId, scheme)` by `schemeSharedParams`.
  */
-const SCHEME_SHARED_SQL = `(CASE WHEN NOT EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication_pins' AND phase='publicationPinsReady' AND done=1)
-    THEN CASE WHEN EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=? AND t.session_id=? AND t.role='primary')
+export const schemeSharedSql = (project: string, session: string, hook: string): string => `(CASE WHEN NOT EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication_pins' AND phase='publicationPinsReady' AND done=1)
+    THEN CASE WHEN EXISTS(SELECT 1 FROM transcripts t WHERE t.project_id=${project} AND t.session_id=${session} AND t.role='primary')
       THEN NOT EXISTS(SELECT 1 FROM (SELECT COALESCE(t.prompt_identity_scheme,${pinDecision('t.agent')}) pin FROM transcripts t
           LEFT JOIN (SELECT COALESCE(agent,'') agent,MIN(NULLIF(prompt_identity_scheme,'')) scheme,COUNT(DISTINCT NULLIF(prompt_identity_scheme,''))>1 conflict,
               MAX(prompt_identity_scheme IS NULL AND (parser_version>0 OR parsed_at IS NOT NULL OR parsed_offset>0)) read_before
-            FROM transcripts WHERE project_id=? AND session_id=? GROUP BY COALESCE(agent,'')) g ON g.agent=COALESCE(t.agent,'')
-          WHERE t.project_id=? AND t.session_id=? AND t.role='primary')
-        WHERE pin IS NULL OR ${HOOK_SCHEME_SQL('pin')}<>?)
-      ELSE COALESCE((SELECT ${schemeByAgent(HOOK_DECLARED_SCHEMES, 's.agent')} FROM sessions s WHERE s.project_id=? AND s.session_id=?),?)=? END
-    WHEN EXISTS (SELECT 1 FROM document_pin_totals t WHERE t.project_id = ? AND t.session_id = ? AND t.role = 'primary' AND t.transcripts>0)
-    THEN NOT EXISTS (SELECT 1 FROM document_pin_totals t WHERE t.project_id = ? AND t.session_id = ? AND t.role = 'primary' AND t.transcripts>0
-      AND (t.prompt_identity_scheme = '' OR ${HOOK_SCHEME_SQL('t.prompt_identity_scheme')} <> ?))
-    ELSE COALESCE((SELECT ${schemeByAgent(HOOK_DECLARED_SCHEMES, 's.agent')} FROM sessions s WHERE s.project_id = ? AND s.session_id = ?), ?) = ? END)`;
+            FROM transcripts WHERE project_id=${project} AND session_id=${session} GROUP BY COALESCE(agent,'')) g ON g.agent=COALESCE(t.agent,'')
+          WHERE t.project_id=${project} AND t.session_id=${session} AND t.role='primary')
+        WHERE pin IS NULL OR ${HOOK_SCHEME_SQL('pin')}<>${hook})
+      ELSE COALESCE((SELECT ${schemeByAgent(HOOK_DECLARED_SCHEMES, 's.agent')} FROM sessions s WHERE s.project_id=${project} AND s.session_id=${session}),${hook})=${hook} END
+    WHEN EXISTS (SELECT 1 FROM document_pin_totals t WHERE t.project_id = ${project} AND t.session_id = ${session} AND t.role = 'primary' AND t.transcripts>0)
+    THEN NOT EXISTS (SELECT 1 FROM document_pin_totals t WHERE t.project_id = ${project} AND t.session_id = ${session} AND t.role = 'primary' AND t.transcripts>0
+      AND (t.prompt_identity_scheme = '' OR ${HOOK_SCHEME_SQL('t.prompt_identity_scheme')} <> ${hook}))
+    ELSE COALESCE((SELECT ${schemeByAgent(HOOK_DECLARED_SCHEMES, 's.agent')} FROM sessions s WHERE s.project_id = ${project} AND s.session_id = ${session}), ${hook}) = ${hook} END)`;
+const SCHEME_SHARED_SQL = schemeSharedSql('?', '?', '?');
 const schemeSharedParams = (projectId: string, sessionId: string, scheme: PromptIdScheme): unknown[] => {
   const params=[projectId, sessionId, projectId, sessionId, hookScheme(scheme), projectId, sessionId, hookScheme(scheme), hookScheme(scheme)];
   const building=[projectId, sessionId, projectId, sessionId, projectId, sessionId, hookScheme(scheme), projectId, sessionId, hookScheme(scheme), hookScheme(scheme)];
@@ -230,16 +231,3 @@ export interface DeliveredNaming {
   scheme?: PromptIdScheme | null;
 }
 
-/**
- * The delivery columns a row is marked with: `delivered_at`, and the prompt that carried it, or why it names none. A
- * prompt named under a scheme the session's prompts are not named by is recorded as `scheme`, never as an id that
- * names nothing.
- */
-export function deliveredFields(d:DeliveredNaming):{column:string;sql:string;params:unknown[]}[]{
-  const scope=d.promptId===null||d.scheme===undefined||d.scheme===null?null:schemeSharedParams(d.projectId,d.sessionId,d.scheme);
-  return [
-    {column:'delivered_at',sql:'?',params:[d.at]},
-    {column:'delivered_prompt_id',sql:scope===null?'?':`CASE WHEN ${SCHEME_SHARED_SQL} THEN ? END`,params:scope===null?[d.promptId]:[...scope,d.promptId]},
-    {column:'delivered_scope_reason',sql:scope===null?'?':`CASE WHEN ${SCHEME_SHARED_SQL} THEN NULL ELSE 'scheme' END`,params:scope===null?[d.scopeReason]:scope},
-  ];
-}
