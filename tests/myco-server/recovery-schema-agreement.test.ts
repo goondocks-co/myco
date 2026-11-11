@@ -9,7 +9,7 @@ import {
   type AttemptCheckpoint, type AttemptPart, type AttemptState, type ProducerPorts, type RangeAnswer, type ScanProgress,
 } from '@myco-server-worker/core/recovery-producer.js';
 import { newInventoryProgress } from '@myco-server-worker/core/recovery-inventory.js';
-import { normalizeDefinition, tableDefinition } from '@myco-server-worker/core/sql-statements.js';
+import { normalizeDefinition, tableDefinition } from '@myco-server-worker/db/sql-statements.js';
 
 const SESSIONS = 'CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT)';
 

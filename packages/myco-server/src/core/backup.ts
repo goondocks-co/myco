@@ -27,7 +27,8 @@ import { restoreAuthorityReceipt, restoreSelectsOwner } from '../db/identity/res
 import { prepareBound } from '../db/kernel/statement.js';
 import { restoreOwnership } from '../db/identity/ownership.js';
 import { restoreTableKey } from '../db/recovery/restore-keys.js';
-import { effectiveRawOwnerSql, reserveRawRestore } from './raw-claims.js';
+import { reserveRawRestore } from './raw-claims.js';
+import { effectiveRawOwnerSql } from '../db/raw/claims.js';
 /**
  * Deployment backup and restore.
  *

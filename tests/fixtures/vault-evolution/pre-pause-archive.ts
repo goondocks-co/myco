@@ -6,7 +6,7 @@ import { prepareArchiveStep, type ContentRow } from '@myco-server-worker/core/ev
 import { bundleArchiveStatements, discardArchiveBundle, prepareArchiveBundle } from '@myco-server-worker/core/archive-bundle.js';
 import { transcriptRetentionFact } from '@myco-server-worker/ingest/retention.js';
 import { observedSettingsGuard } from '@myco-server-worker/core/settings.js';
-import { effectiveRawOwnerSql } from '@myco-server-worker/core/raw-claims.js';
+import { effectiveRawOwnerSql } from '@myco-server-worker/db/raw/claims.js';
 import { emit } from '@myco-server-worker/telemetry.js';
 import { prepareBound } from '@myco-server-worker/db/kernel/statement.js';
 

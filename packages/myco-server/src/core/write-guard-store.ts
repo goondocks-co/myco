@@ -1,6 +1,6 @@
 import { inheritStoreContext } from './adapters.js';
 import type { PreparedStatement, RelationalStore, RunResult } from './adapters.js';
-import { isSelectStatement } from './sql-statements.js';
+import { isSelectStatement } from '../db/sql-statements.js';
 import { prepareBound, type Bound } from '../db/kernel/statement.js';
 
 /** Mutations and their authority assertion execute in one atomic store batch. */

@@ -2,7 +2,7 @@ import { estimateRefreshDue } from './budget-estimates.js';
 import { storageCleanupPending } from './storage-cleanup.js';
 import { deviceReclamationPending } from '../db/identity/authority-retention.js';
 import { CONTENT_BLOB_LIMIT, CONTENT_WAKE_JOB_RESERVE, CONTENT_WALL_MS, measuredContentEnv } from './content-budget.js';
-import { rawBackfillPending } from './raw-backfill.js';
+import { rawBackfillPending } from '../db/raw/backfill.js';
 /**
  * One wake of the Deployment's intelligence.
  *

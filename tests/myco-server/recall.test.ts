@@ -1,6 +1,6 @@
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { schemaD1Root } from './helpers/schema-template.js';
-import { significantStatement } from '../../packages/myco-server/src/core/sql-statements.js';
+import { significantStatement } from '../../packages/myco-server/src/db/sql-statements.js';
 import { promptAnswerRetentionStatements } from '@myco-server-worker/db/prompt-answer-retention.js';
 /**
  * Recall: the capability gate over everything, the contributors and the order

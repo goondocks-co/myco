@@ -31,7 +31,7 @@ import {
  */
 const FIXED_STAGING_FILES = [STAGING_MANIFEST_FILE, STAGING_SQL_FILE, STAGING_SCHEMA_FILE] as const;
 import { CHECKPOINT_STATEMENT_CHARS, newInventoryProgress, within, type SavedDigest } from '../../core/recovery-inventory.js';
-import type { StatementScan } from '../../core/sql-statements.js';
+import type { StatementScan } from '../../db/sql-statements.js';
 import { serialGate } from '../../core/serial-gate.js';
 import {
   admittedStarter, boundRecoveryConfiguration, cloudflareFailurePorts, cloudflareProducerPorts, R2_MINIMUM_PART_BYTES, recordedAdmission, STAGING_TARGET,

@@ -1,5 +1,5 @@
 import { expect, it } from 'bun:test';
-import { isSelectStatement } from '@myco-server-worker/core/sql-statements.js';
+import { isSelectStatement } from '@myco-server-worker/db/sql-statements.js';
 import { writeGuardStore } from '@myco-server-worker/core/write-guard-store.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 

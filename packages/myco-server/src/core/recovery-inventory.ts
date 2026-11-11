@@ -15,7 +15,7 @@
  * is its caller's to commit; this module computes, and the checkpoint owner makes the work durable.
  */
 import { SHA256 } from '@stablelib/sha256';
-import { endStatements, feedStatements, newStatementScan, readStatement, type StatementScan } from './sql-statements.js';
+import { endStatements, feedStatements, newStatementScan, readStatement, type StatementScan } from '../db/sql-statements.js';
 import { blobArtifactKey, snapshotBlobObject } from './blob-objects.js';
 
 /** The tables whose rows name an object an artifact must carry. */

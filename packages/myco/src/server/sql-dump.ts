@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { boundedMemoryChunks } from './stream-memory.js';
 import {
   endStatements, feedStatements, identifierAt, newStatementScan, significantStatement,
-} from '@myco-server-worker/core/sql-statements.js';
+} from '@myco-server-worker/db/sql-statements.js';
 
 export { identifierAt, significantStatement };
 

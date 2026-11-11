@@ -13,7 +13,7 @@ import {
   CHECKPOINT_STATEMENT_CHARS, continueInventory, INVENTORY_LIMITS, inventoryObjectOf, newInventoryProgress,
   type InventoryPorts, type InventoryProgress, type RecordedPart,
 } from '@myco-server-worker/core/recovery-inventory.js';
-import { tableColumns } from '@myco-server-worker/core/sql-statements.js';
+import { tableColumns } from '@myco-server-worker/db/sql-statements.js';
 import { snapshotObjectFacts } from '@myco/server/recovery-bundle.js';
 import { schemaSqlite } from './helpers/schema-template.js';
 

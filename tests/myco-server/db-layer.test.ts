@@ -23,9 +23,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'core/backup.ts',
   'core/content-budget.ts',
   'core/harness.ts',
-  'core/raw-backfill.ts',
-  'core/raw-claims.ts',
-  'core/raw-provenance.ts',
   'core/recall.ts',
   'core/recovered-tenant.ts',
   'core/registered-content.ts',
@@ -39,7 +36,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'core/scheduled-tasks.ts',
   'core/session-artifacts.ts',
   'core/settings.ts',
-  'core/sql-statements.ts',
   'core/task-catalogue.ts',
   'core/turn-card-prompt.ts',
   'core/write-guard-store.ts',
@@ -78,7 +74,6 @@ const PENDING: ReadonlySet<string> = new Set([
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
 const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
   'api/member-projects.ts',
-  'core/raw-claims.ts',
   'core/remotes.ts',
 ]);
 
