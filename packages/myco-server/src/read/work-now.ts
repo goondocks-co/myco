@@ -4,6 +4,8 @@ import { todayProjects, todayRunning, todayQueued, type ProjectCursor } from '..
 import { failureReasons, unresolvedFailures, NOW_WATCHED_TASKS } from '../db/runs/outcomes.js';
 import { unclaimedDue } from '../db/runs/unclaimed.js';
 import { readPulledWaiting } from './pulled-waiting.js';
+import { currentPulledBudgetHold } from '../db/runs/pulled-budget-hold.js';
+import { pulledStages } from '../core/pulled-stages.js';
 import { todaySchedules, curationDispositions } from '../db/learning/curation-now.js';
 import { todayMarks } from '../db/meta/marks.js';
 /** Current work, waits and unresolved failures, with exact live totals and explicit page coverage. */
@@ -233,10 +235,12 @@ async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly Wo
   recovery: RecoveryProducerStatus | null): Promise<NowWaiting[]> {
   const waiting: NowWaiting[] = [];
   const holds = await readBudgetHolds(env.db);
+  const pulledHold = await currentPulledBudgetHold(env.db, { levels: pulledStages().map(stage => stage.level), now });
   const held = holds.heldHeads ?? [];
-  const tooSmall = held.find((head) => head.reason === 'budget_too_small');
-  if (held.length > 0) {
-    waiting.push({ key: 'budget', projectId: null, what: 'Automatic work', count: null, since: null, nextAt: null,
+  const tooSmall = held.find((head) => head.reason === 'budget_too_small')
+    ?? (pulledHold !== null && pulledHold.requiredUsd > holds.dailyUsd ? pulledHold : undefined);
+  if (held.length > 0 || pulledHold !== null) {
+    waiting.push({ key: 'budget', projectId: null, what: 'Automatic work', count: null, since: pulledHold?.at ?? null, nextAt: null,
       why: tooSmall !== undefined && tooSmall.requiredUsd !== null
         ? `The next ${taskName(tooSmall.task).toLowerCase()} run needs about $${tooSmall.requiredUsd.toFixed(2)}, more than the whole daily budget of $${holds.dailyUsd.toFixed(2)}. Raise the daily budget in Settings.`
         : 'Paused: the rolling 24-hour budget has no room for the next automatic run. It resumes as earlier spending leaves the window.' });

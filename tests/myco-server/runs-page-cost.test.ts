@@ -27,7 +27,7 @@ const CODES = JSON.stringify([null, null, 'machine_unresponsive', 'lease_lapsed'
 /** Runs that finished inside the page's widest read: the last two weeks. */
 const RECENT = 400;
 
-it('pulled work costs D1 the same as unrelated live runs and its own ready backlog grow', async () => {
+it('pulled work costs D1 the same as unrelated live runs, its ready backlog and terminal history grow', async () => {
   const page = Array.from({ length: NOW_PROJECTS_MAX }, (_, i) => `proj_visible_${i}`);
   const work = async (db: RelationalStore, project: string) => {
     await db.prepare('INSERT INTO projects(project_id,name,created_at) VALUES(?,?,1)').bind(project, project).run();
@@ -58,6 +58,8 @@ it('pulled work costs D1 the same as unrelated live runs and its own ready backl
         SELECT ?3,'own-'||i,'ready',1,?4,1,?5,?5,?5,?5,?5 FROM n`, page[0], NOW - 2 * HOUR, NOW - 45 * 60_000);
       await eachUnit(db, from, to, "UPDATE learning_sessions SET next_model_due_at=?4,card_promoted_at=?4 WHERE project_id=?3 AND session_id IN (SELECT 'own-'||i FROM n)", page[0], NOW - 45 * 60_000);
       await eachUnit(db, from, to, "INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) SELECT ?3,'own-'||i,'[]',?4 FROM n", page[0], NOW - 45 * 60_000);
+      await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,origin,queued_at,started_at,completed_at)
+        SELECT ?3,'ended-'||i,'load-agent','title-summary',CASE WHEN i%2=0 THEN 'completed' ELSE 'failed' END,'manual',?4-i-1000,?4-i-500,?4-i FROM n`, page[0], NOW - DAY);
     },
     cases: [
       { name: 'one Project with all pulled stages on', run: async db => {

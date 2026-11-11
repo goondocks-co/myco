@@ -3,7 +3,7 @@ let updateOrder = 0;
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { credentialEnvFor } from '@goondocks/myco-shared/harness-providers';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
-import { fleetExecution } from '@myco-server-worker/core/harness.js';
+import { fleetExecution } from '@myco-server-worker/core/fleet-execution.js';
 import { claimSettings } from '@myco-server-worker/core/worker-selection.js';
 import { readTaskStartPreview } from '@myco-server-worker/read/task-start.js';
 import { readFleetProjection } from '@myco-server-worker/db/runs/fleet.js';

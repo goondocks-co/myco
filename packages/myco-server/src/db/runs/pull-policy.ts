@@ -28,13 +28,16 @@ export function curationDueWorkSql(project:string,now:number|string):string {
       WHERE project_id=${project} AND first_started_at IS NOT NULL AND first_started_at>${before(now,BUDGET_WINDOW_MS)}
       LIMIT ${CURATION_DAILY_LIMIT_MAX}))<${curationDailyLimitSql(project)})`;
 }
+export function curationReadySql(project:string,now:number|string):string {
+  return `EXISTS(SELECT 1 FROM spore_curation_work w INDEXED BY idx_curation_due WHERE ${curationDueWorkSql(project,now)})
+    AND ${capabilityOnSql(project,"'spore_curation'")}
+    AND NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live WHERE r.task='${CURATION_TASK}' AND r.project_id=${project} AND r.${IN_FLIGHT_RUN_STATUSES})`;
+}
 export function curationAdmissionSql(project:string,now:number|string,estimateKey?:string, keySql?:string):string {
   const price=keySql===undefined&&estimateKey===undefined?String(seedForStage(CURATION_TASK)):
     `COALESCE((SELECT json_extract(value,'$.estimate') FROM agent_state WHERE project_id=${project} AND agent_id='myco-agent' AND key=${keySql??literal(estimateKey!)}),${seedForStage(CURATION_TASK)})`;
-  return `EXISTS(SELECT 1 FROM spore_curation_work w INDEXED BY idx_curation_due WHERE ${curationDueWorkSql(project,now)})
-    AND ${capabilityOnSql(project,"'spore_curation'")}
-    AND NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live WHERE r.task='${CURATION_TASK}' AND r.project_id=${project} AND r.${IN_FLIGHT_RUN_STATUSES})
-    AND ${spendReadySql(before(now,BUDGET_WINDOW_MS))} AND ${spentUsdSql(before(now,BUDGET_WINDOW_MS))} + ${price} + ${reserveForStage(CURATION_TASK)}<=${effectiveBudgetSql()}`;
+  return `${curationReadySql(project,now)} AND ${spendReadySql(before(now,BUDGET_WINDOW_MS))}
+    AND ${spentUsdSql(before(now,BUDGET_WINDOW_MS))} + ${price} + ${reserveForStage(CURATION_TASK)}<=${effectiveBudgetSql()}`;
 }
 const limitSql = (task:string) => `${RUN_ADMISSION_READY_SQL}
   AND (i.fleet IS NULL OR ${liveCountSql('fleet',task,'NULL','NULL')}<i.fleet)

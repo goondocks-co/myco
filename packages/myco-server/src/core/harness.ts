@@ -3,7 +3,8 @@ import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
 import { budgetHold } from '../db/runs/budget-policy.js';
-import { pullBudgetAvailable, pullCapacityAvailable } from './pulled-admission.js';
+import { pullBudgetAdmission, pullCapacityAvailable } from './pulled-admission.js';
+import { recordPulledBudgetHold, clearPulledBudgetHolds } from '../db/runs/pulled-budget-hold.js';
 import { fleetExecution } from './fleet-execution.js';
 import { BUDGET_WORKER_TASKS } from './budget-policy.js';
 import {
@@ -1166,7 +1167,11 @@ async function pullAtClaim(
     if (selection === null) return null;
     const { stage, item } = selection;
     const chosen = executions.get(stage.task)!;
-    if (!(await pullBudgetAvailable(env.db, { projectId: item.projectId, task: stage.task, now: worker.now, execution: chosen, activation: read.activation }))) return null;
+    const budget = await pullBudgetAdmission(env.db, { projectId: item.projectId, task: stage.task, now: worker.now, execution: chosen, activation: read.activation });
+    if (!budget.fits) {
+      await recordPulledBudgetHold(env.db, { level: stage.level, task: stage.task, requiredUsd: budget.requiredUsd, at: worker.now });
+      return null;
+    }
     const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
     const resolvesTo = await catalogResolution(env.db, catalogOwner, chosen.harness, chosen.profile.model, worker.now);
     const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
@@ -1175,7 +1180,11 @@ async function pullAtClaim(
     const runId = `${RUN_ID_PREFIX}${crypto.randomUUID()}`;
     const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
       assertions: [...selection.assertions,queuedPriority(queues,limits,worker.now)],
-      ...(stage.claimed === undefined ? {} : { claimed: (dispatchedBy: string) => stage.claimed!(env.db, item, input, { runId, dispatchedBy }, worker.now) }) }, {
+      claimed: (dispatchedBy: string) => [
+        ...(stage.claimed?.(env.db, item, input, { runId, dispatchedBy }, worker.now) ?? []),
+        clearPulledBudgetHolds({ levels: pulledStages().map(stage => stage.level), level: stage.level, now: worker.now,
+          projectId: item.projectId, runId, attemptId: dispatchedBy }),
+      ] }, {
       worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now, capabilities:worker.capabilities,
       settingsGuard:policy.revisions,
     });

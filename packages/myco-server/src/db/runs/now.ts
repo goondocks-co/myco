@@ -12,7 +12,7 @@ export interface ProjectCursor { priority: number; activity: number; projectId: 
 type Row = Record<string, unknown>;
 const scopeSql = ({ all }: { all: boolean }) => all ? '?1 IS NULL AND EXISTS(SELECT 1 FROM projects p WHERE p.project_id=r.project_id AND p.archived_at IS NULL)' : 'r.project_id=?1';
 const projectScope = ({ all }: { all: boolean }) => all ? '?1 IS NULL AND p.archived_at IS NULL' : 'p.project_id=?1';
-const projectRows = ({ all }: { all: boolean }) => `WITH live AS MATERIALIZED (SELECT DISTINCT project_id FROM agent_runs INDEXED BY ${all ? 'idx_agent_runs_claimable' : 'idx_agent_runs_task'}
+const projectRows = ({ all }: { all: boolean }) => `WITH live AS MATERIALIZED (SELECT DISTINCT project_id FROM agent_runs INDEXED BY ${all ? 'idx_agent_runs_claimable' : 'idx_agent_runs_project_live'}
     WHERE ${IN_FLIGHT_RUN_STATUSES}${all ? '' : ' AND project_id=?1 LIMIT 1'})
   SELECT p.project_id,CASE WHEN EXISTS(SELECT 1 FROM live WHERE live.project_id=p.project_id)
     OR EXISTS(SELECT 1 FROM json_each('${JSON.stringify(NOW_WATCHED_TASKS)}') t
@@ -38,11 +38,11 @@ export async function todayProjects(db: RelationalStore, scope: TodayScope, curs
 }
 const runningSql = ({ all }: { all: boolean }) => `SELECT r.project_id,r.id,r.task,r.harness,r.model,r.started_at,n.name AS runner,n.id AS runner_id,
   (SELECT c.last_seen_at FROM runner_contacts c WHERE c.runner_id=r.leased_runner_id) AS heard_at
-  FROM agent_runs r INDEXED BY ${all ? 'idx_agent_runs_claimable' : 'idx_agent_runs_task'} LEFT JOIN runners n ON n.id=r.leased_runner_id
-  WHERE r.status='running' AND ${scopeSql({ all })} ORDER BY r.queued_at,r.id LIMIT ${NOW_RUNNING_MAX}`;
+  FROM agent_runs r INDEXED BY ${all ? 'idx_agent_runs_claimable' : 'idx_agent_runs_project_live'} LEFT JOIN runners n ON n.id=r.leased_runner_id
+  WHERE r.status='running' ${all ? '' : `AND r.${IN_FLIGHT_RUN_STATUSES}`} AND ${scopeSql({ all })} ORDER BY r.queued_at,r.id LIMIT ${NOW_RUNNING_MAX}`;
 const runningPage = [true, false].map(all => read<[project: string | null], Row>({ name: `runs.todayRunning${all ? 'All' : 'Named'}`, sql: runningSql({ all }) }));
 const runningCount = [true, false].map(all => read<[project: string | null], { n: number }>({ name: `runs.todayRunningCount${all ? 'All' : 'Named'}`, sql: `SELECT COUNT(*) AS n
-  FROM agent_runs r INDEXED BY ${all ? 'idx_agent_runs_claimable' : 'idx_agent_runs_task'} WHERE r.status='running' AND ${scopeSql({ all })}` }));
+  FROM agent_runs r INDEXED BY ${all ? 'idx_agent_runs_claimable' : 'idx_agent_runs_project_live'} WHERE r.status='running' ${all ? '' : `AND r.${IN_FLIGHT_RUN_STATUSES}`} AND ${scopeSql({ all })}` }));
 const keys = ({ all }: { all: boolean }) => `WITH keys AS (SELECT json_extract(value,'$[0]') AS project_id,json_extract(value,'$[1]') AS id
   FROM json_each((SELECT json_group_array(json_array(project_id,id)) FROM (${runningSql({ all })}))))`;
 const profile = [true, false].map(all => read<[project: string | null], Row>({ name: `runs.todayProfiles${all ? 'All' : 'Named'}`, sql: `${keys({ all })} SELECT k.project_id,k.id,

@@ -14,6 +14,8 @@ import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-acti
 import { LAST_REQUEST_KEY } from '@myco-server-worker/core/activity.js';
 import { estimateKey } from '@myco-server-worker/core/budget-estimates.js';
 import { PROFILE_HARNESSES } from '@goondocks/myco-shared/execution-profile';
+import { claimNextRun } from '@myco-server-worker/core/harness.js';
+import { PULLED_BUDGET_HOLD_MS } from '@myco-server-worker/db/runs/pulled-budget-hold.js';
 
 const NOW = 1_800_000_000_000;
 const MINUTE = 60_000;
@@ -40,7 +42,7 @@ function harness() {
 }
 
 describe('Myco’s work now', () => {
-  it('names pulled work by its real deadline and Project, only while current capacity and budget admit it', async () => {
+  it('names pulled work by its real deadline and Project, excludes capacity holds and skips pricing without an execution', async () => {
     const h = harness();
     await completeBudgetMigration(h.fixture.db, NOW);
     h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
@@ -65,16 +67,20 @@ describe('Myco’s work now', () => {
     expect(await needs()).toHaveLength(1);
     h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.budget.daily_usd','1',1,'owner')");
     h.sqlite.run("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,cost_usd,cost_source) VALUES('proj_2','busy','spent','fixture',?,1,'actual')", [NOW - MINUTE]);
-    expect(await needs()).toEqual([]);
+    expect(await needs()).toHaveLength(1);
   });
 
-  it('uses learned prices to hold a learning head and cheaper curation, and drops disabled work', async () => {
+  it('shows the claim’s Deployment-wide budget hold across Projects, expires it and clears it on a successful claim', async () => {
     const h = harness();
     await completeBudgetMigration(h.fixture.db, NOW);
     h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')");
-    h.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at) VALUES('proj_1','learn','m1','tok_1',?1,?1,?1)", [NOW - 2 * HOUR]);
-    h.sqlite.run(`INSERT INTO learning_sessions(project_id,session_id,init_state,counted,source_activity_at,eligible_at,quiet_at,learning_promoted_at)
-      VALUES('proj_1','learn','ready',1,?1,?2,?2,?2)`, [NOW - 2 * HOUR, NOW - HOUR]);
+    for (const project of ['proj_1', 'proj_2']) {
+      h.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at) VALUES(?1,?1,'m1','tok_1',?2,?2,?2)", [project, NOW - 2 * HOUR]);
+      h.sqlite.run("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at) VALUES(?1,?1,'ready',?2)", [project, NOW - 2 * HOUR]);
+      h.sqlite.run("INSERT INTO turn_cards(project_id,session_id,turn_key,state,input_hash,card,signal,created_at,carded_at) VALUES(?1,?1,'turn','carded','input',?3,'high',?2,?2)", [project, NOW - HOUR,
+        JSON.stringify({ asked: 'Keep the lesson', done: 'Recorded the fix', outcome: 'done', decisions: [], rejected: [], errors: [], corrections: [], files: [], commands: [], open_questions: [] })]);
+      h.sqlite.run("UPDATE learning_sessions SET eligible_at=?2,learning_promoted_at=?2 WHERE project_id=?1", [project, NOW - HOUR]);
+    }
     h.sqlite.run("INSERT INTO project_capabilities VALUES('proj_1','spore_curation',1,1,'owner')");
     h.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) VALUES('proj_1','group','[]',?)", [NOW - 45 * MINUTE]);
     expect((await h.read()).needsYou.filter(item => item.key.startsWith('pulled:'))).toMatchObject([
@@ -87,15 +93,33 @@ describe('Myco’s work now', () => {
       [JSON.stringify([offeredHarness('claude-code')]), JSON.stringify(WORKER_CAPABILITIES), NOW]);
     h.sqlite.run("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,1)");
     const key = estimateKey('extract-curate', 'claude-code', { tier: 'default', model: PROFILE_HARNESSES['claude-code']!.models.default! });
-    h.sqlite.run("INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES('proj_1','myco-agent',?1,?2,?3)", [key, JSON.stringify({ estimate: 0.9 }), NOW]);
-    h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.budget.daily_usd','1',1,'owner')");
+    h.sqlite.run("INSERT INTO agent_state(project_id,agent_id,key,value,updated_at) VALUES('proj_1','myco-agent',?1,?2,?3),('proj_2','myco-agent',?1,?4,?3)", [key, JSON.stringify({ estimate: 1.2 }), NOW, JSON.stringify({ estimate: 0.4 })]);
+    h.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.budget.daily_usd','2',1,'owner')");
     h.run('proj_2', 'spent', 'title-summary', 'completed', NOW - MINUTE);
-    h.sqlite.run("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,cost_usd,cost_source) VALUES('proj_2','spent','priced-spend','fixture',?,0.2,'actual')", [NOW - MINUTE]);
-    const held = await h.read();
+    h.sqlite.run("INSERT INTO agent_run_attempts(project_id,run_id,attempt_id,leased_by,claimed_at,cost_usd,cost_source) VALUES('proj_2','spent','priced-spend','fixture',?,1.2,'actual')", [NOW - MINUTE]);
+    const poll = (now: number) => claimNextRun(h.fixture.serverEnv, {
+      principal: { kind: 'runner', runnerId: 'rn_price', credentialId: 'rc_price', machineId: null },
+      harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now,
+    });
+    expect((await h.read({ projectId: 'proj_2' })).needsYou).toContainEqual(expect.objectContaining({ key: 'pulled:proj_2:extract-curate' }));
+    expect(await poll(NOW)).toMatchObject({ claimed: false });
+    const held = await h.read({ projectId: 'proj_2' });
     expect(held.unavailable).toEqual([]);
     expect(held.needsYou.filter(item => item.key.startsWith('pulled:'))).toEqual([]);
-    h.sqlite.run("UPDATE agent_state SET value=?1 WHERE key=?2", [JSON.stringify({ estimate: 0.4 }), key]);
-    expect((await h.read()).needsYou.filter(item => item.key.startsWith('pulled:'))).toHaveLength(2);
+    expect(held.waiting.filter(item => item.key === 'budget')).toMatchObject([{ projectId: null,
+      why: 'Paused: the rolling 24-hour budget has no room for the next automatic run. It resumes as earlier spending leaves the window.' }]);
+    h.sqlite.run("UPDATE agent_state SET value=?1 WHERE project_id='proj_1' AND key=?2", [JSON.stringify({ estimate: 3 }), key]);
+    expect(await poll(NOW + 1)).toMatchObject({ claimed: false });
+    expect((await h.read({ projectId: 'proj_2' }, NOW + 1)).waiting.find(item => item.key === 'budget')?.why)
+      .toBe('The next learn from sessions run needs about $3.00, more than the whole daily budget of $2.00. Raise the daily budget in Settings.');
+    const expiredAt = NOW + PULLED_BUDGET_HOLD_MS + 2;
+    expect((await h.read({ projectId: 'proj_2' }, expiredAt)).needsYou).toContainEqual(expect.objectContaining({ key: 'pulled:proj_2:extract-curate' }));
+    expect(await poll(expiredAt + 1)).toMatchObject({ claimed: false });
+    h.sqlite.run("UPDATE agent_state SET value=?1 WHERE project_id='proj_1' AND key=?2", [JSON.stringify({ estimate: 0.2 }), key]);
+    expect(await poll(expiredAt + 2)).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
+    const resumed = await h.read({ projectId: 'proj_2' }, expiredAt + 3);
+    expect(resumed.waiting.find(item => item.key === 'budget')).toBeUndefined();
+    expect(resumed.needsYou).toContainEqual(expect.objectContaining({ key: 'pulled:proj_2:extract-curate' }));
     h.sqlite.run("UPDATE project_capabilities SET enabled=0 WHERE capability='spore_curation'");
     h.sqlite.run("UPDATE deployment_settings SET value='false' WHERE leaf='agent.scheduled_tasks_enabled'");
     expect((await h.read()).needsYou).toEqual([]);
