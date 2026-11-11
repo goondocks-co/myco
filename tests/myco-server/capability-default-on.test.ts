@@ -41,8 +41,7 @@ describe('project capability defaults across readers', () => {
           .toEqual({ enabled: admitted ? 1 : 0 });
       }
       for (const projectId of [undefined, 'proj_1']) {
-        const reader = enabledCapabilities(db, PROJECT_CAPABILITIES, projectId);
-        const rows = reader.read((await reader.statement.all()).results as Array<Record<string, unknown>>);
+        const rows = await enabledCapabilities(db, PROJECT_CAPABILITIES, projectId);
         expect(rows.filter((row) => row.projectId === 'proj_1').map((row) => row.capability).sort())
           .toEqual(PROJECT_CAPABILITIES.filter(c => c.startsWith('spore_curation') ? state === true : expected).sort());
       }
@@ -65,8 +64,7 @@ describe('project capability defaults across readers', () => {
             .toEqual({ enabled: 0 });
         }
         for (const projectId of [undefined, 'proj_1']) {
-          const reader = enabledCapabilities(db, PROJECT_CAPABILITIES, projectId);
-          expect(reader.read((await reader.statement.all()).results as Array<Record<string, unknown>>)
+          expect((await enabledCapabilities(db, PROJECT_CAPABILITIES, projectId))
             .filter((row) => row.projectId === 'proj_1')).toEqual([]);
         }
         const facts = await readScheduleFacts(serverEnv, [MAP_TASK, EXTRACTION_TASK], NOW, 'proj_1');

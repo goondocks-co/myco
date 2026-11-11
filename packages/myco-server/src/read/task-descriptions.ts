@@ -124,8 +124,7 @@ export function descriptionProfile(task: string, settings: ReadonlyMap<string, s
 async function availabilityNotes(env: ServerEnv, set: ProjectSet): Promise<Map<string, string | null>> {
   const ids = set.all ? (await listProjects(env.db)).map((project) => project.projectId) : set.projectIds;
   const required = [...new Set(RETAINED_TASKS.map(capabilityOf).filter((capability) => capability !== null))];
-  const capabilities = enabledCapabilities(env.db, required);
-  const enabled = capabilities.read((await capabilities.statement.all<Record<string, unknown>>()).results);
+  const enabled = await enabledCapabilities(env.db, required);
   const projectsByCapability = new Map(required.map((capability) => [capability, new Set(enabled.filter((row) => row.capability === capability).map((row) => row.projectId))]));
   const embeddingAvailable = env.vectors !== undefined && await env.embeddingProvider?.() != null;
   const notes = await Promise.all(RETAINED_TASKS.map(async (task) => {

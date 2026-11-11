@@ -1,11 +1,11 @@
 import { observedSettingsAssertion } from '../db/meta/settings-observation.js';
-import type { Bound } from '../db/index.js';
+import { rows, type Bound } from '../db/index.js';
 import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';
 import { BUDGET_LEAF, BUDGET_DEFAULT_USD, BUDGET_MINIMUM_USD } from './budget-policy.js';
 import { persistSettings, readEveryLeaf, readLeafValues, readSettingStates, readProjectEditor, projectCurationLimitSql, readCurationLimit, settingRevisions, observedRevisionPredicate, type SettingState } from '../db/settings/leaves.js';
-import { DEFAULT_OFF_CAPABILITIES, capabilityOnSql, projectWorkEnabled, readCapabilities, readCapabilityOn, readRetiredCapabilities } from '../db/settings/admission.js';
+import { DEFAULT_OFF_CAPABILITIES, enabledCapabilitiesRead, projectWorkEnabled, readCapabilities, readCapabilityOn, readRetiredCapabilities, type EnabledCapability } from '../db/settings/admission.js';
 import type { EmbeddingSwitch } from './embedding/switch-store.js';
-import type { PreparedStatement, RelationalStore } from './adapters.js';
+import type { RelationalStore } from './adapters.js';
 import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
@@ -760,23 +760,9 @@ export async function taskWorkEnabled(db: RelationalStore, projectId: string, ta
     : projectWorkEnabled(db, projectId);
 }
 
-function requestedCapabilities(capabilities: readonly ProjectCapability[]): string {
-  return capabilities.map(() => 'SELECT ? AS capability').join(' UNION ALL ');
-}
-
 /** Enabled capabilities for every stored Project or the Project named, in one statement. */
-export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): {
-  statement: PreparedStatement;
-  read: (rows: ReadonlyArray<Record<string, unknown>>) => Array<{ projectId: string; capability: string }>;
-} {
-  const statement = db.prepare(
-    capabilities.length === 0
-      ? 'SELECT project_id AS projectId, NULL AS capability FROM projects WHERE 0'
-      : `SELECT p.project_id AS projectId, requested.capability FROM projects p
-         CROSS JOIN (${requestedCapabilities(capabilities)}) requested
-         WHERE ${capabilityOnSql('p.project_id', 'requested.capability')}${projectId === undefined ? '' : ' AND p.project_id = ?'}`,
-  ).bind(...capabilities, ...(capabilities.length === 0 || projectId === undefined ? [] : [projectId]));
-  return { statement, read: (rows) => rows.map((row) => ({ projectId: String(row.projectId), capability: String(row.capability) })) };
+export function enabledCapabilities(db: RelationalStore, capabilities: readonly ProjectCapability[], projectId?: string): Promise<EnabledCapability[]> {
+  return rows(db, enabledCapabilitiesRead(capabilities, projectId));
 }
 
 /**

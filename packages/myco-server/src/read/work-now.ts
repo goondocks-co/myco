@@ -183,9 +183,8 @@ async function readScheduled(env: ServerEnv, projects: readonly string[], onePag
   if (projects.length === 0) return { waiting: [], failingGroups };
   const mapCapability = capabilityOf(MAP_TASK);
   const capabilities: ProjectCapability[] = ['spore_curation', ...(mapCapability === null ? [] : [mapCapability])];
-  const on = enabledCapabilities(env.db, capabilities, projects.length === 1 ? projects[0] : undefined);
-  const [enabled, leaves] = await Promise.all([on.statement.all<Record<string, unknown>>(), scheduleLeaves(env)]);
-  const has = new Set(on.read(enabled.results).filter((row) => projects.includes(row.projectId)).map((row) => `${row.projectId}\u0000${row.capability}`));
+  const [enabled, leaves] = await Promise.all([enabledCapabilities(env.db, capabilities, projects.length === 1 ? projects[0] : undefined), scheduleLeaves(env)]);
+  const has = new Set(enabled.filter((row) => projects.includes(row.projectId)).map((row) => `${row.projectId}\u0000${row.capability}`));
   const curating = projects.filter((projectId) => has.has(`${projectId}\u0000spore_curation`));
   const mapping = leaves.enabled && leaves.mapRefresh.enabled ? projects.filter((projectId) => mapCapability === null || has.has(`${projectId}\u0000${mapCapability}`)) : [];
   const answers = await todaySchedules(env.db, curating, mapping, now);

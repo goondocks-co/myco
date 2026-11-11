@@ -66,7 +66,7 @@ const runShapes = async (sqlite: ReturnType<typeof seededSqlite>): Promise<void>
     await insertReport(db, scope, { runId: 'r', agentId: 'a', action: 'x', summary: 's', details: null, audit: null, createdAt: 0 }, held);
     for (const code of Object.keys(RUN_CONTROL_REFUSAL_WORDS) as RunControlRefusalCode[]) await recordRunControlRefusal(db, 't', code, held);
   }
-  for (const projects of [undefined, 'p', ['p']]) taskRunFacts(db, ['t'], 0, 'clock', projects);
+  for (const projects of [undefined, 'p', ['p']]) taskRunFacts(['t'], 0, 'clock', projects);
 };
 
 it('every registered statement prepares against the final schema', async () => {

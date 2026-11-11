@@ -29,8 +29,6 @@ const PENDING: ReadonlySet<string> = new Set([
   'core/restore-rows.ts',
   'core/run-write-store.ts',
   'core/runner-updates.ts',
-  'core/scheduled-tasks.ts',
-  'core/settings.ts',
   'core/task-catalogue.ts',
   'core/turn-card-prompt.ts',
   'core/write-guard-store.ts',
