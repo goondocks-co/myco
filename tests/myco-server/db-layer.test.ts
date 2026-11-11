@@ -9,7 +9,6 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
  * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
  */
 const PENDING: ReadonlySet<string> = new Set([
-  'api/runs.ts',
   'auth/authorization.ts',
   'auth/device.ts',
   'auth/grants.ts',
@@ -38,10 +37,7 @@ const PENDING: ReadonlySet<string> = new Set([
   'read/catalog/shared.ts',
   'read/catalog/turns.ts',
   'read/document-catalog.ts',
-  'read/run-outcome.ts',
   'read/runs.ts',
-  'read/task-descriptions.ts',
-  'routes.ts',
   // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
   'db/runs/change.ts', // A terminal run update commits with the credential retirement auth/tokens still prepares.
 ]);
@@ -164,6 +160,10 @@ it('counts store batches, exec and template producers while ignoring comments an
     /words/.exec(text); pattern.exec(text);
   `));
   expect(sites.map(site => site.kind)).toEqual(['batch', 'exec', 'prepare', 'sql']);
+});
+
+it('reads a lone statement keyword or a sentence opening with one as words and not as SQL', () => {
+  expect(boundarySites(source(`const method = 'DELETE'; const op = "delete"; const note = 'update names columns it may not set'; const q = \`WITH recent AS (SELECT 1) SELECT 2\`;`)).map(site => site.kind)).toEqual(['sql']);
 });
 
 it('recognizes store aliases by their type and permits unrelated batch and exec methods', () => {

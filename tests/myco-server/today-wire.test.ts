@@ -18,7 +18,7 @@ import type {
   Upkeep,
   OutcomeKind,
 } from '../../packages/myco-server/src/read/work.ts';
-import type { RunResult } from '../../packages/myco-server/src/read/run-outcome';
+import type { RunResult } from '../../packages/myco-server/src/db/runs/run-output';
 import type { AttentionAnswer, AttentionItem } from '../../packages/myco-server/src/core/attention.ts';
 import type { CaptureRow } from '../../packages/myco-server/src/read/capture.ts';
 import type { ConnectAnswer, ConnectRefusal, ConnectRefusalCode, ConnectRequest, UncapturedAnswer, UncapturedRootItem } from '../../packages/myco-server/src/api/uncaptured.ts';

@@ -27,6 +27,9 @@ export const DB_STORE_ALLOWED = new Map<string, string>([
   ['db/meta/budget-activation.ts', 'Operator path: runs generated activation steps in order'],
 ]);
 
+/** The opening of a statement: its keyword in the shape SQL gives it, so a word or sentence that begins with one is prose. */
+const STATEMENT_START = new RegExp(String.raw`^\s*(?:SELECT\b\s+\S|INSERT\s+(?:OR\s+\w+\s+)?INTO\b|REPLACE\s+INTO\b|DELETE\s+FROM\b`
+  + String.raw`|UPDATE\s+(?:OR\s+\w+\s+)?(?:\S+\s+)?SET\b|WITH\s+(?:RECURSIVE\s+)?(?:\w+\s*(?:\([^)]*\)\s*)?)?AS\b)`, 'i');
 const FROZEN_SCHEMA = /^db\/schema-v\d+\.ts$/;
 const STORE_KINDS: ReadonlySet<BoundarySite['kind']> = new Set(['prepare', 'batch', 'exec']);
 const BOUND_COMPILERS = new Set(['prepareBound', 'prepareClaimCompanion']);
@@ -77,7 +80,7 @@ export function boundarySites(source: ts.SourceFile, checker?: ts.TypeChecker): 
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) {
       const text = ts.isTemplateExpression(node)
         ? node.head.text + node.templateSpans.map(span => ` ${span.literal.text}`).join('') : node.text;
-      if (/^\s*(?:SELECT|WITH|INSERT|UPDATE|DELETE|REPLACE)\b/i.test(text)
+      if (STATEMENT_START.test(text)
         || (/\bFROM\s+[A-Za-z_][A-Za-z_0-9]*\b/i.test(text) && /\bWHERE\b/i.test(text))) add(node, 'sql');
     }
     ts.forEachChild(node, visit);

@@ -7,7 +7,7 @@ import { assertSandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { fleetReports, readWorkerFleet } from '@myco-server-worker/core/worker-contacts.js';
-import { producedSql } from '@myco-server-worker/read/run-outcome.js';
+import { producedSql } from '@myco-server-worker/db/runs/run-output.js';
 import { FIRST_MEMBER_KEY } from '@myco-server-worker/core/ownership.js';
 import { handleDevicePoll } from '@myco-server-worker/auth/device.js';
 import { readRunnerRecord } from '@myco/runner/runner-registry.js';

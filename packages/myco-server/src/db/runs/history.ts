@@ -8,7 +8,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope, ProjectSet } from '../../read/scope.js';
 import { EMBEDDING_TASK } from '../../core/embedding/task.js';
-import { producedSql, runResultSql } from '../../read/run-outcome.js';
+import { producedSql, runResultSql } from './run-output.js';
 import { costProvenanceValue } from '../run-accounting.js';
 import { requestedProfileValue } from '../run-profile.js';
 import { contextValue, DISPATCH_ACTOR_SQL, ENDED_NOTE_KEY, FAILURE_REASON_KEY, HARNESS_STOP_KEY, REPOSITORY_FAILURE_CODE_KEY, REPOSITORY_FAILURE_SUMMARY_KEY } from '../run-context.js';

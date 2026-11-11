@@ -1,6 +1,6 @@
 import { RUN_ID_PREFIX } from '../../constants.js';
 import { SETUP_OUTPUT_EVENT_INDEX, SETUP_OUTPUT_EVENT_WHERE } from '../schema-v712.js';
-import { producedSql } from '../../read/run-outcome.js';
+import { producedSql } from '../runs/run-output.js';
 import { read, readSet } from '../index.js';
 import { repositoriesNeeded } from '../../read/repository-requirements.js';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';

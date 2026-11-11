@@ -6,7 +6,7 @@
  */
 import type { Database } from 'bun:sqlite';
 import type { BlobFailureClassifier, JobBudget, OwnerBindings, PlatformDescriptor, ServerEnv } from '../../core/adapters.js';
-import { classifySqliteError, sqliteRelationalStore } from './sqlite.js';
+import { classifySqliteError, sqliteAnswers, sqliteRelationalStore } from './sqlite.js';
 import { diskBlobStore, DIGEST_MISMATCH_MESSAGE } from './blobs.js';
 import { inProcessRateLimiter } from './limiter.js';
 import { wrappingKeyFromText } from '../wrapping-key.js';
@@ -59,18 +59,8 @@ export const classifyBlobFailureOf: BlobFailureClassifier = (message) =>
 const BUN_JOB_BUDGET: JobBudget = { calls: 2_000, wallMs: 15_000 };
 
 export function bunPlatform(config: BunServerConfig): PlatformDescriptor {
-  // Usability, not merely presence: an open handle that cannot answer a trivial
-  // query is as missing as no handle at all, and is the shape a detached volume
-  // or a half-applied migration actually takes.
-  const storeUsable = (): boolean => {
-    try {
-      if (config.sqlite === undefined || config.sqlite === null) return false;
-      config.sqlite.query('SELECT 1').get();
-      return true;
-    } catch {
-      return false;
-    }
-  };
+  // Usability, not merely presence: an open handle that cannot answer a trivial query is as missing as no handle at all.
+  const storeUsable = (): boolean => sqliteAnswers(config.sqlite);
 
   return {
     name: 'bun',

@@ -2,7 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_TASK, CURATION_TASK, SEEDING_TASK } from '../../core/task-catalogue.js';
-import { producedSql } from '../../read/run-outcome.js';
+import { producedSql } from './run-output.js';
 import { contextValue, FAILURE_REASON_KEY } from '../run-context.js';
 import { FAILED_CALL_INDEX, FAILED_CALL_SQL } from '../schema-v701.js';
 import { read, readSet } from '../index.js';

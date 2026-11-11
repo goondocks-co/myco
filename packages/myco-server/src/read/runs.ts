@@ -18,7 +18,7 @@ import { attemptsReceived, runEvidenceHead } from '../db/runs/evidence.js';
 import { readRunCloseEvidence, type RunCloseEvidence } from '../core/run-postconditions.js';
 import { runErrorCode, skipReasonCode } from '../core/reader-codes.js';
 import { requestedProfile, type ExecutionProfile } from '@goondocks/myco-shared/execution-profile';
-import { type RunResult } from './run-outcome.js';
+import { type RunResult } from '../db/runs/run-output.js';
 import { MAP_WRITE_TOOL } from '../core/tool-catalogue.js';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import type { StepKind, StepOutcome, UnrecognizedCount } from '@goondocks/myco-shared/worker-steps';
