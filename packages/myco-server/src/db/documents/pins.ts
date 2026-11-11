@@ -231,16 +231,3 @@ export interface DeliveredNaming {
   scheme?: PromptIdScheme | null;
 }
 
-/**
- * The delivery columns a row is marked with: `delivered_at`, and the prompt that carried it, or why it names none. A
- * prompt named under a scheme the session's prompts are not named by is recorded as `scheme`, never as an id that
- * names nothing.
- */
-export function deliveredFields(d:DeliveredNaming):{column:string;sql:string;params:unknown[]}[]{
-  const scope=d.promptId===null||d.scheme===undefined||d.scheme===null?null:schemeSharedParams(d.projectId,d.sessionId,d.scheme);
-  return [
-    {column:'delivered_at',sql:'?',params:[d.at]},
-    {column:'delivered_prompt_id',sql:scope===null?'?':`CASE WHEN ${SCHEME_SHARED_SQL} THEN ? END`,params:scope===null?[d.promptId]:[...scope,d.promptId]},
-    {column:'delivered_scope_reason',sql:scope===null?'?':`CASE WHEN ${SCHEME_SHARED_SQL} THEN NULL ELSE 'scheme' END`,params:scope===null?[d.scopeReason]:scope},
-  ];
-}

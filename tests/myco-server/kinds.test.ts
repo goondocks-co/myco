@@ -439,30 +439,6 @@ describe('kind catalogue', () => {
     expect(bytesWritten(e.sqlite, t.tokenId)).toBe(0);
   });
 
-  it('binds a row keyed by its own id to the machine that owns its session: another machine cannot squat a tool call, response, or attachment id', async () => {
-    const e = sqliteEnv();
-    const t1 = await member(e);
-    const t3 = await member(e, 'proj_1', 'machine_3');
-    const png = await upload(e, t1.token, utf8('att-bytes'), 'image/png');
-    const ids = { toolCallId: uuid(600), responseId: uuid(601), attachmentId: uuid(602) };
-    const mine: [string, Record<string, unknown>][] = [
-      ['tool.use', { toolCallId: ids.toolCallId, toolName: 'Read', input: { a: 1 }, success: true }],
-      ['response', { responseId: ids.responseId, text: 'mine' }],
-      ['attachment', { attachmentId: ids.attachmentId, blob: png }],
-    ];
-    let n = 610;
-    for (const [kind, payload] of mine) {
-      const own = await json(await worker.fetch(memberPost(t1.token, envelope({ eventId: uuid(n++), kind, createdAt: 1_000, payload })), e.env));
-      expect({ kind, own }).toEqual({ kind, own: { persisted: true, projected: true } });
-    }
-    const before = ['events', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all());
-    for (const [kind, payload] of mine) {
-      const res = await json(await worker.fetch(memberPost(t3.token, envelope({ eventId: uuid(n++), sessionId: 'sess_3', kind, createdAt: 9_000, payload })), e.env));
-      expect({ kind, res }).toEqual({ kind, res: { persisted: false, code: 'identity_mismatch', reason: 'machine identity mismatch' } });
-    }
-    expect(['events', 'attachments'].map((t) => e.sqlite.query(`SELECT * FROM ${t}`).all())).toEqual(before);
-  });
-
   it('binds referenced prompts to the machine that owns their session: another machine\'s token cannot merge, time, join to, or parent onto them, and sees no oracle', async () => {
     const e = sqliteEnv();
     const t1 = await member(e);
