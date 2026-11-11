@@ -13,6 +13,7 @@
  */
 import type { PreparedStatement, RelationalStore } from '../core/adapters.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
+import { shownMachineOwners } from '../db/capture/owners.js';
 
 /** How far back capture recency looks. A machine and agent silent for longer drop out of the answer. */
 export const CAPTURE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -23,39 +24,6 @@ interface MachineOwner {
   memberId: string;
   memberLabel: string | null;
 }
-
-/** Every claimed machine with its own label and its member. The claims are the Deployment's machines, a handful of rows. */
-function machineClaimsStatement(db: RelationalStore): PreparedStatement {
-  return db.prepare(
-    `SELECT mc.machine_id, mc.member_id, mc.label, m.label AS member_label
-       FROM machine_claims mc CROSS JOIN members m ON m.id = mc.member_id`,
-  );
-}
-
-/** The label each machine's live credentials carry, newest first: the name of a machine whose claim holds none. */
-function machineNamesStatement(db: RelationalStore, nowMs: number): PreparedStatement {
-  return db.prepare(
-    `SELECT machine_id, runtime_label FROM member_credentials INDEXED BY idx_member_credentials_live_successor
-      WHERE revoked_at IS NULL AND expires_at > ? AND machine_id IS NOT NULL AND runtime_label IS NOT NULL
-      ORDER BY issued_at DESC, id DESC`,
-  ).bind(nowMs);
-}
-
-/** Each claimed machine's name and member, from what `machineClaimsStatement` and `machineNamesStatement` answer. */
-function machineOwnersOf(claims: readonly unknown[], credentials: readonly unknown[]): Map<string, MachineOwner> {
-  const carried = new Map<string, string>();
-  for (const row of credentials as { machine_id: string; runtime_label: string }[]) {
-    if (!carried.has(row.machine_id)) carried.set(row.machine_id, row.runtime_label);
-  }
-  const owners = new Map<string, MachineOwner>();
-  for (const row of claims as { machine_id: string; member_id: string; label: string | null; member_label: string | null }[]) {
-    owners.set(row.machine_id, { name: row.label ?? carried.get(row.machine_id) ?? null, memberId: row.member_id, memberLabel: row.member_label });
-  }
-  return owners;
-}
-
-/** The two statements `machineOwnersOf` reads, for a caller to batch beside its own. */
-const machineOwnerStatements = (db: RelationalStore, nowMs: number): PreparedStatement[] => [machineClaimsStatement(db), machineNamesStatement(db, nowMs)];
 
 /** What `viewerId` is shown as a machine's name: the name of a machine that is theirs, and null for anyone else's. */
 function shownMachineName(owner: MachineOwner | undefined, viewerId: string): string | null {
@@ -129,6 +97,11 @@ function captureRowsOf(rows: readonly unknown[], owners: ReadonlyMap<string, Mac
 
 /** Receipt-minute heads with their source receipts, most recent first, as `viewerId` is shown them. */
 export async function captureRecency(db: RelationalStore, nowMs: number, viewerId: string): Promise<CaptureRow[]> {
-  const [recent, claims, credentials] = await db.batch([captureRecencyStatement(db, nowMs), ...machineOwnerStatements(db, nowMs)]);
-  return captureRowsOf(recent!.results, machineOwnersOf(claims!.results, credentials!.results), viewerId);
+  const recent = await captureRecencyStatement(db, nowMs).all<Record<string, unknown>>();
+  const owners = new Map<string, MachineOwner>();
+  const ids = [...new Set(recent.results.map((row) => String(row.machine_id)))];
+  for (const row of await shownMachineOwners(db, nowMs, ids)) {
+    owners.set(row.machine_id, { name: row.label ?? row.carried_label, memberId: row.member_id, memberLabel: row.member_label });
+  }
+  return captureRowsOf(recent.results, owners, viewerId);
 }
