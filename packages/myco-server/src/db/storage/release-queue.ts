@@ -218,11 +218,6 @@ export function registeredBlobsWrite(pairs: readonly BlobRef[]): Bound {
   return referenceGuard.bind(pageOf(pairs));
 }
 
-/** `registeredBlobsWrite` compiled for a batch still built from prepared statements. */
-export function registeredBlobsGuard(db: RelationalStore, pairs: readonly BlobRef[]): PreparedStatement {
-  return prepareBound(db, registeredBlobsWrite(pairs));
-}
-
 const EVIDENCE_CLOSED = `NOT EXISTS (
     SELECT 1 FROM registered_content_proofs p LEFT JOIN blobs b ON b.project_id=p.project_id AND b.key=p.key
     WHERE b.key IS NULL OR p.generation IS NOT b.generation OR p.size IS NOT b.size

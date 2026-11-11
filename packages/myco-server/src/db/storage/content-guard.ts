@@ -1,12 +1,9 @@
 /**
  * The content guard a content transition holds in its own batch: a row the guard table refuses unless the condition
- * holds, then cleared, so a batch whose evidence moved fails whole. The statements are those `contentAssertion` writes;
- * each condition text is its own statement.
+ * holds, then cleared, so a batch whose evidence moved fails whole. Each condition text is its own statement.
  */
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
 import { composedStatements } from '../composed-statements.js';
 import { write, type BindValue, type Bound } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
 
 const holds = composedStatements<never, 'write'>('storage.contentGuard');
 const clear = write<[]>({ name: 'storage.contentGuardClear', sql: 'DELETE FROM storage_content_guard' });
@@ -26,12 +23,4 @@ export function contentGuard(sql: string, params: readonly unknown[], when?: { s
 export function namedContentGuard<Params extends BindValue[]>(name: string, condition: string): (...params: Params) => Bound<never, 'write'>[] {
   const guard = write<Params>({ name, sql: `INSERT INTO storage_content_guard(ok) SELECT CASE WHEN (${condition}) THEN 1 ELSE 0 END` });
   return (...params) => [guard.bind(...params), clear.bind()];
-}
-
-/**
- * `contentGuard` compiled for a batch still built from prepared statements: a failed guard aborts the whole publication
- * or clear transaction with the guard table's own refusal.
- */
-export function contentAssertion(db: RelationalStore, sql: string, params: readonly unknown[], when?: { sql: string; params: readonly unknown[] }): PreparedStatement[] {
-  return contentGuard(sql, params, when).map(guard => prepareBound(db, guard));
 }
