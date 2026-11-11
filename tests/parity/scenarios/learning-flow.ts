@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { documentsPublished, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { ageRows, documentsPublished, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
@@ -39,6 +39,16 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   await capture('response', { responseId: crypto.randomUUID(), promptId: prompt, text: 'Reopen the spool under its recorded owner before capture.' });
   await capture('session.end', { endedAt: at });
   await documentsPublished(target, session, target.projectId, request);
+  const pulledNeeds = async () => {
+    const response = await request(new Request(`${target.url}/api/work/now?project=${target.projectId}`, { headers: target.ownerHeaders() }));
+    expect(response.status).toBe(200);
+    const answer = await response.json() as { needsYou: { key: string; what: string; runId: string | null }[]; unavailable: string[] };
+    expect(answer.unavailable).toEqual([]);
+    return answer.needsYou.filter(item => item.key.startsWith('pulled:'));
+  };
+  expect(await pulledNeeds()).toEqual([]);
+  await ageRows(target as ParityTarget, { table: 'turn_cards', column: 'due_at', byMs: 3_600_000, match: { project_id: target.projectId, session_id: session } });
+  expect(await pulledNeeds()).toMatchObject([{ what: expect.stringContaining('Summarize session turns has waited'), runId: null }]);
   const claim = () => post<Claim>('/worker/claim', { harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES });
   const call = async <T = unknown>(run: Claim['run'], name: string, input: Record<string, unknown>): Promise<T> => {
     const body = await post<{ error?: unknown; result: { isError?: boolean; structuredContent: { result: T } } }>('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { project: target.projectId, ...input } } }, memberHeadersFor(run.runToken, target.projectId));

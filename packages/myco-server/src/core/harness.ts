@@ -2,8 +2,11 @@ import { queuedPriority, queuedAdmissible } from '../db/runs/pull-policy.js';
 import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
 import { budgetActivation } from '../db/meta/budget-activation.js';
-import { automaticFits, budgetHold } from '../db/runs/budget-policy.js';
-import { reserveForStage, BUDGET_WORKER_TASKS } from './budget-policy.js';
+import { budgetHold } from '../db/runs/budget-policy.js';
+import { pullBudgetAdmission, pullCapacityAvailable } from './pulled-admission.js';
+import { recordPulledBudgetHold, clearPulledBudgetHolds } from '../db/runs/pulled-budget-hold.js';
+import { fleetExecution } from './fleet-execution.js';
+import { BUDGET_WORKER_TASKS } from './budget-policy.js';
 import {
   pulledStages,
   PULL_RESELECTIONS,
@@ -98,11 +101,9 @@ import {
   capabilityOn,
   CLAIM_SETTING_LEAVES,
   claimSettings,
-  fleetSelection,
   RUNTIME_SERVED_TASKS,
   availableLogin,
   selectExecution,
-  type FleetReport,
   type LoginStep,
   type OfferedHarness,
 } from './worker-selection.js';
@@ -954,12 +955,6 @@ async function recordProfileHolds(env: ServerEnv, worker: { principal: WorkerPri
   }
 }
 
-/** What `reports` would run `task` under at a claim now, or the holder a queued run of it waits under (`fleetSelection`). */
-export async function fleetExecution(env: ServerEnv, task: string, reports: readonly FleetReport[], settings: ReadonlyMap<string, string>,
-  login = availableLogin(harnessCredentialAvailability(env.db, env.wrappingKey))) {
-  return fleetSelection(task, reports, settings, () => login);
-}
-
 /** Whether a recent eligible worker can execute this repository task with its required profile and capabilities. */
 export async function repositoryWorkerAvailable(env: ServerEnv, task: string, now: number): Promise<boolean> {
   const [reports, settings] = await Promise.all([recentWorkerReports(env.db, now), claimSettings(env)]);
@@ -1167,13 +1162,16 @@ async function pullAtClaim(
     }
     const limits = attempt === 0 ? read.limits : await readDispatchLimits(env);
     const eligible: PulledStage[] = [];
-    for (const stage of compatible) if (heldBy(await dispatchLoad(env.db, stage.task, worker.now), limits) === null) eligible.push(stage);
+    for (const stage of compatible) if (await pullCapacityAvailable(env.db, stage.task, limits, worker.now)) eligible.push(stage);
     const selection = await selectPulled(env.db, eligible, compatible, limits, worker.now);
     if (selection === null) return null;
     const { stage, item } = selection;
     const chosen = executions.get(stage.task)!;
-    const price = await estimateForClaim(env.db, item.projectId, stage.task, chosen.harness, chosen.profile);
-    if (!(await automaticFits(env.db, price.estimate, worker.now, reserveForStage(stage.task), read.activation))) return null;
+    const budget = await pullBudgetAdmission(env.db, { projectId: item.projectId, task: stage.task, now: worker.now, execution: chosen, activation: read.activation });
+    if (!budget.fits) {
+      await recordPulledBudgetHold(env.db, { level: stage.level, task: stage.task, requiredUsd: budget.requiredUsd, at: worker.now });
+      return null;
+    }
     const catalogOwner: CatalogOwner = worker.principal.kind === 'member' ? { kind: 'machine', machineId: worker.principal.machineId } : { kind: 'runner', runnerId: worker.principal.runnerId };
     const resolvesTo = await catalogResolution(env.db, catalogOwner, chosen.harness, chosen.profile.model, worker.now);
     const profile = resolvesTo === undefined ? chosen.profile : { ...chosen.profile, resolvesTo };
@@ -1182,7 +1180,11 @@ async function pullAtClaim(
     const runId = `${RUN_ID_PREFIX}${crypto.randomUUID()}`;
     const claimed = await claimPulledRun(env, { projectId: item.projectId, id: runId, task: stage.task, subject: item.subject, input,
       assertions: [...selection.assertions,queuedPriority(queues,limits,worker.now)],
-      ...(stage.claimed === undefined ? {} : { claimed: (dispatchedBy: string) => stage.claimed!(env.db, item, input, { runId, dispatchedBy }, worker.now) }) }, {
+      claimed: (dispatchedBy: string) => [
+        ...(stage.claimed?.(env.db, item, input, { runId, dispatchedBy }, worker.now) ?? []),
+        clearPulledBudgetHolds({ levels: pulledStages().map(stage => stage.level), level: stage.level, now: worker.now,
+          projectId: item.projectId, runId, attemptId: dispatchedBy }),
+      ] }, {
       worker: worker.principal, leaseExpiresAt: worker.now + WORKER_LEASE_MS, harness: chosen.harness, profile, now: worker.now, capabilities:worker.capabilities,
       settingsGuard:policy.revisions,
     });
