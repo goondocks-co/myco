@@ -9,7 +9,6 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
  * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
  */
 const PENDING: ReadonlySet<string> = new Set([
-  'core/backup.ts',
 ]);
 
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */

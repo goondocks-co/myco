@@ -5,9 +5,8 @@
  * keyed by run; a report row's id is local to the database that wrote it, so the reference lands only where that
  * report exists and its column is empty, and a destination that kept its own copy of the body keeps it.
  */
-import type { PreparedStatement, RelationalStore } from '../../core/adapters.js';
-import { read, readSet, write } from '../index.js';
-import { prepareBound } from '../kernel/statement.js';
+import type { RelationalStore } from '../../core/adapters.js';
+import { read, readSet, write, type Bound } from '../index.js';
 
 type Params = [project: string, run: string, kind: string, item: number, key: string, size: number, moved: number];
 const restore = (name: string, target: string) => write<Params, { rowid: number }>({ name: `runs.restoreBody${name}`, sql:
@@ -21,11 +20,11 @@ const RESTORES: Readonly<Record<string, ReturnType<typeof restore>>> = {
 };
 
 /** The statement restoring one artifact row into the restore's batch; a row naming no known body kind is refused. */
-export function restoreRunBodyStatement(db: RelationalStore, row: Readonly<Record<string, unknown>>): PreparedStatement {
+export function restoreRunBodyStatement(row: Readonly<Record<string, unknown>>): Bound<{ rowid: number }, 'write'> {
   const statement = typeof row.body_kind === 'string' ? RESTORES[row.body_kind] : undefined;
   if (statement === undefined) throw new Error('Invalid restored run body');
-  return prepareBound(db, statement.bind(row.project_id as string, row.run_id as string, row.body_kind as string, row.item_id as number,
-    row.key as string, row.size as number, row.moved_at as number));
+  return statement.bind(row.project_id as string, row.run_id as string, row.body_kind as string, row.item_id as number,
+    row.key as string, row.size as number, row.moved_at as number);
 }
 
 const PRESENT_PAGE = 64;
