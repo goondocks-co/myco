@@ -14,6 +14,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { credentialFile, harnessById, HARNESSES, offerable, type Harness } from './harnesses.js';
+import { spawnOwnedGroup, type OwnedProcess } from './process-group.js';
 import type { ProfileCapability } from '@goondocks/myco-shared/execution-profile';
 import type { CodexInstallationContext, CodexInstallationVerdict } from '@myco/runner/drivers/codex.js';
 
@@ -156,6 +157,8 @@ async function fileHoldsAsync(at: string | null, requires: readonly string[]): P
 export interface DetectionMode {
   /** False limits a file probe to whether the file exists and is non-empty; its bytes are never read. */
   credentialBytes: boolean;
+  /** True asks each installed agent its version in the background, for a worker that stops its probes as it ends. */
+  versions?: boolean;
 }
 
 const READ_CREDENTIAL_BYTES: DetectionMode = { credentialBytes: true };
@@ -185,30 +188,43 @@ function agentVersionOf(printed: string | null): string | undefined {
 
 /**
  * Each installed binary's version, asked once per file as it stands on disk: an upgrade replaces the file and is asked
- * again. A probe runs in the background, bounded by the probe timeout; until it answers, the binary has no version.
+ * again. A probe runs in the background as a process group of its own, stopped with its helpers when the probe timeout
+ * passes or the worker stops it; until it answers, the binary has no version.
  */
 const versions = new Map<string, { version: string | undefined } | 'asking'>();
+const probes = new Set<OwnedProcess>();
+const MAX_VERSION_OUTPUT_CHARS = 4096;
 
 function askVersion(at: string, key: string): void {
   versions.set(key, 'asking');
-  // Its input is closed at once: an agent that reads its input for a session reads none and ends, rather than waiting out the probe.
-  const child = execFile(at, ['--version'], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: probeEnv() }, (error, stdout) => {
-    versions.set(key, { version: error === null ? agentVersionOf(stdout) : undefined });
+  let owned: OwnedProcess;
+  // Its input is closed: an agent that reads its input for a session reads none and ends, rather than waiting out the probe.
+  try { owned = spawnOwnedGroup(at, ['--version'], { env: probeEnv(), stdio: ['ignore', 'pipe', 'ignore'] }, AbortSignal.timeout(PROBE_TIMEOUT_MS)); }
+  catch { versions.set(key, { version: undefined }); return; }
+  probes.add(owned);
+  let printed = '';
+  owned.child.stdout?.setEncoding('utf8');
+  owned.child.stdout?.on('data', (chunk: string) => { if (printed.length < MAX_VERSION_OUTPUT_CHARS) printed += chunk; });
+  void owned.exit.then((code) => code, () => -1).then((code) => {
+    probes.delete(owned);
+    versions.set(key, { version: code === 0 ? agentVersionOf(printed) : undefined });
   });
-  child.stdin?.end();
-  // An unanswered probe never holds a stopping worker open.
-  child.unref();
+}
+
+/** Stop every version probe still running, its helpers included, and wait until they are gone. */
+export async function stopVersionProbes(): Promise<void> {
+  await Promise.all([...probes].map((owned) => owned.dispose().catch(() => undefined)));
 }
 
 /** The binary's version where its probe has answered; otherwise undefined, with a probe started if none is asking. */
-async function knownVersion(at: string): Promise<string | undefined> {
+async function knownVersion(at: string, ask: boolean): Promise<string | undefined> {
   let key: string;
   try {
     const found = await stat(at);
     key = `${at}\u0000${found.mtimeMs}\u0000${found.size}`;
   } catch { return undefined; }
   const held = versions.get(key);
-  if (held === undefined) askVersion(at, key);
+  if (held === undefined && ask) askVersion(at, key);
   return typeof held === 'object' ? held.version : undefined;
 }
 
@@ -223,7 +239,7 @@ export async function detectHarnessesAsync(only?: readonly string[], signal?: Ab
     const at = found?.split('\n')[0]?.trim() ?? '';
     const installed = at.length > 0;
     if (!installed) return { id: harness.id, installed, authenticated: false };
-    const version = knownVersion(at);
+    const version = knownVersion(at, mode.versions === true);
     const withVersion = async (detected: DetectedHarness): Promise<DetectedHarness> => {
       const known = await version;
       return known === undefined ? detected : { ...detected, version: known };

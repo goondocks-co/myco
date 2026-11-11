@@ -15,7 +15,7 @@ const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
 /**
  * A machine whose `claude` answers its login probe, logging each (slowly where `slow`), and prints `printed` for
- * `--version` after `versionSeconds`, logging each ask.
+ * `--version` after `versionSeconds`, logging each ask with the asking process.
  */
 async function withProbeFixture(run: (fixture: { root: string; probes: string; running: string; versions: string }) => Promise<void>,
   { slow = false, printed = '2.1.3 (Claude Code)', versionSeconds = 0 }: { slow?: boolean; printed?: string; versionSeconds?: number } = {}): Promise<void> {
@@ -28,7 +28,7 @@ async function withProbeFixture(run: (fixture: { root: string; probes: string; r
   const versions = join(root, 'versions');
   writeFileSync(join(bin, 'claude'), [
     '#!/bin/sh',
-    `if [ "$1" = "--version" ]; then printf 'asked\\n' >> ${quote(versions)}; sleep ${versionSeconds}; printf '%s\\n' ${quote(printed)}; exit 0; fi`,
+    `if [ "$1" = "--version" ]; then printf 'asked %s\\n' $$ >> ${quote(versions)}; sleep ${versionSeconds}; printf '%s\\n' ${quote(printed)}; exit 0; fi`,
     `printf 'probe\\n' >> ${quote(probes)}`,
     `touch ${quote(running)}`,
     slow ? 'sleep 0.2' : '',
@@ -121,7 +121,7 @@ describe('worker login probe cadence', () => {
   });
 
   it('never holds a claim for a version probe that has not answered', async () => {
-    await withProbeFixture(async ({ root }) => {
+    await withProbeFixture(async ({ root, versions }) => {
       const stopping = new AbortController();
       const started = performance.now();
       let first: { offer: unknown; afterMs: number } | null = null;
@@ -139,6 +139,9 @@ describe('worker login probe cadence', () => {
       expect(first!.offer).toMatchObject({ id: 'claude-code', installed: true, authenticated: true });
       expect(first!.offer).not.toHaveProperty('version');
       expect(first!.afterMs).toBeLessThan(2_000);
+      // The stopped worker leaves no probe behind.
+      const asking = Number(readFileSync(versions, 'utf8').trim().split(' ')[1]);
+      expect(() => process.kill(asking, 0)).toThrow();
     }, { versionSeconds: 3 });
   });
 
