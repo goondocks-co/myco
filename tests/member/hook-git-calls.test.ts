@@ -53,7 +53,7 @@ function loggingGit(bin: string, log: string): void {
     'process.exit(result.status ?? 1);',
     '',
   ].join('\n'));
-  execFileSync(process.execPath, ['build', '--compile', source, '--outfile', path.join(bin, 'git.exe')], { stdio: 'ignore' });
+  execFileSync(process.execPath, ['build', '--compile', source, '--outfile', path.join(bin, 'git.exe')], { cwd: bin, stdio: 'ignore' });
 }
 
 const DIRTY_QUERIES = ['diff --cached --quiet --', 'diff --quiet --'];

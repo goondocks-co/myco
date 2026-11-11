@@ -625,7 +625,17 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item -LiteralPath $env:MYCO_WINDOWS_NATIVE_EXE -Force -ErrorAction SilentlyContinue
-          bun build --compile --target=bun-windows-x64 tests/helpers/windows-native-contract.ts --outfile "$env:MYCO_WINDOWS_NATIVE_EXE"
+          $entry = (Resolve-Path tests/helpers/windows-native-contract.ts).Path
+          $compile = Join-Path $env:RUNNER_TEMP ("myco-compile-" + [Guid]::NewGuid())
+          New-Item -ItemType Directory -Path $compile | Out-Null
+          Push-Location $compile
+          try {
+            bun build --compile --target=bun-windows-x64 $entry --outfile "$env:MYCO_WINDOWS_NATIVE_EXE"
+            if ($LASTEXITCODE -ne 0) { throw "Windows native contract compilation failed" }
+          } finally {
+            Pop-Location
+            Remove-Item -LiteralPath $compile -Recurse -Force
+          }
       - name: Execute Windows native contract
         shell: pwsh
         run: |

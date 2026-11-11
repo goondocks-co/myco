@@ -149,7 +149,7 @@ describe('the sessions table', () => {
   const ROWS = [
     LIVE,
     session({ sessionId: 's2', projectId: 'y', agent: 'codex', title: 'Checkout errors name their field', summary: 'Replaced the generic errors.\nAdded tests.', label: 'Checkout errors name their field', startedAt: NOW - 5 * HOUR, endedAt: NOW - 4 * HOUR, promptCount: 12 }),
-    session({ sessionId: 's3', agent: 'cursor', title: null, label: 's3', startedAt: NOW - DAY - HOUR, endedAt: NOW - DAY, memberId: 'mem_harness', memberLabel: 'harness', promptCount: 1 }),
+    session({ sessionId: 's3', agent: 'cursor', title: null, label: 'Untitled session', startedAt: NOW - DAY - HOUR, endedAt: NOW - DAY, memberId: 'mem_harness', memberLabel: 'harness', promptCount: 1 }),
   ];
   /** The live group's read: open sessions heard from within the live span, under the same filters. */
   const livePath = (filters: Omit<Parameters<typeof sessionListPath>[0], 'state' | 'active'>) => sessionListPath({ ...filters, state: 'open', active: { since: NOW - LIVE_WITHIN_MS } });
@@ -182,7 +182,7 @@ describe('the sessions table', () => {
     expect(within(ended).getByRole('link').getAttribute('href')).toBe('/p/y/sessions/s2');
     for (const words of ['Atlas web', 'Codex', '12 prompts', '11:00', 'Replaced the generic errors. Added tests.']) expect(ended.textContent).toContain(words);
     const untitled = within(groups[2]!).getAllByRole('row')[1]!;
-    expect(untitled.textContent).toContain('Untitled session');
+    expect(within(untitled).getByRole('link').textContent).toBe('Untitled session');
     expect(untitled.textContent).toContain('Cursor');
     expect(screen.getByText('Showing 4 sessions')).toBeTruthy();
     expect(requested).toContain(listPath({ projectId: null }));
@@ -737,7 +737,7 @@ describe('the session reading page', () => {
     server(base({ '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - HOUR }, { untitled: 'stopped' }), '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([]) }));
     mount('/p/x/sessions/s1?about=1');
     expect((await screen.findByText(/^Nothing yet/)).textContent).toBe('Nothing yet. Myco hasn’t learned anything from this session.');
-    expect(screen.getByRole('heading', { level: 1, hidden: true }).textContent).toBe('UntitledUntitled session');
+    expect(screen.getByRole('heading', { level: 1, hidden: true }).textContent).toBe('Untitled session');
     expect(screen.getByText(/^Untitled: Myco stopped trying/)).toBeTruthy();
   });
 

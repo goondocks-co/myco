@@ -2,7 +2,7 @@ import type { RelationalStore as lineage_import_RelationalStore } from "../../co
 import { lineageChildIds, lineageSessionRows, type LineageSessionRow } from "../../db/sessions/lineage.js";
 import { inListChunks as lineage_import_inListChunks } from "../scope.js";
 import type { ReadScope as lineage_import_ReadScope } from "../scope.js";
-import { sessions_relatedSessionLabel } from './sessions.js';
+import { sessions_sessionLabel } from './sessions.js';
 
 /** The most generations the walk climbs above the session, and descends below the root it reached. */
 const lineage_LINEAGE_MAX_DEPTH = 8;
@@ -153,7 +153,7 @@ function lineage_placed(rows: ReadonlyMap<string, lineage_Row>, uncaptured: Read
     return row === undefined
       ? { sessionId: id, captured: false, label: null, agent: null, startedAt: null, endedAt: null, depth, placedUnder, current: false }
       : {
-        sessionId: id, captured: true, label: sessions_relatedSessionLabel(row.title, row.first_prompt, row.agent), agent: row.agent,
+        sessionId: id, captured: true, label: sessions_sessionLabel(row.title, row.first_prompt, row.agent), agent: row.agent,
         startedAt: row.started_at, endedAt: row.ended_at, depth, placedUnder, current: id === sessionId,
       };
   };

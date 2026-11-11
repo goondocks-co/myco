@@ -54,7 +54,7 @@ int main(void) {
 }` : script);
   const built = native
     ? spawnSync('cc', [source, '-o', binary], { encoding: 'utf8' })
-    : spawnSync(bun, ['build', source, '--compile', '--outfile', binary], { encoding: 'utf8' });
+    : spawnSync(bun, ['build', source, '--compile', '--outfile', binary], { cwd: moduleFixture!, encoding: 'utf8' });
   expect({ status: built.status, error: built.stderr }).toEqual({ status: 0, error: expect.any(String) });
   contained(execFileSync(binary, [], { env, encoding: 'utf8' }));
 });

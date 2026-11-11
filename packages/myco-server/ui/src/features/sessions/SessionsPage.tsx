@@ -7,7 +7,7 @@ import {
 import { useMembers } from '../../hooks/use-access';
 import { useLiveSessions, useSessionList } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
-import { cleanSessionText, sessionHeading } from '../../lib/session-text';
+import { cleanSessionText, sessionHeading, UNTITLED_SESSION_LABEL } from '../../lib/session-text';
 import { projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 import { sessionAt } from '../today/timeline';
@@ -241,7 +241,7 @@ function SessionHeadline({ row, live }: { row: SessionListRow; live: boolean }) 
         </StatusChip>
       )}
       {heading.titled ? heading.title : heading.firstPrompt === null
-        ? <span className="font-normal text-muted">Untitled session</span>
+        ? <span className="font-normal text-muted">{UNTITLED_SESSION_LABEL}</span>
         : <><StatusChip className="mr-s2 align-text-bottom">Untitled</StatusChip>{heading.firstPrompt}</>}
     </>
   );

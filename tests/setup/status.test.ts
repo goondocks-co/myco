@@ -38,6 +38,7 @@ const deps = () => ({
   fetch: Object.assign(async () => { throw new Error('status must not call the network'); }, { preconnect: () => {} }),
   worker: { runner: () => { throw new Error('status must not query services'); } },
 });
+
 function snapshot(directory: string): unknown {
   return fs.readdirSync(directory).sort().map(name => {
     const file = path.join(directory, name);
@@ -67,9 +68,15 @@ it('observes an unconnected folder on a separate filesystem without a fatal Git 
 });
 
 for (const args of [[], ['--join', STATUS_URL]]) for (const inside of [false, true]) {
-  it(`observes twelve repositories ${inside ? 'inside' : 'outside'} a repository with ${args.length ? '--join' : 'no journey flags'}`, async () => {
+  it(`observes twelve repositories ${inside ? 'inside a repository' : 'under a stray git entry'} with ${args.length ? '--join' : 'no journey flags'}`, async () => {
+    const cwd = inside ? fixture.repositories[3] : path.join(scratch, 'child');
+    if (!inside) {
+      fs.mkdirSync(cwd);
+      if (args.length === 0) fs.mkdirSync(path.join(scratch, '.git'));
+      else fs.writeFileSync(path.join(scratch, '.git'), 'gitdir: missing-repository\n');
+    }
     const before = snapshot(scratch);
-    expect(await run(['--status', ...args], { ...deps(), cwd: inside ? fixture.repositories[3] : scratch })).toBe(3);
+    expect(await run(['--status', ...args], { ...deps(), cwd })).toBe(3);
     const text = lines.join('\n');
     expect(text).toContain(`Deployment ${STATUS_URL}`);
     expect(text).toContain('Signed in: This machine is signed in');
@@ -91,6 +98,20 @@ for (const args of [[], ['--join', STATUS_URL]]) for (const inside of [false, tr
     expect(text).not.toContain(fixture.repositories[2]);
     for (const line of lines.filter(line => /Signed in:|bound here|nothing waiting|Setup:/.test(line))) expect(line).not.toMatch(/Run |myco member|myco logs/);
     expect(snapshot(scratch)).toEqual(before);
+  });
+}
+
+for (const damage of ['corrupt HEAD', 'unreadable git directory']) {
+  it.skipIf(damage === 'unreadable git directory' && (process.platform === 'win32' || process.getuid?.() === 0))(`reports a Git failure for ${damage}`, async () => {
+    const cwd = fixture.repositories[3];
+    const entry = path.join(cwd, '.git');
+    const errors: string[] = [];
+    if (damage === 'corrupt HEAD') fs.writeFileSync(path.join(entry, 'HEAD'), 'not-a-ref\n');
+    else fs.chmodSync(entry, 0);
+    try {
+      expect(await run(['--status'], { ...deps(), cwd, stderr: line => errors.push(line) })).toBe(4);
+      expect(errors.join('\n')).toContain('fatal: not a git repository');
+    } finally { if (damage === 'unreadable git directory') execFileSync('chmod', ['700', entry]); }
   });
 }
 

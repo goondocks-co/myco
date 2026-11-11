@@ -16,6 +16,7 @@ import type { ProjectSet as sessions_import_ProjectSet } from "../scope.js";
 import type { ReadScope as sessions_import_ReadScope } from "../scope.js";
 import { CAPTURE_RULE_BUNDLES as sessions_import_CAPTURE_RULE_BUNDLES } from "@goondocks/myco-shared/capture-rules-data";
 import { sourceTimestampsRecorded as sessions_import_sourceTimestampsRecorded } from "@goondocks/myco-shared/capture-rules";
+import { UNTITLED_SESSION_LABEL } from '@goondocks/myco-shared/prompt-text';
 
 interface sessions_ProjectRow {
   projectId: string;
@@ -73,7 +74,7 @@ interface sessions_SessionRow {
   summary: string | null;
   /** The time of the titling attempt, whatever its outcome; null while nothing has tried. */
   titledAt: number | null;
-  /** What a list or a header shows: the title, else the opening line of the first user prompt, else the agent, else the id. */
+  /** What a list or a header shows: the title, else the opening line of the first user prompt, else the agent, else "Untitled session". */
   label: string;
 }
 
@@ -89,9 +90,6 @@ interface sessions_SessionCounts {
 /** The longest label the fallback rule produces. */
 const sessions_LABEL_MAX_CHARS = 80;
 
-/** What a label shows for a session with no title, typed prompt or agent, where an id fragment must never reach the reader. */
-const sessions_UNTITLED_SESSION_LABEL = 'Untitled session';
-
 /** The one label rule for a session's words: a stored title as is; else the first prompt's first line, whitespace collapsed, cut at `LABEL_MAX_CHARS` on a word boundary; else the agent; else null. */
 function sessions_namedLabel(title: string | null, firstPrompt: string | null, agent: string | null): string | null {
   if (title !== null && title.trim() !== '') return title.trim();
@@ -106,14 +104,9 @@ function sessions_namedLabel(title: string | null, firstPrompt: string | null, a
   return null;
 }
 
-/** The label the list, the detail and the activity feed share: the words of `namedLabel`, then the id's first eight characters. */
-function sessions_sessionLabel(title: string | null, firstPrompt: string | null, agent: string | null, sessionId: string): string {
-  return sessions_namedLabel(title, firstPrompt, agent) ?? sessionId.slice(0, 8);
-}
-
-/** The same words for a surface that names related sessions, which falls back to `UNTITLED_SESSION_LABEL` and never to the id. */
-function sessions_relatedSessionLabel(title: string | null, firstPrompt: string | null, agent: string | null): string {
-  return sessions_namedLabel(title, firstPrompt, agent) ?? sessions_UNTITLED_SESSION_LABEL;
+/** The shared label for lists, detail, activity and related sessions. */
+function sessions_sessionLabel(title: string | null, firstPrompt: string | null, agent: string | null): string {
+  return sessions_namedLabel(title, firstPrompt, agent) ?? UNTITLED_SESSION_LABEL;
 }
 
 const sessions_WORKING_CAP_MS = sessions_import_WORKING_CAP_MS;
@@ -150,7 +143,7 @@ function sessions_toSession(row: Record<string, unknown>, nowMs?: number): sessi
     title: sessions_text(row.title),
     summary: sessions_text(row.summary),
     titledAt: sessions_num(row.titled_at),
-    label: sessions_sessionLabel(sessions_text(row.title), sessions_text(row.first_prompt), sessions_text(row.agent), row.session_id as string),
+    label: sessions_sessionLabel(sessions_text(row.title), sessions_text(row.first_prompt), sessions_text(row.agent)),
   };
 }
 
@@ -448,7 +441,6 @@ export {
   type sessions_ProjectRow,
   type sessions_SessionRow,
   sessions_sessionLabel,
-  sessions_relatedSessionLabel,
   sessions_WORKING_CAP_MS,
   sessions_listProjects,
   type sessions_SessionFilters,
