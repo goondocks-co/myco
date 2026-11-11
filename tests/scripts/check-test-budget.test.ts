@@ -82,6 +82,8 @@ test('the line ratio may not rise while it is above 1, and states both ratios an
     expect(refusal).toContain(formatRatio(before));
     expect(refusal).toContain(formatRatio(after));
     expect(refusal).toContain('4 test lines added');
+    expect(refusal).toContain('deleting test code');
+    expect(refusal).not.toContain('demoting');
     expect(checkTestBudget({ repo: fixture, base, skipPlan: true })).toEqual([refusal]);
     write(source('tests', 'b.test.ts'), '1\n2\n3\n');
     git('add', '.');

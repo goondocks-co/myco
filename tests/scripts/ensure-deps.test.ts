@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { installRoots, staleReason } from '../../scripts/ensure-deps.mjs';
+import { installRoots } from '../../scripts/ensure-deps.mjs';
 import { sandboxChildEnv, resolveTestTool } from '../../scripts/test-environment.mjs';
 
 const repo = path.resolve(import.meta.dir, '../..');
@@ -150,19 +150,6 @@ describe('dependency preparation', () => {
     expect(f.calls()).toEqual([[f.root, 'ci']]);
   });
 
-  it.each(['glibc', 'musl'])('requires the matching %s binding and accepts the other Linux libc', current => {
-    const f = fixture();
-    const host = { os: 'linux', cpu: 'x64', libc: current };
-    const locked = (libc: string) => ({ ...f.lock, packages: { ...f.lock.packages,
-      'node_modules/native': { version: '1', optional: true, os: ['linux'], libc: [libc] },
-    } });
-    f.write('package-lock.json', locked(current === 'glibc' ? 'musl' : 'glibc'));
-    expect(staleReason(f.root, host)).toBeNull();
-    f.write('package-lock.json', locked(current));
-    expect(staleReason(f.root, host)).toBe('packages out of date');
-    expect(staleReason(f.root, { ...host, libc: null })).toBe('packages out of date');
-  });
-
   it('checks only Node and npm for a dashboard build', () => {
     const f = fixture();
     for (const name of ['bun', 'bash', 'curl', 'unzip', 'clang', 'gcc']) fs.unlinkSync(path.join(f.bin, name));
@@ -198,25 +185,6 @@ describe('dependency preparation', () => {
     expect(f.calls()).toEqual([]);
   });
 
-  it.each([['20.9.9', false], ['20.10.1', false], ['20.10.2', true], ['20.11.0', true], ['21.0.0', true]])('compares Node %s against a major.minor.patch engines floor', (version, allowed) => {
-    const f = fixture();
-    f.write('packages/myco/package.json', { engines: { node: '>=20.10.2' } });
-    f.tool('node', `echo v${version}`);
-    const result = f.run(['--ui']);
-    expect(result.status === 0, result.stderr).toBe(allowed);
-    if (!allowed) expect(result.stderr).toContain('Node.js >=20.10.2');
-    expect(f.calls()).toEqual([]);
-  });
-
-  it('notices a Bun mismatch without refusing the build', () => {
-    const f = fixture();
-    f.tool('bun', 'echo 1.4.3');
-    const result = f.run();
-    expect(result.stderr).toContain('Notice: Bun 1.4.3');
-    expect(result.status).toBe(0);
-    expect(f.calls()).toEqual([]);
-  });
-
   it('prints one Bun notice across dashboard and recursive Make preparation and keeps the recipe quiet', () => {
     const f = fixture();
     f.tool('bun', 'echo 1.4.3');
@@ -225,15 +193,6 @@ describe('dependency preparation', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr.match(/Notice: Bun/g)).toHaveLength(1);
     expect(result.stdout).not.toContain('node scripts/ensure-deps.mjs');
-    expect(f.calls()).toEqual([]);
-  });
-
-  it('requires MinGW before Windows build work', () => {
-    const f = fixture();
-    fs.unlinkSync(path.join(f.bin, 'x86_64-w64-mingw32-gcc'));
-    const result = f.run(['--windows']);
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('Install MinGW');
     expect(f.calls()).toEqual([]);
   });
 

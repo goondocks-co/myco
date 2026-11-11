@@ -112,7 +112,7 @@ export function ratioRoseAboveOne(before, after) {
 export function ratioRefusal(before, after) {
   const added = after.test - before.test;
   return `Test-to-product line ratio rose from ${formatRatio(before)} to ${formatRatio(after)} while above 1.0 `
-    + `(${added} test lines added). Make room by deleting or demoting tests.`;
+    + `(${added} test lines added). Make room by deleting test code.`;
 }
 
 function git(repo, args, options = {}) {

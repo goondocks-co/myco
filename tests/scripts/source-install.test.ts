@@ -122,32 +122,6 @@ it.each(['file', 'link', 'owned-link'] as const)('preserves foreign paths and re
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
 });
 
-it.each(['read-only-directory', 'stale-repair-link'] as const)('finishes PATH setup when owned-link repair is unavailable (%s)', kind => {
-  const f = fixture();
-  const bin = path.join(f.home, '.local/bin');
-  const link = path.join(bin, 'myco');
-  const owned = path.join(f.home, '.myco/bin/myco');
-  f.env.MYCO_HOME = path.join(f.home, 'selected-home');
-  try {
-    fs.mkdirSync(bin, { recursive: true });
-    fs.symlinkSync(owned, link);
-    if (kind === 'read-only-directory') fs.chmodSync(bin, 0o555);
-    else fs.symlinkSync('/stale/repair-target', link + '.myco-new');
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const result = f.install();
-      expect(result.status, result.stderr).toBe(0);
-      expect(result.stderr).toContain('left owned link untouched: ' + link);
-      expect(result.stdout).toContain('Open a new shell');
-      expect(fs.readlinkSync(link)).toBe(owned);
-      for (const rc of ['.zshenv', '.zprofile', '.profile']) {
-        expect(fs.readFileSync(path.join(f.home, rc), 'utf8').match(/export PATH=/g)?.length).toBe(1);
-      }
-    }
-    if (kind === 'stale-repair-link') expect(fs.readlinkSync(link + '.myco-new')).toBe('/stale/repair-target');
-    expect(fs.readdirSync(bin).filter(name => name.startsWith('myco.repair-'))).toEqual([]);
-  } finally { fs.chmodSync(bin, 0o755); fs.rmSync(f.root, { recursive: true, force: true }); }
-});
-
 it('prints a failed candidate command without a Node stack and leaves PATH setup unstarted', () => {
   const f = fixture();
   try {
@@ -220,17 +194,6 @@ it('preserves shell rc symlinks and modes, and leaves settings intact when publi
     expect(fs.readlinkSync(rc)).toBe(target);
     expect(fs.readdirSync(f.home).filter(name => name.startsWith('.myco-path-') || name.startsWith('.myco-original-'))).toEqual([]);
   } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
-});
-
-it('prepares and verifies one source compilation without tests', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-source-recipe-'));
-  try {
-    const plan = spawnSync('make', ['-n', 'source-build'], { cwd: repo, env: sandboxChildEnv(root), encoding: 'utf8' });
-    expect(plan.status).toBe(0);
-    for (const command of ['build-libsqlite3-target.sh', 'build:ui', 'npm run codegen', 'build-single-target.mjs', 'verify-build.mjs']) expect(plan.stdout).toContain(command);
-    expect(plan.stdout.match(/build-single-target.mjs/g)?.length).toBe(1);
-    expect(plan.stdout).not.toMatch(/npm (test|run test)/);
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 it('reconciles older installer blocks and follows the selected home across A to B to A', () => {

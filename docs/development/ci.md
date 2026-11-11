@@ -6,8 +6,8 @@ Darwin release-recipe build and verification jobs run when build or release inpu
 `npm run check:test-budget`. That fails a change whose pull request plan is over the node runner budget in
 `scripts/check-test-budget.mjs`, or whose test-to-product line ratio rises while the ratio is above 1.0. Each plan
 file is charged at the larger of its declared weight and its recorded CI time, and a file with no recorded time is
-charged at least the floor beside that budget. The ratio counts non-blank, non-comment lines. Make room by
-deleting or demoting tests, never by raising the budget.
+charged at least the floor beside that budget. The ratio counts non-blank, non-comment lines. Make room for
+the runner budget by deleting or demoting tests, and for the ratio by deleting test code. Never raise the budget.
 
 **The full run** (nightly on main through `.github/workflows/nightly.yml`, a `full-ci` pull request label, or a release
 tag through `publish.yml`) adds the full Windows contract list, all seven parity shards, every dashboard screen, and

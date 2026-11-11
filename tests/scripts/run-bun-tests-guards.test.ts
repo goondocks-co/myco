@@ -102,7 +102,9 @@ const mode = process.env.FAKE_BUN_MODE === 'fail-then-delay'
   : process.env.FAKE_BUN_MODE === 'repair-evidence' ? (dom ? 'repair' : 'missing')
   : (process.env.FAKE_BUN_MODE ?? 'pass');
 if (mode !== 'missing') {
-  const xml = '<testsuites><testsuite tests="1" failures="0" errors="0"><testcase name="fixture" /></testsuite></testsuites>';
+  const xml = mode === 'zero' ? '<testsuites><testsuite tests="0" failures="0" errors="0" /></testsuites>'
+    : mode === 'junit-fail' ? '<testsuites><testsuite tests="1" failures="1" errors="0"><testcase name="fixture"><failure type="AssertionError" /></testcase></testsuite></testsuites>'
+    : '<testsuites><testsuite tests="1" failures="0" errors="0"><testcase name="fixture" /></testsuite></testsuites>';
   fs.writeFileSync(file, xml);
   if (mode === 'repair') fs.writeFileSync(path.join(path.dirname(file), 'node-env.junit.xml'), xml);
 }
@@ -206,6 +208,14 @@ describe('run-bun-tests guards', () => {
     });
     expect(passed.status).toBe(0);
     expect(passed.output).toContain('FAKE_BUN_EXEC');
+    for (const [mode, diagnostic] of [['junit-fail', 'JUnit aggregated 1 failure'], ['zero', 'zero executed tests']] as const) {
+      const result = await runRunner(STDIN_FIXTURE, {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        MYCO_RUNNER_REPORT_DIR: path.join(base, mode),
+        FAKE_BUN_MODE: mode,
+      });
+      expect({ mode, status: result.status, output: result.output }).toEqual({ mode, status: 1, output: expect.stringContaining(diagnostic) });
+    }
   }), RUN_BOUND_MS + 10_000);
 
   test.skipIf(process.platform === 'win32')('concurrent runs keep configs and reports separate when one is interrupted', () => withReportDir(async (base) => {
