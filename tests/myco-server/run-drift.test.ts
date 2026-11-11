@@ -9,6 +9,9 @@
  */
 import { describe, expect, it } from 'bun:test';
 import { getRunDetail } from '@myco-server-worker/read/runs.js';
+import { expireLeases } from '@myco-server-worker/core/harness.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { SERVED_PROMPTS_COUNTED_FROM } from '@myco-server-worker/db/runs/served-prompts.js';
 import { runnerRig, type Json } from './helpers/runner-rig.js';
 import { offeredHarness } from './helpers/offered-harness.js';
@@ -44,6 +47,25 @@ describe('versions at run time', () => {
         [run.id, '2.0.0-alpha.24', '2.1.3', 'claude-code'],
       ]);
       expect(page.rows[0].identity).toEqual({ status: 'not_recorded' });
+    } finally { r.e.sqlite.close(); }
+  });
+
+  it('each attempt names the agent it was claimed for, so a retry on another agent never relabels an earlier version', async () => {
+    const r = runnerRig();
+    try {
+      const { token, runnerId } = await r.register('mini');
+      await r.queueTitling();
+      const first = (await r.claim(token, [{ ...CLAUDE, version: '2.1.3' }])).run;
+      r.at(r.now() + 2 * WORKER_LEASE_MS);
+      expect(await expireLeases(r.e.serverEnv as never, r.now())).toBe(1);
+      // The owner moves the task to Codex before the retry.
+      await settingsWriter(r.e.db).setLeaf('agent.tasks', { 'title-summary': { harness: 'codex', model: 'gpt-5.5', reasoningLevel: 'default' } }, 'member', r.now());
+      const retry = (await r.claim(token, [{ ...offeredHarness('codex'), version: '0.50.0' }])).run;
+      expect(retry.id).toBe(first.id);
+      const detail = await r.get(`/api/projects/proj_1/runs/${first.id}`);
+      expect(detail.attempts.map((attempt: Json) => [attempt.harness, attempt.agentVersion])).toEqual([['claude-code', '2.1.3'], ['codex', '0.50.0']]);
+      const page = await r.get(`/api/runners/${runnerId}/runs`);
+      expect(page.rows.map((row: Json) => [row.harness, row.agentVersion])).toEqual([['codex', '0.50.0'], ['claude-code', '2.1.3']]);
     } finally { r.e.sqlite.close(); }
   });
 

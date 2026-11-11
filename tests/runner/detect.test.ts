@@ -13,8 +13,12 @@ import { STUB_PROFILE } from '../helpers/stub-profile-harness.js';
 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 
-/** A machine whose `claude` answers its login probe, logging each, and prints `printed` for `--version`, logging each ask. */
-async function withProbeFixture(run: (fixture: { root: string; probes: string; running: string; versions: string }) => Promise<void>, slow = false, printed = '2.1.3 (Claude Code)'): Promise<void> {
+/**
+ * A machine whose `claude` answers its login probe, logging each (slowly where `slow`), and prints `printed` for
+ * `--version` after `versionSeconds`, logging each ask.
+ */
+async function withProbeFixture(run: (fixture: { root: string; probes: string; running: string; versions: string }) => Promise<void>,
+  { slow = false, printed = '2.1.3 (Claude Code)', versionSeconds = 0 }: { slow?: boolean; printed?: string; versionSeconds?: number } = {}): Promise<void> {
   const root = removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-probe-')));
   const home = join(root, 'home');
   const bin = join(root, 'bin');
@@ -24,7 +28,7 @@ async function withProbeFixture(run: (fixture: { root: string; probes: string; r
   const versions = join(root, 'versions');
   writeFileSync(join(bin, 'claude'), [
     '#!/bin/sh',
-    `if [ "$1" = "--version" ]; then printf 'asked\\n' >> ${quote(versions)}; printf '%s\\n' ${quote(printed)}; exit 0; fi`,
+    `if [ "$1" = "--version" ]; then printf 'asked\\n' >> ${quote(versions)}; sleep ${versionSeconds}; printf '%s\\n' ${quote(printed)}; exit 0; fi`,
     `printf 'probe\\n' >> ${quote(probes)}`,
     `touch ${quote(running)}`,
     slow ? 'sleep 0.2' : '',
@@ -89,14 +93,14 @@ describe('worker login probe cadence', () => {
         expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(2);
         expect([...progressed]).toEqual([1, 2]);
       } finally { clearInterval(timer); stopping.abort(); }
-    }, true);
+    }, { slow: true });
   });
 
-  it('offers each agent with the version its CLI prints, asking the installed binary once', async () => {
-    await withProbeFixture(async ({ root, probes, versions }) => {
+  it('offers each agent with the version its CLI prints once a background probe has read it, asking the installed binary once', async () => {
+    await withProbeFixture(async ({ root, versions }) => {
       const stopping = new AbortController();
       let now = 0;
-      const offered: unknown[] = [];
+      const offered: Array<Array<{ id: string; version?: string }>> = [];
       await runWorker({
         serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'),
         only: ['claude-code'], pollIdleMs: 1, signal: stopping.signal, clock: () => now, log: () => {},
@@ -104,36 +108,38 @@ describe('worker login probe cadence', () => {
           if (new URL(String(input)).pathname === '/worker/claim') {
             now += 2_000;
             offered.push((JSON.parse(String(init?.body)) as { harnesses: Array<{ id: string; version?: string }> }).harnesses.map(({ id, version }) => ({ id, version })));
-            if (offered.length === 30) stopping.abort();
+            if (offered.at(-1)![0]!.version !== undefined || offered.length === 200) stopping.abort();
+            await new Promise((resolve) => setTimeout(resolve, 10));
           }
           return answer({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
         }) as typeof fetch,
       });
-      // A minute of polls detects twice; the binary on disk has not changed, so its version is asked once.
-      expect(offered).toEqual(Array.from({ length: 30 }, () => [{ id: 'claude-code', version: '2.1.3' }]));
-      expect(readFileSync(probes, 'utf8').trim().split('\n')).toHaveLength(2);
+      expect(offered.at(-1)).toEqual([{ id: 'claude-code', version: '2.1.3' }]);
+      expect(offered.slice(0, -1).every((offer) => offer[0]!.version === undefined)).toBe(true);
       expect(readFileSync(versions, 'utf8').trim().split('\n')).toHaveLength(1);
     });
   });
 
-  it('offers an agent whose CLI prints no version without one', async () => {
+  it('never holds a claim for a version probe that has not answered', async () => {
     await withProbeFixture(async ({ root }) => {
       const stopping = new AbortController();
-      let offer: unknown = null;
+      const started = performance.now();
+      let first: { offer: unknown; afterMs: number } | null = null;
       await runWorker({
         serverUrl: 'https://fixture.invalid', token: 'fixture', lockDir: null, runRoot: join(root, 'runs'),
         only: ['claude-code'], pollIdleMs: 1, signal: stopping.signal, log: () => {},
         fetchImpl: (async (input, init) => {
           if (new URL(String(input)).pathname === '/worker/claim') {
-            offer = (JSON.parse(String(init?.body)) as { harnesses: unknown[] }).harnesses[0];
+            first = { offer: (JSON.parse(String(init?.body)) as { harnesses: unknown[] }).harnesses[0], afterMs: performance.now() - started };
             stopping.abort();
           }
           return answer({ persisted: true, claimed: false, reason: 'no_work', pollAfterMs: 1 });
         }) as typeof fetch,
       });
-      expect(offer).toMatchObject({ id: 'claude-code' });
-      expect(offer).not.toHaveProperty('version');
-    }, false, 'Claude Code');
+      expect(first!.offer).toMatchObject({ id: 'claude-code', installed: true, authenticated: true });
+      expect(first!.offer).not.toHaveProperty('version');
+      expect(first!.afterMs).toBeLessThan(2_000);
+    }, { versionSeconds: 3 });
   });
 
   it('expires the offer after a failed run before the next claim', async () => {
@@ -187,7 +193,7 @@ describe('worker login probe cadence', () => {
         expect(claimAt).not.toBeNull();
         expect(claimAt! - lastProbeTick).toBeGreaterThanOrEqual(settleMs);
       } finally { clearInterval(timer); stopping.abort(); }
-    }, true);
+    }, { slow: true });
   });
 });
 

@@ -159,6 +159,8 @@ export interface RunAttempt {
   runnerVersion: string | null;
   /** The coding agent's version the claim reported for the harness it ran; null where it reported none. */
   agentVersion: string | null;
+  /** The harness this attempt was claimed for, as its claim recorded it; null for an attempt that recorded none. */
+  harness: string | null;
 }
 
 /** One step a worker observed, metadata only: its target in its shaped form, where `…` marks words not kept. */

@@ -30,13 +30,13 @@ export function attemptRestoreComparison(row:Record<string,unknown>):Record<stri
     && (RESTORE_CLAIM_FIELDS.has(key)||['project_id','run_id','attempt_id'].includes(key))
     && (key!=='cost_source'||row.cost_usd!=null)));
 }
-/** The claimed attempt's row; `agentVersion` is the version the claim reported for the harness the run is held on, null where it reported none. */
+/** The claimed attempt's row; `agentVersion` is the version the claim reported for the harness the run is held on, null where it reported none, and kept only on a runner's attempt. */
 export function recordPricedAttemptWrite(
   scope: ReadScope, attempt: { runId: string; attemptId: string; worker: WorkerPrincipal; now: number; price?: AttemptPrice; agentVersion: string | null },
 ): Bound {
   const { runId, attemptId, worker, now, price, agentVersion } = attempt;
   const runner = worker.kind === 'runner';
-  return pricedAttemptInsert[Number(runner)]!.bind(runner ? worker.credentialId : worker.tokenId, worker.machineId, now, worker.kind, runner ? worker.runnerId : null, price?.estimate ?? seedForStage(''), price?.profileJson ?? null, agentVersion, scope.projectId, runId, attemptId, ...(runner ? [worker.runnerId,worker.credentialId] : [worker.tokenId]));
+  return pricedAttemptInsert[Number(runner)]!.bind(runner ? worker.credentialId : worker.tokenId, worker.machineId, now, worker.kind, runner ? worker.runnerId : null, price?.estimate ?? seedForStage(''), price?.profileJson ?? null, ...(runner ? [agentVersion] : []), scope.projectId, runId, attemptId, ...(runner ? [worker.runnerId,worker.credentialId] : [worker.tokenId]));
 }
 
 /** Cost can settle only while this exact attempt remains under the authenticated live lease. */

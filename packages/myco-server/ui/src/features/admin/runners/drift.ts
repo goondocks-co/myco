@@ -48,32 +48,60 @@ export function agentVersionWords(rows: readonly DriftFacts[]): string | null {
     .join(' · ');
 }
 
-/** One pairing of the model asked for and the model a run recorded, with how many shown runs hold it. */
-export interface ModelDriftLine { words: string; runs: number; differs: boolean }
+/** How a run's model compares with what it was asked for, on its own record and nothing else. */
+export type ModelState = 'match' | 'mismatch' | 'unconfirmed' | 'unasked' | 'launched' | 'unreported';
+
+/** One comparison state: the agent, the model asked for and what it resolves to, the model recorded, and how they compare. */
+export interface ModelDriftLine { words: string; runs: number; state: ModelState }
+
+const STATE_WORDS: Readonly<Record<ModelState, (used: string) => string>> = {
+  match: (used) => `ran ${used}`,
+  mismatch: (used) => `ran ${used}, a different model than asked`,
+  unconfirmed: (used) => `ran ${used}; the provider chooses which model this name runs, so it can’t be confirmed`,
+  unasked: (used) => `ran ${used}`,
+  launched: (used) => `launched with ${used}; the agent did not report what it ran`,
+  unreported: () => 'model not reported',
+};
+
+function modelState(row: DriftFacts): ModelState {
+  if (row.identity.status === 'launched') return 'launched';
+  if (row.identity.status !== 'reported') return 'unreported';
+  if (row.requested === null || row.harness === null) return 'unasked';
+  return profileModelVerdict(row.harness, row.requested, row.identity.primary);
+}
 
 /**
- * The models the shown runs recorded against what each was asked for, one line per pairing, most first. Only a claim
- * that is its run's latest counts: a run's recorded model is its latest claim's.
+ * The models the shown runs recorded against what each was asked for, one line per comparison state, most first: runs
+ * share a line only when the agent, the model asked for, what it resolves to, the model recorded and their verdict all
+ * agree. Only a claim that is its run's latest counts: a run's recorded model is its latest claim's. Only a model the
+ * agent reported and that matches counts as running the model asked for.
  */
 export function modelDrift(rows: readonly DriftFacts[]): { headline: string | null; lines: ModelDriftLine[] } {
   const counted = rows.filter((row) => row.outcome !== 'handed_on');
-  const primary = (row: DriftFacts) => row.identity.status === 'reported' || row.identity.status === 'launched' ? row.identity.primary : null;
-  const used = (row: DriftFacts): string | null => primary(row)?.model ?? null;
-  const differs = (row: DriftFacts): boolean => {
-    const ran = primary(row);
-    return row.requested !== null && row.harness !== null && ran !== null && profileModelVerdict(row.harness, row.requested, ran) === 'mismatch';
-  };
-  const pairings = new Map<string, { asked: string | null; used: string | null; runs: number; differs: boolean }>();
+  const lines = new Map<string, ModelDriftLine>();
+  const states = new Map<ModelState, number>();
   for (const row of counted) {
-    const key = `${row.requested?.model ?? NOT_REPORTED}\u0001${used(row) ?? NOT_REPORTED}`;
-    const held = pairings.get(key) ?? { asked: row.requested?.model ?? null, used: used(row), runs: 0, differs: differs(row) };
-    pairings.set(key, { ...held, runs: held.runs + 1 });
+    const state = modelState(row);
+    states.set(state, (states.get(state) ?? 0) + 1);
+    const ran = row.identity.status === 'reported' || row.identity.status === 'launched' ? row.identity.primary : null;
+    const used = ran === null ? '' : `${ran.provider === undefined ? '' : `${ran.provider}/`}${ran.model}`;
+    const asked = row.requested === null ? 'No model asked'
+      : `Asked for ${displayModel(row.requested.model)}${row.requested.resolvesTo === undefined ? '' : ` (resolves to ${row.requested.resolvesTo})`}`;
+    const words = `${row.harness === null ? 'Unknown agent' : harnessLabel(row.harness)}: ${asked}, ${STATE_WORDS[state](used)}`;
+    const line = lines.get(words) ?? { words, runs: 0, state };
+    lines.set(words, { ...line, runs: line.runs + 1 });
   }
-  const lines = [...pairings.values()].sort((a, b) => b.runs - a.runs).map((pairing) => ({
-    words: `${pairing.asked === null ? 'No model asked' : `Asked for ${displayModel(pairing.asked)}`}, ${pairing.used === null ? 'model not reported' : `ran ${pairing.used}`}: ${runs(pairing.runs)}${pairing.differs ? ', a different model than asked' : ''}`,
-    runs: pairing.runs, differs: pairing.differs,
-  }));
-  const judged = counted.filter((row) => row.requested !== null && used(row) !== null);
-  const headline = judged.length === 0 ? null : `Ran the model it was asked for in ${(judged.length - judged.filter(differs).length).toLocaleString()} of ${runs(judged.length)} that reported one`;
-  return { headline, lines };
+  const confirmed = states.get('match') ?? 0;
+  const judged = confirmed + (states.get('mismatch') ?? 0) + (states.get('unconfirmed') ?? 0);
+  const unconfirmed = states.get('unconfirmed') ?? 0;
+  const launched = states.get('launched') ?? 0;
+  const parts = [
+    ...(judged === 0 ? [] : [`Ran the model it was asked for in ${confirmed.toLocaleString()} of ${runs(judged)} whose agent reported its model`]),
+    ...(unconfirmed === 0 ? [] : [`${runs(unconfirmed)} can’t be confirmed`]),
+    ...(launched === 0 ? [] : [`${runs(launched)} recorded only the model ${launched === 1 ? 'it was' : 'they were'} launched with`]),
+  ];
+  return {
+    headline: parts.length === 0 ? null : parts.join('; '),
+    lines: [...lines.values()].sort((a, b) => b.runs - a.runs).map((line) => ({ ...line, words: `${line.words}: ${runs(line.runs)}` })),
+  };
 }

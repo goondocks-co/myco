@@ -308,13 +308,10 @@ describe('Runner page', () => {
     expect(screen.getByRole('link', { name: /Worked; changed nothing/ }).getAttribute('href')).toBe('/p/proj_1/work/runs/run_old');
   });
 
-  it('counts the versions and models its shown runs ran with, against the model each was asked for', async () => {
-    const asked = { tier: 'default', model: 'sonnet', effort: null, sources: { tier: 'task', model: 'configured' }, resolvesTo: 'claude-sonnet-5-5' };
-    const ranModel = (model: string) => ({ status: 'reported', source: 'stream', primary: { model }, models: [{ model }] });
+  it('counts the versions its shown runs ran with', async () => {
     const rows = [
-      ...Array.from({ length: 4 }, (_, at) => ran(`run_new${at}`, 'worked', at + 1, { runnerVersion: '2.0.0-alpha.24', agentVersion: '2.1.3', requested: asked, identity: ranModel('claude-sonnet-5-5') })),
-      ran('run_other', 'worked', 10, { runnerVersion: '2.0.0-alpha.24', agentVersion: '2.1.3', requested: asked, identity: ranModel('claude-haiku-5-5') }),
-      ran('run_handed', 'handed_on', 12, { runnerVersion: '2.0.0-alpha.23', agentVersion: '2.1.2', requested: asked, identity: ranModel('claude-haiku-5-5') }),
+      ...Array.from({ length: 5 }, (_, at) => ran(`run_new${at}`, 'worked', at + 1, { runnerVersion: '2.0.0-alpha.24', agentVersion: '2.1.3' })),
+      ran('run_handed', 'handed_on', 12, { runnerVersion: '2.0.0-alpha.23', agentVersion: '2.1.2' }),
       ran('run_old', 'failed', 30),
     ];
     mount('member', RUNNER, { route: '/runners/rn_mini', runs: () => ({ runner: facts, rows, cursor: null }) });
@@ -323,12 +320,35 @@ describe('Runner page', () => {
     expect(said('runner')).toContain('Ran 2.0.0-alpha.24 for 5 runs, 2.0.0-alpha.23 for 1 run, not reported for 1 run');
     expect(said('runner')).toContain('Runner reports');
     expect(said('agent')).toContain('Claude Code 2.1.3 for 5 runs, 2.1.2 for 1 run, not reported for 1 run');
-    expect(said('models')).toContain('Ran the model it was asked for in 4 of 5 runs that reported one');
+  });
+
+  it('counts only a reported model that matches as the model it was asked for, and keeps each comparison state its own line', async () => {
+    const profile = (model: string, resolvesTo?: string) => ({ tier: 'default', model, effort: null, sources: { tier: 'task', model: 'configured' }, ...(resolvesTo === undefined ? {} : { resolvesTo }) });
+    const recorded = (model: string, status = 'reported', provider?: string) => ({ status, source: 'stream', primary: { model, ...(provider === undefined ? {} : { provider }) }, models: [{ model }] });
+    const sonnet = profile('sonnet', 'claude-sonnet-5-5');
+    const rows = [
+      ...Array.from({ length: 2 }, (_, at) => ran(`run_ok${at}`, 'worked', at + 1, { requested: sonnet, identity: recorded('claude-sonnet-5-5') })),
+      ran('run_haiku', 'worked', 5, { requested: sonnet, identity: recorded('claude-haiku-5-5') }),
+      ran('run_handed', 'handed_on', 6, { requested: sonnet, identity: recorded('claude-haiku-5-5') }),
+      ran('run_alias', 'worked', 7, { harness: 'opencode', requested: profile('openrouter/~anthropic/claude-opus-latest'), identity: recorded('anthropic/claude-opus-5', 'reported', 'openrouter') }),
+      ran('run_launch', 'worked', 8, { harness: 'codex', requested: profile('gpt-5.5'), identity: recorded('gpt-5.5', 'launched') }),
+      // The same model asked and run, compared against a recorded resolution and without one, in both orders.
+      ran('run_bare1', 'worked', 9, { harness: 'codex', requested: profile('gpt-5.5'), identity: recorded('gpt-5.5-2026') }),
+      ran('run_resolved', 'worked', 10, { harness: 'codex', requested: profile('gpt-5.5', 'gpt-5.5-2026'), identity: recorded('gpt-5.5-2026') }),
+      ran('run_bare2', 'worked', 11, { harness: 'codex', requested: profile('gpt-5.5'), identity: recorded('gpt-5.5-2026') }),
+    ];
+    mount('member', RUNNER, { route: '/runners/rn_mini', runs: () => ({ runner: facts, rows, cursor: null }) });
+    const drift = await screen.findByRole('region', { name: 'What its runs ran with' });
+    expect(drift.querySelector('[data-drift="models"]')!.textContent).toContain(
+      'Ran the model it was asked for in 3 of 7 runs whose agent reported its model; 1 run can’t be confirmed; 1 run recorded only the model it was launched with');
     const lines = [...drift.querySelectorAll<HTMLElement>('[data-model-drift]')].map((line) => [line.textContent, line.dataset.modelDrift]);
     expect(lines).toEqual([
-      ['Asked for Sonnet, ran claude-sonnet-5-5: 4 runs', 'same'],
-      ['Asked for Sonnet, ran claude-haiku-5-5: 1 run, a different model than asked', 'differs'],
-      ['No model asked, model not reported: 1 run', 'same'],
+      ['Claude Code: Asked for Sonnet (resolves to claude-sonnet-5-5), ran claude-sonnet-5-5: 2 runs', 'match'],
+      ['Codex: Asked for gpt-5.5, ran gpt-5.5-2026, a different model than asked: 2 runs', 'mismatch'],
+      ['Claude Code: Asked for Sonnet (resolves to claude-sonnet-5-5), ran claude-haiku-5-5, a different model than asked: 1 run', 'mismatch'],
+      ['OpenCode: Asked for openrouter/~anthropic/claude-opus-latest, ran openrouter/anthropic/claude-opus-5; the provider chooses which model this name runs, so it can’t be confirmed: 1 run', 'unconfirmed'],
+      ['Codex: Asked for gpt-5.5, launched with gpt-5.5; the agent did not report what it ran: 1 run', 'launched'],
+      ['Codex: Asked for gpt-5.5 (resolves to gpt-5.5-2026), ran gpt-5.5-2026: 1 run', 'match'],
     ]);
   });
 });

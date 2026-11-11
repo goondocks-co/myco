@@ -7,6 +7,7 @@ import { runResultSql } from '../runs/run-output.js';
 import { first, read, readSet } from '../index.js';
 import { runNotRetiring } from '../runs/evidence-schema.js';
 import { requestedProfileValue } from '../run-profile.js';
+import { attemptHarnessSql } from '../runs/attempt-harness.js';
 
 /** One attempt this runner claimed, with the run it belongs to and how that run stands. */
 export interface RunnerAttemptRow {
@@ -25,7 +26,7 @@ export interface RunnerAttemptRow {
   /** The versions the attempt ran with: the runner's, as it last reported it at the claim, and the coding agent's the claim reported. */
   runner_version: string | null;
   agent_version: string | null;
-  /** The harness the run is held on, the profile its dispatch asked for, and its recorded accounting (where its identity lives). */
+  /** The harness this attempt was claimed for (from its recorded profile), the profile the run's dispatch asked for, and its recorded accounting (where its identity lives). */
   harness: string | null;
   requested_profile: string | null;
   usage_data: string | null;
@@ -33,7 +34,7 @@ export interface RunnerAttemptRow {
 
 const columns = `a.attempt_id,a.claimed_at,a.project_id,(SELECT p.name FROM projects p WHERE p.project_id=a.project_id) AS project_name,
   a.run_id,r.task,r.status,r.completed_at,r.error_code,${runResultSql('r')} AS result,
-  a.runner_version,a.agent_version,r.harness,${requestedProfileValue('r.')} AS requested_profile,r.usage_data,
+  a.runner_version,a.agent_version,${attemptHarnessSql('a')} AS harness,${requestedProfileValue('r.')} AS requested_profile,r.usage_data,
   NOT EXISTS(SELECT 1 FROM agent_run_attempts l WHERE l.project_id=a.project_id AND l.run_id=a.run_id
     AND (l.claimed_at>a.claimed_at OR (l.claimed_at=a.claimed_at AND l.attempt_id>a.attempt_id))) AS latest`;
 const attempts = (keyed: boolean) => `SELECT ${columns}

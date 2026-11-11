@@ -104,21 +104,19 @@ function waitedNote(hold: string | null | undefined): string | null {
 }
 
 /** The versions an attempt ran with, as its runner reported them: its own and the coding agent's. */
-function versionRow(attempt: RunAttempt, harness: string | null): StoryRow {
-  const agent = harness === null ? 'the agent' : harnessLabel(harness);
-  const runner = attempt.executor.kind === 'runner'
-    ? attempt.runnerVersion === null ? 'Runner version not reported' : `Runner ${attempt.runnerVersion}`
-    : null;
-  const parts = [...(runner === null ? [] : [runner]), attempt.agentVersion === null ? `${agent} version not reported` : `${agent} ${attempt.agentVersion}`];
+/** The versions a runner's attempt ran with, as its runner reported them: its own, and that of the agent the attempt was claimed for. */
+function versionRow(attempt: RunAttempt): StoryRow {
+  const agent = harnessLabel(attempt.harness ?? 'unrecorded');
+  const runner = attempt.runnerVersion === null ? 'Runner version not reported' : `Runner ${attempt.runnerVersion}`;
   const reported = attempt.runnerVersion !== null || attempt.agentVersion !== null;
-  const words = parts.join(' · ');
   return row({
-    key: `versions-${attempt.attemptId}`, at: attempt.claimedAt, words: `${words.charAt(0).toUpperCase()}${words.slice(1)}`, source: reported ? 'runner' : 'none',
+    key: `versions-${attempt.attemptId}`, at: attempt.claimedAt, source: reported ? 'runner' : 'none',
+    words: `${runner} · ${attempt.agentVersion === null ? `${agent} version not reported` : `${agent} ${attempt.agentVersion}`}`,
     note: reported ? null : 'A runner from before Myco recorded versions sends none.',
   });
 }
 
-function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null, memberName: (id: string) => string | null, harness: string | null): StoryRow[] {
+function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null, memberName: (id: string) => string | null): StoryRow[] {
   const total = attemptCount ?? attempts.length;
   return attempts.flatMap((attempt, index) => {
     const ordinal = total - attempts.length + index + 1;
@@ -129,10 +127,10 @@ function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null,
       : [];
     if (attempt.executor.kind === 'runner') {
       const name = attempt.executor.name ?? 'a runner';
-      return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', runner: { id: attempt.executor.runnerId, name } }), versionRow(attempt, harness)];
+      return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${name}${position}`, source: 'saw', runner: { id: attempt.executor.runnerId, name } }), versionRow(attempt)];
     }
     const member = attempt.executor.memberId === null ? null : memberName(attempt.executor.memberId);
-    return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw' }), versionRow(attempt, harness)];
+    return [...requeued, row({ key: `claim-${attempt.attemptId}`, at: attempt.claimedAt, words: `Claimed by ${member === null ? 'a member’s machine' : `${member}’s machine`}${position}`, source: 'saw' })];
   });
 }
 
@@ -190,7 +188,7 @@ export function runStory({ answer, calls, callsComplete, steps, startedBy, cause
   const { run } = answer;
   const timed: StoryRow[] = [];
   if (run.queuedAt !== null) timed.push(row({ key: 'queued', at: run.queuedAt, words: startedBy === null ? 'Queued' : `Queued, ${startedBy}`, source: 'saw' }));
-  const claims = claimRows(answer.attempts, answer.attemptCount, memberName, run.harness);
+  const claims = claimRows(answer.attempts, answer.attemptCount, memberName);
   if (claims.length > 0) timed.push(...claims);
   else if (run.startedAt !== null) timed.push(row({ key: 'started', at: run.startedAt, words: 'Started', source: 'saw' }));
   timed.push(...groupCalls(calls));
@@ -362,15 +360,15 @@ function evidenceWords(evidence: RunCloseEvidence): { evidence: string; tone: To
   return { evidence: 'Report filed', tone: 'good' };
 }
 
-/** What the agent's latest account says it read, counted; null where no report carries an account. */
+/** The files and areas the agent's latest account says it examined, counted; null where no report carries an account. */
 function examinedWords(reports: readonly RunReport[]): string | null {
   const audit = reports.filter((report) => report.audit !== null).at(-1)?.audit;
   if (audit === undefined || audit === null) return null;
   const listed = audit.examined.length;
-  return `It read ${audit.omitted > 0 && listed > 0 ? 'at least ' : ''}${listed.toLocaleString()}`;
+  return `It says it examined ${audit.omitted > 0 && listed > 0 ? 'at least ' : ''}${listed.toLocaleString()} file${listed === 1 ? '' : 's'} or area${listed === 1 ? '' : 's'}`;
 }
 
-/** Asked versus evidence: model, effort, material, prompts served versus read, and the evidence the task owes. */
+/** Asked versus evidence: model, effort, material, the prompts Myco served and what the agent says it examined, and the evidence the task owes. */
 export function askedRows(answer: RunDetailAnswer): AskedRow[] {
   const { run, read, outcomeEvidence } = answer;
   const rows: AskedRow[] = [];
@@ -402,10 +400,15 @@ export function askedRows(answer: RunDetailAnswer): AskedRow[] {
   }
   const prompts = answer.servedPrompts;
   if (prompts !== null && prompts > 0) {
+    // Myco records which prompts it served, never which the agent read: the agent's account names files and areas, not prompts.
+    rows.push({
+      key: 'prompts', label: 'Prompts served', asked: `Myco gave it ${count(prompts, 'prompt')}`, askedSource: 'saw',
+      evidence: 'Which of them it read isn’t recorded', source: 'none', tone: null,
+    });
     const examined = examinedWords(answer.reports);
     rows.push({
-      key: 'prompts', label: 'Prompts served versus read', asked: `Myco gave it ${count(prompts, 'prompt')}`, askedSource: 'saw',
-      evidence: examined ?? (live ? 'Reported when it ends' : 'It gave no account of what it read'), source: examined === null ? 'none' : 'agent', tone: null,
+      key: 'examined', label: 'Files and areas examined', asked: 'Its account of what it read',
+      evidence: examined ?? (live ? 'Reported when it ends' : 'It gave no account of what it examined'), source: examined === null ? 'none' : 'agent', tone: null,
     });
   }
   if (outcomeEvidence !== null) {

@@ -181,6 +181,8 @@ export interface RunAttemptRow {
   runnerVersion: string | null;
   /** The coding agent's version the claim reported for the harness it ran; null where it reported none. */
   agentVersion: string | null;
+  /** The harness this attempt was claimed for, as its claim recorded it; null for an attempt that recorded none. */
+  harness: string | null;
 }
 
 /** One step a worker observed, metadata only: never file contents or command output. */
@@ -490,6 +492,7 @@ const attemptOf = (received: ReadonlyMap<string, number> | null, includeSignIn =
   waitedSince: row.waitedSince === null ? null : Number(row.waitedSince),
   runnerVersion: row.runnerVersion,
   agentVersion: row.agentVersion,
+  harness: row.harness,
 });
 
 /**

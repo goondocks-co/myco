@@ -97,10 +97,10 @@ function RunnerDrift({ rows }: { rows: readonly RunnerRun[] }) {
         {models.headline !== null && <p className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1 t-small text-ink-2" data-drift="models">{models.headline}<SourceMark source="runner" /></p>}
         {models.lines.length > 0 && (
           <ul className="flex flex-col gap-s1 t-meta" aria-label="Models asked for and run">
-            {models.lines.map((line) => <li key={line.words} className={line.differs ? 'text-warn' : 'text-muted'} data-model-drift={line.differs ? 'differs' : 'same'}>{line.words}</li>)}
+            {models.lines.map((line) => <li key={line.words} className={line.state === 'mismatch' ? 'text-warn' : 'text-muted'} data-model-drift={line.state}>{line.words}</li>)}
           </ul>
         )}
-        <p className="t-meta text-muted">Versions are as the runner reported them when it took each run; a runner from before Myco recorded them reads “not reported”. Models are as the agent’s output named them, for each run’s latest try.</p>
+        <p className="t-meta text-muted">Versions are as the runner reported them when it took each run; a runner from before Myco recorded them reads “not reported”. Models are as each run’s latest try recorded them: the model its agent reported, or only the one it was launched with where it reported none.</p>
       </Card>
     </AdminSection>
   );

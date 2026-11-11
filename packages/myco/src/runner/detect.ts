@@ -183,28 +183,39 @@ function agentVersionOf(printed: string | null): string | undefined {
   return token === undefined || token.length > MAX_VERSION_CHARS ? undefined : token;
 }
 
-/** Each installed binary's version, asked once per file as it stands on disk: an upgrade replaces the file and is asked again. */
-const versions = new Map<string, string | undefined>();
+/**
+ * Each installed binary's version, asked once per file as it stands on disk: an upgrade replaces the file and is asked
+ * again. A probe runs in the background, bounded by the probe timeout; until it answers, the binary has no version.
+ */
+const versions = new Map<string, { version: string | undefined } | 'asking'>();
 
-async function binaryVersion(at: string, signal?: AbortSignal): Promise<string | undefined> {
+function askVersion(at: string, key: string): void {
+  versions.set(key, 'asking');
+  // Its input is closed at once: an agent that reads its input for a session reads none and ends, rather than waiting out the probe.
+  const child = execFile(at, ['--version'], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: probeEnv() }, (error, stdout) => {
+    versions.set(key, { version: error === null ? agentVersionOf(stdout) : undefined });
+  });
+  child.stdin?.end();
+  // An unanswered probe never holds a stopping worker open.
+  child.unref();
+}
+
+/** The binary's version where its probe has answered; otherwise undefined, with a probe started if none is asking. */
+async function knownVersion(at: string): Promise<string | undefined> {
   let key: string;
   try {
     const found = await stat(at);
     key = `${at}\u0000${found.mtimeMs}\u0000${found.size}`;
   } catch { return undefined; }
-  if (versions.has(key)) return versions.get(key);
-  const version = agentVersionOf(await new Promise<string | null>((resolve) => {
-    if (signal?.aborted === true) { resolve(null); return; }
-    // Its input is closed at once: an agent that reads its input for a session reads none and ends, rather than waiting out the probe.
-    execFile(at, ['--version'], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, env: probeEnv(), signal }, (error, stdout) => {
-      resolve(error === null ? stdout : null);
-    }).stdin?.end();
-  }));
-  if (signal?.aborted !== true) versions.set(key, version);
-  return version;
+  const held = versions.get(key);
+  if (held === undefined) askVersion(at, key);
+  return typeof held === 'object' ? held.version : undefined;
 }
 
-/** Worker detection leaves the event loop free for leases, requests and shutdown. */
+/**
+ * Worker detection leaves the event loop free for leases, requests and shutdown. An agent's version is offered once a
+ * background probe has read it: detection never waits on it.
+ */
 export async function detectHarnessesAsync(only?: readonly string[], signal?: AbortSignal, mode: DetectionMode = READ_CREDENTIAL_BYTES): Promise<DetectedHarness[]> {
   const wanted = only === undefined || only.length === 0 ? null : new Set(only);
   return Promise.all(HARNESSES.filter((harness) => wanted === null || wanted.has(harness.id)).map(async (harness) => {
@@ -212,10 +223,10 @@ export async function detectHarnessesAsync(only?: readonly string[], signal?: Ab
     const at = found?.split('\n')[0]?.trim() ?? '';
     const installed = at.length > 0;
     if (!installed) return { id: harness.id, installed, authenticated: false };
-    const version = binaryVersion(at, signal);
+    const version = knownVersion(at);
     const withVersion = async (detected: DetectedHarness): Promise<DetectedHarness> => {
-      const printed = await version;
-      return printed === undefined ? detected : { ...detected, version: printed };
+      const known = await version;
+      return known === undefined ? detected : { ...detected, version: known };
     };
     try {
       const probe = harness.credential;
