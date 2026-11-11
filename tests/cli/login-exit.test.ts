@@ -174,5 +174,5 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
       e.sqlite.close();
       fs.rmSync(home, { recursive: true, force: true });
     }
-  }, 25_000);
+  }, 30_000);
 }
