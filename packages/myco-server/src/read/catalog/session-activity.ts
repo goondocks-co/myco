@@ -1,7 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { clampLimit, decodeCursor, type ReadScope } from '../scope.js';
 import { readSessionEdges, type SessionEdge } from '../../db/activity/session-edges.js';
-import { sessions_relatedSessionLabel } from './sessions.js';
+import { sessions_sessionLabel } from './sessions.js';
 
 export const SESSION_ACTIVITY_TYPES = ['child_session', 'continuation'] as const;
 
@@ -48,7 +48,7 @@ async function session_activity_sessionEdges(db: RelationalStore, scope: ReadSco
     after: after === null ? null : { at: after.createdAt, id: after.id }, limit: clampLimit(opts.limit) + 1 });
   return rows.map((row): session_activity_SessionActivityRow => ({
     id: row.id, type: row.type, at: row.at,
-    title: row.related === null ? session_activity_NOT_CAPTURED_TITLE : sessions_relatedSessionLabel(row.title, row.first_prompt, row.agent),
+    title: row.related === null ? session_activity_NOT_CAPTURED_TITLE : sessions_sessionLabel(row.title, row.first_prompt, row.agent),
     detail: [session_activity_EDGE_DETAILS[row.edge], row.reason].filter(Boolean).join(' · '),
     sessionId: row.related, agent: row.agent,
   }));

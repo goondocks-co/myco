@@ -65,7 +65,7 @@ async function activity_activityFeed(db: RelationalStore, scope: ReadScope, opts
     const label = row.kind === 'session' ? page.sessions.get(row.source_id) : undefined;
     return {
       type: row.kind, id: row.source_id, at: row.sort_at, sessionId: row.session_id,
-      summary: row.kind === 'session' ? sessions_sessionLabel(label?.title ?? null, label?.first_prompt ?? null, label?.agent ?? null, row.source_id)
+      summary: row.kind === 'session' ? sessions_sessionLabel(label?.title ?? null, label?.first_prompt ?? null, label?.agent ?? null)
         : row.preview ?? '',
     };
   });
