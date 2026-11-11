@@ -9,9 +9,10 @@ import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import {
   authenticateGrant, expireGrants, GRANT_AGENT_FALLBACK_NAME, GRANT_AGENT_SOURCE, GRANT_EXPIRY_ACTOR,
-  grantAgent, GRANT_KEY_PATTERN, GRANT_TOUCH_INTERVAL_MS, GRANT_TTL_DAYS_DEFAULT, GRANT_TTL_DAYS_MAX,
+  GRANT_KEY_PATTERN, GRANT_TOUCH_INTERVAL_MS, GRANT_TTL_DAYS_DEFAULT, GRANT_TTL_DAYS_MAX,
   issueExternalGrant, rotateExternalGrant, touchGrant,
 } from '@myco-server-worker/auth/grants.js';
+import { ensureGrantAgent } from '@myco-server-worker/db/identity/grants.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { SCHEMA_DDL } from '@myco-server-worker/db/schema.js';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -202,7 +203,7 @@ describe('external grants', () => {
   it('mints the agent row again without failing, so a re-run of the mint is a no-op rather than a conflict', async () => {
     const e = sqliteEnv();
     const grant = await issueExternalGrant(e.db, { projectId: 'proj_1' }, 'bot', 'mem_machine_1', NOW);
-    await grantAgent(e.db, grant.id, NOW).run();
+    await ensureGrantAgent(e.db, grant.id, NOW, { fallbackName: GRANT_AGENT_FALLBACK_NAME, source: GRANT_AGENT_SOURCE });
     expect(e.sqlite.query(`SELECT COUNT(*) AS c FROM agents WHERE id = ?`).get(grant.id)).toEqual({ c: 1 });
     expect(agentOf(e, grant.id)).toMatchObject({ name: 'bot' });
   });

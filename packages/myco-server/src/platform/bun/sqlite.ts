@@ -61,4 +61,15 @@ export function sqliteRelationalStore(sqlite: Database): RelationalStore {
 }
 
 /** SQLite reports constraint failures with `SQLITE_CONSTRAINT`, which the shared classifier already recognises; anything else naming the driver is this store's own. */
+/** Whether an open handle answers a trivial query: a detached volume or a half-applied migration does not. */
+export function sqliteAnswers(sqlite: Database | null | undefined): boolean {
+  try {
+    if (sqlite === undefined || sqlite === null) return false;
+    sqlite.query('SELECT 1').get();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const classifySqliteError = (message: string): 'db' | null => (/^SQLiteError|SQLITE_/i.test(message) ? 'db' : null);

@@ -27,6 +27,19 @@ export const DB_STORE_ALLOWED = new Map<string, string>([
   ['db/meta/budget-activation.ts', 'Operator path: runs generated activation steps in order'],
 ]);
 
+/** Comments and whitespace a statement may open with. */
+const LEADING = String.raw`(?:\s+|--[^\n]*(?:\n|$)|/\*[\s\S]*?\*/)*`;
+/** The opening of a statement: its keyword in the shape SQL gives it, so a word or sentence that begins with one is prose. */
+const STATEMENT_START = new RegExp(`^${LEADING}(?:` + [
+  String.raw`SELECT\b\s+\S`, String.raw`INSERT\s+(?:OR\s+\w+\s+)?INTO\b`, String.raw`REPLACE\s+INTO\b`, String.raw`DELETE\s+FROM\b`,
+  String.raw`UPDATE\s+(?:OR\s+\w+\s+)?(?:\S+\s+(?:AS\s+\w+\s+)?)?SET\b`,
+  String.raw`WITH\s+(?:RECURSIVE\s+)?(?:\w+\s*(?:\([^)]*\)\s*)?)?AS\b`,
+  String.raw`PRAGMA\s+\w+`, String.raw`CREATE\s+(?:UNIQUE\s+|VIRTUAL\s+|TEMP(?:ORARY)?\s+)*(?:TABLE|INDEX|VIEW|TRIGGER)\b`,
+  String.raw`DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER)\b`, String.raw`ALTER\s+TABLE\b`, String.raw`EXPLAIN\s+(?:QUERY\s+PLAN\s+)?(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b`,
+].join('|') + ')', 'i');
+/** A composed fragment: a bind placeholder beside an uppercase clause keyword used as a word. */
+const BIND_PLACEHOLDER = /\?\d*/;
+const CLAUSE_WORD = /(?<![A-Za-z0-9_])(?:AND|OR|WHERE|SET|VALUES|JOIN|FROM|ON|IN)(?![A-Za-z0-9_])/;
 const FROZEN_SCHEMA = /^db\/schema-v\d+\.ts$/;
 const STORE_KINDS: ReadonlySet<BoundarySite['kind']> = new Set(['prepare', 'batch', 'exec']);
 const BOUND_COMPILERS = new Set(['prepareBound', 'prepareClaimCompanion']);
@@ -77,7 +90,7 @@ export function boundarySites(source: ts.SourceFile, checker?: ts.TypeChecker): 
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) {
       const text = ts.isTemplateExpression(node)
         ? node.head.text + node.templateSpans.map(span => ` ${span.literal.text}`).join('') : node.text;
-      if (/^\s*(?:SELECT|WITH|INSERT|UPDATE|DELETE|REPLACE)\b/i.test(text)
+      if (STATEMENT_START.test(text) || (BIND_PLACEHOLDER.test(text) && CLAUSE_WORD.test(text))
         || (/\bFROM\s+[A-Za-z_][A-Za-z_0-9]*\b/i.test(text) && /\bWHERE\b/i.test(text))) add(node, 'sql');
     }
     ts.forEachChild(node, visit);

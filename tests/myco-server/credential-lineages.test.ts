@@ -3,7 +3,9 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { authorizeTool } from '@myco-server-worker/auth/mcp-authorization.js';
 import { listMembers, revokeMember } from '@myco-server-worker/auth/members-admin.js';
-import { activateSuccessor, revokeCredentialStatement, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
+import { activateSuccessor, revokeMemberLineage } from '@myco-server-worker/auth/tokens.js';
+import { commit } from '@myco-server-worker/db/index.js';
+import { credentialRevokeWrite } from '@myco-server-worker/db/identity/credential-auth.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { handleCredentials, handleInvitations, handleMembers } from '@myco-server-worker/api/access.js';
 import { handleGrants } from '@myco-server-worker/api/grants.js';
@@ -93,7 +95,7 @@ describe('credential lineage heads', () => {
       await expectHeadsExact(db, 'activated');
       const other = await issueMemberToken(db, { memberId: LIN, machineId: 'machine_2' }, NOW + 30);
       await expectHeadsExact(db, 'second member');
-      await revokeCredentialStatement(db, LIN, other.tokenId, NOW + 31).run();
+      await commit(db, credentialRevokeWrite({ token: other.tokenId, actor: LIN, now: NOW + 31 }));
       await expectHeadsExact(db, 'single revoke');
       await revokeMemberLineage(db, second.tokenId, NOW + 40, ADA);
       await expectHeadsExact(db, 'lineage revoke');
@@ -157,7 +159,7 @@ describe('credential lineage heads', () => {
     await withStore(target, async db => {
       const live = await issueMemberToken(db, { memberId: ADA, machineId: 'machine_1' }, NOW);
       const ended = await issueMemberToken(db, { memberId: LIN, machineId: 'machine_2' }, NOW);
-      await revokeCredentialStatement(db, LIN, ended.tokenId, NOW).run();
+      await commit(db, credentialRevokeWrite({ token: ended.tokenId, actor: LIN, now: NOW }));
       await resetProjectionCatchup(db);
 
       const building = await countOf(db, ADA);

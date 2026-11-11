@@ -2,7 +2,7 @@ import type { RelationalStore as kpis_import_RelationalStore } from "@myco-serve
 import { CAPTURE_RULE_BUNDLES as kpis_import_CAPTURE_RULE_BUNDLES } from "@goondocks/myco-shared/capture-rules-data";
 import { recallQuality as kpis_import_recallQuality } from "@myco-server-worker/evals/recall-baseline.js";
 import { caseCount as kpis_import_caseCount } from "@myco-server-worker/evals/recall-baseline.js";
-import { hook_placement_hookPlacementSql } from '@myco-server-worker/read/catalog/hook-placement.js';
+import { placedPromptSql } from '@myco-server-worker/db/documents/live-generation.js';
 
 const kpis_PROMPTS = `(SELECT p.* FROM projects pr CROSS JOIN session_prompts p CROSS JOIN session_documents d
   WHERE p.project_id = pr.project_id AND d.project_id = p.project_id AND d.session_id = p.session_id
@@ -101,7 +101,7 @@ async function kpis_promptMeasures(db: kpis_import_RelationalStore, since: numbe
 
 async function kpis_deliveryMeasures(db: kpis_import_RelationalStore, since: number | null, until: number): Promise<kpis_KpiReport['deliveries']> {
   const w = kpis_windowClause('i.delivered_at', since, until);
-  const placed = hook_placement_hookPlacementSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' });
+  const placed = placedPromptSql({ project: 'i.project_id', session: 'i.session_id', prompt: 'i.delivered_prompt_id' });
   const row = await db.prepare(`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ${placed} THEN 1 ELSE 0 END), 0) AS placed
     FROM projects pr CROSS JOIN spore_injections i
     WHERE i.project_id = pr.project_id AND i.delivered_at IS NOT NULL AND ${w.sql}`)

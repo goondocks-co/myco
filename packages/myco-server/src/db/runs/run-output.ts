@@ -1,10 +1,10 @@
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
-import { CURATION_TASK, EXTRACTION_TASK, PLAN_CURATION_TASK, RETAINED_TASKS, SEEDING_TASK, TITLING_TASK, type RetainedTask } from '../core/task-catalogue.js';
-import { CARD_TOOL, MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '../core/tool-catalogue.js';
-import { EMBEDDING_REPORT_ACTION, EMBEDDING_TASK } from '../core/embedding/task.js';
-import { RUN_WRITE_EVENT } from '../db/runs/evidence.js';
-import { PLAN_CURATION_TOOL } from '../core/plan-curation.js';
+import { CURATION_TASK, EXTRACTION_TASK, PLAN_CURATION_TASK, RETAINED_TASKS, SEEDING_TASK, TITLING_TASK, type RetainedTask } from '../../core/task-catalogue.js';
+import { CARD_TOOL, MAP_WRITE_TOOL, TITLE_WRITE_TOOL } from '../../core/tool-catalogue.js';
+import { EMBEDDING_REPORT_ACTION, EMBEDDING_TASK } from '../../core/embedding/task.js';
+import { RUN_WRITE_EVENT } from './evidence.js';
+import { PLAN_CURATION_TOOL } from '../../core/plan-curation.js';
 
 /** A terminal run's outcome, determined by the output it recorded. */
 export type RunResult = 'produced' | 'unchanged' | 'failed' | 'failed_with_output';

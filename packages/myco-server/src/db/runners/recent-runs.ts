@@ -3,7 +3,7 @@
  * `idx_runner_attempt_history`, and the runner's own facts: its name, state and last check-in.
  */
 import type { RelationalStore } from '../../core/adapters.js';
-import { runResultSql } from '../../read/run-outcome.js';
+import { runResultSql } from '../runs/run-output.js';
 import { first, read, readSet } from '../index.js';
 import { runNotRetiring } from '../runs/evidence-schema.js';
 

@@ -1,4 +1,4 @@
-import { heldToolCalls } from './tool-statistics.js';
+import { heldToolCalls } from '../db/documents/turn-statistics.js';
 /**
  * A turn as the session page reads it, from the turn's own pages of the live document: the prompt, its steering
  * prompts, replies, plan appearances and tool records. What hooks recorded beside the turn (attachments, context
@@ -23,14 +23,13 @@ import { locatorRepairPending, TurnLocatorBuilding } from '../db/documents/locat
 import { type DocRecord } from './document.js';
 import { SESSION_OWNER } from '../db/document-tables.js';
 import { editedFiles, toolFiles, type ToolRollup, type ToolState } from './tool-rollup.js';
-import { liveGenerationSql } from '../read/document-catalog.js';
+import { hookCollectionRows, hookRecordPages, HOOK_ROWS } from '../db/documents/turn-hooks.js';
+import { promptCatalogRow, sessionAgent } from '../db/documents/turn-catalog.js';
 import {
   pageCursor, promptRow, readPageCursor, responseRow, SessionDocument, toolCallRow, TURN_PAGES,
   type LocatedPage, type PageLocator, type PromptWireRow, type ResponseWireRow, type ToolCallWireRow,
 } from './session-pages.js';
 
-/** Rows each hook collection carries before its continuation. */
-const HOOK_ROWS = 50;
 /** Failed calls and named files a turn's tool summary lists before it only counts. */
 const SUMMARY_FAILURES = 20;
 const SUMMARY_FILES = 50;
@@ -124,34 +123,9 @@ function toolSummary(tools: readonly Located[], complete: boolean, harness: stri
   };
 }
 
-/**
- * Each prompt's first page of a hook collection, read in its full order up to its row `HOOK_ROWS + 1`, so the statement
- * reads no further into a prompt's rows than its page and the row that shows another follows.
- */
-const hookPage = (table: string, columns: string, id: string) => {
-  const nth = (column: string) => `(SELECT x.${column} FROM ${table} x WHERE x.project_id = ?1 AND x.session_id = ?2 AND x.prompt_id = j.value
-      ORDER BY x.created_at, x.${id} LIMIT 1 OFFSET ${HOOK_ROWS})`;
-  return `WITH b AS (SELECT j.value AS prompt_id, COALESCE(${nth('created_at')}, ${Number.MAX_SAFE_INTEGER}) AS at, COALESCE(${nth(id)}, '') AS id
-      FROM json_each(?3) j)
-  SELECT ${columns} FROM b CROSS JOIN ${table} r INDEXED BY idx_${table}_prompt_order
-    ON r.project_id = ?1 AND r.session_id = ?2 AND r.prompt_id = b.prompt_id AND (r.created_at, r.${id}) <= (b.at, b.id)
-  ORDER BY r.prompt_id, r.created_at, r.${id}`;
-};
-
 /** The first page of attachments and context answers recorded for each of these prompts, and the context last served for each. */
 async function hookRecords(db: RelationalStore, scope: ReadScope, sessionId: string, promptIds: readonly string[]) {
-  const ids = JSON.stringify(promptIds);
-  const [attachments, answers, receipts] = await db.batch([
-    db.prepare(hookPage('attachments', 'r.attachment_id, r.prompt_id, r.blob_key, r.media_type, r.byte_size, r.description, r.created_at', 'attachment_id'))
-      .bind(scope.projectId, sessionId, ids),
-    db.prepare(hookPage('prompt_context_answers', 'r.id, r.prompt_id, r.created_at, r.outcome, r.context_chars, r.parts, r.skipped, r.failures, r.selection', 'id'))
-      .bind(scope.projectId, sessionId, ids),
-    db.prepare(`SELECT i.delivered_prompt_id AS prompt_id, i.id, i.spore_ids, i.created_at, COALESCE(i.plan_ids, '[]') AS plan_ids
-      FROM json_each(?3) j CROSS JOIN spore_injections i ON i.project_id = ?1 AND i.session_id = ?2
-        AND i.id = (SELECT x.id FROM spore_injections x INDEXED BY idx_spore_injections_delivered_at
-          WHERE x.project_id = ?1 AND x.session_id = ?2 AND x.delivered_prompt_id = j.value ORDER BY x.created_at DESC LIMIT 1)`)
-      .bind(scope.projectId, sessionId, ids),
-  ]);
+  const { attachments, answers, receipts } = await hookRecordPages(db, scope.projectId, sessionId, promptIds);
   const grouped = <T>(rows: readonly Record<string, unknown>[], map: (row: Record<string, unknown>) => T) => {
     const out = new Map<string, { rows: T[]; cursor: string | null; last: Record<string, unknown> | null }>(promptIds.map((id) => [id, { rows: [], cursor: null, last: null }]));
     for (const row of rows) {
@@ -162,7 +136,7 @@ async function hookRecords(db: RelationalStore, scope: ReadScope, sessionId: str
     return out;
   };
   const served = new Map<string, { receiptId: string; sporeIds: string[]; planIds: string[]; createdAt: number }>();
-  for (const row of receipts!.results as Record<string, unknown>[]) {
+  for (const row of receipts) {
     const ids = (raw: unknown): string[] => {
       try { const parsed: unknown = JSON.parse(String(raw)); return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []; } catch { return []; }
     };
@@ -187,12 +161,12 @@ async function hookRecords(db: RelationalStore, scope: ReadScope, sessionId: str
     };
   };
   return {
-    attachments: grouped(attachments!.results as Record<string, unknown>[], (r): AttachmentRow => ({
+    attachments: grouped(attachments, (r): AttachmentRow => ({
       attachmentId: String(r.attachment_id), promptId: (r.prompt_id as string | null) ?? null, blobKey: String(r.blob_key),
       mediaType: String(r.media_type), byteSize: Number(r.byte_size), description: (r.description as string | null) ?? null,
       createdAt: Number(r.created_at), orderedAt: Number(r.created_at),
     })),
-    answers: grouped(answers!.results as Record<string, unknown>[], (r): PromptAnswer => ({
+    answers: grouped(answers, (r): PromptAnswer => ({
       id: String(r.id), createdAt: Number(r.created_at), outcome: String(r.outcome), contextChars: Number(r.context_chars),
       parts: JSON.parse(String(r.parts)) as unknown[], skipped: JSON.parse(String(r.skipped)) as string[],
       failures: JSON.parse(String(r.failures)) as unknown[], selection: JSON.parse(String(r.selection)) as Record<string, number>,
@@ -243,7 +217,7 @@ async function windowBodies(env: ContentStore, scope: ReadScope, sessionId: stri
   const prompts = window.records.filter(({ record }) => record.k === 'prompt');
   const [hooks, agent, canonical] = await Promise.all([
     hookRecords(env.db, scope, sessionId, prompts.map(({ record }) => record.id)),
-    env.db.prepare(`SELECT agent FROM sessions WHERE project_id = ? AND session_id = ?`).bind(scope.projectId, sessionId).first<{ agent: string | null }>(),
+    sessionAgent(env.db, scope.projectId, sessionId),
     canonicalPlans(env.db, scope, [...new Set(window.records.filter(({ record }) => record.k === 'plan').map(({ record }) => String(record.plan_key ?? record.id)))]),
   ]);
   const timed = sourceTimestampsRecorded(CAPTURE_RULE_BUNDLES, agent?.agent ?? null);
@@ -303,11 +277,7 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
   }
   const body = (await windowBodies(env, scope, sessionId, { generation: doc.generation, records, next: whole ? null : after })).body(top, 0);
   if (place.turn === promptId) {
-    const catalog = await env.db.prepare(`SELECT p.tools,p.failed_tools,p.files_named,p.tool_rollup,p.tool_state,s.agent,c.card,c.fields FROM session_prompts p
-      JOIN sessions s ON s.project_id=p.project_id AND s.session_id=p.session_id
-      LEFT JOIN turn_cards c ON c.project_id=p.project_id AND c.session_id=p.session_id AND c.turn_key=p.prompt_id
-      WHERE p.project_id=?1 AND p.session_id=?2 AND p.generation=${liveGenerationSql('?1', '?2')} AND p.prompt_id=?3`)
-      .bind(scope.projectId, sessionId, promptId).first<{ tools: number; failed_tools: number; files_named: number; tool_rollup: string | null; tool_state: string | null; agent: string | null; card: string | null; fields: string | null }>();
+    const catalog = await promptCatalogRow(env.db, scope.projectId, sessionId, promptId);
     const calls = await heldToolCalls(env.db, [scope.projectId, sessionId, doc.generation],
       records.filter(({ record }) => record.k === 'tool' && record.bodies?.input !== undefined).map(({ record }) => ({ owner: promptId, id: record.id })));
     const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls);
@@ -366,14 +336,8 @@ async function hookCollection(db: RelationalStore, scope: ReadScope, sessionId: 
   cursor: string | undefined): Promise<Page<unknown> | null> {
   const after = cursor === undefined ? null : /^(-?[0-9]+):(.+)$/.exec(cursor);
   if (cursor !== undefined && after === null) return null;
-  const keyed = after === null ? '' : `AND (created_at, ${collection === 'attachments' ? 'attachment_id' : 'id'}) > (?, ?)`;
-  const keys = after === null ? [] : [Number(after[1]), after[2]];
-  const sql = collection === 'attachments'
-    ? `SELECT attachment_id, prompt_id, blob_key, media_type, byte_size, description, created_at FROM attachments INDEXED BY idx_attachments_prompt_order
-       WHERE project_id = ? AND session_id = ? AND prompt_id = ? ${keyed} ORDER BY created_at, attachment_id LIMIT ?`
-    : `SELECT id, prompt_id, created_at, outcome, context_chars, parts, skipped, failures, selection FROM prompt_context_answers INDEXED BY idx_prompt_context_answers_prompt_order
-       WHERE project_id = ? AND session_id = ? AND prompt_id = ? ${keyed} ORDER BY created_at, id LIMIT ?`;
-  const { results } = await db.prepare(sql).bind(scope.projectId, sessionId, promptId, ...keys, HOOK_ROWS + 1).all<Record<string, unknown>>();
+  const results = await hookCollectionRows(db, { project: scope.projectId, session: sessionId, prompt: promptId, collection,
+    after: after === null ? null : { createdAt: Number(after[1]), id: after[2]! }, limit: HOOK_ROWS + 1 }) as Record<string, unknown>[];
   const shown = results.slice(0, HOOK_ROWS);
   const last = shown.at(-1);
   const next = results.length > HOOK_ROWS && last !== undefined ? encodeCursor(Number(last.created_at), String(last.attachment_id ?? last.id)) : null;

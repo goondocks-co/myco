@@ -12,6 +12,11 @@ import type { Bound } from '../db/index.js';
 import { enrollmentMintWrite, ENROLLMENT_KEY_BYTES, ENROLLMENT_KEY_PATTERN, ENROLLMENT_IDENTITY_PATTERN } from './enrollment.js';
 import { commitNamed, refused } from '../db/index.js';
 import { DEVICE_DECISION_REFUSED, deviceDecisionWrites } from '../db/identity/device-decision.js';
+import {
+  candidateDigestKnown, machineClaimant, memberPollRow, pacePollRow, requestByUserHash, runnerPollRow, runnersNamed, startDeviceRequest as storeDeviceRequest,
+  type DeviceRequestRow,
+} from '../db/identity/device-requests.js';
+import { memberRoleRow } from '../db/identity/member-standing.js';
 import { joinMember } from './join.js';
 import { asMemberRole } from './roles.js';
 import { deploymentIdentity } from './authorization.js';
@@ -27,22 +32,7 @@ const USER_ALPHABET = 'BCDFGHJKLMNPQRSTVWXYZ23456789';
 const USER_CODE_LENGTH = 8;
 const MAX_METADATA_LENGTH = 128;
 
-interface DeviceRow {
-  id: string;
-  device_hash: string;
-  machine_id: string;
-  machine_name: string;
-  os: string;
-  source_ip: string;
-  created_at: number;
-  expires_at: number;
-  decision: 'approved' | 'denied' | null;
-  decided_by: string | null;
-  subject: 'member' | 'runner';
-  runner_name: string | null;
-  runner_credential_choices: string;
-  replacing_runner_id: string | null;
-}
+type DeviceRow = DeviceRequestRow;
 
 /**
  * A device request a store carries into another instance — a member sign-in or a runner registration — admits no
@@ -97,14 +87,11 @@ export async function handleRunnerDeviceStart(env: ServerEnv, request: Request, 
   let credentialChoices: RunnerCredentialChoices;
   try { credentialChoices = parseRunnerCredentialChoices(JSON.stringify(body.credentialChoices === undefined ? {} : body.credentialChoices)); }
   catch { return badRequest('choose this machine or a stored key for each named agent'); }
-  const targets = body.replace === true ? (await env.db.prepare(`SELECT id FROM runners WHERE name = ? AND state <> 'removed'
-    ${body.runnerId === undefined ? '' : 'AND id = ?'} LIMIT 2`).bind(body.name, ...(body.runnerId === undefined ? [] : [body.runnerId])).all<{ id: string }>()).results : [];
+  const targets = body.replace === true ? await runnersNamed(env.db, body.name, body.runnerId) : [];
   if (body.replace === true && targets.length !== 1) return deviceError(targets.length === 0 ? 'runner_not_found' : 'runner_name_ambiguous', 409);
   const candidateHash = await sha256Hex(body.candidate);
-  const known = await env.db.prepare(`SELECT 1 AS one FROM device_requests WHERE candidate_hash = ?
-    UNION ALL SELECT 1 FROM runner_credentials WHERE token_hash = ? LIMIT 1`).bind(candidateHash, candidateHash).first<{ one: number }>();
-  if (known !== null) return badRequest('stage a fresh candidate');
-  return startDeviceRequest(env, request, now, source, { machineId: body.machineId, machineName: body.machineName, os: body.os, runner: { name: body.name, candidateHash, credentialChoices, replacingId: targets[0]?.id ?? null } });
+  if (await candidateDigestKnown(env.db, candidateHash)) return badRequest('stage a fresh candidate');
+  return startDeviceRequest(env, request, now, source, { machineId: body.machineId, machineName: body.machineName, os: body.os, runner: { name: body.name, candidateHash, credentialChoices, replacingId: targets[0] ?? null } });
 }
 
 /** One device request of either subject, admitted under the shared per-source bounds. */
@@ -114,16 +101,13 @@ async function startDeviceRequest(env: ServerEnv, request: Request, now: number,
   const deviceCode = toBase64Url(crypto.getRandomValues(new Uint8Array(ENROLLMENT_KEY_BYTES)));
   const userCode = newUserCode();
   const id = `en_device_${crypto.randomUUID()}`;
-  const inserted = await env.db.prepare(`INSERT INTO device_requests
-    (id,device_hash,user_hash,machine_id,machine_name,os,source_ip,created_at,expires_at,interval_seconds,next_poll_at,subject,runner_name,candidate_hash,replacing_runner_id,runner_credential_choices)
-    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE
-      NOT EXISTS (SELECT 1 FROM device_requests WHERE source_ip = ? AND decision IS NULL AND expires_at > ? LIMIT 1 OFFSET ?)
-      AND NOT EXISTS (SELECT 1 FROM device_requests WHERE source_ip = ? AND created_at > ? LIMIT 1 OFFSET ?) RETURNING id`)
-    .bind(id, await sha256Hex(deviceCode), await sha256Hex(userCode.replace('-', '')),
-      device.machineId, device.machineName, device.os, source, now, now + DEVICE_TTL_MS, DEVICE_POLL_SECONDS, now,
-      device.runner === null ? 'member' : 'runner', device.runner?.name ?? null, device.runner?.candidateHash ?? null, device.runner?.replacingId ?? null, JSON.stringify(device.runner?.credentialChoices ?? {}),
-      source, now, DEVICE_PENDING_PER_SOURCE - 1, source, now - DEVICE_START_WINDOW_MS, DEVICE_STARTS_PER_MINUTE - 1).first<{ id: string }>();
-  if (inserted === null) return deviceError('slow_down', 429, DEVICE_START_WINDOW_MS / 1000);
+  const inserted = await storeDeviceRequest(env.db, {
+    id, deviceHash: await sha256Hex(deviceCode), userHash: await sha256Hex(userCode.replace('-', '')),
+    machineId: device.machineId, machineName: device.machineName, os: device.os, source, now, expiresAt: now + DEVICE_TTL_MS, intervalSeconds: DEVICE_POLL_SECONDS,
+    runner: device.runner === null ? null : { name: device.runner.name, candidateHash: device.runner.candidateHash, replacingId: device.runner.replacingId, credentialChoices: JSON.stringify(device.runner.credentialChoices) },
+    limits: { pending: DEVICE_PENDING_PER_SOURCE, perWindow: DEVICE_STARTS_PER_MINUTE, windowStart: now - DEVICE_START_WINDOW_MS },
+  });
+  if (!inserted) return deviceError('slow_down', 429, DEVICE_START_WINDOW_MS / 1000);
   const verificationUri = `${new URL(request.url).origin}/device`;
   return Response.json({ device_code: deviceCode, user_code: userCode, verification_uri: verificationUri, verification_uri_complete: `${verificationUri}?code=${encodeURIComponent(userCode)}`,
     expires_in: DEVICE_TTL_MS / 1000, interval: DEVICE_POLL_SECONDS });
@@ -134,8 +118,7 @@ export async function handleDevicePoll(env: ServerEnv, request: Request, now: nu
   const body = await readJsonObject(request);
   if (body === null || Object.keys(body).some(k => k !== 'device_code') || typeof body.device_code !== 'string' || !ENROLLMENT_KEY_PATTERN.test(body.device_code)) return deviceError('invalid_request');
   const hash = await sha256Hex(body.device_code);
-  const row = await env.db.prepare(`SELECT d.*, a.used_at FROM device_requests d
-    LEFT JOIN enrollment_authorities a ON a.id = d.id WHERE d.device_hash = ? AND d.subject = 'member'`).bind(hash).first<DeviceRow & { used_at: number | null }>();
+  const row = await memberPollRow(env.db, hash);
   if (row === null || row.used_at !== null) return deviceError('invalid_grant');
   const paced = await pacePoll(env, row, hash, now);
   if (paced !== null) return paced;
@@ -156,7 +139,7 @@ export async function handleRunnerDevicePoll(env: ServerEnv, request: Request, n
   const body = await readJsonObject(request);
   if (body === null || Object.keys(body).some(k => k !== 'device_code') || typeof body.device_code !== 'string' || !ENROLLMENT_KEY_PATTERN.test(body.device_code)) return deviceError('invalid_request');
   const hash = await sha256Hex(body.device_code);
-  const row = await env.db.prepare(`SELECT * FROM device_requests WHERE device_hash = ? AND subject = 'runner'`).bind(hash).first<DeviceRow>();
+  const row = await runnerPollRow(env.db, hash);
   if (row === null) return deviceError('invalid_grant');
   const paced = await pacePoll(env, row, hash, now);
   if (paced !== null) return paced;
@@ -169,13 +152,7 @@ export async function handleRunnerDevicePoll(env: ServerEnv, request: Request, n
 async function pacePoll(env: ServerEnv, row: DeviceRow, hash: string, now: number): Promise<Response | null> {
   if (row.expires_at <= now) return deviceError('expired_token');
   if (row.decision === 'denied') return deviceError('access_denied');
-  const pacing = await env.db.prepare(`UPDATE device_requests SET
-    slowed = CASE WHEN next_poll_at > ? THEN 1 ELSE 0 END,
-    interval_seconds = interval_seconds + CASE WHEN next_poll_at > ? THEN ? ELSE 0 END,
-    next_poll_at = ? + (interval_seconds + CASE WHEN next_poll_at > ? THEN ? ELSE 0 END) * 1000
-    WHERE device_hash = ? AND expires_at > ?
-    RETURNING slowed, interval_seconds`).bind(now, now, DEVICE_SLOW_DOWN_SECONDS, now, now, DEVICE_SLOW_DOWN_SECONDS, hash, now)
-    .first<{ slowed: number; interval_seconds: number }>();
+  const pacing = await pacePollRow(env.db, hash, now, DEVICE_SLOW_DOWN_SECONDS);
   if (pacing === null) return deviceError('expired_token');
   if (pacing.slowed === 1) return deviceError('slow_down', 400, pacing.interval_seconds);
   if (row.decision !== 'approved') return deviceError('authorization_pending');
@@ -187,7 +164,7 @@ export async function requestByUserCode(env: ServerEnv, request: Request): Promi
   if (body === null || Object.keys(body).some(k => k !== 'user_code') || typeof body.user_code !== 'string') return badRequest('user_code required');
   const code = body.user_code.trim().toUpperCase().replace('-', '');
   if (code.length !== USER_CODE_LENGTH || [...code].some(c => !USER_ALPHABET.includes(c))) return deviceError('invalid_user_code', 404);
-  const row = await env.db.prepare('SELECT * FROM device_requests WHERE user_hash = ?').bind(await sha256Hex(code)).first<DeviceRow>();
+  const row = await requestByUserHash(env.db, await sha256Hex(code));
   return row ?? deviceError('invalid_user_code', 404);
 }
 
@@ -200,8 +177,8 @@ export async function handleDevicePreview(env: ServerEnv, ctx: OwnerContext): Pr
   const shared = { machineName: row.machine_name, os: row.os, ip: row.source_ip, approverIp: ctx.source,
     ageSeconds: Math.max(0, Math.floor((ctx.now - row.created_at) / 1000)), expiresAt: row.expires_at };
   if (row.subject === 'runner') return Response.json({ ...shared, subject: 'runner', runnerName: row.runner_name, replacingRunnerId: row.replacing_runner_id, ...(isAdmin(ctx.member.role) ? { credentialChoices: parseRunnerCredentialChoices(row.runner_credential_choices) } : {}), scope: 'runner' });
-  const claim = await env.db.prepare('SELECT member_id FROM machine_claims WHERE machine_id = ?').bind(row.machine_id).first<{ member_id: string }>();
-  return Response.json({ ...shared, subject: 'member', alreadyYours: claim?.member_id === ctx.member.id, scope: 'membership' });
+  const claimant = await machineClaimant(env.db, row.machine_id);
+  return Response.json({ ...shared, subject: 'member', alreadyYours: claimant === ctx.member.id, scope: 'membership' });
 }
 
 /** A decision and its immutable audit receipt commit together; a pending request admits exactly one decision. */
@@ -222,8 +199,7 @@ export async function handleDeviceApprove(env: ServerEnv, ctx: OwnerContext): Pr
   const row = await requestByUserCode(env, ctx.request);
   if (row instanceof Response) return row;
   await tryNameMemberFromLogin(env.db, ctx.member.id, ctx.session.sub, ctx.session.login, env.platform.classifyError);
-  const roleRow = await env.db.prepare('SELECT role FROM members WHERE id = ?').bind(ctx.member.id).first<{ role: string }>();
-  const role = asMemberRole(roleRow?.role);
+  const role = asMemberRole(await memberRoleRow(env.db, ctx.member.id) ?? undefined);
   if (role === null) return deviceError('access_denied', 403);
   const mint = enrollmentMintWrite(ctx.now, row.expires_at - ctx.now, { kind: 'member', memberId: ctx.member.id }, row.device_hash, row.id, { role, memberId: ctx.member.id });
   if (!await decideDevice(env, ctx, row, 'approved', mint.write)) return deviceError('approval_refused', 409);

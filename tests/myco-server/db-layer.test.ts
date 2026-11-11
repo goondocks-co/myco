@@ -9,54 +9,19 @@ import { boundaryInventory, boundarySites, boundaryViolations, changeCountInvent
  * has no site left, and the gate fails until it does. A file outside the set with any site fails, naming each site.
  */
 const PENDING: ReadonlySet<string> = new Set([
-  'api/runs.ts',
-  'auth/authorization.ts',
-  'auth/device.ts',
-  'auth/grants.ts',
-  'auth/identity-link.ts',
-  'auth/members-admin.ts',
   'auth/tokens.ts',
-  'content/document-reader.ts',
-  'content/session-pages.ts',
-  'content/session-turns.ts',
-  'content/tool-statistics.ts',
   'core/backup.ts',
   'core/content-budget.ts',
   'core/harness.ts',
-  'core/runner-updates.ts',
   'ingest/document-batch.ts',
   'ingest/document-restore.ts',
   'ingest/document-summaries.ts',
-  'mcp/definitions.ts',
-  'platform/bun/env.ts',
-  'read/blobs.ts',
-  'read/capture.ts',
-  'read/catalog/children.ts',
-  'read/catalog/embedding.ts',
-  'read/catalog/hook-placement.ts',
-  'read/catalog/lineage.ts',
-  'read/catalog/processed.ts',
-  'read/catalog/sessions.ts',
-  'read/catalog/shared.ts',
-  'read/catalog/turns.ts',
-  'read/credentials.ts',
-  'read/document-catalog.ts',
-  'read/legacy-history.ts',
-  'read/repository-requirements.ts',
-  'read/run-outcome.ts',
-  'read/runs.ts',
-  'read/scope.ts',
-  'read/session-artifacts.ts',
-  'read/session-files.ts',
-  'read/task-descriptions.ts',
-  'routes.ts',
   // Direct store calls inside db/, each waiting on the batch or composed SQL it carries.
   'db/runs/change.ts', // A terminal run update commits with the credential retirement auth/tokens still prepares.
 ]);
 
 /** Files still deciding an outcome from a statement's change count; same ownership as PENDING. Decide from RETURNING or an in-batch assertion, then remove the file. */
 const PENDING_CHANGE_COUNTS: ReadonlySet<string> = new Set([
-  'api/member-projects.ts',
 ]);
 
 const source = (text: string) => ts.createSourceFile('core/example.ts', text, ts.ScriptTarget.Latest, true);
@@ -172,6 +137,13 @@ it('counts store batches, exec and template producers while ignoring comments an
     /words/.exec(text); pattern.exec(text);
   `));
   expect(sites.map(site => site.kind)).toEqual(['batch', 'exec', 'prepare', 'sql']);
+});
+
+it('reads a statement or a composed fragment as SQL, and a keyword in prose or copy as words', () => {
+  const sql = ["UPDATE t AS a SET x = 1", "UPDATE OR IGNORE t AS a SET x = 1", "/* note */ -- more\nDELETE FROM t", "PRAGMA foreign_keys", "CREATE INDEX i ON t(x)", "WHERE a = ?1 AND b = ?2"];
+  const words = ["DELETE", "delete", "update names columns it may not set", "Run now or later?", "Create a project?"];
+  for (const text of sql) expect(boundarySites(source(`const a = ${JSON.stringify(text)};`)).map(site => site.kind), text).toEqual(['sql']);
+  for (const text of words) expect(boundarySites(source(`const a = ${JSON.stringify(text)};`)), text).toEqual([]);
 });
 
 it('recognizes store aliases by their type and permits unrelated batch and exec methods', () => {

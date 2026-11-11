@@ -1,7 +1,7 @@
 /** Canonical machine summaries and activity, scoped to claims owned by the viewer. */
 import type { RelationalStore } from '../core/adapters.js';
 import { parseOffers, type ReportedHarness } from '../core/worker-contacts.js';
-import { captureRecencyStatement } from './capture.js';
+import { captureRecencyWindow } from './capture.js';
 import { clampLimit, decodeCursor, encodeCursor, page, type Page } from './scope.js';
 import type { ActivityRow } from './credentials.js';
 import { claimedMachineIds, claimPage, machineClaimed, machineCredentialFacts, machineEvents } from '../db/runners/machines.js';
@@ -53,12 +53,12 @@ export async function listMachines(
   const [{ heads, building }, credentials, recent] = await Promise.all([
     machineHeadPage(db, ids),
     machineCredentialFacts(db, nowMs, ids),
-    captureRecencyStatement(db, nowMs, ids).all<Record<string, unknown>>(),
+    captureRecencyWindow(db, nowMs, ids),
   ]);
   const byId = new Map(credentials.map((row) => [row.machine_id, row]));
   const headOf = new Map(heads.map((head) => [head.machine_id, head]));
   const capture = new Map<string, MachineCapture[]>();
-  for (const row of recent.results) {
+  for (const row of recent) {
     const machineId = String(row.machine_id);
     const held = capture.get(machineId) ?? [];
     held.push({ agent: row.agent == null ? null : String(row.agent), lastEventAt: Number(row.last_event_at), projectId: String(row.project_id) });

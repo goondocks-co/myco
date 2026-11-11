@@ -12,10 +12,7 @@ import type { ReadScope as embedding_import_ReadScope } from "../scope.js";
 import { SEARCH_PREVIEW_CHARS as embedding_import_SEARCH_PREVIEW_CHARS } from "@goondocks/myco-shared/search-types";
 import type { SearchOptions as embedding_import_SearchOptions } from "@goondocks/myco-shared/search-types";
 import type { SearchResult as embedding_import_SearchResult } from "@goondocks/myco-shared/search-types";
-import { notTombstonedSql as embedding_import_notTombstonedSql } from "../../db/session-read-model.js";
-import { CURRENT_EMBEDDING_SOURCES as embedding_import_CURRENT_EMBEDDING_SOURCES } from "../../db/embedding-sources.js";
-import { EMBEDDING_RELEASE_COLUMNS as embedding_import_EMBEDDING_RELEASE_COLUMNS } from "../../db/embedding-sources.js";
-import { embeddingSourceSelect as embedding_import_embeddingSourceSelect } from "../../db/embedding-sources.js";
+import { embeddingHitRows as embedding_import_embeddingHitRows } from "../../db/embeddings/hit-hydration.js";
 import { settledAll as embedding_import_settledAll } from "../../core/settled.js";
 
 interface embedding_EmbeddingSource extends embedding_import_VectorMetadata {
@@ -47,35 +44,6 @@ interface embedding_SemanticHitOptions {
   during?: <T>(operation: 'vector' | 'sql', work: () => Promise<T>) => Promise<T>;
 }
 
-/** A bounded character prefix, including embedded NULs; blob slicing advances past each NUL. */
-function embedding_previewSql(text: string): string {
-  return `(WITH RECURSIVE chunks(prefix, rest, remaining) AS (
-    SELECT '', ${text}, ${embedding_import_SEARCH_PREVIEW_CHARS}
-    UNION ALL SELECT prefix || substr(rest, 1, remaining) || char(0),
-      CAST(substr(CAST(rest AS BLOB), instr(CAST(rest AS BLOB), x'00') + 1) AS TEXT),
-      remaining - length(substr(rest, 1, remaining)) - 1
-    FROM chunks WHERE remaining > 0 AND instr(CAST(rest AS BLOB), x'00') > 0
-      AND length(substr(rest, 1, remaining)) < remaining
-  ) SELECT prefix || substr(rest, 1, remaining) FROM chunks
-    WHERE remaining = 0 OR instr(CAST(rest AS BLOB), x'00') = 0
-      OR length(substr(rest, 1, remaining)) = remaining LIMIT 1)`;
-}
-
-/** Receipt ids drive every source lookup; CROSS JOIN preserves that indexed order. */
-function embedding_hitHydrationSql(ids: readonly string[], preview: boolean): string {
-  const branches = embedding_import_CURRENT_EMBEDDING_SOURCES.map((source) => `SELECT s.*, v.revision,
-    ${embedding_import_EMBEDDING_RELEASE_COLUMNS},
-    r.id AS vector_id, r.neighbor_mean, r.neighbor_std
-    FROM hits r CROSS JOIN (${embedding_import_embeddingSourceSelect(source, preview ? embedding_previewSql(source.text) : "''")}) s
-    CROSS JOIN embedding_versions v
-    WHERE r.type = '${source.type}' AND s.project_id = r.project_id AND s.record_id = r.record_id
-      AND v.project_id = r.project_id AND v.type = r.type AND v.record_id = r.record_id AND v.revision = r.revision
-      ${source.type === 'session' || source.type === 'plan' ? `AND ${embedding_import_notTombstonedSql('s')}` : ''}`);
-  return `WITH hits AS MATERIALIZED (SELECT * FROM embedding_receipts
-    WHERE project_id = ? AND model_key = ? AND ready = 1 AND id IN (${ids.map(() => '?').join(',')}))
-    ${branches.join(' UNION ALL ')}`;
-}
-
 /** A vector is readable only while its source revision is still eligible in the same project. */
 async function embedding_semanticHits(db: embedding_import_RelationalStore, scope: embedding_import_ReadScope, semantic: embedding_SemanticSearch, values: number[], options: embedding_SemanticHitOptions): Promise<embedding_SemanticHit[]> {
   const partition = { projectId: scope.projectId, modelKey: semantic.provider.modelKey };
@@ -86,10 +54,9 @@ async function embedding_semanticHits(db: embedding_import_RelationalStore, scop
   const rows: embedding_SemanticHit[] = [];
   let joinedHits = 0;
   await during('sql', () => embedding_import_settledAll(embedding_import_inListChunks(hits.map((h) => h.id)).map(async (ids) => {
-    const found = await db.prepare(embedding_hitHydrationSql(ids, preview))
-      .bind(scope.projectId, partition.modelKey, ...ids).all<Omit<embedding_SemanticHit, 'score'>>();
-    joinedHits += found.results.length;
-    rows.push(...found.results.filter((r) => embedding_import_vectorMatches(r, options.filters)).map((r) => ({ ...r, score: byId.get(r.vector_id)! })));
+    const found = await embedding_import_embeddingHitRows(db, { project: scope.projectId, modelKey: partition.modelKey, receiptIds: ids, preview });
+    joinedHits += found.length;
+    rows.push(...found.filter((r) => embedding_import_vectorMatches(r, options.filters)).map((r) => ({ ...r, score: byId.get(r.vector_id)! })));
     observe?.({ rawMatches: hits.length, joinedHits, filteredHits: rows.length });
   })));
   return rows.sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id));

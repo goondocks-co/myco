@@ -119,11 +119,6 @@ export async function spendIdentityLinkAuthority(
   return redeemed.ok ? { ok: true, member: redeemed.member } : { ok: false, reason: redeemed.reason };
 }
 
-/** The break-glass bind: the statement an operator applies with their own store access. Clears any earlier account. */
-export function linkStatement(db: RelationalStore, memberId: string, githubId: string) {
-  return db.prepare(`UPDATE members SET github_id = ? WHERE id = ?`).bind(githubId, memberId);
-}
-
 /** Whether a member can be given a link now: absent, removed, already linked, or open to one. */
 type MemberLinkState = 'absent' | 'revoked' | 'linked' | 'unlinked';
 

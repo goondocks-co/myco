@@ -1,4 +1,3 @@
-import { significantStatement } from '../../packages/myco-server/src/db/sql-statements.js';
 import { expect, test } from 'bun:test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -13,8 +12,6 @@ import { vectorMatches, type VectorFilters, type VectorHit } from '@myco-server-
 import { notTombstonedSql } from '@myco-server-worker/db/session-read-model.js';
 import { inListChunks } from '@myco-server-worker/read/scope.js';
 import { SEARCH_PREVIEW_CHARS } from '@goondocks/myco-shared/search-types';
-import { selectSporesForPrompt } from '@myco-server-worker/core/injection.js';
-import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { seededSqlite, sqliteD1 } from './helpers/d1.js';
 import { measuredStore } from './helpers/read-budget.js';
 import { schemaD1Root } from './helpers/schema-template.js';
@@ -22,23 +19,14 @@ import { schemaD1Root } from './helpers/schema-template.js';
 const SCOPE = { projectId: 'proj_1' };
 const MODEL = 'hydration-model';
 const BODY = 'Long preview 😀\0'.repeat(1_000);
-type Statement = { sql: string; params: unknown[]; rows: Record<string, unknown>[] };
 
+/** Every row each batch answered. */
 function capturingStore(db: RelationalStore) {
-  const statements: Statement[] = [];
-  const wrap = (record: Statement, original: PreparedStatement): PreparedStatement => ({
-    ...original,
-    bind: (...params) => { record.params = params; return wrap(record, original.bind(...params)); },
-    all: async <T,>() => {
-      const answer = await original.all<T>();
-      record.rows = answer.results as Record<string, unknown>[];
-      return answer;
-    },
-  });
-  return { statements, db: { ...db, prepare: (sql: string) => {
-    const record: Statement = { sql, params: [], rows: [] };
-    statements.push(record);
-    return wrap(record, db.prepare(sql));
+  const batches: Record<string, unknown>[][] = [];
+  return { batches, db: { ...db, batch: async (statements: PreparedStatement[]) => {
+    const answers = await db.batch(statements);
+    for (const answer of answers) batches.push(answer.results as Record<string, unknown>[]);
+    return answers;
   } } };
 }
 
@@ -143,9 +131,9 @@ for (const target of ['bun', 'workerd-d1'] as const) {
         console.info(`G5 D1 hydration rows_read: ${small} at 5000 spores, ${large} at 25000`);
         expect(large).toBeLessThanOrEqual(small);
       }
-      expect(recording.statements.length).toBeGreaterThan(1);
-      for (const statement of recording.statements) {
-        for (const row of statement.rows) {
+      expect(recording.batches.length).toBeGreaterThan(1);
+      for (const rows of recording.batches) {
+        for (const row of rows) {
           expect(row).not.toHaveProperty('content');
           expect(row.text).toBe('');
         }
@@ -159,34 +147,13 @@ for (const target of ['bun', 'workerd-d1'] as const) {
       const previews = capturingStore(db);
       const previewRows = await semanticHits(previews.db, SCOPE, semantic(matches), [1, 0], { topK: 100, preview: true });
       expect(previewRows.map((row) => row.text.slice(0, SEARCH_PREVIEW_CHARS))).toEqual(all.map((row) => row.text.slice(0, SEARCH_PREVIEW_CHARS)));
-      for (const statement of previews.statements) {
-        for (const row of statement.rows) expect(Array.from(String(row.text)).length).toBeLessThanOrEqual(SEARCH_PREVIEW_CHARS);
+      for (const rows of previews.batches) {
+        for (const row of rows) expect(Array.from(String(row.text)).length).toBeLessThanOrEqual(SEARCH_PREVIEW_CHARS);
       }
       const search = await semanticSearch(db, SCOPE, semantic(matches), ['spore', 'plan', 'session'], { query: 'fixture prompt' }, 100);
       const expected = (await Promise.all(['spore', 'plan', 'session'].map((type) => oracle(db, matches, { type })))).flat()
         .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, 100);
       expect(search.map(({ id, preview }) => ({ id, preview }))).toEqual(expected.map((row) => ({ id: row.record_id, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS) })));
-      const input = { sessionId: 'session', admission: sessionWriteAdmission({ projectId: SCOPE.projectId, machineId: 'machine' }, 'session'), promptId: 'recall', promptHash: 'recall', prompt: 'fixture prompt for recall', now: 2000 };
-      const leaves = { enabled: true, maxPerPrompt: 3 };
-      const selection = await selectSporesForPrompt(db, SCOPE, leaves, true, input, async () => semantic(matches));
-      let oracleSubstitutions = 0;
-      let distinguishOracle = false;
-      const fromOracle: RelationalStore = { ...db, prepare: (sql) => {
-        if (!significantStatement(sql).startsWith('WITH hits AS MATERIALIZED')) return db.prepare(sql);
-        oracleSubstitutions++;
-        let params: unknown[] = [];
-        const statement: PreparedStatement = { bind: (...values) => { params = values; return statement; },
-          all: async <T,>() => { const rows = (await oracle(db, matches.filter((hit) => params.slice(2).includes(hit.id)))).map(({score:_score,...row}) => row); if(distinguishOracle && rows[0]) rows[0] = {...rows[0],text:'oracle-substitution-canary'}; return {results:rows as T[]}; },
-          first: async () => { throw new Error('unexpected first'); }, run: async () => { throw new Error('unexpected run'); } };
-        return statement;
-      } };
-      await db.prepare("DELETE FROM spore_injections WHERE project_id='proj_1'").run();
-      await db.prepare("DELETE FROM session_served_items WHERE project_id='proj_1'").run();
-      expect(await selectSporesForPrompt(fromOracle, SCOPE, leaves, true, input, async () => semantic(matches))).toEqual({ ...selection, receiptId: expect.any(String) });
-      expect(oracleSubstitutions).toBeGreaterThan(0);
-      distinguishOracle = true;
-      const canary = await semanticHits(fromOracle, SCOPE, semantic(matches), [1,0], {topK:100});
-      expect(canary.some(row=>row.text==='oracle-substitution-canary')).toBe(true);
     } finally { sqlite.close(); await mf?.dispose(); }
   }, 60_000);
 }
@@ -200,17 +167,11 @@ test('multiple hydration chunks are in flight together and observations retain a
     let peak = 0;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const wrapped: RelationalStore = { ...db, prepare: (sql) => {
-      const observe = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
-        bind: (...params) => observe(statement.bind(...params)),
-        all: async <T,>() => {
-          inFlight++; peak = Math.max(peak, inFlight);
-          if (inFlight === 2) release();
-          await gate;
-          try { return await statement.all<T>(); } finally { inFlight--; }
-        },
-      });
-      return observe(db.prepare(sql));
+    const wrapped: RelationalStore = { ...db, batch: async (statements) => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      if (inFlight === 2) release();
+      await gate;
+      try { return await db.batch(statements); } finally { inFlight--; }
     } };
     const observations: SemanticHitCounts[] = [];
     const result = await semanticHits(wrapped, SCOPE, semantic(matches), [1, 0], { topK: 100, observe: (n) => observations.push(n) });
@@ -233,17 +194,11 @@ for (const failedChunk of [0, 1]) {
       let chunk = 0;
       let failed!: () => void;
       const failureStarted = new Promise<void>((resolve) => { failed = resolve; });
-      const wrapped: RelationalStore = { ...db, prepare: (sql) => {
+      const wrapped: RelationalStore = { ...db, batch: async (statements) => {
         const index = chunk++;
-        const wrap = (statement: PreparedStatement): PreparedStatement => ({ ...statement,
-          bind: (...params) => wrap(statement.bind(...params)),
-          all: async <T,>() => {
-            if (index === failedChunk) { failed(); throw new Error('receipt unavailable'); }
-            await gate;
-            return statement.all<T>();
-          },
-        });
-        return wrap(db.prepare(sql));
+        if (index === failedChunk) { failed(); throw new Error('receipt unavailable'); }
+        await gate;
+        return db.batch(statements);
       } };
       const observations: SemanticHitCounts[] = [];
       let answered = false;

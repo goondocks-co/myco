@@ -11,8 +11,12 @@ import { sqliteEnv } from './helpers/fixtures.js';
 const ADMIN = { id: 'mem_machine_1', label: 'machine_1', role: 'admin' as const };
 const MEMBER = { id: 'mem_machine_2', label: 'machine_2', role: 'member' as const };
 
-const fakeDb = (row: Record<string, unknown> | null) =>
-  ({ prepare: () => ({ bind: () => ({ first: async () => row, run: async () => ({ results: [], meta: { changes: 1 } }) }) }) }) as any;
+/** A store whose every read answers the one row, singly or in a batch, as a real store does. */
+const fakeDb = (row: Record<string, unknown> | null) => {
+  const answer = async () => ({ results: row === null ? [] : [row], meta: { changes: 0 } });
+  const statement = { first: async () => row, run: answer, all: answer };
+  return { prepare: () => ({ bind: () => statement }), batch: async (statements: unknown[]) => Promise.all(statements.map(answer)) } as any;
+};
 
 function recordingDb(changes = 1) {
   const calls: { sql: string; params: unknown[] }[] = [];

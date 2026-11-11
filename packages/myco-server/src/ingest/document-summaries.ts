@@ -12,7 +12,7 @@ import { readBodyChunk, readPageChunk, type ChunkRow } from '../content/document
 import { SESSION_OWNER } from '../db/document-tables.js';
 import { adjustToolState, editedFiles, emptyToolState, recordMycoFields, needsToolInput, parseToolState, scalarToolState, toolFiles, type ToolState } from '../content/tool-rollup.js';
 import { PASS_CLOSING_BLOB_CALLS, PASS_CLOSING_STATEMENTS, reserveReached, SESSION_PATHS_LIMIT } from './document-batch.js';
-import { turnStatisticsStatements, type StatisticsChange } from '../content/tool-statistics.js';
+import { turnStatisticsStatements, type DocumentKey, type StatisticsChange } from '../db/documents/turn-statistics.js';
 import { deferDocumentReadFailure } from './document-read-failures.js';
 import type { PassLimits } from './parse.js';
 
@@ -39,7 +39,7 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
       ORDER BY d.rollup_due,d.rollup_checked,d.project_id,d.session_id LIMIT 1`).bind(now).first<Pending>();
     if (doc === null) break;
     try {
-    const key = [doc.project_id, doc.session_id, doc.generation];
+    const key: DocumentKey = [doc.project_id, doc.session_id, doc.generation];
     const rows = (await db.prepare(`SELECT c.chunk_no,c.blob_key,c.kind,c.bytes,c.source_id,
         ${registeredObjectKeySql('c.project_id', 'c.blob_key')} AS object_key
       FROM session_chunks c INDEXED BY idx_session_chunks_pages
@@ -160,7 +160,7 @@ export async function catchUpSummaries(env: Pick<ServerEnv, 'db' | 'blobs'>, lim
         FROM json_each(?4) j WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND prompt_id=json_extract(j.value,'$.id')
           AND prompt_id IN (SELECT json_extract(value,'$.id') FROM json_each(?4))`)
         .bind(...key, JSON.stringify(page))),
-      ...turnStatisticsStatements(db, key, [...statistics.values()], updates.filter(update => update.state !== undefined).map(update => update.id)),
+      ...turnStatisticsStatements(key, [...statistics.values()], updates.filter(update => update.state !== undefined).map(update => update.id)).map(bound => prepareBound(db, bound)),
       ...(doc.paths_build === null ? [db.prepare('DELETE FROM session_path_build WHERE project_id=? AND session_id=? AND generation=?').bind(...key)] : []),
       ...jsonPages(paths.filter(path => changedPaths.has(path.path))).map(page => db.prepare(`INSERT INTO session_path_build(project_id,session_id,generation,path,calls,edits,at,turn)
         SELECT ?1,?2,?3,json_extract(value,'$.path'),json_extract(value,'$.calls'),json_extract(value,'$.edits'),

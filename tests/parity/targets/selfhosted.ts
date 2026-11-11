@@ -12,7 +12,8 @@ import { renderMigrationFiles } from '@myco-server-worker/db/migrate.js';
 import { issueMemberToken } from '../../myco-server/helpers/member-token.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { linkStatement } from '@myco-server-worker/auth/identity-link.js';
+import { commit } from '@myco-server-worker/db/index.js';
+import { memberAccountBind } from '@myco-server-worker/db/identity/member-standing.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { createBunHandler, serve, type BunServerOptions } from '@myco-server-worker/entry/bun.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
@@ -37,7 +38,7 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
   sqlite.query(`INSERT INTO projects (project_id, name, created_at) VALUES (?, ?, ?)`).run(PROJECT_ID, PROJECT_ID, Date.now());
   const db = sqliteRelationalStore(sqlite);
   await completeBudgetMigration(db,Date.now());
-  await linkStatement(db, MEMBER_ID, GITHUB_SUB).run();
+  await commit(db, memberAccountBind(MEMBER_ID, GITHUB_SUB));
   const { token } = await issueMemberToken(db, { memberId: MEMBER_ID, machineId: MACHINE_ID }, Date.now());
   const deploymentId = String((sqlite.query("SELECT value FROM schema_meta WHERE key = 'deployment_id'").get() as { value?: string } | null)?.value);
   if (!deploymentId || deploymentId === 'undefined') throw new Error('native parity target has no Deployment identity');
