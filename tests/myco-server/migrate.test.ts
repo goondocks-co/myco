@@ -392,23 +392,6 @@ describe('versioned schema steps', () => {
     } finally { sqlite.close(); }
   });
 
-  it('indexes existing captured text and queues historical spilled bodies when v19 is applied', () => {
-    const sqlite = fresh();
-    try {
-      for (const migration of SCHEMA_STEPS.filter((s) => s.version < 19)) step(sqlite, migration);
-      sqlite.exec(`INSERT INTO projects(project_id,name,created_at) VALUES ('existing','Existing',1);
-        INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,title) VALUES ('existing','s','m','t',1,1,'historical session');
-        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<50000)
-        INSERT INTO prompt_batches(project_id,session_id,prompt_id,event_id,origin,text,content_hash,created_at,updated_at,token_id,received_at)
-          SELECT 'existing','s','p'||i,'e'||i,'user','historical prompt '||i,'h'||i,1,1,'t',1 FROM n;
-        UPDATE prompt_batches SET text=NULL,blob_key='legacy-body' WHERE prompt_id='p1';`);
-      step(sqlite, SCHEMA_STEPS.find((s) => s.version === 19)!);
-      expect(version(sqlite)).toBe('19');
-      expect(sqlite.query(`SELECT COUNT(*) AS n FROM prompt_batches_fts WHERE prompt_batches_fts MATCH 'historical'`).get()).toEqual({ n: 49999 });
-      expect(sqlite.query(`SELECT project_id,blob_key,complete FROM search_blob_queue`).all()).toEqual([{ project_id: 'existing', blob_key: 'legacy-body', complete: 0 }]);
-      expect(sqlite.query(`SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'historical'`).all()).toHaveLength(1);
-    } finally { sqlite.close(); }
-  });
   it('stamps its version as the last statement of every step, in ascending order from 1', () => {
     SCHEMA_STEPS.forEach((step, i) => {
       expect(step.version).toBe(i + 1);
@@ -723,7 +706,7 @@ describe('versioned schema steps', () => {
       'agent_reports', 'agent_run_attempts', 'agent_run_events', 'agent_run_steps', 'agent_run_write_intents', 'agent_runs', 'agent_state', 'agent_turns',
       'document_due', 'document_publication_facts', 'embedding_due', 'embedding_calibration_state', 'embedding_calibration_population', 'embedding_passed_over', 'embedding_source_state', 'embedding_vector_pages', 'embedding_model_totals', 'embedding_resets', 'embedding_eligible_sources', 'embedding_models', 'embedding_hubness_revision', 'embedding_hubness_commits', 'event_refs', 'archive_bundles', 'attachments', 'blob_release_candidates', 'blob_reservations', 'blobs', 'canopy_maps', 'content_scan_checkpoints', 'embedding_cursors', 'embedding_hubness_members', 'embedding_receipts', 'embedding_retirement_queue', 'embedding_source_failures', 'embedding_versions', 'embedding_work_attention', 'embedding_work_state', 'enrollment_authorities', 'external_grants',
       'extraction_acks', 'injection_served_items', 'kpi_fact', 'knowledge_git_provenance', 'knowledge_release_state', 'machine_capture_heads', 'myco_tool_calls', 'plans', 'prepared_archive_bundles', 'processed_resources', 'project_capabilities', 'project_release_provenance', 'project_remotes', 'project_repositories', 'project_session_counts', 'project_session_days', 'projects', 'context_placements',
-       'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'release_check_due', 'release_propagation_due', 'release_state_unresolved', 'release_work_due', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_chunks', 'search_blob_queue', 'search_blob_refs', 'search_blobs', 'search_documents', 'search_index_status', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
+       'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'release_check_due', 'release_propagation_due', 'release_state_unresolved', 'release_work_due', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_refs', 'search_blobs', 'search_documents', 'search_index_status', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'plan_metadata', 'project_activity', 'spore_resolution_edges', 'learning_project_counts', 'learning_ready_projects', 'session_served_items',
       'session_deletion_jobs', 'transcript_reread_jobs', 'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'storage_usage', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
       'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',

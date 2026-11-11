@@ -37,6 +37,7 @@ import { MAP_ACTION, MAP_TASK, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shar
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { searchWords } from './helpers/search-fixture.js';
 import { publishFixture, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 
@@ -591,8 +592,9 @@ describe('a titling run reads and writes its own session', () => {
     expect(revision()).not.toBe(before);
     expect(sqlite.query(`SELECT status, text FROM embedding_sources WHERE type = 'session' AND record_id = 'sess_1'`).get())
       .toEqual({ status: 'active', text: 'New title\nNew summary covering the whole session' });
-    expect(sqlite.query(`SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'whole'`).all()).toHaveLength(1);
-    expect(sqlite.query(`SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'Old'`).all()).toHaveLength(0);
+    const sessionsFound = async (query: string) => (await searchWords(f.db, { projectId: 'proj_1' }, { query, type: 'session', mode: 'fts' })).hits.map((hit) => hit.id);
+    expect(await sessionsFound('whole')).toEqual(['sess_1']);
+    expect(await sessionsFound('Old')).toEqual([]);
   });
 
   it('supports a skip on a standing title for a claim run, and for a refresh none, since a refresh exists to replace the title', async () => {

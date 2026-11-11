@@ -218,9 +218,9 @@ it('reconstructs FTS and triggers, preserves sequence high-water and exact value
     try {
       expect(recovered.query('SELECT * FROM recovery_fixture').get()).toEqual({ id: 3, body: f.body, bytes: f.bytes });
       expect(recovered.query("INSERT INTO recovery_fixture(body) VALUES('next') RETURNING id").get()).toEqual({ id: 72 });
-      expect(recovered.query("SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'Recovered'").all()).toHaveLength(1);
+      expect(recovered.query("SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH 'Recovered'").all()).toHaveLength(1);
       recovered.exec("UPDATE sessions SET title='Continuation proof' WHERE session_id='s_backup'");
-      expect(recovered.query("SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH 'Continuation'").all()).toHaveLength(1);
+      expect(recovered.query("SELECT rowid FROM search_documents_fts WHERE search_documents_fts MATCH 'Continuation'").all()).toHaveLength(1);
       expect(recovered.query('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally { recovered.close(); }
     expect(f.source.sqlite.query("SELECT title FROM sessions WHERE session_id='s_backup'").get()).toEqual({ title: 'Recovered 🌱 title' });

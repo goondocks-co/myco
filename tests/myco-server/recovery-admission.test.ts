@@ -86,7 +86,7 @@ it('captures the schema before any export, names its tables, and wakes the Deplo
   expect(admission!.tables).toContain('sqlite_sequence');
   const captured = JSON.parse(admission!.schema) as Array<{ name: string; type: string; storage: string | null }>;
   expect(captured.some((row) => row.name === 'sessions' && row.type === 'table')).toBe(true);
-  expect(captured.some((row) => row.name === 'sessions_fts')).toBe(true);
+  expect(captured.some((row) => row.name === 'search_documents_fts')).toBe(true);
   // The definitions the export is later held to travel with the admission, taken from the same capture: one
   // definition per ordinary table, and none for an index, a view or a virtual table.
   const definitions = admission!.captured;
