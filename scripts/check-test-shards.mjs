@@ -120,11 +120,14 @@ export function assertCoverage(actual, expected, label) {
 }
 
 
+/** Shard and plan selectors a nested runner must not inherit from its parent. */
+export const nestedRunnerEnvKeys = ['MYCO_TEST_SCOPE', 'MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_GROUP', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD', 'MYCO_RUNNER_PLAN_FILE', 'MYCO_RUNNER_MATRIX_PLAN_FILE', 'MYCO_PARITY_PLAN_MATRIX'];
+
 function audit() {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-shard-audit-'));
   const manifestPath = path.join(scratch, 'manifest.json');
   const baseEnv = { ...process.env };
-  for (const key of ['MYCO_TEST_SCOPE', 'MYCO_TEST_KIND', 'MYCO_TEST_SHARD', 'MYCO_TEST_GROUP', 'MYCO_TEST_PROFILE', 'MYCO_PARITY_SHARD', 'MYCO_RUNNER_PLAN_FILE', 'MYCO_RUNNER_MATRIX_PLAN_FILE', 'MYCO_PARITY_PLAN_MATRIX']) delete baseEnv[key];
+  for (const key of nestedRunnerEnvKeys) delete baseEnv[key];
   baseEnv.MYCO_RUNNER_REPORT_DIR = path.join(scratch, 'reports');
 
   let generations = 0;

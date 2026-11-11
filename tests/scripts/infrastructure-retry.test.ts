@@ -4,13 +4,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { nestedRunnerEnvKeys } from '../../scripts/check-test-shards.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STDIN_FIXTURE = 'tests/fixtures/runner/stdin_read_test.ts';
 
 function run(args: string[], env: Record<string, string> = {}) {
+  const childEnv = { ...process.env, ...env };
+  for (const key of nestedRunnerEnvKeys) delete childEnv[key];
   const result = spawnSync(process.execPath, ['scripts/run-bun-tests.mjs', ...args], {
-    cwd: REPO, encoding: 'utf8', timeout: 60_000, env: { ...process.env, ...env },
+    cwd: REPO, encoding: 'utf8', timeout: 60_000, env: childEnv,
   });
   return { status: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
@@ -30,6 +33,9 @@ test('connect', () => {
 `);
   fs.writeFileSync(path.join(dir, 'ok.test.ts'), "import { test } from 'bun:test';\ntest('ok', () => {});\n");
   fs.writeFileSync(path.join(dir, 'missing.test.ts'), "import { missing } from './no-such-module';\nimport { test } from 'bun:test';\ntest('missing', () => { missing(); });\n");
+  const ciParent = { MYCO_TEST_SHARD: process.env.MYCO_TEST_SHARD, MYCO_TEST_SCOPE: process.env.MYCO_TEST_SCOPE };
+  process.env.MYCO_TEST_SHARD = '1';
+  process.env.MYCO_TEST_SCOPE = 'pr';
   try {
     const cleared = run([connect, path.join(dir, 'ok.test.ts')]);
     expect(cleared.status).toBe(0);
@@ -41,6 +47,7 @@ test('connect', () => {
     expect(hidden.output).toContain('Unhandled error between tests');
     expect(hidden.output).not.toContain('Infrastructure retry:');
   } finally {
+    for (const [key, value] of Object.entries(ciParent)) value === undefined ? delete process.env[key] : process.env[key] = value;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }, 90_000);
