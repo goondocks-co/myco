@@ -181,6 +181,8 @@ describe('liveness on the run panel and the Runs page', () => {
       r.at(queuedAt + 4 * HOUR);
       expect(await expireLeases(r.e.serverEnv as never, r.now())).toBe(1);
       const back = r.now();
+      // While it waits again, its current stay is what still waits, not its first.
+      expect((await r.get('/api/runs/hours?window=day')).stillWaiting).toEqual([{ since: back, runs: 1 }]);
       r.at(back + 30 * 60_000);
       const again = await r.claim(token);
       expect(again.run.id).toBe(run.id);

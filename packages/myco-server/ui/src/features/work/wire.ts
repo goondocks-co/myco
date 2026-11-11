@@ -151,10 +151,10 @@ export interface RunAttempt {
   /** Who took the attempt: a runner by name, or the member whose worker credential claimed it. */
   executor: { kind: 'runner'; runnerId: string; name: string | null } | { kind: 'legacy-worker'; memberId: string | null };
   steps: { total: number; received: number; overflow: number; unrecognized: UnrecognizedCount | null } | null;
-  /** The hold its run waited under in the queue before this attempt took it; null when none was recorded. */
-  waitedFor: string | null;
-  /** When the stay in the queue this attempt ended began; null when the run was never queued or it was not recorded. */
-  waitedSince: number | null;
+  /** The hold its run waited under in the queue before this attempt took it; null or absent when none was recorded. */
+  waitedFor?: string | null;
+  /** When the stay in the queue this attempt ended began; null or absent when the run was never queued or it was not recorded. */
+  waitedSince?: number | null;
 }
 
 /** One step a worker observed, metadata only: its target in its shaped form, where `…` marks words not kept. */

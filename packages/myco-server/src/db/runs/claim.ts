@@ -208,7 +208,7 @@ export async function launchQueued(db: RelationalStore, scope: ReadScope, runId:
 
 const RETURN_TO_QUEUE_SQL = `UPDATE agent_runs
    SET status = 'queued', held_by = ?, dispatch_spec = ?, dispatched_by = ?,
-       queued_at = COALESCE(queued_at, started_at, ?), queue_entered_at = ?4
+       queued_at = COALESCE(queued_at, started_at, ?)
  WHERE project_id = ? AND id = ? AND status = 'pending' RETURNING id`;
 
 export async function returnToQueue(

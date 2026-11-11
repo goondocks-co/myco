@@ -24,12 +24,15 @@ CREATE TRIGGER IF NOT EXISTS runner_contact_hour_update AFTER UPDATE OF last_see
 CREATE TABLE IF NOT EXISTS run_wait_hour(left_hour INTEGER NOT NULL,entered_hour INTEGER NOT NULL,
       project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),taken INTEGER NOT NULL CHECK (taken IN (0,1)),waits INTEGER NOT NULL,PRIMARY KEY(left_hour,entered_hour,project_id,taken)) WITHOUT ROWID;
 
-CREATE TRIGGER IF NOT EXISTS run_wait_hour_leave AFTER UPDATE OF status ON agent_runs WHEN OLD.status='queued' AND NEW.status<>'queued' BEGIN INSERT INTO run_wait_hour(left_hour,entered_hour,project_id,taken,waits)
-    SELECT CAST(MAX(CASE WHEN NEW.status IN ('running','pending') THEN COALESCE(NEW.started_at,(CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))) ELSE COALESCE(NEW.completed_at,(CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))) END,COALESCE(OLD.queue_entered_at,OLD.queued_at))/3600000 AS INTEGER)*3600000,CAST(COALESCE(OLD.queue_entered_at,OLD.queued_at)/3600000 AS INTEGER)*3600000,OLD.project_id,CASE WHEN NEW.status IN ('running','pending') THEN 1 ELSE 0 END,1 WHERE COALESCE(OLD.queue_entered_at,OLD.queued_at) IS NOT NULL
+CREATE TRIGGER IF NOT EXISTS run_wait_hour_leave AFTER UPDATE OF status ON agent_runs WHEN OLD.status IN ('queued','pending') AND NEW.status NOT IN ('queued','pending') BEGIN INSERT INTO run_wait_hour(left_hour,entered_hour,project_id,taken,waits)
+    SELECT CAST(MAX(CASE WHEN NEW.status='running' THEN COALESCE(NEW.started_at,(CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))) ELSE COALESCE(NEW.completed_at,(CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))) END,COALESCE(OLD.queue_entered_at,OLD.queued_at))/3600000 AS INTEGER)*3600000,CAST(COALESCE(OLD.queue_entered_at,OLD.queued_at)/3600000 AS INTEGER)*3600000,OLD.project_id,CASE WHEN NEW.status='running' THEN 1 ELSE 0 END,1 WHERE COALESCE(OLD.queue_entered_at,OLD.queued_at) IS NOT NULL
     ON CONFLICT(left_hour,entered_hour,project_id,taken) DO UPDATE SET waits=waits+1; END;
 
-CREATE TRIGGER IF NOT EXISTS run_wait_hour_delete AFTER DELETE ON agent_runs WHEN OLD.status='queued' BEGIN INSERT INTO run_wait_hour(left_hour,entered_hour,project_id,taken,waits)
+CREATE TRIGGER IF NOT EXISTS run_wait_hour_delete AFTER DELETE ON agent_runs WHEN OLD.status IN ('queued','pending') BEGIN INSERT INTO run_wait_hour(left_hour,entered_hour,project_id,taken,waits)
     SELECT CAST(MAX((CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)),COALESCE(OLD.queue_entered_at,OLD.queued_at))/3600000 AS INTEGER)*3600000,CAST(COALESCE(OLD.queue_entered_at,OLD.queued_at)/3600000 AS INTEGER)*3600000,OLD.project_id,0,1 WHERE COALESCE(OLD.queue_entered_at,OLD.queued_at) IS NOT NULL
     ON CONFLICT(left_hour,entered_hour,project_id,taken) DO UPDATE SET waits=waits+1; END;
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_requeued ON agent_runs(project_id,queue_entered_at)
+  WHERE status='queued' AND queue_entered_at IS NOT NULL;
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '811');

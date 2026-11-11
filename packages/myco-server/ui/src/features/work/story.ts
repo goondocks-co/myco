@@ -108,7 +108,7 @@ function claimRows(attempts: readonly RunAttempt[], attemptCount: number | null,
     const ordinal = total - attempts.length + index + 1;
     const position = total > 1 ? ` (attempt ${ordinal.toLocaleString()} of ${total.toLocaleString()})` : '';
     // The first attempt's wait begins at "Queued"; a later attempt's began when the run went back to the queue.
-    const requeued = ordinal > 1 && attempt.waitedSince !== null
+    const requeued = ordinal > 1 && typeof attempt.waitedSince === 'number'
       ? [row({ key: `requeued-${attempt.attemptId}`, at: attempt.waitedSince, words: 'Back in the queue', source: 'saw', note: waitedNote(attempt.waitedFor) })]
       : [];
     if (attempt.executor.kind === 'runner') {

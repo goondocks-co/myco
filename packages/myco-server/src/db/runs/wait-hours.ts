@@ -4,8 +4,9 @@
  * left. A run that goes back to the queue waits again, and each stay counts once, so a counter never claims distinct runs.
  *
  * A stay begins when the run is queued: at `queued_at` for its first stay, and at `queue_entered_at`, which every write
- * that puts a run back in the queue sets, for a later one. It ends when the run leaves the queue for any reason: a machine
- * takes it (`taken` 1), or it expires, is cancelled, skipped or deleted unclaimed (`taken` 0). The triggers here count it
+ * that puts a run back in the queue sets, for a later one. A launch attempt (`pending`) is still part of the stay: a
+ * refused launch returns the run to the same stay. It ends when the run leaves the queue for any reason: a machine
+ * starts it (`taken` 1), or it expires, is cancelled, skipped or deleted unclaimed (`taken` 0). The triggers here count it
  * in the statement that moves the run out of the queue, so the count rides the queue owner's own writes. A run created
  * as it is claimed (pulled work) never stays in the queue and is not counted.
  *
@@ -20,11 +21,12 @@ import type { ProjectSet } from '../../read/scope.js';
 import { SQL_NOW_MS } from '../../core/run-deadline.js';
 import { HOUR_MS } from './run-hours.js';
 import { queueEnteredSql } from './queue-stay.js';
+import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
 
 const hourOf = (instant: string) => `CAST(${instant}/${HOUR_MS} AS INTEGER)*${HOUR_MS}`;
 const KEY = 'left_hour,entered_hour,project_id,taken';
-/** Statuses a run leaves the queue for when a machine or launcher takes it. */
-const TAKEN = "('running','pending')";
+/** Statuses a stay in the queue continues through: queued, and a launch attempt that may yet be refused. */
+const STAYING = "('queued','pending')";
 
 /** Count the stay `OLD` held, ended at `left` and taken or not. */
 const countStay = (left: string, taken: string) => `INSERT INTO run_wait_hour(${KEY},waits)
@@ -33,11 +35,11 @@ const countStay = (left: string, taken: string) => `INSERT INTO run_wait_hour(${
 
 function waitHourTriggers(): Trigger[] {
   // A run taken leaves the queue as it starts; any other exit as it ends; the server's clock where it recorded neither.
-  const left = `CASE WHEN NEW.status IN ${TAKEN} THEN COALESCE(NEW.started_at,${SQL_NOW_MS}) ELSE COALESCE(NEW.completed_at,${SQL_NOW_MS}) END`;
+  const left = `CASE WHEN NEW.status='running' THEN COALESCE(NEW.started_at,${SQL_NOW_MS}) ELSE COALESCE(NEW.completed_at,${SQL_NOW_MS}) END`;
   return [
-    trigger('run_wait_hour_leave', 'agent_runs', 'UPDATE OF status', countStay(left, `CASE WHEN NEW.status IN ${TAKEN} THEN 1 ELSE 0 END`),
-      "OLD.status='queued' AND NEW.status<>'queued'"),
-    trigger('run_wait_hour_delete', 'agent_runs', 'DELETE', countStay(SQL_NOW_MS, '0'), "OLD.status='queued'"),
+    trigger('run_wait_hour_leave', 'agent_runs', 'UPDATE OF status', countStay(left, "CASE WHEN NEW.status='running' THEN 1 ELSE 0 END"),
+      `OLD.status IN ${STAYING} AND NEW.status NOT IN ${STAYING}`),
+    trigger('run_wait_hour_delete', 'agent_runs', 'DELETE', countStay(SQL_NOW_MS, '0'), `OLD.status IN ${STAYING}`),
   ];
 }
 
@@ -52,7 +54,7 @@ export function waitHourSchemaStatements(): string[] {
 
 /** How many stays in the queue of the visible Projects began in one hour and ended in another, taken by a machine or not. */
 export interface WaitHourRow { left_hour: number; entered_hour: number; taken: number; waits: number }
-/** Queued work still waiting under one Project, task and origin: since its oldest was queued, and how many wait. */
+/** Queued work still waiting under one Project: since the earliest current stay began, and how many wait. */
 export interface StillWaitingRow { since: number; runs: number }
 
 const visible = (all: boolean, column: string) => all
@@ -62,15 +64,27 @@ const ended = [true, false].map((all) => read<[projects: string, since: number, 
   sql: `SELECT left_hour,entered_hour,taken,SUM(waits) AS waits FROM run_wait_hour w WHERE left_hour>=?2 AND left_hour<?3 AND ${visible(all, 'w.project_id')}
     GROUP BY left_hour,entered_hour,taken` }));
 /**
- * Every waiting head across Projects through the partial index of heads with queued work; a named set seeks each of
- * its Projects by the heads' Project-leading key, so unrelated Projects' queues are never read.
+ * The queued work of each visible Project now: how many runs wait, from the queue's own counters, and when the earliest
+ * current stay began. That is the earlier of two bounded seeks: the oldest first stay (a run never put back, whose stay
+ * began at `queued_at`), read in queue order and stopping at the first such run, and the oldest stay of a run put back
+ * in the queue, read from the index of requeued runs. A named set seeks only its own Projects.
  */
+const stillWaiting = (projects: string) => `WITH q AS (${projects})
+  SELECT CASE WHEN f IS NULL THEN r WHEN r IS NULL THEN f ELSE MIN(f,r) END AS since,runs FROM (SELECT q.runs,
+    (SELECT a.queued_at FROM agent_runs a INDEXED BY idx_agent_runs_project_live WHERE a.project_id=q.project_id AND a.${IN_FLIGHT_RUN_STATUSES}
+      AND a.status='queued' AND a.queue_entered_at IS NULL ORDER BY a.queued_at LIMIT 1) AS f,
+    (SELECT MIN(a.queue_entered_at) FROM agent_runs a INDEXED BY idx_agent_runs_requeued WHERE a.project_id=q.project_id
+      AND a.status='queued' AND a.queue_entered_at IS NOT NULL) AS r FROM q) WHERE f IS NOT NULL OR r IS NOT NULL`;
 const waiting = [
-  read<[projects: string], StillWaitingRow>({ name: 'waitHours.stillWaitingAll', sql: `SELECT oldest_queued_at AS since,queued_count AS runs
-    FROM task_runtime t INDEXED BY idx_task_runtime_task WHERE queued_count>0 AND oldest_queued_at IS NOT NULL AND ${visible(true, 't.project_id')}` }),
-  read<[projects: string], StillWaitingRow>({ name: 'waitHours.stillWaitingNamed', sql: `SELECT t.oldest_queued_at AS since,t.queued_count AS runs
-    FROM json_each(?1) p CROSS JOIN task_runtime t ON t.project_id=p.value WHERE t.queued_count>0 AND t.oldest_queued_at IS NOT NULL` }),
+  read<[projects: string], StillWaitingRow>({ name: 'waitHours.stillWaitingAll', sql: stillWaiting(`SELECT t.project_id,SUM(t.queued_count) AS runs
+    FROM task_runtime t INDEXED BY idx_task_runtime_task WHERE t.queued_count>0 AND ${visible(true, 't.project_id')} GROUP BY t.project_id`) }),
+  read<[projects: string], StillWaitingRow>({ name: 'waitHours.stillWaitingNamed', sql: stillWaiting(`SELECT t.project_id,SUM(t.queued_count) AS runs
+    FROM json_each(?1) p CROSS JOIN task_runtime t ON t.project_id=p.value WHERE t.queued_count>0 GROUP BY t.project_id`) }),
 ];
+
+/** Runs put back in the queue, by Project and when their current stay began: the few the still-waiting read seeks. */
+export const REQUEUED_INDEX = `CREATE INDEX IF NOT EXISTS idx_agent_runs_requeued ON agent_runs(project_id,queue_entered_at)
+  WHERE status='queued' AND queue_entered_at IS NOT NULL`;
 
 /**
  * The stays in the queue of the visible Projects that ended in [since, until), by the hours they began and ended and
