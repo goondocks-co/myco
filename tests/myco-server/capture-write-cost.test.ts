@@ -7,7 +7,7 @@ import { HOOK_NAMED_SCHEMES } from '@goondocks/myco-shared/prompt-identity';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { commit } from '@myco-server-worker/db/index.js';
 import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
-import { planEventWrite } from '@myco-server-worker/ingest/events.js';
+import { planEventWrite, type IngestResult } from '@myco-server-worker/ingest/events.js';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { memoryBlobStore, recordingLimiter } from './helpers/fixtures.js';
@@ -22,14 +22,14 @@ const BOUNDED_EXTRA = 10;
 it('D1 capture of tool calls, attachments, segments, plans and deliveries costs the same as the Project\'s history grows', async () => {
   const blobs = memoryBlobStore();
   const sessionOf = (scale: number) => `capture-${scale}`;
-  const event = async (db: RelationalStore, scale: number, kind: string, payload: Record<string, unknown>, expected: Record<string, unknown>) => {
+  const event = async (db: RelationalStore, scale: number, kind: string, payload: Record<string, unknown>, expected: IngestResult) => {
     const planned = await planEventWrite(db, CONTEXT, {
       eventId: crypto.randomUUID(), sessionId: sessionOf(scale), kind, createdAt: 1_000, channel: 'cli', producer: { adapter: 'claude-code', version: '1' }, payload,
     }, { db, blobs });
     if (!planned.ok) throw new Error(JSON.stringify(planned));
     expect(planned.write.interpret(await commit(db, ...planned.write.statements))).toEqual(expected);
   };
-  const projected = { persisted: true, projected: true };
+  const projected = { persisted: true, projected: true } as const;
   expectTwoScale(await d1TwoScale({
     sizes: [1_000, 5_000],
     setup: async (db) => {
