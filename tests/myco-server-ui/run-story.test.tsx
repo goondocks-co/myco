@@ -86,7 +86,7 @@ describe('What happened', () => {
     const panel = await open('run_embed1914', searchRunCutOff());
     const text = story(panel).textContent!;
     expect(text).toContain('Queued, on its schedule');
-    expect(within(line(panel, 'claim-att_5e13c0b7')).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/runners#runner-rn_7f3a91c2');
+    expect(within(line(panel, 'claim-att_5e13c0b7')).getByRole('link', { name: 'homelab-mini' }).getAttribute('href')).toBe('/runners/rn_7f3a91c2');
     const grouped = story(panel).querySelectorAll('[data-story-row^="calls-"]');
     expect(grouped).toHaveLength(1);
     expect(grouped[0]!.textContent).toContain('Advanced the search index 8 times');
@@ -104,6 +104,21 @@ describe('What happened', () => {
     expect(exact).toContain('att_5e13c0b7');
     expect(exact).toContain('rn_7f3a91c2');
     expect(exact).toContain('machine_unresponsive');
+  });
+
+  it('says in reader words what each recorded route call did and how long it took, under one row or beside a single call', async () => {
+    const cutOff = searchRunCutOff();
+    const calls = cutOff.toolCalls.map((call) => ({ ...call, op: 'missing', durationMs: 340, result: { processed: 1 } }));
+    const panel = await open('run_embed1914', { ...cutOff, toolCalls: calls });
+    const grouped = story(panel).querySelector<HTMLElement>('[data-story-row^="calls-"]')!;
+    expect(grouped.textContent).toContain('Advanced the search index 8 times');
+    expect(grouped.textContent).not.toContain('not recorded');
+    fireEvent.click(within(grouped).getByRole('button', { name: /Show the 8 calls/ }));
+    expect(grouped.textContent).toContain('Advanced the search index: made a new source searchable · took 340 ms');
+    expect(grouped.textContent).not.toMatch(/missing|processed/);
+    cleanup();
+    const single = await open('run_embed1914', { ...cutOff, toolCalls: [{ ...calls[0]!, op: 'settled', durationMs: 1_200 }] });
+    expect(story(single).querySelector('[data-story-row^="calls-"]')!.textContent).toContain('Advanced the search index: found the index up to date · took 1.2 s');
   });
 
   it('marks each claim with whose word it rests on: Myco’s record, the runner’s step log, the agent’s report, and what was never recorded', async () => {
@@ -265,22 +280,42 @@ describe('the facts the panel states', () => {
 });
 
 describe('Tries', () => {
-  it('links one piece of work across its tries from the task’s run list', async () => {
+  /** The task's run list as the server answers it: the window, the subject (null for none) before the page of six, newest first unless asked oldest first. */
+  const listOf = (runs: readonly RunPageRow[]) => (url: URL): RunPageRow[] => {
+    const [since, until] = [Number(url.searchParams.get('since')), Number(url.searchParams.get('until'))];
+    const subject = url.searchParams.get('noSubject') === '1' ? null : url.searchParams.get('subject');
+    const kept = runs.filter((run) => run.task === url.searchParams.get('task') && run.completedAt! >= since && run.completedAt! < until && (run.subject ?? null) === subject)
+      .sort((a, b) => b.completedAt! - a.completedAt!);
+    return (url.searchParams.get('order') === 'oldest' ? kept.reverse() : kept).slice(0, 6);
+  };
+  const embed = (id: string, status: string, at: number, subject: string | null = null) =>
+    runRow({ id, task: 'embedding-reconcile', status, failed: status === 'failed', completedAt: at, subject });
+
+  it('links one piece of work across its tries, through the try that finished it on a busy day', async () => {
     const cutOff = searchRunCutOff();
     const ended = cutOff.run.completedAt!;
-    const earlier = runRow({ id: 'run_embed1904', task: 'embedding-reconcile', status: 'failed', failed: true, completedAt: ended - 10 * MINUTE });
-    const before = runRow({ id: 'run_embed1800', task: 'embedding-reconcile', status: 'completed', completedAt: ended - 70 * MINUTE });
-    const later = runRow({ id: 'run_embed1931', task: 'embedding-reconcile', status: 'completed', completedAt: ended + 11 * MINUTE });
-    const panel = await open('run_embed1914', cutOff, (url) => url.searchParams.get('task') !== 'embedding-reconcile' ? []
-      : Number(url.searchParams.get('until')) <= ended ? [earlier, before] : [later]);
+    // Before it: one more failure, then a success that ended an earlier piece of work. After it: a failure, the run that
+    // worked, then six more after that.
+    const panel = await open('run_embed1914', cutOff, listOf([embed('run_embed1904', 'failed', ended - 10 * MINUTE), embed('run_embed1800', 'completed', ended - 70 * MINUTE),
+      embed('run_embed1920', 'failed', ended + 5 * MINUTE), embed('run_embed1931', 'completed', ended + 11 * MINUTE),
+      ...Array.from({ length: 6 }, (_, i) => embed(`run_embed20${i}`, 'completed', ended + (20 + i) * MINUTE))]));
     const tries = await within(panel).findByRole('region', { name: 'Tries' });
-    expect(tries.textContent).toContain('One piece of work, 3 tries');
+    expect(tries.textContent).toContain('One piece of work, 4 tries');
     const links = within(tries).getAllByRole('link');
-    expect(links.map((link) => link.getAttribute('href'))).toEqual([`/p/${P}/work/runs/run_embed1904`, `/p/${P}/work/runs/run_embed1931`]);
-    expect(tries.textContent).toContain('failed');
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['run_embed1904', 'run_embed1920', 'run_embed1931'].map((id) => `/p/${P}/work/runs/${id}`));
     expect(tries.textContent).toContain('(this one)');
     expect(tries.textContent).toContain('worked');
-    expect(tries.textContent).not.toContain('run_embed1800');
+  });
+
+  it('follows one subject past a page of other subjects to the run that worked, and links none of the others', async () => {
+    const cutOff = searchRunCutOff();
+    const ended = cutOff.run.completedAt!;
+    const others = Array.from({ length: 7 }, (_, i) => embed(`run_other${i}`, i % 2 === 0 ? 'failed' : 'completed', ended + (i + 1) * MINUTE, `cluster-${i}`));
+    const panel = await open('run_embed1914', { ...cutOff, run: { ...cutOff.run, subject: 'cluster-a' } }, listOf([
+      embed('run_b_before', 'failed', ended - MINUTE, 'cluster-b'), ...others, embed('run_a_worked', 'completed', ended + 20 * MINUTE, 'cluster-a')]));
+    const tries = await within(panel).findByRole('region', { name: 'Tries' });
+    expect(tries.textContent).toContain('One piece of work, 2 tries');
+    expect(within(tries).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([`/p/${P}/work/runs/run_a_worked`]);
   });
 
   it('shows no tries for a run whose neighbours are separate pieces of work', async () => {

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Card, ChipGroup, HealthDot, Link, ListRow, ReadState, ReadUnavailable, StatusChip } from '../../design';
-import { formatElapsed, formatUntil } from '../../lib/format';
+import { formatElapsed, formatRelative, formatUntil } from '../../lib/format';
 import { harnessLabel } from '../../lib/harness';
 import { PROJECTS_PATH, runPath } from '../../routes/nav';
 import { displayModel } from '../work/ModelSummary';
@@ -94,7 +94,7 @@ function RunningRow({ run, now, kicker }: { run: NowRunning; now: number; kicker
         leading={<HealthDot tone="ok" live label="Running" />}
         kicker={kicker}
         title={<><span>{run.what}</span>{ranBy !== '' && <span className="t-small font-normal text-muted"> · {ranBy}</span>}</>}
-        meta={run.step === null ? 'Starting' : `Now: ${run.step.words}`}
+        meta={`${run.step === null ? 'Starting' : `Now: ${run.step.words}`}${run.heardAt === null ? '' : ` · ${run.machine ?? 'Its runner'} checked in ${formatRelative(run.heardAt, now)}`}`}
         trailing={run.startedAt === null ? undefined : <span>{formatElapsed(Math.max(0, now - run.startedAt))}</span>}
         wrap
       />

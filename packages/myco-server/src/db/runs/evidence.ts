@@ -83,6 +83,24 @@ export const RUN_CALL_FAILED = 'failed';
 const RUN_CALL_FAILURE_CHARS = 300;
 
 /** Why the Deployment answered a run's call with a failure: the error's code, and what it said. */
+/** What a route call answered, kept small: scalar fields only, at most `RUN_CALL_RESULT_FIELDS` of them, text cut to `RUN_CALL_RESULT_CHARS`. */
+export type RunCallResult = Readonly<Record<string, string | number | boolean>>;
+export const RUN_CALL_RESULT_FIELDS = 8;
+export const RUN_CALL_RESULT_CHARS = 80;
+const RESULT_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/;
+
+/** The scalar fields of an answer a call's record keeps, bounded, leaving out `omit`; null where none remain. */
+export function runCallResult(answer: Readonly<Record<string, unknown>>, omit: ReadonlySet<string>): RunCallResult | null {
+  const kept: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(answer)) {
+    if (Object.keys(kept).length >= RUN_CALL_RESULT_FIELDS) break;
+    if (omit.has(key) || !RESULT_KEY.test(key)) continue;
+    if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) kept[key] = value;
+    else if (typeof value === 'string') kept[key] = value.slice(0, RUN_CALL_RESULT_CHARS);
+  }
+  return Object.keys(kept).length === 0 ? null : kept;
+}
+
 export interface RunCallFailure {
   code: string;
   message: string;
@@ -103,10 +121,10 @@ export interface RunCallFailure {
 export async function recordRunCall(
   db: RelationalStore,
   scope: ReadScope,
-  call: { runId: string; toolName: string; op: string | null; durationMs: number | null; recordedAt: number; failure?: RunCallFailure },
+  call: { runId: string; toolName: string; op: string | null; durationMs: number | null; recordedAt: number; failure?: RunCallFailure; result?: RunCallResult | null },
 ): Promise<void> {
   const failure = call.failure === undefined ? undefined : { code: call.failure.code, message: call.failure.message.slice(0, RUN_CALL_FAILURE_CHARS) };
-  const payload = { ...(call.op === null ? {} : { op: call.op }), ...(failure === undefined ? {} : { failure }) };
+  const payload = { ...(call.op === null ? {} : { op: call.op }), ...(failure === undefined ? {} : { failure }), ...(call.result == null ? {} : { result: call.result }) };
   try {
     await recordRunEvents(db, scope, [{
       runId: call.runId, phaseName: null, eventType: RUN_TOOL_EVENT, toolName: call.toolName,

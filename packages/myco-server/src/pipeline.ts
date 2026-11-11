@@ -20,7 +20,7 @@ import { isOwnedPath, matchRoute, methodsServing, UNSERVED_PATHS, type Route, ty
 import { activateSuccessor, authenticateServerMemberToken, releasedRunCredential, detectLineageReplay, LINEAGE_REPLAY_REVOKER, MEMBER_LINEAGE_IDLE_MS, LINEAGE_REPLAYED_CODE, MEMBER_TOKEN_PATTERN, revokedForReplay, revokeMemberLineage, type ExpiryAdmission, type MemberAuth } from './auth/tokens.js';
 import { admitRunControl, inProcessCredential, IN_PROCESS_SCOPE, CONTROL_CAPABILITIES, heldRunOfCredential, runDeadline, runtimeCaller } from './api/run-admission.js';
 import { runWriteStore, RunWriteExpired } from './core/run-write-store.js';
-import { recordRunCall } from './db/runs/evidence.js';
+import { recordRunCall, runCallResult, RUN_CALL_RESULT_CHARS } from './db/runs/evidence.js';
 import { recordRunControlRefusal, type HeldRun } from './db/runs/lifecycle.js';
 import { dispatchRefusal, isDispatchProjectId } from './api/harness.js';
 import {
@@ -243,14 +243,14 @@ const PROTOCOL_VALUE = /^[0-9]+$/;
 async function recordRunRoute(
   env: ServerEnv,
   auth: MemberAuth,
-  path: string,
-  answered: Response,
-  heldBefore: HeldRun | null,
-  now: number,
+  call: { path: string; answered: Response; heldBefore: HeldRun | null; now: number; durationMs: number | null },
 ): Promise<void> {
+  const { path, answered, heldBefore, now, durationMs } = call;
   let persisted = false;
+  let answer: Record<string, unknown> = {};
   try {
-    const result = await answered.clone().json() as { persisted?: unknown; applied?: unknown; changed?: unknown; claimed?: unknown };
+    const result = await answered.clone().json() as Record<string, unknown>;
+    answer = typeof result === 'object' && result !== null ? result : {};
     persisted = result.persisted === true && result.claimed !== false && !(result.applied === false && result.changed === 0);
   } catch {
     persisted = false;
@@ -258,9 +258,14 @@ async function recordRunRoute(
   if (!persisted) return;
   const held = heldBefore ?? await heldRunOfCredential(env, auth, now);
   if (held === null) return;
-  emit({ kind: 'run_tool', runId: held.id, task: held.task, tool: path, op: null, tokenId: auth.tokenId });
-  await recordRunCall(env.db, { projectId: held.projectId }, { runId: held.id, toolName: path, op: null, durationMs: null, recordedAt: now });
+  // A step route names the step it took in `phase`; that is the call's operation, and the rest of its answer its result.
+  const op = typeof answer.phase === 'string' && answer.phase.length > 0 ? answer.phase.slice(0, RUN_CALL_RESULT_CHARS) : null;
+  emit({ kind: 'run_tool', runId: held.id, task: held.task, tool: path, op, tokenId: auth.tokenId });
+  await recordRunCall(env.db, { projectId: held.projectId }, { runId: held.id, toolName: path, op, durationMs, recordedAt: now, result: runCallResult(answer, ROUTE_ANSWER_ENVELOPE) });
 }
+
+/** The fields of a run route's answer that say whether it was admitted, never what it did. */
+const ROUTE_ANSWER_ENVELOPE: ReadonlySet<string> = new Set(['persisted', 'held', 'claimed', 'applied', 'phase']);
 
 /** Every worker route reports a subject that lost authority as an unheld lease. */
 function workerLivenessAnswer(path: string): Response {
@@ -882,12 +887,13 @@ export function createServer(deps: ServerDeps) {
     const guarded = CONTROL_CAPABILITIES[route.path]?.writeGuard === 'batch'
       ? { ...env, db: runWriteStore(env.db, projectId, admission.run.id, runtimeCaller(principal)) } : env;
     let answered: Response;
+    const started = deps.now();
     try { answered = await route.handler(guarded, principal); }
     catch (error) {
       if (!(error instanceof RunWriteExpired)) throw error;
       answered = refuse(auth, shapeOf(route), NO_LIVE_RUN, 'no_run');
     }
-    await recordRunRoute(env, auth, route.path, answered, admission.run, now);
+    await recordRunRoute(env, auth, { path: route.path, answered, heldBefore: admission.run, now, durationMs: Math.max(0, deps.now() - started) });
     return receipt(answered);
   }
 

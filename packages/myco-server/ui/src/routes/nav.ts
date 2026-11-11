@@ -180,6 +180,11 @@ export function projectPath(projectId: string, suffix = ''): string {
 }
 
 /** Where one run of Myco's work opens: its panel over the project's work. */
+/** One runner's own page: its recent runs and check-ins. */
+export function runnerPath(runnerId: string): string {
+  return `${RUNNERS_PATH}/${encodeURIComponent(runnerId)}`;
+}
+
 export function runPath(projectId: string, runId: string): string {
   return projectPath(projectId, `${RUN_SUFFIX}/${encodeURIComponent(runId)}`);
 }
@@ -231,7 +236,9 @@ export function titleOf(pathname: string): string {
   if (projectOf(pathname) !== null) {
     return pageOf(pageSuffix(pathname))?.label ?? 'Not found';
   }
-  return SERVER_TITLES[pathname.replace(/\/+$/, '')] ?? 'Not found';
+  const path = pathname.replace(/\/+$/, '');
+  if (path.startsWith(`${RUNNERS_PATH}/`)) return 'Runners';
+  return SERVER_TITLES[path] ?? 'Not found';
 }
 
 /** The repository section, optionally opening its connection form. */

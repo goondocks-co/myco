@@ -66,7 +66,7 @@ const week = (over: { work?: WorkAnswer; who?: unknown; taskRuns?: typeof TASK_R
   '/api/tasks/names': () => Response.json({ tasks: TASK_DESCRIPTIONS.map(({ task, name }) => ({ task, name })) }),
   '/api/work': () => Response.json(over.work ?? WEEK_WORK),
   '/api/work/now': (url) => Response.json({ observedAt: NOW, scope: url.searchParams.has('project') ? 'project' : 'deployment', unavailable: [], marks: { runs: 'r', sessions: 's', knowledge: 'k', recovery: 'b', fleet: 'f' }, projects: { read: 1, total: 1, hasMore: false, cursor: null }, runningTotal: 1, runningHasMore: false,
-    running: [{ runId: 'run_live_now', projectId: P, task: 'canopy-map', what: 'Keep the code map', machine: 'homelab-mini', harness: 'claude-code', model: null, startedAt: NOW - 70_000, step: { words: 'Read the code map', at: NOW - 3_000 } }],
+    running: [{ runId: 'run_live_now', projectId: P, task: 'canopy-map', what: 'Keep the code map', machine: 'homelab-mini', runnerId: null, heardAt: null, harness: 'claude-code', model: null, startedAt: NOW - 70_000, step: { words: 'Read the code map', at: NOW - 3_000 } }],
     waiting: [{ key: `map:${P}`, projectId: P, what: 'Code map', count: null, why: 'It refreshes every 6 hours. Only after new session material arrives.', since: null, nextAt: NOW + 2 * 3_600_000 }],
     needsYou: [] }),
   '/api/spores': () => Response.json({ spores: WEEK_SPORES, total: WEEK_SPORES.length, maxPage: 200 }),

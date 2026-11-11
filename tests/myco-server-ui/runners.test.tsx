@@ -17,13 +17,15 @@ const RUNNER: RunnerRow = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled
   lastResult: { fromVersion: '2.0.0-alpha.1', toVersion: '2.0.0-alpha.2', result: 'updated', at: NOW }, blockedVersion: null, updateState: null, updateRequest: null, busy: null };
 
 function mount(role: 'admin' | 'member', initial: RunnerRow = RUNNER,
-  options: { rows?: RunnerRow[]; legacy?: WorkerRow[]; fail?: boolean; route?: string; queue?: FleetQueue; previewName?: string; previewRunnerId?: string; storedCredentials?: Record<string, boolean> } = {}) {
+  options: { rows?: RunnerRow[]; legacy?: WorkerRow[]; fail?: boolean; route?: string; queue?: FleetQueue; previewName?: string; previewRunnerId?: string; storedCredentials?: Record<string, boolean>; runs?: (cursor: string | null) => unknown } = {}) {
   let runner = initial;
   const writes: string[] = [];
   let legacy = options.legacy ?? [];
   globalThis.fetch = (async (input, init) => {
     const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    const path = new URL(href, 'https://s').pathname;
+    const url = new URL(href, 'https://s');
+    const path = url.pathname;
+    if (path === '/api/runners/rn_mini/runs' && options.runs !== undefined) return Response.json(options.runs(url.searchParams.get('cursor')));
     if (path === '/auth/me') return Response.json(dashboardMe({ sub: '1', login: 'owner', member: { id: 'mem_1', label: 'Chris', role } }));
     if (path === '/api/machines') return Response.json({ machines: [] });
     if (path === '/api/members') return Response.json({ members: [] });
@@ -285,4 +287,23 @@ it('shows a failed agent sign-in while another agent keeps the runner online', a
   const failure = await screen.findByText('Claude Code could not sign in at launch. Open a GUI Terminal on this Mac, run claude, then /login.');
   expect(failure.closest('details')).toBeNull();
   expect((await screen.findByText('homelab-mini')).closest('article')?.textContent).toContain('Online');
+});
+
+describe('Runner page', () => {
+  const ran = (runId: string, outcome: string, minutesAgo: number) => ({ attemptId: `att_${runId}`, claimedAt: NOW - minutesAgo * 60_000, projectId: 'proj_1', projectName: 'Myco', runId, task: 'canopy-map', completedAt: null, outcome });
+  const facts = { id: 'rn_mini', name: 'homelab-mini', state: 'enabled', lastSeenAt: NOW - 5_000, version: '2.0.0-alpha.2' };
+
+  it('opens from its card: its last check-in, how its recent runs went, and each run linked, older runs on request', async () => {
+    mount('member', RUNNER, { runs: (cursor) => cursor === null
+      ? { runner: facts, rows: [ran('run_new', 'running', 1), ran('run_ok', 'worked', 20), ran('run_bad', 'failed', 40)], cursor: 'next' }
+      : { runner: facts, rows: [ran('run_old', 'changed_nothing', 90)], cursor: null } });
+    fireEvent.click(await screen.findByRole('link', { name: 'Recent runs and check-ins' }));
+    expect(await screen.findByRole('heading', { level: 1, name: 'homelab-mini' })).toBeTruthy();
+    expect(screen.getByText(/Last checked in just now/)).toBeTruthy();
+    expect(screen.getByText(/1 of the last 2 finished runs worked/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Failed/ }).getAttribute('href')).toBe('/p/proj_1/work/runs/run_bad');
+    fireEvent.click(screen.getByRole('button', { name: /Show more/ }));
+    await waitFor(() => expect(screen.getByText(/2 of the last 3 finished runs worked/)).toBeTruthy());
+    expect(screen.getByRole('link', { name: /Worked; changed nothing/ }).getAttribute('href')).toBe('/p/proj_1/work/runs/run_old');
+  });
 });

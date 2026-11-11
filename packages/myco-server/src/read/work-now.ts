@@ -53,6 +53,9 @@ interface NowRunning {
   what: string;
   /** The runner holding it, by its own name; null where none is named. */
   machine: string | null;
+  /** The runner holding it, by id, and when that runner last checked in; null for a run no runner holds. */
+  runnerId: string | null;
+  heardAt: number | null;
   harness: string | null;
   model: string | null;
   startedAt: number | null;
@@ -144,7 +147,7 @@ async function readRunning(db: RelationalStore, scope: WorkNowScope) {
     const harness = str(row.harness) ?? str(attempt?.harness);
     return {
       runId: String(row.id), projectId: String(row.project_id), task: String(row.task ?? ''), what: taskName(str(row.task)),
-      machine: str(row.runner), harness, model: str(row.model) ?? str(attempt?.model), startedAt: num(row.started_at),
+      machine: str(row.runner), runnerId: str(row.runner_id), heardAt: num(row.heard_at), harness, model: str(row.model) ?? str(attempt?.model), startedAt: num(row.started_at),
       step: latestStep(data.steps.get(key) ?? null, data.calls.get(key) ?? null, harness),
     };
   });

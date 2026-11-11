@@ -22,6 +22,7 @@ export const SETTINGS_SECTIONS = [
 
 export const adminRoutesPaths = {
   runners: RUNNERS_PATH,
+  runner: `${RUNNERS_PATH}/:runnerId`,
   people: PEOPLE_PATH,
   machines: MY_MACHINES_PATH,
   projectSettings: `/p/:projectId${PROJECT_SETTINGS_SUFFIX}`,

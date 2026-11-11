@@ -105,7 +105,7 @@ function Row({ row }: { row: ActivityRow }) {
           <FactRow term="Seen by">{seenBy(row)}</FactRow>
           {row.step !== null && <FactRow term="Kind">{KIND_WORDS[row.step.kind]}</FactRow>}
           {row.step !== null && <FactRow term="Tool" mono>{row.step.tool}</FactRow>}
-          {row.call !== null && <FactRow term="Myco call" mono>{row.call.tool}{row.call.op === null ? '' : ` / ${row.call.op}`}</FactRow>}
+          {row.call !== null && <FactRow term="Myco call" mono>{row.call.tool}{row.call.op === null || row.call.tool.startsWith('/') ? '' : ` / ${row.call.op}`}</FactRow>}
           {row.step?.target != null && <FactRow term="Target" mono>{row.step.target}</FactRow>}
           {row.step !== null && <FactRow term="Step">{(row.step.seq + 1).toLocaleString()}</FactRow>}
           {row.step?.callId != null && <FactRow term="Call id" mono>{row.step.callId}</FactRow>}

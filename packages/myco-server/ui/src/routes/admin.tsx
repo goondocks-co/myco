@@ -3,6 +3,7 @@ import type { RouteObject } from 'react-router-dom';
 import { AdminOnly } from '../features/admin/AdminFrame';
 import { HealthPage } from '../features/admin/health/HealthPage';
 import { RunnersPage } from '../features/admin/runners/RunnersPage';
+import { RunnerPage } from '../features/admin/runners/RunnerPage';
 import { MyMachinesPage } from '../features/admin/people/MyMachinesPage';
 import { PeoplePage } from '../features/admin/people/PeoplePage';
 import { ProjectSettingsPage } from '../features/admin/project/ProjectSettingsPage';
@@ -21,6 +22,7 @@ import { useRouteProject } from './route-project';
  */
 export const adminRoutes: RouteObject[] = routeGroup(adminRoutesPaths, {
   runners: <RunnersPage />,
+  runner: <RunnerPage />,
   people: <PeoplePage />,
   machines: <MyMachinesPage />,
   projectSettings: <ProjectSettingsRoute />,

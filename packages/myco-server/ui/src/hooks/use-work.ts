@@ -46,11 +46,15 @@ export function runIsLive(status: string): boolean {
 export const TASK_RUNS_SHOWN = 6;
 
 /** A project's latest runs of one task, newest first, read again whenever runs move while `live`. */
-export function useTaskRuns(projectId: string, task: string, isLive: boolean, enabled = true, bounds?: { since: number; until: number }) {
+export function useTaskRuns(projectId: string, task: string, isLive: boolean, enabled = true, bounds?: { since: number; until: number; oldestFirst?: boolean; subject?: string | null }) {
   return useQuery({
     enabled,
-    queryKey: ['runs', projectId, 'task', task, bounds?.since, bounds?.until],
-    queryFn: ({ signal }) => fetchJson<RunPage>(`/api/projects/${seg(projectId)}/runs?${new URLSearchParams({ task, limit: String(TASK_RUNS_SHOWN), ...(bounds === undefined ? {} : { since: String(bounds.since), until: String(bounds.until) }) })}`, signal),
+    queryKey: ['runs', projectId, 'task', task, bounds?.since, bounds?.until, bounds?.oldestFirst === true, bounds?.subject],
+    queryFn: ({ signal }) => fetchJson<RunPage>(`/api/projects/${seg(projectId)}/runs?${new URLSearchParams({
+      task, limit: String(TASK_RUNS_SHOWN),
+      ...(bounds === undefined ? {} : { since: String(bounds.since), until: String(bounds.until), ...(bounds.oldestFirst === true ? { order: 'oldest' } : {}),
+        ...(bounds.subject === undefined ? {} : bounds.subject === null ? { noSubject: '1' } : { subject: bounds.subject }) }),
+    })}`, signal),
     ...live<RunPage>(isLive ? { follows: ['runs'] } : 'still'),
   });
 }
