@@ -14,7 +14,7 @@ import { useIsAdmin } from '../../hooks/use-me';
 import { UNTITLED_REASON_TEXT, useSession, useSessionChildren, type SessionPlanRow, type SessionResponse, type SessionRow, type TurnFilter } from '../../hooks/use-sessions';
 import { useNow } from '../../hooks/use-today';
 import { ApiError } from '../../lib/api';
-import { sessionHeading } from '../../lib/session-text';
+import { sessionHeading, UNTITLED_SESSION_LABEL } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
@@ -155,8 +155,8 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
             <h1 className="t-display text-ink" data-session-title="">
               {heading.titled ? heading.title : (
                 <>
-                  <StatusChip className="mr-s2 align-middle">Untitled</StatusChip>
-                  <span className={heading.firstPrompt === null ? 'text-muted' : undefined}>{heading.firstPrompt ?? 'Untitled session'}</span>
+                  {heading.firstPrompt !== null && <StatusChip className="mr-s2 align-middle">Untitled</StatusChip>}
+                  <span className={heading.firstPrompt === null ? 'text-muted' : undefined}>{heading.firstPrompt ?? UNTITLED_SESSION_LABEL}</span>
                 </>
               )}
             </h1>

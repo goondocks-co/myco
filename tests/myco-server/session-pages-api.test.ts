@@ -178,9 +178,11 @@ describe('a project\'s name', () => {
     expect(listed.find((p) => p.projectId === 'proj_1')?.name).toBe('Myco');
   });
 
-  it('a session line in the feed carries the same label the session list shows', async () => {
+  it('uses the same session words in the list, detail, lineage and activity feeds', async () => {
     const { get, session, sqlite } = await harness();
     session('proj_1', 's_t', NOW + 1, { agent: 'claude-code' });
+    session('proj_1', 'abcdef12-unnamed', NOW + 3);
+    sqlite.run(`UPDATE sessions SET launch_parent_session_id = 's_t' WHERE session_id = 'abcdef12-unnamed'`);
     session('proj_1', 's_p', NOW + 2, { agent: 'codex' });
     sqlite.run(`UPDATE sessions SET title = 'Titled by the model' WHERE session_id = 's_t'`);
     sqlite.run(`INSERT INTO session_documents (project_id, session_id, state, generation, first_prompt, updated_at)
@@ -188,8 +190,11 @@ describe('a project\'s name', () => {
     const feed = (await get('/api/projects/proj_1/activity')).body.items as { id: string; summary: string }[];
     const rows = (await get('/api/projects/proj_1/sessions')).body.rows as { sessionId: string; label: string }[];
     const labels = Object.fromEntries(rows.map((r) => [r.sessionId, r.label]));
-    expect(labels).toEqual({ s_t: 'Titled by the model', s_p: 'Fix the flaky test' });
-    expect(feed.map((i) => [i.id, i.summary])).toEqual([['s_p', 'Fix the flaky test'], ['s_t', 'Titled by the model']]);
+    expect(labels).toEqual({ s_t: 'Titled by the model', s_p: 'Fix the flaky test', 'abcdef12-unnamed': 'Untitled session' });
+    expect((await get('/api/projects/proj_1/sessions/abcdef12-unnamed')).body).toMatchObject({ session: { label: 'Untitled session' } });
+    expect((await get('/api/projects/proj_1/sessions/s_t/lineage')).body).toMatchObject({ nodes: [{ label: 'Titled by the model' }, { label: 'Untitled session' }] });
+    expect((await get('/api/projects/proj_1/sessions/s_t/activity')).body).toMatchObject({ rows: [{ title: 'Untitled session', sessionId: 'abcdef12-unnamed' }] });
+    expect(feed.map((i) => [i.id, i.summary])).toEqual([['abcdef12-unnamed', 'Untitled session'], ['s_p', 'Fix the flaky test'], ['s_t', 'Titled by the model']]);
   });
 });
 
@@ -250,17 +255,6 @@ describe('a session\'s lineage', () => {
     expect([tree(fromLeaf), fromLeaf.truncated]).toEqual([['R', '  C <launched', '    G* <launched'], false]);
     expect(fromLeaf.edges.filter((edge) => edge.childId === 'C').map((edge) => edge.kind).sort()).toEqual(['continuation', 'launched']);
     expect(tree(await lineage('C'))).toEqual(['R', '  C* <launched', '    G <launched']);
-  });
-
-  it('names a related session with no title, prompt or agent in words, never by an id fragment', async () => {
-    const { add, lineage, sqlite, get } = await family();
-    add('proj_1', 'parent', 0);
-    add('proj_1', 'abcdef12-unnamed', 1, { launch: 'parent' });
-    sqlite.run(`UPDATE sessions SET title = NULL, agent = NULL WHERE session_id = 'abcdef12-unnamed'`);
-    expect((await lineage('parent')).nodes.map((node) => node.label)).toEqual(['Session parent', 'Untitled session']);
-    const { body } = await get('/api/projects/proj_1/sessions/parent/activity');
-    expect((body.rows as Array<{ title: string; sessionId: string }>).map((row) => [row.title, row.sessionId])).toEqual([['Untitled session', 'abcdef12-unnamed']]);
-    expect(JSON.stringify((await lineage('parent')).nodes.map((node) => node.label))).not.toContain('abcdef12');
   });
 
   it('ends at a cycle in the records with each session once', async () => {

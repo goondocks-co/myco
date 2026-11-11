@@ -24,7 +24,7 @@ import { useStatus } from '../hooks/use-status';
 import { useNow, useToday } from '../hooks/use-today';
 import { isArchived } from '../lib/api';
 import { cn } from '../lib/cn';
-import { cleanSessionText, sessionHeading, sessionHeadingText } from '../lib/session-text';
+import { cleanSessionText, sessionHeading, sessionHeadingText, UNTITLED_SESSION_LABEL } from '../lib/session-text';
 import { readPendingLink } from '../lib/pending-link';
 import { useRouteProject } from './route-project';
 import { CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, projectPath, runPath } from './nav';
@@ -231,7 +231,7 @@ function SessionItem({ entry, scoped, projectName, now }: { entry: SessionEntry;
  * has no such line.
  */
 function UntitledHeading({ firstPrompt }: { firstPrompt: string | null }) {
-  if (firstPrompt === null) return <span className="font-normal text-muted">Untitled session</span>;
+  if (firstPrompt === null) return <span className="font-normal text-muted">{UNTITLED_SESSION_LABEL}</span>;
   return (
     <>
       <StatusChip className="mr-s2 align-text-bottom">Untitled</StatusChip>

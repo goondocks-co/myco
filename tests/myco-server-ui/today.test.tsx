@@ -18,7 +18,7 @@ import { dayParam, dayWindow } from '../../packages/myco-server/ui/src/hooks/use
 import { buildTimeline, ledeCounts, sporesWritten } from '../../packages/myco-server/ui/src/features/today/timeline';
 import { attentionWords, machineNames, repositoryWords, workHeadline, workPlace } from '../../packages/myco-server/ui/src/features/today/words';
 import { ranOn } from '../../packages/myco-server/ui/src/features/work/words';
-import { cleanSessionText, sessionHeading } from '../../packages/myco-server/ui/src/lib/session-text';
+import { cleanSessionText, sessionHeading, sessionHeadingText } from '../../packages/myco-server/ui/src/lib/session-text';
 import { memberDisplayName, memberLabel } from '../../packages/myco-server/ui/src/lib/member-name';
 import type {
   AttentionAnswer, AttentionItem, CaptureRow, TodaySession, TodaySpore, UncapturedRootItem, WorkAnswer, WorkRun,
@@ -381,13 +381,16 @@ describe('Today', () => {
       session({ sessionId: 'a0000000-0000-5000-8000-000000000002', projectId: P_MYCO, ...at(2), title: null, label: 'claude-code', agent: 'claude-code' }),
       session({ sessionId: 'a0000000-0000-5000-8000-000000000003', projectId: P_MYCO, ...at(3), title: null, agent: 'claude-code', label: '<pasted_content id="a1">Why does the map read differ', summary: 'Compared both targets.' }),
       session({ sessionId: 'a0000000-0000-5000-8000-000000000004', projectId: P_MYCO, ...at(4), title: 'Named by id', memberId: 'mem_sirkirby_5a2d54af', memberLabel: 'sirkirby_5a2d54af', runtimeLabel: null }),
+      session({ sessionId: 'a0000000-0000-5000-8000-000000000005', projectId: P_MYCO, ...at(5), title: null, label: 'Untitled session', agent: null }),
     ] }, work: { ...WORK, timeline: [] } }));
     mount('/');
     const list = await timeline();
-    await waitFor(() => expect(items(list)).toHaveLength(4));
-    const [titled, agentOnly, pasted, byId] = items(list).map((li) => li.querySelector('a')!);
+    await waitFor(() => expect(items(list)).toHaveLength(5));
+    const [titled, agentOnly, pasted, byId, empty] = items(list).map((li) => li.querySelector('a')!);
     expect(titled!.textContent).toBe('Fix the release build');
     expect(agentOnly!.textContent).toBe('Untitled session');
+    expect(empty!.textContent).toBe('Untitled session');
+    expect(within(empty!).getByText('Untitled session').className).toContain('text-muted');
     expect(pasted!.textContent).toBe('UntitledWhy does the map read differ');
     expect(within(agentOnly!).getByText('Untitled session').className).toContain('text-muted');
     expect(list.textContent).toContain('Compared both targets.');
@@ -403,6 +406,7 @@ describe('Today', () => {
     expect(cleanSessionText('Fix <skill> handling in capture', 'claude-code')).toBe('Fix <skill> handling in capture');
     expect(cleanSessionText('', null)).toBeNull();
     expect(sessionHeading({ sessionId: 's1', title: null, label: 's1', agent: null })).toEqual({ titled: false, firstPrompt: null });
+    expect(sessionHeadingText({ sessionId: 's1', title: null, label: 'Untitled session', agent: null })).toBe('Untitled session');
   });
 
   it('preserves personal and incomplete markup within its harness', () => {
