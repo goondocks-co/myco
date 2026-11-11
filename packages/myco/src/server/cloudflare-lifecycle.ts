@@ -301,7 +301,7 @@ export interface CloudflareUpdateSummary {
   schemaBefore: number | null;
   schemaTarget: number;
   schema: 'not attempted' | 'attempted; outcome unknown' | 'refused: not applied' | 'failed: not applied' | 'applied' | 'unchanged'
-    | 'stopped: D1 overloaded' | 'stopped: a migration exceeds D1 limits';
+    | 'stopped: D1 overloaded' | 'stopped: a migration exceeds D1 limits' | 'stopped: a migration timed out' | 'stopped: the update ran out of time';
   schemaReached?: number;
   /** Why the schema stopped short, and the Worker the update left serving. */
   schemaStop?: { stop: SchemaStop; worker: WorkerLeft };
@@ -311,6 +311,13 @@ export interface CloudflareUpdateSummary {
   recordPath: string;
   bookmark?: string;
 }
+
+const STOPPED_SCHEMA = {
+  overloaded: 'stopped: D1 overloaded',
+  migration_over_limit: 'stopped: a migration exceeds D1 limits',
+  migration_timed_out: 'stopped: a migration timed out',
+  out_of_time: 'stopped: the update ran out of time',
+} as const satisfies Record<SchemaStop['reason'], CloudflareUpdateSummary['schema']>;
 
 /** The same summary is printed for successful and interrupted hosted updates. */
 export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[] {
@@ -410,7 +417,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     }
     if (cause instanceof SchemaUpdateStopped && held !== null) {
       const { stop } = cause;
-      summary.schema = stop.reason === 'overloaded' ? 'stopped: D1 overloaded' : 'stopped: a migration exceeds D1 limits';
+      summary.schema = STOPPED_SCHEMA[stop.reason];
       if (stop.reached === null) delete summary.schemaReached; else summary.schemaReached = stop.reached;
       summary.schemaStop = { stop, worker: { release: held.release, versionId: held.versionId, schema: stop.evidence.workerSchema ?? null } };
     }
