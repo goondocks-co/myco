@@ -3,32 +3,22 @@ import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cook
 import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobFields, KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { documentsPublished, expectPersisted, lit, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { browser, person, selectOwner, stopMember } from '../clients/identity.ts';
+import { rawFixtureActors, rejoinAccount, seedSiblingTranscript, seedUnattributedRaw, type RawActors, type RawViewer } from '../owner-review/historical-authority.ts';
 
 type RequestFetch = (request: Request) => Promise<Response>;
-const TOKEN_TTL_MS = 3_600_000;
 const PROJECT = 'proj_raw_privacy';
 const ATTACHMENT_PNG = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 96, 96, 96, 96, 0, 0, 0, 5, 0, 1, 165, 246, 69, 64, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
 
-interface Viewer { id: string; sub: string; machine: string; token: string; tokenId: string; headers: Record<string, string> }
+type Viewer = RawViewer;
 
 /** The same raw-serving contract through either target's actual request pipeline. */
-export async function assertRawPrivacy(target: ParityTarget, requestFetch: RequestFetch = (request) => fetch(request), secret = SESSION_SECRET): Promise<void> {
+export async function assertRawPrivacy(target: ParityTarget, requestFetch: RequestFetch = (request) => fetch(request), secret = SESSION_SECRET, actors?: RawActors): Promise<void> {
   const now = Date.now();
-  const viewers: Viewer[] = [];
-  await target.sql(`INSERT INTO projects (project_id, name, created_at) VALUES (${lit(PROJECT)}, 'raw privacy', ${now})`);
-  for (const [label, role, sub] of [['uploader', 'member', '991001'], ['other', 'member', '991002'], ['admin', 'admin', '991003']] as const) {
-    const id = `mem_raw_${label}`;
-    const machine = `machine_raw_${label}`;
-    const token = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
-    const tokenId = `mt_raw_${label}`;
-    await target.sql(`INSERT INTO members (id, label, created_at, role, github_id) VALUES (${lit(id)}, ${lit(label)}, ${now}, ${lit(role)}, ${lit(sub)})`);
-    await target.sql(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (${lit(machine)}, ${lit(id)}, ${now})`);
-    await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, bytes_written, lineage_root, lineage_started_at)
-      VALUES (${lit(tokenId)}, ${lit(id)}, ${lit(machine)}, ${lit(await sha256Hex(token))}, ${now}, ${now + TOKEN_TTL_MS}, 0, ${lit(tokenId)}, ${now})`);
-    const cookie = await signSession(secret, { aud: target.deploymentId, sub, login: label, iat: now, exp: now + TOKEN_TTL_MS });
-    viewers.push({ id, sub, machine, token, tokenId, headers: { cookie: `${SESSION_COOKIE}=${cookie}`, 'cf-connecting-ip': '1.2.3.4' } });
-  }
-  const [uploader, other, admin] = viewers;
+  const created = await requestFetch(new Request(`${target.url}/api/projects`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ projectId: PROJECT, name: 'raw privacy' }) }));
+  expect(created.status).toBe(201);
+  const people = actors ?? rawFixtureActors(target, async (sub, login) => `${SESSION_COOKIE}=${await signSession(secret, { aud: target.deploymentId, sub, login, iat: now, exp: now + 3_600_000 })}`);
+  const [uploader, other, admin] = await people.enroll() as [Viewer, Viewer, Viewer];
   const readers = [
     { name: 'uploader', headers: uploader.headers, admitted: true },
     { name: 'other member', headers: other.headers, admitted: false },
@@ -60,10 +50,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   const siblingText = 'other member raw transcript';
   const sibling = await upload(other, siblingText);
   await expectPersisted(sibling.response, 'sibling blob');
-  await target.sql(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, agent, size, segment_count, first_received_at, last_received_at, token_id, role, prompt_identity_scheme)
-    VALUES (${lit(PROJECT)}, ${lit(siblingId)}, ${lit(session)}, ${lit(other.machine)}, 'claude-code', ${siblingText.length}, 1, ${now}, ${now}, ${lit(other.tokenId)}, 'subagent', 'claude-v1')`);
-  await target.sql(`INSERT INTO transcript_segments (project_id, transcript_id, base_offset, length, blob_key, event_id, created_at, received_at, token_id)
-    VALUES (${lit(PROJECT)}, ${lit(siblingId)}, 0, ${siblingText.length}, ${lit(sibling.key)}, ${lit(crypto.randomUUID())}, ${now}, ${now}, ${lit(other.tokenId)})`);
+  await seedSiblingTranscript(target, { projectId: PROJECT, transcriptId: siblingId, session, machine: other.machine, tokenId: other.tokenId, size: siblingText.length, blobKey: sibling.key, at: now });
   const transcriptPath = `/api/projects/${PROJECT}/sessions/${session}/transcript`;
   const blobPath = (key: string) => `/api/projects/${PROJECT}/blobs/${key}`;
   for (const reader of readers) {
@@ -119,6 +106,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
       expect({ kind: spec.name, field, status: refused.status, body: await refused.json() }).toMatchObject({
         kind: spec.name, field, status: 200, body: { persisted: false, code: 'blob_absent' },
       });
+      // A refused capture stores no event: the stored invariant behind the refusal, which no read reaches for another member.
       expect(await target.sql(`SELECT event_id FROM events WHERE project_id = ${lit(PROJECT)} AND event_id = ${lit(eventId)}`)).toEqual([]);
       const typed = typedKinds[spec.name];
       if (typed !== undefined) {
@@ -131,16 +119,14 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   const verified = await upload(other, rawText, raw.key);
   await expectPersisted(verified.response, 'verified duplicate');
   expect(await (await get(blobPath(raw.key), other.headers)).text()).toBe(rawText);
+  // The raw owner registry holds both verified uploaders: no route lists a resource's owners.
   expect(await target.sql(`SELECT owner_member_id FROM raw_resources WHERE project_id = ${lit(PROJECT)} AND kind = 'blob' AND resource_id = ${lit(raw.key)} ORDER BY owner_member_id`))
     .toEqual([other.id, uploader.id].sort().map((owner_member_id) => ({ owner_member_id })));
   const afterDuplicate = await (await get(transcriptPath, other.headers)).json() as { transcripts: Array<{ transcriptId: string }> };
   expect(afterDuplicate.transcripts.map((row) => row.transcriptId)).toEqual([siblingId]);
 
   const unknown = { key: await sha256Hex('unknown ownership remains preserved') };
-  await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
-    VALUES (${lit(PROJECT)}, ${lit(unknown.key)}, 36, 'text/plain', 'unknown_token', ${now}, ${lit(crypto.randomUUID())})`);
-  await target.sql(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, segment_count, first_received_at, last_received_at, token_id)
-    VALUES (${lit(PROJECT)}, 'tx_00000000000000000000000000000000', ${lit(session)}, 'unknown_machine', 0, 0, ${now}, ${now}, 'unknown_token')`);
+  await seedUnattributedRaw(target, { projectId: PROJECT, key: unknown.key, session, at: now });
   for (const reader of readers) {
     const response = await get(blobPath(unknown.key), reader.headers);
     expect(response.status).toBe(404);
@@ -207,6 +193,7 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   }));
   expect(await forged.json()).toMatchObject({ persisted: false, code: 'blob_absent' });
   expect((await get(`/api/projects/${PROJECT}/processed/plan/${forgedPlan}`, other.headers)).status).toBe(404);
+  // A refused reference to a spilled body adds no owner to it.
   expect(await target.sql(`SELECT owner_member_id FROM raw_resources WHERE project_id = ${lit(PROJECT)} AND kind = 'blob' AND resource_id = ${lit(spilled.key)}`)).toEqual([{ owner_member_id: uploader.id }]);
   for (const reader of readers) {
     for (const [kind, id, expected] of [['prompt', promptId, processed], ['response', responseId, processed], ['plan', planKey, processed], ['plan', inlinePlanKey, 'shared inline plan'], ['tool-input', toolCallId, processed], ['tool-output', toolCallId, outputPreview]] as const) {
@@ -232,13 +219,13 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
     assertPrivateCache(generic);
   }
 
-  await target.sql(`UPDATE member_credentials SET expires_at = ${now - 1}, revoked_at = ${now} WHERE id = ${lit(uploader.tokenId)}`);
+  await people.stopCredential(uploader);
   const expiredTokenRead = await get(blobPath(raw.key), uploader.headers);
   expect(expiredTokenRead.status).toBe(200);
   expect(await expiredTokenRead.text()).toBe(rawText);
   assertPrivateCache(expiredTokenRead);
   expect((await get(transcriptPath, uploader.headers)).status).toBe(200);
-  await target.sql(`UPDATE members SET revoked_at = ${now} WHERE id = ${lit(uploader.id)}`);
+  await people.stopMember(uploader);
   for (const path of [blobPath(raw.key), transcriptPath]) {
     const revoked = await get(path, uploader.headers);
     expect(revoked.status).toBe(401);
@@ -255,9 +242,9 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   const ownerAfterRevocation = await get(blobPath(raw.key), target.ownerHeaders());
   expect(ownerAfterRevocation.status).toBe(404);
   assertPrivateCache(ownerAfterRevocation);
+  // Ownership of the transcript survives its uploader's removal.
   expect(await target.sql(`SELECT owner_member_id FROM raw_resources WHERE project_id = ${lit(PROJECT)} AND kind = 'transcript' AND resource_id = ${lit(transcriptId)}`)).toEqual([{ owner_member_id: uploader.id }]);
-  await target.sql(`UPDATE members SET github_id = NULL WHERE id = ${lit(uploader.id)}`);
-  await target.sql(`INSERT INTO members (id, label, created_at, role, github_id) VALUES ('mem_raw_rejoined', 'new membership', ${now}, 'member', ${lit(uploader.sub)})`);
+  await rejoinAccount(target, uploader.id, uploader.sub, now);
   for (const path of [blobPath(raw.key), blobPath(spilled.key), transcriptPath]) {
     const rejoined = await get(path, uploader.headers);
     expect(rejoined.status).toBe(404);
@@ -275,5 +262,14 @@ function assertPrivateCache(response: Response): void {
 export const rawPrivacy: ParityScenario = {
   name: 'raw privacy: uploader provenance, filtered transcripts, verified dedup, shared processed bodies and browser revocation',
   dedicated: { timeoutMs: 180_000 },
-  run: (target) => assertRawPrivacy(target),
+  async run(target) {
+    // Three people the owner invites and links; stopping the uploader's credential and membership are the dashboard's own Stops.
+    await selectOwner(target);
+    const enrolled = [await person(target, '991001', { login: 'uploader' }), await person(target, '991002', { login: 'other' }), await person(target, '991003', { role: 'admin', login: 'admin' })];
+    await assertRawPrivacy(target, (request) => fetch(request), SESSION_SECRET, {
+      enroll: async () => enrolled.map((actor) => ({ id: actor.id, sub: actor.sub!, machine: actor.machineId, token: actor.token, tokenId: actor.tokenId, headers: actor.session })),
+      stopCredential: async (viewer) => { expect((await browser(target, `/api/credentials/${viewer.tokenId}/revoke`, target.ownerHeaders(), {})).body.revoked).toBe(true); },
+      stopMember: (viewer) => stopMember(target, viewer.id),
+    });
+  },
 };
