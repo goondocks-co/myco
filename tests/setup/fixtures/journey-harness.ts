@@ -2,7 +2,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { workerLockPath } from '@myco/runner/instance.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 
@@ -10,7 +9,6 @@ export const URL = 'https://setup.invalid';
 export const fakeFetch = (fn: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>): typeof fetch => Object.assign(fn, { preconnect: () => {} });
 
 export function freshJourney(): { root: string; home: string; project: string; lines: string[]; errors: string[] } {
-  resetMachineIdCache();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-setup-journey-'));
   const home = path.join(root, 'myco');
   const project = path.join(root, 'repo');

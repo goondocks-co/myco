@@ -6,7 +6,6 @@
  * deriving exactly this; claude-v2 is `claude-v2-identity.test.ts`.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
 import { identityRig } from './helpers/prompt-identity-rig.js';
@@ -22,7 +21,7 @@ const TRANSCRIPTS = {
 };
 
 const savedHome = process.env.MYCO_HOME;
-afterEach(() => { process.env.MYCO_HOME = savedHome; resetMachineIdCache(); });
+afterEach(() => { process.env.MYCO_HOME = savedHome; });
 
 describe('Claude Code sibling lines under the lead prompt id', () => {
   for (const order of [['lead', 'subagent'], ['subagent', 'lead']] as const) {

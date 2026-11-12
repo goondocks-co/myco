@@ -55,25 +55,15 @@ const FALLBACK_GITHUB_USER = 'local';
  */
 const GH_USER_TIMEOUT_MS = 1500;
 
-/** Module-level cache — set on first getMachineId() call, never cleared. */
-let cachedMachineId: string | undefined;
-
-/**
- * Reset the in-memory machine ID cache.
- *
- * Test-only — call in beforeEach to restore per-test filesystem isolation
- * when MYCO_HOME is redirected to a temp directory between tests.
- */
-export function resetMachineIdCache(): void {
-  cachedMachineId = undefined;
-}
+/** The id already read for one resolved path. A different path reads its own file. */
+let cachedMachineId: { path: string; id: string } | undefined;
 
 /**
  * Compute a deterministic machine hash from hostname + homedir.
  *
  * Returns the first MACHINE_HASH_LENGTH hex chars of the SHA-256 digest.
  */
-export function computeMachineHash(): string {
+function computeMachineHash(): string {
   const raw = `${os.hostname()}${os.homedir()}`;
   const hash = crypto.createHash('sha256').update(raw).digest('hex');
   return hash.slice(0, MACHINE_HASH_LENGTH);
@@ -123,32 +113,27 @@ export function resolveGitHubUser(run: GhRunner = defaultGhRunner): string {
  * @returns the machine ID string
  */
 export function getMachineId(): string {
-  // Return the in-memory cached value — avoids a filesystem read per row-insert
-  // (getTeamMachineId() delegates here on every synced write when no explicit
-  // context has been initialised, so this path can be hot).
-  if (cachedMachineId !== undefined) return cachedMachineId;
-
   const cachePath = resolveMachineIdPath();
+  // The same path is read on every synced write once a home is fixed. Skip the filesystem then.
+  if (cachedMachineId?.path === cachePath) return cachedMachineId.id;
 
-  // Read from global cache if present.
   try {
     const persisted = fs.readFileSync(cachePath, 'utf-8').trim();
     if (persisted.length > 0) {
-      cachedMachineId = persisted;
-      return cachedMachineId;
+      cachedMachineId = { path: cachePath, id: persisted };
+      return persisted;
     }
   } catch {
-    // Global cache missing — fall through to generate.
+    // No persisted id — fall through to generate.
   }
 
   const githubUser = resolveGitHubUser();
   const machineHash = computeMachineHash();
   const machineId = `${githubUser}_${machineHash}`;
 
-  // Persist for future process startups.
   fs.mkdirSync(path.dirname(cachePath), { recursive: true });
   fs.writeFileSync(cachePath, machineId, 'utf-8');
 
-  cachedMachineId = machineId;
-  return cachedMachineId;
+  cachedMachineId = { path: cachePath, id: machineId };
+  return machineId;
 }

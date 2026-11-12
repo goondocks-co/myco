@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { runMemberHook } from '@myco/member/capture.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
@@ -17,14 +16,12 @@ const savedHome = process.env.MYCO_HOME;
 beforeEach(async () => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
 });
 
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 const kinds = (sessionId: string): string[] => new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome })

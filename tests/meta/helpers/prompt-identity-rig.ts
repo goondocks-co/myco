@@ -14,7 +14,6 @@ import { indexFixture } from '../../myco-server/helpers/vector-index.js';
 import { turnOnGatedCapabilities } from '../../myco-server/helpers/fixtures.js';
 import { memberRig, tempMycoHome, TEST_PROJECT_ID, type MemberRig } from '../../member/helpers/server.js';
 import { recordingFetch, registerTestMember } from '../../member/helpers/hooks.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
 import {  TRANSCRIPT_IDLE_MS  } from '@myco-server-worker/ingest/parse.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
@@ -49,7 +48,6 @@ export interface IdentityRig {
 export async function identityRig(opts: { relevant?: number; background?: number } = {}): Promise<IdentityRig> {
   const mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   const rig = await memberRig();
   const bindings = rig.env.env as Record<string, unknown>;
   bindings.AI = { run: async (_model: string, input: { text: string[] }) => ({ data: [vectorFor(input.text[0]!)] }) };

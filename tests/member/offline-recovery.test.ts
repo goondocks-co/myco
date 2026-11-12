@@ -19,7 +19,6 @@ import path from 'node:path';
 import { MEMBER_LINEAGE_IDLE_MS } from '@myco-server-worker/auth/tokens.js';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { agentOfSession, drainBacklog } from '@myco/member/backlog.js';
 import { unboundedBudget } from '@myco/member/budget.js';
@@ -49,12 +48,10 @@ const savedHome = process.env.MYCO_HOME;
 beforeEach(() => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   root = resolveMemberProjectRoot(process.cwd());
 });
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 const transcript = (sessionId: string, text: string): string => {

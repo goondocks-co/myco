@@ -6,7 +6,6 @@
 import { spawnSync } from 'node:child_process';
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { HOOK_DISPATCH, type HookName } from '@myco/hooks/entry.js';
-import { _resetManifestCache } from '@myco/hooks/normalize.js';
 import type { HookMainOptions } from '@myco/member/capture.js';
 import type { CredentialSource } from '@myco/member/credential.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
@@ -79,7 +78,6 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
   process.argv = [originalArgv[0], 'myco', 'hook', name, ...(opts.symbiont === null ? [] : ['--symbiont', opts.symbiont ?? 'claude-code']), ...(opts.argv ?? [])];
-  _resetManifestCache();
   setBufferedStdin(Buffer.from(JSON.stringify(raw)));
   (process.stdout as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { out.push(String(chunk)); return true; }) as never;
   (process.stderr as unknown as { write: (chunk: unknown) => boolean }).write = ((chunk: unknown) => { err.push(String(chunk)); return true; }) as never;
@@ -112,7 +110,6 @@ export async function runHook(name: HookName, raw: Record<string, unknown>, opts
     (process.stderr as unknown as { write: unknown }).write = origErr;
     process.argv = originalArgv;
     setBufferedStdin(null);
-    _resetManifestCache();
     current = null;
   }
   return { stdout: out.join(''), stderr: err.join(''), starts };

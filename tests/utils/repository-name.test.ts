@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { sessionRepositoryName } from '@myco/member/git-facts.js';
 import { resolveHookBudget } from '@myco/member/budget.js';
-import { repositoryName, repositoryRemote, memoizedRepositoryName, __resetGitBinaryCacheForTest } from '@myco/utils/git.js';
+import { repositoryName, repositoryRemote, memoizedRepositoryName } from '@myco/utils/git.js';
 import { repositoryAt } from '@myco/member/auto-join.js';
 
 const roots: string[] = [];
@@ -87,12 +87,10 @@ describe('repository display name', () => {
     const began = Date.now();
     try {
       process.env.PATH = bin;
-      __resetGitBinaryCacheForTest();
       expect(repositoryName(base, { deadline: began + 100 })).toBe(path.basename(base));
       expect(Date.now() - began).toBeLessThan(2_000);
     } finally {
       process.env.PATH = heldPath;
-      __resetGitBinaryCacheForTest();
     }
   });
 

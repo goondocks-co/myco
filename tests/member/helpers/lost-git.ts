@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { __resetGitBinaryCacheForTest, findGitBinary } from '@myco/utils/git.js';
+import { findGitBinary } from '@myco/utils/git.js';
 import { removeWhenTestsEnd } from '../../support/remove-when-tests-end.js';
 
 export interface LostGit {
@@ -21,7 +21,7 @@ export interface LostGit {
   loseNext: (times: number, match?: string) => void;
   /** How many armed losses are still to come. */
   armsLeft: () => number;
-  /** Put PATH back and forget the resolved git. */
+  /** Put PATH back. */
   restore: () => void;
 }
 
@@ -47,7 +47,6 @@ export function installLostGit(): LostGit {
   ].join('\n'), { mode: 0o755 });
   const savedPath = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${savedPath ?? ''}`;
-  __resetGitBinaryCacheForTest();
   return {
     realGit,
     loseNext: (times, match = '') => {
@@ -56,7 +55,6 @@ export function installLostGit(): LostGit {
     armsLeft: () => (fs.existsSync(armFile) ? Number(fs.readFileSync(armFile, 'utf-8').split('\t')[0]) : 0),
     restore: () => {
       process.env.PATH = savedPath;
-      __resetGitBinaryCacheForTest();
     },
   };
 }

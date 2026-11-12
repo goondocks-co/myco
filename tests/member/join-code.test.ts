@@ -20,7 +20,6 @@ import { tempMycoHome, unjoinedRig } from './helpers/server.js';
 import { registerTestMember } from './helpers/hooks.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
 import { runHook } from './helpers/hooks.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { resolveMachineIdPath } from '@myco/paths/home.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, parseCredentialFlag, redeemsJoinCode, resolveCredential, resolveMemberProjectRoot, type CredentialSource } from '@myco/member/credential.js';
 import { NO_RUNTIME_CLAIMS } from '@myco-server-worker/auth/tokens.js';
@@ -203,7 +202,6 @@ describe('a hook on a machine holding only a join code', () => {
   beforeEach(async () => {
     mycoHome = tempMycoHome();
     process.env.MYCO_HOME = mycoHome;
-    resetMachineIdCache();
     rig = unjoinedRig();
     const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
@@ -211,7 +209,6 @@ describe('a hook on a machine holding only a join code', () => {
   afterEach(() => {
     if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
     if (savedCode === undefined) delete process.env[ENV_JOIN_CODE]; else process.env[ENV_JOIN_CODE] = savedCode;
-    resetMachineIdCache();
   });
 
   it('redeems the code and lands a session and its plan, with no registry entry to start from', async () => {
@@ -319,12 +316,10 @@ describe('the emitted sandbox settings with a join code', () => {
     for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
     mycoHome = tempMycoHome();
     process.env.MYCO_HOME = mycoHome;
-    resetMachineIdCache();
     rig = unjoinedRig();
   });
   afterEach(() => {
     for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
-    resetMachineIdCache();
   });
 
   it('delivers each session at its turn\'s end, in the hook, and never starts a helper that ends with the sandbox; a second session uses the same credential', async () => {
@@ -376,7 +371,6 @@ describe('the emitted sandbox settings with a join code', () => {
       // A fresh machine per case, so an earlier case's membership answers nothing here.
       process.env.MYCO_HOME = tempMycoHome();
       fs.writeFileSync(path.join(process.env.MYCO_HOME, 'machine_id'), `machine_case_${i}`, 'utf-8');
-      resetMachineIdCache();
       for (const k of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT]) delete process.env[k];
       Object.assign(process.env, c.env);
       const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });

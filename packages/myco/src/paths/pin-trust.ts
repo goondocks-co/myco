@@ -96,16 +96,9 @@ export function readTrustedPin(
 }
 
 const PIN_REFUSAL_REPORTED_ENV = 'MYCO_PIN_REFUSAL_REPORTED';
-let refusalReported = false;
-
-export function resetPinRefusalReports(): void {
-  refusalReported = false;
-  delete process.env[PIN_REFUSAL_REPORTED_ENV];
-}
 
 export function reportPinRefusal(pinPath: string, reason: string): void {
-  if (refusalReported || process.env[PIN_REFUSAL_REPORTED_ENV] === '1') return;
-  refusalReported = true;
+  if (process.env[PIN_REFUSAL_REPORTED_ENV] === '1') return;
   process.env[PIN_REFUSAL_REPORTED_ENV] = '1';
   try {
     process.stderr.write(`[myco] ignoring runtime pin (${reason}): ${pinPath}\n`);

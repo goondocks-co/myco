@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { _resetPinRefusalReports, defaultMycoHome, resolveMycoHome, resolveMycoHomeWithSource } from '@myco/paths/home.js';
+import { defaultMycoHome, resolveMycoHome, resolveMycoHomeWithSource } from '@myco/paths/home.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 import {
@@ -75,7 +75,7 @@ beforeEach(() => {
   delete process.env.MYCO_HOME;
   homeDir = tmpdir('myco-fallback-homedir-');
   process.env.HOME = homeDir;
-  _resetPinRefusalReports();
+  delete process.env.MYCO_PIN_REFUSAL_REPORTED;
 });
 
 afterEach(() => {

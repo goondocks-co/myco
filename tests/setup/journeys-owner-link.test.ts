@@ -9,7 +9,6 @@ import { execFileSync } from 'node:child_process';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 import { run, parseSetupOptions } from '@myco/cli/setup.js';
 import { run as login } from '@myco/cli/login.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { runRunnerService } from '@myco/cli/runner-service.js';
 import { executorServiceTarget } from '@myco/cli/worker-service.js';
 import { homeReport } from '@myco/cli/member-doctor.js';
@@ -69,7 +68,6 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close();
   fs.rmSync(root, { recursive: true, force: true });
   process.exitCode = 0;
-  resetMachineIdCache();
 });
 const base = (): SetupDeps => ({ mycoHome: home, cwd: project, ask: async () => null, agents: () => [], stdout: line => lines.push(line), stderr: line => errors.push(line) });
 function holdRunnerLock(lockDir: string): void {

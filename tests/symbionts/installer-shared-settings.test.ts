@@ -5,7 +5,7 @@ import { ensureManagedSkills } from '@myco/symbionts/managed-skills.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { symbiontManifest, deriveSymbiontManifest } from '../helpers/symbiont-manifest.js';
 import { isMycoHookCommand, MYCO_MANAGED_MARKER } from '@myco/symbionts/install-helpers.js';
-import { readSymbiontFlag } from '@myco/hooks/normalize.js';
+import { readSymbiontFlag } from '@myco/hooks/symbiont-flag.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

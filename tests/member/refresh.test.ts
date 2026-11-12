@@ -12,7 +12,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { MEMBER_TOKEN_REFRESH_WINDOW_MS, PROJECT_HEADER, REFRESH_NO_PROJECT_BACKOFF_MS, TERMINAL_RETRY_INTERVAL_MS } from '@myco/member/constants.js';
@@ -39,7 +38,6 @@ const savedEnv = { url: process.env[ENV_SERVER_URL], token: process.env[ENV_MEMB
 beforeEach(() => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   root = resolveMemberProjectRoot(process.cwd());
 });
 afterEach(() => {
@@ -48,7 +46,6 @@ afterEach(() => {
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
-  resetMachineIdCache();
 });
 
 /** A rig whose member token was issued 6.5 days ago: live, and inside its refresh window. */

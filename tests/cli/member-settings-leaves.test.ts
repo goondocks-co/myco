@@ -17,7 +17,6 @@ import { DEPLOYMENT_LEAVES, settingsWriter } from '@myco-server-worker/core/sett
 import { issueEnrollmentAuthority } from '@myco-server-worker/auth/enrollment.js';
 import { runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { run as login } from '@myco/cli/login.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { memberRig, tempMycoHome, unjoinedRig } from '../member/helpers/server.js';
 import { registerTestMember } from '../member/helpers/hooks.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
@@ -35,7 +34,6 @@ const saved = { mycoHome: process.env.MYCO_HOME, home: process.env.HOME };
 beforeEach(() => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   checkout = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-leaves-root-')));
   execFileSync('git', ['init', '-q', checkout]);
   userHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-leaves-user-')));
@@ -44,7 +42,6 @@ beforeEach(() => {
 afterEach(() => {
   if (saved.mycoHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = saved.mycoHome;
   if (saved.home === undefined) delete process.env.HOME; else process.env.HOME = saved.home;
-  resetMachineIdCache();
   for (const dir of [mycoHome, checkout, userHome]) fs.rmSync(dir, { recursive: true, force: true });
 });
 
