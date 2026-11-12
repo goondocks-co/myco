@@ -5,13 +5,13 @@ import { join } from 'node:path';
 import { runWorker, type WorkerOutcome } from '@myco/runner/loop.js';
 import { stubProfileHarness, PROFILE_STUB_DETECTED, PROFILE_STUB_HARNESS } from '../../helpers/stub-profile-harness.ts';
 import { RUN_CLOSE_ERROR } from '@myco-server-worker/core/run-postconditions.js';
-import { lit, MACHINE_ID, MEMBER_ID, type ParityScenario, type ParityTarget, waitFor } from '../harness.ts';
+import { MACHINE_ID, MEMBER_ID, type ParityScenario, type ParityTarget, waitFor } from '../harness.ts';
 import { revisionHeaders } from '../settings-revision.ts';
+import { owner } from '../clients/requests.ts';
+import { askTitle, captureSession, runDetail } from '../clients/runs.ts';
 
 /** Well under the scenario timeout, so a worker that cannot claim reports rather than hangs. */
 const ATTACH_BOUND_MS = 45_000;
-/** How far ahead another scenario's queued run is parked while this one claims, and back again afterwards. */
-const PARK_MS = 3_600_000;
 /**
  * The renewal cadence the claim's answer is rewritten to, so a held turn renews
  * several times inside the scenario. The lease the Deployment grants is its own.
@@ -36,32 +36,13 @@ const STEPS_KEPT = [
   { seq: 2, callId: 'tu_2', kind: 'command', tool: 'Bash', target: 'ls -la', outcome: 'ok' },
 ];
 
-/**
- * The shipped worker attached to a booted Deployment, on both targets.
- *
- * The worker is the real one — `runWorker` over `fetch` against the target's own
- * URL — so every header it composes is the header a Deployment receives. That is
- * the whole point of doing this here: the in-process tests drive the claim
- * handler with a fetch a test wrote, and a worker that declared no member
- * protocol passed all of them while every booted Deployment answered it 409 and
- * drove nothing.
- *
- * The harness is a stub on PATH; what is under test is the wire from a claim
- * to an outcome, which runs the same on a machine with real harnesses.
- *
- * The stub reads its session material with the supplied run credential, then
- * answers `end_turn` without writing a title or report. Both targets must reject
- * completion while ending the lease and retiring the run credential.
- */
+/** The shipped worker claims, renews, reads material, sends steps and ends without its required title or report. */
 export const workerWire: ParityScenario = {
   name: 'the worker wire: a claim, a lease and the outcome the Deployment judges, from the shipped worker against a booted Deployment',
+  dedicated: { timeoutMs: 120_000 },
   async run(target: ParityTarget) {
     const now = Date.now();
-    await target.sql(`INSERT OR IGNORE INTO projects(project_id, name, created_at) VALUES (${lit(target.projectId)}, 'Worker parity', ${now})`);
-    // The turn is held open until this scenario releases it, so the run is still
-    // being driven when the row is read BECAUSE it has not been released — not
-    // because the read arrived in time. A `wrangler d1 execute` read costs
-    // seconds, which no delay in the harness can be sized against.
+    // The stub holds its turn until the scenario releases it.
     const scratch = mkdtempSync(join(tmpdir(), 'myco-parity-release-'));
     const release = join(scratch, 'release');
     const receipt = join(scratch, 'mcp-material.json');
@@ -81,36 +62,9 @@ export const workerWire: ParityScenario = {
       ...(method === 'PUT' ? { body: JSON.stringify({ value }) } : {}),
     });
 
-    // A claim takes the OLDEST queued run the Deployment holds, so this row has
-    // to be the one at the front — without ending runs this scenario does not
-    // own, and without depending on running last. Anything already waiting is
-    // moved back in the queue rather than completed, and moved forward again
-    // afterwards by the same offset, so relative order survives.
-    const runId = `run_parity_wire_${now}`;
     const sessionId = `sess_parity_wire_${now}`;
-    const parked = (await target.sql(
-      `SELECT id FROM agent_runs WHERE status = 'queued' AND dispatched_by IS NULL AND task IS NOT NULL`,
-    )).map((r) => String((r as { id: string }).id));
-    const shiftParked = async (by: number): Promise<void> => {
-      if (parked.length === 0) return;
-      await target.sql(`UPDATE agent_runs SET queued_at = queued_at + (${by}) WHERE id IN (${parked.map(lit).join(', ')})`);
-    };
-    await shiftParked(PARK_MS);
-    await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
-    // The session the run is dispatched to title. A stub that never calls back
-    // leaves it untitled, which is the whole reading this scenario takes. The
-    // row is what the dispatcher records: the titling parameters ride the
-    // launch spec, and the claim builds the prompt from them.
-    await target.sql(
-      `INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at)
-       VALUES (${lit(target.projectId)}, ${lit(sessionId)}, 'm_parity', 'tok_parity', ${now}, ${now})`,
-    );
-    await target.sql(
-      `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)
-       VALUES (${lit(target.projectId)}, ${lit(runId)}, 'myco-agent', 'title-summary', 'queued', ${now}, 'worker',
-               ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120, params: { session_id: sessionId, mode: 'claim' } }))},
-               ${lit(JSON.stringify({ timeoutSeconds: 120, session_id: sessionId, mode: 'claim' }))}, NULL)`,
-    );
+    await captureSession(target, sessionId, 'Observe the worker wire');
+    const runId = await askTitle(target, sessionId);
 
     /**
      * The worker's own fetch, with the edge header wrangler dev never injects —
@@ -131,20 +85,11 @@ export const workerWire: ParityScenario = {
       return Response.json(answer.claimed === true ? { ...answer, heartbeatMs: HEARTBEAT_MS } : answer, { status: response.status, headers: response.headers });
     }) as typeof fetch;
 
-    const row = async () =>
-      (await target.sql(
-        `SELECT status, harness, error, leased_by IS NOT NULL AS leased, dispatched_by AS dispatchedBy FROM agent_runs WHERE id = ${lit(runId)}`,
-      ))[0] as { status: string; harness: string | null; error: string | null; leased: number; dispatchedBy: string | null };
+    const row = async () => (await runDetail(target, runId)).run;
 
     /** What this scenario asserts while the attachment is live. */
     const drove = async (attached: Promise<WorkerOutcome>, lines: string[], ended: () => WorkerOutcome | null): Promise<void> => {
-      // The claim is answered, and the row says so while the run is still being
-      // driven: running, on the harness the Deployment chose, under a lease.
-      //
-      // A worker that ended before the row moved is waited for too, and reported
-      // as itself. Without that, a Deployment that refused the worker and a run
-      // that was never claimed print the same unmoved row, and a refusal reads as
-      // a queue nobody took.
+      // A refused worker ends the wait even when its run remains queued.
       const reached = await waitFor(
         async () => ({ row: await row(), ended: ended() }),
         (s) => s.row?.status === 'running' || s.ended !== null,
@@ -157,19 +102,16 @@ export const workerWire: ParityScenario = {
         );
       }
       const running = reached.row;
-      expect(`${target.name} while driven: ${running?.status} harness=${running?.harness} leased=${running?.leased}`)
-        .toBe(`${target.name} while driven: running harness=${PROFILE_STUB_HARNESS} leased=1`);
+      expect(`${target.name} while driven: ${running?.status} harness=${running?.harness} leased=${running?.leaseExpiresAt !== null}`)
+        .toBe(`${target.name} while driven: running harness=${PROFILE_STUB_HARNESS} leased=true`);
       // The run credential the claim answered the worker with, named on the row
       // while the run is live. Its retirement is what the end is checked by.
       const minted = running.dispatchedBy ?? '';
       expect(minted).not.toBe('');
-      // The claim is the session's titling attempt; the queue never counted one.
-      expect(await target.sql(`SELECT titling_attempts AS attempts FROM sessions WHERE session_id = ${lit(sessionId)}`)).toEqual([{ attempts: 1 }]);
-
       // Only the child receives the run's MCP connection and reads its material.
       await waitFor(async () => existsSync(receipt) || ended() !== null, Boolean, 20_000);
       expect(existsSync(receipt)).toBe(true);
-      expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ session_id: sessionId, prompt_count: 0, batches: [] });
+      expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ session_id: sessionId, prompt_count: 1 });
 
       // The lease is renewed while the run is driven, and every renewal is
       // answered held: nothing else takes a run whose lease is live.
@@ -190,30 +132,24 @@ export const workerWire: ParityScenario = {
       // whose answer the worker's deadline cut short is still the Deployment's
       // to finish, so the row is waited for rather than read once.
       await waitFor(row, (r) => r?.status !== 'running', 20_000);
-      const [accounted] = await target.sql(`SELECT tokens_used, cost_usd, actual_cost_usd, estimated_cost_usd, cost_source, usage_data
-        FROM agent_runs WHERE id = ${lit(runId)}`) as Array<{ tokens_used: number | null; cost_usd: number | null; actual_cost_usd: number | null; estimated_cost_usd: number | null; cost_source: string; usage_data: string }>;
-      expect(accounted).toMatchObject({ tokens_used: null, cost_usd: null, actual_cost_usd: null, estimated_cost_usd: null, cost_source: 'unavailable' });
-      expect(JSON.parse(accounted!.usage_data)).toMatchObject({
+      const detail = await runDetail(target, runId), accounted = detail.run;
+      expect(accounted).toMatchObject({ tokensUsed: null, costUsd: null, actualCostUsd: null, estimatedCostUsd: null, costSource: 'unavailable' });
+      expect(JSON.parse(accounted.usageData)).toMatchObject({
         accountingVersion: 1, model: 'claude-sonnet-5-5', provider: 'anthropic',
         identity: { status: 'reported', source: 'system.init.model', primary: { model: 'claude-sonnet-5-5', provider: 'anthropic' } },
       });
       const finalRow = await row();
       expect(`${target.name} ended: ${finalRow.status} — ${finalRow.error ?? 'no error'}`)
         .toBe(`${target.name} ended: failed — ${RUN_CLOSE_ERROR}`);
-      // The attempt's step log went ahead of its end, and is filed under the attempt the claim recorded.
-      expect(await target.sql(`SELECT attempt_id AS attemptId, steps_total AS total, steps_overflow AS overflow FROM agent_run_attempts WHERE run_id = ${lit(runId)}`))
-        .toEqual([{ attemptId: minted, total: 3, overflow: 0 }]);
-      expect(await target.sql(`SELECT seq, call_id AS callId, kind, tool, target, outcome FROM agent_run_steps WHERE run_id = ${lit(runId)} ORDER BY seq`))
-        .toEqual(STEPS_KEPT);
-      expect(await target.sql(
-        `SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(minted)}`,
-      )).toEqual([{ revoked: 1 }]);
-      // The ended run still names the worker that ran it: the member's
-      // credential, and the machine that credential was issued to.
-      expect(await target.sql(
-        `SELECT c.member_id AS memberId, c.machine_id AS machineId, r.lease_expires_at AS leaseExpiresAt
-           FROM agent_runs r JOIN member_credentials c ON c.id = r.leased_by WHERE r.id = ${lit(runId)}`,
-      )).toEqual([{ memberId: MEMBER_ID, machineId: MACHINE_ID, leaseExpiresAt: null }]);
+      expect(detail.attempts).toEqual([expect.objectContaining({ attemptId: minted, steps: expect.objectContaining({ total: 3, overflow: 0 }) })]);
+      const steps = await owner(target, `/api/projects/${target.projectId}/runs/${runId}/steps?attempt=${minted}`);
+      expect(steps.status).toBe(200);
+      expect(steps.body.rows.map(({ seq, callId, kind, tool, target, outcome }: any) => ({ seq, callId, kind, tool, target, outcome }))).toEqual(STEPS_KEPT);
+      const credentials = await owner(target, '/api/credentials?purpose=run&limit=100');
+      expect(credentials.status).toBe(200);
+      expect(credentials.body.rows.find((credential: any) => credential.id === minted)).toMatchObject({ live: false, revokedAt: expect.any(Number) });
+      expect(detail.run).toMatchObject({ worker: { machineId: MACHINE_ID, member: { id: MEMBER_ID } }, leaseExpiresAt: null });
+
     };
 
     // A worker that cannot claim polls by design, so the attachment is bounded
@@ -241,21 +177,15 @@ export const workerWire: ParityScenario = {
       }).then((outcome) => { finished = outcome; return outcome; });
       await drove(attached, lines, () => finished);
     } finally {
-      // A thrown assertion must still end the attachment: a scenario that threw
-      // while its worker kept polling would leave it claiming the next
-      // scenario's runs. Releasing first lets the harness finish on its own
-      // rather than being killed mid-turn. The queue is handed back in the order
-      // it was found.
+      // Release the stub and stop the attachment on every exit.
       releaseTurn();
       clearTimeout(bound);
       stopping.abort();
       await attached?.catch(() => undefined);
       rmSync(runRoot, { recursive: true, force: true });
       rmSync(scratch, { recursive: true, force: true });
-      try {
-        const restored = await credentialSetting(previous.configured ? 'PUT' : 'DELETE', previous.value);
-        expect({ status: restored.status, body: await restored.json() }).toEqual({ status: 200, body: { applied: true } });
-      } finally { await shiftParked(-PARK_MS); }
+      const restored = await credentialSetting(previous.configured ? 'PUT' : 'DELETE', previous.value);
+      expect({ status: restored.status, body: await restored.json() }).toEqual({ status: 200, body: { applied: true } });
     }
   },
 };

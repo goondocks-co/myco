@@ -2,8 +2,10 @@ import { expect } from 'bun:test';
 import { REPOSITORY_FAILURE_FEATURE, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { FEATURES_HEADER, featureAdvertised } from '@goondocks/myco-shared/member-protocol';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
-import { lit, MEMBER_ID, type ParityScenario } from '../harness.ts';
+import { type ParityScenario } from '../harness.ts';
 import { revisionHeaders } from '../settings-revision.ts';
+import { putCapability } from '../clients/requests.ts';
+import { dispatch, repository } from '../clients/runs.ts';
 
 export const repositoryFailure: ParityScenario = {
   name: 'repository preparation failure: leased worker metadata reaches runs and work on both targets',
@@ -28,21 +30,16 @@ export const repositoryFailure: ParityScenario = {
       body: JSON.stringify({ value: 'worker-login' }),
     });
     expect(configured.status).toBe(200);
-    await target.sql(`INSERT OR IGNORE INTO agents (id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,${now})`);
-    await target.sql(`INSERT INTO project_capabilities (project_id,capability,enabled,updated_at,updated_by)
-      VALUES (${lit(target.projectId)},'vault_evolution',1,${now},${lit(MEMBER_ID)})`);
-    await target.sql(`INSERT INTO project_repositories (project_id,revision,url,branch,username,secret_slot,updated_at,updated_by)
-      VALUES (${lit(target.projectId)},'repository-failure',${lit('https://github.com/example/source.git')},'main',NULL,NULL,${now},${lit(MEMBER_ID)})`);
+    expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
+    await repository(target, { url: 'https://github.com/example/source.git', branch: 'main' });
 
     const cases = [
       { suffix: 'reason', reason: { code: 'fetch_failed', summary: 'fatal: unable to access https://reader:synthetic-secret-999@github.com/example/source.git' } },
       { suffix: 'old', reason: undefined },
       { suffix: 'invalid', reason: { code: 'worker_supplied_reason', summary: 'private detail' } },
     ];
-    for (const [index, entry] of cases.entries()) {
-      const runId = `repository-failure-${entry.suffix}`;
-      await target.sql(`INSERT INTO agent_runs (project_id,id,agent_id,task,status,queued_at,held_by,dispatch_spec,run_context)
-        VALUES (${lit(target.projectId)},${lit(runId)},'myco-agent','vault-seed','queued',${now + index},'worker',${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID }))},'{}')`);
+    for (const entry of cases) {
+      const { runId } = await dispatch(target, 'vault-seed');
       const claimed = await post('/worker/claim', { harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES });
       expect(claimed).toMatchObject({ persisted: true, claimed: true, run: { id: runId } });
       const ended = await post('/worker/end', {

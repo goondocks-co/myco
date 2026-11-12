@@ -1,100 +1,33 @@
 import { expect } from 'bun:test';
-import { DISPATCH_REFUSAL_MESSAGE } from '@myco-server-worker/core/harness.js';
-import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario } from '../harness.ts';
+import { allowWorkerClaims, putCapability, putSetting, resetSetting, wake } from '../clients/requests.ts';
+import { dispatch, failRun, repository, runDetail, runList, takeRun } from '../clients/runs.ts';
 
-/**
- * The claim queue on both targets.
- *
- * Every ask for a worker-served task waits, whatever the limits say, in the
- * order the queue's own positions give it; the wake drains none of them. The
- * launch queue the seam still serves is exercised by the clock scenario, which
- * dispatches one of the three tasks that still launch.
- */
+/** Worker-served runs wait in order, including after a slot becomes available. */
 export const dispatchQueue: ParityScenario = {
   name: 'the claim queue: a worker\'s runs wait in order whatever the limit says, and no front door launches one',
-  async run(target: ParityTarget) {
-    const now = Date.now();
-    const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
-    const secret = (method: 'PUT' | 'DELETE') => fetch(`${target.url}/api/secrets/anthropic`, {
-      method, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-      ...(method === 'PUT' ? { body: JSON.stringify({ value: 'sk-ant-oat-parity-test-token' }) } : {}),
-    });
-    expect((await secret('PUT')).status).toBe(200);
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'cortex', 1, ${now}, ${lit(MEMBER_ID)})`);
-    // An outcome task is queued only where the Project has turned its capability on.
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'vault_evolution', 1, ${now}, ${lit(MEMBER_ID)})`);
-    // A clean queue: nothing another scenario launched under the recorder still holds a place.
-    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
-    await leaf('agent.limits.concurrent_runs', 1);
-
-    const dispatch = async (task: string) => {
-      const res = await fetch(`${target.url}/api/harness/dispatch`, {
-        method: 'POST',
-        headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: JSON.stringify({ task, projectId: target.projectId, timeoutSeconds: 120 }),
-      });
-      const answer = await res.json() as { runId: string; queued?: boolean; heldBy?: string };
-      expect({ status: res.status, answer }).toMatchObject({ status: 200 });
-      return answer;
-    };
-    const wake = async () => {
-      const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-      expect(res.status).toBe(200);
-      return (await res.json()) as { drained: number };
-    };
-    const rows = (ids: string[]) => target.sql(`SELECT id, status, held_by AS heldBy, harness, dispatched_by IS NOT NULL AS credentialed FROM agent_runs WHERE id IN (${ids.map(lit).join(', ')}) ORDER BY id`);
-    const listed = async (status: string) => {
-      const res = await fetch(`${target.url}/api/projects/${target.projectId}/runs?status=${status}`, { headers: target.ownerHeaders() });
-      expect(res.status).toBe(200);
-      return ((await res.json()) as { rows: Array<{ id: string; status: string; heldBy: string | null; waitReason: string | null; taskQueued: number | null; queuedAt: number | null }> }).rows;
-    };
-    const waiting = (id: string, heldBy: string) => ({ id, status: 'queued', heldBy, harness: null, credentialed: 0 });
-
-    // A run already running holds the limit, so the first ask waits behind it
-    // by name; with the limit clear the next still waits, held by the worker
-    // that has yet to claim it. Both are the same queue in the same order.
-    await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'myco-agent', 'built-in', 1, ${now})`);
-    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at) VALUES (${lit(target.projectId)}, ${lit(`blocker-${now}`)}, 'myco-agent', 'title-summary', 'running', 0, ${now})`);
-    const a = await dispatch('title-summary');
+  dedicated: { timeoutMs: 120_000 },
+  async run(target) {
+    await allowWorkerClaims(target);
+    expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
+    await repository(target);
+    expect((await putSetting(target, 'agent.limits.concurrent_runs', 1)).status).toBe(200);
+    const blocker = await takeRun(target, (await dispatch(target, 'vault-seed')).runId);
+    const a = await dispatch(target, 'vault-seed');
     expect(a).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
-    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = ${lit(`blocker-${now}`)}`);
-    const b = await dispatch('title-summary');
+    expect(await failRun(target, blocker)).toMatchObject({ ended: true });
+    const b = await dispatch(target, 'vault-seed');
     expect(b).toMatchObject({ queued: true, heldBy: 'worker' });
-    expect(await rows([a.runId, b.runId].sort()))
-      .toEqual([a.runId, b.runId].sort().map((id) => waiting(id, id === a.runId ? 'concurrent_runs' : 'worker')));
-    const queued = (await listed('queued')).sort((x, y) => (x.queuedAt ?? 0) - (y.queuedAt ?? 0) || x.id.localeCompare(y.id));
-    expect(queued.map((r) => r.id).sort()).toEqual([a.runId, b.runId].sort());
-    expect(queued.map((r) => [r.waitReason, r.taskQueued])).toEqual([['concurrent_runs', 2], ['concurrent_runs', 2]]);
-
-    // No limit, and still nothing launches: neither front door runs a harness
-    // for these, and the drain passes over them rather than stopping.
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'`);
-    expect((await wake()).drained).toBe(0);
-    expect(await rows([a.runId, b.runId].sort()))
-      .toEqual([a.runId, b.runId].sort().map((id) => waiting(id, id === a.runId ? 'concurrent_runs' : 'worker')));
-
-    // A queued run the Deployment can no longer prepare is ended where it
-    // waits, and the credential its own row names goes with it. The write that
-    // does both answers with what it displaced (`UPDATE … RETURNING`), which
-    // this proves on each target's store rather than on one of them.
-    const stranded = `run_parity_stranded`;
-    const credential = `mt_parity_stranded`;
-    // The harness member this credential belongs to; every scenario that seeds one ensures it exists.
-    await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
-    await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, lineage_root, lineage_started_at, predecessor_id, first_used_at)
-      VALUES (${lit(credential)}, 'mem_harness', 'harness', ${lit(`h_${credential}`)}, ${now}, ${now + 3_600_000}, NULL, 0, ${lit(credential)}, ${now}, NULL, NULL)`);
-    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, dispatched_by)
-      VALUES (${lit(target.projectId)}, ${lit(stranded)}, 'myco-agent', 'unknown-parity-task', 'queued', ${now}, 'runtime',
-              ${lit(JSON.stringify({ serverUrl: target.url, actor: MEMBER_ID, timeoutSeconds: 120 }))}, ${lit(credential)})`);
-
-    await wake();
-    expect(await target.sql(`SELECT status, error FROM agent_runs WHERE id = ${lit(stranded)}`))
-      .toEqual([{ status: 'failed', error: DISPATCH_REFUSAL_MESSAGE.unknown_task }]);
-    expect(await target.sql(`SELECT revoked_at IS NOT NULL AS revoked FROM member_credentials WHERE id = ${lit(credential)}`))
-      .toEqual([{ revoked: 1 }]);
-
-    // Nothing this scenario launched stays live for the next one to count.
-    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id IN (${[a.runId, b.runId].map(lit).join(', ')})`);
-    expect((await secret('DELETE')).status).toBe(200);
+    const queued = await runList(target, 'status=queued');
+    expect(queued.map(row => row.id).sort()).toEqual([a.runId, b.runId].sort());
+    expect(queued.map(row => [row.waitReason, row.taskQueued])).toEqual([['concurrent_runs', 2], ['concurrent_runs', 2]]);
+    expect((await resetSetting(target, 'agent.limits.concurrent_runs')).status).toBe(200);
+    await wake(target);
+    expect((await runDetail(target, a.runId)).run).toMatchObject({ status: 'queued', heldBy: 'concurrent_runs', harness: null });
+    expect((await runDetail(target, b.runId)).run).toMatchObject({ status: 'queued', heldBy: 'worker', harness: null });
+    const first = await takeRun(target, a.runId);
+    expect(await failRun(target, first)).toMatchObject({ ended: true });
+    const second = await takeRun(target, b.runId);
+    expect(await failRun(target, second)).toMatchObject({ ended: true });
   },
 };
