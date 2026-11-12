@@ -6,8 +6,7 @@ import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js
 import { RestoreAuthorizationError } from '@myco-server-worker/core/restore-authorization.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { changingAtStatement } from './helpers/store-faults.js';
-import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
+import { changingAt, storingCall } from './helpers/store-faults.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 const OWNER = 'mem_machine_1';
@@ -128,12 +127,12 @@ it('a transfer after restore admission rolls back the first guarded data batch',
       { t: 'members', r: { id: 'mem_restore_race', role: 'admin', created_at: 1 } },
     ]);
     const body = { text, authorization: { kind: 'member' as const, memberId: OWNER } };
-    await restoreArtifact(f.db, body);
-    const projectRow = [...definedStatements().keys()].find((name) => name.startsWith('recovery.restoreRowProjects'));
-    if (projectRow === undefined) throw new Error('no kernel statement is named recovery.restoreRowProjects');
+    const project = () => f.sqlite.query("SELECT name FROM projects WHERE project_id='proj_restore_race'").get();
+    const at = await storingCall(f.db, (store) => restoreArtifact(store, body), project);
+    expect(at).toBeGreaterThan(0);
     f.sqlite.run("DELETE FROM projects WHERE project_id='proj_restore_race'");
     f.sqlite.run("DELETE FROM members WHERE id='mem_restore_race'");
-    const raced = changingAtStatement(f.db, projectRow, () => {
+    const raced = changingAt(f.db, at, () => {
       f.sqlite.run('UPDATE deployment_ownership SET member_id=?,revision=revision+1 WHERE id=1', [ADMIN]);
     });
     await expect(restoreArtifact(raced.store, body)).rejects.toBeInstanceOf(RestoreAuthorizationError);

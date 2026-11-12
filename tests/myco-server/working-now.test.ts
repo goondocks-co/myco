@@ -39,28 +39,33 @@ const turnStampSql = () => new Set(TURN_STAMPS.map((name) => {
   return sql;
 }));
 
-/** A store whose turn-stamp calls never finish. The prompt answers before that deferred stamp. */
-function stallingTurn(db: RelationalStore): RelationalStore {
+/** A store whose turn-stamp calls never finish. `landed` is true once that stamp was reached. The prompt answers before it. */
+function stallingTurn(db: RelationalStore): { store: RelationalStore; landed(): boolean } {
   const stamps = turnStampSql();
+  let landed = false;
   const held = new WeakMap<PreparedStatement, { raw: PreparedStatement; sql: string }>();
+  const hang = <T>(): Promise<T> => { landed = true; return new Promise<T>(() => {}); };
   const wrap = (raw: PreparedStatement, sql: string): PreparedStatement => {
     const statement: PreparedStatement = {
       bind: (...values: unknown[]) => wrap(raw.bind(...values), sql),
       first: <T>() => raw.first<T>(),
       all: <T>() => raw.all<T>(),
-      run: () => stamps.has(sql) ? new Promise<RunResult>(() => {}) : raw.run(),
+      run: () => stamps.has(sql) ? hang<RunResult>() : raw.run(),
     };
     held.set(statement, { raw, sql });
     return statement;
   };
   return {
-    ...db,
-    prepare: (sql) => wrap(db.prepare(sql), sql),
-    batch: (statements) => {
-      const originals = statements.map((statement) => held.get(statement));
-      if (originals.some((original) => original !== undefined && stamps.has(original.sql))) return new Promise(() => {});
-      return db.batch(statements.map((statement, index) => originals[index]?.raw ?? statement));
+    store: {
+      ...db,
+      prepare: (sql) => wrap(db.prepare(sql), sql),
+      batch: (statements) => {
+        const originals = statements.map((statement) => held.get(statement));
+        if (originals.some((original) => original !== undefined && stamps.has(original.sql))) return hang<RunResult[]>();
+        return db.batch(statements.map((statement, index) => originals[index]?.raw ?? statement));
+      },
     },
+    landed: () => landed,
   };
 }
 
@@ -363,22 +368,29 @@ describe('a session working now', () => {
 
   it('answers the prompt without waiting on the stamp, which may never finish', async () => {
     const r = await rig();
-    const hanging = { ...r.e.env, MYCO_DB: stallingTurn(r.e.env.MYCO_DB) };
+    const hanging = stallingTurn(r.e.env.MYCO_DB);
+    const stalled = { ...r.e.env, MYCO_DB: hanging.store };
     const deferred = recordingDeferred();
     const res = await Promise.race([
       worker.fetch(new Request('https://s/context/prompt', {
         method: 'POST', headers: memberHeaders(r.token), body: JSON.stringify({ sessionId: 'sess_1', promptId: promptIdAt(r.now - 1_000), text: 'still going' }),
-      }), hanging as never, deferred).then((answer) => answer.status),
+      }), stalled as never, deferred).then((answer) => answer.status),
       new Promise((resolve) => setTimeout(() => resolve('waited'), 2_000)),
     ]);
     expect(res).toBe(200);
     expect(deferred.pending).toHaveLength(1);
+    expect(hanging.landed()).toBe(true);
   });
 
   it('answers the prompt whatever becomes of the stamp: a store that refuses it, or work that cannot be deferred', async () => {
     const r = await rig();
+    const faults: Array<ReturnType<typeof failingStatement>> = [];
     let store = r.e.env.MYCO_DB;
-    for (const name of TURN_STAMPS) store = failingStatement(store, name, { error: () => new Error('D1_ERROR: storage is unavailable') }).store;
+    for (const name of TURN_STAMPS) {
+      const fault = failingStatement(store, name, { error: () => new Error('D1_ERROR: storage is unavailable') });
+      faults.push(fault);
+      store = fault.store;
+    }
     const failing = { ...r.e.env, MYCO_DB: store };
     const refusing = { ...recordingDeferred(), waitUntil: () => { throw new Error('no deferral here'); } };
     const logged: string[] = [];
@@ -386,6 +398,7 @@ describe('a session working now', () => {
     console.log = (...args: unknown[]) => { logged.push(args.map(String).join(' ')); };
     try {
       const refused = await r.prompt('sess_1', promptIdAt(r.now - 1_000), { env: failing });
+      expect(faults.reduce((n, fault) => n + fault.failures(), 0)).toBeGreaterThan(0);
       expect({ status: refused.status, persisted: refused.body.persisted }).toEqual({ status: 200, persisted: true });
       expect(r.workingSince('sess_1')).toBeNull();
       const undeferred = await r.prompt('sess_1', promptIdAt(r.now - 1_000), { deferred: refusing });

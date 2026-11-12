@@ -62,10 +62,10 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
 }
 
 /** The same Deployment with the queue's own write refused, so a dispatch that has spent a claim fails after it. */
-const queueRefusing = (env: ServerEnv): ServerEnv => ({
-  ...env,
-  db: failingStatement(env.db, 'runs.queueRecordWrite', { error: () => new Error('the queue refused the write') }).store,
-});
+const queueRefusing = (env: ServerEnv) => {
+  const fault = failingStatement(env.db, 'runs.queueRecordWrite', { error: () => new Error('the queue refused the write') });
+  return { env: { ...env, db: fault.store }, failures: fault.failures };
+};
 
 const logged: string[] = [];
 const originalLog = console.log;
@@ -247,14 +247,15 @@ describe('titleSession', () => {
     h.prompt('s2', 'p2', 'hello', NOW - 9000);
     const refusing = queueRefusing(h.env);
     await h.convert();
-    expect((await titleSession(refusing, { projectId: 'proj_1', sessionId: 's2', now: NOW + OWNER_TITLING_WINDOW_MS, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' })).outcome).toBe('error');
+    expect((await titleSession(refusing.env, { projectId: 'proj_1', sessionId: 's2', now: NOW + OWNER_TITLING_WINDOW_MS, origin: ORIGIN }, { mode: 'owner', by: 'mem_asker' })).outcome).toBe('error');
+    expect(refusing.failures()).toBeGreaterThan(0);
     expect(h.row('s2')).toEqual({ ...untouched, titled_at: NOW - 60_000, titled_by: 'mem_earlier' });
 
     // The session's own attempt is untouched by the same refusal, and stays open.
     h.session('s3');
     h.prompt('s3', 'p3', 'hello', NOW - 9000);
     await h.convert();
-    expect((await titleSession(refusing, { projectId: 'proj_1', sessionId: 's3', now: NOW, origin: ORIGIN })).outcome).toBe('error');
+    expect((await titleSession(refusing.env, { projectId: 'proj_1', sessionId: 's3', now: NOW, origin: ORIGIN })).outcome).toBe('error');
     expect(h.row('s3')).toEqual(untouched);
     expect(logged.filter((l) => l.includes('session_title_failed'))).toHaveLength(2);
 

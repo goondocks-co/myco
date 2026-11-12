@@ -248,8 +248,10 @@ describe('run-stale-sweep', () => {
   it('is reported by its failure class and does not stop the jobs after it', async () => {
     const f = fixture();
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
-    const broken: ServerEnv = { ...f.env, db: failingStatement(f.env.db, 'runs.retireEligible', { error: () => new Error('D1_ERROR: nope') }).store };
+    const retire = failingStatement(f.env.db, 'runs.retireEligible', { error: () => new Error('D1_ERROR: nope') });
+    const broken: ServerEnv = { ...f.env, db: retire.store };
     const report = await runTick(broken, NOW);
+    expect(retire.failures()).toBeGreaterThan(0);
     expect(report.jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined).map((j) => j.name).sort());
     expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
     expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
