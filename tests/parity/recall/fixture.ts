@@ -6,12 +6,8 @@
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { expectPersisted } from '../harness.ts';
-import { event } from '../clients/requests.ts';
-import type { IdentityTarget } from '../clients/identity.ts';
+import { lit } from '../harness.ts';
 import { fixtureLookup, type VectorIndexFile } from './lookup.ts';
-import { joinMember } from '../clients/identity.ts';
-import { asMember } from '../clients/runs.ts';
 import type { GoldCase, MustNotSummary } from './score.ts';
 
 export const FIXTURE_DIR = path.resolve(import.meta.dir, '..', '..', 'fixtures', 'evals', 'recall');
@@ -32,14 +28,42 @@ export function loadRecallFixture() {
   return { gold, corpus, index, data, lookup: fixtureLookup(index, data) };
 }
 
-/** Imports the frozen identities and source times through the same channel as a member's legacy import. */
-export async function importCorpus(target: IdentityTarget, corpus: Corpus): Promise<void> {
-  const importers = await Promise.all(Array.from({ length: 4 }, async () => asMember(target, (await joinMember(target)).token)));
-  for (const [index, spore] of corpus.spores.entries()) {
-    const importer = importers[index % importers.length]!;
-    await expectPersisted(await fetch(`${target.url}/spores/save`, { method: 'POST', headers: importer.memberHeaders({ 'content-type': 'application/json' }), body: JSON.stringify({ channel: 'import', id: spore.id, agentId: 'recall-gold', observationType: spore.observationType, content: spore.content, agentLine: spore.agentLine, createdAt: spore.createdAt, status: spore.status }) }), `corpus ${spore.id}`);
+/** Longest SQL text one seed statement carries; `wrangler d1 execute --command` passes it as one argument. */
+const SEED_CHUNK_CHARS = 60_000;
+
+function chunked<T>(rows: readonly T[], size: (row: T) => number): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let length = 0;
+  for (const row of rows) {
+    const n = size(row);
+    if (current.length > 0 && length + n > SEED_CHUNK_CHARS) { chunks.push(current); current = []; length = 0; }
+    current.push(row);
+    length += n;
   }
-  const sessionId = 'recall-gold';
-  await event(target, sessionId, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
-  for (const plan of corpus.plans) await event(target, sessionId, 'plan', { planKey: plan.planKey, title: plan.title, status: plan.status, content: plan.content }, Date.now(), target.projectId, { channel: 'import' });
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+/**
+ * Single statements that seed the corpus into a Project, each reading its rows
+ * from one JSON literal. One statement per call is what both targets' `sql`
+ * run, and `json_each` keeps a statement to a single SELECT, which D1's
+ * compound-select cap would refuse as a many-term VALUES list.
+ */
+export function seedStatements(projectId: string, corpus: Corpus, agentId: string, now: number): string[] {
+  const spores = chunked(corpus.spores, (s) => s.content.length + (s.agentLine?.length ?? 0) + 200).map((rows) => {
+    const payload = rows.map((s) => ({ id: s.id, t: s.observationType, c: s.content, l: s.agentLine, at: s.createdAt ?? now }));
+    return `INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, agent_line, created_at)
+      SELECT ${lit(projectId)}, json_extract(j.value, '$.id'), ${lit(agentId)}, json_extract(j.value, '$.t'), 'active',
+        json_extract(j.value, '$.c'), json_extract(j.value, '$.l'), json_extract(j.value, '$.at') FROM json_each(${lit(JSON.stringify(payload))}) j`;
+  });
+  const plans = chunked(corpus.plans, (p) => p.content.length + (p.title?.length ?? 0) + 200).map((rows) => {
+    const payload = rows.map((p) => ({ k: p.planKey, t: p.title, s: p.status, c: p.content }));
+    return `INSERT INTO plans (project_id, plan_key, session_id, event_id, machine_id, title, content, content_hash, status, created_at, updated_at, token_id, received_at)
+      SELECT ${lit(projectId)}, json_extract(j.value, '$.k'), 'recall-gold', 'recall-gold-' || json_extract(j.value, '$.k'), 'recall-gold',
+        json_extract(j.value, '$.t'), json_extract(j.value, '$.c'), 'recall-gold-' || json_extract(j.value, '$.k'), json_extract(j.value, '$.s'),
+        ${now}, ${now}, 'recall-gold', ${now} FROM json_each(${lit(JSON.stringify(payload))}) j`;
+  });
+  return [...spores, ...plans];
 }
