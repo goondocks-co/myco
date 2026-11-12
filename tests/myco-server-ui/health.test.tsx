@@ -460,7 +460,7 @@ describe('Health', () => {
     fireEvent.click(within(await openMenu(/^More for the backup of /, list)).getByRole('menuitem', { name: 'Restore…' }));
     const alert = await screen.findByText(/older format this release can’t restore/);
     expect(alert.textContent).toContain('Myco 2.0.0-alpha.23 was the last release that read it');
-    expect(alert.textContent).toContain('recover from a complete recovery copy with myco server restore');
+    expect(alert.textContent).toContain('run myco server restore --target cloudflare --from <recovery copy folder> --secrets-from <recovery secrets file> --account-id <Cloudflare account ID> --source-retired --yes');
     expect(alert.textContent).not.toContain('server sentence');
     expect(screen.queryByRole('dialog')).toBeNull();
   });

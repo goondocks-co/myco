@@ -77,7 +77,7 @@ export const BACKUP_ACCESS_COMMAND = 'myco server backup-credential --target clo
  */
 export function retiredFormatWords(restoresOn: unknown): string {
   const release = typeof restoresOn === 'string' ? ` Myco ${restoresOn} was the last release that read it.` : '';
-  return `This backup is in an older format this release can’t restore, so nothing was restored.${release} Restore a backup taken after the format change, or recover from a complete recovery copy with myco server restore, which carries the stored content.`;
+  return `This backup is in an older format this release can’t restore, so nothing was restored.${release} Restore a backup taken after the format change, or recover from a complete recovery copy, which carries the stored content. Once this server is retired, run myco server restore --target cloudflare --from <recovery copy folder> --secrets-from <recovery secrets file> --account-id <Cloudflare account ID> --source-retired --yes (for a Myco on your own computer: myco server restore --target local --from <recovery copy folder> --secrets-from <recovery secrets file> --source-retired --yes). To keep this server running, use --fork in place of --source-retired.`;
 }
 
 /** What the recovery schedule is doing, in one line an owner can act on. */
