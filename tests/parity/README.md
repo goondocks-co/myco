@@ -9,6 +9,11 @@ label.
 Run: `npm run test:parity` (the default `npm test` reaches the entry and
 skips — the gate is `MYCO_PARITY=1`).
 
+To check one scenario while changing it, run it on the self-hosted target alone:
+`MYCO_PARITY_TARGET=selfhosted MYCO_PARITY_ONLY='<part of its name>' npm run test:parity`
+(`MYCO_PARITY_ONLY` takes comma-separated name parts). The self-hosted target boots in process. The Cloudflare
+target starts `wrangler dev`, so leave it to CI, which runs every scenario on both targets.
+
 ## Adding a scenario
 
 Write `scenarios/<feature>.ts` exporting a `ParityScenario` (`harness.ts`);

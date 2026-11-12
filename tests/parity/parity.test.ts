@@ -35,7 +35,7 @@ if (!process.env.MYCO_PARITY) {
   const plan = (shard: string | undefined) => selectShard(scenarios, parseShard(shard), (scenario) => weights[scenario.name] ?? DEFAULT_SCENARIO_DURATION_MS);
   const smoke = scenarios.filter((scenario) => PARITY_SMOKE_SCENARIOS.includes(scenario.name));
   if (smoke.length !== PARITY_SMOKE_SCENARIOS.length) throw new Error(`Parity smoke names ${PARITY_SMOKE_SCENARIOS.length} scenarios but ${smoke.length} exist`);
-  const selected = process.env.MYCO_PARITY_SCOPE === 'smoke' ? smoke : plan(process.env.MYCO_PARITY_SHARD);
+  const only = process.env.MYCO_PARITY_ONLY?.split(',').filter(Boolean), selected = (process.env.MYCO_PARITY_SCOPE === 'smoke' ? smoke : plan(process.env.MYCO_PARITY_SHARD)).filter((scenario) => only === undefined || only.some((part) => scenario.name.includes(part)));
   if (process.env.MYCO_PARITY_PLAN === '1') {
     const selectors: string[] | undefined = process.env.MYCO_PARITY_PLAN_MATRIX === undefined ? undefined : JSON.parse(process.env.MYCO_PARITY_PLAN_MATRIX);
     if (selectors !== undefined && (!Array.isArray(selectors) || !selectors.every(value => typeof value === 'string'))) throw new Error('Invalid parity matrix selectors');
@@ -57,7 +57,7 @@ if (!process.env.MYCO_PARITY) {
     ];
     const shared = selected.filter((scenario) => scenario.dedicated === undefined);
     const dedicated = selected.filter((scenario) => scenario.dedicated !== undefined);
-    for (const { name, boot } of boots) {
+    for (const { name, boot } of boots.filter((entry) => process.env.MYCO_PARITY_TARGET === undefined || entry.name === process.env.MYCO_PARITY_TARGET)) {
       const targetShared = shared.filter((scenario) => scenarioCoversTarget(scenario, name));
       const targetDedicated = dedicated.filter((scenario) => scenarioCoversTarget(scenario, name));
       if (targetShared.length > 0) {
