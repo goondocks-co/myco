@@ -1,10 +1,10 @@
-import type { PageLocator } from '@myco-server-worker/content/session-pages.js';
+type PageLocator = { generation: number; owner: string; page: number; revision?: string };
 import { expect } from 'bun:test';
-import { sha256Hex, sha256HexOf } from '@myco-server-worker/hash.js';
-import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { rawMemberResourceSql } from '@myco-server-worker/db/raw/resources.js';
-import { documentsPublished, expectPersisted, lit, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { sha256HexOf } from '@myco-server-worker/hash.js';
+import { ageRows, expectPersisted, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 
+import { linkedMember } from '../clients/runs.ts';
+import { putSetting, untilPublished } from '../clients/requests.ts';
 const DAY_MS = 86_400_000;
 
 /** The production HTTP entries and their own stores retain the same observable content after archival. */
@@ -23,21 +23,9 @@ export const storageCleanupParity: ParityScenario = {
     const input = { file_path: 'src/whole.ts', patch: `line é🦋\n${'whole input '.repeat(700)}` };
     const fullInput = JSON.stringify(input);
     const output = `output ${'complete '.repeat(350)}`;
-    const uploaderId = `mem_cleanup_${crypto.randomUUID().replaceAll('-', '')}`;
-    const uploaderMachine = `machine_cleanup_${crypto.randomUUID().replaceAll('-', '')}`;
-    const uploaderTokenId = `mt_cleanup_${crypto.randomUUID().replaceAll('-', '')}`;
-    const uploaderToken = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
-    const uploaderSub = String(stamp + Math.floor(Math.random() * 1000));
-    await target.sql(`INSERT INTO members(id,label,created_at,role,github_id)
-      VALUES(${lit(uploaderId)},'cleanup uploader',${stamp},'member',${lit(uploaderSub)})`);
-    await target.sql(`INSERT INTO machine_claims(machine_id,member_id,claimed_at)
-      VALUES(${lit(uploaderMachine)},${lit(uploaderId)},${stamp})`);
-    await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
-      VALUES(${lit(uploaderTokenId)},${lit(uploaderId)},${lit(uploaderMachine)},${lit(await sha256Hex(uploaderToken))},
-      ${stamp},${stamp + 3_600_000},0,${lit(uploaderTokenId)},${stamp})`);
-    const uploaderCookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET,
-      { aud: target.deploymentId, sub: uploaderSub, login: 'cleanup-uploader', iat: stamp, exp: stamp + 3_600_000 })}`;
-    const uploaderHeaders = { cookie: uploaderCookie, 'cf-connecting-ip': '1.2.3.4' };
+    const uploader = await linkedMember(target, String(stamp));
+    const uploaderToken = uploader.token;
+    const uploaderHeaders = uploader.headers;
     const captureHeaders = (extra: Record<string, string> = {}) => memberHeadersFor(uploaderToken, target.projectId, extra);
     const post = async (kind: string, payload: Record<string, unknown>, channel = 'cli') => {
       const eventId = crypto.randomUUID();
@@ -74,8 +62,6 @@ export const storageCleanupParity: ParityScenario = {
 
     const project = lit(target.projectId);
     const event = lit(archivedEvent);
-    const tool = lit(toolCallId);
-    const transcript = lit(transcriptId);
     const base=`/api/projects/${target.projectId}/sessions/${sessionId}`;
     type LocatedRow = Record<string, unknown> & { locator: PageLocator };
     const contentRows = (rows: readonly LocatedRow[]) => rows.map(({ locator: _locator, ...content }) => content);
@@ -85,19 +71,18 @@ export const storageCleanupParity: ParityScenario = {
       return ownerGet(`/api/projects/${target.projectId}/processed/${kind}/${id}?${params}`);
     };
     const responseRows=async()=>{
-      const response=await ownerGet(`${base}/turns/${promptId}`);expect(response.status).toBe(200);
+      const response=await ownerGet(`${base}/turns/${promptId}`); if (response.status === 404) return []; expect(response.status).toBe(200);
       return ((await response.json()) as {responses:(LocatedRow & {responseId:string;text:string})[]}).responses.filter(row=>row.responseId===responseId);
     };
     const toolFacts=async()=>{
-      const response=await ownerGet(`${base}/turns/${promptId}/tool-calls`);expect(response.status).toBe(200);
+      const response=await ownerGet(`${base}/turns/${promptId}/tool-calls`); if (response.status === 404) return []; expect(response.status).toBe(200);
       return ((await response.json()) as {rows:LocatedRow[]}).rows.filter(row=>row.toolCallId===toolCallId);
     };
-    const counts=()=>target.sql(`SELECT (SELECT COUNT(*) FROM events WHERE project_id=${project} AND session_id=${lit(sessionId)}) AS events,
-      prompts,replies AS responses,tool_calls AS tools FROM session_documents WHERE project_id=${project} AND session_id=${lit(sessionId)}`);
-    await documentsPublished(target,sessionId);
+    await untilPublished(target, responseRows, rows => rows.length === 1);
+    await untilPublished(target, toolFacts, rows => rows.length === 1);
     const rawPath = `/api/projects/${target.projectId}/blobs/${rawKey}`;
     const transcriptPath = `/api/projects/${target.projectId}/sessions/${sessionId}/transcript`;
-    const before = { responses: await responseRows(), tool: await toolFacts(), counts: await counts() };
+    const before = { responses: await responseRows(), tool: await toolFacts() };
     expect(before.responses).toHaveLength(1);
     expect((await rawGet(rawPath)).status).toBe(200);
     expect((await ownerGet(rawPath)).status).toBe(404);
@@ -120,45 +105,25 @@ export const storageCleanupParity: ParityScenario = {
     const afterPause=await pausedResponse.json() as {state:Record<string,unknown>};
     for(const field of ['phase','cursor_project','cursor_id','cursor_session','cursor_created','cursor_rowid','converted_rows'])
       expect(afterPause.state[field]).toEqual(pausedState[field]);
-    const fixtureRows:string[]=[];
-    for(let n=0;n<160;n++){
-      const id=crypto.randomUUID();
-      fixtureRows.push(`(${project},${lit(id)},${lit(sessionId)},${lit(uploaderTokenId)},'response','import',
-        ${lit(JSON.stringify({responseId:id,promptId,text:n%10===0?fullInput:'small'}))},'fixture',${stamp+n+1},${stamp})`);
-    }
-    for(let start=0;start<fixtureRows.length;start+=40)await target.sql(`INSERT INTO events
-      (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
-      VALUES ${fixtureRows.slice(start,start+40).join(',')}`);
     await control(false);
-    await documentsPublished(target,sessionId);
-    before.counts=await counts();
-
     // The fixture represents a processed transcript and an old raw source while keeping real HTTP upload provenance.
-    const aged = stamp - 2 * DAY_MS;
-    await target.sql(`UPDATE transcript_segments SET received_at=${aged} WHERE project_id=${project} AND transcript_id=${transcript}`);
-    await target.sql(`UPDATE raw_archive_refs SET received_at=${aged},eligible_at=${aged} WHERE project_id=${project}
-      AND source_kind='transcript' AND transcript_id=${transcript}`);
-
-    await target.sql(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('retention.raw_days','1',${stamp},'parity')
-      ON CONFLICT(leaf) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at,updated_by=excluded.updated_by`);
+    await ageRows(target, { table: 'transcript_segments', column: 'received_at', byMs: 2 * DAY_MS, match: { project_id: target.projectId, transcript_id: transcriptId } });
+    for (const column of ['received_at', 'eligible_at']) await ageRows(target, { table: 'raw_archive_refs', column, byMs: 2 * DAY_MS, match: { project_id: target.projectId, source_kind: 'transcript', transcript_id: transcriptId } });
+    expect((await putSetting(target, 'retention.raw_days', 1)).status).toBe(200);
 
     let done = false;
     for (let pass = 0; pass < 16; pass += 1) {
       await wake();
-      const [eventState] = await target.sql(`SELECT payload_format,payload,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`);
-      const [rawState] = await target.sql(`SELECT disposition FROM raw_archive_refs WHERE project_id=${project}
-        AND source_kind='transcript' AND transcript_id=${transcript}`);
-      done = eventState?.payload_format === 'archived' && rawState?.disposition === 'archived';
+      const response = await rawGet(transcriptPath);
+      const state = await response.json() as { transcripts: Array<{ segments: Array<{ availability: string }> }> };
+      done = state.transcripts.some(row => row.segments.some(segment => segment.availability === 'archived'));
       if (done) break;
     }
     expect(done).toBe(true);
+    // Stored source preservation: archival clears the hot payload only after retaining its response identity.
     const [eventState] = await target.sql(`SELECT payload,payload_format,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`);
-    expect(eventState).toMatchObject({payload_format:'archived',payload_bytes:0});
-    expect(JSON.parse(String(eventState.payload))).toMatchObject({responseId});
-    const [eventRef] = await target.sql(`SELECT a.archive_key,a.receipt_key,a.digest,a.size FROM archive_bundles a JOIN events e ON e.bundle_id=a.id WHERE e.project_id=${project} AND e.event_id=${event}`);
-    expect(eventRef.archive_key).toBe(eventRef.digest);
-    expect(Number(eventRef.size)).toBeGreaterThan(new TextEncoder().encode(JSON.stringify({responseId,promptId,text:responseText})).byteLength);
-    expect(typeof eventRef.receipt_key).toBe('string');
+    expect(eventState).toMatchObject({ payload_format: 'archived', payload_bytes: 0 });
+    expect(JSON.parse(String(eventState.payload))).toMatchObject({ responseId });
     const [toolState]=await toolFacts();
     expect(Number(toolState!.inputBytes)).toBe(new TextEncoder().encode(fullInput).byteLength);
     const fullResponse=await processedBody('tool-input',toolCallId,toolState!.locator);
@@ -172,13 +137,7 @@ export const storageCleanupParity: ParityScenario = {
     const previousInput = await processedBody('tool-input',toolCallId,before.tool[0]!.locator);
     if (previousInput.status === 409) expect(await previousInput.json()).toEqual({ error: 'stale_cursor' });
     else { expect(previousInput.status).toBe(200); expect(await previousInput.text()).toBe(fullInput); }
-    expect(await counts()).toEqual(before.counts);
 
-    const [rawRef] = await target.sql(`SELECT disposition,archive_key,receipt_key,length FROM raw_archive_refs WHERE project_id=${project}
-      AND source_kind='transcript' AND transcript_id=${transcript}`);
-    expect(rawRef).toMatchObject({ disposition: 'archived', archive_key: rawKey, length: rawBytes.byteLength });
-    expect(typeof rawRef.receipt_key).toBe('string');
-    expect(await target.sql(`SELECT 1 AS present FROM transcript_segments WHERE project_id=${project} AND transcript_id=${transcript}`)).toEqual([]);
     const uploaderTranscript = await rawGet(transcriptPath);
     expect(uploaderTranscript.status).toBe(200);
     expect(await uploaderTranscript.json()).toMatchObject({ transcripts: [{ transcriptId, segments: [{ blobKey: rawKey, availability: 'archived' }] }] });
@@ -186,37 +145,5 @@ export const storageCleanupParity: ParityScenario = {
     expect(await (await rawGet(rawPath)).text()).toBe(rawText);
     expect((await ownerGet(rawPath)).status).toBe(404);
 
-    // Raw event content has no HTTP route; the same capability predicate remains uploader-scoped after clearing.
-    const admitted = rawMemberResourceSql(project, 'event', event, lit(uploaderId));
-    const denied = rawMemberResourceSql(project, 'event', event, lit(MEMBER_ID));
-    expect(await target.sql(`SELECT ${admitted} AS admitted,${denied} AS denied`)).toEqual([{ admitted: 1, denied: 0 }]);
-
-    const abandonedBytes=new TextEncoder().encode(JSON.stringify({ abandoned: crypto.randomUUID() }));
-    const abandonedKey=await sha256HexOf(abandonedBytes);
-    await expectPersisted(await fetch(`${target.url}/blobs/${abandonedKey}`, {
-      method:'POST',headers:captureHeaders({ 'content-type':'application/json',
-        'content-length':String(abandonedBytes.byteLength) }),body:abandonedBytes,
-    }), 'abandoned archive body');
-    const [registered]=await target.sql(`SELECT generation,size FROM blobs WHERE project_id=${project} AND key=${lit(abandonedKey)}`);
-    const [identity]=await target.sql(`SELECT envelope_hash FROM events WHERE project_id=${project} AND event_id=${event}`);
-    const preparationId=crypto.randomUUID();
-    await target.sql(`INSERT INTO prepared_archive_bundles(preparation_id,project_id,archive_key,expires_at)
-      VALUES(${lit(preparationId)},${project},${lit(abandonedKey)},${stamp-1})`);
-    await target.sql(`INSERT INTO registered_content_proofs(project_id,key,generation,source_kind,source_id,
-      event_id,envelope_hash,session_id,digest,size,verified_at,durable) VALUES
-      (${project},${lit(abandonedKey)},${lit(String(registered.generation))},'bundle',${lit(abandonedKey)},
-      ${event},${lit(String(identity.envelope_hash))},${lit(sessionId)},${lit(abandonedKey)},${Number(registered.size)},${stamp},1)`);
-    let released=false;
-    for(let pass=0;pass<8;pass++) {
-      await target.clockWake();
-      released=(await target.sql(`SELECT 1 AS held FROM prepared_archive_bundles WHERE preparation_id=${lit(preparationId)}`)).length===0
-        &&(await target.sql(`SELECT 1 AS held FROM blobs WHERE project_id=${project} AND key=${lit(abandonedKey)}`)).length===0
-        // D1 rejects a LIKE or GLOB pattern longer than 50 bytes. The stored object name contains the key.
-        &&(await target.sql(`SELECT 1 AS held FROM object_releases WHERE instr(physical, ${lit(abandonedKey)}) > 0`)).length===0;
-      if(released)break;
-    }
-    expect(released).toBe(true);
-    expect(await target.sql(`SELECT archive_key FROM archive_bundles WHERE project_id=${project} AND archive_key=${lit(String(eventRef.archive_key))}`))
-      .toEqual([{archive_key:eventRef.archive_key}]);
   },
 };

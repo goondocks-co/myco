@@ -1,7 +1,8 @@
 import { expect } from 'bun:test';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { CHECKED_TABLES_SQL, quickCheckSql } from '@myco-server-worker/db/maintenance/store-checks.js';
-import { documentsPublished, type ParityScenario } from '../harness.ts';
+import { type ParityScenario } from '../harness.ts';
+import { untilPublished } from '../clients/requests.ts';
 import { freshSchemaObjects, SCHEMA_OBJECTS_SQL } from '../schema-upgrade.ts';
 import { observe, seededDeployment } from '../upgrade-seed/index.ts';
 import { event, mcp, owner } from '../upgrade-seed/requests.ts';
@@ -23,6 +24,7 @@ export const latestSchemaUpgrade: ParityScenario = {
     expect(await status.json()).toMatchObject({ schema: { expected: version, found: version, matches: true }, budget: { active: true } });
     // On Cloudflare the upgrade applied the checked-in files, so a file that drifted from its step differs here. What the
     // Deployment made at runtime (the native vector table) stands beside them.
+    // The upgraded physical schema and integrity checks must match a fresh store.
     const fresh = await freshSchemaObjects();
     const declared = new Set(fresh.map((object) => `${object.type}:${object.name}`));
     expect((await target.sql(SCHEMA_OBJECTS_SQL)).filter((object) => declared.has(`${object.type}:${object.name}`))).toEqual(fresh);
@@ -55,7 +57,7 @@ export const latestSchemaUpgrade: ParityScenario = {
     const before = (await owner(target, `/api/projects/${target.projectId}/sessions/${sessionId}/turns`)).body.rows as Array<{ promptId: string; preview: string }>;
     const promptId = crypto.randomUUID();
     await event(target, sessionId, 'prompt', { promptId, text: 'after the upgrade', origin: 'user' }, Date.now());
-    await documentsPublished(target, sessionId);
+    await untilPublished(target, () => owner(target, `/api/projects/${target.projectId}/sessions/${sessionId}/turns`), answer => answer.body.rows?.some((row: any) => row.promptId === promptId));
     const turns = await owner(target, `/api/projects/${target.projectId}/sessions/${sessionId}/turns`);
     expect((turns.body.rows as Array<{ promptId: string; preview: string }>).map((row) => [row.promptId, row.preview]))
       .toEqual([...before.map((row) => [row.promptId, row.preview]), [promptId, 'after the upgrade']]);

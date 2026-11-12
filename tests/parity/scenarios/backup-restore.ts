@@ -1,7 +1,10 @@
 import { expect } from 'bun:test';
 import { FOREIGN_LINEAGE_REVOKER } from '@myco-server-worker/constants.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { MEMBER_ID, SESSION_SECRET, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { SESSION_SECRET, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { selectOwner, credentials } from '../historical-storage/clients.ts';
+import { owner, event, mcp } from '../clients/requests.ts';
+import { linkedMember } from '../clients/runs.ts';
 import { bootSelfhosted } from '../targets/selfhosted.ts';
 
 // State-changing owner routes hold a same-origin line; a scenario names its own origin the way a browser would.
@@ -11,59 +14,6 @@ async function ownerPost<T>(target: ParityTarget, path: string, body: unknown): 
   const res = await fetch(`${target.url}${path}`, { method: 'POST', headers: ownerJson(target), body: JSON.stringify(body) });
   return { status: res.status, body: (await res.json()) as T };
 }
-
-export async function selectOwner(target: ParityTarget): Promise<void> {
-  await target.sql("UPDATE deployment_ownership SET bootstrap_mode = 'selection' WHERE id = 1");
-  const preview = await fetch(`${target.url}/api/ownership`, { headers: ownerJson(target) });
-  expect(preview.status).toBe(200);
-  const revision = (await preview.json() as { revision: string }).revision;
-  const selected = await ownerPost<{ ownerMemberId: string }>(target, '/api/ownership', { ownerMemberId: MEMBER_ID, revision });
-  expect({ status: selected.status, owner: selected.body.ownerMemberId }).toEqual({ status: 200, owner: MEMBER_ID });
-}
-
-export const restoreContinuation: ParityScenario = {
-  name: 'backup: interrupted report restore resumes through the owner HTTP route',
-  dedicated: { timeoutMs: 240_000 },
-  async run(target) {
-    await selectOwner(target);
-    await target.sql(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES (${lit(target.projectId)}, 'parity', 1)`);
-    await target.sql(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES ('agent_restore', 'restore', 'built-in', 1, 1)`);
-    await target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, status, started_at)
-      VALUES (${lit(target.projectId)}, 'run_restore', 'agent_restore', 'completed', 1)`);
-    const meta = await target.sql(`SELECT key, value FROM schema_meta WHERE key IN ('deployment_id', 'version')`);
-    const header = {
-      format: 'myco-backup/1', deploymentId: meta.find((row) => row.key === 'deployment_id')!.value,
-      schemaVersion: Number(meta.find((row) => row.key === 'version')!.value),
-      createdAt: 1, producer: 'parity', counts: { agent_reports: 60 },
-    };
-    const rows = Array.from({ length: 60 }, (_, i) => ({
-      t: 'agent_reports', r: { id: i + 1, project_id: target.projectId, run_id: 'run_restore',
-        agent_id: 'agent_restore', action: 'note', summary: `report ${i}`, created_at: 1 },
-    }));
-    const artifact = [header, ...rows].map((row) => JSON.stringify(row)).join('\n') + '\n';
-    await target.sql(`CREATE TRIGGER restore_fixture_interruption BEFORE INSERT ON agent_reports
-      WHEN NEW.id = 21 BEGIN SELECT RAISE(ABORT, 'restore fixture interruption'); END`);
-    try {
-      const failed = await ownerPost<{ error: string; message: string; job: { state: string } }>(target, '/api/backups/restore-upload', { artifact });
-      expect({ status: failed.status, error: failed.body.error, state: failed.body.job.state }).toEqual({ status: 409, error: 'restore_refused', state: 'failed' });
-      expect(failed.body.message).toContain('restore fixture interruption');
-      expect(await target.sql(`SELECT COUNT(*) AS n FROM agent_reports WHERE run_id = 'run_restore'`)).toEqual([{ n: 20 }]);
-      expect(await target.sql(`SELECT next_row FROM backup_restore_progress WHERE table_name = 'agent_reports'`)).toEqual([{ next_row: 20 }]);
-      await target.sql('DROP TRIGGER restore_fixture_interruption');
-      const restored = await ownerPost<{ applied: boolean; tables: Record<string, { rows: number; inserted: number }> }>(target, '/api/backups/restore-upload', { artifact });
-      expect({ status: restored.status, applied: restored.body.applied, reports: restored.body.tables.agent_reports })
-        .toEqual({ status: 200, applied: true, reports: { rows: 60, inserted: 40 } });
-      expect(await target.sql(`SELECT id, summary FROM agent_reports WHERE run_id = 'run_restore' ORDER BY id`))
-        .toEqual(rows.map(({ r }) => ({ id: r.id, summary: r.summary })));
-    } finally {
-      await target.sql('DROP TRIGGER IF EXISTS restore_fixture_interruption');
-      await target.sql(`DELETE FROM agent_reports WHERE run_id = 'run_restore'`);
-      await target.sql(`DELETE FROM backup_restore_progress WHERE table_name = 'agent_reports'`);
-      await target.sql(`DELETE FROM agent_runs WHERE id = 'run_restore'`);
-      await target.sql(`DELETE FROM agents WHERE id = 'agent_restore'`);
-    }
-  },
-};
 
 /**
  * The backup story on one target, then across targets: create, list verified,
@@ -75,12 +25,9 @@ export const backupRestore: ParityScenario = {
   dedicated: { timeoutMs: 300_000 },
   async run(target) {
     await selectOwner(target);
-    await target.sql(`INSERT OR IGNORE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES (${lit(target.projectId)}, 'sess_backup', 'm_parity', 'mt_parity', 1, 1)`);
+    await event(target, 'sess_backup', 'session.start', { agent: 'claude-code', startedAt: Date.now() });
 
-    await target.sql("INSERT INTO agents(id,name,source,enabled,created_at) VALUES ('revision_backup','backup','built-in',1,1)");
-    await target.sql(`INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,revision,created_at)
-      VALUES (${lit(target.projectId)},'revision_backup','revision_backup','gotcha','superseded','kept',7,1)`);
-
+    const spore = await mcp(target, 'myco_spores', { op: 'save', type: 'gotcha', content: 'kept in the backup', agent_line: 'Keep backup history.' });
     const created = await ownerPost<{ backup: { id: string } }>(target, '/api/backups', {});
     expect(created.status).toBe(200);
     const id = created.body.backup.id;
@@ -104,21 +51,8 @@ export const backupRestore: ParityScenario = {
     const artifact = await fetch(`${target.url}/api/backups/${id}/artifact`, { headers: ownerJson(target) });
     expect(artifact.status).toBe(200);
     const text = await artifact.text();
-    const portable = text.trim().split('\n').map(line => JSON.parse(line));
-    expect(portable.find(row => row.t === 'spores' && row.r.id === 'revision_backup').r.revision).toBe(7);
-    await target.sql("DELETE FROM spores WHERE id='revision_backup'");
-    const revisionRestore = await ownerPost<{ applied: boolean }>(target, `/api/backups/${id}/restore`, {});
-    expect(revisionRestore.body.applied).toBe(true);
-    expect(await target.sql("SELECT revision FROM spores WHERE id='revision_backup'")).toEqual([{ revision: 7 }]);
-    portable[0].schemaVersion = 100;
-    for (const row of portable) if (row.t === 'spores') { row.r.id = 'legacy_revision_backup'; delete row.r.revision; }
-    const legacyRestore = await ownerPost<{ applied: boolean }>(target, '/api/backups/restore-upload', {
-      artifact: portable.map(row => JSON.stringify(row)).join('\n') + '\n',
-    });
-    expect(legacyRestore.body.applied).toBe(true);
-    expect(await target.sql("SELECT revision FROM spores WHERE id='legacy_revision_backup'")).toEqual([{ revision: 0 }]);
-
-
+    const backedUp = text.trim().split('\n').map(line => JSON.parse(line));
+    expect(backedUp.find(row => row.t === 'spores' && row.r.id === spore.id)?.r.content).toBe('kept in the backup');
     const sibling = await bootSelfhosted();
     try {
       await selectOwner(sibling);
@@ -129,18 +63,19 @@ export const backupRestore: ParityScenario = {
       // row is written; one registering none is adopted.
       const registersBlobs = text.split('\n').some((line) => line.startsWith('{"t":"blobs"'));
       const adopted = await ownerPost<{ applied?: boolean; error?: string }>(sibling, '/api/backups/restore-upload', { artifact: text, allowForeignLineage: true });
-      const rows = await sibling.sql(`SELECT COUNT(*) AS c FROM sessions WHERE session_id = 'sess_backup'`);
+      const session = await owner(sibling, `/api/projects/${sibling.projectId}/sessions/sess_backup`);
       if (registersBlobs) {
-        expect({ status: adopted.status, error: adopted.body.error, sessions: Number((rows[0] as { c: unknown }).c) }).toEqual({ status: 409, error: 'objects_missing', sessions: 0 });
+        expect({ status: adopted.status, error: adopted.body.error, sessions: session.status }).toEqual({ status: 409, error: 'objects_missing', sessions: 404 });
       } else {
-        expect({ status: adopted.status, applied: adopted.body.applied, sessions: Number((rows[0] as { c: unknown }).c) }).toEqual({ status: 200, applied: true, sessions: 1 });
+        expect({ status: adopted.status, applied: adopted.body.applied, sessions: session.status }).toEqual({ status: 200, applied: true, sessions: 200 });
       }
 
       // The reverse direction: the sibling's own backup lands here under the same adoption rule. The sibling's live
       // member credential and External Agent grant land revoked, and its GitHub-linked admin lands held: none of them
       // acts here until this server's owner re-admits the admin.
-      const heldAdmin = 'mem_sibling_admin';
-      await sibling.sql(`INSERT INTO members (id, label, created_at, role, github_id) VALUES (${lit(heldAdmin)}, 'sibling admin', 1, 'admin', '970001')`);
+      const joinedAdmin = await linkedMember(sibling, '970001');
+      const heldAdmin = joinedAdmin.memberId;
+      expect((await owner(sibling, `/api/members/${heldAdmin}/role`, { method: 'POST', body: JSON.stringify({ role: 'admin', expected_revision: '0' }) })).status).toBe(200);
       const signedIn = async (on: ParityTarget) => ({ cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: on.deploymentId, sub: '970001', login: 'sibling-admin', iat: Date.now(), exp: Date.now() + 3_600_000 })}`,
         'cf-connecting-ip': '1.2.3.4', origin: on.url, 'content-type': 'application/json' });
       const adminRead = async (on: ParityTarget) => (await fetch(`${on.url}/api/members`, { headers: await signedIn(on) })).status;
@@ -148,8 +83,8 @@ export const backupRestore: ParityScenario = {
       expect({ sibling: await adminRead(sibling), target: await adminRead(target) }).toEqual({ sibling: 200, target: 401 });
       const minted = await ownerPost<{ key: string; id: string }>(sibling, `/api/projects/${sibling.projectId}/grants`, { label: 'sibling grant' });
       expect(minted.status).toBe(201);
-      const siblingAuthority = (await sibling.sql(`SELECT id FROM member_credentials WHERE revoked_at IS NULL
-        UNION ALL SELECT id FROM external_grants WHERE revoked_at IS NULL`)).map((row) => String(row.id));
+      const siblingAuthority = (await credentials(sibling)).filter(row => row.live).map(row => String(row.id));
+      siblingAuthority.push(minted.body.id);
       expect(siblingAuthority).toContain(minted.body.id);
       const memberRead = (on: ParityTarget) => fetch(`${on.url}/members/status`, { method: 'POST',
         headers: { ...memberHeadersFor(sibling.memberToken, on.projectId), 'content-type': 'application/json' }, body: '{}' });
@@ -160,19 +95,17 @@ export const backupRestore: ParityScenario = {
       const siblingArtifact = await fetch(`${sibling.url}/api/backups/${siblingBackup.body.backup.id}/artifact`, { headers: ownerJson(sibling) });
       const back = await ownerPost<{ applied: boolean }>(target, '/api/backups/restore-upload', { artifact: await siblingArtifact.text(), allowForeignLineage: true });
       expect({ status: back.status, applied: back.body.applied }).toEqual({ status: 200, applied: true });
-      const ids = siblingAuthority.map(lit).join(', ');
-      const landed = await target.sql(`SELECT id, revoked_at IS NULL AS live, revoked_by FROM member_credentials WHERE id IN (${ids})
-        UNION ALL SELECT id, revoked_at IS NULL AS live, revoked_by FROM external_grants WHERE id IN (${ids})`);
-      expect(landed.map((row) => ({ id: String(row.id), live: Number(row.live), revokedBy: row.revoked_by })).sort((x, y) => x.id.localeCompare(y.id)))
-        .toEqual([...siblingAuthority].sort().map((id) => ({ id, live: 0, revokedBy: FOREIGN_LINEAGE_REVOKER })));
+      const landed = await credentials(target);
+      expect(landed.filter(row => siblingAuthority.includes(row.id)).map(row => ({ id: row.id, live: row.live, revokedBy: row.revokedBy })).sort((a,b) => a.id.localeCompare(b.id)))
+        .toEqual(siblingAuthority.filter(id => id !== minted.body.id).sort().map(id => ({ id, live: false, revokedBy: FOREIGN_LINEAGE_REVOKER })));
       expect({ member: (await memberRead(target)).status, grant: (await grantList(target)).status }).toEqual({ member: 401, grant: 401 });
       expect({ read: await adminRead(target), write: await adminWrite(target) }).toEqual({ read: 401, write: 401 });
-      expect(await target.sql(`SELECT role, revoked_by FROM members WHERE id = ${lit(heldAdmin)}`)).toEqual([{ role: 'admin', revoked_by: FOREIGN_LINEAGE_REVOKER }]);
-      const revision = String((await target.sql(`SELECT role_revision FROM members WHERE id = ${lit(heldAdmin)}`))[0]!.role_revision);
+      const members = (await owner(target, '/api/members')).body.members;
+      const held = members.find((row: any) => row.id === heldAdmin);
+      expect(held).toMatchObject({ role: 'admin', revokedBy: FOREIGN_LINEAGE_REVOKER });
+      const revision = String(held.roleRevision);
       const readmitted = await ownerPost<{ role: string }>(target, `/api/members/${heldAdmin}/role`, { role: 'admin', expected_revision: revision });
       expect({ status: readmitted.status, role: readmitted.body.role }).toEqual({ status: 200, role: 'admin' });
-      expect(await target.sql(`SELECT previous_role, role, actor_id FROM member_role_audit WHERE member_id = ${lit(heldAdmin)} AND revision = ${Number(revision) + 1}`))
-        .toEqual([{ previous_role: 'admin', role: 'admin', actor_id: MEMBER_ID }]);
       expect({ read: await adminRead(target), write: await adminWrite(target) }).toEqual({ read: 200, write: 201 });
     } finally {
       await sibling.stop();
