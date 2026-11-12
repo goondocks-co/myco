@@ -11,8 +11,6 @@ import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { Database } from 'bun:sqlite';
 import { applyCloudflareSchema } from '@myco/server/cloudflare-schema.js';
 import { restoreCloudflareDatabase } from '@myco/server/cloudflare-recovery-database.js';
-import { fingerprintFile } from '@myco/server/recovery-bundle.js';
-import { withRecoveryDatabaseCopy } from '@myco/server/recovery-copy.js';
 import { THIN_LEARNING_STEPPING_STONE_REQUIRED, THIN_LEARNING_STEPPING_STONE_REMEDY } from '@myco-server-worker/db/thin-learning-admission.js';
 import { ACCOUNT, BOOKMARK, OLD_WORKER, copySchemaDatabase, fixture } from './fixtures/cloudflare-schema-update.js';
 
@@ -230,19 +228,17 @@ it('refuses hosted 94 before a concurrent old-Worker dispatch can prepare', asyn
   await fixture({ schema: '94' }, async ({ root, home, reports }) => {
     let prepared = false;
     const live = path.join(root, 'schema.sqlite');
-    await withRecoveryDatabaseCopy(live, await fingerprintFile(live), async (copy) => {
-      await expect(applyCloudflareSchema({
-        recovery: copy, accountId: ACCOUNT, mycoHome: home, configDir: root, record: readDeploymentRecord(home)!,
-        persist: (record) => writeDeploymentRecord(record, home), report: (line) => reports.push(line),
-        prepare: async (record) => {
-          prepared = true;
-          const db = new Database(live);
-          try { db.exec("INSERT INTO projects(project_id,name,created_at) VALUES('race','Race',1); INSERT INTO agents(id,name,source,enabled,created_at) VALUES('race','Race','built-in',1,1); INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at) VALUES('race','late','race','extract-curate','running',1,2)"); }
-          finally { db.close(); }
-          return record;
-        },
-      })).rejects.toThrow(THIN_LEARNING_STEPPING_STONE_REQUIRED);
-    });
+    await expect(applyCloudflareSchema({
+      accountId: ACCOUNT, mycoHome: home, configDir: root, record: readDeploymentRecord(home)!,
+      persist: (record) => writeDeploymentRecord(record, home), report: (line) => reports.push(line),
+      prepare: async (record) => {
+        prepared = true;
+        const db = new Database(live);
+        try { db.exec("INSERT INTO projects(project_id,name,created_at) VALUES('race','Race',1); INSERT INTO agents(id,name,source,enabled,created_at) VALUES('race','Race','built-in',1,1); INSERT INTO agent_runs(project_id,id,agent_id,task,status,queued_at,started_at) VALUES('race','late','race','extract-curate','running',1,2)"); }
+        finally { db.close(); }
+        return record;
+      },
+    })).rejects.toThrow(THIN_LEARNING_STEPPING_STONE_REQUIRED);
     expect(prepared).toBe(false);
     expect(reports).toEqual([THIN_LEARNING_STEPPING_STONE_REMEDY]);
     const db = new Database(live, { readonly: true });
