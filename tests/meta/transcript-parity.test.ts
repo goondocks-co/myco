@@ -23,7 +23,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { TRANSCRIPT_PARSE_ADAPTER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 const TRANSCRIPT_PRODUCER={adapter:TRANSCRIPT_PARSE_ADAPTER,version:String(SERVER_PROTOCOL)};
@@ -52,14 +51,12 @@ const savedHome = process.env.MYCO_HOME;
 beforeEach(async () => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
   spy = recordingFetch(rig.fetch);
 });
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 /** The transcript on disk, which is what the hooks read. */

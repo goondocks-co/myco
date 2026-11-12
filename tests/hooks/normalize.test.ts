@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
-import { NO_AGENT, normalizeHookInput, readSymbiontFlag, _resetManifestCache } from '@myco/hooks/normalize.js';
+import { NO_AGENT, normalizeHookInput } from '@myco/hooks/normalize.js';
+import { readSymbiontFlag } from '@myco/hooks/symbiont-flag.js';
 import { BUNDLED_MANIFESTS } from '@myco/symbionts/manifests.generated.js';
 
 // Normalization reads the build-time generated hook config; mock it with a
@@ -68,7 +69,6 @@ const named = (harness?: string): void => {
 describe('normalizeHookInput', () => {
   beforeEach(() => {
     setHookConfig([claudeManifest, codexManifest, windsurfManifest, geminiManifest, cursorManifest]);
-    _resetManifestCache();
     for (const name of ENV_SIGNALS) delete process.env[name];
   });
   afterEach(() => {
@@ -97,13 +97,6 @@ describe('normalizeHookInput', () => {
       named('bogus');
       expect(normalizeHookInput({ session_id: 'abc' }).agent).toBe(NO_AGENT);
     });
-
-    it('is kept for the process: the first answer stands', () => {
-      named('windsurf');
-      expect(normalizeHookInput({ trajectory_id: 's1' }).agent).toBe('windsurf');
-      named('codex');
-      expect(normalizeHookInput({ trajectory_id: 's2' }).agent).toBe('windsurf');
-    });
   });
 
   describe('field mapping, from the named harness\'s manifest', () => {
@@ -120,7 +113,6 @@ describe('normalizeHookInput', () => {
       expect(normalizeHookInput({ session_id: 's1', prompt_id: ' k1 ' }).promptKey).toBe('k1');
       expect('promptKey' in normalizeHookInput({ session_id: 's1' })).toBe(false);
       expect('promptKey' in normalizeHookInput({ session_id: 's1', prompt_id: 42 })).toBe(false);
-      _resetManifestCache();
       named('codex');
       expect('promptKey' in normalizeHookInput({ session_id: 's1', prompt_id: 'k1' })).toBe(false);
     });
@@ -133,7 +125,6 @@ describe('normalizeHookInput', () => {
     it('maps trajectory_id to sessionId for Windsurf, and fabricates none for an empty payload', () => {
       named('windsurf');
       expect(normalizeHookInput({ trajectory_id: 'traj-42' }).sessionId).toBe('traj-42');
-      _resetManifestCache();
       expect(normalizeHookInput({ prompt: 'x' })).toMatchObject({ agent: 'windsurf', sessionId: undefined });
     });
 

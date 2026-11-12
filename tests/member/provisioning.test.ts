@@ -9,7 +9,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { runJoin, runLeave, runStatus, runProvision } from '@myco/cli/member.js';
 import { run as runSettings } from '@myco/cli/settings.js';
 import { CREDENTIAL_FLAG, NEVER_DRAINS_HOOK, hookNameInCommand } from '@myco/member/constants.js';
@@ -60,11 +59,9 @@ beforeEach(() => {
   fs.mkdirSync(projectRoot);
   fs.writeFileSync(path.join(mycoHome, 'machine_id'), 'm1');
   restoreHome = bindSandboxChildHome(fixtureRoot, { HOME: home, MYCO_HOME: mycoHome });
-  resetMachineIdCache();
 });
 afterEach(() => {
   restoreHome();
-  resetMachineIdCache();
   fs.rmSync(fixtureRoot, { recursive: true, force: true });
 });
 

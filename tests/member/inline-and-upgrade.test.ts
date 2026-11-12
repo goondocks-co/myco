@@ -12,7 +12,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { MEMBER_PROTOCOL } from '@myco/member/constants.js';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL } from '@myco/member/credential.js';
 import { ENV_JOIN_CODE } from '@myco/member/constants.js';
@@ -37,7 +36,6 @@ beforeEach(async () => {
   mycoHome = tempMycoHome();
   scratch.push(mycoHome);
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
 });
 /** Directories a test made, removed after it. */
@@ -48,7 +46,6 @@ afterEach(() => {
     if (savedEnv[key] === undefined) delete process.env[key]; else process.env[key] = savedEnv[key];
   }
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 const transcript = (id: string): string => {

@@ -19,7 +19,6 @@ import { memberSource as memberReadSource, type MemberVerbDeps as MemberReadDeps
 import { MEMBER_READ_VERBS, type MemberReadVerb } from '@myco/cli/member-verbs.js';
 import { callTool } from '@myco/mcp/client-call.js';
 import { deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { REJOIN_HINT } from '@myco/member/delivery-notice.js';
 import { readRegistryEntry } from '@myco/member/registry.js';
@@ -58,12 +57,10 @@ function freshCheckout(): string {
 beforeEach(() => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   checkout = freshCheckout();
 });
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 /** What a 1.4 install leaves on a machine: a project vault, a Grove, daemon state, a SQLite file. */

@@ -12,12 +12,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { canonicalPromptId, type TurnSubmission } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { runHook } from '../member/helpers/hooks.js';
 import { identityRig, RELEVANT_WORD, type IdentityRig } from './helpers/prompt-identity-rig.js';
 
 const savedHome = process.env.MYCO_HOME;
-afterEach(() => { process.env.MYCO_HOME = savedHome; resetMachineIdCache(); });
+afterEach(() => { process.env.MYCO_HOME = savedHome; });
 
 const FIRST = `How long does the ${RELEVANT_WORD} window keep records?`;
 const STEER = `Only the ${RELEVANT_WORD} window for plans, please.`;

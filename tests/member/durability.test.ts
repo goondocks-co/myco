@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { readSessionState } from '@myco/member/session-state.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
@@ -31,14 +30,12 @@ const session = 'sess-durable-1';
 beforeEach(async () => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
   fetchSpy = recordingFetch(rig.fetch);
 });
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 /** A Claude Code transcript whose turn wrote `planFile` through a tool the transcript records only as a diff. */

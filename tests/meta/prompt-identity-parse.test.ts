@@ -3,11 +3,10 @@
  * and the parse cursor records the latest dated line it read, on the clock that wrote the transcript.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { identityRig } from './helpers/prompt-identity-rig.js';
 
 const savedHome = process.env.MYCO_HOME;
-afterEach(() => { process.env.MYCO_HOME = savedHome; resetMachineIdCache(); });
+afterEach(() => { process.env.MYCO_HOME = savedHome; });
 
 const lines = (records: readonly Record<string, unknown>[]): string => records.map((o) => `${JSON.stringify(o)}\n`).join('');
 const SESSION = 'ses-parse-identity';

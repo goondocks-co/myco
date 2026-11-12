@@ -10,7 +10,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { membershipProblem } from '@myco/cli/deployment-reader.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { resolveCredential, resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { gitFacts } from '@myco/member/git-facts.js';
 import { unmemberedDir } from '@myco/member/no-membership.js';
@@ -181,7 +180,6 @@ describe('a git stdout lost in transit', () => {
     const home = tempDir('myco-lost-git-home-');
     process.env.HOME = home;
     process.env.MYCO_HOME = mycoHome;
-    resetMachineIdCache();
     const excludes = path.join(checkout, '.git', 'empty-excludes');
     fs.writeFileSync(excludes, '');
     realGit(['config', 'core.excludesFile', excludes], checkout);
@@ -190,7 +188,6 @@ describe('a git stdout lost in transit', () => {
     expect(git.armsLeft()).toBe(0);
     expect(fs.readFileSync(path.join(checkout, '.git', 'info', 'exclude'), 'utf-8').split('\n')).toContain('/.myco/runtime.home');
     expect(fs.existsSync(path.join(checkout, 'info'))).toBe(false);
-    resetMachineIdCache();
   });
 });
 

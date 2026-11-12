@@ -25,7 +25,6 @@ import { MemberSpool } from '@myco/member/spool.js';
 import { promptEvent } from '@myco/member/envelope.js';
 import { setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { main as sessionStart } from '@myco/hooks/session-start.js';
-import { _resetManifestCache } from '@myco/hooks/normalize.js';
 import { getPluginVersion, setPluginVersion } from '@myco/version.js';
 import { recordingPlatform } from '../member/helpers/service-platform.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
@@ -536,7 +535,6 @@ for (const damage of ['truncated', 'malformed', 'unreadable']) {
         } else {
           process.env.MYCO_HOME = home;
           process.argv = [argv[0], argv[1], 'hook', 'session-start', '--symbiont', 'claude-code'];
-          _resetManifestCache();
           const transcript = path.join(root, 'marker.jsonl');
           fs.writeFileSync(transcript, JSON.stringify({ type: 'user', entrypoint: 'cli' }) + '\n');
           setBufferedStdin(Buffer.from(JSON.stringify({ session_id: 'marker', cwd: root, transcript_path: transcript })));
@@ -546,7 +544,7 @@ for (const damage of ['truncated', 'malformed', 'unreadable']) {
         }
         expect(starts, JSON.stringify(err.mock.calls)).toEqual([live]);
         expect(fs.existsSync(helperPaths('proj_fixture', home, SERVER).starting)).toBe(false);
-      } finally { process.argv = argv; _resetManifestCache(); out.mockRestore(); err.mockRestore(); denied?.mockRestore(); setBufferedStdin(null); restoreProcess(); }
+      } finally { process.argv = argv; out.mockRestore(); err.mockRestore(); denied?.mockRestore(); setBufferedStdin(null); restoreProcess(); }
     });
   }
 }

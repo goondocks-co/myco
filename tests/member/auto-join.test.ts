@@ -12,7 +12,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import {
   AUTO_JOIN_RETRY_MS, autoJoinDir, isLeft, JOIN_BUCKET, listJoinRequests, listPendingImports, queueImport, requestJoin, takeRepositoryLock, machineSalt, markLeft, markSweepDone, placeRepository, readAutoJoinState, rootKeyFor, silentRepository, sweepDone,
 } from '@myco/member/auto-join.js';
@@ -99,7 +98,6 @@ beforeEach(async () => {
   process.env.MYCO_TEMPORARY_FOLDERS = temporary;
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
   rig.env.sqlite.run(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)`, [TEST_MACHINE_ID, `mem_${TEST_MACHINE_ID}`, Date.now()]);
   writeDeploymentMembership({ serverUrl: SERVER_URL, token: rig.token, tokenId: rig.tokenId, memberId: `mem_${TEST_MACHINE_ID}`, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome });
@@ -114,7 +112,6 @@ beforeEach(async () => {
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
   if (savedTemporary === undefined) delete process.env.MYCO_TEMPORARY_FOLDERS; else process.env.MYCO_TEMPORARY_FOLDERS = savedTemporary;
-  resetMachineIdCache();
   fs.rmSync(base, { recursive: true, force: true });
   fs.rmSync(temporary, { recursive: true, force: true });
 });

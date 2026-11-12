@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ID_GRAMMAR, ENVELOPE_FIELDS } from '@myco-server-worker/ingest/envelope.js';
 import { KINDS } from '@myco-server-worker/ingest/kinds.js';
-import { normalizeHookInput, _resetManifestCache } from '@myco/hooks/normalize.js';
+import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import {
   attachmentEvent, compactionEvent, contextDeliveredEvent, deriveId, errorEvent, homeRelativePath, mintId, notificationEvent, planEvent, planKeyForTag,
   promptEvent, responseEvent, sessionEndEvent, sessionStartEvent, stopFailureEvent, subagentIdFor,
@@ -40,12 +40,10 @@ const ctx = (sessionId = SESSION): EnvelopeContext => ({ agent: 'claude-code', s
 const input = (raw: Record<string, unknown>) => {
   const argv = process.argv;
   process.argv = ['node', 'myco', 'hook', 'post-tool-use', '--symbiont', 'claude-code'];
-  _resetManifestCache();
   try {
     return normalizeHookInput({ session_id: SESSION, transcript_path: '/fixture/t.jsonl', ...raw });
   } finally {
     process.argv = argv;
-    _resetManifestCache();
   }
 };
 
