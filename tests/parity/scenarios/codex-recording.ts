@@ -20,7 +20,6 @@ export const codexRecording: ParityScenario = {
       detail: await sessionDetail(target, sessionId),
       turns: await owner<{ rows: Array<{ promptId: string; toolCallCount: number }> }>(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(sessionId)}/turns`),
     }), (read) => read.detail.status === 200 && read.detail.body.counts?.toolCalls === 1 && read.detail.body.counts?.failedTools === 0 && read.turns.status === 200 && read.turns.body.rows.some((row) => row.toolCallCount >= 1));
-    expect(published.detail.body.counts).toMatchObject({ toolCalls: 1, failedTools: 0 });
     const turn = published.turns.body.rows.find((row) => row.toolCallCount >= 1);
     expect(turn?.promptId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     const tools = await owner<{ rows: Array<{ toolName: string; success: boolean }> }>(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(sessionId)}/turns/${turn!.promptId}/tool-calls`);
