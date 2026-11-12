@@ -94,7 +94,7 @@ export function detectMachineInstalledSymbionts(): SymbiontManifest[] {
  * The PATH-lookup program for a platform. `which` is POSIX-only; Windows ships
  * `where`. Both exit 0 (printing the matching path(s)) when the binary is on
  * PATH and non-zero when it isn't, so the exit-code contract is identical
- * across platforms — only the program name differs. Exported for testing.
+ * across platforms — only the program name differs.
  */
 export function pathLookupProgram(platform: NodeJS.Platform = process.platform): 'where' | 'which' {
   return platform === 'win32' ? 'where' : 'which';

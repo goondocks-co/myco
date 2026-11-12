@@ -227,7 +227,7 @@ export interface D1ExportContext {
   download?: D1DownloadFetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
-  /** Test-only overrides of the bound, the cancel margin, the pause between polls and the download's stall. */
+  /** Overrides of the bound, the cancel margin, the pause between polls and the download's stall. */
   boundMs?: number;
   marginMs?: number;
   pollMs?: number;

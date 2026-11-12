@@ -100,7 +100,7 @@ export async function backupCloudflareDeployment(
   options: LifecycleOptions & {
     destination: string; fetch?: CloudflareFetch; timeouts?: OperatorObjectTimeouts; retry?: RecoveryRetryPolicy;
     networkRetry?: OperatorNetworkRetry;
-    /** Test-only: the export's clock, pause and bound. */
+    /** The export's clock, pause and bound overrides. */
     d1Export?: Pick<D1ExportOptions, 'now' | 'sleep' | 'boundMs' | 'marginMs' | 'pollMs'>;
   },
 ): Promise<RecoveryManifest> {

@@ -73,7 +73,7 @@ export interface CloudflareBindings extends OwnerBindings {
   MYCO_RECOVERY_DATABASE_ID?: string;
   /** The Deployment's public configuration a recovery records, rendered from the deployment record as JSON. */
   MYCO_RECOVERY_CONFIGURATION?: string;
-  /** Test runtimes only: a loopback stand-in for the provider API. A deployed Worker declares none. */
+  /** A loopback stand-in for the provider API. A deployed Worker declares none. */
   MYCO_RECOVERY_API_ORIGIN?: string;
 }
 
@@ -201,7 +201,7 @@ function recoveryPort(bindings: CloudflareBindings): ServerEnv['recovery'] {
   };
 }
 
-/** The recording launch: the run row is stamped as launched by a recorder and nothing starts. A test double for the parity Worker, never a Deployment's runtime. */
+/** The recording launch: the run row is stamped as launched by a recorder and nothing starts. Used under a recording runtime, never a Deployment's runtime. */
 function recordingLaunch(bindings: CloudflareBindings): ServerEnv['harnessLaunch'] {
   return async (spec) => { await markRecordedLaunch(bindings.MYCO_DB, spec.runId); };
 }

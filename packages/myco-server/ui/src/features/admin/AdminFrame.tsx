@@ -85,7 +85,7 @@ export interface SettingRowProps {
   stacked?: boolean;
   /** Keeps a small control, such as a switch, beside the words at every width, a phone's included. */
   inline?: boolean;
-  /** Names the row for tests and the screen checks, as `data-setting`. */
+  /** The setting key this row represents, rendered as `data-setting`. */
   setting?: string;
 }
 
