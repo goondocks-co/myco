@@ -76,17 +76,13 @@ export const memberStatus: ParityScenario = {
     await allowWorkerClaims(target);
     await event(target, session, 'session.start', { agent: 'claude-code', startedAt: now }, now);
     await event(target, session, 'prompt', { promptId: prompt, text: 'Status the deployment.', origin: 'user' }, now + 1);
-    const published = await untilPublished(target, () => owner(target, `/api/projects/${target.projectId}/sessions/${session}/turns/${prompt}`), (read) => read.status === 200);
-    expect(published.status).toBe(200);
-    const asked = await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(session)}/title`, { method: 'POST' });
-    expect(asked.status).toBe(200);
+    expect((await untilPublished(target, () => owner(target, `/api/projects/${target.projectId}/sessions/${session}/turns/${prompt}`), (page) => page.status === 200)).status).toBe(200);
+    expect((await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(session)}/title`, { method: 'POST' })).status).toBe(200);
     const claimed = await claimRun(target);
     expect(claimed.claimed).toBe(true);
     try {
       expect(await jsonBody(await read('{}', memberHeadersFor(claimed.run!.runToken, target.projectId)))).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
-    } finally {
-      expect(await endRun(target, claimed.run!)).toMatchObject({ ended: true });
-    }
+    } finally { expect(await endRun(target, claimed.run!)).toMatchObject({ ended: true }); }
 
     const resolved = await fetch(`${target.url}/spores/list`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: '{}' });
     expect(((await resolved.json()) as { persisted: boolean }).persisted).toBe(true);

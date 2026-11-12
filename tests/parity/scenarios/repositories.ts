@@ -13,10 +13,7 @@ export const repositories: ParityScenario = {
       return { status: result.status, body: await result.json() as any };
     };
     const dispatch = async (task: string, projectId = target.projectId) => {
-      const response = await fetch(target.url + '/api/harness/dispatch', {
-        method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: JSON.stringify({ task, projectId }),
-      });
+      const response = await fetch(target.url + '/api/harness/dispatch', { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ task, projectId }) });
       return { status: response.status, body: await response.json() };
     };
     for (const [task, projectId, error, message] of [
@@ -34,8 +31,7 @@ export const repositories: ParityScenario = {
     const setupNeeded = async () => {
       const response = await fetch(target.url + '/api/setup', { headers: target.ownerHeaders() });
       expect(response.status).toBe(200);
-      return (await response.json() as { repositoriesNeeded: Array<{ projectId: string }> }).repositoriesNeeded
-        .filter(item => item.projectId === target.projectId);
+      return (await response.json() as { repositoriesNeeded: Array<{ projectId: string }> }).repositoriesNeeded.filter(item => item.projectId === target.projectId);
     };
     for (const capability of ['canopy', 'vault_evolution']) expect((await putCapability(target, capability, false)).status).toBe(200);
     expect(await needed()).toEqual([]);

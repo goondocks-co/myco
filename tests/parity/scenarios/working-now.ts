@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
-import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event } from '../clients/requests.ts';
 
 /** A prompt id as the member mints one: a UUIDv7 whose timestamp is `at`. */
 const promptIdAt = (at: number): string => {
@@ -17,13 +18,7 @@ export const workingNow: ParityScenario = {
   async run(target: ParityTarget) {
     const now = Date.now();
     const session = `parity-working-${now}`;
-    const post = async (kind: string, createdAt: number, payload: Record<string, unknown>) => {
-      const res = await fetch(`${target.url}/events`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: session, kind, createdAt, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
-      });
-      await expectPersisted(res, kind);
-    };
+    const post = (kind: string, createdAt: number, payload: Record<string, unknown>) => event(target, session, kind, payload, createdAt);
     const ask = async (promptId: string) => {
       const res = await fetch(`${target.url}/context/prompt`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },

@@ -1,44 +1,26 @@
 import { expect } from 'bun:test';
 import { uuidv5 } from '@myco-server-worker/hash.js';
-import { expectPersisted, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { untilPublished } from '../clients/requests.ts';
+import { MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event, mcp, owner, untilPublished } from '../clients/requests.ts';
 import { planStatusCounts } from '../clients/knowledge.ts';
 
 /**
  * Plans on both targets: a plan captured with the prompt it came from, an
  * identical re-emission that advances its rank, a changed one that keeps the row's
  * status and prompt, an MCP save converging on the member's key, a status edit
- * through the owner route naming its member, the turn body carrying the plan,
+ * through the read route naming its member, the turn body carrying the plan,
  * and a later capture clearing the administrator.
  */
 export const plans: ParityScenario = {
   name: 'plans: prompt linkage, convergence guards, MCP save on the member key, owner status edit, turn body',
   async run(target: ParityTarget) {
-    const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) => {
-      const res = await fetch(`${target.url}/events`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind, createdAt, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
-      });
-      await expectPersisted(res, kind);
-    };
-    const owner = async <T,>(path: string, init: RequestInit = {}): Promise<{ status: number; body: T }> => {
-      const res = await fetch(`${target.url}${path}`, { ...init, headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...(init.headers ?? {}) } });
-      return { status: res.status, body: (await res.json()) as T };
-    };
-    const mcp = async (args: Record<string, unknown>): Promise<Record<string, unknown>> => {
-      const res = await fetch(`${target.url}/mcp`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_plans', arguments: args } }),
-      });
-      expect(res.status).toBe(200);
-      return ((await res.json()) as { result: { structuredContent: { result: Record<string, unknown> } } }).result.structuredContent.result;
-    };
+    const post = (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) => event(target, sessionId, kind, payload, createdAt);
+    const read = <T,>(path: string, init: RequestInit = {}) => owner<T>(target, path, init);
+    const tool = (args: Record<string, unknown>) => mcp(target, 'myco_plans', args);
     const row = async (key: string) => {
-      const read = await owner<{ plan: { promptId: string | null; status: string; content: string; updatedAt: number; updatedBy: string | null } }>(`/api/projects/${target.projectId}/plans/${key}`);
-      expect(read.status).toBe(200);
-      return read.body.plan;
+      const loaded = await read<{ plan: { promptId: string | null; status: string; content: string; updatedAt: number; updatedBy: string | null } }>(`/api/projects/${target.projectId}/plans/${key}`);
+      expect(loaded.status).toBe(200);
+      return loaded.body.plan;
     };
 
     const stamp = Date.now();
@@ -66,40 +48,40 @@ export const plans: ParityScenario = {
     expect([changed.promptId, changed.status, changed.content, changed.updatedAt]).toEqual([p1, 'active', '- [x] one', stamp + 30]);
 
     // An MCP save by the same path converges on the member's key and, updating, leaves the prompt the row names.
-    const saved = await mcp({ op: 'save', session_id: session, source_path: path, content: '- [x] one\n- [ ] two', project: target.projectId });
+    const saved = await tool({ op: 'save', session_id: session, source_path: path, content: '- [x] one\n- [ ] two', project: target.projectId });
     expect([saved.ok, saved.id, saved.prompt_id]).toEqual([true, key, p1]);
     // A fresh plan saved without a prompt names none.
-    const fresh = await mcp({ op: 'save', session_id: session, plan_key: `parity-${stamp}`, content: 'fresh', project: target.projectId });
+    const fresh = await tool({ op: 'save', session_id: session, plan_key: `parity-${stamp}`, content: 'fresh', project: target.projectId });
     expect([fresh.ok, fresh.prompt_id]).toEqual([true, null]);
 
-    // The owner's status edit names its member and stamps after the row.
+    // The read's status edit names its member and stamps after the row.
     const base = `/api/projects/${target.projectId}/sessions/${session}`;
-    const edit = await owner<{ plan: { status: string; updatedBy: string | null; progress: string; updatedAt: number } }>(`${base}/plans/${key}/status`, { method: 'POST', body: JSON.stringify({ status: 'completed' }) });
+    const edit = await read<{ plan: { status: string; updatedBy: string | null; progress: string; updatedAt: number } }>(`${base}/plans/${key}/status`, { method: 'POST', body: JSON.stringify({ status: 'completed' }) });
     expect(edit.status).toBe(200);
     expect([edit.body.plan.status, edit.body.plan.updatedBy, edit.body.plan.progress, edit.body.plan.updatedAt > changed.updatedAt]).toEqual(['completed', MEMBER_ID, '1/2', true]);
-    expect((await owner(`${base}/plans/${key}/status`, { method: 'POST', body: JSON.stringify({ status: 'all' }) })).status).toBe(400);
+    expect((await read(`${base}/plans/${key}/status`, { method: 'POST', body: JSON.stringify({ status: 'all' }) })).status).toBe(400);
 
     // The session's plans list narrows by status, refuses a text filter for search, and refuses a status the catalogue does not hold.
-    const narrowed = async (query: string) => (await owner<{ rows: { planKey: string }[] }>(`${base}/plans?${query}`)).body.rows.map((p) => p.planKey);
+    const narrowed = async (query: string) => (await read<{ rows: { planKey: string }[] }>(`${base}/plans?${query}`)).body.rows.map((p) => p.planKey);
     expect(await narrowed('status=completed')).toContain(key);
     expect(await narrowed('status=abandoned')).toEqual([]);
-    expect((await owner(`${base}/plans?q=ARIT`)).status).toBe(400);
+    expect((await read(`${base}/plans?q=ARIT`)).status).toBe(400);
     // The board's status totals are the maintained counts: they equal a fresh count of the Project's plans, the edit included.
     const counted = await planStatusCounts(target);
     const board = await untilPublished(target,
-      () => owner<{ totals?: Record<string, number> }>(`/api/plans?project=${target.projectId}&limit=1`),
+      () => read<{ totals?: Record<string, number> }>(`/api/plans?project=${target.projectId}&limit=1`),
       (read) => read.status === 200 && read.body.totals !== undefined);
     expect([board.status, board.body.totals]).toEqual([200, counted]);
-    expect((await owner(`/api/plans?project=${target.projectId}&q=ARIT`)).status).toBe(400);
-    expect((await owner(`${base}/plans?status=all`)).status).toBe(400);
+    expect((await read(`/api/plans?project=${target.projectId}&q=ARIT`)).status).toBe(400);
+    expect((await read(`${base}/plans?status=all`)).status).toBe(400);
 
     // The turn body carries the plan under the prompt it came from; the list reads it by session.
     const detail = await untilPublished(target,
-      () => owner<{ plans: { planKey: string; status: string; progress: string; promptId: string | null }[] }>(`${base}/turns/${p1}`),
+      () => read<{ plans: { planKey: string; status: string; progress: string; promptId: string | null }[] }>(`${base}/turns/${p1}`),
       (read) => read.status === 200 && read.body.plans.some((plan) => plan.planKey === key));
     expect(detail.body.plans.map((p) => [p.planKey, p.status, p.progress, p.promptId])).toEqual([[key, 'completed', '1/2', p1]]);
     // The tool's list is a page of metadata: progress and a preview, never the body.
-    const listed = (await mcp({ op: 'list', session, status: 'all' })) as unknown as { plans: Record<string, unknown>[]; has_more: boolean };
+    const listed = (await tool({ op: 'list', session, status: 'all' })) as unknown as { plans: Record<string, unknown>[]; has_more: boolean };
     expect(listed.plans.filter((p) => p.id === key).map((p) => [p.prompt_id, p.progress, 'content' in p])).toEqual([[p1, '1/2', false]]);
 
     // A later capture with new content clears the administrator and keeps the status the member set.

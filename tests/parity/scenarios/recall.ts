@@ -21,24 +21,13 @@ export const recall: ParityScenario = {
     };
 
     interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[]; kind?: string; answerId?: string; machine?: unknown }
-    const served = async (sessionId: string, promptId: string, text: string): Promise<Served> => {
-      const res = await fetch(`${target.url}/context/prompt`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId, promptId, text }),
-      });
+    const ask = async (path: string, payload: Record<string, unknown>): Promise<Served> => {
+      const res = await fetch(`${target.url}${path}`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       expect(res.status).toBe(200);
-      return (await res.json()) as Served;
+      return await res.json() as Served;
     };
-    const sessionBlock = async (payload: Record<string, unknown>): Promise<Served> => {
-      const res = await fetch(`${target.url}/context/session`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      expect(res.status).toBe(200);
-      return (await res.json()) as Served;
-    };
+    const served = (sessionId: string, promptId: string, text: string) => ask('/context/prompt', { sessionId, promptId, text });
+    const sessionBlock = (payload: Record<string, unknown>) => ask('/context/session', payload);
     const servedAtStart = (sessionId: string) => sessionBlock({ sessionId, kind: 'start' });
     const servedToSubagent = (sessionId: string, agentId: string, agentType: string) =>
       sessionBlock({ sessionId, kind: 'subagent', agentId, agentType });
@@ -71,9 +60,7 @@ export const recall: ParityScenario = {
 
     // The planning nudge remains available when semantic recall has no provider.
     const first = await served(session, p1, planning);
-    expect(first.persisted).toBe(true);
-    expect(first.skipped).toEqual(['spores:no_semantic']);
-    expect(first.parts?.map((p) => p.kind)).toEqual(['plan-nudge']);
+    expect([first.persisted, first.skipped, first.parts?.map((p) => p.kind)]).toEqual([true, ['spores:no_semantic'], ['plan-nudge']]);
     expect(first.context?.startsWith('Myco is where plans live')).toBe(true);
     expect(first.context).not.toContain(`the hook answers before the drain ${stamp}`);
     expect(first.context!.length).toBeLessThanOrEqual(10_000);
@@ -111,13 +98,9 @@ export const recall: ParityScenario = {
     try {
     const startSession = `parity-recall-start-${stamp}`;
     const atStart = await servedAtStart(startSession);
-    expect(atStart.persisted).toBe(true);
-    expect(atStart.parts?.map((p) => p.kind)).toEqual(['project', 'instructions']);
+    expect([atStart.persisted, atStart.parts?.map((p) => p.kind), atStart.kind]).toEqual([true, ['project', 'instructions'], 'cortex']);
     // The Project line stands first: it is the value a write is refused without.
-    expect(atStart.context?.startsWith('Project:: ')).toBe(true);
-    expect(atStart.context).toContain(target.projectId);
-    expect(atStart.context?.endsWith(guidance)).toBe(true);
-    expect(atStart.kind).toBe('cortex');
+    expect([atStart.context?.startsWith('Project:: '), atStart.context?.includes(target.projectId), atStart.context?.endsWith(guidance)]).toEqual([true, true, true]);
     // A machine another scenario claimed adds its own settings block; this checks only what recall serves.
     const { machine: _machine, ...repeated } = await servedAtStart(startSession);
     expect(repeated).toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'], kind: 'cortex' });
@@ -142,8 +125,7 @@ export const recall: ParityScenario = {
     for (const compaction of [1, 2]) {
       const payload = { sessionId: startSession, kind: 'compact', compaction };
       const restored = await sessionBlock(payload);
-      expect(restored.context?.endsWith(guidance)).toBe(true);
-      expect(restored.kind).toBe(`cortex-compact:${compaction}`);
+      expect([restored.context?.endsWith(guidance), restored.kind]).toEqual([true, `cortex-compact:${compaction}`]);
       expect((await sessionBlock(payload)).skipped).toContain('repeat');
     }
     expect((await servedAtStart(startSession)).context).toBe('');
@@ -193,9 +175,7 @@ export const recall: ParityScenario = {
       { kind: 'subagent', preview: true },
     ]) {
       const block = await sessionBlock(payload);
-      expect(block.parts).toEqual([{ kind: 'project' }]);
-      expect(block.skipped).toEqual(['capability']);
-      expect(block.context).toBe(`Project:: \`${target.projectId}\` — pass this as \`project\` on Myco tool calls; a write without it is refused.`);
+      expect([block.parts, block.skipped, block.context]).toEqual([[{ kind: 'project' }], ['capability'], `Project:: \`${target.projectId}\` — pass this as \`project\` on Myco tool calls; a write without it is refused.`]);
     }
     expect((await capabilities()).cortex).toBe(false);
 

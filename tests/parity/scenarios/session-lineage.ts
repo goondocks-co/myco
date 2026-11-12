@@ -4,7 +4,8 @@ import {
   type lineage_SessionLineage as SessionLineage,
 } from '@myco-server-worker/read/catalog/lineage.js';
 import { type session_activity_SessionActivityRow as SessionActivityRow } from '@myco-server-worker/read/catalog/session-activity.js';
-import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event } from '../clients/requests.ts';
 
 /** Launch and continuation parents recorded by `session.start`, read back as a family and as agent activity on both front doors. */
 export const sessionLineageParity: ParityScenario = {
@@ -12,13 +13,8 @@ export const sessionLineageParity: ParityScenario = {
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const id = (name: string) => `parity-lineage-${name}-${stamp}`;
-    const start = async (name: string, at: number, payload: Record<string, unknown>) => {
-      const response = await fetch(`${target.url}/events`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: id(name), kind: 'session.start', createdAt: at, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload: { agent: 'claude-code', startedAt: at, ...payload } }),
-      });
-      await expectPersisted(response, `session.start ${name}`);
-    };
+    const start = (name: string, at: number, payload: Record<string, unknown>) =>
+      event(target, id(name), 'session.start', { agent: 'claude-code', startedAt: at, ...payload }, at);
     const read = async <T>(name: string, path: string): Promise<T> => {
       const response = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${encodeURIComponent(id(name))}/${path}`, { headers: target.ownerHeaders() });
       expect(response.status).toBe(200);

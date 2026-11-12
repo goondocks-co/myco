@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
-import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { sessionDetail, untilPublished } from '../clients/requests.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event, sessionDetail, untilPublished } from '../clients/requests.ts';
 
 /**
  * A deleted session leaves the project list on both targets: the project's
@@ -32,12 +32,7 @@ export const projectCounts: ParityScenario = {
       return ((await res.json()) as { stats: { sessions: number } }).stats.sessions;
     };
     const before = await projectOrEmpty();
-    const res = await fetch(`${target.url}/events`, {
-      method: 'POST',
-      headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: session, kind: 'session.start', createdAt: stamp, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload: { agent: 'claude-code', startedAt: stamp } }),
-    });
-    await expectPersisted(res, 'session.start');
+    await event(target, session, 'session.start', { agent: 'claude-code', startedAt: stamp }, stamp);
     const added = await untilPublished(target, async () => ({ row: await project(), stats: await railTotal(), session: await sessionDetail(target, session) }),
       (read) => read.row.sessionCount === before.sessionCount + 1 && read.row.sessionCount === read.stats && read.session.status === 200 && read.row.lastActivityAt === read.session.body.session.lastReceivedAt);
     expect(added.row.sessionCount).toBe(before.sessionCount + 1);

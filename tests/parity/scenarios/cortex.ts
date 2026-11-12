@@ -65,16 +65,10 @@ export const cortex: ParityScenario = {
     const template = await putSetting(target, 'instructions.template', `  ${guidance}  `);
     expect(template.status).toBe(200);
     try {
-      const res = await fetch(`${target.url}/context/session`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId: session, kind: 'start' }),
-      });
+      const res = await fetch(`${target.url}/context/session`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: session, kind: 'start' }) });
       expect(res.status).toBe(200);
       const body = await res.json() as { persisted: boolean; context: string };
-      expect(body.persisted).toBe(true);
-      expect(body.context.startsWith('Project:: ')).toBe(true);
-      expect(body.context).toContain(target.projectId);
-      expect(body.context.endsWith(guidance)).toBe(true);
+      expect([body.persisted, body.context.startsWith('Project:: '), body.context.includes(target.projectId), body.context.endsWith(guidance)]).toEqual([true, true, true, true]);
     } finally {
       expect((await resetSetting(target, 'instructions.template')).status).toBe(200);
     }

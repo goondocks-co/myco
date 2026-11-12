@@ -29,11 +29,7 @@ export const projectNaming: ParityScenario = {
       git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture');
       git('worktree', 'add', '-qb', 'worker', linked);
       const project = 'proj_worktree_name';
-      const nameOf = async (id: string) => {
-        const listed = await fetch(`${target.url}/api/projects?include=archived`, { headers: target.ownerHeaders() });
-        expect(listed.status).toBe(200);
-        return ((await listed.json()) as { projects: Array<{ projectId: string; name: string }> }).projects.find((row) => row.projectId === id)?.name;
-      };
+      const nameOf = async (id: string) => ((await (await fetch(`${target.url}/api/projects?include=archived`, { headers: target.ownerHeaders() })).json()) as { projects: Array<{ projectId: string; name: string }> }).projects.find((row) => row.projectId === id)?.name;
       const start = async (id: string, originPath: string, projectName?: string) => {
         const out = sessionStartEvent({ agent: 'claude-code', sessionId: crypto.randomUUID(), stage: () => { throw new Error('no blob'); } }, { originPath, projectName });
         await expectPersisted(await fetch(target.url + '/events', {

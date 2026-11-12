@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
-import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { owner, putSetting, resetSetting, wake } from '../clients/requests.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event, owner, putSetting, resetSetting, wake } from '../clients/requests.ts';
 
 /**
  * The bounded import, identical on both front doors (#1148).
@@ -28,20 +28,9 @@ export const importParity: ParityScenario = {
     const ship = async (sessionId: string, transcriptId: string, n: number, channel: 'cli' | 'import') => {
       const bytes = new TextEncoder().encode(body(n));
       const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
-      const blob = await fetch(`${target.url}/blobs/${digest}`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }, body: bytes,
-      });
+      const blob = await fetch(`${target.url}/blobs/${digest}`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }, body: bytes });
       expect((await blob.json() as { stored: boolean }).stored).toBe(true);
-      const res = await fetch(`${target.url}/events`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({
-          eventId: crypto.randomUUID(), sessionId, kind: 'transcript.segment', createdAt: Date.now(), channel,
-          producer: { adapter: 'claude-code', version: '1' },
-          payload: { transcriptId, baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'claude-code', headHash: 'a'.repeat(64) },
-        }),
-      });
-      await expectPersisted(res, `${channel} segment`);
+      await event(target, sessionId, 'transcript.segment', { transcriptId, baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'claude-code', headHash: 'a'.repeat(64) }, Date.now(), target.projectId, { channel, producer: { adapter: 'claude-code', version: '1' } });
     };
 
     const plan = async (candidates: unknown[], over: Record<string, unknown> = {}) => {

@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { expectPersisted, type ParityScenario } from '../harness.ts';
-import { owner, sessionDetail, untilPublished, wake } from '../clients/requests.ts';
+import { event, owner, sessionDetail, untilPublished, wake } from '../clients/requests.ts';
 
 export const codexRecording: ParityScenario = {
   name: 'Codex recording: custom call and array result through segment upload and wake',
@@ -14,14 +14,7 @@ export const codexRecording: ParityScenario = {
     await expectPersisted(await fetch(`${target.url}/blobs/${digest}`, {
       method: 'POST', headers: target.memberHeaders({ 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), body: bytes,
     }), 'recording blob');
-    await expectPersisted(await fetch(`${target.url}/events`, {
-      method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }),
-      body: JSON.stringify({
-        eventId: crypto.randomUUID(), sessionId, kind: 'transcript.segment', createdAt: Date.now(), channel: 'cli',
-        producer: { adapter: 'codex', version: '0.153.4' },
-        payload: { transcriptId, baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'codex', headHash: digest },
-      }),
-    }), 'recording segment');
+    await event(target, sessionId, 'transcript.segment', { transcriptId, baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'codex', headHash: digest }, Date.now(), target.projectId, { producer: { adapter: 'codex', version: '0.153.4' } });
     // The wake publishes the recording into the session the reader opens: one custom call, and it succeeded.
     const published = await untilPublished(target, async () => {
       await wake(target);

@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
-import { expectPersisted, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event } from '../clients/requests.ts';
 
 /**
  * A person's end of a session on both targets: the owner route ends an open
@@ -11,14 +12,7 @@ export const sessionEnd: ParityScenario = {
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const session = `parity-end-${stamp}`;
-    const post = async (kind: string, createdAt: number, payload: Record<string, unknown>) => {
-      const res = await fetch(`${target.url}/events`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: session, kind, createdAt, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
-      });
-      await expectPersisted(res, kind);
-    };
+    const post = (kind: string, createdAt: number, payload: Record<string, unknown>) => event(target, session, kind, payload, createdAt);
     const end = async () => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/end`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
       expect(res.status).toBe(200);
