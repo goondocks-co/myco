@@ -11,6 +11,7 @@
   "scripts": {
     "hooks:install": "node scripts/install-fixture-hook.mjs",
     "check:fixtures": "node --import tsx scripts/check-fixture-redaction.ts",
+    "check:pr": "node scripts/check-pr.mjs",
     "check:migrations": "node scripts/check-shipped-migrations.mjs origin/main",
     "check:test-additions": "node scripts/check-test-additions.mjs origin/main",
     "check:test-budget": "node scripts/check-test-budget.mjs origin/main",
