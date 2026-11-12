@@ -2,8 +2,9 @@ import { expect } from 'bun:test';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { ageRows, expectPersisted, type ParityTarget } from '../harness.ts';
 import { revisionHeaders } from '../settings-revision.ts';
-import { event, owner, putCapability, putSetting, resetSetting, untilPublished, type RouteTarget } from './requests.ts';
+import { event, owner, putCapability, putSetting, untilPublished, type RouteTarget } from './requests.ts';
 import { wordVectorProvider } from '../embedding/word-vectors.ts';
+import { withSettings } from './settings.ts';
 import { saveSpore, writeDueCards } from './knowledge.ts';
 
 export async function blob(target: RouteTarget, bytes: Uint8Array<ArrayBuffer>, mediaType = 'text/plain'): Promise<string> {
@@ -27,19 +28,17 @@ export async function deliver(target: RouteTarget, sessionId: string, answer: { 
   await event(target, sessionId, 'context.delivered', { ...answer, ...rendered });
 }
 export async function withRecallSettings(target: RouteTarget, body: () => Promise<void>, overrides: Record<string, unknown> = {}): Promise<void> {
-  expect((await putCapability(target, 'cortex', true)).status).toBe(200);
+  const before = await owner(target, `/api/projects/${target.projectId}/capabilities`);
+  expect(before.status).toBe(200);
   const settings = { 'cortex.spores.inject_on_prompt_submit': true, 'cortex.plans.inject_intent_nudge_on_prompt_submit': false, 'cortex.instructions.inject_on_session_start': true, 'cortex.instructions.inject_on_subagent_start': true, 'instructions.template': 'Keep captured evidence.', ...overrides };
   try {
-    for (const [leaf, value] of Object.entries(settings)) expect((await putSetting(target, leaf, value)).status).toBe(200);
-    await body();
+    expect((await putCapability(target, 'cortex', true)).status).toBe(200);
+    await withSettings(target, settings, body);
   } finally {
-    const resets = await Promise.allSettled(Object.keys(settings).map(leaf => resetSetting(target, leaf)));
-    for (const reset of resets) {
-      if (reset.status === 'rejected') throw reset.reason;
-      expect(reset.value.status).toBe(200);
-    }
+    expect((await putCapability(target, 'cortex', before.body.capabilities.cortex)).status).toBe(200);
   }
 }
+
 export async function learningSettings(target: RouteTarget): Promise<void> {
   expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
   for (const [leaf, value] of Object.entries({ 'agent.harnesses.claude-code.credential': 'worker-login', 'agent.scheduled_tasks_enabled': true, 'agent.tasks': { 'title-summary': { schedule: { maxRunsPerDay: 0 } } }, 'agent.budget.daily_usd': 10 })) expect((await putSetting(target, leaf, value)).status).toBe(200);

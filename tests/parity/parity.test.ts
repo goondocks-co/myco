@@ -52,7 +52,7 @@ if (!process.env.MYCO_PARITY) {
     afterAll(stopCloudflareRuntime);
     try { configureSqliteLibrary(); } catch (error) { sqliteVecRefusal = error instanceof Error ? error.message : String(error); }
     const boots = [
-      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ stopRace: scenario?.dedicated?.stopRace === true, embeddingFixture:scenario?.dedicated?.cloudflare?.embeddingFixture===true, latestSchemaUpgrade: scenario?.dedicated?.latestSchemaUpgrade === true }) },
+      { name: 'selfhosted' as const, boot: (scenario?: ParityScenario) => bootSelfhosted({ stopRace: scenario?.dedicated?.stopRace === true, embeddingFixture:scenario?.dedicated?.selfhosted?.embeddingRuntime===true||scenario?.dedicated?.cloudflare?.embeddingFixture===true, latestSchemaUpgrade: scenario?.dedicated?.latestSchemaUpgrade === true }) },
       { name: 'cloudflare' as const, boot: (scenario?: ParityScenario) => bootCloudflare({ ...scenario?.dedicated?.cloudflare, latestSchemaUpgrade: scenario?.dedicated?.latestSchemaUpgrade === true }) },
     ];
     const shared = selected.filter((scenario) => scenario.dedicated === undefined);
