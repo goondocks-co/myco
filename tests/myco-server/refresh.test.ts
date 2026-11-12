@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'bun:test';
-import type { Database } from 'bun:sqlite';
 import worker from '@myco-server-worker/index.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { cloudflareSourceOf } from '@myco-server-worker/platform/cloudflare/source.js';
@@ -10,6 +9,7 @@ import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, journaled, memberHeaders, memberPost, noOutboundFetch, RETIRED_BYTE_CEILING, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { refusingWrites } from './helpers/refusing-writes.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 const json = async (res: Response) => res.json() as Promise<Record<string, unknown>>;
 const T0 = 1_700_000_000_000;
@@ -215,17 +215,17 @@ describe('token refresh', () => {
   });
 
   it('admits nothing for a predecessor\'s event that authenticated before activation and wrote after it: retryable, and the retry meets the revocation', async () => {
-    let hook: ((sqlite: Database) => void) | null = null;
-    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO events')) { const h = hook; hook = null; h(sqlite); } } });
+    const r = await rig();
     const successor = await successorOf(r, r.root.token, r.root.expiresAt);
     const activation = r.clock.now + 1;
-    hook = (sqlite) => {
-      sqlite.query(`UPDATE member_credentials SET bytes_written = (SELECT bytes_written FROM member_credentials WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
-      sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
-    };
+    const raced = changingAtStatement(r.e.db, 'capture.rawInsert.prompt', () => {
+      r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = (SELECT bytes_written FROM member_credentials WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
+      r.e.sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
+    });
+    r.e.env.MYCO_DB = raced.store;
     const answered = await r.post(r.root.token, 1);
     expect({ status: answered.status, body: await json(answered) }).toEqual({ status: 503, body: { persisted: false, code: 'unavailable', reason: 'unavailable' } });
-    expect(hook).toBeNull();
+    expect(raced.landed()).toBe(true);
     expect(count(r.e.sqlite, 'events')).toBe(0);
     expect((await r.post(r.root.token, 1)).status).toBe(401);
     expect(r.row(r.root.tokenId)).toMatchObject({ revoked_at: activation, bytes_written: 0 });
@@ -233,16 +233,16 @@ describe('token refresh', () => {
   });
 
   it('mints nothing when a lineage revoke lands between a refresh\'s authentication and its insert: 503 in the refreshed shape, no live row under the revoked root, and the presented token answers 401 next', async () => {
-    let hook: ((sqlite: Database) => void) | null = null;
-    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO member_credentials')) { const h = hook; hook = null; h(sqlite); } } });
+    const r = await rig();
     const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
     r.clock.now += 1;
     const revokedAt = r.clock.now;
-    hook = (sqlite) => {
-      sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId);
-    };
+    const raced = changingAtStatement(r.e.db, 'claim.credentialInsert', () => {
+      r.e.sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE lineage_root = (SELECT lineage_root FROM member_credentials WHERE id = ?) AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId);
+    });
+    r.e.env.MYCO_DB = raced.store;
     const res = await r.capture(() => r.refresh(r.root.token));
-    expect(hook).toBeNull();
+    expect(raced.landed()).toBe(true);
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
     expect(r.emitted('refresh_error')).toEqual([{ kind: 'refresh_error', memberId: 'mem_machine_1', tokenId: r.root.tokenId, error_class: 'revoked' }]);
     expect(r.emitted('token_refreshed')).toEqual([]);
@@ -254,14 +254,16 @@ describe('token refresh', () => {
   });
 
   it('changes nothing when a single-token revoke of the presented token lands between a refresh\'s authentication and its batch: 503, its banked unused successor stays live and keeps working, and the presented token answers 401 next', async () => {
-    let hook: ((sqlite: Database) => void) | null = null;
-    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('revoked_at IS NULL AND rotates=1')) { const h = hook; hook = null; h(sqlite); } } });
+    const r = await rig();
     const s1 = await successorOf(r, r.root.token, r.root.expiresAt);
     r.clock.now += 1;
     const revokedAt = r.clock.now;
-    hook = (sqlite) => { sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId); };
+    const raced = changingAtStatement(r.e.db, 'credential.refreshable', () => {
+      r.e.sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`).run(revokedAt, r.root.tokenId);
+    });
+    r.e.env.MYCO_DB = raced.store;
     const res = await r.refresh(r.root.token);
-    expect(hook).toBeNull();
+    expect(raced.landed()).toBe(true);
     expect({ status: res.status, body: await json(res) }).toEqual({ status: 503, body: { refreshed: false, code: 'unavailable', reason: 'unavailable' } });
     expect(count(r.e.sqlite, 'member_credentials')).toBe(2);
     expect(r.row(s1.tokenId)).toMatchObject({ revoked_at: null, first_used_at: null });
@@ -273,18 +275,18 @@ describe('token refresh', () => {
   });
 
   it('admits nothing for a predecessor\'s upload whose reservation is taken after activation: retryable, no row and no put', async () => {
-    let hook: ((sqlite: Database) => void) | null = null;
-    const r = await rig({ onSql: (sql, sqlite) => { if (hook && sql.includes('INSERT INTO blob_reservations')) { const h = hook; hook = null; h(sqlite); } } });
+    const r = await rig();
     const successor = await successorOf(r, r.root.token, r.root.expiresAt);
     const activation = r.clock.now + 1;
-    hook = (sqlite) => {
-      sqlite.query(`UPDATE member_credentials SET bytes_written = (SELECT bytes_written FROM member_credentials WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
-      sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
-    };
+    const raced = changingAtStatement(r.e.db, 'storage.admitBlobUpload', () => {
+      r.e.sqlite.query(`UPDATE member_credentials SET bytes_written = (SELECT bytes_written FROM member_credentials WHERE id = ?), first_used_at = ? WHERE id = ?`).run(r.root.tokenId, activation, successor.tokenId);
+      r.e.sqlite.query(`UPDATE member_credentials SET revoked_at = ? WHERE id = ?`).run(activation, r.root.tokenId);
+    });
+    r.e.env.MYCO_DB = raced.store;
     const payload = new Uint8Array(64).fill(3);
     const upload = await r.fetch(blobPost(r.root.token, await sha256HexOf(payload), payload));
     expect({ status: upload.status, body: await json(upload) }).toEqual({ status: 503, body: { stored: false, code: 'unavailable', reason: 'unavailable' } });
-    expect(hook).toBeNull();
+    expect(raced.landed()).toBe(true);
     expect(count(r.e.sqlite, 'blob_reservations')).toBe(0);
     expect(count(r.e.sqlite, 'blobs')).toBe(0);
     expect(r.e.bucket.puts).toEqual([]);

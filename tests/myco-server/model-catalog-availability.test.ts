@@ -12,6 +12,14 @@ import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtur
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
 import { statementRecorder } from '../helpers/statement-recorder.js';
+import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
+import { failingStatement } from './helpers/store-faults.js';
+
+const MACHINE_HEAD = () => {
+  const sql = definedStatements().get('runnerHeads.machine');
+  if (sql === undefined) throw new Error('no kernel statement is named runnerHeads.machine');
+  return sql;
+};
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const close of cleanups.splice(0)) close(); });
@@ -90,7 +98,7 @@ describe('catalog availability from current machine offers', () => {
     const observed = statementRecorder(r.db, {
       accounting: 'native',
       after: async (entry) => {
-        if (intercept && entry.sql.includes('FROM machine_head WHERE machine_id')) {
+        if (intercept && entry.sql === MACHINE_HEAD()) {
           intercept = false;
           announce();
           await continued;
@@ -223,13 +231,10 @@ describe('catalog availability from current machine offers', () => {
   it('surfaces failure reading worker availability instead of returning a misleading catalog result', async () => {
     const r = await rig();
     await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
-    const original = r.db.prepare.bind(r.db);
-    r.db.prepare = (sql) => {
-      if (sql.includes('FROM machine_head')) throw new Error('worker availability unavailable');
-      return original(sql);
-    };
-    await expect(readModelCatalogs(r.db, r.now)).rejects.toThrow('worker availability unavailable');
-    await expect(catalogResolution(r.db, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', r.now)).rejects.toThrow('worker availability unavailable');
+    const fault = failingStatement(r.db, 'runnerHeads.contacted', { error: () => new Error('worker availability unavailable') });
+    await expect(readModelCatalogs(fault.store, r.now)).rejects.toThrow('worker availability unavailable');
+    await expect(catalogResolution(fault.store, { kind: 'machine', machineId: 'machine-1' }, 'claude-code', 'opus', r.now)).rejects.toThrow('worker availability unavailable');
+    expect(fault.failures()).toBeGreaterThan(0);
   });
 
   it('resolves the cached model on the first reauthenticated claim using that claim’s current offers', async () => {

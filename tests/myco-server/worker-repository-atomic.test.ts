@@ -10,16 +10,18 @@ import { dispatchTask, claimNextRun } from '@myco-server-worker/core/harness.js'
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { prepareWorkerRepository } from '@myco-server-worker/core/worker-repository.js';
+import { renewRunLease } from '@myco-server-worker/db/runs/leases.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { memberHeaders, sqliteEnv } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
+import { changingAt, changingAtStatement, observing, storingCall } from './helpers/store-faults.js';
 
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
 const COMMIT = 'a'.repeat(40);
 const MEMBER = 'mem_worker';
 
-async function rig(onSql: (sql: string, sqlite: ReturnType<typeof sqliteEnv>['sqlite']) => void) {
-  const e = sqliteEnv({ workerLogin: true, onSql });
+async function rig() {
+  const e = sqliteEnv({ workerLogin: true });
   e.env.SECRET_WRAP_KEY = { get: async () => btoa('r'.repeat(32)) };
   const now = Date.now();
   await ensureMember(e.db, MEMBER, now, 'admin', 'worker');
@@ -39,46 +41,52 @@ async function rig(onSql: (sql: string, sqlite: ReturnType<typeof sqliteEnv>['sq
   return { e, request, state, credential, runId: claimed.run.id };
 }
 
+type Rig = Awaited<ReturnType<typeof rig>>;
+
+function memberChange(sqlite: Rig['e']['sqlite'], change: 'demotion' | 'revocation') {
+  sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [MEMBER]);
+}
+
+function restoreRun(r: Rig, before: { context: string; lease: number }) {
+  r.e.sqlite.run('UPDATE agent_runs SET run_context = ?, lease_expires_at = ? WHERE id = ?', [before.context, before.lease, r.runId]);
+}
+
+/** The call of `operation` that changes what `read` returns. The row is put back so the measured call can run again. */
+async function storingAt(r: Rig, operation: (store: RelationalStore) => Promise<unknown>, read: () => unknown) {
+  const before = r.state();
+  const at = await storingCall(r.e.db, operation, read);
+  restoreRun(r, before);
+  if (at < 1) throw new Error('the pin stored nothing');
+  return at;
+}
+
 for (const change of ['demotion', 'revocation'] as const) {
   it(`refuses a map pin before its guarded write after ${change}, leaving the pin and lease untouched`, async () => {
-    let armed = false;
-    let changed = false;
-    const r = await rig((sql, sqlite) => {
-      if (!armed || changed || !/^UPDATE agent_runs SET run_context = json_set/.test(sql.trim())) return;
-      changed = true;
-      sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [MEMBER]);
-    });
+    const r = await rig();
     try {
       const before = r.state();
-      armed = true;
-      const response = await r.request({ ...SOURCE, commit: COMMIT });
-      expect(changed).toBe(true);
+      const pin = (store: RelationalStore) => { r.e.env.MYCO_DB = store; return r.request({ ...SOURCE, commit: COMMIT }); };
+      const at = await storingAt(r, pin, () => r.state().context);
+      const raced = changingAt(r.e.db, at, () => memberChange(r.e.sqlite, change));
+      const response = await pin(raced.store);
+      expect(raced.landed()).toBe(true);
       expect(await response.json()).toMatchObject({ persisted: false, code: 'not_admin' });
       expect(r.state()).toEqual(before);
     } finally { r.e.sqlite.close(); }
   });
 
   it(`answers a committed map pin after ${change} without a later guarded write`, async () => {
-    let armed = false;
-    let changed = false;
-    const r = await rig(() => {});
+    const r = await rig();
     try {
-      const db = r.e.env.MYCO_DB as RelationalStore;
-      r.e.env.MYCO_DB = {
-        prepare: (sql: string) => db.prepare(sql),
-        batch: async (statements: Parameters<RelationalStore['batch']>[0]) => {
-          const results = await db.batch(statements);
-          if (armed && !changed && statements.some((statement) => /^UPDATE agent_runs SET run_context = json_set/.test(String((statement as { sql?: string }).sql).trim()))) {
-            changed = true;
-            r.e.sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [MEMBER]);
-          }
-          return results;
-        },
-      };
       const before = r.state();
-      armed = true;
-      const response = await r.request({ ...SOURCE, commit: COMMIT });
-      expect(changed).toBe(true);
+      const pin = (store: RelationalStore) => { r.e.env.MYCO_DB = store; return r.request({ ...SOURCE, commit: COMMIT }); };
+      const at = await storingAt(r, pin, () => r.state().context);
+      let landed = false;
+      const watched = observing(r.e.db, async (n, moment) => {
+        if (!landed && n === at && moment === 'after') { landed = true; memberChange(r.e.sqlite, change); }
+      });
+      const response = await pin(watched.store);
+      expect(landed).toBe(true);
       expect(await response.json()).toMatchObject({ persisted: true, held: true, pin: { ...SOURCE, commit: COMMIT } });
       expect(r.state().lease).toBe(before.lease);
       expect(JSON.parse(r.state().context)).toMatchObject({ repository: { ...SOURCE, commit: COMMIT }, canopy: { inputHash: expect.any(String), priorRevision: null } });
@@ -88,26 +96,29 @@ for (const change of ['demotion', 'revocation'] as const) {
 
 for (const task of ['map', 'repository', 'credential'] as const) {
   it(`checks the database clock at the ${task} pin write after a stale worker clock passed initial lease admission`, async () => {
-    let armed = false;
-    let expired = false;
-    const r = await rig((sql, sqlite) => {
-      const write = task === 'credential' ? /^UPDATE agent_runs SET lease_expires_at/ : /^UPDATE agent_runs SET run_context = json_set/;
-      if (!armed || expired || !write.test(sql.trim())) return;
-      expired = true;
-      sqlite.run('UPDATE agent_runs SET lease_expires_at = ? WHERE id = ?', [Date.now() - 1_000, r.runId]);
-    });
+    const r = await rig();
     try {
       if (task === 'repository') r.e.sqlite.run("UPDATE agent_runs SET task='vault-seed' WHERE id=?", [r.runId]);
       const stale = Date.now() - 60_000;
-      const env = { ...r.e.serverEnv, db: memberWriteStore(r.e.db, MEMBER, 'admin') };
-      const before = r.state().context;
-      armed = true;
-      const result = await prepareWorkerRepository(env, { worker: legacyWorker(r.credential.tokenId, 'm1'), clock: () => stale }, {
-        projectId: 'proj_1', runId: r.runId, body: task === 'credential' ? {} : { ...SOURCE, commit: COMMIT },
-      });
-      expect(expired).toBe(true);
+      const body = task === 'credential' ? {} : { ...SOURCE, commit: COMMIT };
+      const prepare = (store: RelationalStore) => prepareWorkerRepository(
+        { ...r.e.serverEnv, db: memberWriteStore(store, MEMBER, 'admin') },
+        { worker: legacyWorker(r.credential.tokenId, 'm1'), clock: () => stale },
+        { projectId: 'proj_1', runId: r.runId, body },
+      );
+      const before = r.state();
+      const expire = () => { r.e.sqlite.run('UPDATE agent_runs SET lease_expires_at = ? WHERE id = ?', [Date.now() - 1_000, r.runId]); };
+      const raced = task === 'credential'
+        ? await (async () => {
+          await renewRunLease(r.e.db, { projectId: 'proj_1' }, r.runId, legacyWorker(r.credential.tokenId, 'm1'), before.lease, Date.now(), r.credential.tokenId);
+          restoreRun(r, before);
+          return changingAtStatement(r.e.db, 'runs.renewLeaseMemberAttempt', expire);
+        })()
+        : changingAt(r.e.db, await storingAt(r, prepare, () => r.state().context), expire);
+      const result = await prepare(raced.store);
+      expect(raced.landed()).toBe(true);
       expect(result).toMatchObject(task === 'credential' ? { held: false } : { persisted: true, held: false, pin: null });
-      expect(r.state().context).toBe(before);
+      expect(r.state().context).toBe(before.context);
       expect(r.state().lease).toBeGreaterThan(stale);
       expect(r.state().lease).toBeLessThan(Date.now());
     } finally { r.e.sqlite.close(); }
@@ -115,38 +126,39 @@ for (const task of ['map', 'repository', 'credential'] as const) {
 }
 
 it('withholds a repository credential when revocation precedes its final authority write', async () => {
-  let armed = false;
-  let changed = false;
-  const r = await rig((sql, sqlite) => {
-    if (!armed || changed || !/^UPDATE agent_runs SET lease_expires_at/.test(sql.trim())) return;
-    changed = true;
-    sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [MEMBER]);
-  });
+  const r = await rig();
   try {
     const before = r.state();
-    armed = true;
+    const at = await storingAt(r, async (store) => {
+      r.e.env.MYCO_DB = store;
+      await r.request({});
+    }, () => r.state().lease);
+    const raced = changingAt(r.e.db, at, () => { r.e.sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [MEMBER]); });
+    r.e.env.MYCO_DB = raced.store;
     const response = await r.request({});
-    expect(changed).toBe(true);
+    expect(raced.landed()).toBe(true);
     expect(await response.json()).toMatchObject({ persisted: false, code: 'not_admin' });
     expect(r.state()).toEqual(before);
   } finally { r.e.sqlite.close(); }
 });
 
 it('answers an expired lease against a legacy repository-only map pin without changing the pin', async () => {
-  let armed = false;
-  let expired = false;
-  const r = await rig((sql, sqlite) => {
-    if (!armed || expired || !/^UPDATE agent_runs SET run_context = json_set/.test(sql.trim())) return;
-    expired = true;
-    sqlite.run('UPDATE agent_runs SET lease_expires_at = ? WHERE id = (SELECT id FROM agent_runs WHERE task = ? ORDER BY queued_at DESC LIMIT 1)', [0, MAP_TASK]);
-  });
+  const r = await rig();
   try {
     const initial = r.state();
     const legacy = { ...JSON.parse(initial.context), repository: { ...SOURCE, commit: COMMIT } };
     r.e.sqlite.run('UPDATE agent_runs SET run_context = ? WHERE task = ?', [JSON.stringify(legacy), MAP_TASK]);
-    armed = true;
+    const at = await storingAt(r, async (store) => {
+      r.e.env.MYCO_DB = store;
+      await r.request({ ...SOURCE, commit: COMMIT });
+    }, () => r.state().context);
+    r.e.sqlite.run('UPDATE agent_runs SET run_context = ? WHERE task = ?', [JSON.stringify(legacy), MAP_TASK]);
+    const raced = changingAt(r.e.db, at, () => {
+      r.e.sqlite.run('UPDATE agent_runs SET lease_expires_at = ? WHERE id = (SELECT id FROM agent_runs WHERE task = ? ORDER BY queued_at DESC LIMIT 1)', [0, MAP_TASK]);
+    });
+    r.e.env.MYCO_DB = raced.store;
     const response = await r.request({ ...SOURCE, commit: COMMIT });
-    expect(expired).toBe(true);
+    expect(raced.landed()).toBe(true);
     expect(await response.json() as Record<string, unknown>).toEqual({ persisted: true, held: false, reason: 'the run no longer holds its map input' });
     expect(JSON.parse(r.state().context)).toEqual(legacy);
   } finally { r.e.sqlite.close(); }
@@ -154,26 +166,21 @@ it('answers an expired lease against a legacy repository-only map pin without ch
 
 for (const change of ['demotion', 'revocation'] as const) {
   it(`answers a committed repository pin after worker ${change}`, async () => {
-    let armed = false;
-    let changed = false;
-    const r = await rig(() => {});
+    const r = await rig();
     try {
       r.e.sqlite.run("UPDATE agent_runs SET task='vault-seed' WHERE task=?", [MAP_TASK]);
-      const db = r.e.env.MYCO_DB as RelationalStore;
-      r.e.env.MYCO_DB = {
-        prepare: (sql: string) => db.prepare(sql),
-        batch: async (statements: Parameters<RelationalStore['batch']>[0]) => {
-          const results = await db.batch(statements);
-          if (armed && !changed && statements.some((statement) => /^UPDATE agent_runs SET run_context = json_set/.test(String((statement as { sql?: string }).sql).trim()))) {
-            changed = true;
-            r.e.sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id=?" : 'UPDATE members SET revoked_at=1 WHERE id=?', [MEMBER]);
-          }
-          return results;
-        },
-      };
-      armed = true;
+      const at = await storingAt(r, async (store) => {
+        r.e.env.MYCO_DB = store;
+        await r.request({ ...SOURCE, commit: COMMIT });
+      }, () => r.state().context);
+      r.e.sqlite.run("UPDATE agent_runs SET task='vault-seed' WHERE id=?", [r.runId]);
+      let landed = false;
+      const watched = observing(r.e.db, async (n, moment) => {
+        if (!landed && n === at && moment === 'after') { landed = true; memberChange(r.e.sqlite, change); }
+      });
+      r.e.env.MYCO_DB = watched.store;
       const response = await r.request({ ...SOURCE, commit: COMMIT });
-      expect(changed).toBe(true);
+      expect(landed).toBe(true);
       expect(await response.json()).toMatchObject({ persisted: true, held: true, pin: { ...SOURCE, commit: COMMIT } });
       expect(JSON.parse(r.state().context)).toMatchObject({ repository: { ...SOURCE, commit: COMMIT } });
     } finally { r.e.sqlite.close(); }

@@ -218,6 +218,7 @@ describe('live authority at administrative writes', () => {
 
   for (const fault of ['read', 'delete'] as const) {
     it(`backup cleanup ${fault} failure preserves the terminal admin refusal and surfaces cleanup failure`, async () => {
+      let readFailures: (() => number) | undefined;
       const log = console.log;
       const events: string[] = [];
       console.log = line => { events.push(String(line)); };
@@ -226,12 +227,16 @@ describe('live authority at administrative writes', () => {
           request: f => send(f, operations.find(operation => operation.name === 'backup')!),
           change: f => f.sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]),
           fault: f => {
-            if (fault === 'read') f.env.MYCO_DB = failingStatement(f.env.MYCO_DB, 'storage.backupObjectRegistered').store;
-            else f.bucket.delete = async () => { throw new Error('fixture cleanup delete failure'); };
+            if (fault === 'read') {
+              const failing = failingStatement(f.env.MYCO_DB, 'storage.backupObjectRegistered');
+              readFailures = failing.failures;
+              f.env.MYCO_DB = failing.store;
+            } else f.bucket.delete = async () => { throw new Error('fixture cleanup delete failure'); };
           },
         });
         try {
           expect(landed).toBe(true);
+          if (fault === 'read') expect(readFailures!()).toBeGreaterThan(0);
           expect(response.status).toBe(403);
           expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
           expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);

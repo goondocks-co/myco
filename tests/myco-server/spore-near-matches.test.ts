@@ -5,6 +5,7 @@ import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile
 import type { EmbeddingProvider } from '@myco-server-worker/core/embedding/provider.js';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { indexFixture } from './helpers/vector-index.js';
 
 /** A Project and a neighbour Deployment-mate, with a spore inserted the way the word match reads them. */
@@ -71,17 +72,16 @@ it('adds near matches to a learning run\'s save and nothing to a member\'s', asy
 });
 
 it('leaves a neighbour out when it is retired between finding it and reading it', async () => {
-  let retire = false;
-  const f = sqliteEnv({ onSql: (sql, sqlite) => {
-    if (retire && sql.includes('FROM spores WHERE (project_id,id) IN')) { retire = false; sqlite.run(`UPDATE spores SET status = 'obsolete', revision = revision + 1 WHERE id = 'candidate'`); }
-  } });
+  const f = sqliteEnv();
   opened.push(f);
   f.sqlite.run(`INSERT INTO agents(id,name,source,enabled,created_at) VALUES('a','agent','built-in',1,1)`);
   f.sqlite.run(`INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','candidate','a','Scheduler retries','gotcha',1)`);
   expect((await nearSpores(f.serverEnv, { projectId: 'proj_1' }, 'saved', LINE)).map((match) => match.id)).toEqual(['candidate']);
-  retire = true;
-  expect(await nearSpores(f.serverEnv, { projectId: 'proj_1' }, 'saved', LINE)).toEqual([]);
-  expect(retire).toBe(false);
+  const retire = () => { f.sqlite.run(`UPDATE spores SET status = 'obsolete', revision = revision + 1 WHERE id = 'candidate'`); };
+  const byIds = changingAtStatement(f.db, 'spores.byIds', retire);
+  const withSource = changingAtStatement(byIds.store, 'spores.byIdsWithSource', retire);
+  expect(await nearSpores({ ...f.serverEnv, db: withSource.store }, { projectId: 'proj_1' }, 'saved', LINE)).toEqual([]);
+  expect(byIds.landed() || withSource.landed()).toBe(true);
 });
 
 it('ranks the word search inside one Project\'s active spores by how many of the line\'s words each holds, never the saved one', async () => {

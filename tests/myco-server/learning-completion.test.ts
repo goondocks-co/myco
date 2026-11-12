@@ -9,7 +9,7 @@ import { learningCompletedBy } from '@myco-server-worker/core/run-postconditions
 import { taskTools } from '@myco-server-worker/core/task-catalogue.js';
 import { isRunCall, runAllowlist } from '@myco-server-worker/mcp/run-allowlist.js';
 import { seedCredential, seededSqlite, sqliteD1 } from './helpers/d1.js';
-import { beforeWriteBatch } from './helpers/prepared.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 const NOW = 1_800_000_000_000;
 let sqlite: Database;
@@ -69,10 +69,10 @@ it('completes surviving cards when a card goes pending before the batch', async 
     if (timing === 'before_batch') { sqlite.close(); await setup(); }
     const pending = async () => { sqlite.query(`UPDATE turn_cards SET state='pending' WHERE turn_key='second'`).run(); };
     if (timing === 'before_read') await pending();
-    const raced = timing === 'before_read' ? db : beforeWriteBatch(db,
-      sql => sql.startsWith('UPDATE learning_sessions SET revision'), pending, true);
-    expect(await completeLearning(raced, 'proj_1', 'session', 'run', assignment, 'handoff', NOW))
+    const landing = timing === 'before_read' ? null : changingAtStatement(db, 'runs.learningCompleted', pending);
+    expect(await completeLearning(landing?.store ?? db, 'proj_1', 'session', 'run', assignment, 'handoff', NOW))
       .toEqual({ completed: true, covered: 1 });
+    if (landing) expect(landing.landed()).toBe(true);
     expect(sqlite.query('SELECT record_id FROM extraction_acks').all()).toEqual([{ record_id: 'first' }]);
     expect(sqlite.query('SELECT turn_key,state,covered FROM turn_cards ORDER BY turn_key').all()).toEqual([
       { turn_key: 'first', state: 'carded', covered: 1 }, { turn_key: 'second', state: 'pending', covered: 0 },
@@ -85,9 +85,9 @@ it('completes surviving cards when a card goes pending before the batch', async 
 
 it('keeps the prior handoff and failures when every card changes before the batch', async () => {
   sqlite.query(`UPDATE learning_sessions SET handoff='prior'`).run();
-  const raced = beforeWriteBatch(db, sql => sql.startsWith('UPDATE learning_sessions SET revision'),
-    async () => { sqlite.query(`UPDATE turn_cards SET state='pending'`).run(); }, true);
-  expect(await completeLearning(raced, 'proj_1', 'session', 'run', assignment, 'new', NOW)).toEqual({ completed: true, covered: 0 });
+  const raced = changingAtStatement(db, 'runs.learningCompleted', () => { sqlite.query(`UPDATE turn_cards SET state='pending'`).run(); });
+  expect(await completeLearning(raced.store, 'proj_1', 'session', 'run', assignment, 'new', NOW)).toEqual({ completed: true, covered: 0 });
+  expect(raced.landed()).toBe(true);
   expect(progress()).toMatchObject({ revision: 1, handoff: 'prior', failures: 3, last_completed_run: 'run' });
 });
 

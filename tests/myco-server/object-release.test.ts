@@ -15,6 +15,7 @@ import { ORPHAN_AUDIT_PAGE } from '@myco-server-worker/db/storage/blob-orphan-au
 import { OBJECT_WALK_QUARANTINE_MS } from '@myco-server-worker/db/storage/object-reconciliation.js';
 import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { blobPost, count, journaled, memberHeaders, registeredObject, sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { legacyBlob, registerBlob } from './helpers/d1.js';
 
 /**
@@ -333,17 +334,14 @@ describe('the one physical name', () => {
 
 describe('upload authority is the only way bytes become registered', () => {
   it('holds every refused, failed or expired upload to one outcome: its bytes are journaled or never written, and the count is untouched', async () => {
-    let revoke: string | null = null;
-    const e = sqliteEnv({
-      onSql: (sql, sqlite) => {
-        if (revoke === null || !sql.startsWith('INSERT INTO blob_reservations')) return;
-        sqlite.run('UPDATE member_credentials SET revoked_at = 1 WHERE id = ?', [revoke]);
-        revoke = null;
-      },
-    });
+    const e = sqliteEnv();
     const t = await member(e);
-    revoke = t.tokenId;
+    const raced = changingAtStatement(e.db, 'storage.admitBlobUpload', () => {
+      e.sqlite.run('UPDATE member_credentials SET revoked_at = 1 WHERE id = ?', [t.tokenId]);
+    });
+    e.env.MYCO_DB = raced.store;
     expect(await capture(e, t.token)).toMatchObject({ stored: false, code: 'unavailable' });
+    expect(raced.landed()).toBe(true);
     expect((e.sqlite.query('SELECT bytes_written AS b FROM member_credentials WHERE id = ?').get(t.tokenId) as { b: number }).b).toBe(0);
     expect([e.bucket.puts, journaled(e.sqlite), count(e.sqlite, 'blob_reservations')]).toEqual([[], [], 0]);
     await drain(e);

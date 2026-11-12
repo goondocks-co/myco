@@ -1,5 +1,8 @@
 import { inheritStoreContext, type PreparedStatement, type RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { createProject } from '@myco-server-worker/db/storage/projects.js';
+import { interleaveAt } from './store-faults.js';
+
+export { interleaveAt };
 
 /**
  * Two writers racing on one store, and the Deployment rows the race cases share. Imported by the cases that run both
@@ -49,36 +52,6 @@ export async function lockstep<A, B>(db: RelationalStore, first: Writer<A>, seco
     try { return await writer(storeFor(side)); } finally { finished[side] = true; handTo(1 - side); }
   };
   return Promise.all([run(0, first), run(1, second)]);
-}
-
-/**
- * Runs `first` until it has made `calls` store calls, then the whole of `second`, then the rest of `first`: sweeping
- * `calls` from zero puts `second` between every pair of `first`'s calls. Answers both results, and whether `second`
- * ran before `first` finished (false once `calls` is past `first`'s last call).
- */
-export async function interleaveAt<A, B>(db: RelationalStore, first: Writer<A>, second: Writer<B>, calls: number): Promise<{ results: [A, B]; inside: boolean }> {
-  let made = 0;
-  let other: Promise<B> | undefined;
-  const before = async (): Promise<void> => {
-    if (made++ === calls) await (other = second(db));
-  };
-  const originals = new WeakMap<PreparedStatement, PreparedStatement>();
-  const wrap = (statement: PreparedStatement): PreparedStatement => {
-    const wrapped: PreparedStatement = {
-      bind: (...values) => wrap(statement.bind(...values)),
-      first: async <T>() => { await before(); return statement.first<T>(); },
-      all: async <T>() => { await before(); return statement.all<T>(); },
-      run: async () => { await before(); return statement.run(); },
-    };
-    originals.set(wrapped, statement);
-    return wrapped;
-  };
-  const result = await first(inheritStoreContext(db, {
-    prepare: (sql) => wrap(db.prepare(sql)),
-    batch: async (statements) => { await before(); return db.batch(statements.map((statement) => originals.get(statement) ?? statement)); },
-  }));
-  const inside = other !== undefined;
-  return { results: [result, await (other ?? second(db))], inside };
 }
 
 export interface Sweep<A, B> {
