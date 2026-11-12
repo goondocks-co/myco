@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { SQLQueryBindings } from 'bun:sqlite';
 import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
 import { indexFixture } from './helpers/vector-index.js';
 import worker from '@myco-server-worker/index.js';
@@ -64,7 +65,7 @@ type RouteFixture = Awaited<ReturnType<typeof fixture>>;
 
 function restoreTarget(f: RouteFixture, row: Record<string, unknown>) {
   const columns = Object.keys(row);
-  f.sqlite.run(`UPDATE agent_runs SET ${columns.map((column) => `${column}=?`).join(',')} WHERE id='target'`, columns.map((column) => row[column]));
+  f.sqlite.run(`UPDATE agent_runs SET ${columns.map((column) => `${column}=?`).join(',')} WHERE id='target'`, columns.map((column) => row[column]) as SQLQueryBindings[]);
   f.sqlite.run("DELETE FROM agent_reports WHERE run_id='target'");
   f.sqlite.run("DELETE FROM agent_run_events WHERE run_id='target'");
 }

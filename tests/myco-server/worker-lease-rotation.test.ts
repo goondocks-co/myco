@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { SQLQueryBindings } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,7 +109,7 @@ function pauseAuthenticatedOwner(r: Awaited<ReturnType<typeof rig>>) {
 }
 
 type Rig = Awaited<ReturnType<typeof rig>>;
-type Row = Record<string, unknown>;
+type Row = Record<string, SQLQueryBindings>;
 
 function holdBefore(db: RelationalStore, at: number) {
   let release = () => {}, reached = () => {};
