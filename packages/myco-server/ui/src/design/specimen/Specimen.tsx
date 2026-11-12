@@ -367,7 +367,7 @@ export function Specimen() {
                 A <Link to="/knowledge">link inside text</Link> reads in the primary colour, underlined.
               </p>
             </div>
-            <FactsPanel title="Facts" actions={<CopyButton value="myco resume sess_example" label="Copy resume command" />}>
+            <FactsPanel title="Facts" actions={<CopyButton value="claude --resume sess_example" label="Copy resume command" />}>
               <FactRow term="Agent">Claude Code</FactRow>
               <FactRow term="Machine">studio machine</FactRow>
               <FactRow term="Started">Sep 29, 9:41 AM</FactRow>

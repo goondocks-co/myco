@@ -28,7 +28,7 @@ export function setupItems(progress: SetupProgress | undefined, admin: boolean, 
   ];
   const definitions: Omit<Item, 'done'>[] = admin ? [
     { id: 'owner', title: progress?.viewerIsOwner ? 'You’re the owner' : 'Owner linked',
-      nextAction: <>On the computer that created your Myco, run <code>myco server setup-owner</code>.</> },
+      nextAction: <>On the computer that created your Myco, run <code>myco server setup-owner --target cloudflare</code>, or <code>myco server setup-owner --target local</code> if Myco runs on that computer.</> },
     { id: 'sign-in', title: 'Sign-in working',
       nextAction: <>Sign in to this dashboard with your connected GitHub account.</> },
     ...items,

@@ -1,5 +1,5 @@
 import { COMMANDS, helpForCommand } from '@myco/cli/command-registry.js';
-/** Published commands, subcommands and flags match the CLI source vocabulary. */
+/** Published and dashboard commands, subcommands and flags match the CLI source vocabulary. */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,9 +13,10 @@ export const USER_DOCS = ['README.md', 'packages/myco/README.md', 'docs/index.ht
   .filter((slug) => !slug.startsWith('architecture/'))
   .map((slug) => `docs/${slug}.md`)];
 
-interface CommandSurface { flags: Set<string>; subcommands: Map<string, Set<string>> }
+interface CommandSurface { flags: Set<string>; subcommands: Map<string, Set<string>>; required: Map<string, Set<string>> }
 const readSource = (relative: string): string => fs.readFileSync(path.join(SRC, relative), 'utf8');
 const flagsIn = (text: string): Set<string> => new Set(text.match(/--[a-z][a-z0-9-]*/g) ?? []);
+const requiredIn = (signature: string): Set<string> => flagsIn(signature.split(/\s{2,}/)[0].replace(/\[[^\]]*\]/g, ''));
 
 function functionSource(source: string, name: string): string {
   const match = source.match(new RegExp(`(?:export )?(?:async )?function ${name}\\([\\s\\S]*?\\n}`));
@@ -31,6 +32,7 @@ async function commandSurfaces(): Promise<Map<string, CommandSurface>> {
     const source = command === 'server' || command === 'tool' ? readSource('cli/' + command + '.ts') : '';
     const help = await helpForCommand(command);
     const subcommands = new Map<string, Set<string>>();
+    const required = new Map<string, Set<string>>();
     const nested = ['member', 'server', 'runner'].includes(command);
     if (nested) {
       let current: Set<string> | undefined;
@@ -39,6 +41,7 @@ async function commandSurfaces(): Promise<Map<string, CommandSurface>> {
         if (signature) {
           current = subcommands.get(signature[1]) ?? new Set<string>();
           subcommands.set(signature[1], current);
+          required.set(signature[1], new Set([...requiredIn(signature[2])].filter((flag) => required.get(signature[1])?.has(flag) ?? true)));
         } else if (line.trim() && !/^\s/.test(line)) current = undefined;
         if (current) for (const flag of flagsIn(line)) current.add(flag);
       }
@@ -62,7 +65,7 @@ async function commandSurfaces(): Promise<Map<string, CommandSurface>> {
       for (const op of ['install', 'status', 'doctor', 'uninstall']) subcommands.set(op, runner.subcommands.get(op)!);
     }
     const options = help.split('\n').filter((line) => /^  |^Usage:/.test(line)).join('\n');
-    surfaces.set(command, { flags: nested || subcommands.size ? new Set() : flagsIn(options || help), subcommands });
+    surfaces.set(command, { flags: nested || subcommands.size ? new Set() : flagsIn(options || help), subcommands, required });
   }
   return surfaces;
 }
@@ -84,6 +87,17 @@ export function invocations(file: string, text: string): Invocation[] {
     }
   });
   return found;
+}
+
+const DASHBOARD = path.join(ROOT, 'packages/myco-server/ui/src');
+const DASHBOARD_COPY = (fs.readdirSync(DASHBOARD, { recursive: true }) as string[])
+  .filter((file) => /(?<!\.test)\.tsx?$/.test(file)).map((file) => path.relative(ROOT, path.join(DASHBOARD, file)));
+
+/** Every `myco …` a dashboard screen shows, read as shown: no comments, VALUE per interpolation, entities decoded, ending with its clause or element. */
+export function dashboardInvocations(file: string, text: string): Invocation[] {
+  const shown = text.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, ' ')).replace(/(^|\s)\/\/.*$/gm, '$1').replace(/\$\{[^{}\n]*\}|\{[\w.?]+\}/g, 'VALUE');
+  return shown.split('\n').flatMap((raw, i) => [...raw.matchAll(/\bmyco ([a-z](?:&[a-z]+;|[^<>'"`,;()\n.]|\.(?=[\w/-]))*)/g)]
+    .map((m) => ({ file, line: i + 1, words: m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').trim().split(/\s+/) })));
 }
 
 /** A word that is a value a person types in, not a subcommand: a placeholder, path, URL or quoted string. */
@@ -115,36 +129,30 @@ function problemsFor(surfaces: Map<string, CommandSurface>, invocation: Invocati
   for (const flag of flagsIn(rest.join(' '))) {
     if (!flags.has(flag) && flag !== '--help') problems.push(`${where}: ${command} ${sub ?? ''} has no flag ${flag}`);
   }
-  if (command === 'server' && sub === 'create' && !rest.some((word) => word === '--target' || word.startsWith('--target='))) {
-    problems.push(`${where}: server create requires an explicit --target in user docs`);
-  }
+  for (const flag of surface.required.get(sub ?? '') ?? []) if (!flagsIn(rest.join(' ')).has(flag)) problems.push(`${where}: ${command} ${sub} requires an explicit ${flag}`);
   return problems;
 }
 
 const surfaces = await commandSurfaces();
+const read = (file: string): string => fs.readFileSync(path.join(ROOT, file), 'utf8');
 
-describe('the user docs name only what the CLI has', () => {
-
-  it('finds the published pages and the commands in them', () => {
+describe('the user docs and the dashboard name only what the CLI has', () => {
+  it('every published page exists, and every command, subcommand and required flag it or a screen names exists', () => {
     for (const file of USER_DOCS) expect({ file, exists: fs.existsSync(path.join(ROOT, file)) }).toEqual({ file, exists: true });
-    const all = USER_DOCS.flatMap((file) => currentInvocations(file, fs.readFileSync(path.join(ROOT, file), 'utf8')));
-    expect(all.length).toBeGreaterThan(10);
+    const docs = USER_DOCS.flatMap((file) => currentInvocations(file, read(file)));
+    const screens = DASHBOARD_COPY.flatMap((file) => dashboardInvocations(file, read(file)));
+    expect({ docs: docs.length > 10, screens: screens.length > 5 }).toEqual({ docs: true, screens: true });
+    const problems = [...docs, ...screens].flatMap((invocation) => problemsFor(surfaces, invocation));
+    expect(problems, `These docs or screens name unavailable commands or omit required flags:\n\n${problems.join('\n')}`).toEqual([]);
   });
 
-  it('every command, subcommand and flag exists', () => {
-    const problems = USER_DOCS.flatMap((file) => currentInvocations(file, fs.readFileSync(path.join(ROOT, file), 'utf8'))
-      .flatMap((invocation) => problemsFor(surfaces, invocation)));
-    expect(problems, `These docs name unavailable commands or flags:\n\n${problems.join('\n')}`).toEqual([]);
-  });
-
-  it('catches a retired command, a made-up subcommand, a made-up flag and an implicit create target', () => {
+  it('catches a retired command, a made-up subcommand or flag and a missing required flag, in docs and on screens', () => {
     const page = '```bash\nmyco frobnicate\nmyco server teleport --target local\nmyco login --nope <link>\nmyco server create\n```\n';
-    const checked = invocations('probe.md', page).map((invocation) => problemsFor(surfaces, invocation));
-    for (const problems of checked) expect(problems.length).toBeGreaterThan(0);
-    expect(checked[0][0]).toContain('no such 2.0 command');
-    expect(checked[1][0]).toContain('no subcommand');
-    expect(checked[2][0]).toContain('no flag');
-    expect(checked[3][0]).toContain('explicit --target');
+    const screen = '// myco frobnicate\n<p>run <code>myco server setup-owner</code>.</p>\n`myco runner register ${origin} --name ${runner.name}. Enter`\n<code>myco login &lt;link&gt;</code>';
+    const found = [...invocations('probe.md', page), ...dashboardInvocations('probe.tsx', screen)];
+    expect(found.slice(4).map((i) => i.words.join(' '))).toEqual(['server setup-owner', 'runner register VALUE --name VALUE', 'login <link>']);
+    expect(found.map((i) => problemsFor(surfaces, i).join())).toEqual([...['no such 2.0 command', 'no subcommand', 'no flag', 'explicit --target', 'explicit --target']
+      .map((problem) => expect.stringContaining(problem)), '', '']);
   });
 
   it('checks homepage commands and refuses the ledger DROP verbs', () => {
@@ -175,3 +183,4 @@ describe('the user docs name only what the CLI has', () => {
     expect(currentInvocations('docs/quickstart.md', page).length).toBe(3);
   });
 });
+
