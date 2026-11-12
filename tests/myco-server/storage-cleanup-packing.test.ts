@@ -13,6 +13,7 @@ import { storageCleanupPending } from '@myco-server-worker/core/storage-cleanup.
 
 import worker from '@myco-server-worker/entry/cloudflare.js';
 import { sqliteEnv,uuid } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { OWNER_ENV,ownerCookie,seedMemberRoleAccount,MEMBER_SUB,asOwner,asOwnerPatch } from './helpers/owner.js';
 
 type Rig=ReturnType<typeof sqliteEnv>;
@@ -72,12 +73,14 @@ it('declares admin control, refuses other actors, validates the body and recheck
     expect((await worker.fetch(await asOwnerPatch(rig.db, '/api/storage-cleanup',{paused:true}),env)).status).toBe(200);
     expect(await storageCleanupPending(rig.db)).toBe(false);
     expect((await worker.fetch(await asOwnerPatch(rig.db, '/api/storage-cleanup',{paused:false}),env)).status).toBe(200);
-    let intercepted=false;
-    const raced=sqliteEnv({onSql(sql,sqlite){if(sql.startsWith('UPDATE storage_cleanup_state SET paused=')&&!intercepted){
-      intercepted=true;sqlite.exec("UPDATE members SET role='member' WHERE id='mem_machine_1'");
-    }}});
+    const raced=sqliteEnv();
     try{
+      const landing=changingAtStatement(raced.db,'storage.cleanupSetPaused',()=>{
+        raced.sqlite.exec("UPDATE members SET role='member' WHERE id='mem_machine_1'");
+      });
+      raced.env.MYCO_DB=landing.store;
       expect((await worker.fetch(await asOwnerPatch(raced.db, '/api/storage-cleanup',{paused:true}),{...raced.env,...OWNER_ENV})).status).toBe(403);
+      expect(landing.landed()).toBe(true);
       expect(raced.sqlite.query('SELECT paused FROM storage_cleanup_state').get()).toEqual({paused:0});
     }finally{raced.sqlite.close();}
   }finally{rig.sqlite.close();}

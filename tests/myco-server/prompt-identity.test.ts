@@ -18,6 +18,7 @@ import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js
 import { tombstoneSession } from './helpers/session-deletion.js';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { RECEIPT_COLLISIONS_META_KEY } from '@myco-server-worker/db/schema.js';
+import { failingStatement } from './helpers/store-faults.js';
 import { applySchemaSteps } from './helpers/migrate.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { envelope, memberHeaders, sqliteEnv, uuid } from './helpers/fixtures.js';
@@ -301,10 +302,13 @@ describe('what outlives the answers', () => {
   it('lists the receipt of an answer whose write failed, and its delivery to a prompt with no name', async () => {
     const log = spyOn(console, 'log').mockImplementation(() => {});
     try {
-      const s = await served({ db: (db) => ({ ...db, prepare: (sql) => {
-        if (sql.startsWith('INSERT INTO prompt_context_answers')) throw new Error('answer store unavailable');
-        return db.prepare(sql);
-      } }) });
+      const answerWrite = { failures: () => 0 };
+      const s = await served({ db: (db) => {
+        const failed = failingStatement(db, 'context.promptAnswer', { error: () => new Error('answer store unavailable') });
+        answerWrite.failures = failed.failures;
+        return failed.store;
+      } });
+      expect(answerWrite.failures()).toBeGreaterThan(0);
       expect({ receipt: typeof s.answer.receiptId, answer: typeof s.answer.answerId }).toEqual({ receipt: 'string', answer: 'undefined' });
       expect(await s.sessionLevel()).toEqual([{ kind: `context:${s.answer.receiptId}`, delivery: 'not_delivered' }]);
       await s.deliver(1, { receiptId: s.answer.receiptId, renderedScopeReason: 'absent_key' });

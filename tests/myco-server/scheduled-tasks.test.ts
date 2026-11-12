@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import type { PreparedStatement, RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { HARNESS_AGENT_ID } from '@myco-server-worker/core/harness.js';
 import {
   CLOCK_ACTOR,
@@ -355,17 +356,13 @@ describe('one wake of the clock', () => {
     const f = scheduledFixture();
     f.receipt('proj_1', NOW - 3_600_000);
     // The second wake reads the same answers the first read, and its write meets the first's row.
-    let raced = false;
-    const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
-      if (!raced && sql.startsWith(`INSERT INTO agent_runs`) && sql.includes(`'queued'`)) {
-        raced = true;
-        f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?) ON CONFLICT DO NOTHING`, [HARNESS_AGENT_ID, NOW]);
-        f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'other-wake', ?, 'canopy-map', 'queued', ?)`, [HARNESS_AGENT_ID, NOW]);
-      }
-      return f.env.db.prepare(sql);
-    } } };
+    const landing = changingAtStatement(f.env.db, 'runs.queueRecordWrite', () => {
+      f.sqlite.run(`INSERT INTO agents (id, name, source, enabled, created_at) VALUES (?, 'a', 'built-in', 1, ?) ON CONFLICT DO NOTHING`, [HARNESS_AGENT_ID, NOW]);
+      f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', 'other-wake', ?, 'canopy-map', 'queued', ?)`, [HARNESS_AGENT_ID, NOW]);
+    });
+    const racing: ServerEnv = { ...f.env, db: landing.store };
     expect(await runScheduledTasks(racing, 'sleep', NOW, ORIGIN)).toEqual({ dispatched: 0, skipped: 0 });
-    expect(raced).toBe(true);
+    expect(landing.landed()).toBe(true);
     expect(f.runs('proj_1').map((r) => r.id)).toEqual(['other-wake']);
     expect(f.launches).toHaveLength(0);
     expect((f.sqlite.query(`SELECT COUNT(*) c FROM member_credentials WHERE member_id = 'mem_harness' AND revoked_at IS NULL`).get() as { c: number }).c).toBe(0);

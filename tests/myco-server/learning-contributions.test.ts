@@ -10,7 +10,7 @@ import { selectPulled } from '@myco-server-worker/core/pulled-stages.js';
 import { LEARNING_STAGES } from '@myco-server-worker/core/learning-stages.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { beforeWriteBatch } from './helpers/prepared.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
@@ -255,10 +255,11 @@ it('does not activate a newer idle-close generation from a stale final page', as
     await db.prepare("INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at) VALUES('project','held','t',1,?)").bind(NOW).run();
     await sessionRow(db, 'held');
     expect(await settingsWriter(db).setLeaf(IDLE_CLOSE, 600, 'owner', NOW)).toEqual({ applied: true });
-    const raced = beforeWriteBatch(db, sql => sql.includes("SET state='active'"), async () => {
+    const raced = changingAtStatement(db, 'learningQuietPolicy.activate', async () => {
       expect(await settingsWriter(db).setLeaf(IDLE_CLOSE, 30, 'owner', NOW)).toEqual({ applied: true });
-    }, true);
-    await catchUpPhase(raced, 'learningQuietPolicy', NOW);
+    });
+    await catchUpPhase(raced.store, 'learningQuietPolicy', NOW);
+    expect(raced.landed()).toBe(true);
     expect(await readQuietPolicy(db)).toMatchObject({ pendingMinutes: 30, effectiveMinutes: 120, state: 'building' });
 
     await catchUpPhase(db, 'learningQuietPolicy', NOW);

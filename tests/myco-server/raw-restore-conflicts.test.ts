@@ -7,6 +7,7 @@ import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js
 import { RawResourceReader } from '@myco-server-worker/core/raw-resources.js';
 import { registerBlob, seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 type Fixture = ReturnType<typeof sqliteEnv>;
 const TRANSCRIPT_ID = 'same-transcript';
@@ -124,22 +125,18 @@ describe('raw transcript ownership during additive restore', () => {
 
   it('refuses a competing attribution committed between the comparison and snapshot transaction', async () => {
     const source = sqliteEnv();
-    let armed = false;
-    let raced = false;
-    const destination = sqliteEnv({ onSql: (sql, sqlite) => {
-      if (!armed || raced || !sql.includes('transcript ownership conflicts with held raw data')) return;
-      raced = true;
-      sqlite.run(`INSERT INTO raw_resources (project_id,kind,resource_id,reference_id,owner_member_id,provenance,revision)
-        VALUES ('proj_1','transcript',?,'competing-restore','mem_machine_2','recorded',1)`, [TRANSCRIPT_ID]);
-    } });
+    const destination = sqliteEnv();
     try {
       source.sqlite.run("INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES (?, 'mem_machine_1', 1)", [MACHINE_ID]);
       seedCredential(source.sqlite, { id: TOKEN_ID, memberId: 'mem_machine_1', machineId: MACHINE_ID });
       transcript(source); transcript(destination);
       const text = await artifact(source);
-      armed = true;
-      await expect(restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
-      expect(raced).toBe(true);
+      const raced = changingAtStatement(destination.db, 'recovery.transcriptReferenceHolds', () => {
+        destination.sqlite.run(`INSERT INTO raw_resources (project_id,kind,resource_id,reference_id,owner_member_id,provenance,revision)
+          VALUES ('proj_1','transcript',?,'competing-restore','mem_machine_2','recorded',1)`, [TRANSCRIPT_ID]);
+      });
+      await expect(restoreArtifact(raced.store, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
+      expect(raced.landed()).toBe(true);
       expect(await reader(destination, 'mem_machine_1').allows({ kind: 'transcript', id: TRANSCRIPT_ID }, 'read')).toBe(false);
       expect(destination.sqlite.query("SELECT owner_member_id FROM raw_resources WHERE kind = 'transcript' AND provenance = 'recorded'").all())
         .toEqual([{ owner_member_id: 'mem_machine_2' }]);
@@ -148,13 +145,7 @@ describe('raw transcript ownership during additive restore', () => {
 
   it('refuses a segment replacement after bounded comparisons even when metadata and owners stay unchanged', async () => {
     const source = sqliteEnv();
-    let armed = false;
-    let raced = false;
-    const destination = sqliteEnv({ onSql: (sql, sqlite) => {
-      if (!armed || raced || !sql.includes('transcript ownership conflicts with held raw data')) return;
-      raced = true;
-      sqlite.run(`UPDATE transcript_segments SET blob_key = ? WHERE project_id = 'proj_1' AND transcript_id = ? AND base_offset = 0`, [HELD_BLOB, TRANSCRIPT_ID]);
-    } });
+    const destination = sqliteEnv();
     try {
       source.sqlite.run("INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES (?, 'mem_machine_1', 1)", [MACHINE_ID]);
       seedCredential(source.sqlite, { id: TOKEN_ID, memberId: 'mem_machine_1', machineId: MACHINE_ID });
@@ -162,9 +153,11 @@ describe('raw transcript ownership during additive restore', () => {
       blob(destination, SOURCE_BLOB); blob(destination, HELD_BLOB, HELD_BODY);
       transcript(source, { segments: 1 }); transcript(destination, { segments: 1 });
       const text = await artifact(source);
-      armed = true;
-      await expect(restoreArtifact(destination.db, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
-      expect(raced).toBe(true);
+      const raced = changingAtStatement(destination.db, 'recovery.transcriptReferenceHolds', () => {
+        destination.sqlite.run(`UPDATE transcript_segments SET blob_key = ? WHERE project_id = 'proj_1' AND transcript_id = ? AND base_offset = 0`, [HELD_BLOB, TRANSCRIPT_ID]);
+      });
+      await expect(restoreArtifact(raced.store, { authorization: { kind: 'recovery' }, text, allowForeignLineage: true })).rejects.toThrow('raw_resources');
+      expect(raced.landed()).toBe(true);
       expect(destination.sqlite.query('SELECT blob_key FROM transcript_segments').all()).toEqual([{ blob_key: HELD_BLOB }]);
       expect(await reader(destination, 'mem_machine_1').allows({ kind: 'transcript', id: TRANSCRIPT_ID }, 'read')).toBe(false);
     } finally { source.sqlite.close(); destination.sqlite.close(); }

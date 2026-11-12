@@ -12,6 +12,7 @@ import { revokeCredentialAsMember, revokeMachineCredentialsAsMember } from '@myc
 import { issueMemberToken } from './helpers/member-token.js';
 import { renameMachine } from '@myco-server-worker/auth/enrollment.js';
 import { schemaSqlite } from './helpers/schema-template.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -108,12 +109,7 @@ it('two fresh authenticated links produce exactly one linked owner and receipt',
 
 for (const operation of ['credential', 'machine'] as const) {
   it(`a demoted admin loses authority before a foreign ${operation} Stop commits`, async () => {
-    let armed = false;
-    const f = sqliteEnv({ onSql(sql, sqlite) {
-      if (!armed || !/UPDATE member_credentials SET revoked_at/.test(sql)) return;
-      armed = false;
-      sqlite.run("UPDATE members SET role='member',role_revision=role_revision+1 WHERE id=?", [ADMIN]);
-    } });
+    const f = sqliteEnv();
     try {
       const now = Date.now();
       f.sqlite.run("UPDATE members SET github_id='9002',role='admin' WHERE id=?", [ADMIN]);
@@ -121,11 +117,14 @@ for (const operation of ['credential', 'machine'] as const) {
       await bootstrapOwnership(f.db, OWNER, OWNER, '0', now);
       f.sqlite.run('INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES (?,?,?)', ['review_machine', MEMBER, now]);
       const issued = await issueMemberToken(f.db, { memberId: MEMBER, machineId: 'review_machine' }, now);
-      armed = true;
+      const raced = changingAtStatement(f.db, operation === 'credential' ? 'credential.revokeLineageAsMember' : 'credential.revokeMachineAsMember', () => {
+        f.sqlite.run("UPDATE members SET role='member',role_revision=role_revision+1 WHERE id=?", [ADMIN]);
+      });
       const actor = { id: ADMIN, label: null, role: 'admin' as const };
       const outcome = operation === 'credential'
-        ? await revokeCredentialAsMember(f.db, actor, issued.tokenId, now)
-        : await revokeMachineCredentialsAsMember(f.db, actor, 'review_machine', now);
+        ? await revokeCredentialAsMember(raced.store, actor, issued.tokenId, now)
+        : await revokeMachineCredentialsAsMember(raced.store, actor, 'review_machine', now);
+      expect(raced.landed()).toBe(true);
       expect(outcome.revoked).toBe(operation === 'credential' ? false : 0);
       expect(f.sqlite.query('SELECT revoked_at FROM member_credentials WHERE id=?').get(issued.tokenId)).toEqual({ revoked_at: null });
     } finally { f.sqlite.close(); }
@@ -133,17 +132,15 @@ for (const operation of ['credential', 'machine'] as const) {
 }
 
 it('a demoted admin loses authority before a foreign machine rename commits', async () => {
-  let armed = false;
-  const f = sqliteEnv({ onSql(sql, sqlite) {
-    if (!armed || !sql.startsWith('UPDATE machine_claims SET label')) return;
-    armed = false;
-    sqlite.run("UPDATE members SET role='member',role_revision=role_revision+1 WHERE id=?", [ADMIN]);
-  } });
+  const f = sqliteEnv();
   try {
     f.sqlite.run("UPDATE members SET role='admin' WHERE id=?", [ADMIN]);
     f.sqlite.run('INSERT INTO machine_claims(machine_id,member_id,claimed_at,label) VALUES (?,?,0,?)', ['rename_race', MEMBER, 'Original']);
-    armed = true;
-    expect(await renameMachine(f.db, { memberId: ADMIN }, 'rename_race', 'Forbidden')).toBe(false);
+    const raced = changingAtStatement(f.db, 'enrollment.machineRename', () => {
+      f.sqlite.run("UPDATE members SET role='member',role_revision=role_revision+1 WHERE id=?", [ADMIN]);
+    });
+    expect(await renameMachine(raced.store, { memberId: ADMIN }, 'rename_race', 'Forbidden')).toBe(false);
+    expect(raced.landed()).toBe(true);
     expect(f.sqlite.query("SELECT label FROM machine_claims WHERE machine_id='rename_race'").get()).toEqual({ label: 'Original' });
   } finally { f.sqlite.close(); }
 });
@@ -161,22 +158,20 @@ for (const state of ['admin', 'member-own', 'member-foreign', 'revoked'] as cons
 
 for (const operation of ['credential', 'machine'] as const) {
   it(`a revoked admin loses authority before a foreign ${operation} Stop commits`, async () => {
-    let armed = false;
-    const f = sqliteEnv({ onSql(sql, sqlite) {
-      if (!armed || !sql.startsWith('UPDATE member_credentials SET revoked_at')) return;
-      armed = false;
-      sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [ADMIN]);
-    } });
+    const f = sqliteEnv();
     try {
       const now = Date.now();
       f.sqlite.run("UPDATE members SET role='admin',github_id='9002' WHERE id=?", [ADMIN]);
       f.sqlite.run('INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES (?,?,?)', ['revoke_race', MEMBER, now]);
       const issued = await issueMemberToken(f.db, { memberId: MEMBER, machineId: 'revoke_race' }, now);
-      armed = true;
+      const raced = changingAtStatement(f.db, operation === 'credential' ? 'credential.revokeLineageAsMember' : 'credential.revokeMachineAsMember', () => {
+        f.sqlite.run('UPDATE members SET revoked_at=1 WHERE id=?', [ADMIN]);
+      });
       const actor = { id: ADMIN, label: null, role: 'admin' as const };
       const result = operation === 'credential'
-        ? await revokeCredentialAsMember(f.db, actor, issued.tokenId, now)
-        : await revokeMachineCredentialsAsMember(f.db, actor, 'revoke_race', now);
+        ? await revokeCredentialAsMember(raced.store, actor, issued.tokenId, now)
+        : await revokeMachineCredentialsAsMember(raced.store, actor, 'revoke_race', now);
+      expect(raced.landed()).toBe(true);
       expect(result.revoked).toBe(operation === 'credential' ? false : 0);
       expect(f.sqlite.query('SELECT revoked_at FROM member_credentials WHERE id=?').get(issued.tokenId)).toEqual({ revoked_at: null });
     } finally { f.sqlite.close(); }

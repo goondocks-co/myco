@@ -6,6 +6,7 @@ import { bootstrapOwnership } from '@myco-server-worker/db/identity/ownership.js
 import { RestoreAuthorizationError } from '@myco-server-worker/core/restore-authorization.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { changingAt, storingCall } from './helpers/store-faults.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 
 const OWNER = 'mem_machine_1';
@@ -117,21 +118,25 @@ it('previews stored restore permission from artifact rows even when header count
 });
 
 it('a transfer after restore admission rolls back the first guarded data batch', async () => {
-  let armed = false;
-  const f = sqliteEnv({ onSql(sql, sqlite) {
-    if (!armed || !sql.startsWith('INSERT OR IGNORE INTO projects')) return;
-    armed = false;
-    sqlite.run('UPDATE deployment_ownership SET member_id=?,revision=revision+1 WHERE id=1', [ADMIN]);
-  } });
+  const f = sqliteEnv();
   try {
     f.sqlite.run("UPDATE members SET role='admin',github_id='9002' WHERE id=?", [ADMIN]);
     await bootstrapOwnership(f.db, OWNER, OWNER, '0', Date.now());
-    armed = true;
     const text = artifact(f, [
       { t: 'projects', r: { project_id: 'proj_restore_race', name: 'Race', created_at: 1 } },
       { t: 'members', r: { id: 'mem_restore_race', role: 'admin', created_at: 1 } },
     ]);
-    await expect(restoreArtifact(f.db, { text, authorization: { kind: 'member', memberId: OWNER } })).rejects.toBeInstanceOf(RestoreAuthorizationError);
+    const body = { text, authorization: { kind: 'member' as const, memberId: OWNER } };
+    const project = () => f.sqlite.query("SELECT name FROM projects WHERE project_id='proj_restore_race'").get();
+    const at = await storingCall(f.db, (store) => restoreArtifact(store, body), project);
+    expect(at).toBeGreaterThan(0);
+    f.sqlite.run("DELETE FROM projects WHERE project_id='proj_restore_race'");
+    f.sqlite.run("DELETE FROM members WHERE id='mem_restore_race'");
+    const raced = changingAt(f.db, at, () => {
+      f.sqlite.run('UPDATE deployment_ownership SET member_id=?,revision=revision+1 WHERE id=1', [ADMIN]);
+    });
+    await expect(restoreArtifact(raced.store, body)).rejects.toBeInstanceOf(RestoreAuthorizationError);
+    expect(raced.landed()).toBe(true);
     expect(f.sqlite.query("SELECT 1 FROM projects WHERE project_id='proj_restore_race'").get()).toBeNull();
     expect(f.sqlite.query("SELECT 1 FROM members WHERE id='mem_restore_race'").get()).toBeNull();
   } finally { f.sqlite.close(); }

@@ -24,6 +24,7 @@ import { lastActivityAt, REQUEST_STAMP_INTERVAL_MS, stampRequest } from '@myco-s
 import { CHAINED_WAKE_MS, POWER_THRESHOLDS, runTick, tickPacer, WAKE_INTERVALS } from '@myco-server-worker/core/tick.js';
 import { seedCredential } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement, failingStatement } from './helpers/store-faults.js';
 import { ENROLLMENT_RETENTION_MS } from '@myco-server-worker/db/identity/authority-retention.js';
 import { handleDeviceStart } from '@myco-server-worker/auth/device.js';
 
@@ -227,11 +228,12 @@ describe('run-stale-sweep', () => {
     const f = fixture();
     f.seedRun({ id: 'racing', status: 'running', startedAt: NOW - 10 * DAY, completedAt: null });
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
-    const racing: ServerEnv = { ...f.env, db: { ...f.env.db, prepare: (sql: string) => {
-      if (sql.includes(`SET status = 'failed'`)) f.sqlite.query(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'racing'`).run(NOW - 1);
-      return f.env.db.prepare(sql);
-    } } };
+    const raced = changingAtStatement(f.env.db, 'runs.failStale', () => {
+      f.sqlite.query(`UPDATE agent_runs SET status = 'completed', completed_at = ? WHERE id = 'racing'`).run(NOW - 1);
+    });
+    const racing: ServerEnv = { ...f.env, db: raced.store };
     expect((await runTick(racing, NOW)).jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });
+    expect(raced.landed()).toBe(true);
     expect(f.runRow('racing')).toEqual({ status: 'completed', error: null, completedAt: NOW - 1 });
   });
 
@@ -246,8 +248,10 @@ describe('run-stale-sweep', () => {
   it('is reported by its failure class and does not stop the jobs after it', async () => {
     const f = fixture();
     f.seedSession('s1', NOW - POWER_THRESHOLDS.sleepMs);
-    const broken: ServerEnv = { ...f.env, db: { prepare: (sql: string) => (sql.includes('resumable = 0 AND') ? { bind: () => ({ run: async () => { throw new Error('D1_ERROR: nope'); }, all: async () => { throw new Error('D1_ERROR: nope'); }, first: async () => { throw new Error('D1_ERROR: nope'); } }) } : f.env.db.prepare(sql)) as never, batch: f.env.db.batch } };
+    const retire = failingStatement(f.env.db, 'runs.retireEligible', { error: () => new Error('D1_ERROR: nope') });
+    const broken: ServerEnv = { ...f.env, db: retire.store };
     const report = await runTick(broken, NOW);
+    expect(retire.failures()).toBeGreaterThan(0);
     expect(report.jobs.map((j) => j.name).sort()).toEqual(SERVER_JOBS.filter((j) => j.runsThrough !== 'idle' && j.wake === undefined).map((j) => j.name).sort());
     expect(report.jobs.find((j) => j.name === 'agent-run-retention')).toMatchObject({ name: 'agent-run-retention', failed: expect.any(String) });
     expect(report.jobs.find((j) => j.name === 'run-stale-sweep')).toEqual({ name: 'run-stale-sweep', changed: 0, failed: null, more: false });

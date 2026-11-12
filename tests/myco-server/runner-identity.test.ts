@@ -20,6 +20,7 @@ import { readFleetProjection } from '@myco-server-worker/db/runs/fleet.js';
  * - capacity, pause, removal, rotation and replay, each at the write that decides it.
  */
 import { describe, expect, it, spyOn } from 'bun:test';
+import { failingStatement } from './helpers/store-faults.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { ROUTES } from '@myco-server-worker/routes.js';
@@ -110,6 +111,15 @@ function rig(options: { onSql?: (sql: string) => void; deploymentId?: string } =
     e, env, post, asSession, asRunner, json, start, poll, register, queueTitling, claim, asRun, row,
     now: () => now, advance: (ms: number) => { now += ms; }, at: (instant: number) => { now = instant; },
     arm: (fn: ((sql: string) => void) | undefined) => { hook = fn; },
+    failFleetReads: () => {
+      const names = ['runners.activeFleet', 'runners.removedFleet', 'runners.removedFleetAfter', 'runners.recentRunnerReports'] as const;
+      const faults = names.map((name) => {
+        const fault = failingStatement(env.db, name, { error: () => new Error('fleet read failed') });
+        env.db = fault.store;
+        return fault;
+      });
+      return () => faults.reduce((hits, fault) => hits + fault.failures(), 0);
+    },
   };
 }
 
@@ -1129,12 +1139,13 @@ describe('shared runner fleet projection', () => {
       expect(r.row('SELECT availability,observed_at FROM runner_observations WHERE runner_id = ?', runner.runnerId)).toEqual({ availability: 'ready', observed_at: r.now() });
       await r.queueTitling();
       const id = String(r.row("SELECT id FROM agent_runs WHERE status = 'queued'")!.id);
-      r.arm(sql => { if (sql.includes('LEFT JOIN runner_observations')) throw new Error('fleet read failed'); });
+      const fleetFailures = r.failFleetReads();
       const runs = await r.json(r.asSession('/api/projects/proj_1/runs', {}, OWNER_SUB, 'GET'));
       expect(JSON.stringify(runs)).toContain('"rows"');
       expect(runs.rows.find((row: Json) => row.id === id)).toMatchObject({ fleetWait: { reason: 'unavailable', observedAt: r.now() } });
       const detail = await r.json(r.asSession(`/api/projects/proj_1/runs/${id}`, {}, OWNER_SUB, 'GET'));
       expect(detail.run).toMatchObject({ id, fleetWait: { reason: 'unavailable' } });
+      expect(fleetFailures()).toBeGreaterThan(0);
     } finally { r.e.sqlite.close(); }
   });
 
@@ -1210,11 +1221,12 @@ describe('shared runner fleet projection', () => {
     const r = rig();
     try {
       await r.register();
-      r.arm(sql => { if (sql.includes('LEFT JOIN runner_observations')) throw new Error('fleet read failed'); });
+      const fleetFailures = r.failFleetReads();
       expect((await r.asSession('/api/runners', {}, OWNER_SUB, 'GET')).status).toBe(503);
       const status = await r.json(r.asSession('/api/status', {}, OWNER_SUB, 'GET'));
       expect(status.workers).toMatchObject({ available: false, fleet: null, runsQueued: null, workersBusy: null });
       expect(status.unavailable).toContain('workers');
+      expect(fleetFailures()).toBeGreaterThan(0);
     } finally { r.e.sqlite.close(); }
   });
 });
