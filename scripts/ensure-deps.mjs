@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { hostReleaseTarget, releaseTarget, RELEASE_TARGETS } from '../packages/myco/scripts/release-targets.mjs';
 
 export const installRoots = [
   { directory: '.', label: 'workspace' },
@@ -41,7 +42,7 @@ function versionParts(value) {
   return match.slice(1).map(part => Number(part ?? 0));
 }
 
-export function checkTools(root, { windows = false, uiOnly = false } = {}) {
+export function checkTools(root, { target: targetName = hostReleaseTarget()?.name, uiOnly = false } = {}) {
   const floor = readJson(path.join(root, 'packages/myco/package.json')).engines.node;
   if (!floor.startsWith('>=')) throw new Error(`Expected a minimum Node.js engines floor, found ${floor}.`);
   const minimum = versionParts(floor.slice(2).trim());
@@ -56,8 +57,11 @@ export function checkTools(root, { windows = false, uiOnly = false } = {}) {
   const pin = fs.readFileSync(path.join(root, '.bun-version'), 'utf8').trim();
   if (bun !== pin && process.env.MYCO_BUN_NOTICE_SHOWN !== '1') console.error(`Notice: Bun ${bun} differs from .bun-version (${pin}); continuing.`);
   requireExecutable('bash', 'Install Bash with your package manager.');
-  const target = windows ? 'windows-x64' : `${process.platform}-${process.arch === 'arm64' ? 'arm64' : 'x64'}`;
-  const native = command('bash', [path.join(root, 'packages/myco/scripts/check-native-build-tools.sh'), target]);
+  const target = releaseTarget(targetName ?? '');
+  if (!target) throw new Error(`No release target for ${targetName ?? `${process.platform}-${process.arch}`}; choose one of ${RELEASE_TARGETS.map(one => one.name).join(', ')}.`);
+  // A target built without native artifacts compiles no SQLite library, so it needs no compiler.
+  if (!target.native) return;
+  const native = command('bash', [path.join(root, 'packages/myco/scripts/check-native-build-tools.sh'), target.name]);
   if (native.error) throw native.error;
   if (native.status !== 0) throw new Error(native.stderr.trim() || `Native tool check failed (exit ${native.status}).`);
 }
@@ -131,8 +135,9 @@ export function ensureDeps(root, uiOnly = false) {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    if (args.some(arg => !['--ui', '--windows'].includes(arg))) throw new Error('Usage: node scripts/ensure-deps.mjs [--ui] [--windows]');
-    checkTools(repo, { windows: args.includes('--windows'), uiOnly: args.includes('--ui') });
+    const targets = args.filter(arg => arg.startsWith('--target=')).map(arg => arg.slice('--target='.length));
+    if (targets.length > 1 || args.some(arg => arg !== '--ui' && !arg.startsWith('--target='))) throw new Error('Usage: node scripts/ensure-deps.mjs [--ui] [--target=<release target>]');
+    checkTools(repo, { ...(targets.length === 1 ? { target: targets[0] } : {}), uiOnly: args.includes('--ui') });
     ensureDeps(repo, args.includes('--ui'));
   } catch (error) {
     console.error(`Myco: ${error.message}`);

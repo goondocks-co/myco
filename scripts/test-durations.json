@@ -69,6 +69,7 @@
     "tests/daemon/machine-id.test.ts": 195,
     "tests/entries/checkout-env.test.ts": 1529,
     "tests/entries/dispatch-errors.test.ts": 427,
+    "tests/entries/windows-arm64-entry.test.ts": 6000,
     "tests/hooks/capture-rules.test.ts": 165,
     "tests/hooks/normalize.test.ts": 196,
     "tests/hooks/read-stdin.test.ts": 864,

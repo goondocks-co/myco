@@ -79,8 +79,8 @@ describe('a Myco 2.0 prerelease', () => {
     expect(step('create-release', 'Publish the GitHub Release')).toContain('publish_args+=(--prerelease --latest=false)');
   });
 
-  it('requires all five binaries and SHA256SUMS before creating and publishing a draft', () => {
-    const names = ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe', 'SHA256SUMS'];
+  it('requires all six binaries and SHA256SUMS before creating and publishing a draft', () => {
+    const names = ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe', 'myco-windows-arm64.exe', 'SHA256SUMS'];
     const defects = ['none', ...names.map(name => `missing:${name}`), 'tampered', 'missing-entry', 'duplicate-entry', 'substituted-entry', 'extra-entry', 'malformed-entry', 'malformed-separator'];
     for (const state of ['absent', 'draft', 'published']) for (const defect of defects) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-release-order-'));

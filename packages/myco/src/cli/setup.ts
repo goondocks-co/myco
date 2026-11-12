@@ -19,6 +19,7 @@ import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
 import { APP_NAME_MAX } from '@myco/server/github-app.js';
 import { parseArgs as parseCutoverArgs } from '@myco/cli/cutover.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { requireNativeDeps } from '@myco/runtime/native-deps.js';
 
 export const SETUP_HELP = `Usage: myco setup [options]
 
@@ -176,6 +177,7 @@ export function parseSetupOptions(args: readonly string[]): Options {
 }
 
 function validateCreationOptions(answers: SetupAnswers): void {
+  if (answers.target === 'local') requireNativeDeps();
   if (answers.target === 'local' && (answers.customUrl || answers.accountId || answers.org)) throw new Error('Local setup is loopback only; use --port and --serve, without --url, --account-id or --org.');
   if (answers.target === 'cloudflare' && (answers.port !== undefined || answers.serve !== undefined)) throw new Error('Cloudflare setup uses --account-id and --url, without --port or --serve.');
   if (answers.role && answers.role !== 'create' && [answers.target, answers.customUrl, answers.accountId, answers.org, answers.appName, answers.port, answers.serve].some(value => value !== undefined)) throw new Error('Creation options require --create cloudflare or --create local.');

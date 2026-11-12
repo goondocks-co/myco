@@ -26,6 +26,7 @@ function fixture() {
   write('packages/myco/package.json', { engines: { node: '>=20' } });
   fs.mkdirSync(path.join(root, 'packages/myco/scripts'));
   fs.copyFileSync(path.join(repo, 'packages/myco/scripts/check-native-build-tools.sh'), path.join(root, 'packages/myco/scripts/check-native-build-tools.sh'));
+  fs.copyFileSync(path.join(repo, 'packages/myco/scripts/release-targets.mjs'), path.join(root, 'packages/myco/scripts/release-targets.mjs'));
   fs.writeFileSync(path.join(root, '.bun-version'), '1.4.0\n');
   const tool = (name: string, body: string) => fs.writeFileSync(path.join(bin, name), '#!/bin/sh\n' + body + '\n', { mode: 0o755 });
   for (const name of ['bash', 'dirname', 'uname', 'sed']) fs.symlinkSync(resolveTestTool(name)!, path.join(bin, name));
@@ -205,6 +206,14 @@ describe('dependency preparation', () => {
     expect(result.stderr).toContain('Install MinGW');
     expect(result.stderr).not.toContain('Install curl');
     expect(f.calls()).toEqual([]);
+  });
+
+  it('needs no compiler for make source-build-windows-arm64, whose target carries no native artifacts', () => {
+    const f = fixture();
+    for (const name of ['clang', 'gcc', 'x86_64-w64-mingw32-gcc']) fs.unlinkSync(path.join(f.bin, name));
+    fs.appendFileSync(path.join(f.root, 'Makefile'), '\nsource-build-windows-arm64:\n\t@exit 0;\n');
+    expect(f.make(['source-build-windows-arm64']).status).toBe(0);
+    expect(f.make(['source-build-windows'])).toMatchObject({ status: 2, stderr: expect.stringContaining('Install MinGW') });
   });
 
   it.each(['curl', 'unzip', process.platform === 'darwin' ? 'clang' : 'gcc'])('names only the missing %s remedy', name => {

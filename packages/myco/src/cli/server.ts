@@ -29,6 +29,7 @@ import { withLocalDiagnosticStore,withCloudflareDiagnosticStore,localUnplacedCon
 import { keptArtifacts } from '../server/local-artifacts.js';
 import { volumeMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import { carriedNative, runLocalDeployment } from '../server/local-run.js';
+import { requireNativeDeps } from '../runtime/native-deps.js';
 import { setupLocalOwner } from '../server/local-owner.js';
 import { setupCloudflareOwner } from '../server/cloudflare-owner.js';
 import { backupLocalDeployment, localRecoveryHold } from '../server/local-backup.js';
@@ -302,6 +303,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       return;
     }
     if (LOCAL_VERBS.has(command) && target() === 'local') {
+      requireNativeDeps();
       const paths = resolveLocalPaths();
 
       if (command === 'create') {
@@ -632,6 +634,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       if (flags.has('client-secret')) fail('pipe the regenerated secret to --client-secret-stdin; do not pass --client-secret.');
       if (existing && flags.has('org')) fail('--org applies to registering a new app; omit it with --existing.');
       const target = resolveSignInTarget(flags.get('target'));
+      if (target.kind === 'local') requireNativeDeps();
       const clientSecret = existing ? await (deps.readSecret ?? readSignInSecret)() : undefined;
       if (target.kind === 'cloudflare') for (const line of credentialLines) report(line);
       const result = await registerGitHubApp({

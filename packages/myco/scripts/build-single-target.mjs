@@ -1,6 +1,6 @@
 // Build a single target via TARGET env var — used by CI matrix, Makefile
 // source builds, and the plain `npm run build` local flow. Defaults to the host
-// platform when TARGET is unset so local builds don't need all five targets
+// platform when TARGET is unset so local builds don't need every target
 // staged. No shell interpolation.
 
 import { spawnSync } from 'node:child_process';
@@ -10,24 +10,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stampDevelopmentVersion } from './install-marker-schema.mjs';
 import { signExecutable } from './sign-executable.mjs';
-
-function detectHostTarget() {
-  if (process.platform === 'darwin') return process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
-  if (process.platform === 'linux') return process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
-  if (process.platform === 'win32') return 'windows-x64';
-  return null;
-}
+import { RELEASE_TARGETS, binaryFileName, hostReleaseTarget, releaseTarget } from './release-targets.mjs';
 
 function buildSingleTarget() {
-  const target = process.env.TARGET ?? detectHostTarget();
+  const target = process.env.TARGET ?? hostReleaseTarget()?.name;
   if (!target) {
     process.stderr.write(`[build:binary] no TARGET and host platform ${process.platform}-${process.arch} is unsupported\n`);
     process.exit(2);
   }
 
-  const VALID = new Set(['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'windows-x64']);
-  if (!VALID.has(target)) {
-    process.stderr.write(`[build:binary] unknown TARGET="${target}" (valid: ${[...VALID].join(', ')})\n`);
+  const declared = releaseTarget(target);
+  if (!declared) {
+    process.stderr.write(`[build:binary] unknown TARGET="${target}" (valid: ${RELEASE_TARGETS.map((one) => one.name).join(', ')})\n`);
     process.exit(2);
   }
 
@@ -61,7 +55,7 @@ function buildSingleTarget() {
   const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
   const outputDir = path.join(platformPkgDir, 'bin');
   fs.mkdirSync(outputDir, { recursive: true });
-  const binaryName = target.startsWith('windows-') ? 'myco.exe' : 'myco';
+  const binaryName = binaryFileName(declared);
   const outfile = path.join(outputDir, binaryName);
 
   // Bun's `-baseline` x64 variant omits modern SIMD (AVX2). Required to run

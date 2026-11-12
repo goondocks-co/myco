@@ -117,11 +117,12 @@ jobs:
           - { target: linux-arm64, os: ubuntu-24.04-arm, ceiling: 80 }
           - { target: darwin-arm64, os: macos-15, ceiling: 150 }
           - { target: windows-x64, os: ubuntu-latest, cross: true, measure_elsewhere: true }
+          - { target: windows-arm64, os: ubuntu-latest, cross: true, measure_elsewhere: true, no_native: true }
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-setup
       - name: Install the target's native subpackages
-        if: matrix.cross
+        if: matrix.cross && !matrix.no_native
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -135,7 +136,8 @@ jobs:
           install: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
       - if: matrix.target == 'windows-x64'
         run: node scripts/check-test-shards.mjs --start hook-startup
-      - run: bash packages/myco/scripts/build-libsqlite3-target.sh "${{ matrix.target }}"
+      - if: ${{ !matrix.no_native }}
+        run: bash packages/myco/scripts/build-libsqlite3-target.sh "${{ matrix.target }}"
       - name: Hand the Darwin native library to the Linux cross-compiler
         if: matrix.target == 'darwin-arm64'
         uses: actions/upload-artifact@v7
@@ -266,6 +268,29 @@ jobs:
         run: node packages/myco/scripts/measure-hook-startup.mjs hook-startup-bin/myco.exe
       - name: Measure every hook at work
         run: bun packages/myco/scripts/measure-hook-work.ts hook-startup-bin/myco.exe
+
+  # Windows ARM64 is a member and runner platform: its binary carries no native SQLite artifacts. Cross-compiled by
+  # `hook-startup` and run here on a Windows ARM64 runner, it must start natively, run a member verb, refuse to host a
+  # Deployment while writing nothing, and answer a no-op hook within the Windows ceiling.
+  windows-arm64:
+    name: Windows ARM64 smoke (member and runner)
+    needs: hook-startup
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: ./.github/actions/download-artifact
+        with:
+          name: hook-startup-windows-arm64
+          path: windows-arm64-bin
+      - name: Smoke the Windows ARM64 binary
+        shell: pwsh
+        run: ./scripts/windows-arm64-smoke.ps1 -Executable windows-arm64-bin/myco.exe
+      - name: Measure a no-op hook
+        run: node packages/myco/scripts/measure-hook-startup.mjs windows-arm64-bin/myco.exe
 
   tests:
     name: tests (${{ matrix.kind }}, ${{ matrix.shard }})
@@ -439,7 +464,7 @@ jobs:
 
   check:
     if: always()
-    needs: [lint, build, tests, parity, parity-smoke, self-hosted-container, windows-native, ui-screens, hook-startup, hook-startup-windows, darwin-release-build, darwin-release-verify]
+    needs: [lint, build, tests, parity, parity-smoke, self-hosted-container, windows-native, windows-arm64, ui-screens, hook-startup, hook-startup-windows, darwin-release-build, darwin-release-verify]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -175,8 +175,10 @@ jobs:
           if-no-files-found: error
 
   # Per-target myco binary compile via `bun build --compile`. Each matrix job
-  # stages the target's sqlite-vec native extension and downloads
-  # the matching libsqlite3 artifact before compiling.
+  # whose target carries native artifacts stages the target's sqlite-vec native
+  # extension and downloads the matching libsqlite3 artifact before compiling.
+  # windows-arm64 carries none (packages/myco/scripts/release-targets.mjs): it
+  # is a member and runner platform, and compiles from its entry alone.
   cross-compile:
     name: Cross-compile myco (${{ matrix.target }})
     needs: [validate-tag, compile-libsqlite3]
@@ -185,7 +187,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64]
+        include:
+          - { target: darwin-arm64, native: true }
+          - { target: darwin-x64, native: true }
+          - { target: linux-x64, native: true }
+          - { target: linux-arm64, native: true }
+          - { target: windows-x64, native: true }
+          - { target: windows-arm64, native: false }
     steps:
       - uses: actions/checkout@v7
 
@@ -212,6 +220,7 @@ jobs:
       # the host only pulls the host optional subpackage, so force-install
       # the target's subpackage at the same pinned version.
       - name: Install sqlite-vec target subpackage
+        if: matrix.native
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -219,6 +228,7 @@ jobs:
           npm install "sqlite-vec-${TARGET}@${SQLITE_VEC_VERSION}" --no-save --ignore-scripts --force
 
       - name: Download libsqlite3 artifact
+        if: matrix.native
         uses: actions/download-artifact@v8
         with:
           name: libsqlite3-${{ matrix.target }}
@@ -333,10 +343,12 @@ jobs:
         if: needs.validate-tag.outputs.tag_prefix == 'myco'
         run: |
           set -euo pipefail
-          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64; do
-            ext=""
-            [ "$target" = "windows-x64" ] && ext=".exe"
-            binary="packages/myco-${target}/bin/myco${ext}"
+          source scripts/release-assets.sh
+          for name in "${MYCO_RELEASE_BINARIES[@]}"; do
+            target="${name#myco-}"
+            target="${target%.exe}"
+            binary="packages/myco-${target}/bin/myco"
+            case "$name" in *.exe) binary="${binary}.exe" ;; esac
             if [ ! -f "$binary" ]; then
               echo "missing binary: $binary" >&2
               exit 1
@@ -418,12 +430,36 @@ jobs:
             bash scripts/verify-darwin-distribution.sh "$VERSION" "raw-binaries/myco-${target}" "raw-binaries/SHA256SUMS" "$mode"
           done
 
+  # The Windows ARM64 asset is cross-compiled and never executed by the build job: run the exact release bytes on a
+  # Windows ARM64 runner before anything is published.
+  verify-windows-arm64:
+    name: Verify staged Windows ARM64 distribution
+    needs: [validate-tag, build]
+    if: needs.validate-tag.outputs.tag_prefix == 'myco'
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: myco-raw-binaries
+          path: raw-binaries/
+      - name: Verify the release asset's checksum and behaviour
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate-tag.outputs.version }}
+        run: |
+          $asset = 'myco-windows-arm64.exe'
+          $expected = (Get-Content raw-binaries/SHA256SUMS | Where-Object { $_ -match "^([0-9a-f]{64})  $([regex]::Escape($asset))$" } | ForEach-Object { $Matches[1] })
+          if (-not $expected -or (Get-FileHash "raw-binaries/$asset" -Algorithm SHA256).Hash -ne $expected) { throw "$asset does not match SHA256SUMS" }
+          ./scripts/windows-arm64-smoke.ps1 -Executable "raw-binaries/$asset" -Version $env:VERSION
+
   create-release:
     name: Create GitHub Release
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    needs: [validate-tag, build, require-ci, full-ci, verify-darwin]
+    needs: [validate-tag, build, require-ci, full-ci, verify-darwin, verify-windows-arm64]
     if: |
       always() &&
       needs.validate-tag.outputs.publication_allowed == 'true' &&
@@ -432,6 +468,7 @@ jobs:
       needs.require-ci.result == 'success' &&
       needs.full-ci.result == 'success' &&
       needs.verify-darwin.result == 'success' &&
+      needs.verify-windows-arm64.result == 'success' &&
       needs.validate-tag.outputs.tag_prefix == 'myco'
     steps:
       - uses: actions/checkout@v7

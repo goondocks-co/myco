@@ -39,7 +39,7 @@ On Windows x64, in PowerShell:
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The 2.0 Windows path is not yet verified. Windows on ARM has no supported build. A binary destination containing whitespace is refused; choose a path with no spaces rather than retrying unchanged.
+The 2.0 Windows path is not yet verified. Windows ARM64 joins and runs work but cannot host a Deployment; for that, use `--create cloudflare` or another machine. A binary destination containing whitespace is refused; choose a path with no spaces rather than retrying unchanged.
 
 ## 2. Join a Deployment
 

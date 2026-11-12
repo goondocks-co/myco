@@ -7,7 +7,7 @@ Install the Myco binary using the [installation steps](quickstart.md#1.-install)
 | Run it on | Choose this when | What you need |
 |---|---|---|
 | Cloudflare | Teammates, remote runners or cloud agents need to reach it | A Cloudflare account; Node.js and Wrangler on the machine you deploy from |
-| This machine | You want a personal Myco reached only from this machine | The Myco binary; no Node.js or container runtime |
+| This machine | You want a personal Myco reached only from this machine | The Myco binary on macOS, Linux or Windows x64; no Node.js or container runtime. Windows ARM64 cannot host one |
 
 **At beta, self-hosting on your own machine supports loopback access only.** Use Cloudflare for a shared address. VM hosting and exposing a local server are covered only in the [unsupported appendix](#unsupported-self-hosting).
 
