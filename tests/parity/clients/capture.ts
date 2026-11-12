@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { ageRows, expectPersisted, type ParityTarget } from '../harness.ts';
 import { revisionHeaders } from '../settings-revision.ts';
-import { event, owner, putCapability, putSetting, untilPublished, type RouteTarget } from './requests.ts';
+import { event, owner, putCapability, putSetting, resetSetting, untilPublished, type RouteTarget } from './requests.ts';
 import { wordVectorProvider } from '../embedding/word-vectors.ts';
 import { saveSpore, writeDueCards } from './knowledge.ts';
 
@@ -26,9 +26,19 @@ export const promptContext = (target: RouteTarget, sessionId: string, promptId: 
 export async function deliver(target: RouteTarget, sessionId: string, answer: { receiptId?: string; answerId?: string }, rendered: { renderedIn: string } | { renderedScopeReason: 'absent_key' }): Promise<void> {
   await event(target, sessionId, 'context.delivered', { ...answer, ...rendered });
 }
-export async function recallSettings(target: RouteTarget): Promise<void> {
+export async function withRecallSettings(target: RouteTarget, body: () => Promise<void>, overrides: Record<string, unknown> = {}): Promise<void> {
   expect((await putCapability(target, 'cortex', true)).status).toBe(200);
-  for (const [leaf, value] of Object.entries({ 'cortex.spores.inject_on_prompt_submit': true, 'cortex.plans.inject_intent_nudge_on_prompt_submit': false, 'cortex.instructions.inject_on_session_start': true, 'cortex.instructions.inject_on_subagent_start': true, 'instructions.template': 'Keep captured evidence.' })) expect((await putSetting(target, leaf, value)).status).toBe(200);
+  const settings = { 'cortex.spores.inject_on_prompt_submit': true, 'cortex.plans.inject_intent_nudge_on_prompt_submit': false, 'cortex.instructions.inject_on_session_start': true, 'cortex.instructions.inject_on_subagent_start': true, 'instructions.template': 'Keep captured evidence.', ...overrides };
+  try {
+    for (const [leaf, value] of Object.entries(settings)) expect((await putSetting(target, leaf, value)).status).toBe(200);
+    await body();
+  } finally {
+    const resets = await Promise.allSettled(Object.keys(settings).map(leaf => resetSetting(target, leaf)));
+    for (const reset of resets) {
+      if (reset.status === 'rejected') throw reset.reason;
+      expect(reset.value.status).toBe(200);
+    }
+  }
 }
 export async function learningSettings(target: RouteTarget): Promise<void> {
   expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
@@ -42,9 +52,10 @@ export async function cardSession(target: ParityTarget, sessionId: string, text:
 export async function withRecall(target: ParityTarget, body: () => Promise<void>): Promise<void> {
   const provider = target.name === 'selfhosted' ? wordVectorProvider() : null;
   try {
-    await recallSettings(target);
-    expect((await owner(target, '/api/embedding', { method: 'PUT', headers: await revisionHeaders(target, '/api/embedding'), body: JSON.stringify(provider === null ? { provider: 'workers-ai', model: '@cf/baai/bge-m3' } : { provider: 'ollama', model: 'parity-words', endpoint: provider.origin }) })).status).toBe(200);
-    for (const text of ['astronomy telescope galaxy', 'sourdough fermentation flour', 'gardening soil seedlings', 'sailing tide compass', 'knitting wool pattern', 'painting canvas pigment', 'piano concert melody', 'cycling mountain trail']) await saveSpore(target, text);
-    await body();
+    await withRecallSettings(target, async () => {
+      expect((await owner(target, '/api/embedding', { method: 'PUT', headers: await revisionHeaders(target, '/api/embedding'), body: JSON.stringify(provider === null ? { provider: 'workers-ai', model: '@cf/baai/bge-m3' } : { provider: 'ollama', model: 'parity-words', endpoint: provider.origin }) })).status).toBe(200);
+      for (const text of ['astronomy telescope galaxy', 'sourdough fermentation flour', 'gardening soil seedlings', 'sailing tide compass', 'knitting wool pattern', 'painting canvas pigment', 'piano concert melody', 'cycling mountain trail']) await saveSpore(target, text);
+      await body();
+    });
   } finally { provider?.stop(); }
 }

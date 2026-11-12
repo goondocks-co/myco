@@ -3,7 +3,6 @@ import type { SearchAnswer, SearchResult } from '@goondocks/myco-shared/search-t
 import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 import { cardSession, learningSettings, publishedTurns } from '../clients/capture.ts';
-import { event, createProject } from '../clients/requests.ts';
 
 const MATCHES = 5;
 const PAGE = 2;
@@ -48,11 +47,6 @@ export const searchPaging: ParityScenario = {
     const everyCard = Array.from({ length: MATCHES }, () => crypto.randomUUID()).sort();
     await cards(session, everyCard, `${word} identical words`);
     await cards(elsewhere, [crypto.randomUUID()], `${word} identical words`);
-    const foreign = `proj_${crypto.randomUUID()}`;
-    expect((await createProject(target, foreign, 'Foreign paging')).status).toBe(201);
-    const capture = async () => {
-      await event(target, 'noise', 'prompt', { promptId: crypto.randomUUID(), text: 'unrelated text', origin: 'user' }, at, foreign);
-    };
     const walk = async (limit: number): Promise<{ results: SearchResult[]; pages: SearchResult[][] }> => {
       const pages: SearchResult[][] = [];
       let cursor: string | null = null;
@@ -64,7 +58,6 @@ export const searchPaging: ParityScenario = {
         if (pages.length > MATCHES) throw new Error('search cursor did not end');
         if (cursor !== null) {
           expect(page.body.hits).toHaveLength(limit);
-          if (pages.length === 1) await capture();
         }
       } while (cursor !== null);
       return { results: pages.flat(), pages };

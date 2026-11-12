@@ -9,6 +9,7 @@ export const eventDirectBody: ParityScenario = {
   async run(target) {
     const sessionId = `direct-body-${crypto.randomUUID()}`, now = Date.now();
     await event(target, sessionId, 'session.start', { agent: 'claude-code', startedAt: now });
+    // The 24 KB Unicode body exceeds EVENT_INLINE_PAYLOAD_BYTES (16 KB).
     const payload = { promptId: crypto.randomUUID(), text: 'é'.repeat(12_000), origin: 'user' };
     const body = JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind: 'prompt', createdAt: now, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload });
     const post = () => fetch(`${target.url}/events`, { method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }), body });

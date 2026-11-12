@@ -20,7 +20,9 @@ Write `scenarios/<feature>.ts` exporting a `ParityScenario` (`harness.ts`);
 `parity.test.ts` runs every scenario a file there exports, so there is no list
 to edit. Give it a weight under `parity` in `scripts/test-durations.json`. A
 scenario receives a `ParityTarget`; a paired scenario receives two separately
-booted targets. `clients/runs.ts` supplies real dispatch/claim, run reads,
+booted targets. `clients/capture.ts` supplies blobs, transcripts, real context answers and delivery,
+public publication readiness and claimed-card preparation. `withRecallSettings`
+resets every Deployment leaf it sets in a `finally`. `clients/runs.ts` supplies real dispatch/claim, run reads,
 settlement, capture publication and account-linking helpers; use `endRun` from
 `clients/requests.ts` to complete a claimed run and `failRun` from
 `clients/runs.ts` to fail one. Create state over HTTP (`/events` with `memberHeaders()`,

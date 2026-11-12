@@ -7,7 +7,7 @@ const cursorLine = (role: string, text: string): string => `${JSON.stringify({ r
 
 /** Captured transcript and spilled tool input remain readable through the session's turns. */
 export const sessionDocuments: ParityScenario = {
-  name: 'session documents: a wake publishes a new transcript into registered chunks with its turn catalog',
+  name: 'session documents: a wake publishes a transcript and spilled tool input readable through its turns',
   async run(target) {
     const session = `documents-${crypto.randomUUID()}`;
     await transcript(target, session, cursorLine('user', '<user_query>\nfirst question\n</user_query>') + cursorLine('assistant', 'first answer')
