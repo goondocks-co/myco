@@ -29,10 +29,9 @@ export async function releaseRun(env: ServerEnv, _scope: ReadScope, run: Releasa
 
 /** A runtime ending and retirement of its dispatch credential commit in the same transaction. */
 export async function commitRunUpdate(env: ServerEnv, scope: ReadScope, runId: string, update: RunUpdate,
-  options: { caller: RunCaller; now: number; errorCode: RunErrorCode; context?: Readonly<Record<string, string>>; replaced?: boolean },
+  options: { caller: RunCaller; now: number; errorCode: RunErrorCode; context?: Readonly<Record<string, string>> },
 ): Promise<number> {
-  const statement = runUpdateStatement(scope, runId, update, { errorCode: options.errorCode, context: options.context, caller: options.caller,
-    replaced: options.replaced === true && update.status === 'failed' });
+  const statement = runUpdateStatement(scope, runId, update, { errorCode: options.errorCode, context: options.context, caller: options.caller });
   if (statement === null) return 0;
   const terminal = isTerminalRunStatus(update.status);
   const { changed, following } = await commitRunChange(env.db, statement, terminal ? [

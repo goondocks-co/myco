@@ -479,8 +479,8 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     f.receipt('proj_3', NOW - 60_000);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, dispatch_spec) VALUES ('proj_3', 'run_pending', 'myco-agent', 'embedding-reconcile', 'pending', ?)`, [JSON.stringify({ actor: CLOCK_ACTOR })]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, dispatch_spec) VALUES ('proj_1', 'run_queued', 'myco-agent', 'canopy-map', 'queued', ?, ?)`, [NOW - 2_000, JSON.stringify({ actor: CLOCK_ACTOR })]);
-    // The clock's entry the platform replaced: the interval reads it, the day's ceiling does not.
-    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec, run_context) VALUES ('proj_2', 'run_replaced', 'myco-agent', 'embedding-reconcile', 'completed', ?, ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR }), JSON.stringify({ replaced: true })]);
+    // A clock entry inside the day: the interval and the day's ceiling both read it.
+    f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, dispatch_spec) VALUES ('proj_2', 'run_recent', 'myco-agent', 'embedding-reconcile', 'completed', ?, ?, ?)`, [NOW - 3_000, NOW - 2_500, JSON.stringify({ actor: CLOCK_ACTOR })]);
     // A skip for unchanged input is the interval's entry; a skip for any other reason is nobody's.
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_unchanged', 'myco-agent', 'canopy-map', 'skipped', ?, ?, ?)`, [NOW - 500, NOW - 500, skipContext(INPUT_UNCHANGED)]);
     f.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, run_context) VALUES ('proj_2', 'run_ceiling', 'myco-agent', 'canopy-map', 'skipped', ?, ?, ?)`, [NOW - 100, NOW - 100, skipContext('max_runs_per_day')]);
@@ -500,7 +500,7 @@ describe('one wake\'s scheduling across many Projects (#1510)', () => {
     ]).toEqual([
       true,
       true,
-      { live: false, lastEntryAt: NOW - 3_000, entriesSince: 0 },
+      { live: false, lastEntryAt: NOW - 3_000, entriesSince: 1 },
       { live: false, lastEntryAt: NOW - 500, entriesSince: 0 },
       { live: false, lastEntryAt: NOW - 4_000, entriesSince: 1 },
     ]);

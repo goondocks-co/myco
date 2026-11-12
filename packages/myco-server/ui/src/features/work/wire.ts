@@ -68,8 +68,6 @@ export interface RunFields {
   waitingSince: number | null;
   /** How many runs of this task wait in this Project, this one included; null while the queue is measured. */
   taskQueued: number | null;
-  replaced: boolean;
-  replaces: string | null;
   harness: string | null;
   worker: RunWorker | null;
   /** The member who started it by hand, `clock` or `backfill` when Myco started it on its own, null where the run names no one. */

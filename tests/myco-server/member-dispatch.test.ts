@@ -132,11 +132,10 @@ describe('a member starting a task', () => {
     expect((await h.asMember({ task: 'title-summary', projectId: 'proj_1' })).status).toBe(200);
   });
 
-  it('never counts a skipped run or a replaced one against the day', async () => {
+  it('never counts a skipped run against the day', async () => {
     const h = harness(memberCap(2));
     const now = Date.now();
     h.entered('run_skipped', TASK, now - 1000, { status: 'skipped', context: { reason: 'input_unchanged' } });
-    h.entered('run_replaced', TASK, now - 2000, { status: 'failed', context: { replaced: 1 } });
     expect((await h.asMember({ task: TASK, projectId: 'proj_1' })).status).toBe(200);
     expect((await h.asMember({ task: TASK, projectId: 'proj_1' })).status).toBe(200);
     expect((await h.asMember({ task: TASK, projectId: 'proj_1' })).status).toBe(429);

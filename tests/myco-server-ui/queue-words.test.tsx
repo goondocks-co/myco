@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { deployWords, queuedWords } from '../../packages/myco-server/ui/src/features/work/words';
+import { queuedWords } from '../../packages/myco-server/ui/src/features/work/words';
 import {
   HELD_BY_WORDS,
   CAPABILITY_HOLDS,
@@ -56,10 +56,4 @@ describe('a queued run in the reader\'s words', () => {
     }
   });
 
-  it('says what a deploy did to a run, and says nothing about an ordinary one', () => {
-    expect(deployWords({ replaced: true, replaces: null })).toBe('Replaced during a deploy');
-    // The run it stands in for is never named by its id.
-    expect(deployWords({ replaced: false, replaces: 'run_abc' })).toBe('Started again after a deploy');
-    expect(deployWords({ replaced: false, replaces: null })).toBeNull();
-  });
 });

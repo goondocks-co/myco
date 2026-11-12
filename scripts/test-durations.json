@@ -605,7 +605,6 @@
     "tests/myco-server/release-provenance.test.ts": 2300,
     "tests/myco-server/remaining-read-cost.test.ts": 21000,
     "tests/myco-server/remotes.test.ts": 6578,
-    "tests/myco-server/replaced-runs.test.ts": 635,
     "tests/myco-server/repositories.test.ts": 5979,
     "tests/myco-server/response-owner-cost.test.ts": 8640,
     "tests/myco-server/restore-authority.test.ts": 1322,
