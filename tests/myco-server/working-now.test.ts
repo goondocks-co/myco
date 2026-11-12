@@ -30,7 +30,7 @@ import { FEATURES_HEADER, featuresNamed, TURN_END_HEADER } from '@goondocks/myco
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
 import { failingStatement } from './helpers/store-faults.js';
-import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+import type { PreparedStatement, RelationalStore, RunResult } from '@myco-server-worker/core/adapters.js';
 
 const TURN_STAMPS = ['sessions.startTurn', 'sessions.startTurnFromEvent'] as const;
 const turnStampSql = () => new Set(TURN_STAMPS.map((name) => {
@@ -42,13 +42,13 @@ const turnStampSql = () => new Set(TURN_STAMPS.map((name) => {
 /** A store whose turn-stamp calls never finish. The prompt answers before that deferred stamp. */
 function stallingTurn(db: RelationalStore): RelationalStore {
   const stamps = turnStampSql();
-  const held = new WeakMap<object, { raw: ReturnType<RelationalStore['prepare']>; sql: string }>();
-  const wrap = (raw: ReturnType<RelationalStore['prepare']>, sql: string): ReturnType<RelationalStore['prepare']> => {
-    const statement = {
+  const held = new WeakMap<PreparedStatement, { raw: PreparedStatement; sql: string }>();
+  const wrap = (raw: PreparedStatement, sql: string): PreparedStatement => {
+    const statement: PreparedStatement = {
       bind: (...values: unknown[]) => wrap(raw.bind(...values), sql),
       first: <T>() => raw.first<T>(),
       all: <T>() => raw.all<T>(),
-      run: () => stamps.has(sql) ? new Promise(() => {}) : raw.run(),
+      run: () => stamps.has(sql) ? new Promise<RunResult>(() => {}) : raw.run(),
     };
     held.set(statement, { raw, sql });
     return statement;
