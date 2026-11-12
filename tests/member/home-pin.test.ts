@@ -149,18 +149,13 @@ describe('resolveMycoHome precedence', () => {
     expect(refusals).toEqual([[path.join(owned, '.myco', 'runtime.home'), `pin file owned by uid ${process.getuid?.()}, expected ${foreignUid}`]]);
   });
 
-  it('reports one refused pin once, however often the home is resolved', () => {
-    const home = tmpdir('myco-pinned-home-');
-    const loose = pinnedProject(home, 0o664);
-    const lines: string[] = [];
-    const origErr = process.stderr.write.bind(process.stderr);
-    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = ((c: unknown) => { lines.push(String(c)); return true; }) as never;
-    try {
-      for (let i = 0; i < 5; i++) resolveMycoHome({ cwd: loose, homeDir, env: {} });
-    } finally {
-      (process.stderr as unknown as { write: unknown }).write = origErr;
-    }
-    expect(lines.filter((l) => l.includes('ignoring runtime pin'))).toHaveLength(1);
+  it('prints one refusal per launch, and the next launch prints again', () => {
+    const loose = pinnedProject(tmpdir('myco-pinned-home-'), 0o664);
+    const source = `import { resolveMycoHome } from ${JSON.stringify(path.resolve('packages/myco/src/paths/home.ts'))}; let n=0; const write=process.stderr.write.bind(process.stderr); process.stderr.write=(c)=>{ if(String(c).includes('ignoring runtime pin')) n+=1; return true }; const opts={ cwd:${JSON.stringify(loose)}, homeDir:${JSON.stringify(homeDir)}, env:{} }; resolveMycoHome(opts); delete process.env.MYCO_PIN_REFUSAL_REPORTED; process.env.MYCO_PIN_REFUSAL_REPORTED='0'; resolveMycoHome(opts); process.stderr.write=write; process.stdout.write(String(n));`;
+    const env = { ...process.env, HOME: homeDir };
+    delete env.MYCO_HOME; delete env.MYCO_PIN_REFUSAL_REPORTED;
+    const launch = () => execFileSync(process.execPath, ['-e', source], { env, encoding: 'utf8' });
+    expect([launch(), launch()].map((line) => line.trim())).toEqual(['1', '1']);
   });
 });
 

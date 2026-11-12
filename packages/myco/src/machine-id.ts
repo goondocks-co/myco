@@ -107,15 +107,16 @@ export function resolveGitHubUser(run: GhRunner = defaultGhRunner): string {
 /**
  * Get or generate the machine ID for this host.
  *
- * On first call, computes `{github_user}_{machine_hash}` and caches it
- * to `~/.myco/machine_id`. Subsequent calls read from cache.
+ * The first call for a resolved path reads or writes that path's `machine_id`.
+ * A later call for the same path returns the id already read. The path is
+ * resolved on every call, which reads the home pin when `MYCO_HOME` is unset.
  *
  * @returns the machine ID string
  */
 export function getMachineId(): string {
   const cachePath = resolveMachineIdPath();
-  // The same path is read on every synced write once a home is fixed. Skip the filesystem then.
-  if (cachedMachineId?.path === cachePath) return cachedMachineId.id;
+  // The path above is resolved on every call. A hit returns the id without reading machine_id.
+  if (cachedMachineId?.path === cachePath) return cachedMachineId.id
 
   try {
     const persisted = fs.readFileSync(cachePath, 'utf-8').trim();
