@@ -1,15 +1,19 @@
 import { issueRecoveryForget } from '../../../packages/myco-server/src/db/recovery/forget-commands.ts';
-import { MemberWriteRefused, memberWriteStore } from '../../../packages/myco-server/src/auth/member-write-store.ts';
+import { MemberWriteRefused } from '../../../packages/myco-server/src/auth/member-write-store.ts';
 import type { PreparedStatement, RelationalStore } from '../../../packages/myco-server/src/core/adapters.ts';
 
 const STOP_WRITE = /^UPDATE member_credentials SET revoked_at\s*=/i;
 
-/** A one-shot interleaving at the real credential UPDATE, after the HTTP route has resolved its actor. */
+/**
+ * A one-shot interleaving at the real credential UPDATE, after the HTTP route has resolved its actor: the actor is demoted
+ * or revoked, or with `fail` the matching write itself fails, as a store interrupted mid-operation does.
+ */
 export function stopRaceFixture() {
   let pendingMemberId: string | null = null;
   let fired = false;
   let write = STOP_WRITE;
   let revoke = false;
+  let fail = false;
   let remainingMatches = 0;
   let serving: RelationalStore | undefined;
 
@@ -20,10 +24,11 @@ export function stopRaceFixture() {
       if (remainingMatches-- > 0) return;
       const memberId = pendingMemberId;
       pendingMemberId = null;
+      fired = true;
+      if (fail) throw new Error('parity interrupted write');
       await db.prepare(revoke ? 'UPDATE members SET revoked_at = 1 WHERE id = ?'
         : "UPDATE members SET role = 'member', role_revision = role_revision + 1 WHERE id = ? AND role = 'admin'")
         .bind(memberId).run();
-      fired = true;
     };
     const statement = (sql: string, original: PreparedStatement): PreparedStatement => {
       const wrapped: PreparedStatement = {
@@ -57,22 +62,21 @@ export function stopRaceFixture() {
     if (path === '/__parity/live-write' && request.method === 'POST' && serving !== undefined) {
       const body = await request.json() as { memberId: string; operation: string; projectId: string };
       try {
-        if (body.operation === 'recovery') return Response.json({ id: await issueRecoveryForget(serving, body.memberId, Date.now(), null) });
-        const db = memberWriteStore(serving, body.memberId, 'admin');
-        const statement = db.prepare("WITH target AS (SELECT ? AS id) UPDATE projects SET name='returning write' WHERE project_id=(SELECT id FROM target) RETURNING name").bind(body.projectId);
-        return Response.json(await (body.operation === 'first' ? statement.first() : statement.all()));
+        if (body.operation !== 'recovery') return new Response(null, { status: 400 });
+        return Response.json({ id: await issueRecoveryForget(serving, body.memberId, Date.now(), null) });
       } catch (error) {
         if (error instanceof MemberWriteRefused) return Response.json({ error: 'not_admin' }, { status: 403 });
         throw error;
       }
     }
     if (path === '/__parity/stop-race/arm'  && request.method === 'POST') {
-      const body = await request.json() as { memberId?: unknown; write?: string; revoke?: boolean; after?: number };
+      const body = await request.json() as { memberId?: unknown; write?: string; revoke?: boolean; fail?: boolean; after?: number };
       if (typeof body.memberId !== 'string') return new Response(null, { status: 400 });
       pendingMemberId = body.memberId;
       fired = false;
       write = body.write === undefined ? STOP_WRITE : new RegExp(body.write, 'i');
       revoke = body.revoke === true;
+      fail = body.fail === true;
       remainingMatches = body.after ?? 0;
       return Response.json({ armed: true });
     }

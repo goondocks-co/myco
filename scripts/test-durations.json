@@ -995,7 +995,7 @@
     "object lifecycle: generation names, clock-owned deletion, expired authority, and a recovery hold": 66000,
     "object store ownership: a fresh database over a populated store releases and deletes nothing": 40000,
     "owner lifecycle: explicit owner selection, atomic transfer, role CAS, protected owner and credential Stop": 151000,
-    "owner lifecycle: a restored administrator waits for owner selection, then links and takes ownership": 54000,
+    "owner lifecycle: an interrupted restore keeps the selected owner and the imported administrator, who then links and takes ownership": 54000,
     "owner review: live actor scope gates credential and machine Stop after demotion": 127000,
     "plans at scale: a full page past the parameter ceiling, tags on every row, and every plan by pages": 27000,
     "plans: prompt linkage, convergence guards, MCP save on the member key, owner status edit, turn body": 10000,

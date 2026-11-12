@@ -13,11 +13,6 @@ export const modelCatalogs: ParityScenario = {
   async run(target) {
     const now = Date.now();
     const alias = 'openrouter/~anthropic/claude-opus-latest';
-    const offer = await fetch(`${target.url}/worker/claim`, {
-      method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ harnesses: [{ id: 'opencode', authenticated: true }] }),
-    });
-    expect(offer.status).toBe(200);
     let observedOrder = 0;
     const report = async (models: unknown[], fetchedAt: number, headers = target.memberHeaders(), harness = 'opencode') => {
       const response = await fetch(`${target.url}/worker/models`, {

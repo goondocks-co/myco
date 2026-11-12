@@ -122,8 +122,7 @@ export async function seedUnattributedRaw(target: ParityTarget, row: { projectId
     VALUES (${lit(row.projectId)}, 'tx_00000000000000000000000000000000', ${lit(row.session)}, 'unknown_machine', 0, 0, ${row.at}, ${row.at}, 'unknown_token')`);
 }
 
-/** The removed uploader's GitHub account rejoined as a new membership: no client unlinks an account from a member. */
-export async function rejoinAccount(target: ParityTarget, memberId: string, sub: string, at: number): Promise<void> {
+/** Releases a removed member's GitHub account so it can link to a new membership: no client unlinks an account from a member. */
+export async function unlinkAccount(target: ParityTarget, memberId: string): Promise<void> {
   await target.sql(`UPDATE members SET github_id = NULL WHERE id = ${lit(memberId)}`);
-  await target.sql(`INSERT INTO members (id, label, created_at, role, github_id) VALUES ('mem_raw_rejoined', 'new membership', ${at}, 'member', ${lit(sub)})`);
 }

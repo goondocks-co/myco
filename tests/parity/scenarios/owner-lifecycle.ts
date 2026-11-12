@@ -144,10 +144,13 @@ export const ownerLifecycle: ParityScenario = {
   },
 };
 
-/** An authority restore waits for an owner; once one is selected, a restored administrator is linked and takes ownership. */
+/**
+ * An authority restore waits for an owner. Once one is selected, a restore the store interrupts after its member rows keeps
+ * both the owner and the imported administrator, who links without replacing the owner and then takes ownership.
+ */
 export const interruptedRestoreOwner: ParityScenario = {
-  name: 'owner lifecycle: a restored administrator waits for owner selection, then links and takes ownership',
-  dedicated: { timeoutMs: 240_000 },
+  name: 'owner lifecycle: an interrupted restore keeps the selected owner and the imported administrator, who then links and takes ownership',
+  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/worker-entry.ts' }, stopRace: true, timeoutMs: 240_000 },
   async run(target) {
     const restoredId = 'mem_owner_parity_restored';
     const now = Date.now();
@@ -159,8 +162,14 @@ export const interruptedRestoreOwner: ParityScenario = {
     expect({ status: ownerless.status, body: ownerless.body }).toEqual({ status: 409, body: { error: 'owner_pending' } });
     expect(await memberView(target, restoredId)).toBeUndefined();
     expect(await selectOwner(target)).toBe('1');
-    expect((await browser(target, '/api/backups/restore-upload', target.ownerHeaders(), { artifact })).status).toBe(200);
+    // The store fails the restore's machine-claim write, after the member rows it already committed.
+    expect((await browser(target, '/__parity/stop-race/arm', {}, { memberId: MEMBER_ID, write: 'INTO machine_claims', fail: true })).status).toBe(200);
+    const interrupted = await browser(target, '/api/backups/restore-upload', target.ownerHeaders(), { artifact });
+    // The store's failure stops this pass after the member rows committed; the job stays to be resumed by the tick.
+    expect({ status: interrupted.status, applied: interrupted.body.applied }).toEqual({ status: 202, applied: false });
+    expect((await browser(target, '/__parity/stop-race/status', {})).body).toEqual({ fired: true, armed: false });
     expect(await memberView(target, restoredId)).toMatchObject({ role: 'admin', linked: false });
+    expect(await ownership(target, target.ownerHeaders())).toMatchObject({ ownerMemberId: MEMBER_ID, revision: '1' });
 
     const restored = await linkAccount(target, restoredId, '720004', target.ownerHeaders(), 'restored');
     const pending = await ownership(target, restored);

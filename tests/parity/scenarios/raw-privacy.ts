@@ -4,7 +4,7 @@ import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobFields, KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { documentsPublished, expectPersisted, lit, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { browser, person, selectOwner, stopMember } from '../clients/identity.ts';
-import { rawFixtureActors, rejoinAccount, seedSiblingTranscript, seedUnattributedRaw, type RawActors, type RawViewer } from '../owner-review/historical-authority.ts';
+import { rawFixtureActors, seedSiblingTranscript, seedUnattributedRaw, type RawActors, type RawViewer, unlinkAccount } from '../owner-review/historical-authority.ts';
 
 type RequestFetch = (request: Request) => Promise<Response>;
 const PROJECT = 'proj_raw_privacy';
@@ -244,7 +244,20 @@ export async function assertRawPrivacy(target: ParityTarget, requestFetch: Reque
   assertPrivateCache(ownerAfterRevocation);
   // Ownership of the transcript survives its uploader's removal.
   expect(await target.sql(`SELECT owner_member_id FROM raw_resources WHERE project_id = ${lit(PROJECT)} AND kind = 'transcript' AND resource_id = ${lit(transcriptId)}`)).toEqual([{ owner_member_id: uploader.id }]);
-  await rejoinAccount(target, uploader.id, uploader.sub, now);
+  // The removed uploader's account joins again as a new membership: invited, joined from a machine, linked by an admin.
+  await unlinkAccount(target, uploader.id);
+  const owned = { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' };
+  const send = async (path: string, headers: Record<string, string>, body: unknown) => {
+    const response = await post(path, headers, JSON.stringify(body));
+    return { status: response.status, body: await response.json() as Record<string, any> };
+  };
+  const invite = await send('/api/enrollment', owned, { role: 'member' });
+  expect(invite.status).toBe(201);
+  const rejoined = await send('/members/join', { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4' }, { key: invite.body.key, machineId: 'machine_raw_rejoined' });
+  expect(rejoined.body).toMatchObject({ joined: true });
+  const link = await send(`/api/members/${rejoined.body.memberId}/link-github`, owned, {});
+  expect(link.status).toBe(201);
+  expect((await send('/auth/link', { ...uploader.headers, origin: target.url, 'content-type': 'application/json' }, { key: link.body.key, confirm: true })).status).toBe(200);
   for (const path of [blobPath(raw.key), blobPath(spilled.key), transcriptPath]) {
     const rejoined = await get(path, uploader.headers);
     expect(rejoined.status).toBe(404);
