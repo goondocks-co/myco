@@ -198,6 +198,10 @@ function audit() {
     }
     assert.deepEqual(parity.shards.map(({ shard }) => shard), selectors, 'Parity matrix differs from CI');
     assertCoverage(parity.shards.flatMap(({ scenarios }) => scenarios), parityScenarios, 'CI parity shards');
+    for (const { shard, scenarios } of parity.shards) {
+      const plannedMs = scenarios.reduce((total, name) => total + parityWeights[name], 0);
+      console.log(`parity ${shard}: estimated ${Math.ceil(plannedMs / 1000)}s`);
+    }
     for (const name of PARITY_SMOKE_SCENARIOS) assert.ok(parityScenarios.includes(name), `Parity smoke names a scenario that does not exist: ${name}`);
     const windowsTests = job => job.steps.flatMap(step => /npm test --/.test(step.run ?? '') ? step.run.split(/\s+/).filter(word => word.startsWith('tests/')) : []);
     const windowsSmoke = windowsTests({ steps: workflow.jobs['windows-native'].steps.filter(step => step.if === "env.MYCO_TEST_SCOPE != 'full'") });

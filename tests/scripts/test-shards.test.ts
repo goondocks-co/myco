@@ -100,7 +100,7 @@ describe('test shard selection', () => {
       for (const scenario of workload.scenarios) expect(weight(scenario)).toBeGreaterThan(0);
       const projected = Array.from({ length: count }, (_, index) => {
         const shard = selectShard(workload.scenarios, { index: index + 1, count }, weight);
-        return shard.reduce((total, scenario) => total + scenario.milliseconds, workload.sharedTargetAllowanceMs);
+        return shard.reduce((total, scenario) => total + Math.max(scenario.milliseconds, weight(scenario)), workload.sharedTargetAllowanceMs);
       });
       expect(Math.max(...projected), workload.source).toBeLessThanOrEqual(budget - workload.requiredHeadroomMs);
     }

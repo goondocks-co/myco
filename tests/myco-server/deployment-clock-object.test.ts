@@ -140,6 +140,35 @@ it('retains retry deadlines and escalation across object resets and an interrupt
   } finally { Date.now = realNow; }
 });
 
+it('keeps a request launch awake at the launched-work cadence during tick backoff', async () => {
+  const held = state();
+  const env = { MYCO_ORIGIN: 'https://myco.example' };
+  const work = Promise.withResolvers<void>();
+  class RequestClock extends DeploymentClock {
+    protected override clockEnv() {
+      const running = super.clockEnv();
+      return { ...running, harnessLaunch: async () => { running.afterResponse(() => work.promise); } };
+    }
+    protected override async tick(): Promise<TickReport> { throw new Error('fixture tick failure'); }
+  }
+  const clock = new RequestClock(held.ctx as never, env as never);
+  Object.assign(clock, { ctx: held.ctx, env });
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    await clock.alarm();
+    now = held.alarm()!;
+    await clock.alarm();
+    const retryAt = held.alarm()!;
+    now += 1_000;
+    await clock.launchEmbedding({ runId: 'request-run', timeoutSeconds: 60, envVars: {} });
+    expect(held.alarm()! - now).toBeLessThanOrEqual(LAUNCHED_WORK_WAKE_MS);
+    expect(await clock.wake()).toMatchObject({ ticked: false, heldBy: 'tick_backoff', retryInMs: retryAt - now });
+    expect(held.alarm()! - now).toBeLessThanOrEqual(LAUNCHED_WORK_WAKE_MS);
+  } finally { work.resolve(); await Promise.all(held.kept); Date.now = realNow; }
+});
+
 it('advances a later alarm for new work while retaining an earlier deadline', async () => {
   const held = state();
   const env = {};

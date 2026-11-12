@@ -625,10 +625,10 @@ test('admission refuses missing records and preserves archived blob holders in t
       VALUES('project','converted',?,?,?,?,?,?,?,?)`).bind(record.id,record.prompt_id,record.id,record.text,await sha256Hex(String(record.text)),record.created_at,doc!.token_id,record.received_at).run();
     const bytes=new Uint8Array(await encodePageChunk({pages:[{owner:SESSION_OWNER,page:0,records}],states:new Map(),owners:[]}));
     const key=await sha256HexOf(bytes),source='retirement-page';
-    await db.prepare(SCHEMA_STEPS.find(step=>step.version===715)!.statements.find(sql=>sql.includes('object_settlement_intents'))!).run();
-    await prepareDerivedStream({db,blobs},{projectId:'project',sessionId:'converted',tokenId:String(doc!.token_id),
-      sourceKind:'document',eventId:source,resourceId:source,envelopeHash:source},
-      {size:bytes.length,digest:key,stream:()=>new Blob([bytes]).stream()},3,{sql:'1',params:[]});
+    const generation=uuid(98002);
+    blobs.seed(blobObjectKey('project',key,generation),{size:bytes.length,bytes});
+    await db.prepare(`INSERT INTO blobs(project_id,key,size,media_type,token_id,received_at,generation)
+      VALUES('project',?,?,'application/json',?,3,?)`).bind(key,bytes.length,String(doc!.token_id),generation).run();
     await db.batch([
       db.prepare(`INSERT INTO session_chunks(project_id,session_id,generation,chunk_no,blob_key,kind,encoding,bytes,source_id,state)
         VALUES('project','converted',1,0,?,'page','gzip-ndjson',?,?,'live')`).bind(key,bytes.length,source),

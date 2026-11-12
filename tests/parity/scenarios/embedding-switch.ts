@@ -6,8 +6,9 @@ import { revisionHeaders } from '../settings-revision.ts';
 import { saveSpore } from '../clients/knowledge.ts';
 import { owner as readOwner } from '../clients/requests.ts';
 import { embeddingPass, embeddingSettings } from '../embedding/runtime.ts';
-/** Runtime passes past which a switch over three sources is taken as stuck. */
+/** Runtime passes past which a switch is taken as stuck. */
 const MAX_STEPS = 40;
+const SOURCE_COUNT = 24;
 
 /** Each target's starting model and the model of another size it switches to. */
 const MODELS = {
@@ -32,11 +33,11 @@ function startStub(dimensions: Record<string, number>): { url: string; stop(): v
 /**
  * Switch embedding model on each front door: with search built under one model, a confirmed switch to a model
  * of another size builds the new vectors through the dispatched embedding runtime while search answers by meaning
- * between runtime passes, and the embedding settings move to the new model only once every source holds a vector
+ * with partial new-model coverage. The embedding settings move to the new model only once every source holds a vector
  * under it.
  */
 export const embeddingSwitch: ParityScenario = {
-  name: 'embedding switch: search answers by meaning between runtime passes and changes model once the switch finishes',
+  name: 'embedding switch: search answers by meaning at every step and moves only once the new model covers every source',
   dedicated: { cloudflare: { embeddingRuntime: true, embeddingFixture: 'switch' }, selfhosted: { embeddingRuntime: true }, sqliteVec: true, timeoutMs: 120_000 },
   async run(target: ParityTarget) {
     const projectId = target.projectId;
@@ -47,8 +48,10 @@ export const embeddingSwitch: ParityScenario = {
     const stub = target.name === 'selfhosted' ? startStub(models.dimensions) : null;
     try {
       await embeddingSettings(target);
+      const contents = ['an architecture decision', 'architecture of the store', 'an unrelated observation',
+        ...Array.from({ length: SOURCE_COUNT - 3 }, (_, index) => `an unrelated observation ${index + 1}`)];
       const ids = [];
-      for (const content of ['an architecture decision', 'architecture of the store', 'an unrelated observation']) ids.push((await saveSpore(target, content, projectId, 'decision')).id);
+      for (const content of contents) ids.push((await saveSpore(target, content, projectId, 'decision')).id);
       const start = stub === null ? { provider: 'workers-ai', model: models.from } : { provider: 'openai-compatible', model: models.from, endpoint: stub.url };
       const to = stub === null ? { provider: 'workers-ai', model: models.to } : { provider: 'openai-compatible', model: models.to, endpoint: stub.url };
       expect((await owner('/api/embedding', 'PUT', start)).status).toBe(200);
@@ -68,15 +71,21 @@ export const embeddingSwitch: ParityScenario = {
       const started = await owner('/api/embedding/switch', 'POST', { ...to, confirm: true });
       expect(`start: ${started.status}`).toBe('start: 200');
       let moved = false;
+      let partial = false;
       for (let i = 0; i < MAX_STEPS && !moved; i++) {
         expect(await meaning()).toEqual({ unavailable: false, ids: ids.slice(0, 2).sort() });
         const sw = (await (await owner('/api/embedding/switch', 'GET')).json() as { switch: { done: number; total: number } | null }).switch;
         if (sw === null) { moved = true; break; }
-        expect({ model: await storedModel(), total: sw.total }).toEqual({ model: models.from, total: 3 });
+        expect({ model: await storedModel(), total: sw.total }).toEqual({ model: models.from, total: ids.length });
+        if (sw.done > 0 && sw.done < sw.total) partial = true;
         await step();
       }
-      expect(moved).toBe(true);
+      expect({ moved, partial }).toEqual({ moved: true, partial: true });
       expect(await storedModel()).toBe(models.to);
+      // Ready receipts witness coverage of sources that a semantic query does not return.
+      const ready = await target.sql(`SELECT record_id,model_key FROM embedding_receipts
+        WHERE project_id=?1 AND type='spore' AND ready=1 AND record_id IN (SELECT value FROM json_each(?2))`, [projectId, JSON.stringify(ids)]);
+      expect(ready.filter(row => JSON.parse(String(row.model_key)).includes(models.to)).map(row => row.record_id).sort()).toEqual([...ids].sort());
       expect(await meaning()).toEqual({ unavailable: false, ids: ids.slice(0, 2).sort() });
     } finally {
       stub?.stop();

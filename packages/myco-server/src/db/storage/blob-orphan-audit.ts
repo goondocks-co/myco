@@ -24,7 +24,7 @@ const armAudit = write<[now: number, reservation: string | null]>({ name: 'stora
   `UPDATE orphan_sweep_state SET armed_at=?1,revision=revision+1 WHERE id=1 AND armed_at=0
     AND (?2 IS NULL OR EXISTS(SELECT 1 FROM blob_reservations WHERE reservation_id=?2))` });
 
-/** Arms the audit before newly admitted bytes move, retaining any established historical floor. */
+/** Arms the audit before member or derived bytes move, retaining any established historical floor. */
 export const armOrphanAudit = (now: number, reservation: string | null) => armAudit.bind(now, reservation);
 /** Restarts the audit with its object lifecycle: a restored database audits only what it registers after now. */
 const resetAudit = write<[now: number]>({ name: 'storage.resetOrphanAudit', sql:
@@ -40,8 +40,8 @@ export async function resetOrphanAudit(db: RelationalStore, now: number): Promis
  * deletion should have recorded and did not. Walks every registration from a durable position, then rests.
  *
  * A registration is released only when it arrived after the audit floor, its upload grace has passed, and no reference
- * holds it in the commit that decides it; the store delete then waits out a quarantine. Upload admission or the first
- * audit pass arms the floor. Older orphans cost only storage. Answers how many were released.
+ * holds it in the commit that decides it; the store delete then waits out a quarantine. Member or derived upload admission, or
+ * the first audit pass, arms the floor. Older orphans cost only storage. Answers how many were released.
  */
 export async function auditBlobOrphans(db: RelationalStore, now: number): Promise<{ released: number; deferred: number }> {
   const [[state]] = await readSet(db, auditState.bind());
