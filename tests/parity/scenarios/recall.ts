@@ -105,7 +105,8 @@ export const recall: ParityScenario = {
     // A machine another scenario claimed adds its own settings block; this checks only what recall serves.
     const { machine: _machine, ...repeated } = await servedAtStart(startSession);
     expect(repeated).toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'], kind: 'cortex' });
-    // A member about to have sessions previews the same block, as often as it asks, and no session is recorded.
+    // The context list is a session read, so the session is captured here. The preview itself names no session.
+    await post(startSession, 'session.start', { agent: 'claude-code', startedAt: stamp }, stamp);
     const beforeSessions = await sessionIds();
     const beforeKinds = await injectionKinds(startSession);
     for (let i = 0; i < 2; i++) {
@@ -130,7 +131,6 @@ export const recall: ParityScenario = {
       expect((await sessionBlock(payload)).skipped).toContain('repeat');
     }
     expect((await servedAtStart(startSession)).context).toBe('');
-    await post(startSession, 'session.start', { agent: 'claude-code', startedAt: stamp }, stamp);
     const contextPath = `/api/projects/${target.projectId}/sessions/${startSession}/context-injections`;
     const context = await owner<ContextPage>(target, `${contextPath}?limit=2`);
     expect(context.status).toBe(200);

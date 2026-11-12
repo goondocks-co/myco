@@ -17,9 +17,9 @@ export const cortex: ParityScenario = {
       return res.body;
     };
     const runOf = async (runId: string) => {
-      const read = await owner(target, `/api/projects/${target.projectId}/runs/${runId}`);
+      const read = await owner<{ run: { status: string; heldBy: string | null; dryRun: boolean; instruction: string | null } }>(target, `/api/projects/${target.projectId}/runs/${runId}`);
       expect(read.status).toBe(200);
-      return read.body as { status: string; heldBy: string | null; dryRun: boolean; instruction: string | null };
+      return read.body.run;
     };
 
     const stamp = Date.now();

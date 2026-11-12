@@ -96,7 +96,8 @@ export const search: ParityScenario = {
     expect((await across(word, [], { mode: 'semantic' })).status).toBe(400);
     expect((await across(word, [`proj_absent_${stamp}`])).status).toBe(404);
     expect((await fetch(`${target.url}/api/search?q=${word}`, { headers: target.memberHeaders() })).status).toBe(401);
-    await writeSessionTitle(target, session, 'changed title', 'The session no longer matches the word.');
+    // The owner holdoff is the titling run bound plus its overrun margin, so the stamp is aged past it before the second ask.
+    await ageRows(target, { table: 'sessions', column: 'titled_at', byMs: 600_000, match: { project_id: target.projectId, session_id: session } }); await writeSessionTitle(target, session, 'changed title', 'The session no longer matches the word.');
     const retitled = await untilPublished(target, () => searchFor(word), (answer) => !answer.hits.some((hit) => hit.type === 'session'), 4);
     expect(retitled.hits.map((r) => r.type).sort()).toEqual(['card', 'plan', 'spore']);
   },

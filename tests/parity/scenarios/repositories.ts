@@ -74,6 +74,7 @@ export const repositories: ParityScenario = {
       if (current.status === 200 && current.body.repository !== null) {
         expect((await owner('DELETE', { revision: current.body.repository.revision })).status).toBe(200);
       }
+      for (const capability of ['canopy', 'vault_evolution']) expect((await putCapability(target, capability, false)).status).toBe(200);
     }
   },
 };

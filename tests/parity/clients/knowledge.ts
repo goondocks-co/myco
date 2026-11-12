@@ -1,5 +1,4 @@
 import { expect } from 'bun:test';
-import { CARD_REPORT_ACTION, TITLING_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
 import { claimRun, endRun, mcp, owner, runTool, type ClaimedRun, type RouteTarget } from './requests.ts';
 
@@ -37,13 +36,13 @@ export async function writeDueCards(target: RouteTarget, text: string): Promise<
   expect(keys.length).toBeGreaterThan(0);
   const written = await runTool<{ written: number }>(target, run, 'myco_run_cards', { op: 'write', revision, cards: keys.map((turn) => ({ turns: [turn], signal: 'high', card: cardOf(text) })) });
   expect(written.written).toBe(keys.length);
-  await runTool(target, run, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'Carded the turn.', audit: RUN_AUDIT }); expect(await endRun(target, run, 0.25)).toMatchObject({ ended: true });
+  await runTool(target, run, 'myco_run', { op: 'report', action: 'carded', summary: 'Carded the turn.', audit: RUN_AUDIT }); expect(await endRun(target, run, 0.25)).toMatchObject({ ended: true });
 }
 // The owner's title ask, taken by a worker, which writes the title the caller names.
 export async function writeSessionTitle(target: RouteTarget, sessionId: string, title: string, summary: string): Promise<void> {
   const asked = await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(sessionId)}/title`, { method: 'POST' });
-  expect({ status: asked.status, outcome: asked.body.outcome }).toEqual({ status: 200, outcome: expect.stringMatching(/^(queued|already|dispatched)$/) });
+  expect({ status: asked.status, outcome: asked.body.outcome }).toEqual({ status: 200, outcome: expect.stringMatching(/^(queued|dispatched)$/) });
   const run = await take(target, 'title-summary');
   expect(await runTool(target, run, 'myco_run_sessions', { op: 'title', title, summary })).toMatchObject({ written: true });
-  await runTool(target, run, 'myco_run', { op: 'report', action: TITLING_REPORT_ACTION, summary, audit: RUN_AUDIT }); expect(await endRun(target, run, 0.1)).toMatchObject({ ended: true });
+  await runTool(target, run, 'myco_run', { op: 'report', action: 'summary', summary, audit: RUN_AUDIT }); expect(await endRun(target, run, 0.1)).toMatchObject({ ended: true });
 }
