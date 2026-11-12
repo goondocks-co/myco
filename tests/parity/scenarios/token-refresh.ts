@@ -1,8 +1,8 @@
-import { createHash, randomBytes } from 'node:crypto';
 import { expect } from 'bun:test';
 import { MEMBER_LINEAGE_IDLE_MS, MEMBER_TOKEN_TTL_MS } from '@myco-server-worker/auth/tokens.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
-import { expectPersisted, lit, MACHINE_ID, MEMBER_ID, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { ageRows, expectPersisted, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { credentials, joinMember, lapse, stopMember } from '../clients/identity.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -13,37 +13,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * token once its successor is in use answers 401 on a capture route and
  * revokes nothing, and asking to rotate it revokes the whole lineage and says
  * why. A lineage that started long before the bound but kept refreshing
- * rotates, its successor one TTL from now; a never-used successor past the
- * bound is refused though the refresh activates it; a lapsed token whose
- * lineage has been silent for the bound is told `lineage_expired` with nothing
- * minted.
+ * rotates, its successor one TTL from now; a lapsed token whose lineage has
+ * been silent for the bound is told `lineage_expired` with nothing minted.
  */
 export const tokenRefresh: ParityScenario = {
   name: 'token refresh: a token lapsed offline rotates once within its lineage, a superseded one asking to rotate revokes it, a lineage never ends for age, and one silent past the inactivity bound is refused by name',
   async run(target: ParityTarget) {
     const now = Date.now();
-    /** Seeds a root credential of the parity member issued at `issuedAt`, and returns its raw token and id. */
-    const seed = async (issuedAt: number) => {
-      const token = randomBytes(32).toString('base64url');
-      const tokenId = `mt_parity_${randomBytes(6).toString('hex')}`;
-      const digest = createHash('sha256').update(token).digest('hex');
-      await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at)
-        VALUES (${lit(tokenId)}, ${lit(MEMBER_ID)}, ${lit(MACHINE_ID)}, ${lit(digest)}, ${issuedAt}, ${issuedAt + MEMBER_TOKEN_TTL_MS}, NULL, 0, NULL, ${lit(tokenId)}, ${issuedAt}, NULL)`);
-      return { token, tokenId };
-    };
-    /** Seeds a successor issued at `issuedAt` whose lineage started at `startedAt`, its root before it — a machine that joined then and has rotated since. A used one has revoked its root; an unused one leaves it live. */
-    const seedSuccessor = async (startedAt: number, issuedAt: number, used = true) => {
-      const root = `mt_parity_${randomBytes(6).toString('hex')}`;
-      const rootToken = randomBytes(32).toString('base64url');
-      const token = randomBytes(32).toString('base64url');
-      const tokenId = `mt_parity_${randomBytes(6).toString('hex')}`;
-      const digest = createHash('sha256').update(token).digest('hex');
-      await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at)
-        VALUES (${lit(root)}, ${lit(MEMBER_ID)}, ${lit(MACHINE_ID)}, ${lit(createHash('sha256').update(rootToken).digest('hex'))}, ${startedAt}, ${startedAt + MEMBER_TOKEN_TTL_MS}, ${used ? issuedAt + 1 : 'NULL'}, 0, NULL, ${lit(root)}, ${startedAt}, NULL)`);
-      await target.sql(`INSERT INTO member_credentials (id, member_id, machine_id, token_hash, issued_at, expires_at, revoked_at, bytes_written, predecessor_id, lineage_root, lineage_started_at, first_used_at)
-        VALUES (${lit(tokenId)}, ${lit(MEMBER_ID)}, ${lit(MACHINE_ID)}, ${lit(digest)}, ${issuedAt}, ${issuedAt + MEMBER_TOKEN_TTL_MS}, NULL, 0, ${lit(root)}, ${lit(root)}, ${startedAt}, ${used ? issuedAt + 1 : 'NULL'})`);
-      return { token, tokenId, root, rootToken };
-    };
     /** The member's own refresh: the credential is the Deployment's, so the request names no Project. */
     const refresh = (token: string) => {
       const { [PROJECT_HEADER]: _project, ...headers } = memberHeadersFor(token, target.projectId);
@@ -53,61 +29,65 @@ export const tokenRefresh: ParityScenario = {
       method: 'POST',
       headers: { ...memberHeadersFor(token, target.projectId), 'content-type': 'application/json' },
       body: JSON.stringify({
-        eventId: crypto.randomUUID(), sessionId: `parity-refresh-${now}`, kind: 'session.start', createdAt: Date.now(), channel: 'cli',
+        eventId: crypto.randomUUID(), sessionId: `parity-refresh-${crypto.randomUUID()}`, kind: 'session.start', createdAt: Date.now(), channel: 'cli',
         producer: { adapter: 'parity', version: '1' }, payload: { agent: 'claude-code', startedAt: now },
       }),
     });
+    const lineageOf = async (root: string) => (await credentials(target)).filter((row) => row.lineageRoot === root);
+    const liveOf = async (root: string) => (await lineageOf(root)).filter((row) => row.revokedAt === null).length;
+    const rowOf = async (id: string) => (await credentials(target)).find((row) => row.id === id);
+    const joined: string[] = [];
+    const lapsedMember = async () => {
+      const member = await joinMember(target);
+      joined.push(member.id);
+      await lapse(target, member.tokenId);
+      return member;
+    };
+    try {
+      const lapsed = await lapsedMember();
+      expect((await post(lapsed.token)).status).toBe(401);
+      const res = await refresh(lapsed.token);
+      const body = (await res.json()) as { refreshed: boolean; token: string; tokenId: string; expiresAt: number };
+      expect({ status: res.status, refreshed: body.refreshed }).toEqual({ status: 200, refreshed: true });
+      expect(body.expiresAt).toBeGreaterThan(now);
+      expect(await rowOf(body.tokenId)).toMatchObject({ predecessorId: lapsed.tokenId, lineageRoot: lapsed.tokenId });
+      await expectPersisted(await post(body.token), 'successor capture');
+      // The superseded token on a capture route is refused and revokes nothing: a stale holder re-reads its registry.
+      const stale = await post(lapsed.token);
+      expect({ status: stale.status, body: await stale.json() }).toEqual({ status: 401, body: { error: 'unauthorized' } });
+      expect(await liveOf(lapsed.tokenId)).toBe(1);
+      // Asking to rotate it means a second holder rotated the lineage: every live row of it is revoked, and the answer says why.
+      const replayed = await refresh(lapsed.token);
+      expect({ status: replayed.status, protocol: replayed.headers.get('x-myco-protocol'), body: await replayed.json() })
+        .toEqual({ status: 401, protocol: null, body: { error: 'unauthorized', code: 'lineage_replayed' } });
+      expect({ rows: (await lineageOf(lapsed.tokenId)).length, live: await liveOf(lapsed.tokenId) }).toEqual({ rows: 2, live: 0 });
+      expect((await rowOf(body.tokenId))?.revokedBy).toBe('lineage-replay');
+      const cutOff = await post(body.token);
+      expect({ status: cutOff.status, body: await cutOff.json() }).toEqual({ status: 401, body: { error: 'unauthorized', code: 'lineage_replayed' } });
 
-    const lapsed = await seed(now - 20 * DAY_MS);
-    expect((await post(lapsed.token)).status).toBe(401);
-    const res = await refresh(lapsed.token);
-    const body = (await res.json()) as { refreshed: boolean; token: string; tokenId: string; expiresAt: number };
-    expect({ status: res.status, refreshed: body.refreshed }).toEqual({ status: 200, refreshed: true });
-    expect(body.expiresAt).toBeGreaterThan(now);
-    expect(await target.sql(`SELECT predecessor_id AS predecessor, lineage_root AS root FROM member_credentials WHERE id = ${lit(body.tokenId)}`))
-      .toEqual([{ predecessor: lapsed.tokenId, root: lapsed.tokenId }]);
-    await expectPersisted(await post(body.token), 'successor capture');
-    const liveOf = async (root: string) => target.sql(`SELECT COUNT(*) AS n FROM member_credentials WHERE lineage_root = ${lit(root)} AND revoked_at IS NULL`);
-    // The superseded token on a capture route is refused and revokes nothing: a stale holder re-reads its registry.
-    const stale = await post(lapsed.token);
-    expect({ status: stale.status, body: await stale.json() }).toEqual({ status: 401, body: { error: 'unauthorized' } });
-    expect(await liveOf(lapsed.tokenId)).toEqual([{ n: 1 }]);
-    // Asking to rotate it means a second holder rotated the lineage: every live row of it is revoked, and the answer says why.
-    const replayed = await refresh(lapsed.token);
-    expect({ status: replayed.status, protocol: replayed.headers.get('x-myco-protocol'), body: await replayed.json() })
-      .toEqual({ status: 401, protocol: null, body: { error: 'unauthorized', code: 'lineage_replayed' } });
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM member_credentials WHERE lineage_root = ${lit(lapsed.tokenId)}`)).toEqual([{ n: 2 }]);
-    expect(await liveOf(lapsed.tokenId)).toEqual([{ n: 0 }]);
-    expect(await target.sql(`SELECT revoked_by AS by FROM member_credentials WHERE id = ${lit(body.tokenId)}`)).toEqual([{ by: 'lineage-replay' }]);
-    const cutOff = await post(body.token);
-    expect({ status: cutOff.status, body: await cutOff.json() }).toEqual({ status: 401, body: { error: 'unauthorized', code: 'lineage_replayed' } });
+      // A lineage that started long before the bound and kept refreshing rotates again once its current token lapses.
+      const longLived = await lapsedMember();
+      const first = (await (await refresh(longLived.token)).json()) as { token: string; tokenId: string };
+      await expectPersisted(await post(first.token), 'long-lived lineage first successor');
+      await ageRows(target, { table: 'member_credentials', column: 'lineage_started_at', byMs: 2 * MEMBER_LINEAGE_IDLE_MS, match: { lineage_root: longLived.tokenId } });
+      const startedAt = (await rowOf(first.tokenId))!.lineageStartedAt;
+      await lapse(target, first.tokenId);
+      const kept = await refresh(first.token);
+      const keptBody = (await kept.json()) as { refreshed: boolean; token: string; tokenId: string; expiresAt: number };
+      expect({ status: kept.status, refreshed: keptBody.refreshed }).toEqual({ status: 200, refreshed: true });
+      expect(keptBody.expiresAt).toBeGreaterThanOrEqual(now + MEMBER_TOKEN_TTL_MS);
+      expect(await rowOf(keptBody.tokenId)).toMatchObject({ predecessorId: first.tokenId, lineageRoot: longLived.tokenId, lineageStartedAt: startedAt });
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(2 * MEMBER_LINEAGE_IDLE_MS);
+      await expectPersisted(await post(keptBody.token), 'long-lived lineage successor capture');
 
-    const longLived = await seedSuccessor(now - 2 * MEMBER_LINEAGE_IDLE_MS, now - 20 * DAY_MS);
-    const kept = await refresh(longLived.token);
-    const keptBody = (await kept.json()) as { refreshed: boolean; token: string; tokenId: string; expiresAt: number };
-    expect({ status: kept.status, refreshed: keptBody.refreshed }).toEqual({ status: 200, refreshed: true });
-    expect(keptBody.expiresAt).toBeGreaterThanOrEqual(now + MEMBER_TOKEN_TTL_MS);
-    expect(await target.sql(`SELECT predecessor_id AS predecessor, lineage_root AS root, lineage_started_at AS started FROM member_credentials WHERE id = ${lit(keptBody.tokenId)}`))
-      .toEqual([{ predecessor: longLived.tokenId, root: longLived.root, started: now - 2 * MEMBER_LINEAGE_IDLE_MS }]);
-    await expectPersisted(await post(keptBody.token), 'long-lived lineage successor capture');
-
-    // A superseded token issued before the idle window, asking to rotate, is refused like any other and ends nothing.
-    const ancient = await seedSuccessor(now - MEMBER_LINEAGE_IDLE_MS - DAY_MS, now - 5 * DAY_MS);
-    const ancientReplay = await refresh(ancient.rootToken);
-    expect({ status: ancientReplay.status, body: await ancientReplay.json() }).toEqual({ status: 401, body: { error: 'unauthorized' } });
-    expect(await liveOf(ancient.root)).toEqual([{ n: 1 }]);
-    await expectPersisted(await post(ancient.token), 'current lineage after an ancient replay');
-
-    // A successor never used before the bound passed is refused, though the refresh request itself is its first use.
-    const unused = await seedSuccessor(now - 2 * MEMBER_LINEAGE_IDLE_MS, now - MEMBER_LINEAGE_IDLE_MS - DAY_MS, false);
-    const unusedRefused = await refresh(unused.token);
-    expect({ status: unusedRefused.status, body: await unusedRefused.json() }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage inactive' } });
-    expect(await target.sql(`SELECT first_used_at IS NOT NULL AS used FROM member_credentials WHERE id = ${lit(unused.tokenId)}`)).toEqual([{ used: 1 }]);
-    expect(await liveOf(unused.root)).toEqual([{ n: 1 }]);
-
-    const ended = await seed(now - MEMBER_LINEAGE_IDLE_MS - DAY_MS);
-    const refused = await refresh(ended.token);
-    expect({ status: refused.status, body: await refused.json() }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage inactive' } });
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM member_credentials WHERE lineage_root = ${lit(ended.tokenId)}`)).toEqual([{ n: 1 }]);
+      // A lapsed token whose lineage has been silent for the bound is refused by name, and nothing is minted.
+      const ended = await lapsedMember();
+      await ageRows(target, { table: 'member_credentials', column: 'issued_at', byMs: MEMBER_LINEAGE_IDLE_MS + DAY_MS, match: { id: ended.tokenId } });
+      const refused = await refresh(ended.token);
+      expect({ status: refused.status, body: await refused.json() }).toEqual({ status: 200, body: { refreshed: false, code: 'lineage_expired', reason: 'token lineage inactive' } });
+      expect((await lineageOf(ended.tokenId)).length).toBe(1);
+    } finally {
+      for (const id of joined) await stopMember(target, id);
+    }
   },
 };

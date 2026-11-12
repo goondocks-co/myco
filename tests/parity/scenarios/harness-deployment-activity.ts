@@ -1,23 +1,27 @@
 import { expect } from 'bun:test';
 import { HARNESS_SILENT_MS } from '@goondocks/myco-shared/harness-health';
-import { expectPersisted, lit, MACHINE_ID, MEMBER_ID, type ParityScenario } from '../harness.ts';
+import { ageRows, expectPersisted, memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { browser, deviceMachine } from '../clients/identity.ts';
 
 export const harnessDeploymentActivity: ParityScenario = {
   name: 'harness deployment activity: scoped silence, legacy exclusion and replacement',
   async run(target) {
     const now = Date.now();
     const sessionId = crypto.randomUUID();
-    const capture = await fetch(`${target.url}/events`, {
-      method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind: 'session.start', channel: 'cli', createdAt: now,
-        producer: { adapter: 'parity', version: '1' }, payload: { agent: 'codex', startedAt: now } }),
+    // A machine of the parity member, signed in through the device flow, captures a Codex session.
+    const mine = await deviceMachine(target, target.ownerHeaders());
+    const headers = memberHeadersFor(mine.token, target.projectId);
+    const capture = (kind: string, payload: Record<string, unknown>, session = sessionId) => fetch(`${target.url}/events`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: session, kind, channel: 'cli', createdAt: Date.now(),
+        producer: { adapter: 'parity', version: '1' }, payload }),
     });
-    await expectPersisted(capture, 'session.start');
-    await target.sql(`INSERT OR IGNORE INTO machine_claims (machine_id, member_id, claimed_at) VALUES (${lit(MACHINE_ID)}, ${lit(MEMBER_ID)}, ${now})`);
-    await target.sql(`UPDATE sessions SET agent = 'codex', last_live_received_at = ${now - 2 * HARNESS_SILENT_MS} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(sessionId)}`);
+    await expectPersisted(await capture('session.start', { agent: 'codex', startedAt: now }), 'session.start');
+    // The session has been silent for twice the harness's silence bound.
+    await ageRows(target, { table: 'sessions', column: 'last_live_received_at', byMs: 2 * HARNESS_SILENT_MS, match: { project_id: target.projectId, session_id: sessionId } });
     const report = async (scope: boolean, active: boolean) => {
       const response = await fetch(`${target.url}/members/harnesses/report`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+        method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
         body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'ready', ...(scope ? { activityScope: 'deployment' } : {}), ...(active ? { ranAt: now } : {}) }] }),
       });
       expect(response.status).toBe(200); await response.arrayBuffer();
@@ -37,20 +41,19 @@ export const harnessDeploymentActivity: ParityScenario = {
     };
     const trust = async (marker: number) => {
       const response = await fetch(`${target.url}/members/harnesses/report`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+        method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
         body: JSON.stringify({ harnesses: [{ id: 'codex', provisioned: true, state: 'trust_required', activityScope: 'deployment', action: 'Approve capture.', hookRepairAt: marker, ranAt: Date.now() }] }),
       });
       expect(response.status).toBe(200); await response.arrayBuffer();
     };
     const marker = Date.now();
     await trust(marker); expect(await repairs()).toHaveLength(1);
-    const rows = await target.sql(`SELECT since_at FROM machine_harness_reports WHERE machine_id = ${lit(MACHINE_ID)}`);
-    const since = Number(rows[0].since_at);
-    await target.sql(`UPDATE sessions SET last_received_at = ${since + 1}, last_live_received_at = ${since + 1} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(sessionId)}`);
-    await target.sql(`UPDATE events SET received_at = ${since + 1}, created_at = ${since + 1} WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(sessionId)} AND kind = 'session.start'`);
+    // The harness starts a session after the repair was asked for, which settles it.
+    await Bun.sleep(5);
+    await expectPersisted(await capture('session.start', { agent: 'codex', startedAt: Date.now() }, crypto.randomUUID()), 'session.start after the repair');
     expect(await repairs()).toEqual([]);
     await trust(marker); expect(await repairs()).toEqual([]);
     await trust(marker + 1); expect(await repairs()).toHaveLength(1);
-
+    expect((await browser(target, `/api/machines/${mine.machineId}/stop`, target.ownerHeaders(), {})).status).toBe(200);
   },
 };

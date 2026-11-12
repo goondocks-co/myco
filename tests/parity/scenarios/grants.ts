@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { EXTERNAL_TOOLS } from '@myco-server-worker/mcp/external.js';
-import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * An External Agent grant on both targets: the owner mints it, it lists the
@@ -31,6 +31,13 @@ export const grants: ParityScenario = {
       expect(res.status).toBe(200);
       return ((await res.json()) as any).result.structuredContent.result;
     };
+    // A member's read of a spore's attribution: the grant's own MCP read withholds the author.
+    const attribution = async (id: string) => {
+      const res = await fetch(`${target.url}/spores/get`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+      expect(res.status).toBe(200);
+      const { agentId, author, sessionId, provenanceKind } = ((await res.json()) as { spore: Record<string, unknown> }).spore;
+      return { agentId, author, sessionId, provenanceKind };
+    };
 
     const minted = await ownerPost(`/api/projects/${target.projectId}/grants`, { label: 'parity reviewer' });
     expect(minted.status).toBe(201);
@@ -49,8 +56,7 @@ export const grants: ParityScenario = {
     });
     const spore = saved.body.result.structuredContent.result as { id: string; status: string };
     expect(spore.status).toBe('active');
-    expect((await target.sql(`SELECT agent_id, author, session_id, provenance_kind FROM spores WHERE id = ${lit(spore.id)}`))[0])
-      .toEqual({ agent_id: id, author: id, session_id: null, provenance_kind: 'pr' });
+    expect(await attribution(spore.id)).toEqual({ agentId: id, author: id, sessionId: null, provenanceKind: 'pr' });
 
     // Its own read withholds the author; a member's read shows it.
     const own = (await asGrant(key, 'tools/call', { name: 'myco_spores', arguments: { op: 'get', id: spore.id } })).body.result.structuredContent.result;
@@ -67,6 +73,6 @@ export const grants: ParityScenario = {
     const revoked = await ownerPost(`/api/projects/${target.projectId}/grants/${id}/revoke`);
     expect([revoked.status, ((await revoked.json()) as { revoked: boolean }).revoked]).toEqual([200, true]);
     expect((await asGrant(key, 'tools/list')).status).toBe(401);
-    expect((await target.sql(`SELECT author FROM spores WHERE id = ${lit(spore.id)}`))[0]).toEqual({ author: id });
+    expect((await attribution(spore.id)).author).toBe(id);
   },
 };

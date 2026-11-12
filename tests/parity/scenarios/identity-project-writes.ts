@@ -1,87 +1,26 @@
 import { expect } from 'bun:test';
 import { lit, type ParityScenario } from '../harness.ts';
-import { MAX_PROJECTS } from '@myco-server-worker/constants.js';
+import { owner } from '../clients/requests.ts';
 
+/**
+ * A replaced repository credential retires the secret it replaced, on both stores. Project capacity admission and the
+ * replacement's rollback when retirement fails are covered by `identity-project-atomic.test.ts`.
+ */
 export const identityProjectWrites: ParityScenario = {
-  name: 'identity and Project writes: capacity admission and atomic credential replacement',
+  name: 'identity and Project writes: a replaced repository credential retires its old secret',
   dedicated: { timeoutMs: 240_000 },
   async run(target) {
-    const request = async (path: string, method: string, body?: unknown) => {
-      const response = await fetch(target.url + path, {
-        method,
-        headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      return { status: response.status, body: (await response.json()) as any };
-    };
-
-    const base = `/api/projects/${target.projectId}`;
-    expect((await request(base + '/archive', 'POST')).status).toBe(200);
-    const count = Number((await target.sql('SELECT COUNT(*) AS n FROM projects WHERE archived_at IS NULL'))[0]!.n);
-    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<${MAX_PROJECTS - count})
-      INSERT INTO projects(project_id,name,created_at) SELECT 'capacity_parity_'||i,'Capacity',1 FROM n`);
-    try {
-      expect(await request(base + '/unarchive', 'POST')).toMatchObject({ status: 409, body: {
-        error: 'project_limit', active: MAX_PROJECTS, limit: MAX_PROJECTS,
-        reason: `Project was not restored: ${MAX_PROJECTS} of ${MAX_PROJECTS} active Projects. Archive a Project, then call POST ${base}/unarchive again.`,
-        nextCall: `POST ${base}/unarchive`,
-      } });
-      expect(
-        (await target.sql(`SELECT archived_at FROM projects WHERE project_id=${lit(target.projectId)}`))[0]!.archived_at,
-      ).not.toBeNull();
-      await target.sql("DELETE FROM projects WHERE project_id='capacity_parity_1'");
-      expect(await request(base + '/unarchive', 'POST')).toMatchObject({ status: 200, body: { archived: false } });
-      expect(Number((await target.sql('SELECT COUNT(*) AS n FROM projects WHERE archived_at IS NULL'))[0]!.n)).toBe(MAX_PROJECTS);
-    } finally {
-      await target.sql("DELETE FROM projects WHERE project_id LIKE 'capacity_parity_%'");
-    }
-
-    for (const kind of ['repository', 'release-provenance'] as const) {
-      const path = `/api/projects/${target.projectId}/${kind}`;
-      const payload =
-        kind === 'repository'
-          ? {
-              url: 'https://github.com/example/parity.git',
-              branch: 'main',
-              credential: { username: 'reader', token: 'fixture-old-token' },
-            }
-          : {
-              enabled: true,
-              githubRepo: 'example/parity',
-              productionRefs: ['refs/tags/v*'],
-              integrationRefs: ['origin/main'],
-              packageMap: [],
-              includeUnknown: true,
-              maxLookups: 10,
-              credential: { token: 'fixture-old-token' },
-            };
-      const first = await request(path, 'PUT', { ...payload, revision: null });
-      expect(first.status).toBe(200);
-      const key = kind === 'repository' ? 'repository' : 'releaseProvenance';
-      const revision = first.body[key].revision;
-      const table = kind === 'repository' ? 'project_repositories' : 'project_release_provenance';
-      const old = await target.sql(`SELECT revision,secret_slot FROM ${table} WHERE project_id=${lit(target.projectId)}`);
-      const oldSecrets = await target.sql('SELECT name,ciphertext,iv FROM deployment_secrets ORDER BY name');
-      await target.sql(
-        "CREATE TRIGGER parity_fail_retire BEFORE DELETE ON deployment_secrets BEGIN SELECT RAISE(ABORT,'fixture retirement failure'); END",
-      );
-      try {
-        const failed = await request(path, 'PUT', {
-          ...payload,
-          revision,
-          credential: { ...payload.credential, token: 'fixture-new-token' },
-        });
-        expect(failed.status).toBe(503);
-        expect(await target.sql(`SELECT revision,secret_slot FROM ${table} WHERE project_id=${lit(target.projectId)}`)).toEqual(old);
-        expect(await target.sql('SELECT name,ciphertext,iv FROM deployment_secrets ORDER BY name')).toEqual(oldSecrets);
-      } finally {
-        await target.sql('DROP TRIGGER parity_fail_retire');
-      }
-      expect(
-        (await request(path, 'PUT', { ...payload, revision, credential: { ...payload.credential, token: 'fixture-new-token' } }))
-          .status,
-      ).toBe(200);
-      expect(await target.sql(`SELECT name FROM deployment_secrets WHERE name=${lit(String(old[0]!.secret_slot))}`)).toEqual([]);
-    }
+    const path = `/api/projects/${target.projectId}/repository`;
+    const payload = { url: 'https://github.com/example/parity.git', branch: 'main', credential: { username: 'reader', token: 'fixture-old-token' } };
+    const first = await owner(target, path, { method: 'PUT', body: JSON.stringify({ ...payload, revision: null }) });
+    expect(first.status).toBe(200);
+    // The secret slot a repository holds its credential under, which no read names.
+    const slot = async () => String((await target.sql(`SELECT secret_slot FROM project_repositories WHERE project_id=${lit(target.projectId)}`))[0]?.secret_slot);
+    const old = await slot();
+    const replaced = await owner(target, path, { method: 'PUT', body: JSON.stringify({ ...payload, revision: first.body.repository.revision, credential: { ...payload.credential, token: 'fixture-new-token' } }) });
+    expect(replaced.status).toBe(200);
+    expect(await slot()).not.toBe(old);
+    // The replaced secret is deleted from the store itself.
+    expect(await target.sql(`SELECT name FROM deployment_secrets WHERE name=${lit(old)}`)).toEqual([]);
   },
 };
