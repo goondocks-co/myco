@@ -12,13 +12,22 @@ import type { CommandRunner } from '@myco/server/runner.js';
 export const BACKUP_CREDENTIAL_NAME = 'RECOVERY_EXPORT_TOKEN';
 export const BACKUP_CREDENTIAL_COMMAND = 'myco server backup-credential --target cloudflare';
 export const BACKUP_CREDENTIAL_HINT = `Automatic backups need a backup access key. Run \`${BACKUP_CREDENTIAL_COMMAND}\` on the machine that manages this server.`;
-const BACKUP_CHECK_UNCONFIRMED = 'The backup access key check could not be confirmed yet. Run `myco server status --target cloudflare` to re-check.';
+const BACKUP_CHECK_UNCONFIRMED = {
+  update: 'Cloudflare could not be read; the backup access key check could not be confirmed yet. Run `myco server status --target cloudflare` to re-check.',
+  status: 'The backup access key could not be read from Cloudflare. Try again later.',
+} as const;
+type BackupCredentialObservation = 'present' | 'absent' | 'unconfirmed';
+
+export function backupCredentialNotice(observation: BackupCredentialObservation, surface: keyof typeof BACKUP_CHECK_UNCONFIRMED): string | null {
+  if (observation === 'present') return null;
+  return observation === 'absent' ? BACKUP_CREDENTIAL_HINT : BACKUP_CHECK_UNCONFIRMED[surface];
+}
 
 /** Read-only confirmation shared by update and the operator's status re-check. */
 export async function backupCredentialObservation(options: CloudflareOptions & {
   workerName: string;
   readRetry?: WorkerRetry;
-}): Promise<string | null> {
+}): Promise<BackupCredentialObservation> {
   try {
     const names = await readCloudflarePropagation({
       retry: options.readRetry,
@@ -26,9 +35,9 @@ export async function backupCredentialObservation(options: CloudflareOptions & {
       confirmed: names => names.includes(BACKUP_CREDENTIAL_NAME),
       retryError: () => true,
     });
-    return names.includes(BACKUP_CREDENTIAL_NAME) ? null : BACKUP_CREDENTIAL_HINT;
+    return names.includes(BACKUP_CREDENTIAL_NAME) ? 'present' : 'absent';
   } catch {
-    return BACKUP_CHECK_UNCONFIRMED;
+    return 'unconfirmed';
   }
 }
 

@@ -8,7 +8,7 @@
  * against the operator's own login. The Worker holds bindings, not an API
  * token that could re-provision the account it runs in.
  */
-import { readCloudflarePropagation } from '@myco/server/cloudflare-read.js';
+import { OPERATOR_AUTH_TIMEOUT_MS, readCloudflarePropagation } from '@myco/server/cloudflare-read.js';
 import type { WorkerRetry } from '@myco/server/cloudflare-worker-update.js';
 import nodeFs from 'node:fs';
 const { existsSync, readFileSync, mkdirSync } = nodeFs;
@@ -16,7 +16,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { resolveMycoHome, resolveMycoHomeWithSource } from '../paths/home.js';
 import { ensureServerLayout } from './layout.js';
-import { CommandFailed, jsonDocument, runOrThrow, systemRunner, type CommandRunner, type CommandResult } from './runner.js';
+import { CommandFailed, CommandTimedOut, jsonDocument, runOrThrow, systemRunner, type CommandRunner, type CommandResult } from './runner.js';
 import { cloudflareResources } from './cloudflare-resources.js';
 import { BUNDLED_WORKER_WRANGLER } from '../worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_METADATA_FIELDS } from './vector-config.js';
@@ -507,21 +507,24 @@ export interface CloudflareStatus {
 }
 
 const VERSION_PROPAGATING = /(?:\[code:\s*100146\]|"code"\s*:\s*100146\b)/;
+const VERSION_PROPAGATION_MAX_AGE_MS = 10 * 60_000;
 const VERSION_PATH = /\/versions\/([0-9a-f-]{36})\b/i;
 const WORKER_PROPAGATION_HINT = 'The new version is still propagating; check again shortly with `myco server status --target cloudflare`.';
 
 export async function cloudflareStatus(options: CloudflareOptions & {
   workerName: string;
   activeVersion?: string | null;
+  deployedAt?: string;
   readRetry?: WorkerRetry;
 }): Promise<CloudflareStatus> {
   const { runner, env } = resolved(options);
   const args = wrangler('deployments', 'list', '--name', options.workerName);
   const propagating = (error: unknown): boolean => {
-    if (!(error instanceof CommandFailed) || !options.activeVersion) return false;
+    const age = (options.readRetry?.now ?? Date.now)() - Date.parse(options.deployedAt ?? '');
+    if (!(error instanceof CommandFailed) || !options.activeVersion || !(age >= 0 && age < VERSION_PROPAGATION_MAX_AGE_MS)) return false;
     const output = error.stdout + '\n' + error.stderr;
     const requested = VERSION_PATH.exec(output)?.[1];
-    return VERSION_PROPAGATING.test(output) && (requested === undefined || requested === options.activeVersion);
+    return VERSION_PROPAGATING.test(output) && requested === options.activeVersion;
   };
   let result: CommandResult;
   try {
@@ -537,6 +540,7 @@ export async function cloudflareStatus(options: CloudflareOptions & {
     });
   } catch (error) {
     if (propagating(error)) return { deployed: true, versionId: null, raw: '', propagation: WORKER_PROPAGATION_HINT };
+    if (error instanceof CommandTimedOut) throw new Error(`Cloudflare Worker could not be read: ${error.message}`, { cause: error });
     throw error;
   }
   // Wrangler lists deployments oldest first.
@@ -611,7 +615,6 @@ export interface OperatorObjectTimeouts { responseMs: number; stallMs: number }
 const OPERATOR_OBJECT_TIMEOUTS: OperatorObjectTimeouts = { responseMs: 60_000, stallMs: 60_000 };
 /** An upload's progress is not observable from here, so one window bounds its whole request and acknowledgement. */
 const OPERATOR_UPLOAD_TIMEOUT_MS = 120_000;
-const OPERATOR_AUTH_TIMEOUT_MS = 30_000;
 const OPERATOR_UPLOAD_MAX_BYTES = 300_000_000;
 export const OPERATOR_NETWORK_RETRY_BUDGET_MS = 15 * 60_000;
 export const OPERATOR_NETWORK_BACKOFF_MIN_MS = 2_000;

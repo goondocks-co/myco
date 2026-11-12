@@ -168,6 +168,7 @@ const count = (command: string): number => calls.filter((call) => call.args.slic
 
 describe('Cloudflare status records and live observations', () => {
   it('prints a propagation notice for the recorded version without a Worker failure', async () => {
+    writeDeploymentRecord({ ...readDeploymentRecord()!, deployedAt: new Date().toISOString() });
     failure = 'deployments list';
     failureMessage = `The requested Worker version could not be found [code: 100146] /versions/${RECORDED}`;
     const output = await drive('status');

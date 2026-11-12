@@ -11,7 +11,7 @@
  * prerequisites, and only on the operator's own machine.
  */
 import { randomBytes } from 'node:crypto';
-import { backupCredentialObservation } from '@myco/server/backup-credential.js';
+import { backupCredentialNotice, backupCredentialObservation } from '@myco/server/backup-credential.js';
 import nodeFs from 'node:fs';
 const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
@@ -434,7 +434,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     }, options.mycoHome);
     summary.record = 'updated';
     await worker.triggers();
-    const backupCheck = await backupCredentialObservation({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry });
+    const backupCheck = backupCredentialNotice(await backupCredentialObservation({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry }), 'update');
     if (backupCheck !== null) options.report?.(backupCheck);
     return { versionId: uploadedVersion, summary };
   } catch (cause) {
@@ -489,16 +489,17 @@ export interface CloudflareDeploymentStatus {
 export const cloudflareDeploymentStatus = lifecycleOperation('status', async (options: LifecycleOptions, record): Promise<CloudflareDeploymentStatus | null> => {
   await preflight(options);
   if (record === null) return null;
-  const [worker, schema, backup] = await Promise.allSettled([
-    cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, activeVersion: record.versionId, readRetry: options.readRetry }),
+  const [worker, schema] = await Promise.allSettled([
+    cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, activeVersion: record.versionId, deployedAt: record.deployedAt, readRetry: options.readRetry }),
     cloudflareSchemaVersion({ ...bareCommand(options), databaseName: record.databaseName }),
-    backupCredentialObservation({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry }),
   ]);
+  const backup = worker.status === 'fulfilled' && !worker.value.deployed ? null
+    : backupCredentialNotice(await backupCredentialObservation({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry }), 'status');
   const detail = (error: unknown): string => error instanceof Error ? error.message : String(error);
   return { record, deployed: worker.status === 'fulfilled' && worker.value.deployed,
     versionId: worker.status === 'fulfilled' ? worker.value.versionId : null,
     schema: schema.status === 'fulfilled' ? schema.value : null,
-    backupCredentialCheck: backup.status === 'fulfilled' ? backup.value : detail(backup.reason),
+    backupCredentialCheck: backup,
     workerPropagation: worker.status === 'fulfilled' ? worker.value.propagation ?? null : null,
     workerError: worker.status === 'rejected' ? detail(worker.reason) : null,
     schemaError: schema.status === 'rejected' ? detail(schema.reason) : null };

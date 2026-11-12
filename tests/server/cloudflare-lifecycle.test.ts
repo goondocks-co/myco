@@ -449,7 +449,7 @@ describe('create', () => {
 it('reports the live version after propagation, or a pending observation while it remains unavailable', async () => {
   const { home, options } = setup();
   const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
-  writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: version, deployedAt: 'then' }, home);
+  writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: version, deployedAt: new Date().toISOString() }, home);
   for (const settles of [true, false]) {
     let reads = 0;
     const provider = runner();
@@ -465,13 +465,54 @@ it('reports the live version after propagation, or a pending observation while i
   }
 });
 
-it('preserves unrelated Worker failures and confirms a missing backup key on status', async () => {
+it('keeps unproven or stale version failures as errors, reports unreadable reads, and skips absent Workers', async () => {
+  const { home, options } = setup();
+  const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
+  for (const example of [
+    { output: 'provider refused [code: 12345]', expected: '12345' },
+    { output: '[code: 100146] /versions/11111111-2222-4333-8444-555555555555', expected: '100146' },
+    { output: '[code: 100146]', expected: '100146' },
+    { output: `[code: 100146] /versions/${version}`, old: true, expected: '100146' },
+    { timeout: true, expected: 'could not be read' },
+    { output: '[code: 10007]', expected: null },
+  ]) {
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: version,
+      deployedAt: new Date(Date.now() - (example.old ? 11 * 60_000 : 0)).toISOString() }, home);
+    const provider = runner();
+    const status = await cloudflareDeploymentStatus({ ...options, runner: { async run(command, args, runOptions) {
+      if (args[2] === 'deployments' || args[2] === 'secret') {
+        if (example.timeout || args[2] === 'secret') throw new CommandTimedOut(command, args, runOptions!.timeoutMs!, 'ended');
+        return { code: 1, stdout: '', stderr: example.output! };
+      }
+      return provider.run(command, args, runOptions);
+    } } });
+    if (example.expected === null) expect(status?.workerError).toBeNull();
+    else expect(status?.workerError).toContain(example.expected);
+    expect(status?.workerPropagation).toBeNull();
+    expect(status?.backupCredentialCheck).toBe(example.expected === null ? null : 'The backup access key could not be read from Cloudflare. Try again later.');
+  }
+});
+
+it('allows slow first reads to finish before opening their propagation retry windows', async () => {
   const { home, options } = setup();
   recordFor(home);
-  const status = await cloudflareDeploymentStatus({ ...options, runner: runner({ 'deployments list': { code: 1, stderr: 'provider refused [code: 12345]' } }) });
-  expect(status?.workerError).toContain('provider refused [code: 12345]');
-  expect(status?.workerPropagation).toBeNull();
-  expect(status?.backupCredentialCheck).toBe('Automatic backups need a backup access key. Run `myco server backup-credential --target cloudflare` on the machine that manages this server.');
+  const provider = runner();
+  const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
+  let time = Date.now();
+  let secretReads = 0;
+  const status = await cloudflareDeploymentStatus({ ...options, readRetry: { now: () => time, sleep: async ms => { time += ms; } },
+    runner: { async run(command, args, runOptions) {
+      if (args[2] === 'deployments' || args[2] === 'secret') {
+        const elapsed = args[2] === 'deployments' || secretReads++ === 0 ? 25_000 : 0;
+        time += elapsed;
+        if (runOptions!.timeoutMs! < elapsed) throw new CommandTimedOut(command, args, runOptions!.timeoutMs!, 'ended');
+        return { code: 0, stderr: '', stdout: args[2] === 'deployments' ? `Version ID: ${version}` : JSON.stringify(elapsed ? [] : [{ name: 'RECOVERY_EXPORT_TOKEN' }]) };
+      }
+      return provider.run(command, args, runOptions);
+    } } });
+  expect(status?.versionId).toBe(version);
+  expect(status?.workerError).toBeNull();
+  expect(status?.backupCredentialCheck).toBeNull();
 });
 
 describe('update', () => {
