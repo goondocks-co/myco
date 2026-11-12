@@ -6,6 +6,11 @@ export const RUNNER_POLL_INTERVAL_MS = 2_000;
 export const RUNNER_CONTACT_RECORD_MS = RUNNER_POLL_INTERVAL_MS * 5;
 
 export function runnerRequest<T>(work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
-  const bounded = AbortSignal.any([AbortSignal.timeout(RUNNER_REQUEST_TIMEOUT_MS), ...(signal === undefined ? [] : [signal])]);
+  const bounded = runnerRequestSignal(signal);
   return abortable(bounded, () => work(bounded));
+}
+
+/** A request deadline joined to the lifetime of its caller. */
+export function runnerRequestSignal(signal?: AbortSignal, timeoutMs = RUNNER_REQUEST_TIMEOUT_MS): AbortSignal {
+  return AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal === undefined ? [] : [signal])]);
 }

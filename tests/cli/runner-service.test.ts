@@ -105,16 +105,36 @@ describe('explicit runner service opt-in', () => {
     expect(platform.running.size).toBe(1);
   });
 
-  it('reports stale service contact with a restart command and clears it after fresh contact', async () => {
+  it('reports stale contact, a live release download and fresh service contact', async () => {
     await enroll();
     const scoped = deps('linux');
     fs.mkdirSync(path.dirname(scoped.binaryPath), { recursive: true });
-    fs.writeFileSync(scoped.binaryPath, 'fixture', { mode: 0o755 });
+    fs.writeFileSync(scoped.binaryPath, '#!/bin/sh\necho 2.0.0-alpha.1\n', { mode: 0o755 });
     installWorkerService({ ...scoped, serverUrl: SERVER, executor: 'runner' }, [], { runner: platform.runner });
     await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 1, mycoHome);
     const status = { ...scoped, now: () => 180_000, version: '2.0.0-alpha.1' };
     expect(await run(['status', '--server', SERVER], status)).toBe(true);
     expect(output.join('\n')).toContain(`stalled since ${new Date(1).toISOString()}; restart it with myco runner install --server ${SERVER}`);
+    writeInstallMarker(mycoHome, { channel: 'alpha', source: 'curl', bin: scoped.binaryPath });
+    let started: () => void = () => {}, finish: () => void = () => {};
+    const downloading = new Promise<void>(resolve => { started = resolve; });
+    const completed = new Promise<void>(resolve => { finish = resolve; });
+    const updater = runnerUpdater(SERVER, { ...status, update: {
+      targetTriple: () => 'linux-arm64',
+      fetch: (async () => Response.json([{ tag_name: 'myco/v2.0.0-alpha.2', prerelease: true, assets: [
+        { name: 'myco-linux-arm64', browser_download_url: 'https://fixture.invalid/binary' },
+        { name: 'SHA256SUMS', browser_download_url: 'https://fixture.invalid/sums' },
+      ] }])) as typeof fetch,
+      stage: async () => { started(); await completed; return { error: 'fixture transfer ended' }; },
+    } }, () => {});
+    const pending = updater.idle();
+    try {
+      await downloading;
+      output.length = 0;
+      expect(await run(['status', '--server', SERVER], status)).toBe(true);
+      expect(output.join('\n')).toContain('runner service: updating (Downloading and verifying the release)');
+      expect(output.join('\n')).not.toContain('stalled since');
+    } finally { finish(); await pending; }
     output.length = 0;
     await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 180_000, mycoHome);
     expect(await run(['status', '--server', SERVER], status)).toBe(true);

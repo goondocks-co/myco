@@ -128,8 +128,9 @@ export interface BinaryUpdateDepsOptions {
 export function createBinaryUpdateDeps(options: BinaryUpdateDepsOptions = {}): StageBinaryDeps {
   const maxBytes = options.maxDownloadBytes ?? MAX_DOWNLOAD_BYTES;
   return {
-    download: async (url, destPath, headers = {}) => {
+    download: async (url, destPath, headers = {}, signal) => {
       const controller = new AbortController();
+      const bounded = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal]);
       let deadline: ReturnType<typeof setTimeout> | undefined;
       const progress = (): void => {
         clearTimeout(deadline);
@@ -139,7 +140,7 @@ export function createBinaryUpdateDeps(options: BinaryUpdateDepsOptions = {}): S
       };
       progress();
       try {
-        await download(url, destPath, headers, maxBytes, options.fetch ?? globalThis.fetch, { signal: controller.signal, progress });
+        await download(url, destPath, headers, maxBytes, options.fetch ?? globalThis.fetch, { signal: bounded, progress });
       } finally { clearTimeout(deadline); }
     },
     computeSha256,
@@ -172,7 +173,7 @@ function rmSafe(p: string): void {
 /** Deps for `stageBinary`: the download, the hash, and the runnable check. */
 export interface StageBinaryDeps {
   /** Download `url` to `destPath`. Throws on any network/write failure. */
-  download: (url: string, destPath: string, headers?: Record<string, string>) => Promise<void>;
+  download: (url: string, destPath: string, headers?: Record<string, string>, signal?: AbortSignal) => Promise<void>;
   /** Hex SHA-256 of the file at `filePath`. */
   computeSha256: (filePath: string) => Promise<string>;
   /** Whether a verified download runs on this machine. Defaults to `readyExecutable`. */
@@ -217,6 +218,7 @@ export async function stageBinary(
     home: string;
     platform: NodeJS.Platform;
     localAppData?: string;
+    signal?: AbortSignal;
   },
   deps: StageBinaryDeps,
 ): Promise<StageBinaryResult> {
@@ -244,8 +246,8 @@ export async function stageBinary(
 
   // --- 1 + 2: download and VERIFY, all BEFORE creating versions/<v>/ ---
   try {
-    await deps.download(refs.assetUrl, tempPath);
-    await deps.download(refs.sha256sumsUrl, tempSums);
+    await deps.download(refs.assetUrl, tempPath, undefined, params.signal);
+    await deps.download(refs.sha256sumsUrl, tempSums, undefined, params.signal);
 
     const sumsText = fs.readFileSync(tempSums, 'utf-8');
     const expected = parseSha256Sum(sumsText, refs.assetName);
@@ -258,6 +260,7 @@ export async function stageBinary(
     }
 
     const actual = await deps.computeSha256(tempPath);
+    params.signal?.throwIfAborted();
     if (actual.toLowerCase() !== expected.toLowerCase()) {
       rmSafe(tempPath);
       rmSafe(tempSums);

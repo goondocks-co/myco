@@ -115,6 +115,8 @@ export interface WorkerOptions {
   once?: boolean;
   /** What a worker waits when the Deployment says nothing about it. Every answer carries the Deployment's own cadence, which is what a worker actually keeps. */
   pollIdleMs: number;
+  /** The wait between idle polls; defaults to the abortable worker sleep. */
+  wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   log: (line: string) => void;
   fetchImpl?: typeof fetch;
   signal: AbortSignal;
@@ -142,8 +144,8 @@ export interface WorkerOptions {
   onOfferAcknowledged?: (offer: { offered: string[]; withheld: string[] }, observedAt: number) => Promise<void>;
   /** Metadata published with the runner's next authenticated contact. */
   contactBody?: () => Record<string, unknown>;
-  /** Runs under the instance lock between attempts, before another claim. */
-  onIdle?: () => Promise<'restart' | 'hold' | void>;
+  /** Runs under the instance lock between attempts while contact continues; claims wait for completion. */
+  onIdle?: (signal: AbortSignal) => Promise<'restart' | 'hold' | void>;
   /** Successful lease contact keeps the local service observation current. */
   onLeaseRenewed?: (at: number) => Promise<void>;
   /** The run is admitted under this executor's lease. */
@@ -939,6 +941,10 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   let requestMs = DEFAULT_HEARTBEAT_MS;
   /** Whether the wait for a woken machine to settle has been said. */
   let settling = false;
+  const idleLifetime = new AbortController();
+  const idleSignal = AbortSignal.any([options.signal, idleLifetime.signal]);
+  type IdleStep = { outcome?: { ok: true; result: 'restart' | 'hold' | void } | { ok: false; error: unknown }; pending: Promise<void> };
+  let idleStep: IdleStep | undefined;
   /**
    * Every wait the loop makes is also where a sleep is noticed: one the wall
    * clock says lasted far longer than `ms`, the most it can take awake. A
@@ -954,7 +960,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       if (woke()) settling = false;
     }
   };
-  const pause = (ms: number): Promise<void> => noticing(ms, () => sleep(ms, options.signal));
+  const pause = (ms: number): Promise<void> => noticing(ms, () => (options.wait ?? sleep)(ms, options.signal));
   const clock = options.clock ?? Date.now;
   const detection = harnessDetection({ detect: async (excluded) => {
     const wanted = HARNESSES.filter(harness => (options.only === undefined || options.only.length === 0 || options.only.includes(harness.id))
@@ -975,7 +981,8 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   try {
     return await claimLoop();
   } finally {
-    try { await Promise.all([catalogs.stop(), stopVersionProbes()]); } finally { retryRunDirectoryDiscards(options); }
+    idleLifetime.abort();
+    try { await Promise.all([idleStep?.pending, catalogs.stop(), stopVersionProbes()]); } finally { retryRunDirectoryDiscards(options); }
   }
 
   async function claimLoop(): Promise<WorkerOutcome> {
@@ -984,6 +991,14 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       sweepStepLogs(options);
       if (options.stillCurrent !== undefined && !options.stillCurrent()) {
         options.log('the myco program on disk changed; stopping so the new one starts');
+        return { driven, refused: null, replaced: true };
+      }
+      const outcome = idleStep?.outcome;
+      if (outcome?.ok === false) throw outcome.error;
+      const idle = outcome?.result;
+      if (outcome !== undefined) idleStep = undefined;
+      if (idle === 'restart') {
+        options.log('runner update ready; stopping between runs so the service starts the new program');
         return { driven, refused: null, replaced: true };
       }
       // A machine that has only just woken may be about to sleep again — a closed
@@ -1036,10 +1051,14 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         if (!wake.settled()) continue;
       }
       if (options.signal.aborted) break;
-      const idle = await options.onIdle?.();
-      if (idle === 'restart') {
-        options.log('runner update ready; stopping between runs so the service starts the new program');
-        return { driven, refused: null, replaced: true };
+      if (outcome === undefined && options.onIdle !== undefined) {
+        if (idleStep === undefined) {
+          const step: IdleStep = { pending: Promise.resolve() };
+          step.pending = options.onIdle(idleSignal).then(result => { step.outcome = { ok: true, result }; }, error => { step.outcome = { ok: false, error }; });
+          idleStep = step;
+        }
+        await pause(options.pollIdleMs);
+        continue;
       }
       if (idle === 'hold' || paused) { await pause(options.pollIdleMs); continue; }
       let offer: ReturnType<typeof offerOf>;

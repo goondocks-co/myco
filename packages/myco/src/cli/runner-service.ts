@@ -184,7 +184,8 @@ export async function runRunnerService(verb: 'install' | 'status' | 'doctor' | '
       out(`  last update result: ${lastUpdate === undefined ? 'none' : `${lastUpdate.result}: ${lastUpdate.fromVersion} → ${lastUpdate.toVersion}${lastUpdate.reason === undefined ? '' : ` (${lastUpdate.reason})`}`}`);
       const state = workerServiceStatus(target, options);
       const stalled = state.running && contactStalled(record?.lastContactAt, (deps.now ?? Date.now)());
-      const service = stalled ? `stalled since ${new Date(record!.lastContactAt!).toISOString()}; restart it with myco runner install --server ${url}` : !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, not running' : 'running at login';
+      const updating = state.running && updateStatus.updateState?.phase === 'updating';
+      const service = updating ? `updating (${updateStatus.updateState?.reason ?? 'applying release'})` : stalled ? `stalled since ${new Date(record!.lastContactAt!).toISOString()}; restart it with myco runner install --server ${url}` : !state.installed ? 'not installed' : !state.loaded ? 'installed, not loaded' : !state.running ? 'installed, not running' : 'running at login';
       out(`  runner service: ${service}${state.detail === undefined ? '' : ` (${state.detail})`}`);
       const blocked = await runnerExecutionRefusal(scoped);
       if (blocked !== null) out(`  execution refused: ${blocked}`);
