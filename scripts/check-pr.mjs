@@ -7,12 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { BUILD_JOB_FILES, HEAVY_AND_SCALE_SUITES } from './ci-scopes.mjs';
 import { staleReason } from './ensure-deps.mjs';
-import { affectedTests, budgetTests } from './pr-test-selection.mjs';
+import { affectedTests } from './pr-test-selection.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 process.chdir(root);
 const started = performance.now();
-const AFFECTED_TEST_BUDGET_MS = 90_000;
 const execBuffered = promisify(execFile);
 const activeTests = new Set();
 let interrupted;
@@ -163,16 +162,15 @@ try {
   const candidates = affectedTests({ root, files: [...new Set(files)], changed })
     .filter(({ file }) => (!file.startsWith('tests/meta/') || FULL_JOB_TESTS.has(file))
       && file !== 'tests/myco-server/gates.test.ts');
-  const durations = JSON.parse(fs.readFileSync('scripts/test-durations.json', 'utf8')).files;
-  const { selected, skipped, estimatedMs, weightMs, tiers } = budgetTests({
-    candidates, durations, excluded: FULL_JOB_TESTS, budgetMs: AFFECTED_TEST_BUDGET_MS,
-  });
-  affectedSkipped = skipped.length;
-  console.log(`Affected tests: ${selected.length} selected (${(weightMs / 1000).toFixed(1)} s duration weights, ${(estimatedMs / 1000).toFixed(1)} s reserved), ${skipped.length} skipped; ${AFFECTED_TEST_BUDGET_MS / 1000} s recorded-weight allowance; tiers selected/skipped: ${tiers.map(({ tier, selected, skipped }) => `T${tier} ${selected}/${skipped}`).join(', ')}. Selected: ${selected.join(', ') || 'none'}`);
-  if (skipped.length) {
-    console.warn(`Skipped affected tests (recorded-duration budget or full/build/parity job): ${skipped.join(', ')}`);
-    console.warn(`Run skipped tests: npm test -- ${skipped.map(quote).join(' ')}`);
-    if (skipped.includes('tests/parity/parity.test.ts')) console.warn('For parity: npm run test:parity');
+  // Changed test files always run. Importers are too broad to run locally (a shared module reaches hundreds of
+  // files), so they are listed with their command; CI runs them.
+  const selected = candidates.filter(({ file, tier }) => tier === 0 && !FULL_JOB_TESTS.has(file)).map(({ file }) => file);
+  const importers = candidates.filter(({ file, tier }) => tier > 0 || FULL_JOB_TESTS.has(file)).map(({ file }) => file).sort();
+  affectedSkipped = importers.length;
+  console.log(`Changed tests: ${selected.length} run (${selected.join(', ') || 'none'}); importing tests not run: ${importers.length}`);
+  if (importers.length) {
+    console.warn(`Run importing tests: npm test -- ${importers.map(quote).join(' ')}`);
+    if (importers.includes('tests/parity/parity.test.ts')) console.warn('For parity: npm run test:parity');
   }
   const testChecks = [];
   if (changed.length > 0) {
@@ -182,7 +180,7 @@ try {
     testChecks.push(checkTests('meta tests (PR scope)', 'tests (node): tests/meta in the PR scope',
       'Fix the reported boundary; npm test -- tests/meta', meta));
   }
-  if (selected.length) testChecks.push(checkTests('changed and importing tests', 'tests (node/DOM)',
+  if (selected.length) testChecks.push(checkTests('changed tests', 'tests (node/DOM)',
     `Fix the reported test failures; npm test -- ${selected.map(quote).join(' ')}`, selected));
   await Promise.all(testChecks);
   if (interrupted) throw new Error(`Interrupted by ${interrupted}`);
@@ -201,5 +199,5 @@ try {
   failed++;
   console.error(`FAIL check selection: ${error.message}\nCI step: checkout/base selection\nFix: git fetch origin main, then npm run check:pr`);
 }
-console.log(`check:pr: ${passed} passed, ${failed} failed in ${Math.ceil((performance.now() - started) / 1000)} s (base ${base.slice(0, 9)})${affectedSkipped ? `, ${affectedSkipped} affected test files skipped` : ''}`);
+console.log(`check:pr: ${passed} passed, ${failed} failed in ${Math.ceil((performance.now() - started) / 1000)} s (base ${base.slice(0, 9)})${affectedSkipped ? `, ${affectedSkipped} importing test files not run (CI runs them)` : ''}`);
 process.exitCode = failed ? 1 : 0;

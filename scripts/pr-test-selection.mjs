@@ -5,8 +5,6 @@ import { createRequire } from 'node:module';
 export const isTestFile = file => /^tests\/.*\.test\.[cm]?[jt]sx?$/.test(file);
 const MODULE_FILE = /\.[cm]?[jt]sx?$/;
 const INDEX_FILE = /(?:^|\/)index\.[cm]?[jt]sx?$/;
-const UNKNOWN_DURATION_MS = 5_000;
-const FILE_SETUP_RESERVATION_MS = 3_000;
 const require = createRequire(import.meta.url);
 let compiler;
 
@@ -53,27 +51,4 @@ export function affectedTests({ root, files, changed }) {
       : intersects(imports, throughIndex) || intersects(imports, helpers) ? 2 : null;
     return tier === null ? [] : [{ file, tier }];
   });
-}
-
-export function budgetTests({ candidates, durations, excluded, budgetMs }) {
-  const duration = file => Number.isFinite(durations[file]) && durations[file] > 0 ? durations[file] : UNKNOWN_DURATION_MS;
-  const sorted = [...new Map(candidates.map(candidate => [candidate.file, candidate])).values()]
-    .sort((left, right) => left.tier - right.tier || duration(left.file) - duration(right.file) || left.file.localeCompare(right.file));
-  const selected = [];
-  const skipped = [];
-  const tiers = Array.from({ length: 3 }, (_, tier) => ({ tier, selected: 0, skipped: 0 }));
-  let estimatedMs = 0;
-  let weightMs = 0;
-  for (const { file, tier } of sorted) {
-    if (excluded.has(file) || weightMs + duration(file) > budgetMs) {
-      skipped.push(file);
-      tiers[tier].skipped++;
-    } else {
-      selected.push(file);
-      tiers[tier].selected++;
-      estimatedMs += Math.max(duration(file), FILE_SETUP_RESERVATION_MS);
-      weightMs += duration(file);
-    }
-  }
-  return { selected, skipped, estimatedMs, weightMs, tiers };
 }
