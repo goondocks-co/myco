@@ -945,6 +945,17 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
   const idleSignal = AbortSignal.any([options.signal, idleLifetime.signal]);
   type IdleStep = { outcome?: { ok: true; result: 'restart' | 'hold' | void } | { ok: false; error: unknown }; pending: Promise<void> };
   let idleStep: IdleStep | undefined;
+  const settledIdle = (): { restart: WorkerOutcome } | { idle: 'hold' | void } | undefined => {
+    const outcome = idleStep?.outcome;
+    if (outcome === undefined) return undefined;
+    idleStep = undefined;
+    if (!outcome.ok) throw outcome.error;
+    if (outcome.result === 'restart') {
+      options.log('runner update ready; stopping between runs so the service starts the new program');
+      return { restart: { driven, refused: null, replaced: true } };
+    }
+    return { idle: outcome.result };
+  };
   /**
    * Every wait the loop makes is also where a sleep is noticed: one the wall
    * clock says lasted far longer than `ms`, the most it can take awake. A
@@ -960,7 +971,7 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
       if (woke()) settling = false;
     }
   };
-  const pause = (ms: number): Promise<void> => noticing(ms, () => (options.wait ?? sleep)(ms, options.signal));
+  const pause = (ms: number, signal = options.signal): Promise<void> => noticing(ms, () => (options.wait ?? sleep)(ms, signal));
   const clock = options.clock ?? Date.now;
   const detection = harnessDetection({ detect: async (excluded) => {
     const wanted = HARNESSES.filter(harness => (options.only === undefined || options.only.length === 0 || options.only.includes(harness.id))
@@ -993,14 +1004,8 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         options.log('the myco program on disk changed; stopping so the new one starts');
         return { driven, refused: null, replaced: true };
       }
-      const outcome = idleStep?.outcome;
-      if (outcome?.ok === false) throw outcome.error;
-      const idle = outcome?.result;
-      if (outcome !== undefined) idleStep = undefined;
-      if (idle === 'restart') {
-        options.log('runner update ready; stopping between runs so the service starts the new program');
-        return { driven, refused: null, replaced: true };
-      }
+      let settled = settledIdle();
+      if (settled && 'restart' in settled) return settled.restart;
       // A machine that has only just woken may be about to sleep again — a closed
       // laptop wakes for a while at a time — and a run claimed now would lapse
       // under it. It claims once it has stayed awake for the settle.
@@ -1051,16 +1056,21 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
         if (!wake.settled()) continue;
       }
       if (options.signal.aborted) break;
-      if (outcome === undefined && options.onIdle !== undefined) {
+      if (settled === undefined && options.onIdle !== undefined) {
         if (idleStep === undefined) {
           const step: IdleStep = { pending: Promise.resolve() };
           step.pending = options.onIdle(idleSignal).then(result => { step.outcome = { ok: true, result }; }, error => { step.outcome = { ok: false, error }; });
           idleStep = step;
         }
-        await pause(options.pollIdleMs);
-        continue;
+        const polling = new AbortController();
+        try {
+          await Promise.race([idleStep.pending, pause(options.pollIdleMs, AbortSignal.any([options.signal, polling.signal]))]);
+        } finally { polling.abort(); }
+        settled = settledIdle();
+        if (settled === undefined) continue;
+        if ('restart' in settled) return settled.restart;
       }
-      if (idle === 'hold' || paused) { await pause(options.pollIdleMs); continue; }
+      if (settled?.idle === 'hold' || paused) { await pause(options.pollIdleMs); continue; }
       let offer: ReturnType<typeof offerOf>;
       try { offer = offerOf(await noticing(HARNESS_DETECTION_MAX_MS, () => detection.read())); }
       catch (error) {

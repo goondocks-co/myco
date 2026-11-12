@@ -172,12 +172,6 @@ describe('stageBinary — the default runnable gate', () => {
 });
 
 describe('stageBinary — failure invariants', () => {
-  // Every failure scenario must satisfy ALL of these:
-  //   1. Returns { error }
-  //   2. Nothing under versions/<v>/
-  //   3. No temp files remain under versions/
-  //   4. Stable binary untouched
-
   const FAILURES: Array<{ name: string; opts: StageOpts }> = [
     {
       name: 'download throws',
@@ -203,43 +197,13 @@ describe('stageBinary — failure invariants', () => {
   ];
 
   for (const { name, opts } of FAILURES) {
-    describe(name, () => {
-      it('returns { error }', async () => {
-        const rec = makeStageRec(opts);
-        const result = await stageBinary(
-          { refs: baseRefs(), home: tmpHome, platform: PLATFORM },
-          rec.deps,
-        );
-        expect('error' in result).toBe(true);
-        expect(typeof (result as { error: string }).error).toBe('string');
-      });
-
-      it('writes NOTHING under versions/<v>/', async () => {
-        const rec = makeStageRec(opts);
-        await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-        const vDir = versionDir(tmpHome, PLATFORM, VERSION);
-        expect(fs.existsSync(vDir)).toBe(false);
-      });
-
-      it('cleans all temp files from versions/', async () => {
-        const rec = makeStageRec(opts);
-        await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-        const vDir = versionsDir(tmpHome, PLATFORM);
-        if (fs.existsSync(vDir)) {
-          const leftovers = fs.readdirSync(vDir);
-          expect(leftovers).toEqual([]);
-        }
-      });
-
-      it('stable binary is untouched', async () => {
-        const stablePath = writeStableBinary();
-        const rec = makeStageRec(opts);
-        await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-        expect(fs.readFileSync(stablePath, 'utf-8')).toBe(STABLE_BYTES);
-      });
+    it(`preserves the stable binary and clears staging when ${name}`, async () => {
+      const stablePath = writeStableBinary();
+      const rec = makeStageRec(opts);
+      const result = await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
+      expect(result).toMatchObject({ error: expect.any(String) });
+      expect(fs.readdirSync(versionsDir(tmpHome, PLATFORM))).toEqual([]);
+      expect(fs.readFileSync(stablePath, 'utf-8')).toBe(STABLE_BYTES);
     });
   }
 });

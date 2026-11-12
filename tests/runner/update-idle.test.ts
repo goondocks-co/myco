@@ -54,7 +54,8 @@ describe('runner update idle admission', () => {
     const restore = bindSandboxChildHome(root);
     const release = path.join(root, 'release'), pidFile = path.join(root, 'pid');
     const stopping = new AbortController();
-    let pending = false, active = false, ended = false, claims = 0, contacts = 0, idleCalls = 0;
+    let pending = false, active = false, ended = false, claims = 0, contacts = 0, contactsAtClaim = 0, idleCalls = 0;
+    const lifecycle: string[] = [];
     try {
       stubProfileHarness({ holdUntil: release, pidFile });
       const timer = setInterval(() => {
@@ -70,11 +71,14 @@ describe('runner update idle admission', () => {
           runRoot: path.join(root, 'runs'), only: ['claude-code'], detection: { credentialBytes: false },
           signal: stopping.signal, pollIdleMs: 1, log: () => {},
           contactBody: () => ({ update: { currentVersion: '2.0.0-alpha.2', channel: 'alpha' } }),
+          onClaim: () => { expect(active).toBe(true); lifecycle.push('claim-started'); },
+          onClaimCompleted: () => { expect(ended).toBe(true); lifecycle.push('claim-completed'); },
           onIdle: async () => {
             idleCalls++;
             expect(active).toBe(false);
             if (!pending) return;
             expect(ended).toBe(true);
+            lifecycle.push('restart');
             return 'restart';
           },
           fetchImpl: (async (input, init) => {
@@ -86,6 +90,7 @@ describe('runner update idle admission', () => {
                 updateRequest: pending ? { id: 'req_fixture', requestedAt: 1 } : null });
             }
             if (url.pathname === '/worker/claim') {
+              contactsAtClaim = contacts;
               expect(++claims).toBe(1);
               active = true;
               return answer({ persisted: true, claimed: true, leaseMs: 60_000, heartbeatMs: 30_000,
@@ -96,6 +101,7 @@ describe('runner update idle admission', () => {
             if (url.pathname === '/worker/end') {
               expect(pending).toBe(true);
               active = false; ended = true;
+              lifecycle.push('ended');
               return answer({ persisted: true, ended: true });
             }
             return answer({ persisted: true });
@@ -103,7 +109,9 @@ describe('runner update idle admission', () => {
         });
         expect(outcome).toMatchObject({ driven: 1, refused: null, replaced: true });
         expect(contacts).toBeGreaterThan(1);
+        expect(contactsAtClaim).toBe(1);
         expect(ended).toBe(true);
+        expect(lifecycle).toEqual(['claim-started', 'ended', 'claim-completed', 'restart']);
       } finally { clearInterval(timer); stopping.abort(); }
     } finally {
       restore();

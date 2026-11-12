@@ -479,6 +479,7 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
 export interface RunnerUpdateController {
   contactPayload(): RunnerUpdateContact;
   statusPayload(): RunnerUpdateContact;
+  hasLiveDownload(): boolean;
   onContact(body: Record<string, unknown>): void;
   /** Called after this version starts; health is acknowledged only by authenticated contact. */
   startup(): void;
@@ -544,6 +545,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     };
     if (request) endRequest(state, serverUrl, request.id);
   };
+  const liveDownload = (state: RunnerUpdateState): RunnerUpdateState['download'] => {
+    if (state.download === undefined) return undefined;
+    const observed = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { mode: 'shared' });
+    if (observed.acquired) { observed.lock.release(); return undefined; }
+    return observed.holderPid === state.download.pid ? state.download : undefined;
+  };
   const payload = (state: RunnerUpdateState): RunnerUpdateContact => {
     const blocked = state.latestVersion === null ? undefined : state.blockedVersions?.[state.latestVersion];
     if (fault && (state.lastResults?.[serverUrl]?.at ?? -1) >= fault.at) fault = undefined;
@@ -551,17 +558,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       fromVersion: currentVersion, toVersion: currentVersion, result: 'failed' as const, reason: state.metadataFailure.reason, at: state.metadataFailure.at,
     } : undefined);
     const tx = state.transaction;
-    let downloading = false;
-    if (state.download) {
-      const observed = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { mode: 'shared' });
-      if (observed.acquired) observed.lock.release();
-      else downloading = observed.holderPid === state.download.pid;
-    }
+    const download = liveDownload(state);
     const updateState: RunnerUpdateContact['updateState'] = tx ? {
       phase: tx.phase === 'probation' || tx.phase === 'healthy' ? 'probation' : 'updating', since: tx.startedAt,
       ...(tx.phase === 'waiting' ? { reason: 'Waiting for the bounded service handoff' } : {}),
-    } : downloading ? {
-      phase: 'updating', since: state.download!.since, reason: 'Downloading and verifying the release',
+    } : download ? {
+      phase: 'updating', since: download.since, reason: 'Downloading and verifying the release',
     } : state.cleanupReason ? { phase: 'cleanup_pending', since: result?.at ?? now(), reason: state.cleanupReason } : undefined;
     return { channel: channel(), currentVersion, latestVersion: state.latestVersion, lastCheckAt: state.lastCheckAt,
       ...(result === undefined ? {} : { lastResult: { ...result, ...(result.reason === undefined ? {} : { reason: sanitizeRunnerUpdateReason(result.reason) }) } }),
@@ -983,8 +985,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
         } finally { changeState(next => { if (next.download?.id === download.id) delete next.download; }); }
       };
       const staged = localCandidate ? { stagedPath: localCandidate.binaryPath } : await stageRelease();
+      if (signal?.aborted) {
+        if (!localCandidate) fs.rmSync(path.dirname(versionBinaryPath(home, platform, version, options.localAppData)), { recursive: true, force: true });
+        changeState(next => { schedule(next, now(), request); });
+        return 'continue';
+      }
       if ('error' in staged) { refuse(staged.error); return 'continue'; }
-      signal?.throwIfAborted();
       const live = runnerCurrentReleaseProbe(binaryPath, currentVersion, platform);
       if (!live.runs) { refuse('installed runner changed before handoff: ' + live.detail); return 'continue'; }
       const previous = versionBinaryPath(home, platform, currentVersion, options.localAppData);
@@ -1025,6 +1031,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   return {
     contactPayload: guard(contactPayload, () => payload(freshState())),
     statusPayload: () => payload(decodeState(home)),
+    hasLiveDownload: () => liveDownload(decodeState(home)) !== undefined,
     onContact: guard(onContact, () => undefined), startup: guard(startup, () => undefined),
     acknowledgeHealthy: guard(acknowledgeHealthy, () => undefined), recordClaim: guard(recordClaim, () => undefined),
     recordHealthRefusal: guard(recordHealthRefusal, () => undefined), recordRuntimeCapability: guard(recordRuntimeCapability, () => undefined), queueManual, queueLocal,

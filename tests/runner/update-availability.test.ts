@@ -57,6 +57,38 @@ async function claimsWork(f: ReturnType<typeof fixture>) {
 }
 
 describe('runner update execution availability', () => {
+  for (const stoppedAt of ['transfer', 'staged'] as const) it(`retries a stop during ${stoppedAt} immediately without reporting a refusal`, async () => {
+    const stopping = new AbortController();
+    let started: () => void = () => {};
+    const downloading = new Promise<void>(resolve => { started = resolve; });
+    const bytes = new TextEncoder().encode(`#!/bin/sh\nprintf '%s\\n' '${to}'\n`);
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+    const f = fixture(`stop-${stoppedAt}`, {
+      stage: async (params, deps) => {
+        const result = await stageBinary(params, deps);
+        if (stoppedAt === 'staged' && !stopping.signal.aborted) stopping.abort();
+        return result;
+      },
+      stageDeps: createBinaryUpdateDeps({ downloadIdleTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS, fetch: async url => {
+        if (String(url).endsWith('/sums')) return new Response(`${digest}  myco-darwin-arm64\n`);
+        started();
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+          controller.enqueue(bytes);
+          if (stoppedAt === 'staged' || stopping.signal.aborted) controller.close();
+        } }));
+      } }),
+    });
+    const pending = f.controller.idle(undefined, stopping.signal);
+    try {
+      if (stoppedAt === 'transfer') { await downloading; await yieldIO(); stopping.abort(); }
+      expect(await pending).toBe('continue');
+      expect(f.controller.statusPayload().lastResult).toBeUndefined();
+      expect(f.controller.statusPayload().updateState).toBeUndefined();
+      expect(fs.readdirSync(versionsDir(f.home, process.platform))).toEqual([]);
+      expect(await f.controller.idle()).toBe('restart');
+    } finally { stopping.abort(); await pending; }
+  });
+
   it('contacts during a trickling release, cleans up at the ceiling, retries later and hands off the completed release', async () => {
     const stopping = new AbortController(), deadlines: { at: number; controller: AbortController }[] = [];
     let at = 1000, downloads = 0, downloadStarted = 0, updatingContacts = 0, lastContact = 0, offline = false, waiting: ReadableStreamDefaultController<Uint8Array> | undefined;

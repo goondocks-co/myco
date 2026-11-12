@@ -15,7 +15,7 @@ import { installWorkerService, listWorkerUnits, workerServiceSpec } from '@myco/
 import { recordingPlatform } from '../helpers/fake-service-manager.js';
 import { runnerUpdater } from '@myco/cli/runner-update.js';
 import { publishAdoptedMarker } from '@myco/install/adoption.js';
-import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { writeInstallMarker, versionBinaryPath } from '@myco/install/managed-binary.js';
 import { workerLockPath, workerHolder } from '@myco/runner/instance.js';
 import { readRunnerUpdateState, withRunnerUpdateState } from '@myco/runner/update.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
@@ -125,9 +125,15 @@ describe('explicit runner service opt-in', () => {
         { name: 'myco-linux-arm64', browser_download_url: 'https://fixture.invalid/binary' },
         { name: 'SHA256SUMS', browser_download_url: 'https://fixture.invalid/sums' },
       ] }])) as typeof fetch,
-      stage: async () => { started(); await completed; return { error: 'fixture transfer ended' }; },
+      stage: async ({ home, platform, refs }) => {
+        started(); await completed;
+        const file = versionBinaryPath(home, platform, refs.targetVersion);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, '#!/bin/sh\necho 2.0.0-alpha.2\n', { mode: 0o755 });
+        return { versionDir: path.dirname(file), version: refs.targetVersion };
+      },
     } }, () => {});
-    const pending = updater.idle();
+    const pending = updater.idle('caller');
     try {
       await downloading;
       output.length = 0;
@@ -135,6 +141,9 @@ describe('explicit runner service opt-in', () => {
       expect(output.join('\n')).toContain('runner service: updating (Downloading and verifying the release)');
       expect(output.join('\n')).not.toContain('stalled since');
     } finally { finish(); await pending; }
+    output.length = 0;
+    expect(await run(['status', '--server', SERVER], status)).toBe(true);
+    expect(output.join('\n')).toContain('runner service: stalled since');
     output.length = 0;
     await recordRunnerContact(SERVER, { runnerId: 'runner-one', deploymentId: 'dep-one' }, 180_000, mycoHome);
     expect(await run(['status', '--server', SERVER], status)).toBe(true);
