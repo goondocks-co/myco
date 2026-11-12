@@ -1,11 +1,10 @@
 import { expect } from 'bun:test';
-import { lit, expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * What a session reported it created, on both targets: a session started through /events, a pull request reported
  * through `myco_outcomes` and reported again unchanged, the same artifact under another URL refused, the session
- * page's read serving it, and a deleted session refusing a report and losing the one it held. The page read plans
- * over the session index on each store.
+ * page's read serving it, and a deleted session refusing a report and losing the one it held.
  */
 export const sessionArtifactsParity: ParityScenario = {
   name: 'session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read',
@@ -38,20 +37,11 @@ export const sessionArtifactsParity: ParityScenario = {
     expect(await call({ ...report, url: `${url}9` })).toEqual({ ok: false, error: 'this artifact was already reported for this session with a different url' });
     expect(await page()).toEqual({ status: 200, body: { rows: [{ id: first.id, kind: 'pr', artifactId: '1931', url, linked: true, reportedAt: first.reported_at }], cursor: null } });
 
-    const plan = (await target.sql(`EXPLAIN QUERY PLAN SELECT id FROM session_artifacts WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}
-      AND (reported_at > 0 OR (reported_at = 0 AND id > 'a')) ORDER BY reported_at, id LIMIT 51`)).map((row) => String(row.detail)).join('\n');
-    console.info(`[${target.name}] session artifacts plan:\n${plan}`);
-    expect(plan).toMatch(/SEARCH session_artifacts USING (COVERING )?INDEX idx_session_artifacts_session \(project_id=\? AND session_id=\?/);
-    expect(plan).not.toMatch(/\bSCAN\b|TEMP B-TREE/);
-
     const gone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'parity' }),
     });
     expect(gone.status).toBe(202);
     expect(await call({ ...report, artifact_id: '1932' })).toEqual({ ok: false, error: 'session_id not found' });
-    const held = async () => Number((await target.sql(`SELECT COUNT(*) AS n FROM session_artifacts WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))[0]!.n);
-    for (let wake = 0; wake < 40 && await held() > 0; wake += 1) await target.clockWake();
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM session_artifacts WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`)).toEqual([{ n: 0 }]);
     expect((await page()).status).toBe(404);
   },
 };

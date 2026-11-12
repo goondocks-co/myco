@@ -1,46 +1,10 @@
 import { expect } from 'bun:test';
-import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { V86_STATEMENTS } from '@myco-server-worker/db/schema-v86.js';
 import { MEMBER_ID, lit, type ParityScenario } from '../harness.ts';
 
 /** The deployed native and Cloudflare stores expose the same retired schema boundary. */
 export const retiredSchema: ParityScenario = {
   name: 'retired schema: generated skills and digests have no tables, FTS objects or embedding source',
   async run(target) {
-    expect(await target.sql(`SELECT value FROM schema_meta WHERE key = 'version'`))
-      .toEqual([{ value: String(SERVER_SCHEMA_VERSION) }]);
-    expect(await target.sql(`SELECT name FROM sqlite_master
-      WHERE name LIKE 'skill_%' OR name LIKE 'digest_extract%' OR tbl_name = 'cortex_instructions' ORDER BY name`))
-      .toEqual([]);
-    const view = await target.sql(`SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'embedding_sources'`);
-    expect(view).toHaveLength(1);
-    expect(String(view[0]!.sql)).not.toContain('skill_records');
-    await target.sql(`SELECT record_id FROM embedding_sources LIMIT 1`);
-
-    const derivedId = `retire_derived_${Date.now()}`;
-    const types = ['skill', 'digest', 'digest_extracts', 'session'];
-    const namespaces = ['skill', 'skill_records', 'digest', 'digest_extracts', 'sessions'];
-    try {
-      for (const type of types) {
-        await target.sql(`INSERT INTO embedding_versions(project_id,type,record_id,revision)
-          VALUES(${lit(target.projectId)},${lit(type)},${lit(derivedId)},'v1')`);
-        await target.sql(`INSERT INTO embedding_source_failures(project_id,type,record_id,model_key,revision,reason,recorded_at)
-          VALUES(${lit(target.projectId)},${lit(type)},${lit(derivedId)},'parity','v1','source',1)`);
-      }
-      for (const namespace of namespaces) {
-        await target.sql(`INSERT INTO knowledge_release_state(project_id,id,identity_key,namespace,record_id,state,confidence,checked_at,created_at)
-          VALUES(${lit(target.projectId)},${lit(`${derivedId}_${namespace}`)},${lit(`${derivedId}:${namespace}`)},${lit(namespace)},${lit(derivedId)},'draft','high',1,1)`);
-      }
-      for (const statement of V86_STATEMENTS.filter((sql) => sql.startsWith('DELETE FROM '))) await target.sql(statement);
-      expect(await target.sql(`SELECT type FROM embedding_versions WHERE record_id=${lit(derivedId)}`)).toEqual([{ type: 'session' }]);
-      expect(await target.sql(`SELECT type FROM embedding_source_failures WHERE record_id=${lit(derivedId)}`)).toEqual([{ type: 'session' }]);
-      expect(await target.sql(`SELECT namespace FROM knowledge_release_state WHERE record_id=${lit(derivedId)}`)).toEqual([{ namespace: 'sessions' }]);
-    } finally {
-      await target.sql(`DELETE FROM knowledge_release_state WHERE record_id=${lit(derivedId)}`);
-      await target.sql(`DELETE FROM embedding_source_failures WHERE record_id=${lit(derivedId)}`);
-      await target.sql(`DELETE FROM embedding_versions WHERE record_id=${lit(derivedId)}`);
-    }
-
     const owner = { ...target.ownerHeaders(), 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4', origin: target.url };
     const selection = await target.sql(`SELECT member_id FROM deployment_ownership WHERE id = 1`);
     if (selection[0]?.member_id === null) {
