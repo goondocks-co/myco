@@ -163,7 +163,7 @@ export async function fixture(
   try {
     await run({ home, root, state, reports, waits,
       create: () => createCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line), overloadRetry }),
-      update: () => updateCloudflareDeployment({ accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line), overloadRetry }),
+      update: () => updateCloudflareDeployment({ readRetry: { sleep: async () => {} }, accountId: ACCOUNT, mycoHome: home, report: (line) => reports.push(line), overloadRetry }),
       calls: () => fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line) as Call),
     });
   } finally {

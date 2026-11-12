@@ -96,9 +96,11 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
 beforeEach(() => { calls = []; buckets.clear(); storeSecrets.clear(); workerSecrets.clear(); budgetDb=budgetD1Database(); });
 afterEach(()=>budgetDb.close());
 
+const readRetry = { sleep: async (_ms: number) => {} };
+
 const setup = () => {
   const home = mkdtempSync(join(tmpdir(), 'myco-cf-life-'));
-  return { home, dir: stagingDir(home), options: { accountId: ACCOUNT, mycoHome: home } };
+  return { home, dir: stagingDir(home), options: { accountId: ACCOUNT, mycoHome: home, readRetry } };
 };
 
 it('refuses a different account before any command for an existing hosted Deployment', async () => {
@@ -152,8 +154,8 @@ const drive = async (argv: string[]): Promise<{ exited: boolean; said: string; p
 /** Every lifecycle verb, by name, driven against one home. */
 const EVERY_VERB: ReadonlyArray<{ verb: string; run: (options: { accountId: string; mycoHome: string }, r: CommandRunner) => Promise<unknown> }> = [
   { verb: 'create', run: (o, runner) => createCloudflareDeployment({ ...o, runner }) },
-  { verb: 'update', run: (o, runner) => updateCloudflareDeployment({ ...o, runner }) },
-  { verb: 'status', run: (o, runner) => cloudflareDeploymentStatus({ ...o, runner }) },
+  { verb: 'update', run: (o, runner) => updateCloudflareDeployment({ ...o, readRetry, runner }) },
+  { verb: 'status', run: (o, runner) => cloudflareDeploymentStatus({ ...o, readRetry, runner }) },
   { verb: 'rollback', run: (o, runner) => rollbackCloudflareDeployment({ ...o, runner, versionId: 'a'.repeat(8) }) },
   { verb: 'destroy', run: (o, runner) => destroyCloudflareDeployment({ ...o, runner }) },
 ];
@@ -444,16 +446,91 @@ describe('create', () => {
   });
 });
 
+it('reports the live version after propagation, or a pending observation while it remains unavailable', async () => {
+  const { home, options } = setup();
+  const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
+  writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: version, deployedAt: new Date().toISOString() }, home);
+  for (const settles of [true, false]) {
+    let reads = 0;
+    const provider = runner();
+    const result = await cloudflareDeploymentStatus({ ...options, runner: { async run(command, args, runOptions) {
+      if (args[2] === 'deployments') return settles && ++reads > 1
+        ? { code: 0, stdout: `Version ID: ${version}`, stderr: '' }
+        : { code: 1, stdout: '', stderr: `The requested Worker version could not be found [code: 100146] /versions/${version}` };
+      return provider.run(command, args, runOptions);
+    } } });
+    expect(result?.workerError).toBeNull();
+    expect(result?.versionId).toBe(settles ? version : null);
+    expect(result?.workerPropagation).toBe(settles ? null : 'The new version is still propagating; check again shortly with `myco server status --target cloudflare`.');
+  }
+});
+
+it('keeps unproven or stale version failures as errors, reports unreadable reads, and skips absent Workers', async () => {
+  const { home, options } = setup();
+  const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
+  for (const example of [
+    { output: 'provider refused [code: 12345]', expected: '12345' },
+    { output: '[code: 100146] /versions/11111111-2222-4333-8444-555555555555', expected: '100146' },
+    { output: '[code: 100146]', expected: '100146' },
+    { output: `[code: 100146] /versions/${version}`, old: true, expected: '100146' },
+    { timeout: true, expected: 'could not be read' },
+    { output: '[code: 10007]', expected: null },
+  ]) {
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: version,
+      deployedAt: new Date(Date.now() - (example.old ? 11 * 60_000 : 0)).toISOString() }, home);
+    const provider = runner();
+    const status = await cloudflareDeploymentStatus({ ...options, runner: { async run(command, args, runOptions) {
+      if (args[2] === 'deployments' || args[2] === 'secret') {
+        if (example.timeout || args[2] === 'secret') throw new CommandTimedOut(command, args, runOptions!.timeoutMs!, 'ended');
+        return { code: 1, stdout: '', stderr: example.output! };
+      }
+      return provider.run(command, args, runOptions);
+    } } });
+    if (example.expected === null) expect(status?.workerError).toBeNull();
+    else expect(status?.workerError).toContain(example.expected);
+    expect(status?.workerPropagation).toBeNull();
+    expect(status?.backupCredentialCheck).toBe(example.expected === null ? null : 'The backup access key could not be read from Cloudflare. Try again later.');
+  }
+});
+
+it('allows slow first reads to finish before opening their propagation retry windows', async () => {
+  const { home, options } = setup();
+  recordFor(home);
+  const provider = runner();
+  const version = '16a2423e-af96-4310-b61b-4e2b5fd1310b';
+  let time = Date.now();
+  let secretReads = 0;
+  const status = await cloudflareDeploymentStatus({ ...options, readRetry: { now: () => time, sleep: async ms => { time += ms; } },
+    runner: { async run(command, args, runOptions) {
+      if (args[2] === 'deployments' || args[2] === 'secret') {
+        const elapsed = args[2] === 'deployments' || secretReads++ === 0 ? 25_000 : 0;
+        time += elapsed;
+        if (runOptions!.timeoutMs! < elapsed) throw new CommandTimedOut(command, args, runOptions!.timeoutMs!, 'ended');
+        return { code: 0, stderr: '', stdout: args[2] === 'deployments' ? `Version ID: ${version}` : JSON.stringify(elapsed ? [] : [{ name: 'RECOVERY_EXPORT_TOKEN' }]) };
+      }
+      return provider.run(command, args, runOptions);
+    } } });
+  expect(status?.versionId).toBe(version);
+  expect(status?.workerError).toBeNull();
+  expect(status?.backupCredentialCheck).toBeNull();
+});
+
 describe('update', () => {
-  it('reports an unreadable backup access check after completing the update', async () => {
+  it('reports an unconfirmed backup access check after a failed read followed by absent keys', async () => {
     const { home, options } = setup();
     writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
     const lines: string[] = [];
-    const result = await updateCloudflareDeployment({ ...options, runner: runner({ 'secret list': { code: 1, stderr: 'unavailable' } }), report: (line) => lines.push(line) });
+    const provider = runner();
+    let reads = 0;
+    const result = await updateCloudflareDeployment({ ...options, runner: { async run(command, args, runOptions) {
+      if (args[2] === 'secret' && args[3] === 'list' && ++reads === 1) return { code: 1, stdout: '', stderr: 'unavailable' };
+      return provider.run(command, args, runOptions);
+    } }, report: (line) => lines.push(line) });
     expect(result.summary.record).toBe('updated');
     expect(result.summary.worker).toBe('applied');
-    expect(lines.join('\n')).toContain('backup access key could not be checked');
-    expect(lines.join('\n')).toContain('myco server backup-credential --target cloudflare');
+    expect(lines.join('\n')).toContain('backup access key check could not be confirmed yet');
+    expect(lines.join('\n')).toContain('myco server status --target cloudflare');
+    expect(lines.join('\n')).not.toContain('myco server backup-credential');
   });
 
   it('names the backup access command only when the deployed Worker lacks its key, without prompting', async () => {
@@ -466,6 +543,21 @@ describe('update', () => {
       expect(lines.filter((line) => line.includes('myco server backup-credential --target cloudflare'))).toHaveLength(present ? 0 : 1);
       expect(calls.some((call) => call.input !== undefined)).toBe(false);
     }
+  });
+
+  it('accepts a backup key that becomes visible after deployment', async () => {
+    const { home, options } = setup();
+    recordFor(home);
+    const provider = runner();
+    let reads = 0;
+    const lines: string[] = [];
+    await updateCloudflareDeployment({ ...options, report: line => lines.push(line), runner: {
+      async run(command, args, runOptions) {
+        if (args[2] === 'secret' && args[3] === 'list' && ++reads > 1) workerSecrets.add('RECOVERY_EXPORT_TOKEN');
+        return provider.run(command, args, runOptions);
+      },
+    } });
+    expect(lines.join('\n')).not.toContain('backup access key');
   });
 
   const uploadFailure = { code: 1, stdout: '', stderr: 'binding MYCO_DB of type d1 failed to generate. Please try again later or contact support. [code: 10021]' };
@@ -699,7 +791,7 @@ describe('the prerequisites every verb checks first', () => {
     try {
       const home = freshHome();
       recordFor(home);
-      await cloudflareDeploymentStatus({ accountId: ACCOUNT, mycoHome: home, runner: runner({ 'wrangler whoami': { code: 1 } }) });
+      await cloudflareDeploymentStatus({ readRetry, accountId: ACCOUNT, mycoHome: home, runner: runner({ 'wrangler whoami': { code: 1 } }) });
       expect(calls.some((c) => c.args.includes('whoami'))).toBe(false);
     } finally {
       if (held === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
@@ -712,6 +804,7 @@ describe('the prerequisites every verb checks first', () => {
     recordFor(home);
     const said: string[] = [];
     await cloudflareDeploymentStatus({
+      readRetry,
       accountId: ACCOUNT,
       mycoHome: home,
       report: (line) => { said.push(line); },

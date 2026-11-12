@@ -82,7 +82,7 @@ afterEach(() => {
 
 for (const target of ['local', 'cloudflare']) describe(`hook placement status on ${target}`, () => {
   async function status() {
-    await run(['status', '--target', target], { runner, fetchImpl: globalThis.fetch });
+    await run(['status', '--target', target], { runner, fetchImpl: globalThis.fetch, readRetry: { sleep: async () => {} } });
     return log.mock.calls.flat().map(String).find(line => line.includes('Context deliveries not placed on a turn'));
   }
   it('prints zero through the target’s real read path', async () => {
@@ -126,7 +126,7 @@ it('refuses hosted status under a different --account-id before querying', async
   const exit = spyOn(process, 'exit').mockImplementation(() => { throw new Error('fixture exit'); });
   const error = spyOn(console, 'error').mockImplementation(() => {});
   try {
-    await expect(run(['status', '--target', 'cloudflare', '--account-id', 'b'.repeat(32)], { runner, fetchImpl: globalThis.fetch })).rejects.toThrow('fixture exit');
+    await expect(run(['status', '--target', 'cloudflare', '--account-id', 'b'.repeat(32)], { runner, fetchImpl: globalThis.fetch, readRetry: { sleep: async () => {} } })).rejects.toThrow('fixture exit');
     expect(log.mock.calls.flat().map(String).some(line => line.includes('Context deliveries not placed on a turn'))).toBe(false);
     expect(error.mock.calls.flat()).toContain('status refused: selected account does not match the deployment record');
     expect(reads).toEqual([]);
