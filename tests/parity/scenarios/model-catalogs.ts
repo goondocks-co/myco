@@ -1,6 +1,7 @@
 import { expect } from 'bun:test';
 import { MODEL_CATALOG_FRESH_MS } from '@goondocks/myco-shared/execution-profile';
-import { lit, waitFor, type ParityScenario } from '../harness.ts';
+import { ageRows, lit, memberHeadersFor, waitFor, type ParityScenario } from '../harness.ts';
+import { browser, deviceMachine } from '../clients/identity.ts';
 
 /**
  * The models a machine lists, kept the same on both targets: a report is kept with only the models the agent's
@@ -18,10 +19,10 @@ export const modelCatalogs: ParityScenario = {
     });
     expect(offer.status).toBe(200);
     let observedOrder = 0;
-    const report = async (models: unknown[], fetchedAt: number) => {
+    const report = async (models: unknown[], fetchedAt: number, headers = target.memberHeaders(), harness = 'opencode') => {
       const response = await fetch(`${target.url}/worker/models`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ catalog: { observedOrder: ++observedOrder, harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt, models } }),
+        method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ catalog: { observedOrder: ++observedOrder, harness, source: { kind: 'command', command: `${harness} models` }, signIn: 'worker-login', fetchedAt, models } }),
       });
       return { status: response.status, body: await response.json() as Record<string, unknown> };
     };
@@ -33,25 +34,26 @@ export const modelCatalogs: ParityScenario = {
     ], now - 2_000)).toEqual({ status: 200, body: { persisted: true, recorded: true, models: 2 } });
     expect(await report([{ id: alias, label: alias, provider: 'openrouter' }], now - 1_000)).toEqual({ status: 200, body: { persisted: true, recorded: true, models: 1 } });
 
-    const settings = await fetch(`${target.url}/api/settings`, { headers: { ...target.ownerHeaders(), origin: target.url } });
-    expect(settings.status).toBe(200);
-    const models = ((await settings.json()) as { models: Array<Record<string, unknown>> }).models.filter((catalog) => catalog.harness === 'opencode');
-    expect(models).toEqual([{
+    const answered = async () => {
+      const settings = await browser(target, '/api/settings', target.ownerHeaders());
+      expect(settings.status).toBe(200);
+      return settings.body.models as Array<Record<string, unknown>>;
+    };
+    expect((await answered()).filter((catalog) => catalog.harness === 'opencode')).toEqual([{
       harness: 'opencode', source: { kind: 'command', command: 'opencode models' }, signIn: 'worker-login', fetchedAt: now - 1_000, receivedAt: expect.any(Number), observedOrder: expect.any(Number),
       models: [{ id: alias, label: alias, provider: 'openrouter' }],
     }]);
-    expect(await target.sql(`SELECT resolutions FROM worker_model_catalogs WHERE harness = 'opencode'`)).toEqual([{ resolutions: '{}' }]);
-
-    const gone = 'machine_parity_decommissioned';
-    const stale = now - MODEL_CATALOG_FRESH_MS - 60_000;
-    await target.sql(`INSERT INTO worker_model_catalogs (machine_id, harness, catalog, resolutions, fetched_at, received_at)
-      VALUES (${lit(gone)}, 'codex', ${lit(JSON.stringify({ harness: 'codex', source: { kind: 'exchange', command: 'codex app-server' }, signIn: 'worker-login', fetchedAt: stale, models: [{ id: 'gpt-5.5', label: 'GPT-5.5' }] }))}, '{}', ${stale}, ${stale})`);
-    const left = async () => (await target.sql(`SELECT machine_id FROM worker_model_catalogs WHERE machine_id = ${lit(gone)}`)).length;
+    // A machine since decommissioned listed its models once, and has not renewed them within the freshness window.
+    const gone = await deviceMachine(target, target.ownerHeaders());
+    expect(await report([{ id: 'gpt-5.5', label: 'GPT-5.5' }], now, memberHeadersFor(gone.token, target.projectId), 'codex')).toEqual({ status: 200, body: { persisted: true, recorded: true, models: 1 } });
+    await ageRows(target, { table: 'worker_model_catalogs', column: 'received_at', byMs: MODEL_CATALOG_FRESH_MS + 60_000, match: { machine_id: gone.machineId } });
+    expect((await answered()).map((catalog) => catalog.harness)).toEqual(['opencode']);
+    // The lease sweep deletes the stale list itself, which no read shows once the list is past its window.
+    const left = async () => (await target.sql(`SELECT machine_id FROM worker_model_catalogs WHERE machine_id = ${lit(gone.machineId)}`)).length;
     expect(await left()).toBe(1);
-    const answered = await (await fetch(`${target.url}/api/settings`, { headers: { ...target.ownerHeaders(), origin: target.url } })).json() as { models: Array<{ harness: string }> };
-    expect(answered.models.map((catalog) => catalog.harness)).toEqual(['opencode']);
     await target.clockWake();
     expect(await waitFor(left, (count) => count === 0)).toBe(0);
-    expect((await target.sql(`SELECT COUNT(*) AS n FROM worker_model_catalogs WHERE harness = 'opencode'`))[0]?.n).toBe(1);
+    expect((await answered()).map((catalog) => catalog.harness)).toEqual(['opencode']);
+    expect((await browser(target, `/api/machines/${gone.machineId}/stop`, target.ownerHeaders(), {})).status).toBe(200);
   },
 };

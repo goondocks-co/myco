@@ -1,7 +1,8 @@
 import { expect } from 'bun:test';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { toBase64Url } from '@myco-server-worker/base64.js';
-import { ageRows, MEMBER_ID, SESSION_SECRET, memberHeadersFor, type ParityTarget } from '../harness.ts';
+import { PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
+import { ageRows, MEMBER_ID, SESSION_SECRET, type ParityTarget } from '../harness.ts';
 import { owner, type Answer } from './requests.ts';
 
 /** What enrolling people and machines takes of a target: its routes, its owner and its Deployment identity. */
@@ -27,9 +28,8 @@ export async function browser(target: Pick<ParityTarget, 'url'>, path: string, s
 }
 
 /** A machine or runner client's POST: its bearer when it holds one, the protocol header and a source address. */
-export async function client(target: Pick<ParityTarget, 'url' | 'projectId'>, path: string, body: unknown, bearer?: string): Promise<Answer> {
-  const headers = bearer === undefined ? { 'cf-connecting-ip': '1.2.3.4' } : memberHeadersFor(bearer, target.projectId);
-  return browser(target, path, headers, body);
+export async function client(target: Pick<ParityTarget, 'url'>, path: string, body: unknown, bearer?: string): Promise<Answer> {
+  return browser(target, path, { 'cf-connecting-ip': '1.2.3.4', ...(bearer === undefined ? {} : { authorization: `Bearer ${bearer}`, [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) }) }, body);
 }
 
 /** The Deployment's owner, selected as the dashboard selects it when none is recorded: the parity member. Answers the ownership revision. */
@@ -70,13 +70,13 @@ export async function person(target: IdentityTarget, sub: string, options: Param
 }
 
 /** A machine signed in through the device flow and approved in the browser `approver`; the approver's member holds it. */
-export async function deviceMachine(target: IdentityTarget, approver: Record<string, string>, machineId = `machine_${crypto.randomUUID()}`, machineName = 'Parity laptop'): Promise<{ memberId: string; token: string; machineId: string }> {
+export async function deviceMachine(target: IdentityTarget, approver: Record<string, string>, machineId = `machine_${crypto.randomUUID()}`, machineName = 'Parity laptop'): Promise<{ memberId: string; token: string; tokenId: string; machineId: string }> {
   const started = await client(target, '/auth/device/start', { machineId, machineName, os: 'linux' });
   expect(started.status).toBe(200);
   expect((await browser(target, '/api/device/approve', approver, { user_code: started.body.user_code })).status).toBe(200);
   const polled = await client(target, '/auth/device/poll', { device_code: started.body.device_code });
   expect(polled.body).toMatchObject({ joined: true });
-  return { memberId: String(polled.body.memberId), token: String(polled.body.token), machineId };
+  return { memberId: String(polled.body.memberId), token: String(polled.body.token), tokenId: String(polled.body.tokenId), machineId };
 }
 
 /** A fresh runner bearer, the candidate a runner offers at registration. */
