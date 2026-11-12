@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { LaunchctlRunner } from '@myco/member/legacy-service/launchd.js';
-import { writeDeploymentMembership } from '@myco/member/registry.js';
+import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
+import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { memberRig,tempMycoHome,TEST_MACHINE_ID,type MemberRig } from '../member/helpers/server.js';
 
@@ -126,5 +127,33 @@ export async function machine(opts: { legacyHome?: string } = {}): Promise<Machi
     return { ok, out, err };
   };
   return { rig, home, legacyHome, mycoHome, root, vault, agentsDir, launchctl, planned, done, run };
+}
+
+const HOMELAB_ID = 'proj_homelab';
+const PERSONAL_URL = 'https://personal.invalid';
+
+export interface CutoverProjects { m: Machine; personal: MemberRig; homelab: string; fetchBoth: MemberRig['fetch']; projectsOn: (rig: MemberRig, table: string) => unknown[]; HOMELAB: string; PERSONAL: string; release: () => void }
+
+/** Personal and work Deployments, each with the project that belongs on it. */
+export async function openCutoverProjects(): Promise<CutoverProjects> {
+  const m = await machine();
+  const heldHome = process.env.HOME; process.env.HOME = m.home;
+  const personal = await memberRig({ projectId: HOMELAB_ID });
+  const homelab = path.join(m.home, 'Repos', 'homelab');
+  fs.mkdirSync(homelab, { recursive: true }); execFileSync('git', ['init', '-q', homelab]);
+  writeDeploymentMembership({ serverUrl: PERSONAL_URL, token: personal.token, tokenId: personal.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome: m.mycoHome });
+  writeRegistryEntry({ version: 2, root: homelab, projectId: HOMELAB_ID, serverUrl: PERSONAL_URL, token: personal.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
+  recordDefaultDeployment(SERVER, { mycoHome: m.mycoHome });
+  const db = new Database(m.vault);
+  try {
+    db.run('PRAGMA foreign_keys=OFF');
+    db.run("INSERT INTO sessions (id,agent,project_root,project_id,started_at,ended_at,status,title,created_at) VALUES ('00000000-0000-4000-8000-000000000002','claude-code',?,?,?,?,'completed','personal session',?)", [homelab, HOMELAB_ID, NOW_S - 86400, NOW_S - 86000, NOW_S - 86400]);
+    db.run("INSERT INTO spores (id,project_id,agent_id,observation_type,status,content,created_at) VALUES ('personal-spore',?,'user','gotcha','active','personal only',?)", [HOMELAB_ID, NOW_S]);
+    db.run('PRAGMA wal_checkpoint(TRUNCATE)');
+  } finally { db.close(); }
+  const fetchBoth: MemberRig['fetch'] = (input, init) => { const req = new Request(input, init); return new URL(req.url).origin === PERSONAL_URL ? personal.fetch(req) : m.rig.fetch(req); };
+  const projectsOn = (rig: MemberRig, table: string) => rig.env.sqlite.query(`SELECT DISTINCT project_id FROM ${table} ORDER BY project_id`).all();
+  const release = () => { if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome; };
+  return { m, personal, homelab, fetchBoth, projectsOn, HOMELAB: HOMELAB_ID, PERSONAL: PERSONAL_URL, release };
 }
 

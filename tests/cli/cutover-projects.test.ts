@@ -16,40 +16,21 @@ import { routedSpoolDir } from '@myco/member/routing.js';
 import { resolveMachineIdPath } from '@myco/paths/home.js';
 import { resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
-import { memberRig,TEST_MACHINE_ID,type MemberRig } from '../member/helpers/server.js';
+import { TEST_MACHINE_ID,type MemberRig } from '../member/helpers/server.js';
 
-import { machine,NOW_S,PROJECT,readJson,SERVER,sha,writeJson,type Machine } from './cutover-machine.js';
+import { machine,NOW_S,openCutoverProjects,PROJECT,readJson,SERVER,sha,writeJson,type Machine } from './cutover-machine.js';
 
 describe('cutover project destinations and receipts', () => {
   let m: Machine;
   let personal: MemberRig;
   let homelab: string;
-  let heldHome: string | undefined;
+  let fetchBoth: MemberRig['fetch'];
+  let projectsOn: (rig: MemberRig, table: string) => unknown[];
+  let releaseHome: () => void;
   const PERSONAL = 'https://personal.invalid';
   const HOMELAB = 'proj_homelab';
-  beforeEach(async () => {
-    m = await machine();
-    heldHome = process.env.HOME; process.env.HOME = m.home;
-    personal = await memberRig({ projectId: HOMELAB });
-    homelab = path.join(m.home, 'Repos', 'homelab');
-    fs.mkdirSync(homelab, { recursive: true }); execFileSync('git', ['init', '-q', homelab]);
-    writeDeploymentMembership({ serverUrl: PERSONAL, token: personal.token, tokenId: personal.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome: m.mycoHome });
-    writeRegistryEntry({ version: 2, root: homelab, projectId: HOMELAB, serverUrl: PERSONAL, token: personal.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome: m.mycoHome });
-    recordDefaultDeployment(SERVER, { mycoHome: m.mycoHome });
-    const db = new Database(m.vault);
-    try {
-      db.run('PRAGMA foreign_keys=OFF');
-      db.run("INSERT INTO sessions (id,agent,project_root,project_id,started_at,ended_at,status,title,created_at) VALUES ('00000000-0000-4000-8000-000000000002','claude-code',?,?,?,?,'completed','personal session',?)", [homelab, HOMELAB, NOW_S - 86400, NOW_S - 86000, NOW_S - 86400]);
-      db.run("INSERT INTO spores (id,project_id,agent_id,observation_type,status,content,created_at) VALUES ('personal-spore',?,'user','gotcha','active','personal only',?)", [HOMELAB, NOW_S]);
-      db.run('PRAGMA wal_checkpoint(TRUNCATE)');
-    } finally { db.close(); }
-  });
-  afterEach(() => { if (heldHome === undefined) delete process.env.HOME; else process.env.HOME = heldHome; });
-  const fetchBoth: MemberRig['fetch'] = (input, init) => {
-    const req = new Request(input, init);
-    return new URL(req.url).origin === PERSONAL ? personal.fetch(req) : m.rig.fetch(req);
-  };
-  const projectsOn = (rig: MemberRig, table: string) => rig.env.sqlite.query(`SELECT DISTINCT project_id FROM ${table} ORDER BY project_id`).all();
+  beforeEach(async () => { ({ m, personal, homelab, fetchBoth, projectsOn, release: releaseHome } = await openCutoverProjects()); });
+  afterEach(() => releaseHome());
 
   for (const copies of [1, 2]) it(`reports ${copies} earlier stray copies in preview and execution without touching them`, async () => {
     const imported = await runLegacyImport({ sources: [m.vault], project: HOMELAB, serverUrl: SERVER }, { mycoHome: m.mycoHome, machineId: TEST_MACHINE_ID, fetch: m.rig.fetch, sleep: async () => {} });
@@ -303,35 +284,6 @@ describe('cutover project destinations and receipts', () => {
       expect(legacyStrayHistoryLines(m.mycoHome, projects)).toHaveLength(1);
     }
     expect(fs.readFileSync(file)).toEqual(before);
-  });
-
-  it('previews first, then places homelab only on personal and every other project only on work', async () => {
-    const requests: string[] = [];
-    const fetch: MemberRig['fetch'] = (input, init) => { requests.push(new URL(new Request(input, init).url).pathname); return fetchBoth(input, init); };
-    const before = sha(m.vault);
-    const dry = await m.run(['--dry-run'], { fetch, agents: [] });
-    expect(dry.ok).toBe(true); expect(requests.every(route => route === '/import/legacy-history')).toBe(true); expect(sha(m.vault)).toBe(before);
-    expect(dry.out.join('\n')).toContain(`${HOMELAB} from ${m.vault}: to ${PERSONAL}`);
-    expect(dry.out.join('\n')).toContain(`${PROJECT} from ${m.vault}: to ${SERVER}`);
-    expect(fs.existsSync(path.join(m.mycoHome, 'member', 'cutover.json'))).toBe(false);
-    const result = await m.run([], { fetch, agents: [] });
-    expect(result.err).toEqual([]); expect(result.ok).toBe(true);
-    for (const table of ['sessions', 'spores', 'events']) {
-      expect(projectsOn(personal, table)).toEqual([{ project_id: HOMELAB }]);
-      expect(projectsOn(m.rig, table)).toEqual([{ project_id: PROJECT }]);
-    }
-    expect(legacyMigrationState(m.mycoHome).state).toBe('moved');
-    const state = readCutoverState(m.mycoHome);
-    expect(state.version).toBe(2);
-    expect(state.migrations![m.vault].projects[HOMELAB].destination).toMatchObject({ serverUrl: PERSONAL });
-    expect(state.migrations![m.vault].projects[PROJECT].destination).toMatchObject({ serverUrl: SERVER });
-    expect(sha(m.vault)).toBe(before);
-  });
-
-  it('refuses to route a bound personal repository to the work default', async () => {
-    const result = await m.run(['--route', `${HOMELAB}=${SERVER}`], { fetch: fetchBoth, agents: [] });
-    expect(result.ok).toBe(false); expect(result.err.join('\n')).toContain(`routes to ${PERSONAL}`);
-    expect(personal.rows('events')).toBe(0); expect(m.rig.rows('events')).toBe(0);
   });
 
   it('preserves skipped project spools byte for byte, and preserves the skip on retry', async () => {
