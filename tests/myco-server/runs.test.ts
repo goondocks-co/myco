@@ -23,6 +23,7 @@ import { claimRun, getRunningRunForTask, recordDispatch, recordQueued, launchQue
 import { getState, mutateState, MUTATE_ATTEMPTS } from '@myco-server-worker/db/runs/state.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import type { RelationalStore, PreparedStatement } from '@myco-server-worker/core/adapters.js';
+import { changingAt, storingCall } from './helpers/store-faults.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
 
 const SCOPE: ReadScope = { projectId: 'proj_one' };
@@ -246,21 +247,18 @@ describe('capability admission', () => {
         if (dispatched) await recordDispatch(db, SCOPE, {
           id: row.id, agentId: AGENT, task: 'digest', provider: null, model: null, runContext: null, dispatchedBy: 'cred_1', startedAt: NOW,
         });
-        let changed = false;
-        const interleaved: RelationalStore = {
-          prepare: (sql) => {
-            if (!changed && (sql.startsWith('INSERT INTO agent_runs') || sql.startsWith('UPDATE agent_runs'))) {
-              changed = true;
-              if (change === 'archive') sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [NOW, SCOPE.projectId]);
-              else sqlite.run('UPDATE project_capabilities SET enabled=0 WHERE project_id=? AND capability=?', [SCOPE.projectId, CAPABILITY]);
-            }
-            return db.prepare(sql);
-          },
-          batch: db.batch,
-        };
-        expect(await claimRun(interleaved, SCOPE, row, { ...guardFor('digest'), dispatchedOnly: dispatched }, NOW))
+        const guard = { ...guardFor('digest'), dispatchedOnly: dispatched };
+        const status = () => sqlite.query('SELECT status FROM agent_runs WHERE id=?').get(row.id);
+        const at = await storingCall(db, (store) => claimRun(store, SCOPE, row, guard, NOW), status);
+        if (dispatched) sqlite.run("UPDATE agent_runs SET status='pending' WHERE id=?", [row.id]);
+        else sqlite.run('DELETE FROM agent_runs WHERE id=?', [row.id]);
+        const raced = changingAt(db, at, () => {
+          if (change === 'archive') sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [NOW, SCOPE.projectId]);
+          else sqlite.run('UPDATE project_capabilities SET enabled=0 WHERE project_id=? AND capability=?', [SCOPE.projectId, CAPABILITY]);
+        });
+        expect(await claimRun(raced.store, SCOPE, row, { ...guardFor('digest'), dispatchedOnly: dispatched }, NOW))
           .toEqual({ claimed: false, notAdmitted: CAPABILITY });
-        expect(changed).toBe(true);
+        expect(raced.landed()).toBe(true);
         expect(sqlite.query("SELECT status FROM agent_runs WHERE project_id=?").all(SCOPE.projectId))
           .toEqual(dispatched ? [{ status: 'pending' }] : []);
       } finally { sqlite.close(); }
@@ -403,23 +401,12 @@ describe('mutateState', () => {
   });
 
   it('reports contention rather than reporting a write that did not land', async () => {
-    const { db } = store();
+    const { db, sqlite } = store();
     await mutateState(db, SCOPE, AGENT, 'k', () => 'v0', NOW);
-    // A store whose update never matches: every attempt is refused.
-    const refused = new Set<PreparedStatement>();
-    const contended: RelationalStore = {
-      prepare: (sql) => {
-        if (!/^UPDATE agent_state/.test(sql)) return db.prepare(sql);
-        const statement: PreparedStatement = { bind: () => statement, run: async () => ({ results: [], meta: { changes: 0 } }), all: async () => ({ results: [] }), first: async () => null };
-        refused.add(statement);
-        return statement;
-      },
-      batch: (statements) => statements.some((statement) => refused.has(statement))
-        ? Promise.resolve(statements.map(() => ({ results: [], meta: { changes: 0 } })))
-        : db.batch(statements),
-    };
+    // The compare-and-swap is refused on every attempt: the update is abandoned and the stored value stands.
+    sqlite.run('CREATE TRIGGER refuse_state_update BEFORE UPDATE ON agent_state BEGIN SELECT RAISE(IGNORE); END');
     let attempts = 0;
-    expect(await mutateState(contended, SCOPE, AGENT, 'k', (c) => { attempts += 1; return `${c}!`; }, NOW)).toBe(false);
+    expect(await mutateState(db, SCOPE, AGENT, 'k', (c) => { attempts += 1; return `${c}!`; }, NOW)).toBe(false);
     expect(attempts).toBe(MUTATE_ATTEMPTS);
     expect((await getState(db, SCOPE, AGENT, 'k'))!.value).toBe('v0');
   });

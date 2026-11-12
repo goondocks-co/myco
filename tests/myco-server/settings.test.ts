@@ -13,6 +13,7 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { seededSqlite } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 function rig(opts: Parameters<typeof settingsWriter>[1] = {}) {
   const sqlite = seededSqlite();
@@ -27,22 +28,15 @@ describe('deployment settings', () => {
       r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [
         JSON.stringify({ 'title-summary': 'broken', 'canopy-map': { schedule: { intervalSeconds: 600 } } }),
       ]);
-      let interleaved = false;
-      const db = {
-        prepare: (sql: string) => {
-          if (!interleaved && sql.includes('INSERT INTO deployment_settings') && sql.includes('ON CONFLICT(leaf) DO UPDATE SET value')) {
-            interleaved = true;
-            r.sqlite.run(`UPDATE deployment_settings SET value = ? WHERE leaf = 'agent.tasks'`, [JSON.stringify({
-              'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
-              'canopy-map': { schedule: { intervalSeconds: 600 } },
-            })]);
-          }
-          return r.db.prepare(sql);
-        },
-        batch: r.db.batch,
+      const repaired = {
+        'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
+        'canopy-map': { schedule: { intervalSeconds: 600 } },
       };
-      expect(await settingsWriter(db).setTaskTier('title-summary', tier, 'mem_editor', 2)).toEqual({ applied: true });
-      expect(interleaved).toBe(true);
+      const raced = changingAtStatement(r.db, 'settings.put', () => {
+        r.sqlite.run(`UPDATE deployment_settings SET value = ? WHERE leaf = 'agent.tasks'`, [JSON.stringify(repaired)]);
+      });
+      expect(await settingsWriter(raced.store).setTaskTier('title-summary', tier, 'mem_editor', 2)).toEqual({ applied: true });
+      expect(raced.landed()).toBe(true);
       expect(JSON.parse((r.sqlite.query(`SELECT value FROM deployment_settings WHERE leaf='agent.tasks'`).get() as { value: string }).value))
         .toEqual({
           'title-summary': { ...(tier === null ? {} : { reasoningLevel: tier }), schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
@@ -165,21 +159,13 @@ describe('task document repair', () => {
     const r = rig();
     r.sqlite.run(`INSERT INTO deployment_settings (leaf,value,updated_at,updated_by) VALUES ('agent.tasks',?,1,'historic')`, [JSON.stringify(stored)]);
     const latest = { ...stored, 'title-summary': { schedule: { enabled: true, intervalSeconds: 60 }, reasoningLevel: 'low' } };
-    let raced = false;
-    const db = {
-      prepare: (sql: string) => {
-        if (!raced && sql.includes('INSERT INTO deployment_settings(leaf,value,updated_at,updated_by,write_id)')) {
-          raced = true;
-          r.sqlite.run(`UPDATE deployment_settings SET value = ?, updated_at = 2, updated_by = 'mem_sibling' WHERE leaf = 'agent.tasks'`, [JSON.stringify(latest)]);
-        }
-        return r.db.prepare(sql);
-      },
-      batch: r.db.batch,
-    };
+    const raced = changingAtStatement(r.db, 'settings.put', () => {
+      r.sqlite.run(`UPDATE deployment_settings SET value = ?, updated_at = 2, updated_by = 'mem_sibling' WHERE leaf = 'agent.tasks'`, [JSON.stringify(latest)]);
+    });
     const rearmed: string[] = [];
-    expect(await settingsWriter(db, { rearm: async ({ leaf }) => { rearmed.push(leaf); } }).repairTaskDocument('mem_repair', 3))
+    expect(await settingsWriter(raced.store, { rearm: async ({ leaf }) => { rearmed.push(leaf); } }).repairTaskDocument('mem_repair', 3))
       .toMatchObject({ applied: false, refusal: { reason: 'conflict', leaf: 'agent.tasks', actual: 2, expected: 1 } });
-    expect(raced).toBe(true);
+    expect(raced.landed()).toBe(true);
     expect((await r.w.leaves())['agent.tasks']).toEqual({ value: latest, updatedAt: 2, updatedBy: 'mem_sibling' });
     expect(rearmed).toEqual([]);
   });

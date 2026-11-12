@@ -6,7 +6,7 @@ import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
  * call an operation makes — so a test can sweep every point of an operation, never by the SQL a call carries. A call is
  * one round trip to the store: a statement's `run`, `all` or `first`, or one `batch`. Where a test needs one particular
  * write to fail, or another request to land at it, `failingStatement` and `changingAtStatement` key on the name the
- * kernel gives that statement.
+ * kernel gives that statement. `interleaveAt` is `changingAt` for a second writer.
  */
 
 /** A fault lands before the call reaches the store, or after the store applied it but before the caller hears. */
@@ -122,24 +122,39 @@ export async function sweepChange<T>(db: RelationalStore, options: {
   throw new Error(`the change never landed after the request stored, in ${options.limit ?? 200} points`);
 }
 
+/** The SQL the kernel stores under `name`. A fault made for an unknown name refuses here, before any call. */
+function kernelSql(name: string): string {
+  const sql = definedStatements().get(name);
+  if (sql === undefined) throw new Error(`no kernel statement is named ${name}`);
+  return sql;
+}
+
 /**
  * A store that runs `change` once, just before the first call carrying the statement the kernel names `name`: another
- * request landing at that write. `landed` refuses when no kernel statement carries that name.
+ * request landing at that write. An unknown name refuses when the fault is made.
  */
 export function changingAtStatement(db: RelationalStore, name: string, change: () => unknown): { store: RelationalStore; landed(): boolean } {
+  const sql = kernelSql(name);
   let landed = false;
   const watched = around(db, async (_n, statements, apply) => {
-    const sql = definedStatements().get(name);
-    if (!landed && sql !== undefined && statements.includes(sql)) { landed = true; await change(); }
+    if (!landed && statements.includes(sql)) { landed = true; await change(); }
     return apply();
   });
-  return {
-    store: watched.store,
-    landed: () => {
-      if (!definedStatements().has(name)) throw new Error(`no kernel statement is named ${name}`);
-      return landed;
-    },
-  };
+  return { store: watched.store, landed: () => landed };
+}
+
+/**
+ * Runs `first` until it has made `calls` store calls, then the whole of `second`, then the rest of `first`. `calls` counts
+ * calls already made, so zero lands `second` before the first call. This is `changingAt` for a second writer: one store
+ * wrap, and `second` still runs after `first` when the point is past `first`'s last call.
+ */
+export async function interleaveAt<A, B>(
+  db: RelationalStore, first: (store: RelationalStore) => Promise<A>, second: (store: RelationalStore) => Promise<B>, calls: number,
+): Promise<{ results: [A, B]; inside: boolean }> {
+  let other: Promise<B> | undefined;
+  const landing = changingAt(db, calls + 1, async () => { other = second(db); await other; });
+  const result = await first(landing.store);
+  return { results: [result, await (other ?? second(db))], inside: landing.landed() };
 }
 
 /**
@@ -173,28 +188,22 @@ export async function storingCall(db: RelationalStore, operation: (store: Relati
 
 /**
  * A store on which the statement the kernel names `name` fails: the batch or call carrying it fails before it reaches
- * the store, or after it applied, for its first `times` calls (all of them by default). `failures` answers how often it
- * failed, and refuses when no kernel statement carries that name, so a renamed statement fails the test instead of
- * leaving it passing without a fault.
+ * the store, or after it applied, for its first `times` calls (all of them by default). An unknown name refuses when
+ * the fault is made, so a renamed statement fails the test instead of leaving it passing without a fault. `failures`
+ * answers how often it failed.
  */
 export function failingStatement(
   db: RelationalStore, name: string, options: { when?: Moment; times?: number; error?: () => Error } = {},
 ): { store: RelationalStore; failures(): number } {
+  const sql = kernelSql(name);
   const { when = 'before', times = Number.POSITIVE_INFINITY, error = () => new Error(`${name} failed`) } = options;
   let failures = 0;
   const watched = around(db, async (_n, statements, apply) => {
-    const sql = definedStatements().get(name);
-    const fails = sql !== undefined && failures < times && statements.includes(sql);
+    const fails = failures < times && statements.includes(sql);
     if (fails && when === 'before') { failures += 1; throw error(); }
     const result = await apply();
     if (fails && when === 'after') { failures += 1; throw error(); }
     return result;
   });
-  return {
-    store: watched.store,
-    failures: () => {
-      if (!definedStatements().has(name)) throw new Error(`no kernel statement is named ${name}`);
-      return failures;
-    },
-  };
+  return { store: watched.store, failures: () => failures };
 }

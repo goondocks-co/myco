@@ -28,6 +28,41 @@ import { blobPost, envelope, memberHeaders, memberPost, recordingDeferred, sqlit
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { FEATURES_HEADER, featuresNamed, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
+import { failingStatement } from './helpers/store-faults.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
+
+const TURN_STAMPS = ['sessions.startTurn', 'sessions.startTurnFromEvent'] as const;
+const turnStampSql = () => new Set(TURN_STAMPS.map((name) => {
+  const sql = definedStatements().get(name);
+  if (sql === undefined) throw new Error(`no kernel statement is named ${name}`);
+  return sql;
+}));
+
+/** A store whose turn-stamp calls never finish. The prompt answers before that deferred stamp. */
+function stallingTurn(db: RelationalStore): RelationalStore {
+  const stamps = turnStampSql();
+  const held = new WeakMap<object, { raw: ReturnType<RelationalStore['prepare']>; sql: string }>();
+  const wrap = (raw: ReturnType<RelationalStore['prepare']>, sql: string): ReturnType<RelationalStore['prepare']> => {
+    const statement = {
+      bind: (...values: unknown[]) => wrap(raw.bind(...values), sql),
+      first: <T>() => raw.first<T>(),
+      all: <T>() => raw.all<T>(),
+      run: () => stamps.has(sql) ? new Promise(() => {}) : raw.run(),
+    };
+    held.set(statement, { raw, sql });
+    return statement;
+  };
+  return {
+    ...db,
+    prepare: (sql) => wrap(db.prepare(sql), sql),
+    batch: (statements) => {
+      const originals = statements.map((statement) => held.get(statement));
+      if (originals.some((original) => original !== undefined && stamps.has(original.sql))) return new Promise(() => {});
+      return db.batch(statements.map((statement, index) => originals[index]?.raw ?? statement));
+    },
+  };
+}
 
 /** A prompt id as the member mints one: a UUIDv7 whose timestamp is `at`. */
 const promptIdAt = (at: number): string => {
@@ -328,17 +363,7 @@ describe('a session working now', () => {
 
   it('answers the prompt without waiting on the stamp, which may never finish', async () => {
     const r = await rig();
-    const inner = r.e.env.MYCO_DB;
-    const never = new Promise<never>(() => {});
-    // The stamp never finishes, whichever way the store is asked to run it.
-    const stamps = new WeakSet<object>();
-    const hanging = { ...r.e.env, MYCO_DB: { ...inner,
-      batch: (statements: readonly object[]) => (statements.some((statement) => stamps.has(statement)) ? never : inner.batch(statements as never)),
-      prepare: (sql: string) => {
-        const statement = inner.prepare(sql);
-        if (!/SET working_since = \?/.test(sql)) return statement;
-        return { ...statement, bind: (...values: unknown[]) => { const bound = { ...statement.bind(...values), run: () => never }; stamps.add(bound); return bound; } };
-      } } };
+    const hanging = { ...r.e.env, MYCO_DB: stallingTurn(r.e.env.MYCO_DB) };
     const deferred = recordingDeferred();
     const res = await Promise.race([
       worker.fetch(new Request('https://s/context/prompt', {
@@ -352,8 +377,9 @@ describe('a session working now', () => {
 
   it('answers the prompt whatever becomes of the stamp: a store that refuses it, or work that cannot be deferred', async () => {
     const r = await rig();
-    const inner = r.e.env.MYCO_DB;
-    const failing = { ...r.e.env, MYCO_DB: { ...inner, batch: inner.batch.bind(inner), prepare: (sql: string) => { if (/SET working_since = \?/.test(sql)) throw new Error('D1_ERROR: storage is unavailable'); return inner.prepare(sql); } } };
+    let store = r.e.env.MYCO_DB;
+    for (const name of TURN_STAMPS) store = failingStatement(store, name, { error: () => new Error('D1_ERROR: storage is unavailable') }).store;
+    const failing = { ...r.e.env, MYCO_DB: store };
     const refusing = { ...recordingDeferred(), waitUntil: () => { throw new Error('no deferral here'); } };
     const logged: string[] = [];
     const log = console.log;

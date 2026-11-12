@@ -9,6 +9,7 @@ import { renewRunLease } from '@myco-server-worker/db/runs/leases.js';
 import { runDeadline } from '@myco-server-worker/api/run-admission.js';
 import { renewLease } from '@myco-server-worker/core/harness.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
+import { changingAtStatement, observing, storingCall } from './helpers/store-faults.js';
 
 const NOW = 1_800_000_000_000;
 const SCOPE = { projectId: 'proj_1' };
@@ -75,18 +76,15 @@ describe('a worker lease is bounded by its run deadline', () => {
   });
 
   it('refuses a deadline computed from a row changed before the lease write', async () => {
+    const defined = await rig();
+    try { await defined.renew(NOW + 1, defined.deadline); } finally { defined.e.sqlite.close(); }
     const r = await rig();
-    const prepare = r.e.db.prepare.bind(r.e.db);
-    let changed = false;
-    r.e.db.prepare = (sql) => {
-      if (!changed && sql.startsWith('UPDATE agent_runs SET lease_expires_at')) {
-        changed = true;
-        r.e.sqlite.run(`UPDATE agent_runs SET run_context = '{"timeoutSeconds":1}' WHERE id=?`, [RUN]);
-      }
-      return prepare(sql);
-    };
+    const raced = changingAtStatement(r.e.db, 'runs.renewLeaseMemberAttempt', () => {
+      r.e.sqlite.run(`UPDATE agent_runs SET run_context = '{"timeoutSeconds":1}' WHERE id=?`, [RUN]);
+    });
     try {
-      expect(await r.renew(NOW + 125_000, r.deadline + 90_000)).toBe(false);
+      expect(await renewRunLease(raced.store, SCOPE, RUN, legacyWorker(r.worker.tokenId, 'm1'), r.deadline + 90_000, NOW + 125_000, r.worker.tokenId)).toBe(false);
+      expect(raced.landed()).toBe(true);
     } finally { r.e.sqlite.close(); }
   });
 
@@ -100,34 +98,37 @@ describe('a worker lease is bounded by its run deadline', () => {
   });
 
   it('renews through an unrelated concurrent context update', async () => {
+    const defined = await rig();
+    try { await defined.renew(NOW + 1, defined.deadline); } finally { defined.e.sqlite.close(); }
     const r = await rig();
-    const prepare = r.e.db.prepare.bind(r.e.db);
-    let changed = false;
-    r.e.db.prepare = (sql) => {
-      if (!changed && sql.startsWith('UPDATE agent_runs SET lease_expires_at')) {
-        changed = true;
-        r.e.sqlite.run(`UPDATE agent_runs SET run_context=json_set(run_context, '$.repository.commit', ?) WHERE id=?`, ['a'.repeat(40), RUN]);
-      }
-      return prepare(sql);
-    };
+    const raced = changingAtStatement(r.e.db, 'runs.renewLeaseMemberAttempt', () => {
+      r.e.sqlite.run(`UPDATE agent_runs SET run_context=json_set(run_context, '$.repository.commit', ?) WHERE id=?`, ['a'.repeat(40), RUN]);
+    });
     try {
-      expect(await r.renew(NOW + 1, r.deadline + 90_000)).toBe(true);
+      expect(await renewRunLease(raced.store, SCOPE, RUN, legacyWorker(r.worker.tokenId, 'm1'), r.deadline + 90_000, NOW + 1, r.worker.tokenId)).toBe(true);
+      expect(raced.landed()).toBe(true);
       expect(r.expiry()).toBe(r.deadline);
     } finally { r.e.sqlite.close(); }
   });
 
   it('answers the committed attempt expiry when another attempt replaces it after renewal', async () => {
+    const probe = await rig();
+    let at = 0;
+    try {
+      at = await storingCall(probe.e.db, async (store) => {
+        probe.e.env.MYCO_DB = store;
+        await renewLease(probe.e.serverEnv, { principal: legacyWorker(probe.worker.tokenId, 'm1'), now: NOW + 1 }, { projectId: SCOPE.projectId, runId: RUN, attemptId: probe.worker.tokenId });
+      }, () => probe.expiry());
+    } finally { probe.e.sqlite.close(); }
     const r = await rig();
     const replacement = await issueMemberToken(r.e.db, { memberId: 'mem_worker', machineId: 'machine_worker' }, NOW);
-    const batch = r.e.db.batch.bind(r.e.db);
     let committedExpiry: number | null = null;
-    r.e.db.batch = async (statements) => {
-      const results = await batch(statements);
-      if (statements.length === 1) return results;
+    const watched = observing(r.e.db, (n, moment) => {
+      if (n !== at || moment !== 'after') return;
       committedExpiry = r.expiry();
       r.e.sqlite.run('UPDATE agent_runs SET dispatched_by=?, lease_expires_at=? WHERE id=?', [replacement.tokenId, NOW + 1234, RUN]);
-      return results;
-    };
+    });
+    r.e.env.MYCO_DB = watched.store;
     try {
       const outcome = await renewLease(r.e.serverEnv, { principal: legacyWorker(r.worker.tokenId, 'm1'), now: NOW + 1 }, { projectId: SCOPE.projectId, runId: RUN, attemptId: r.worker.tokenId });
       expect(outcome).toEqual({ held: true, expiresAt: committedExpiry! });

@@ -13,6 +13,7 @@ import { restoreArtifact } from './helpers/restore-artifact.js';
 import { envelope, memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
 import { schemaSqlite } from './helpers/schema-template.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -36,20 +37,18 @@ async function request(db: ReturnType<typeof sqliteEnv>['db'], env: unknown, sub
 describe('owner lifecycle mutation gates', () => {
   it('rechecks transfer target liveness and role actor authority at the conditional writes', async () => {
     for (const kind of ['transfer', 'role'] as const) {
-      let armed = false;
-      const f = sqliteEnv({ onSql: (sql, sqlite) => {
-        if (!armed || !(kind === 'transfer' ? /member_id=\?1 AND revision=\?2/.test(sql) : /role_revision=\?4 AND role=\?5/.test(sql))) return;
-        armed = false;
-        if (kind === 'transfer') sqlite.run('UPDATE members SET revoked_at=? WHERE id=?', [NOW, ADMIN]);
-        else sqlite.run('UPDATE deployment_ownership SET member_id=?,revision=revision+1 WHERE id=1', [ADMIN]);
-      } });
+      const f = sqliteEnv();
       try {
         f.sqlite.run("UPDATE members SET github_id='9002',role='admin' WHERE id=?", [ADMIN]);
         f.sqlite.run("UPDATE members SET role='member' WHERE id=?", [MEMBER]);
         await bootstrapOwnership(f.db, OWNER, OWNER, '0', NOW);
-        armed = true;
-        await expect(kind === 'transfer' ? transferOwnership(f.db, OWNER, ADMIN, '1', NOW)
-          : changeMemberRole(f.db, OWNER, MEMBER, 'admin', '0', NOW)).rejects.toThrow('revision_conflict');
+        const raced = changingAtStatement(f.db, kind === 'transfer' ? 'ownership.transferAdmitted' : 'ownership.roleChangeAdmitted', () => {
+          if (kind === 'transfer') f.sqlite.run('UPDATE members SET revoked_at=? WHERE id=?', [NOW, ADMIN]);
+          else f.sqlite.run('UPDATE deployment_ownership SET member_id=?,revision=revision+1 WHERE id=1', [ADMIN]);
+        });
+        await expect(kind === 'transfer' ? transferOwnership(raced.store, OWNER, ADMIN, '1', NOW)
+          : changeMemberRole(raced.store, OWNER, MEMBER, 'admin', '0', NOW)).rejects.toThrow('revision_conflict');
+        expect(raced.landed()).toBe(true);
         expect(f.sqlite.query('SELECT COUNT(*) AS n FROM member_role_audit').get()).toEqual({ n: 0 });
         expect(f.sqlite.query('SELECT role,role_revision FROM members WHERE id=?').get(MEMBER)).toEqual({ role: 'member', role_revision: 0 });
         if (kind === 'transfer') expect(await ownershipPreview(f.db)).toMatchObject({ ownerMemberId: OWNER, revision: '1' });

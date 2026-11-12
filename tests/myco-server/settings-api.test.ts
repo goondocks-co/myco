@@ -12,6 +12,7 @@ import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { asOwner, asOwnerPatch, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { OUTCOME_TASKS, RETAINED_TASKS, TASK_TIERS } from '@myco-server-worker/core/task-catalogue.js';
@@ -529,18 +530,16 @@ it('shows the configured, pending and effective idle close while a rebuild runs'
 });
 
 it.each(['revoked','demoted'] as const)('refuses a raw-window edit when its actor is %s at commit and preserves legacy policy',async fault=>{
-  let armed=false;
-  const f=sqliteEnv({onSql(sql,sqlite){
-    if(!armed || !sql.includes('INSERT INTO deployment_settings'))return;
-    armed=false;
-    sqlite.run(fault==='revoked'?"UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'":"UPDATE members SET role='member' WHERE id='mem_machine_1'");
-  }});
+  const f=sqliteEnv();
   try{
     f.sqlite.run("INSERT INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES('retention.transcripts','30',1,'historic')");
-    armed=true;
+    const raced=changingAtStatement(f.db,'settings.put',()=>{
+      f.sqlite.run(fault==='revoked'?"UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'":"UPDATE members SET role='member' WHERE id='mem_machine_1'");
+    });
+    f.env.MYCO_DB=raced.store;
     const response=await worker.fetch(await put(f.db, '/api/settings/retention.raw_days',{value:90}),{...f.env,...OWNER_ENV});
     expect(response.status).toBe(403);
-    expect(armed).toBe(false);
+    expect(raced.landed()).toBe(true);
     expect(f.sqlite.query('SELECT leaf,value FROM deployment_settings').all()).toEqual([{leaf:'retention.transcripts',value:'30'}]);
     expect(f.sqlite.query('SELECT * FROM deployment_setting_resets').all()).toEqual([]);
   }finally{f.sqlite.close();}

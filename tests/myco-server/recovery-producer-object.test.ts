@@ -19,6 +19,7 @@ import { acquireRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { HOSTED_RECOVERY_CREDENTIAL_NAMES, STAGING_MANIFEST_FILE } from '@myco-server-worker/core/recovery-staging.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 import { runTick } from '@myco-server-worker/core/tick.js';
 import { handleResetSetting } from '@myco-server-worker/api/settings.js';
 import { stampRequest } from '@myco-server-worker/core/activity.js';
@@ -761,16 +762,13 @@ it('keeps the first answer that nothing is exporting on the attempt itself, apar
 
 for (const change of ['demotion', 'revocation'] as const) {
   it(`recovery command issuance refuses ${change} at its own commit`, async () => {
-    let armed = false;
-    const fixture = sqliteEnv({ onSql(sql, sqlite) {
-      if (!armed || !/INSERT INTO recovery_forget_commands/.test(sql)) return;
-      armed = false;
-      sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id='mem_machine_1'" : "UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'");
-    } });
+    const fixture = sqliteEnv();
     try {
-      armed = true;
-      await expect(issueRecoveryForget(fixture.db, 'mem_machine_1', Date.now(), null)).rejects.toBeInstanceOf(MemberWriteRefused);
-      expect(armed).toBe(false);
+      const raced = changingAtStatement(fixture.db, 'recovery.issueForget', () => {
+        fixture.sqlite.run(change === 'demotion' ? "UPDATE members SET role='member' WHERE id='mem_machine_1'" : "UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'");
+      });
+      await expect(issueRecoveryForget(raced.store, 'mem_machine_1', Date.now(), null)).rejects.toBeInstanceOf(MemberWriteRefused);
+      expect(raced.landed()).toBe(true);
       expect(fixture.sqlite.query('SELECT * FROM recovery_forget_commands').all()).toEqual([]);
     } finally { fixture.sqlite.close(); }
   });

@@ -17,9 +17,10 @@ import { RUN_OVERRUN_MARGIN_MS } from '@myco-server-worker/core/run-deadline.js'
 import { TITLING_TASK } from '@myco-server-worker/core/task-catalogue.js';
 import { titlingParamsOf } from '@myco-server-worker/core/titling-params.js';
 import { MAX_MATERIAL_CHARS, MAX_MATERIAL_PROMPTS, MATERIAL_EXCERPT_CHARS, SESSION_END_SETTLE_MS } from '@myco-server-worker/constants.js';
-import type { RelationalStore, ServerEnv } from '@myco-server-worker/core/adapters.js';
+import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { dispatchTask, prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { publishFixture, sqliteEnv, withHarness } from './helpers/fixtures.js';
+import { failingStatement } from './helpers/store-faults.js';
 import { documentTitlingMaterial } from '@myco-server-worker/content/titling-material.js';
 
 const NOW = 1_700_000_000_000;
@@ -61,16 +62,10 @@ function harness(opts: { bound?: boolean; refuse?: boolean } = {}) {
 }
 
 /** The same Deployment with the queue's own write refused, so a dispatch that has spent a claim fails after it. */
-const queueRefusing = (env: ServerEnv): ServerEnv => {
-  const db: RelationalStore = {
-    prepare: (sql: string) => {
-      if (sql.includes('INSERT INTO agent_runs')) throw new Error('the queue refused the write');
-      return env.db.prepare(sql);
-    },
-    batch: (statements) => env.db.batch(statements),
-  };
-  return { ...env, db };
-};
+const queueRefusing = (env: ServerEnv): ServerEnv => ({
+  ...env,
+  db: failingStatement(env.db, 'runs.queueRecordWrite', { error: () => new Error('the queue refused the write') }).store,
+});
 
 const logged: string[] = [];
 const originalLog = console.log;
