@@ -155,7 +155,7 @@ afterEach(() => {
 });
 
 async function drive(verb: string): Promise<string> {
-  try { await run([verb, '--target', 'cloudflare'], { runner,fetchImpl:fetchD1 }); }
+  try { await run([verb, '--target', 'cloudflare'], { runner,fetchImpl:fetchD1,readRetry: { sleep: async () => {} } }); }
   catch (error) { if (!(error instanceof Error) || error.message !== 'fixture exit') throw error; }
   return [...printed, ...errors].join('\n');
 }
@@ -167,6 +167,15 @@ function expectNoTokenFragments(text: string): void {
 const count = (command: string): number => calls.filter((call) => call.args.slice(2).join(' ').startsWith(command)).length;
 
 describe('Cloudflare status records and live observations', () => {
+  it('prints a propagation notice for the recorded version without a Worker failure', async () => {
+    failure = 'deployments list';
+    failureMessage = `The requested Worker version could not be found [code: 100146] /versions/${RECORDED}`;
+    const output = await drive('status');
+    expect(output).toContain('Worker (live): The new version is still propagating; check again shortly');
+    expect(output).not.toContain('Worker (live): unavailable');
+    expect(exitCode).toBeUndefined();
+  });
+
   it('prints the recorded budget refusal after an update publishes its Worker',async()=>{
     budgetCountUnavailable=true;
     expect(await drive('update')).toContain('Budget governor inactive:');

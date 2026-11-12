@@ -5,7 +5,7 @@ import { CommandFailed, type CommandRunner } from '../server/runner.js';
 import { discardSignInPending, registerGitHubApp, RegistrationRefused, resolveSignInTarget } from '../server/github-app.js';
 import { WranglerNotReady, missingDeploymentRecordMessage, cloudflareCredentialLines, deploymentRecordPath, peekDeploymentRecord, readDeploymentRecord, updateDeploymentRecord } from '../server/cloudflare.js';
 import { DeployConfigIncomplete, renderDeployConfig } from '../server/deploy-config.js';
-import { type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
+import { type LifecycleOptions, type CreatePlan, cloudflareUpdateLines, cloudflareDeploymentStatus, createCloudflareDeployment, destroyCloudflareDeployment, planCloudflareDeployment, rollbackCloudflareDeployment, updateCloudflareDeployment } from '../server/cloudflare-lifecycle.js';
 import { composeRetiredMessage, retiredComposeBundle } from '../server/targets.js';
 import { parseFlags } from './flags.js';
 import { BACKUP_CREDENTIAL_COMMAND, BackupCredentialCancelled, installBackupCredential } from '@myco/server/backup-credential.js';
@@ -225,7 +225,7 @@ export function hostedNextSteps(url: string | undefined): string[] {
   ];
 }
 
-export async function run(args: string[], deps: { runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string>; cloudflareOwner?: typeof setupCloudflareOwner; localOwner?: typeof setupLocalOwner } = {}): Promise<void> {
+export async function run(args: string[], deps: { readRetry?: LifecycleOptions['readRetry']; runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string>; cloudflareOwner?: typeof setupCloudflareOwner; localOwner?: typeof setupLocalOwner } = {}): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(SERVER_HELP);
@@ -272,7 +272,7 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
     const accountId = flags.get('account-id') ?? record?.accountId;
     if (accountId === undefined || accountId === '' || accountId === 'true') fail('pass --account-id <id> (npx wrangler whoami lists the accounts this login reaches).');
     for (const line of credentialLines) report(line);
-    return { accountId, ...(deps.runner === undefined ? {} : { runner: deps.runner }), report };
+    return { accountId, readRetry: deps.readRetry, ...(deps.runner === undefined ? {} : { runner: deps.runner }), report };
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */
@@ -438,7 +438,8 @@ export async function run(args: string[], deps: { runner?: CommandRunner; fetchI
       const status = (await cloudflareDeploymentStatus(cloudflareOptions()))!;
       console.log('\nCloudflare Deployment');
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
-      console.log(`  Worker (live): ${status.workerError === null ? status.deployed ? status.versionId ?? 'version unavailable' : 'not deployed' : `unavailable — ${status.workerError}`}`);
+      console.log(`  Worker (live): ${status.workerPropagation ?? (status.workerError === null ? status.deployed ? status.versionId ?? 'version unavailable' : 'not deployed' : `unavailable — ${status.workerError}`)}`);
+      if (status.backupCredentialCheck !== null) console.log(status.backupCredentialCheck);
       console.log(`  Worker (recorded): ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
       console.log(`  Release (recorded at last deploy): ${status.record.release ?? 'unknown (not recorded)'}`);
       console.log(`  Schema (live): ${status.schema ?? `unavailable — ${status.schemaError}`}`);

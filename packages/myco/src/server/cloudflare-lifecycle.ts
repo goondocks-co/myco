@@ -11,7 +11,7 @@
  * prerequisites, and only on the operator's own machine.
  */
 import { randomBytes } from 'node:crypto';
-import { BACKUP_CREDENTIAL_COMMAND, BACKUP_CREDENTIAL_HINT, BACKUP_CREDENTIAL_NAME } from '@myco/server/backup-credential.js';
+import { backupCredentialObservation } from '@myco/server/backup-credential.js';
 import nodeFs from 'node:fs';
 const { mkdtempSync, rmSync } = nodeFs;
 import { tmpdir } from 'node:os';
@@ -67,6 +67,8 @@ export interface LifecycleOptions extends Omit<CloudflareOptions, 'configFile' |
   overloadRetry?: OverloadRetry;
   /** Clock and backoff for the bounded Worker upload and activation retries. */
   workerRetry?: WorkerRetry;
+  /** Clock and wait for post-deploy observations. */
+  readRetry?: WorkerRetry;
 }
 
 /** Admit the held Deployment's account before a lifecycle command can reach a provider. */
@@ -432,11 +434,8 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     }, options.mycoHome);
     summary.record = 'updated';
     await worker.triggers();
-    try {
-      if (!(await workerSecretNames({ ...bareCommand(options), workerName: record.workerName })).includes(BACKUP_CREDENTIAL_NAME)) options.report?.(BACKUP_CREDENTIAL_HINT);
-    } catch {
-      options.report?.(`Update completed, but the backup access key could not be checked. Run \`${BACKUP_CREDENTIAL_COMMAND}\` on the machine that manages this server to check and replace it.`);
-    }
+    const backupCheck = await backupCredentialObservation({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry });
+    if (backupCheck !== null) options.report?.(backupCheck);
     return { versionId: uploadedVersion, summary };
   } catch (cause) {
     if (cause instanceof WorkerUpdateStopped) {
@@ -482,20 +481,25 @@ export interface CloudflareDeploymentStatus {
   versionId: string | null;
   schema: number | null;
   workerError: string | null;
+  workerPropagation: string | null;
+  backupCredentialCheck: string | null;
   schemaError: string | null;
 }
 
 export const cloudflareDeploymentStatus = lifecycleOperation('status', async (options: LifecycleOptions, record): Promise<CloudflareDeploymentStatus | null> => {
   await preflight(options);
   if (record === null) return null;
-  const [worker, schema] = await Promise.allSettled([
-    cloudflareStatus({ ...bareCommand(options), workerName: record.workerName }),
+  const [worker, schema, backup] = await Promise.allSettled([
+    cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, activeVersion: record.versionId, readRetry: options.readRetry }),
     cloudflareSchemaVersion({ ...bareCommand(options), databaseName: record.databaseName }),
+    backupCredentialObservation({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry }),
   ]);
   const detail = (error: unknown): string => error instanceof Error ? error.message : String(error);
   return { record, deployed: worker.status === 'fulfilled' && worker.value.deployed,
     versionId: worker.status === 'fulfilled' ? worker.value.versionId : null,
     schema: schema.status === 'fulfilled' ? schema.value : null,
+    backupCredentialCheck: backup.status === 'fulfilled' ? backup.value : detail(backup.reason),
+    workerPropagation: worker.status === 'fulfilled' ? worker.value.propagation ?? null : null,
     workerError: worker.status === 'rejected' ? detail(worker.reason) : null,
     schemaError: schema.status === 'rejected' ? detail(schema.reason) : null };
 });

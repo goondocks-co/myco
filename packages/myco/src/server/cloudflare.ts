@@ -8,6 +8,8 @@
  * against the operator's own login. The Worker holds bindings, not an API
  * token that could re-provision the account it runs in.
  */
+import { readCloudflarePropagation } from '@myco/server/cloudflare-read.js';
+import type { WorkerRetry } from '@myco/server/cloudflare-worker-update.js';
 import nodeFs from 'node:fs';
 const { existsSync, readFileSync, mkdirSync } = nodeFs;
 import path from 'node:path';
@@ -430,9 +432,9 @@ export async function findSecretsStore(options: CloudflareOptions): Promise<stri
 }
 
 /** The names of the secrets a deployed Worker holds. Any failure to list them is thrown, never read as a Worker without one. */
-export async function workerSecretNames(options: CloudflareOptions & { workerName: string }): Promise<string[]> {
+export async function workerSecretNames(options: CloudflareOptions & { workerName: string; timeoutMs?: number }): Promise<string[]> {
   const { runner, env } = resolved(options);
-  const listed = await runOrThrow(runner, 'npx', wrangler('secret', 'list', '--name', options.workerName), { cwd: options.configDir, env });
+  const listed = await runOrThrow(runner, 'npx', wrangler('secret', 'list', '--name', options.workerName), { cwd: options.configDir, env, timeoutMs: options.timeoutMs });
   const rows: unknown = jsonDocument(listed.stdout);
   if (!Array.isArray(rows)) throw new Error(`the secret list of ${options.workerName} is unreadable`);
   return rows.flatMap((row) => (typeof row?.name === 'string' ? [row.name as string] : []));
@@ -501,20 +503,43 @@ export interface CloudflareStatus {
   deployed: boolean;
   versionId: string | null;
   raw: string;
+  propagation?: string;
 }
 
-export async function cloudflareStatus(options: CloudflareOptions & { workerName: string }): Promise<CloudflareStatus> {
+const VERSION_PROPAGATING = /(?:\[code:\s*100146\]|"code"\s*:\s*100146\b)/;
+const VERSION_PATH = /\/versions\/([0-9a-f-]{36})\b/i;
+const WORKER_PROPAGATION_HINT = 'The new version is still propagating; check again shortly with `myco server status --target cloudflare`.';
+
+export async function cloudflareStatus(options: CloudflareOptions & {
+  workerName: string;
+  activeVersion?: string | null;
+  readRetry?: WorkerRetry;
+}): Promise<CloudflareStatus> {
   const { runner, env } = resolved(options);
-  const result = await runner.run('npx',
-    wrangler('deployments', 'list', '--name', options.workerName),
-    { cwd: options.configDir, env });
-
-  if (result.code !== 0 && !/\b10007\b/.test(result.stdout + result.stderr)) {
-    throw new CommandFailed('npx', wrangler('deployments', 'list', '--name', options.workerName), result);
+  const args = wrangler('deployments', 'list', '--name', options.workerName);
+  const propagating = (error: unknown): boolean => {
+    if (!(error instanceof CommandFailed) || !options.activeVersion) return false;
+    const output = error.stdout + '\n' + error.stderr;
+    const requested = VERSION_PATH.exec(output)?.[1];
+    return VERSION_PROPAGATING.test(output) && (requested === undefined || requested === options.activeVersion);
+  };
+  let result: CommandResult;
+  try {
+    result = await readCloudflarePropagation({
+      retry: options.readRetry,
+      read: async timeoutMs => {
+        const listed = await runner.run('npx', args, { cwd: options.configDir, env, timeoutMs });
+        if (listed.code !== 0 && !/\b10007\b/.test(listed.stdout + listed.stderr)) throw new CommandFailed('npx', args, listed);
+        return listed;
+      },
+      confirmed: () => true,
+      retryError: propagating,
+    });
+  } catch (error) {
+    if (propagating(error)) return { deployed: true, versionId: null, raw: '', propagation: WORKER_PROPAGATION_HINT };
+    throw error;
   }
-
-  // The list prints OLDEST first, and a version line takes one of two shapes
-  // depending on the wrangler release; the current version is the last match.
+  // Wrangler lists deployments oldest first.
   const versions = [...result.stdout.matchAll(/(?:Version ID:|Version\(s\):\s*\(\d+%\))\s*([0-9a-f-]{36})/g)];
   return {
     deployed: result.code === 0 && result.stdout.trim() !== '',
