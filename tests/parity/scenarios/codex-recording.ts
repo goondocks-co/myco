@@ -15,8 +15,7 @@ export const codexRecording: ParityScenario = {
       method: 'POST', headers: target.memberHeaders({ 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }), body: bytes,
     }), 'recording blob');
     await event(target, sessionId, 'transcript.segment', { transcriptId, baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'codex', headHash: digest }, Date.now(), target.projectId, { producer: { adapter: 'codex', version: '0.153.4' } });
-    // Publication fills a turn's tool count when the turn closes; the session's end closes its last turn.
-    await event(target, sessionId, 'session.end', { endedAt: Date.now() });
+    await event(target, sessionId, 'session.end', { endedAt: Date.now() }); // A turn's tool count settles when the session's end closes it.
     const published = await untilPublished(target, async () => ({
       detail: await sessionDetail(target, sessionId),
       turns: await owner<{ rows: Array<{ promptId: string; toolCallCount: number }> }>(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(sessionId)}/turns`),

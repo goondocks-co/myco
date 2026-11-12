@@ -54,9 +54,7 @@ export const cortex: ParityScenario = {
       expect((await runOf(second.runId!)).instruction).toContain(MAP_INSTRUCTION);
       expect(await endRun(target, held.run!)).toMatchObject({ ended: true });
       await wake(target);
-      // The freed slot is the next worker's: the waiting run is the one it claims.
-      const next = await claimRun(target);
-      expect({ claimed: next.claimed, id: next.run?.id }).toEqual({ claimed: true, id: second.runId });
+      const next = await claimRun(target); expect({ claimed: next.claimed, id: next.run?.id }).toEqual({ claimed: true, id: second.runId }); // The freed slot goes to the waiting run.
       expect(await endRun(target, next.run!)).toMatchObject({ ended: true });
     } finally {
       expect((await resetSetting(target, 'agent.limits.concurrent_runs')).status).toBe(200);
