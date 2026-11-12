@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import type { SearchAcrossAnswer, SearchAnswer } from '@goondocks/myco-shared/search-types';
 import { sha256HexOf } from '@myco-server-worker/hash.js';
 import { ageRows, expectPersisted, waitFor, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { allowWorkerClaims, createProject, event, mcp, owner, untilPublished, wake } from '../clients/requests.ts';
+import { allowWorkerClaims, createProject, event, mcp, owner, putSetting, untilPublished, wake } from '../clients/requests.ts';
 import { saveSpore, writeDueCards, writeSessionTitle } from '../clients/knowledge.ts';
 
 export const search: ParityScenario = {
@@ -24,6 +24,10 @@ export const search: ParityScenario = {
       return res.body;
     };
     await allowWorkerClaims(target);
+    // Due cards are pulled only while scheduled work is on; scheduled titling stays off so the title run is the owner's ask.
+    for (const [leaf, value] of [['agent.scheduled_tasks_enabled', true], ['agent.tasks', { 'title-summary': { schedule: { maxRunsPerDay: 0 } } }]] as const) {
+      expect((await putSetting(target, leaf, value)).status).toBe(200);
+    }
     await post('session.start', { agent: 'claude-code', startedAt: at });
     const text = `${word} ${'filler '.repeat(160_000)} distantneedle`;
     const bytes = new TextEncoder().encode(text);

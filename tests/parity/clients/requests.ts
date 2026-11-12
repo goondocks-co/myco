@@ -36,7 +36,9 @@ export async function archived(target: RouteTarget, projectId: string, body: () 
 }
 export const wake = async (target: RouteTarget): Promise<void> => { expect((await owner(target, '/api/wake', { method: 'POST', body: '{}' })).status).toBe(200); };
 export async function untilPublished<T>(target: RouteTarget, load: () => Promise<T>, ready: (value: T) => boolean, wakes = 8): Promise<T> {
-  let value = await load(); for (let attempt = 0; attempt < wakes && !ready(value); attempt += 1) { await wake(target); value = await load(); } return value;
+  let value = await load(); for (let attempt = 0; attempt < wakes && !ready(value); attempt += 1) { await wake(target); value = await load(); }
+  if (!ready(value)) throw new Error(`not ready after ${wakes} wakes: ${JSON.stringify(value).slice(0, 800)}`);
+  return value;
 }
 export const sessionDetail = (target: RouteTarget, sessionId: string, projectId = target.projectId): Promise<Answer> => owner(target, `/api/projects/${projectId}/sessions/${encodeURIComponent(sessionId)}`);
 export async function allowWorkerClaims(target: RouteTarget): Promise<void> {

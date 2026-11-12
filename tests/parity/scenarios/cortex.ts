@@ -51,10 +51,13 @@ export const cortex: ParityScenario = {
       expect(held.run?.id).toBe(blocker.runId);
       const second = await ask('Wait for the slot.');
       expect(second).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
+      expect((await runOf(second.runId!)).instruction).toContain(MAP_INSTRUCTION);
       expect(await endRun(target, held.run!)).toMatchObject({ ended: true });
       await wake(target);
-      expect(await runOf(second.runId!)).toMatchObject({ status: 'queued', heldBy: 'worker', dryRun: false });
-      expect((await runOf(second.runId!)).instruction).toContain(MAP_INSTRUCTION);
+      // The freed slot is the next worker's: the waiting run is the one it claims.
+      const next = await claimRun(target);
+      expect({ claimed: next.claimed, id: next.run?.id }).toEqual({ claimed: true, id: second.runId });
+      expect(await endRun(target, next.run!)).toMatchObject({ ended: true });
     } finally {
       expect((await resetSetting(target, 'agent.limits.concurrent_runs')).status).toBe(200);
     }
