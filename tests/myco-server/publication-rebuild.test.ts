@@ -60,7 +60,7 @@ test('an admission upgrade retries stopped transcripts once without rebuilding h
   await withDocumentStores(async(db,target)=>{
     const blobs=memoryBlobStore(),at=Date.now()-60*MIN;
     const healthy='tx_00000000000000000000000000000001',good='tx_00000000000000000000000000000004';
-    const bad='tx_00000000000000000000000000000003',gone='tx_00000000000000000000000000000002';
+    const bad='tx_00000000000000000000000000000003',gone='tx_00000000000000000000000000000002',closed='tx_00000000000000000000000000000005';
     const text=user('reopened','retained prompt')+reply('retained answer');
     const env=await captureDocumentTranscript(db,blobs,'healthy',healthy,user('healthy','unchanged')+reply('kept'),at,0,'codex');
     await publishDocuments(env,at+20*MIN,limits());
@@ -71,6 +71,7 @@ test('an admission upgrade retries stopped transcripts once without rebuilding h
       ['reopened',good,text,PARSER_VERSION,'event_refused'],
       ['refused',bad,user('bad','\ud800'),PARSER_VERSION-1,'record_too_large'],
       ['gone',gone,text,PARSER_VERSION,'event_refused'],
+      ['closed',closed,text,PARSER_VERSION,'scheme_conflict'],
     ] as const){
       await captureDocumentTranscript(db,blobs,session,id,body,at,0,'codex');
       await db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,
@@ -96,6 +97,8 @@ test('an admission upgrade retries stopped transcripts once without rebuilding h
     expect(await snapshot(),target).toEqual(before);
     expect(await one(db,"SELECT state,failure,published_offset FROM transcript_publication WHERE session_id='gone'"),target)
       .toEqual({state:'failed',failure:'event_refused',published_offset:0});
+    expect(await one(db,"SELECT state,failure,published_offset,updated_at FROM transcript_publication WHERE session_id='closed'"),target)
+      .toEqual({state:'failed',failure:'scheme_conflict',published_offset:0,updated_at:1});
     const stopped=await one(db,"SELECT state,failure,diagnostic FROM transcript_publication WHERE session_id='refused'");
     expect(stopped,target).toMatchObject({state:'failed',failure:'event_refused'});
     expect(JSON.parse(String(stopped!.diagnostic)),target).toMatchObject({branch:'event_refused',subreason:'unpaired_surrogate'});
