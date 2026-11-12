@@ -121,6 +121,26 @@ else { console.error('unexpected fake command: '+args.join(' ')); process.exit(8
 
 type Call = { args: string[]; cwd: string; account?: string };
 
+// One schema image and one migration directory per process; each case copies the image.
+const schemaImages = new Map<string, string>();
+let migrationDir: string | undefined;
+const sharedMigrations = (): string => migrationDir ??= SCHEMA_STEPS.reduce((dir, step) => (fs.writeFileSync(path.join(dir, `${String(step.version).padStart(4, '0')}.json`), JSON.stringify(step.statements)), dir), fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-migrations-')));
+
+/** Copies this process's schema image at `version`. `population` keeps the fixture's extra table. */
+export function copySchemaDatabase(version: number, destination: string, kind: 'bare' | 'population' = 'bare'): void {
+  const key = `${kind}:${SCHEMA_STEPS.reduce((max, step) => step.version <= version && step.version > max ? step.version : max, -1)}`;
+  let image = schemaImages.get(key);
+  if (!image) {
+    const database = new Database(image = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-schema-image-')), 'schema.sqlite'));
+    try {
+      if (kind === 'population') database.exec('CREATE TABLE fixture_population(id INTEGER)');
+      for (const step of SCHEMA_STEPS) if (step.version <= version) database.exec(step.statements.join(';\n'));
+    } finally { database.close(); }
+    schemaImages.set(key, image);
+  }
+  fs.copyFileSync(image, destination);
+}
+
 export async function fixture(
   overrides: Record<string, unknown>,
   run: (f: { home: string; root: string; create: () => Promise<unknown>; state: string; update: () => Promise<Awaited<ReturnType<typeof updateCloudflareDeployment>>>; calls: () => Call[]; reports: string[]; waits: number[] }) => Promise<void>,
@@ -131,18 +151,11 @@ export async function fixture(
   fs.mkdirSync(bin, { recursive: true });
   fs.writeFileSync(path.join(bin, 'wrangler'), FAKE_WRANGLER, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'npx'), '#!/bin/sh\n[ "$1" = "--no-install" ] || exit 7\nshift\nexec "$@"\n', { mode: 0o755 });
+  const version=Number(overrides.schema ?? SERVER_SCHEMA_VERSION-1);
+  const empty=overrides.empty===true || (overrides.fresh===true && overrides.freshPopulated!==true);
   const schemaDatabase=path.join(root,'schema.sqlite');
-  const migrationsRoot=path.join(root,'migrations');fs.mkdirSync(migrationsRoot);
-  const database=new Database(schemaDatabase);
-  try {
-    const version=Number(overrides.schema ?? SERVER_SCHEMA_VERSION-1);
-    const empty=overrides.empty===true || (overrides.fresh===true && overrides.freshPopulated!==true);
-    if(!empty)database.exec('CREATE TABLE fixture_population(id INTEGER)');
-    for(const step of SCHEMA_STEPS) {
-      fs.writeFileSync(path.join(migrationsRoot,`${String(step.version).padStart(4,'0')}.json`),JSON.stringify(step.statements));
-      if(!empty&&step.version<=version)database.exec(step.statements.join(';\n'));
-    }
-  }finally{database.close();}
+  if(empty){const database=new Database(schemaDatabase);database.close();}else copySchemaDatabase(version,schemaDatabase,'population');
+  const migrationsRoot=sharedMigrations();
   const state = path.join(root, 'state.json');
   const log = path.join(root, 'calls.jsonl');
   fs.writeFileSync(log, '');
