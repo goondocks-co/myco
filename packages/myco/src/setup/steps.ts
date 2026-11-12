@@ -255,15 +255,20 @@ async function signInOptions(ctx: Context): Promise<RegisterOptions> {
   };
 }
 
+/** Where a new Myco runs, asked before the answer is saved: a machine that cannot host one refuses "this machine" first. */
+export async function askCreateTarget(ask: Ask): Promise<'cloudflare' | 'local'> {
+  const target = await askRequired(ask, 'Where should your Myco run? 1) Cloudflare 2) On this machine (only this machine can reach it)', '--create cloudflare or --create local');
+  if (target !== '1' && target !== '2') throw new Error('Choose 1 or 2; pass --create cloudflare or --create local.');
+  if (target === '2') requireNativeDeps();
+  return target === '1' ? 'cloudflare' : 'local';
+}
+
 const CREATE_STEPS: readonly SetupStep[] = [
   {
     id: 'create.choice', requires: [], applies: isCreate,
     act: async ctx => {
       if (!ctx.file.answers.target) {
-        const target = await askRequired(ctx.ask, 'Where should your Myco run? 1) Cloudflare 2) On this machine (only this machine can reach it)', '--create cloudflare or --create local');
-        if (target !== '1' && target !== '2') throw new Error('Choose 1 or 2; pass --create cloudflare or --create local.');
-        if (target === '2') requireNativeDeps();
-        ctx.file.answers.target = target === '1' ? 'cloudflare' : 'local';
+        ctx.file.answers.target = await askCreateTarget(ctx.ask);
         saveSetupFile(ctx.home, ctx.file);
       }
     },

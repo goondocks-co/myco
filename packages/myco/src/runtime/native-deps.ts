@@ -59,10 +59,19 @@ export async function registerNoNativeDeps(params: { target: ReleaseTargetName }
  * @throws {NativeArtifactsUnavailable}
  */
 export function requireNativeDeps(): void {
-  if (resolved) return;
-  const host = hostReleaseTarget();
-  const missing = carriesNone ?? (host && !host.native ? host : null);
+  const missing = missingNativeDeps();
   if (missing) throw new NativeArtifactsUnavailable(missing);
+}
+
+/** Whether this process has native artifacts to hand a Deployment (see {@link requireNativeDeps}). */
+export function carriesNativeDeps(): boolean {
+  return missingNativeDeps() === null;
+}
+
+function missingNativeDeps(): ReleaseTarget | null {
+  if (resolved) return null;
+  const host = hostReleaseTarget();
+  return carriesNone ?? (host && !host.native ? host : null);
 }
 
 /**

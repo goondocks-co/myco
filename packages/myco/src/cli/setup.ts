@@ -14,7 +14,7 @@ import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, readDeploymentMembershipResult, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
-import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
+import { askCreateTarget, conductSetup, type SetupDeps } from '@myco/setup/steps.js';
 import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
 import { APP_NAME_MAX } from '@myco/server/github-app.js';
 import { parseArgs as parseCutoverArgs } from '@myco/cli/cutover.js';
@@ -269,6 +269,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
       if (!['1', '2', '3'].includes(role)) throw new Error('Choose 1, 2 or 3; run myco setup --help for the available choices.');
       file.answers.role = role === '1' ? 'create' : role === '2' ? 'join' : 'runner';
       freshJoin = file.answers.role === 'join';
+      if (file.answers.role === 'create') file.answers.target ??= await askCreateTarget(ask);
       validateCreationOptions(file.answers);
       saveSetupFile(home, file);
     }

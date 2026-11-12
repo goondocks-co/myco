@@ -20,9 +20,11 @@ packages/myco/scripts/release-targets.mjs. A binary that hosts a Deployment
 embeds an extension-enabled SQLite library and sqlite-vec. Neither has a Windows
 ARM64 build, so that binary embeds none: login, capture, the worker, the runner
 and updates run on it, while hosting a Deployment natively or opening a
-Deployment's data files (local create, run, install, update, backup and restore,
-and restoring a Cloudflare Deployment from a backup) refuse before changing
-anything and point to a Cloudflare Deployment or a server on another machine.
+Deployment's data files (local create, run, install, update, backup and restore)
+refuse before changing anything and point to a Cloudflare Deployment or a server
+on another machine. Every Cloudflare verb runs, restore included: preparing a
+recovery copy only migrates its database, which needs no sqlite-vec, so it runs
+on the runtime's own SQLite.
 
 ## Release flow
 

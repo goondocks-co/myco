@@ -28,18 +28,34 @@ $InstallMarker = $null
 # ---------------------------------------------------------------------------
 # Architecture — the machine's own, so ARM64 never receives the x64 build
 # ---------------------------------------------------------------------------
-# A process reports its own architecture: x64 PowerShell emulated on ARM64 sees AMD64, and 32-bit PowerShell sees x86
-# with the machine's in PROCESSOR_ARCHITEW6432. The system environment in the registry names the machine.
+# A process reports its own architecture, never the machine's: x64 PowerShell emulated on ARM64 sees AMD64, and
+# 32-bit PowerShell sees x86. The system environment in the registry names the machine; when it cannot be read,
+# IsWow64Process2 reports the native machine whatever this process runs as. Without either, nothing is installed.
 function Get-MachineArchitecture {
     try {
         $machine = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
         if ($machine) { return $machine }
     } catch { }
-    if ($env:PROCESSOR_ARCHITEW6432) { return $env:PROCESSOR_ARCHITEW6432 }
-    return $env:PROCESSOR_ARCHITECTURE
+    try {
+        $kernel = Add-Type -Name 'NativeMachine' -Namespace 'MycoInstaller' -PassThru -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine);'
+        $processMachine = [uint16]0
+        $nativeMachine = [uint16]0
+        if ($kernel::IsWow64Process2([System.Diagnostics.Process]::GetCurrentProcess().Handle, [ref]$processMachine, [ref]$nativeMachine)) {
+            if ($nativeMachine -eq 0xAA64) { return 'ARM64' }
+            if ($nativeMachine -eq 0x8664) { return 'AMD64' }
+            return ('machine type 0x{0:X4}' -f $nativeMachine)
+        }
+    } catch { }
+    return $null
 }
 
 $arch = Get-MachineArchitecture
+if (-not $arch) {
+    Write-Host "Could not determine this machine's processor architecture; nothing was installed." -ForegroundColor Red
+    Write-Host "  Neither the registry's PROCESSOR_ARCHITECTURE (HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment) nor IsWow64Process2 answered." -ForegroundColor Red
+    Write-Host "  Run the installer from Windows PowerShell on Windows 10 1709 or later, with that registry value readable." -ForegroundColor Red
+    exit 1
+}
 switch ($arch) {
     'AMD64' { $Target = 'windows-x64' }
     'ARM64' { $Target = 'windows-arm64' }

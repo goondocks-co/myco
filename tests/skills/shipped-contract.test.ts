@@ -40,12 +40,12 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const CATALOGUE_MAX_BYTES = 32_768;
 
 /**
- * The sentence the Windows installer prints when it refuses an ARM machine.
+ * The sentence the Windows installer prints when it cannot tell an x64 machine from an ARM64 one.
  * The installer is PowerShell and exports nothing, so the string is pinned here
  * and asserted against the script; a rewording fails this rather than leaving
  * the skill advising on a refusal that no longer reads that way.
  */
-const WINDOWS_ARM_REFUSAL = 'Myco does not support Windows on ARM (ARM64) at this time.';
+const WINDOWS_ARCHITECTURE_REFUSAL = "Could not determine this machine's processor architecture; nothing was installed.";
 const SKILLS_ROOT = path.join(REPO_ROOT, 'packages/myco', SHIPPED_SKILLS_DIR);
 
 /** The same "a directory is a skill iff it holds a SKILL.md" predicate the codegen and the installer use. */
@@ -219,12 +219,12 @@ describe('the setup skill against the code it drives', () => {
     // satisfies — a substring short enough to occur by accident proves the file
     // is prose, not that it covers the refusal.
     const ps1 = fs.readFileSync(path.join(REPO_ROOT, 'docs/install.ps1'), 'utf-8');
-    expect(ps1).toContain(WINDOWS_ARM_REFUSAL);
+    expect(ps1).toContain(WINDOWS_ARCHITECTURE_REFUSAL);
 
     const whitespaceAdvice = WHITESPACE_PATH_REFUSAL.slice(WHITESPACE_PATH_REFUSAL.indexOf('Move Myco'));
     expect(whitespaceAdvice.length).toBeGreaterThan(20);
     expect(markdown).toContain('path with no spaces');
     expect(markdown).toContain('whitespace');
-    expect(markdown).toContain('Windows on ARM');
+    expect(markdown).toContain("could not determine this machine's processor architecture");
   });
 });

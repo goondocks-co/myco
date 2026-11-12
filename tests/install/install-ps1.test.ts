@@ -228,16 +228,17 @@ describe('the Windows installer', () => {
     expect(fs.existsSync(path.join(run.home, 'bin', 'myco.exe'))).toBe(false);
   });
 
-  it.skipIf(PWSH === '' || process.platform === 'win32')('installs the build for the machine, ARM64 even from emulated x64 PowerShell, and only against its checksum', () => {
-    for (const [arch, asset] of [['ARM64', 'arm64'], ['x64-emulated-on-ARM64', 'arm64'], ['AMD64', 'x64']] as const) {
+  it.skipIf(PWSH === '' || process.platform === 'win32')('installs the build for the machine, ARM64 even from emulated x64 PowerShell, only against its checksum, and nothing when the machine is unknown', () => {
+    for (const [arch, asset] of [['ARM64', 'arm64'], ['x64-emulated-on-ARM64', 'arm64'], ['registry-unreadable-on-ARM64', 'arm64'], ['AMD64', 'x64']] as const) {
       const run = select([release('2.0.0')], { arch, install: '2.0.0' });
       expect({ status: run.status, agents: [...new Set(run.sentUserAgents)] }).toEqual({ status: 0, agents: ['myco-installer/goondocks-co'] });
       expect(run.out).toContain(`Downloading myco-windows-${asset}.exe`);
       expect(JSON.parse(fs.readFileSync(path.join(run.mycoHome, 'install.json'), 'utf8')).version).toBe('2.0.0');
     }
-    const unlisted = select([release('2.0.0')], { arch: 'ARM64', install: '2.0.0', sumsName: 'myco-windows-x64.exe' });
-    expect(unlisted.out).toContain("Asset 'myco-windows-arm64.exe' not found in SHA256SUMS.");
-    expect([unlisted.status === 0, fs.existsSync(unlisted.exe)]).toEqual([false, false]);
+    for (const [arch, refusal] of [['ARM64', "Asset 'myco-windows-arm64.exe' not found in SHA256SUMS."], ['undeterminable', "Could not determine this machine's processor architecture; nothing was installed."]] as const) {
+      const refused = select([release('2.0.0')], { arch, install: '2.0.0', sumsName: 'myco-windows-x64.exe' });
+      expect([refused.status === 0, refused.out.includes(refusal), fs.existsSync(refused.exe)]).toEqual([false, true, false]);
+    }
   });
 
   it.skipIf(PWSH === '')('selects on ARM64 only releases that carry the ARM64 asset, and never updates 1.4 there', () => {
