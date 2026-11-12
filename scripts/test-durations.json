@@ -615,7 +615,7 @@
     "tests/myco-server/review-permissions.test.ts": 1200,
     "tests/myco-server/routes.test.ts": 9,
     "tests/myco-server/run-admission-corrections.test.ts": 2369,
-    "tests/myco-server/run-admission-followups.test.ts": 1325,
+    "tests/myco-server/run-admission-followups.test.ts": 3900,
     "tests/myco-server/run-audit.test.ts": 678,
     "tests/myco-server/run-authority-wait.test.ts": 1415,
     "tests/myco-server/run-calls-api.test.ts": 421,

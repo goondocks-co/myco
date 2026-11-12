@@ -48,6 +48,7 @@ import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js'
 import { runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { NO_LIVE_RUN, RUN_PROJECT_MISMATCH, RUN_SCOPE } from '@myco-server-worker/pipeline.js';
 import { envelope, memberHeaders, RETIRED_BYTE_CEILING, sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement, failingStatementCall } from './helpers/store-faults.js';
 
 /** The Project every fixture request names in its header, and the one a write falls back to here. */
 const FIXTURE_PROJECT = 'proj_1';
@@ -467,9 +468,12 @@ describe('POST /mcp', () => {
     // the shipped catalogue and issues no query, so a fault injected on its
     // former table would never fire and this gate would pass while proving
     // nothing.
-    const e = sqliteEnv({ onSql: (sql) => { if (/FROM sessions/.test(sql)) throw new Error('storage is away'); } });
+    const e = sqliteEnv();
     const t1 = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const fault = failingStatementCall(e.db, 'sessionBrowse.projectStart', 1, { error: () => new Error('storage is away') });
+    e.env.MYCO_DB = fault.store;
     const res = await worker.fetch(post(t1.token, rpc('tools/call', { name: 'myco_sessions', arguments: {} })), e.env);
+    expect(fault.failures()).toBeGreaterThan(0);
     const body = await res.json() as any;
     expect({ status: res.status, retry: res.headers.get('retry-after') !== null, code: body.error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
   });
@@ -626,8 +630,11 @@ describe('POST /mcp over an External Agent grant', () => {
     const original = console.log;
     console.log = (line: unknown) => { lines.push(String(line)); };
     try {
-      const faulty = await grantSetup({ onSql: (sql) => { if (/FROM sessions/.test(sql)) throw new Error('storage is away'); } });
+      const faulty = await grantSetup();
+      const sessions = failingStatementCall(faulty.db, 'sessionBrowse.projectStart', 1, { error: () => new Error('storage is away') });
+      faulty.env.MYCO_DB = sessions.store;
       const fault = await worker.fetch(grantRequest(faulty.grant.key, rpc('tools/call', { name: 'myco_sessions', arguments: {} })), faulty.env);
+      expect(sessions.failures()).toBeGreaterThan(0);
       expect({ status: fault.status, retry: fault.headers.get('retry-after') !== null, code: ((await fault.json()) as any).error?.data?.code }).toEqual({ status: 503, retry: true, code: 'unavailable' });
       expect(lines.map((l) => JSON.parse(l)).filter((e) => e.kind === 'mcp_error').map((e) => ({ grantId: e.grantId, memberId: e.memberId }))).toEqual([{ grantId: faulty.grant.id, memberId: undefined }]);
 
@@ -969,23 +976,21 @@ describe('POST /mcp over a run credential', () => {
 
   it('rechecks a served citation at the save and consolidate commit after a concurrent tombstone', async () => {
     for (const op of ['save', 'consolidate']) {
-      let armed = false;
-      const { harness, dispatch, call, sqlite, serve } = await runSetup({ onSql(sql, store) {
-        if (!armed || !/INSERT INTO spores/.test(sql)) return;
-        armed = false;
-        store.run(`INSERT INTO session_tombstones(project_id,session_id,reason,created_at,created_by)
-          VALUES ('proj_1','sess_1','deleted',1,'mem_machine_1')`);
-      } });
+      const { harness, dispatch, call, sqlite, serve, db, env } = await runSetup();
       await dispatch(harness, 'run_1', SWEEP, { sessionId: null });
       await serve();
       sqlite.run(`INSERT INTO spores(project_id,id,agent_id,session_id,observation_type,content,created_at)
         VALUES ('proj_1','source','myco-agent','sess_1','gotcha','existing',1)`);
-      armed = true;
+      const raced = changingAtStatement(db, op === 'consolidate' ? 'spores.insert' : 'spores.insertUnlessHeld', () => {
+        sqlite.run(`INSERT INTO session_tombstones(project_id,session_id,reason,created_at,created_by)
+          VALUES ('proj_1','sess_1','deleted',1,'mem_machine_1')`);
+      });
+      env.MYCO_DB = raced.store;
       const answer = await call(harness.token, 'myco_spores', op === 'save'
         ? { op, type: 'gotcha', content: 'A raced finding', session_id: 'sess_1' }
         : { op, source_spore_ids: [{ id: 'source', revision: 0 }], consolidated_content: 'Raced wisdom', observation_type: 'wisdom', session_id: 'sess_1' });
       expectRunRefusal(answer.result, 'session_id not served to this run', { tool: 'myco_run_learning', op: 'material', page: 1 });
-      expect(armed).toBe(false);
+      expect(raced.landed()).toBe(true);
       expect(sqlite.query('SELECT id,status FROM spores').all()).toEqual([{ id: 'source', status: 'active' }]);
       expect(sqlite.query('SELECT * FROM resolution_events').all()).toEqual([]);
     }

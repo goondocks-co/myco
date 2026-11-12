@@ -16,10 +16,11 @@ import { handleRun } from '@myco-server-worker/mcp/tools/run.js';
 import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
 import { readWindowFor } from '@myco-server-worker/core/read-window.js';
 import { envelope, memberPost, sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement, failingStatement } from './helpers/store-faults.js';
 import { OWNER_ENV, asOwnerPost, ownerCookie, seedMemberRoleAccount } from './helpers/owner.js';
 
-async function rig(onSql?: NonNullable<Parameters<typeof sqliteEnv>[0]>['onSql']) {
-  const f = sqliteEnv({ onSql });
+async function rig() {
+  const f = sqliteEnv();
   const now = Date.now();
   const token = await issueMemberToken(f.db, { memberId: 'mem_machine_2', machineId: 'machine_2' }, now);
   f.sqlite.run("UPDATE members SET role='member' WHERE id='mem_machine_2'");
@@ -86,10 +87,7 @@ test('HTTP and MCP spore admission reject foreign sessions and derive ordinary m
 
 test('grant lifecycle admits only its own sources and replacement, with one absent refusal', async () => {
   let replacement: string | null = null;
-  let race = false;
-  const f = await rig((sql, db) => {
-    if (race && sql.includes('UPDATE spores SET status')) { race = false; db.run("UPDATE spores SET author='mem_machine_2' WHERE id=?", [replacement]); }
-  });
+  const f = await rig();
   try {
     const grant = await issueExternalGrant(f.db, { projectId: 'proj_1' }, 'review', 'mem_machine_1', f.now);
     await f.post('/spores/save', spore('member'));
@@ -106,9 +104,12 @@ test('grant lifecycle admits only its own sources and replacement, with one abse
     expect(f.sqlite.query("SELECT status FROM spores WHERE id='member'").get()).toEqual({ status: 'active' });
     const next = await f.rpc(grant.key, 'myco_spores', { op: 'save', type: 'gotcha', content: 'replacement finding', agent_line: 'Retain evidence.' });
     replacement = next.id;
-    race = true;
+    const raced = changingAtStatement(f.db, 'sporeLifecycle.moveSource', () => {
+      f.sqlite.run("UPDATE spores SET author='mem_machine_2' WHERE id=?", [replacement]);
+    });
+    f.env.MYCO_DB = raced.store;
     expect(await f.rpc(grant.key, 'myco_spores', { op: 'supersede', old_spore_id: own.id, new_spore_id: next.id })).toEqual({ ok: false, error: 'spore_id not found' });
-    expect(race).toBe(false);
+    expect(raced.landed()).toBe(true);
     expect(f.sqlite.query('SELECT status FROM spores WHERE id=?').get(own.id)).toEqual({ status: 'active' });
     expect(await grantWrite({ op: 'obsolete', id: own.id, reason: 'review' })).toMatchObject({ status: 'obsolete' });
   } finally { f.sqlite.close(); }
@@ -226,9 +227,7 @@ test('failed completion postconditions cannot grant replacement eligibility', as
 });
 
 test('postcommit call observation failures preserve the accepted embedding result', async () => {
-  let failObservation = false;
-  let observedFailure = false;
-  const f = sqliteEnv({ onSql(sql) { if (failObservation && sql.includes('INSERT INTO agent_run_events')) { observedFailure = true; throw new Error('observation unavailable'); } } });
+  const f = sqliteEnv();
   const now = Date.now();
   const server = createServer({ now: () => now, sourceOf: () => '127.0.0.1', fetchImpl: () => { throw new Error('unexpected outbound'); } });
   try {
@@ -236,9 +235,10 @@ test('postcommit call observation failures preserve the accepted embedding resul
     const token = await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'harness' }, now);
     await recordDispatch(f.db, { projectId: 'proj_1' }, { id: 'embedding-run', agentId: 'user', task: 'embedding-reconcile', provider: 'embedding', model: null,
       runContext: '{"timeoutSeconds":300}', startedAt: now, dispatchedBy: token.tokenId });
-    failObservation = true;
+    const fault = failingStatement(f.db, 'runs.insertEvent', { error: () => new Error('observation unavailable') });
+    f.env.MYCO_DB = fault.store;
     const response = await server.handleRequest(memberPost(token.token, { runId: 'embedding-run', update: { status: 'failed', error: 'stopped' } }, '/runs/update'), f.serverEnv);
-    expect(observedFailure).toBe(true);
+    expect(fault.failures()).toBeGreaterThan(0);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ persisted: true, changed: 1, applied: true });
     expect(f.sqlite.query("SELECT status FROM agent_runs WHERE id='embedding-run'").get()).toEqual({ status: 'failed' });
@@ -246,16 +246,17 @@ test('postcommit call observation failures preserve the accepted embedding resul
 });
 
 test('every worker protocol route reports the same subject-liveness outcome', async () => {
-  let armed = false;
-  const f = sqliteEnv({ onSql(sql, db) {
-    if (armed && sql.includes('SELECT m.id,m.role,m.revoked_at,o.member_id AS owner')) { armed = false; db.run("UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'"); }
-  } });
+  const f = sqliteEnv();
   try {
     const token = await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     for (const path of ['/worker/lease', '/worker/end', '/worker/repository', '/worker/steps', '/worker/models', '/worker/claim']) {
       f.sqlite.run("UPDATE members SET revoked_at=NULL WHERE id='mem_machine_1'");
-      armed = true;
+      const landing = changingAtStatement(f.db, 'authz.member', () => {
+        f.sqlite.run("UPDATE members SET revoked_at=1 WHERE id='mem_machine_1'");
+      });
+      f.env.MYCO_DB = landing.store;
       const response = await worker.fetch(memberPost(token.token, {}, path), f.env);
+      expect(landing.landed()).toBe(true);
       expect(await response.json()).toEqual({ persisted: true, [path === '/worker/end' ? 'ended' : 'held']: false, reason: 'the lease is no longer held' });
     }
   } finally { f.sqlite.close(); }
@@ -338,25 +339,24 @@ test('MCP saves always mint a separate identity even when an id was supplied', a
 });
 
 test('an import disabled at its insert is refused and can be retried after admission', async () => {
-  let armed = false;
-  const f = await rig((sql, db) => {
-    if (armed && sql.startsWith('INSERT INTO spores')) {
-      armed = false;
-      db.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('import.enabled','false',0,'test')");
-    }
-  });
+  const f = await rig();
   try {
     const token = await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, f.now);
-    const post = async (sessionId: string | null = null) => (await worker.fetch(memberPost(token.token, { ...spore('racing-import'), channel: 'import', sessionId }, '/spores/save'), f.env)).json() as Promise<any>;
-    armed = true;
-    expect(await post()).toMatchObject({ persisted: false });
+    const post = async (sessionId: string | null = null, fault = false) => {
+      const landing = fault ? changingAtStatement(f.db, 'spores.insertUnlessHeld', () => {
+        f.sqlite.run("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('import.enabled','false',0,'test')");
+      }) : undefined;
+      f.env.MYCO_DB = landing?.store ?? f.db;
+      const body = await (await worker.fetch(memberPost(token.token, { ...spore('racing-import'), channel: 'import', sessionId }, '/spores/save'), f.env)).json() as Record<string, unknown>;
+      if (landing !== undefined) expect(landing.landed()).toBe(true);
+      return body;
+    };
+    expect(await post(null, true)).toMatchObject({ persisted: false });
     expect(f.sqlite.query("SELECT id FROM spores WHERE id='racing-import'").get()).toBeNull();
     f.sqlite.run("DELETE FROM deployment_settings WHERE leaf='import.enabled'");
     expect(await post()).toMatchObject({ persisted: true, spore: { id: 'racing-import' } });
     f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at) VALUES('proj_1','sess_1','machine_1','tok_1',1,1)");
-    armed = true;
-    expect(await post('sess_1')).toMatchObject({ persisted: false });
-    expect(armed).toBe(false);
+    expect(await post('sess_1', true)).toMatchObject({ persisted: false });
     expect(f.sqlite.query("SELECT session_id FROM spores WHERE id='racing-import'").get()).toEqual({ session_id: null });
   } finally { f.sqlite.close(); }
 });

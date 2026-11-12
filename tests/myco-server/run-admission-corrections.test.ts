@@ -8,6 +8,7 @@ import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { MAX_BODY_BYTES } from '@myco-server-worker/ingest/body.js';
 import { publishFixture, memberHeaders, sqliteEnv } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
 async function setup(options?: Parameters<typeof sqliteEnv>[0]) {
   const f = sqliteEnv(options), now = Date.now();
@@ -53,13 +54,7 @@ for (const code of ['no_project', 'body_cap', 'no_machine_identity'] as const) f
 
 for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lease', 'revocation', 'mid_batch_revocation', 'none'] as const) {
   it(`${op} commits its domain write and attribution together under ${loss}`, async () => {
-    let armed = false;
-    const f = await setup({ onSql: (sql, sqlite) => {
-      if (!armed || !sql.startsWith('INSERT INTO agent_run_events')) return;
-      armed = false;
-      if (loss === 'lease') sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
-      if (loss === 'revocation') sqlite.run('UPDATE members SET revoked_at = 1 WHERE id = ?', [HARNESS_MEMBER_ID]);
-    } });
+    const f = await setup();
     try {
       f.sqlite.run("INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,started_at,ended_at) VALUES('proj_1','sess','m','t',0,0,0,1)");
       f.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) SELECT project_id,event_id,session_id,token_id,'prompt','cli',json_object('promptId',prompt_id,'text',text,'origin',origin,'updatedAt',updated_at),content_hash,created_at,received_at FROM (SELECT 'proj_1' AS project_id,'sess' AS session_id,'prompt' AS prompt_id,'ev' AS event_id,'hello' AS text,'user' AS origin,'h' AS content_hash,0 AS created_at,0 AS updated_at,'t' AS token_id,0 AS received_at)");
@@ -78,7 +73,10 @@ for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lea
       if (loss === 'mid_batch_revocation') f.sqlite.exec(`CREATE TRIGGER revoke_domain AFTER ${op === 'title' ? 'UPDATE' : 'INSERT'}
         ON ${op === 'learning' ? 'extraction_acks' : op === 'title' ? 'sessions' : 'canopy_maps'} BEGIN
         UPDATE members SET revoked_at = 1 WHERE id = '${HARNESS_MEMBER_ID}'; END`);
-      armed = true;
+      const landing = loss === 'lease' || loss === 'revocation' ? changingAtStatement(f.db, 'runs.attributeWrite', () => {
+        if (loss === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
+        if (loss === 'revocation') f.sqlite.run('UPDATE members SET revoked_at = 1 WHERE id = ?', [HARNESS_MEMBER_ID]); }) : undefined;
+      if (landing !== undefined) f.env.MYCO_DB = landing.store;
       const answer = op === 'learning' ? await f.call('myco_run_learning', { op: 'complete', handoff: '' })
         : op === 'title' ? await f.call('myco_run_sessions', { op: 'title', title: 'title', summary: 'summary' })
         : await f.call('myco_run_map', { op: 'write', artifact: { directories: [{ path: 'src', annotation: 'Source', groundedIn: [{ path: 'src/a.ts', sha256: 'c'.repeat(64) }] }], domains: [{ id: 'main', title: 'Main', files: [{ path: 'src/a.ts', annotation: 'Entry', groundedIn: [{ path: 'src/a.ts', sha256: 'c'.repeat(64) }] }] }] } });
@@ -88,6 +86,7 @@ for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lea
       const attributed = count("SELECT COUNT(*) AS n FROM agent_run_events WHERE event_type = 'run_write'");
       expect(changed).toBe(loss === 'none' ? 1 : 0);
       expect(attributed).toBe(changed);
+      if (landing !== undefined) expect(landing.landed()).toBe(true);
       if (loss !== 'none') expect(answer.error).toBeDefined();
     } finally { f.sqlite.close(); }
   });

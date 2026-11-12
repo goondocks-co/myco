@@ -11,15 +11,7 @@ import type { ModelCatalog } from '@goondocks/myco-shared/execution-profile';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { asOwner, OWNER_ENV } from './helpers/owner.js';
 import { offeredHarness } from './helpers/offered-harness.js';
-import { statementRecorder } from '../helpers/statement-recorder.js';
-import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
-import { failingStatement } from './helpers/store-faults.js';
-
-const MACHINE_HEAD = () => {
-  const sql = definedStatements().get('runnerHeads.machine');
-  if (sql === undefined) throw new Error('no kernel statement is named runnerHeads.machine');
-  return sql;
-};
+import { failingStatement, pausingAtStatement } from './helpers/store-faults.js';
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const close of cleanups.splice(0)) close(); });
@@ -90,29 +82,15 @@ describe('catalog availability from current machine offers', () => {
     const r = await rig();
     const successor = await issueMemberToken(r.db, { memberId: 'mem_machine_1', machineId: 'machine-1' }, r.now);
     await recordModelCatalog(r.db, { owner: { kind: 'machine', machineId: 'machine-1' }, catalog: catalog(r.now), now: r.now });
-    let announce!: () => void;
-    let resume!: () => void;
-    const paused = new Promise<void>((resolve) => { announce = resolve; });
-    const continued = new Promise<void>((resolve) => { resume = resolve; });
-    let intercept = false;
-    const observed = statementRecorder(r.db, {
-      accounting: 'native',
-      after: async (entry) => {
-        if (intercept && entry.sql === MACHINE_HEAD()) {
-          intercept = false;
-          announce();
-          await continued;
-        }
-      },
-    });
-    const report = (credentialId: string, authenticated: boolean) => recordWorkerContact(observed.db, {
+    const reportOn = (db: typeof r.db, credentialId: string, authenticated: boolean) => recordWorkerContact(db, {
       credentialId, machineId: 'machine-1', offers: [{ id: 'claude-code', authenticated }], capabilities: [], now: r.now,
     });
-    await report(r.token.tokenId, true);
-    intercept = true;
-    const reauth = report(r.token.tokenId, true);
-    await paused;
-    try { await report(successor.tokenId, false); } finally { resume(); }
+    await reportOn(r.db, r.token.tokenId, true);
+    const pause = pausingAtStatement(r.db, 'runnerHeads.machine', 'after');
+    const reauth = reportOn(pause.store, r.token.tokenId, true);
+    await pause.admitted;
+    try { await reportOn(pause.store, successor.tokenId, false); } finally { pause.resume(); }
+    expect(pause.landed()).toBe(true);
     expect(await reauth).toBe(true);
     expect(await r.models()).toHaveLength(1);
   });
