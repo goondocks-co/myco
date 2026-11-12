@@ -13,13 +13,11 @@ export const cortex: ParityScenario = {
     const post = (sessionId: string, kind: string, payload: Record<string, unknown>) => event(target, sessionId, kind, payload);
     const ask = async (instruction: string) => {
       const res = await owner<{ queued: boolean; runId?: string; heldBy?: string }>(target, '/api/harness/dispatch', { method: 'POST', body: JSON.stringify({ projectId: target.projectId, task: MAP_TASK, instruction, harness: 'claude-code' }) });
-      expect(res.status).toBe(200);
-      return res.body;
+      expect(res.status).toBe(200); return res.body;
     };
     const runOf = async (runId: string) => {
       const read = await owner<{ run: { status: string; heldBy: string | null; dryRun: boolean; instruction: string | null } }>(target, `/api/projects/${target.projectId}/runs/${runId}`);
-      expect(read.status).toBe(200);
-      return read.body.run;
+      expect(read.status).toBe(200); return read.body.run;
     };
 
     const stamp = Date.now();
