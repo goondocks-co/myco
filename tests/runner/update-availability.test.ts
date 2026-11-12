@@ -1,12 +1,16 @@
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
+import crypto from 'node:crypto';
+import { setImmediate as yieldIO } from 'node:timers/promises';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createRunnerUpdateController, readRunnerUpdateState, withRunnerUpdateState, type RunnerUpdateDeps } from '@myco/runner/update.js';
-import { writeInstallMarker, versionBinaryPath } from '@myco/install/managed-binary.js';
+import { createRunnerUpdateController, readRunnerUpdateState, withRunnerUpdateState, RUNNER_DOWNLOAD_TIMEOUT_MS, type RunnerUpdateDeps } from '@myco/runner/update.js';
+import { createBinaryUpdateDeps, stageBinary } from '@myco/upgrade/apply-binary.js';
+import { writeInstallMarker, versionBinaryPath, versionsDir } from '@myco/install/managed-binary.js';
 import { renderUnit, servicePaths, type ServiceSpec } from '@myco/server/service.js';
 import { runWorker } from '@myco/runner/loop.js';
+import { RUNNER_REQUEST_TIMEOUT_MS } from '@myco/runner/request.js';
 import { FEATURES_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { EXECUTION_PROFILE_FEATURE } from '@goondocks/myco-shared/execution-profile';
 import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
@@ -53,6 +57,105 @@ async function claimsWork(f: ReturnType<typeof fixture>) {
 }
 
 describe('runner update execution availability', () => {
+  for (const stoppedAt of ['transfer', 'staged'] as const) it(`retries a stop during ${stoppedAt} immediately without reporting a refusal`, async () => {
+    const stopping = new AbortController();
+    let started: () => void = () => {};
+    const downloading = new Promise<void>(resolve => { started = resolve; });
+    const bytes = new TextEncoder().encode(`#!/bin/sh\nprintf '%s\\n' '${to}'\n`);
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+    const f = fixture(`stop-${stoppedAt}`, {
+      stage: async (params, deps) => {
+        const result = await stageBinary(params, deps);
+        if (stoppedAt === 'staged' && !stopping.signal.aborted) stopping.abort();
+        return result;
+      },
+      stageDeps: createBinaryUpdateDeps({ downloadIdleTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS, fetch: async url => {
+        if (String(url).endsWith('/sums')) return new Response(`${digest}  myco-darwin-arm64\n`);
+        started();
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+          controller.enqueue(bytes);
+          if (stoppedAt === 'staged' || stopping.signal.aborted) controller.close();
+        } }));
+      } }),
+    });
+    const pending = f.controller.idle(undefined, stopping.signal);
+    try {
+      if (stoppedAt === 'transfer') { await downloading; await yieldIO(); stopping.abort(); }
+      expect(await pending).toBe('continue');
+      expect(f.controller.statusPayload().lastResult).toBeUndefined();
+      expect(f.controller.statusPayload().updateState).toBeUndefined();
+      expect(fs.readdirSync(versionsDir(f.home, process.platform))).toEqual([]);
+      expect(await f.controller.idle()).toBe('restart');
+    } finally { stopping.abort(); await pending; }
+  });
+
+  it('contacts during a trickling release, cleans up at the ceiling, retries later and hands off the completed release', async () => {
+    const stopping = new AbortController(), deadlines: { at: number; controller: AbortController }[] = [];
+    let at = 1000, downloads = 0, downloadStarted = 0, updatingContacts = 0, lastContact = 0, offline = false, waiting: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const bytes = new TextEncoder().encode(`#!/bin/sh\nprintf '%s\\n' '${to}'\n`);
+    const digest = crypto.createHash('sha256').update(bytes).digest('hex');
+    const timers = spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      const controller = new AbortController(); deadlines.push({ at: at + ms, controller }); return controller.signal;
+    });
+    const f = fixture('slow-release', { now: () => at, stage: stageBinary,
+      installGuardian: () => { offline = true; return { unitFile: 'fixture', loaded: true, running: true, changed: true }; },
+      stageDeps: createBinaryUpdateDeps({ downloadIdleTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS, fetch: async url => {
+        if (String(url).endsWith('/sums')) return new Response(`${digest}  myco-darwin-arm64\n`);
+        downloads++;
+        if (downloads === 1) downloadStarted = at;
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { waiting = controller; controller.enqueue(bytes); },
+          cancel() { waiting = undefined; },
+        }));
+      } }),
+    });
+    let retried = false, worker: ReturnType<typeof runWorker> | undefined;
+    try {
+      worker = runWorker({ serverUrl, token: 'fixture', lockDir: null, runRoot: path.join(f.home, 'runs'),
+        only: [], signal: stopping.signal, pollIdleMs: 29_000, log: () => {},
+        contactBody: () => ({ update: f.controller.contactPayload() }),
+        onIdle: async signal => { const result = await f.controller.idle(undefined, signal); return result === 'continue' ? undefined : result; },
+        wait: async () => {
+          at += 29_000;
+          if (downloads === 1) waiting?.enqueue(new Uint8Array([1]));
+          if (downloads === 2 && updatingContacts > 3 && waiting) { waiting.close(); waiting = undefined; }
+          for (const deadline of deadlines) if (at >= deadline.at) deadline.controller.abort(new Error('download ceiling exceeded'));
+          await yieldIO();
+          if (at > 10 * RUNNER_DOWNLOAD_TIMEOUT_MS) throw new Error('runner stopped contacting or retrying');
+        },
+        fetchImpl: (async (input, init) => {
+          if (offline) return new Response(null, { status: 503 });
+          if (new URL(String(input)).pathname === '/worker/claim') {
+            expect(downloads).toBe(1);
+            expect(at - downloadStarted).toBeGreaterThanOrEqual(RUNNER_DOWNLOAD_TIMEOUT_MS);
+            expect(waiting).toBeUndefined();
+            expect(fs.readdirSync(versionsDir(f.home, process.platform))).toEqual([]);
+            expect(f.controller.statusPayload().lastResult).toMatchObject({ result: 'refused', reason: expect.stringContaining('ceiling exceeded') });
+            expect(f.controller.statusPayload().updateState).toBeUndefined();
+            expect(at).toBeLessThan(readRunnerUpdateState(f.home).nextCheckAt);
+            at = readRunnerUpdateState(f.home).nextCheckAt;
+            retried = true;
+          } else {
+            const report = JSON.parse(String(init?.body)).update;
+            if (report.updateState?.phase === 'updating') {
+              if (downloads === 1 && lastContact) expect(at - lastContact).toBeLessThan(120_000);
+              lastContact = at;
+              updatingContacts++;
+              expect(f.controller.statusPayload().updateState?.phase).toBe('updating');
+            }
+          }
+          return Response.json({ persisted: true, claimed: false, pollAfterMs: 29_000 }, { headers: { [FEATURES_HEADER]: EXECUTION_PROFILE_FEATURE } });
+        }) as typeof fetch,
+      });
+      for (let tick = 0; tick < 8; tick++) await yieldIO();
+      expect(updatingContacts).toBeGreaterThan(1);
+      expect(await worker).toMatchObject({ driven: 0, refused: null, replaced: true });
+      expect(retried).toBe(true);
+      expect(updatingContacts).toBeGreaterThan(3);
+      expect(readRunnerUpdateState(f.home).transaction?.toVersion).toBe(to);
+    } finally { stopping.abort(); await worker; timers.mockRestore(); }
+  });
+
   for (const [label, contents] of [['forward', JSON.stringify({ version: 2 })], ['corrupt', '{broken'],
     ['attempts', JSON.stringify({ version: 1, nextCheckAt: 0, lastCheckAt: null, latestVersion: null, failures: 0, attempts: 5 })],
     ['blocks', JSON.stringify({ version: 1, nextCheckAt: 0, lastCheckAt: null, latestVersion: null, failures: 0, blockedVersions: { bad: {} } })]] as const) {

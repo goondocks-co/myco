@@ -157,10 +157,10 @@ async function runVerb(args: readonly string[], deps: RunnerRunDeps): Promise<bo
         offerBusyLogged = true;
       } else offerBusyLogged = false;
     },
-    onIdle: async () => {
+    onIdle: async signal => {
       const holder = workerHolder(instanceLockDir, serverUrl);
       if (holder !== null) updater.recordRuntimeCapability(holder);
-      const outcome = await updater.idle();
+      const outcome = await updater.idle(undefined, signal);
       return outcome === 'continue' ? undefined : outcome;
     },
     onClaim: () => updater.recordClaim(),

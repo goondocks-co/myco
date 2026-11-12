@@ -1,4 +1,4 @@
-import { runnerRequest, RUNNER_REQUEST_TIMEOUT_MS } from './request.js';
+import { runnerRequest, runnerRequestSignal, RUNNER_REQUEST_TIMEOUT_MS } from './request.js';
 import { isReportOrder } from '@goondocks/myco-shared/report-order';
 import { deploymentKeyFor } from '@myco/member/registry.js';
 import { issueReportOrder } from '@myco/utils/order-stamp.js';
@@ -39,6 +39,8 @@ const MAX_GUARDIAN_RECOVERIES = 2;
 export const RUNNER_UPDATE_PROBATION_MS = 5 * 60_000;
 const BLOCK_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const MAX_VERSION_ATTEMPTS = 20;
+/** 82 MB at roughly 0.37 Mbit/s, including checksum retrieval and verification. */
+export const RUNNER_DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 const CANDIDATE_SLOT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export type RunnerUpdateResult = UpdateReceipt['result'];
@@ -79,6 +81,7 @@ interface RunnerUpdateTransaction {
   rollbackResult?: 'rolled_back' | 'failed';
 }
 interface RunnerUpdateState {
+  download?: { id: string; pid: number; since: number };
   reports?: Record<string, RunnerUpdateContact>;
   reportFloors?: Record<string, number>;
   version: 1;
@@ -253,6 +256,8 @@ function decodeState(home: string): RunnerUpdateState {
   if (state?.version !== 1 || !Number.isFinite(state.nextCheckAt) || !Number.isFinite(state.failures)
     || !(state.lastCheckAt === null || Number.isFinite(state.lastCheckAt))
     || !(state.latestVersion === null || typeof state.latestVersion === 'string')
+    || (state.download !== undefined && (!record(state.download) || typeof state.download.id !== 'string'
+      || !Number.isSafeInteger(state.download.pid) || state.download.pid < 1 || !finite(state.download.since)))
     || (state.reports !== undefined && !entriesMatch(state.reports, entry => isReportOrder(entry.observedOrder)))
     || (state.reportFloors !== undefined && (!record(state.reportFloors) || !Object.values(state.reportFloors).every(isReportOrder)))
     || (state.etag !== undefined && typeof state.etag !== 'string')
@@ -474,6 +479,7 @@ export function cleanupRunnerUpdateGuardian(home: string, platform: NodeJS.Platf
 export interface RunnerUpdateController {
   contactPayload(): RunnerUpdateContact;
   statusPayload(): RunnerUpdateContact;
+  hasLiveDownload(): boolean;
   onContact(body: Record<string, unknown>): void;
   /** Called after this version starts; health is acknowledged only by authenticated contact. */
   startup(): void;
@@ -485,7 +491,7 @@ export interface RunnerUpdateController {
   queueLocal(input: RunnerLocalArtifactInput): void;
   check(selection?: RunnerUpdateSelection): Promise<RunnerUpdateContact>;
   /** Called only between runs; the from-version program holds claims for its bounded handoff. */
-  idle(handoff?: 'caller'): Promise<'continue' | 'restart' | 'hold'>;
+  idle(handoff?: 'caller', signal?: AbortSignal): Promise<'continue' | 'restart' | 'hold'>;
 }
 
 export function createRunnerUpdateController(options: RunnerUpdateOptions): RunnerUpdateController {
@@ -539,6 +545,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
     };
     if (request) endRequest(state, serverUrl, request.id);
   };
+  const liveDownload = (state: RunnerUpdateState): RunnerUpdateState['download'] => {
+    if (state.download === undefined) return undefined;
+    const observed = LifecycleLock.acquire(path.join(home, 'runner', UPDATE_OPERATION_LOCK), { mode: 'shared' });
+    if (observed.acquired) { observed.lock.release(); return undefined; }
+    return observed.holderPid === state.download.pid ? state.download : undefined;
+  };
   const payload = (state: RunnerUpdateState): RunnerUpdateContact => {
     const blocked = state.latestVersion === null ? undefined : state.blockedVersions?.[state.latestVersion];
     if (fault && (state.lastResults?.[serverUrl]?.at ?? -1) >= fault.at) fault = undefined;
@@ -546,9 +558,12 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       fromVersion: currentVersion, toVersion: currentVersion, result: 'failed' as const, reason: state.metadataFailure.reason, at: state.metadataFailure.at,
     } : undefined);
     const tx = state.transaction;
+    const download = liveDownload(state);
     const updateState: RunnerUpdateContact['updateState'] = tx ? {
       phase: tx.phase === 'probation' || tx.phase === 'healthy' ? 'probation' : 'updating', since: tx.startedAt,
       ...(tx.phase === 'waiting' ? { reason: 'Waiting for the bounded service handoff' } : {}),
+    } : download ? {
+      phase: 'updating', since: download.since, reason: 'Downloading and verifying the release',
     } : state.cleanupReason ? { phase: 'cleanup_pending', since: result?.at ?? now(), reason: state.cleanupReason } : undefined;
     return { channel: channel(), currentVersion, latestVersion: state.latestVersion, lastCheckAt: state.lastCheckAt,
       ...(result === undefined ? {} : { lastResult: { ...result, ...(result.reason === undefined ? {} : { reason: sanitizeRunnerUpdateReason(result.reason) }) } }),
@@ -794,7 +809,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
       if (!outcome.loaded || !outcome.running) throw new Error(outcome.detail ?? 'update guardian is not running');
     } catch (error) { log('runner update watcher recovery failed: ' + sanitizeRunnerUpdateReason(String(error))); }
   };
-  const idle = async (handoff?: 'caller'): Promise<'continue' | 'restart' | 'hold'> => {
+  const idle = async (handoff?: 'caller', signal?: AbortSignal): Promise<'continue' | 'restart' | 'hold'> => {
     const state = decodeState(home);
     if (state.metadataFailure) return 'continue';
     if (state.transaction) {
@@ -959,9 +974,22 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
           if (!ready.runs) { refuse(ready.detail); return 'continue'; }
         } catch (error) { refuse(error instanceof Error ? error.message : String(error)); return 'continue'; }
       }
-      const staged = localCandidate ? { stagedPath: localCandidate.binaryPath } : await (deps.stage ?? stageBinary)({ refs: refs!, home, platform, localAppData: options.localAppData }, {
-        ...(deps.stageDeps ?? createBinaryUpdateDeps({ downloadIdleTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS })), ready: file => probe(file, version, platform),
-      });
+      const stageRelease = async () => {
+        const download = { id: crypto.randomUUID(), pid: process.pid, since: now() };
+        changeState(next => { next.download = download; });
+        try {
+          return await (deps.stage ?? stageBinary)({ refs: refs!, home, platform, localAppData: options.localAppData,
+            signal: runnerRequestSignal(signal, RUNNER_DOWNLOAD_TIMEOUT_MS) }, {
+            ...(deps.stageDeps ?? createBinaryUpdateDeps({ downloadIdleTimeoutMs: RUNNER_REQUEST_TIMEOUT_MS })), ready: file => probe(file, version, platform),
+          });
+        } finally { changeState(next => { if (next.download?.id === download.id) delete next.download; }); }
+      };
+      const staged = localCandidate ? { stagedPath: localCandidate.binaryPath } : await stageRelease();
+      if (signal?.aborted) {
+        if (!localCandidate) fs.rmSync(path.dirname(versionBinaryPath(home, platform, version, options.localAppData)), { recursive: true, force: true });
+        changeState(next => { schedule(next, now(), request); });
+        return 'continue';
+      }
       if ('error' in staged) { refuse(staged.error); return 'continue'; }
       const live = runnerCurrentReleaseProbe(binaryPath, currentVersion, platform);
       if (!live.runs) { refuse('installed runner changed before handoff: ' + live.detail); return 'continue'; }
@@ -1003,6 +1031,7 @@ export function createRunnerUpdateController(options: RunnerUpdateOptions): Runn
   return {
     contactPayload: guard(contactPayload, () => payload(freshState())),
     statusPayload: () => payload(decodeState(home)),
+    hasLiveDownload: () => liveDownload(decodeState(home)) !== undefined,
     onContact: guard(onContact, () => undefined), startup: guard(startup, () => undefined),
     acknowledgeHealthy: guard(acknowledgeHealthy, () => undefined), recordClaim: guard(recordClaim, () => undefined),
     recordHealthRefusal: guard(recordHealthRefusal, () => undefined), recordRuntimeCapability: guard(recordRuntimeCapability, () => undefined), queueManual, queueLocal,

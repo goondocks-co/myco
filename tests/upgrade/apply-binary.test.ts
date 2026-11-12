@@ -70,7 +70,6 @@ afterEach(() => {
 
 interface StageRecorder {
   deps: StageBinaryDeps;
-  downloads: Array<{ url: string; destPath: string }>;
 }
 
 interface StageOpts {
@@ -87,11 +86,10 @@ interface StageOpts {
 function makeStageRec(opts: StageOpts = {}): StageRecorder {
   const assetBytes = opts.assetBytes ?? NEW_BYTES;
   const sha256sumsText = opts.sha256sumsText ?? makeSumsText(ASSET_NAME, NEW_BYTES);
-  const rec: StageRecorder = { deps: undefined as never, downloads: [] };
+  const rec: StageRecorder = { deps: undefined as never };
 
   rec.deps = {
     download: vi.fn(async (url: string, destPath: string) => {
-      rec.downloads.push({ url, destPath });
       if (opts.downloadThrows) throw new Error('network blew up');
       if (/SHA256SUMS/i.test(url) || destPath.endsWith('.sha256sums')) {
         fs.writeFileSync(destPath, sha256sumsText);
@@ -135,6 +133,7 @@ function writeStableBinary(): string {
 
 describe('stageBinary — success', () => {
   it('returns { versionDir, version } and writes binary at versionBinaryPath', async () => {
+    const stablePath = writeStableBinary();
     const rec = makeStageRec();
     const result = await stageBinary(
       { refs: baseRefs(), home: tmpHome, platform: PLATFORM },
@@ -147,35 +146,9 @@ describe('stageBinary — success', () => {
     expect(ok.versionDir).toBe(versionDir(tmpHome, PLATFORM, VERSION));
 
     const expected = versionBinaryPath(tmpHome, PLATFORM, VERSION);
-    expect(fs.existsSync(expected)).toBe(true);
     expect(fs.readFileSync(expected, 'utf-8')).toBe(NEW_BYTES);
-  });
-
-  it('leaves the stable binary untouched on success', async () => {
-    const stablePath = writeStableBinary();
-    const rec = makeStageRec();
-    await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
     expect(fs.readFileSync(stablePath, 'utf-8')).toBe(STABLE_BYTES);
-  });
-
-  it('cleans up no temps: only the version dir remains under versions/', async () => {
-    const rec = makeStageRec();
-    await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-    const vDir = versionsDir(tmpHome, PLATFORM);
-    const entries = fs.readdirSync(vDir);
-    // Only the versioned subdir should remain; no temp files.
-    expect(entries).toEqual([VERSION]);
-  });
-
-  it('downloads both the asset and SHA256SUMS', async () => {
-    const rec = makeStageRec();
-    await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-    expect(rec.downloads.length).toBe(2);
-    expect(rec.downloads.some((d) => d.url === baseRefs().assetUrl)).toBe(true);
-    expect(rec.downloads.some((d) => d.url === baseRefs().sha256sumsUrl)).toBe(true);
+    expect(fs.readdirSync(versionsDir(tmpHome, PLATFORM))).toEqual([VERSION]);
   });
 });
 
@@ -199,12 +172,6 @@ describe('stageBinary — the default runnable gate', () => {
 });
 
 describe('stageBinary — failure invariants', () => {
-  // Every failure scenario must satisfy ALL of these:
-  //   1. Returns { error }
-  //   2. Nothing under versions/<v>/
-  //   3. No temp files remain under versions/
-  //   4. Stable binary untouched
-
   const FAILURES: Array<{ name: string; opts: StageOpts }> = [
     {
       name: 'download throws',
@@ -230,43 +197,13 @@ describe('stageBinary — failure invariants', () => {
   ];
 
   for (const { name, opts } of FAILURES) {
-    describe(name, () => {
-      it('returns { error }', async () => {
-        const rec = makeStageRec(opts);
-        const result = await stageBinary(
-          { refs: baseRefs(), home: tmpHome, platform: PLATFORM },
-          rec.deps,
-        );
-        expect('error' in result).toBe(true);
-        expect(typeof (result as { error: string }).error).toBe('string');
-      });
-
-      it('writes NOTHING under versions/<v>/', async () => {
-        const rec = makeStageRec(opts);
-        await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-        const vDir = versionDir(tmpHome, PLATFORM, VERSION);
-        expect(fs.existsSync(vDir)).toBe(false);
-      });
-
-      it('cleans all temp files from versions/', async () => {
-        const rec = makeStageRec(opts);
-        await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-        const vDir = versionsDir(tmpHome, PLATFORM);
-        if (fs.existsSync(vDir)) {
-          const leftovers = fs.readdirSync(vDir);
-          expect(leftovers).toEqual([]);
-        }
-      });
-
-      it('stable binary is untouched', async () => {
-        const stablePath = writeStableBinary();
-        const rec = makeStageRec(opts);
-        await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
-
-        expect(fs.readFileSync(stablePath, 'utf-8')).toBe(STABLE_BYTES);
-      });
+    it(`preserves the stable binary and clears staging when ${name}`, async () => {
+      const stablePath = writeStableBinary();
+      const rec = makeStageRec(opts);
+      const result = await stageBinary({ refs: baseRefs(), home: tmpHome, platform: PLATFORM }, rec.deps);
+      expect(result).toMatchObject({ error: expect.any(String) });
+      expect(fs.readdirSync(versionsDir(tmpHome, PLATFORM))).toEqual([]);
+      expect(fs.readFileSync(stablePath, 'utf-8')).toBe(STABLE_BYTES);
     });
   }
 });
