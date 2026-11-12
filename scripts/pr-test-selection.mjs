@@ -8,7 +8,7 @@ const INDEX_FILE = /(?:^|\/)index\.[cm]?[jt]sx?$/;
 const require = createRequire(import.meta.url);
 let compiler;
 
-/** Static imports, one re-exporting index, and one non-test module under tests/. */
+/** Static imports, one re-exporting index, one non-test module under tests/, and a changed JSON file a test imports. */
 export function affectedTests({ root, files, changed }) {
   const ts = compiler ??= require('typescript-v6');
   const relative = file => path.relative(root, file).split(path.sep).join('/');
@@ -43,11 +43,13 @@ export function affectedTests({ root, files, changed }) {
   const intersects = (imports, targets) => [...imports].some(file => targets.has(file));
   const throughIndex = new Set([...exports].filter(([, imports]) => intersects(imports, source)).map(([file]) => file));
   const direct = new Set([...source, ...changed.filter(file => file.startsWith('tests/') && !isTestFile(file))]);
+  // A test that imports a changed JSON file (a duration table, a recorded workload) runs with the changed tests.
+  const data = new Set(changed.filter(file => file.endsWith('.json')));
   const affected = new Set([...direct, ...throughIndex]);
   const helpers = new Set([...dependencies].filter(([file, imports]) => file.startsWith('tests/') && !isTestFile(file) && intersects(imports, affected)).map(([file]) => file));
   return [...dependencies].flatMap(([file, imports]) => {
     if (!isTestFile(file)) return [];
-    const tier = changedSet.has(file) ? 0 : intersects(imports, direct) ? 1
+    const tier = changedSet.has(file) || intersects(imports, data) ? 0 : intersects(imports, direct) ? 1
       : intersects(imports, throughIndex) || intersects(imports, helpers) ? 2 : null;
     return tier === null ? [] : [{ file, tier }];
   });
