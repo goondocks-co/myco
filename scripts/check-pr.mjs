@@ -141,6 +141,12 @@ try {
     const reason = staleReason(root);
     if (reason) throw new Error(`Workspace ${reason}; checks require dependencies from package-lock.json.`);
   });
+  check('bun version', 'CI setup: oven-sh/setup-bun with .bun-version',
+    'Put the pinned Bun first on PATH (the version in .bun-version), then npm run check:pr', () => {
+      const pinned = fs.readFileSync('.bun-version', 'utf8').trim();
+      const found = spawnSync('bun', ['--version'], { encoding: 'utf8' }).stdout?.trim();
+      if (found !== pinned) throw new Error(`bun ${found || 'not found'} is on PATH but CI runs ${pinned}; test results would differ from CI.`);
+    });
   const gate = (name, script, ci, fix) => check(name, ci, fix,
     () => command(process.execPath, [`scripts/${script}.mjs`, base]));
   gate('shipped migrations', 'check-shipped-migrations', 'Shipped migrations are unchanged and new ones append',
