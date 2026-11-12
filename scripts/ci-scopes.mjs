@@ -75,5 +75,5 @@ export const BUILD_JOB_FILES = [
 export const PARITY_SMOKE_SCENARIOS = [
   'session turns: capture keyed to prompts, turns read, turn body, tool calls on their own, rail summaries and filters',
   'schema upgrade: a Deployment populated by its users upgrades from the previous schema with every record, refusal and write unchanged',
-  'budget: populated schema upgrade keeps activation and its refusal visible',
+  'budget: populated schema upgrade keeps activation visible',
 ];

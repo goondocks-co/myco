@@ -21,7 +21,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { configureSqliteLibrary } from '../../packages/myco-server/src/platform/bun/sqlite-library.js';
 import { sqliteVectorStore } from '../../packages/myco-server/src/platform/bun/vectors.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { issueMemberToken } from './helpers/member-token.js';
+import { ingestEvent } from '@myco-server-worker/ingest/events.js';
+import { uuidv5 } from '@myco-server-worker/hash.js';
 import { A, B, D, MISSING, REPO, fakeGithub, type Repo } from './helpers/github-fake.js';
 
 configureSqliteLibrary();
@@ -231,6 +234,65 @@ describe('embedding revisions follow the values a vector is built from', () => {
       const compared = [...sql.matchAll(/(?:old\.(\w+) IS NOT new\.\1|new\.(\w+) IS NOT old\.\2)/g)].map((m) => m[1] ?? m[2]);
       expect({ name, named: named.length > 0, compared: [...new Set(compared)].sort() }).toEqual({ name, named: true, compared: [...named].sort() });
     }
+  });
+
+  it('keeps revisions across replayed session.start and plan ingestion, and moves them on changed record content', async () => {
+    const f = fixture();
+    const token = await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, 10);
+    const ctx = { projectId: P, machineId: 'machine_1', tokenId: token.tokenId, bodyBytes: 0, now: 10 };
+    const planKey = await uuidv5('plan', P, 'docs/plan.md');
+
+    f.insert('sessions', {
+      project_id: P, session_id: 's_ingest', machine_id: 'machine_1', created_by_token_id: token.tokenId,
+      first_received_at: 1, last_received_at: 1, title: 'Title', summary: 'Summary', started_at: 1, ended_at: 2,
+    });
+    await ingestEvent(f.db, ctx, envelope({
+      eventId: uuid(101),
+      sessionId: 's_ingest',
+      kind: 'plan',
+      createdAt: 2,
+      payload: { planKey, title: 'Plan', content: 'Plan initial', originPath: 'docs/plan.md', status: 'active' },
+    }));
+
+    const sessionRevision = f.revisionOf('session', 's_ingest');
+    const planRevision = f.revisionOf('plan', planKey);
+    expect(sessionRevision).toBeDefined();
+    expect(planRevision).toBeDefined();
+
+    // Replay an identical session.start: session revision stays unchanged.
+    await ingestEvent(f.db, ctx, envelope({
+      eventId: uuid(102),
+      sessionId: 's_ingest',
+      kind: 'session.start',
+      createdAt: 1,
+      payload: { agent: 'claude-code', startedAt: 1 },
+    }));
+    expect(f.revisionOf('session', 's_ingest')).toBe(sessionRevision);
+
+    // Replay an identical plan: plan revision stays unchanged.
+    await ingestEvent(f.db, ctx, envelope({
+      eventId: uuid(103),
+      sessionId: 's_ingest',
+      kind: 'plan',
+      createdAt: 3,
+      payload: { planKey, title: 'Plan', content: 'Plan initial', originPath: 'docs/plan.md', status: 'active' },
+    }));
+    expect(f.revisionOf('plan', planKey)).toBe(planRevision);
+
+    // Change plan content: plan revision moves, session revision stays unchanged.
+    await ingestEvent(f.db, ctx, envelope({
+      eventId: uuid(104),
+      sessionId: 's_ingest',
+      kind: 'plan',
+      createdAt: 4,
+      payload: { planKey, title: 'Plan', content: 'Plan changed', originPath: 'docs/plan.md', status: 'active' },
+    }));
+    expect(f.revisionOf('plan', planKey)).not.toBe(planRevision);
+    expect(f.revisionOf('session', 's_ingest')).toBe(sessionRevision);
+
+    // Change session record: session revision moves.
+    f.sqlite.run(`UPDATE sessions SET summary = 'Updated summary' WHERE project_id = ? AND session_id = ?`, [P, 's_ingest']);
+    expect(f.revisionOf('session', 's_ingest')).not.toBe(sessionRevision);
   });
 });
 
