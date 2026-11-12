@@ -5,6 +5,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET, rawBackfill } from '@myco-server-worker/core/raw-backfill.js';
 import { LIVE_PROCESSED_FIELDS } from '@myco-server-worker/db/processed-resources.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
 import { sqliteD1 } from './helpers/d1.js';
 import { historicalBackfillSql } from './helpers/raw-backfill-fixture.js';
 import { measuredStore } from './helpers/read-budget.js';
@@ -68,6 +69,15 @@ it('workerd D1 and native SQLite produce identical bounded backfill runs', async
     const migration = SCHEMA_STEPS.find(s => s.version === 71)!;
     await d1.batch(migration.statements.map(sql => d1.prepare(sql)));
     for (const sql of migration.statements) native.exec(sql);
+    const SOURCE_TABLES = ['blobs', 'events', 'transcripts', 'transcript_segments', 'plans'] as const;
+    const stripEvents = (rows: Record<string, unknown>[], table: string) =>
+      table !== 'events' ? rows : rows.map(({ raw_revision: _r, payload_format: _f, content_revision: _c, ...original }) => original);
+    const d1Originals = new Map<string, string>();
+    const nativeOriginals = new Map<string, string>();
+    for (const table of SOURCE_TABLES) {
+      d1Originals.set(table, await sha256Hex(JSON.stringify(stripEvents((await d1.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all<Record<string, unknown>>()).results, table))));
+      nativeOriginals.set(table, await sha256Hex(JSON.stringify(stripEvents(native.query<Record<string, unknown>, []>(`SELECT * FROM ${table} ORDER BY rowid`).all(), table))));
+    }
     let done = false;
     let nativeDone = false;
     let nativeChanged = 0;
@@ -104,6 +114,10 @@ it('workerd D1 and native SQLite produce identical bounded backfill runs', async
     expect(d1Changed).toBe(nativeChanged);
     for (const table of ['raw_resources', 'raw_credentials', 'processed_resources', 'raw_provenance_backfill']) {
       expect((await d1.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()).results).toEqual(native.query<Record<string, unknown>, []>(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    }
+    for (const table of SOURCE_TABLES) {
+      expect(await sha256Hex(JSON.stringify(stripEvents((await d1.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all<Record<string, unknown>>()).results, table)))).toBe(d1Originals.get(table)!);
+      expect(await sha256Hex(JSON.stringify(stripEvents(native.query<Record<string, unknown>, []>(`SELECT * FROM ${table} ORDER BY rowid`).all(), table)))).toBe(nativeOriginals.get(table)!);
     }
     await expectCursorIndependentPages(d1);
   } finally { native.close(); await mf.dispose(); }
