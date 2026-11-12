@@ -14,7 +14,8 @@ import { refreshEstimates,estimateForClaim,estimateKey } from '@myco-server-work
 import { budgetStatusLine } from '@goondocks/myco-shared/budget-status';
 import { claimSettings } from '@myco-server-worker/core/worker-selection.js';
 import { selectWorkerExecution } from '@myco-server-worker/core/harness.js';
-import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
+import { capabilitiesRequiredBy, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
+import { capture, GOTCHAS, ready } from './helpers/learning-stages.js';
 import { runStaleSweep,QUEUE_MAX_AGE_MS } from '@myco-server-worker/core/jobs-run.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
@@ -411,6 +412,131 @@ it('pulls nothing in production while learning is off and claims queued rows exa
   }
 });
 
+async function pulledFixture() {
+  const f = await budgetFixture();
+  const harnesses = [offeredHarness('claude-code')];
+  const poll = (now = f.now, h = harnesses) =>
+    claimNextRun(f.serverEnv, { principal: f.principal, harnesses: h, capabilities: WORKER_CAPABILITIES, now });
+
+  const seedCards = async (projectId = 'proj_1', sessionId = 'sess-1', turns = GOTCHAS) => {
+    await capture(f.db, sessionId, turns, projectId, f.now);
+    await ready(f.db, f.now);
+    const row = f.sqlite.query<{ card_deadline: number }, []>(
+      `SELECT card_deadline FROM learning_sessions WHERE project_id='${projectId}' AND card_deadline IS NOT NULL LIMIT 1`
+    ).get();
+    return (row?.card_deadline ?? f.now) + 1000;
+  };
+
+  const seedCuration = async (projectId = 'proj_1', clusterKey = 'cur-1', at = f.now) => {
+    await settingsWriter(f.db).setCapability(projectId, 'spore_curation', true, 'test', f.now);
+    f.sqlite.run(`INSERT OR IGNORE INTO spores(project_id, id, agent_id, content, observation_type, agent_line, created_at, revision, status)
+      VALUES(?, 'spore-1-' || ?, 'myco-agent', 'Content 1', 'decision', 'line', ?, 0, 'active'),
+            (?, 'spore-2-' || ?, 'myco-agent', 'Content 2', 'decision', 'line', ?, 0, 'active')`,
+      [projectId, clusterKey, f.now, projectId, clusterKey, f.now]);
+    f.sqlite.run(`INSERT OR REPLACE INTO spore_curation_work(project_id, cluster_key, members, due_at, failures)
+      VALUES(?, ?, '[{"id":"spore-1-' || ? || '","revision":0,"closeness":5.5},{"id":"spore-2-' || ? || '","revision":0,"closeness":5.2}]', ?, 0)`,
+      [projectId, clusterKey, clusterKey, clusterKey, at]);
+  };
+
+  return { ...f, harnesses, poll, seedCards, seedCuration };
+}
+
+it('claims higher-priority learning stage before lower-priority curation when both are due simultaneously', async () => {
+  const f = await pulledFixture();
+  try {
+    const at = await f.seedCards('proj_1', 'sess-1');
+    await f.seedCuration('proj_1', 'cur-1', at);
+    const first = await f.poll(at);
+    expect(first).toMatchObject({ claimed: true, run: { task: 'turn-cards', projectId: 'proj_1' } });
+    const second = await f.poll(at + 1);
+    expect(second).toMatchObject({ claimed: true, run: { task: 'curate-spores', projectId: 'proj_1' } });
+  } finally { f.sqlite.close(); }
+});
+
+it('claims an admitted queued run before due pulled work', async () => {
+  const f = await pulledFixture();
+  try {
+    const at = await f.seedCards('proj_1', 'sess-2');
+    f.queue('queued-title', 'automatic', 'proj_1', 'title-summary', at);
+    const first = await f.poll(at);
+    expect(first).toMatchObject({ claimed: true, run: { id: 'queued-title' } });
+    const second = await f.poll(at + 1);
+    expect(second).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
+  } finally { f.sqlite.close(); }
+});
+
+it('pulls for the least automatically spent Project and breaks ties by Project id', async () => {
+  for (const [spent, expected] of [[[0, 0], 'proj_1'], [[5, 1], 'proj_2']] as const) {
+    const f = await pulledFixture();
+    try {
+      f.history('spent-1', spent[0], 'automatic', f.now, 0.1, 'title-summary', false, 'proj_1');
+      f.history('spent-2', spent[1], 'automatic', f.now, 0.1, 'title-summary', false, 'proj_2');
+      f.history('manual-2', 9, 'manual', f.now, 0.1, 'title-summary', false, 'proj_2');
+      await f.seedCuration('proj_1', 'cur-p1', f.now);
+      await f.seedCuration('proj_2', 'cur-p2', f.now);
+      expect(await f.poll(f.now)).toMatchObject({ claimed: true, run: { projectId: expected } });
+    } finally { f.sqlite.close(); }
+  }
+});
+
+it('admits nothing pulled when the higher stage head is unaffordable, even with cheaper lower work', async () => {
+  const f = await pulledFixture();
+  try {
+    await f.setting(1);
+    const at = await f.seedCards('proj_1', 'sess-high');
+    const { selected: cardSel } = await selectWorkerExecution(f.serverEnv, 'turn-cards', f.harnesses, await claimSettings(f.serverEnv), f.principal);
+    await seedAgentEstimate(f.db, 'proj_1', estimateKey('turn-cards', cardSel!.harness, cardSel!.profile), JSON.stringify({ estimate: 2 }), f.now);
+    await f.seedCuration('proj_1', 'cur-cheap', at);
+    const { selected: curSel } = await selectWorkerExecution(f.serverEnv, 'curate-spores', f.harnesses, await claimSettings(f.serverEnv), f.principal);
+    await seedAgentEstimate(f.db, 'proj_1', estimateKey('curate-spores', curSel!.harness, curSel!.profile), JSON.stringify({ estimate: 0.1 }), f.now);
+    expect(await f.poll(at)).toEqual({ claimed: false, reason: 'no_work' });
+  } finally { f.sqlite.close(); }
+});
+
+it('pulls affordable work past a queued head that does not fit the budget', async () => {
+  const f = await pulledFixture();
+  try {
+    await f.setting(1);
+    f.queue('unaffordable-queued', 'automatic', 'proj_1', 'canopy-map', f.now);
+    const { selected: mapSel } = await selectWorkerExecution(f.serverEnv, 'canopy-map', f.harnesses, await claimSettings(f.serverEnv), f.principal);
+    await seedAgentEstimate(f.db, 'proj_1', estimateKey('canopy-map', mapSel!.harness, mapSel!.profile), JSON.stringify({ estimate: 2 }), f.now);
+    await f.seedCuration('proj_1', 'cur-affordable', f.now);
+    const { selected: curSel } = await selectWorkerExecution(f.serverEnv, 'curate-spores', f.harnesses, await claimSettings(f.serverEnv), f.principal);
+    await seedAgentEstimate(f.db, 'proj_1', estimateKey('curate-spores', curSel!.harness, curSel!.profile), JSON.stringify({ estimate: 0.1 }), f.now);
+    expect(await f.poll(f.now)).toMatchObject({ claimed: true, run: { task: 'curate-spores', projectId: 'proj_1' } });
+    expect(f.sqlite.query("SELECT status, held_by FROM agent_runs WHERE id='unaffordable-queued'").get()).toEqual({ status: 'queued', held_by: 'budget' });
+  } finally { f.sqlite.close(); }
+});
+
+it('creates one run when concurrent polls race for a pulled subject, and pulls fresh work after lease expiry', async () => {
+  const f = await pulledFixture();
+  try {
+    const at = await f.seedCards('proj_1', 'sess-race');
+    let prepared = 0, release!: () => void;
+    const together = new Promise<void>(resolve => { release = resolve; });
+    const batch = f.db.batch.bind(f.db);
+    f.db.batch = async (stmts) => {
+      if (++prepared <= 2) {
+        if (prepared === 2) release();
+        await together;
+      }
+      return batch(stmts);
+    };
+    const outcomes = await Promise.all([f.poll(at), f.poll(at)]);
+    f.db.batch = batch;
+    const claimed = outcomes.filter(o => o.claimed);
+    expect(claimed).toHaveLength(1);
+    expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_run_attempts').get()).toEqual({ n: 1 });
+    const run = (claimed[0] as any).run;
+
+    f.sqlite.run("UPDATE agent_runs SET status='failed', error_code='lease_lapsed', lease_expires_at=0 WHERE id=?", [run.id]);
+    const retryAt = at + 3_600_000 + 1000;
+    const second = await f.poll(retryAt);
+    expect(second).toMatchObject({ claimed: true, run: { task: 'turn-cards', projectId: 'proj_1' } });
+    expect(f.sqlite.query("SELECT COUNT(*) AS n FROM agent_runs WHERE subject='cards:sess-race'").get()).toEqual({ n: 2 });
+  } finally { f.sqlite.close(); }
+});
+
 it('queuedAdmissible costs the head seeks alone on D1, whatever the backlog length', async () => {
   await withDocumentStores(async (db, target) => {
     if (target !== 'D1') return;
@@ -430,4 +556,4 @@ it('queuedAdmissible costs the head seeks alone on D1, whatever the backlog leng
     const one = await reads(1);
     expect(await reads(999)).toBe(one);
   });
-});
+}, 60_000);

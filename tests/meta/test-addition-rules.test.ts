@@ -16,46 +16,49 @@ describe('test addition rules', () => {
     expect(isProductFile(makePath('tests', 'myco-server', 'gates.test.ts'))).toBe(false);
   });
 
-  it('refuses exported functions, consts, or methods matching test knob names in product code', () => {
+  it('accepts legitimate product declarations, calls, help strings and explanatory JSDoc', () => {
     const file = makePath('packages', 'myco-server', 'src', 'core', 'sample.ts');
-    const bad = [
-      'export function reset() {}',
+    const table = [
+      { name: 'rebuild reset export', code: 'export function reset() {}', text: 'export function reset() {}' },
+      { name: 'reset call', code: 'await reset();', text: 'await reset();' },
+      { name: 'resetSettings export', code: 'export function resetSettings() {}', text: 'export function resetSettings() {}' },
+      { name: 'resetEmbeddingIndex export', code: 'export const resetEmbeddingIndex = () => {};', text: 'export const resetEmbeddingIndex = () => {};' },
+      { name: 'help string literal', code: 'export const HELP = "For testing a recovery, select a backup.";', text: 'export const HELP = "For testing a recovery, select a backup.";' },
+      { name: 'for testing whether JSDoc', code: 'export function isActive() {}', text: '/** The predicate for testing whether the account is active. */\nexport function isActive() {}' },
+      { name: 'ordinary export', code: 'export const MAX_RETRIES = 3;', text: 'export const MAX_RETRIES = 3;' },
+    ];
+    for (const { code, text } of table) {
+      expect(statementFindings({ file, line: 1, code, text }, NO_FACTS)).toEqual([]);
+    }
+  });
+
+  it('refuses test knob names across functions, consts, defaults, static members, and object properties', () => {
+    const file = makePath('packages', 'myco-server', 'src', 'core', 'sample.ts');
+    const table = [
       'export async function _reset() {}',
       'export const fooForTest = 1;',
       'export let __stateForTests = 2;',
       'export function installTestStagesForTest() {}',
       'export { normal, knob as knobForTest };',
-      'export class Lock { __resetForTests() {} }',
+      'export class Hooks { static __resetForTests = () => {} }',
+      'export const Hooks = { __resetForTests: () => {} };',
+      'export default resetForTests;',
     ];
-    for (const code of bad) {
+    for (const code of table) {
       const findings = statementFindings({ file, line: 1, code, text: code }, NO_FACTS);
       expect(findings.map((f: { rule: string }) => f.rule)).toContain('test-knob-name');
     }
   });
 
-  it('allows real operations and ordinary exports in product code', () => {
+  it('refuses exports documented with test-only exposure phrases in comments', () => {
     const file = makePath('packages', 'myco-server', 'src', 'core', 'sample.ts');
-    const good = [
-      'export function resetSettings() {}',
-      'export const resetEmbeddingIndex = () => {};',
-      'export function normalHelper() {}',
-      'export const MAX_RETRIES = 3;',
-    ];
-    for (const code of good) {
-      const findings = statementFindings({ file, line: 1, code, text: code }, NO_FACTS);
-      expect(findings).toEqual([]);
-    }
-  });
-
-  it('refuses exports documented with test-only comments in product code', () => {
-    const file = makePath('packages', 'myco-server', 'src', 'core', 'sample.ts');
-    const commented = [
-      { text: '/** Test-only: stage registry */ export function getStages() {}', code: 'export function getStages() {}' },
-      { text: '// Exported for testing export function check() {}', code: 'export function check() {}' },
+    const table = [
+      { text: '/** Test-only: stage registry */\nexport function getStages() {}', code: 'export function getStages() {}' },
+      { text: '// for tests only\nexport function check() {}', code: 'export function check() {}' },
       { text: 'export const seam = 1; // test seam', code: 'export const seam = 1;' },
-      { text: '// exposed for tests export const x = 2;', code: 'export const x = 2;' },
+      { text: '// exposed for tests\nexport const x = 2;', code: 'export const x = 2;' },
     ];
-    for (const { text, code } of commented) {
+    for (const { text, code } of table) {
       const findings = statementFindings({ file, line: 1, code, text }, NO_FACTS);
       expect(findings.map((f: { rule: string }) => f.rule)).toContain('test-knob-comment');
     }

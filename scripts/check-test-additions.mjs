@@ -104,7 +104,7 @@ function statements(lines) {
     out.push({
       line: current[0].line,
       code: current.map((part) => part.code.trim()).filter(Boolean).join(' '),
-      text: current.map((part) => part.text.trim()).join(' '),
+      text: current.map((part) => part.text.trim()).join('\n'),
       fresh: current.some((part) => !part.old),
     });
     current = [];

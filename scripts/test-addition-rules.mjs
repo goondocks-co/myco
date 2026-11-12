@@ -130,16 +130,23 @@ const RULES = {
   }),
 };
 
-const TEST_KNOB_IDENTIFIER = /^(?:_?reset|__\w*ForTests?|install\w*ForTests?|\w+ForTests?)$/;
-const TEST_COMMENT_PHRASE = /\b(?:test[- ]only|for\s+testing|exposed\s+for\s+tests?|test\s+seam)\b/i;
+const TEST_KNOB_IDENTIFIER = /^(?:_reset\w*|__\w*ForTests?|\w+ForTests?)$/;
+const TEST_COMMENT_PHRASE = /\b(?:test[- ]only|exposed\s+for\s+tests?|for\s+tests?\s+only|test\s+seam)\b/i;
 const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/;
 
 function* exportedKnobNames(code) {
+  if (!/\bexport\b/.test(code)) return;
   for (const m of code.matchAll(/\bexport\s+(?:default\s+)?(?:async\s+)?function\*?\s+([A-Za-z0-9_$]+)/g)) {
     if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
   }
   for (const m of code.matchAll(/\bexport\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)/g)) {
     if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
+  }
+  for (const m of code.matchAll(/\bexport\s+(?:default\s+)?class\s+([A-Za-z0-9_$]+)/g)) {
+    if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
+  }
+  for (const m of code.matchAll(/\bexport\s+default\s+([A-Za-z0-9_$]+)\s*(?:;|$|\n)/g)) {
+    if (m[1] !== 'function' && m[1] !== 'class' && TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
   }
   for (const block of code.matchAll(/\bexport\s*\{([^}]+)\}/g)) {
     for (const spec of block[1].split(',')) {
@@ -148,14 +155,75 @@ function* exportedKnobNames(code) {
       if (TEST_KNOB_IDENTIFIER.test(exportedName)) yield exportedName;
     }
   }
-  for (const m of code.matchAll(/(?:^|\s)(?:public\s+|static\s+|async\s+)*([A-Za-z0-9_$]+)\s*\(/g)) {
+  for (const m of code.matchAll(/\bstatic\s+(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z0-9_$]+)\b/g)) {
+    if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
+  }
+  for (const m of code.matchAll(/(?:[{,]\s*)([A-Za-z0-9_$]+)\s*[:(]/g)) {
     if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
   }
 }
 
+function extractComments(text) {
+  let inString = null;
+  let inBlock = false;
+  const comments = [];
+  let current = '';
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const next = text[i + 1];
+
+    if (inBlock) {
+      if (char === '*' && next === '/') {
+        inBlock = false;
+        comments.push(current);
+        current = '';
+        i++;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (char === '\\') {
+        i++;
+      } else if (char === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (char === '/' && next === '/') {
+      const newline = text.indexOf('\n', i + 2);
+      if (newline === -1) {
+        comments.push(text.slice(i + 2));
+        break;
+      }
+      comments.push(text.slice(i + 2, newline));
+      i = newline;
+      continue;
+    }
+
+    if (char === '/' && next === '*') {
+      inBlock = true;
+      current = '';
+      i++;
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      inString = char;
+    }
+  }
+  if (current) comments.push(current);
+  return comments.join(' ');
+}
+
 function exportCommentPhrase(file, line, text) {
-  if (!TEST_COMMENT_PHRASE.test(text)) return null;
-  const match = TEST_COMMENT_PHRASE.exec(text)[0];
+  const commentText = extractComments(text);
+  if (!TEST_COMMENT_PHRASE.test(commentText)) return null;
+  const match = TEST_COMMENT_PHRASE.exec(commentText)[0];
   if (/\bexport\b/.test(text)) return match;
   if (!file || typeof line !== 'number') return null;
   try {
