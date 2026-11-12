@@ -16,7 +16,8 @@ export const toolBlobRetention: ParityScenario = {
   name: 'tool-call blobs: kept by the orphan sweep while referenced, read back whole; the deleted session\'s and the unreferenced freed',
   dedicated: { timeoutMs: 180_000 },
   async run(target: ParityTarget) {
-    await target.clockWake();
+    // The orphan audit arms at its first pass and releases only uploads received after it: arm it now, on the clock path that runs it.
+    if (target.clockAlarm !== undefined) await target.clockAlarm(Date.now()); else await target.clockWake();
     const stamp = Date.now();
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>) => {
       const res = await fetch(`${target.url}/events`, {
