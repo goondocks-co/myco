@@ -1,95 +1,55 @@
-import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
-import { capabilitiesRequiredBy } from '@goondocks/myco-shared/repository';
 import { expect } from 'bun:test';
-import { lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { ageRows, type ParityScenario } from '../harness.ts';
+import { allowWorkerClaims, claimRun, createProject, event, owner, putCapability, putSetting, wake } from '../clients/requests.ts';
+import { cancelRun, captureSession, dispatch, failRun, repository, runList, takeRun } from '../clients/runs.ts';
 
-/**
- * The clock on both targets: with scheduling on, a wake dispatches the harness
- * extraction for a Project with a recent receipt, a second wake inside the interval
- * dispatches nothing, a ceiling met leaves a skipped row by name, and a cold
- * Project gets nothing. The worker queue receives the run.
- */
+/** The schedule queues live map work once and keeps cold history out. */
 export const scheduledTasks: ParityScenario = {
   name: 'the clock: map work queued once, held by its interval, capped by its ceiling, withheld from a cold Project',
   dedicated: { timeoutMs: 120_000 },
-  async run(target: ParityTarget) {
-    const now = Date.now();
-    const leaf = (name: string, value: unknown) => target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES (${lit(name)}, ${lit(JSON.stringify(value))}, ${now}, ${lit(MEMBER_ID)})`);
-    await leaf('agent.scheduled_tasks_enabled', true);
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES (${lit(target.projectId)}, 'canopy', 1, ${now}, ${lit(MEMBER_ID)})`);
-    // Nothing earlier holds a place or sets the extraction interval.
-    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE status IN ('pending', 'running', 'queued')`);
-    await target.sql(`DELETE FROM agent_runs WHERE task = 'canopy-map'`);
-    // A cold Project beside the live one: a receipt three weeks old.
-    await target.sql(`INSERT OR IGNORE INTO projects (project_id, name, created_at) VALUES ('proj_cold', 'cold', ${now - 30 * 86_400_000})`);
-    await target.sql(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_cold', 'canopy', 1, ${now}, ${lit(MEMBER_ID)})`);
-    const [credential] = await target.sql(`SELECT c.id FROM member_credentials c JOIN members m ON m.id=c.member_id WHERE m.role='admin' AND c.revoked_at IS NULL AND c.expires_at>${now} ORDER BY c.issued_at LIMIT 1`) as Array<{ id: string }>;
-    await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
-      VALUES ('proj_cold', 'cold-session', 'machine_parity', ${lit(credential!.id)}, ${now - 21 * 86_400_000}, ${now - 21 * 86_400_000}, 'claude-code')`);
-    for (const project of [target.projectId,'proj_cold']) await target.sql(`INSERT OR REPLACE INTO project_repositories(project_id,revision,url,branch,updated_at,updated_by)
-      VALUES(${lit(project)},'fixture','https://example.test/repo','main',${now},${lit(MEMBER_ID)})`);
-    await target.sql(`INSERT OR REPLACE INTO worker_contacts(credential_id,machine_id,offers,capabilities,last_seen_at,updated_at)
-      VALUES(${lit(credential!.id)},'machine_parity',${lit(JSON.stringify([offeredHarness('claude-code')]))},${lit(JSON.stringify(capabilitiesRequiredBy('canopy-map')))},${now},${now})`);
-    // The live Project: a receipt a minute old, whatever ran before this scenario.
-    await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
-      VALUES (${lit(target.projectId)}, 'clock-live-session', 'machine_parity', ${lit(credential!.id)}, ${now - 60_000}, ${now - 60_000}, 'claude-code')`);
-
-    for (const [project, session, at] of [[target.projectId, 'clock-live-session', now - 60_000], ['proj_cold', 'cold-session', now - 21 * 86_400_000]] as const) {
-      await target.sql(`UPDATE sessions SET ended_at = ${at} WHERE project_id = ${lit(project)} AND session_id = ${lit(session)}`);
-      await target.sql(`INSERT INTO session_documents(project_id,session_id,state,generation,prompts,user_prompts,updated_at)
-        VALUES(${lit(project)},${lit(session)},'live',1,1,1,${at})`);
-      await target.sql(`INSERT INTO session_prompts(project_id,session_id,generation,prompt_id,turn_key,ord,origin,created_at)
-        VALUES(${lit(project)},${lit(session)},1,'clock-prompt','clock-prompt',1,'user',${at})`);
+  async run(target) {
+    await allowWorkerClaims(target);
+    const tasks = (map: Record<string, unknown>) => putSetting(target, 'agent.tasks', { 'title-summary': { schedule: { maxRunsPerDay: 0 } }, 'canopy-map': { schedule: map } });
+    expect((await tasks({ enabled: false })).status).toBe(200);
+    expect((await putSetting(target, 'agent.scheduled_tasks_enabled', true)).status).toBe(200);
+    const cold = { ...target, projectId: 'proj_cold' };
+    expect((await createProject(target, cold.projectId, 'cold')).status).toBe(201);
+    for (const project of [target, cold]) {
+      expect((await putCapability(project, 'canopy', true)).status).toBe(200);
+      await repository(project);
+      await captureSession(project, 'clock-session', 'Map the captured project', { channel: 'import', ended: true });
     }
-
-    const wake = async () => {
-      const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-      expect(res.status).toBe(200);
-      return (await res.json()) as { state: string; scheduled: { dispatched: number; skipped: number } };
-    };
-    const runs = (projectId: string) => target.sql(`SELECT status, harness, json_extract(run_context, '$.timeoutSeconds') AS timeoutSeconds, json_extract(run_context, '$.reason') AS reason FROM agent_runs WHERE project_id = ${lit(projectId)} AND task = 'canopy-map' ORDER BY COALESCE(queued_at, started_at), id`);
-
-    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: false } } });
-    expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 0 });
-    expect(await target.sql(`SELECT id FROM agent_runs WHERE task = 'embedding-reconcile' AND status IN ('pending','running','queued')`)).toEqual([]);
-
-    // Extraction is enabled at every awake state for this scenario.
-    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-capture-since-map', runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } } } });
-    const first = await wake();
-    expect(first.scheduled).toEqual({ dispatched: 1, skipped: 0 });
-    expect(await runs(target.projectId)).toEqual([{ status: 'queued', harness: null, timeoutSeconds: 900, reason: null }]);
-    expect(await runs('proj_cold')).toEqual([]);
-
-    // Inside the interval, and with extraction still live: nothing more.
-    expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 0 });
-    expect(await runs(target.projectId)).toHaveLength(1);
-
-    // The ceiling: one a day, the interval past — a skipped row names it.
-    await target.sql(`UPDATE agent_runs SET status = 'completed', started_at = COALESCE(started_at, queued_at), completed_at = ${now} WHERE task = 'canopy-map'`);
-    await target.sql(`UPDATE sessions SET last_received_at=(SELECT MAX(started_at)+1 FROM agent_runs WHERE task='canopy-map') WHERE project_id=${lit(target.projectId)} AND session_id='clock-live-session'`);
-    await leaf('agent.tasks', { 'canopy-map': { schedule: { enabled: true, preCondition: 'has-capture-since-map', runIn: ['active', 'idle', 'sleep'], intervalSeconds: 0, maxRunsPerDay: 1, reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } } } });
-    expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
-    const atCeiling = [
-      { status: 'completed', harness: null, timeoutSeconds: 900, reason: null },
-      { status: 'skipped', harness: null, timeoutSeconds: null, reason: 'max_runs_per_day' },
-    ];
-    expect(await runs(target.projectId)).toEqual(atCeiling);
-    // The ceiling refuses rather than queues, and one episode leaves one row: a
-    // second wake at the ceiling answers the same and leaves the same rows.
-    expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 1 });
-    expect(await runs(target.projectId)).toEqual(atCeiling);
-
-    // An owner can dispatch while the automatic allowance is exhausted.
-    const manual = await fetch(`${target.url}/api/harness/dispatch`, {
-      method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' },
-      body: JSON.stringify({ task: 'canopy-map', projectId: target.projectId }),
-    });
-    expect(manual.status).toBe(200);
-    expect(await runs(target.projectId)).toHaveLength(3);
-
-    // Off again: the clock leaves both Projects alone.
-    await leaf('agent.scheduled_tasks_enabled', false);
-    expect((await wake()).scheduled).toEqual({ dispatched: 0, skipped: 0 });
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'agent.tasks'`);
+    const coldAge = 21 * 86_400_000;
+    await ageRows(target, { table: 'projects', column: 'created_at', byMs: coldAge, match: { project_id: cold.projectId } });
+    await ageRows(target, { table: 'sessions', column: 'last_received_at', byMs: coldAge, match: { project_id: cold.projectId, session_id: 'clock-session' } });
+    const maps = (project = target) => runList(project, 'task=canopy-map');
+    await wake(target);
+    expect(await maps()).toEqual([]);
+    const schedule = { enabled: true, preCondition: 'has-capture-since-map', runIn: ['active', 'idle', 'sleep'], reservedRunsPerDay: { count: 0, preCondition: 'has-capture-since-map' } };
+    expect((await tasks(schedule)).status).toBe(200);
+    // A claim reports this worker's repository capabilities before the schedule decides availability.
+    expect(await claimRun(target)).toMatchObject({ claimed: false });
+    await wake(target);
+    const [queued] = await maps();
+    expect(queued).toMatchObject({ status: 'queued', harness: null, startedBy: 'clock' });
+    expect(await maps(cold)).toEqual([]);
+    await wake(target);
+    expect(await maps()).toHaveLength(1);
+    const run = await takeRun(target, queued.id);
+    expect(await failRun(target, run)).toMatchObject({ ended: true });
+    await event(target, 'clock-session', 'prompt', { promptId: crypto.randomUUID(), text: 'Map the next change', origin: 'user' });
+    expect((await tasks({ ...schedule, intervalSeconds: 0, maxRunsPerDay: 1 })).status).toBe(200);
+    await wake(target);
+    const atCeiling = await maps();
+    expect(atCeiling.map(row => row.status).sort()).toEqual(['failed', 'skipped']);
+    expect(atCeiling.find(row => row.status === 'skipped')).toMatchObject({ skipReasonCode: 'max_runs_per_day' });
+    await wake(target);
+    expect((await maps()).map(row => row.id).sort()).toEqual(atCeiling.map(row => row.id).sort());
+    const manual = await dispatch(target, 'canopy-map');
+    expect(await maps()).toHaveLength(3);
+    await cancelRun(target, manual.runId);
+    expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);
+    const off = await owner(target, '/api/wake', { method: 'POST' });
+    expect(off.status).toBe(200); expect(off.body.scheduled).toEqual({ dispatched: 0, skipped: 0 });
   },
 };

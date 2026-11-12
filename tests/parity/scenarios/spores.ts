@@ -2,6 +2,7 @@ import { expectRunRefusal } from '../../helpers/run-refusal.js';
 import { expect } from 'bun:test';
 import { sha256Hex } from '@myco-server-worker/hash.js';
 import { memberHeadersFor } from '../harness.ts';
+import { putCapability } from '../clients/requests.ts';
 import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
@@ -143,6 +144,7 @@ export const guardedSpores: ParityScenario = {
     const save = async () => String((await member({ op: 'save', type: 'gotcha', content: crypto.randomUUID() })).id);
     await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
     await target.sql(`INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES ('myco-agent','myco-agent','built-in',1,${now})`);
+    expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200); // extract-curate's spore tools need the Project's learning on.
     const run = async (suffix: string) => {
       const token = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
       const id = `guard-${now}-${suffix}`;
