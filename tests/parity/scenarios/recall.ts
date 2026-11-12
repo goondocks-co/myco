@@ -77,7 +77,8 @@ export const recall: ParityScenario = {
     const later = await served(session, p3, `and the plan for ${stamp} once more`);
     expect(later.parts?.map((p) => p.kind)).not.toContain('plan-nudge');
     expect(later.skipped).toContain('plan-nudge:repeat');
-    expect(await injectionKinds(session)).toEqual(['plan-nudge']);
+    // A served answer whose prompt is not on a published turn is a session record, kind context:<answer id>, beside the nudge.
+    expect(await injectionKinds(session)).toEqual([`context:${first.answerId}`, 'plan-nudge'].sort());
 
     const notice = `<task-notification>\n<task-id>${stamp}</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>`;
     const abstained = await served(session, crypto.randomUUID(), notice);

@@ -34,12 +34,17 @@ export const search: ParityScenario = {
     await post('prompt', { promptId: prompt, blob: key, origin: 'user' });
     await post('response', { responseId: response, promptId: prompt, blob: key });
     await post('plan', { planKey: plan, promptId: prompt, title: `${word} titleword`, blob: key, status: 'active' });
+    // An ended session is quiet at once, so its card deadline is the turn's due instant rather than the idle close.
+    await post('session.end', { endedAt: at });
     const spore = await saveSpore(target, `${word} advice`, target.projectId, 'decision');
     const published = await untilPublished(target,
       () => owner<{ rows?: Array<{ promptId: string }> }>(target, `/api/projects/${target.projectId}/sessions/${session}/turns`),
       (page) => page.status === 200 && (page.body.rows ?? []).some((row) => row.promptId === prompt));
     expect(published.status).toBe(200);
     await ageRows(target, { table: 'turn_cards', column: 'due_at', byMs: 3_600_000, match: { project_id: target.projectId, session_id: session } });
+    // Settlement marks the turn due, and the deadline pass then lists it for a worker.
+    const due = await untilPublished(target, () => owner<{ needsYou: Array<{ key: string }> }>(target, `/api/work/now?project=${target.projectId}`), (read) => read.status === 200 && read.body.needsYou.some((item) => item.key === `pulled:${target.projectId}:turn-cards`));
+    expect(due.status).toBe(200);
     await writeDueCards(target, `${word} card for the turn that reached distantneedle`);
     await writeSessionTitle(target, session, word, 'The session search finds by its title.');
     // A wake runs the index in the background on a Deployment that defers its work: wake, then read until the body is indexed.

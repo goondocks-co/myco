@@ -12,10 +12,9 @@ export const cortex: ParityScenario = {
   async run(target: ParityTarget) {
     const post = (sessionId: string, kind: string, payload: Record<string, unknown>) => event(target, sessionId, kind, payload);
     const ask = async (instruction: string) => {
-      const res = await fetch(`${target.url}/api/harness/dispatch`, { method: 'POST', headers: { ...target.ownerHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId: target.projectId, task: MAP_TASK, instruction, harness: 'claude-code' }) });
+      const res = await owner<{ queued: boolean; runId?: string; heldBy?: string }>(target, '/api/harness/dispatch', { method: 'POST', body: JSON.stringify({ projectId: target.projectId, task: MAP_TASK, instruction, harness: 'claude-code' }) });
       expect(res.status).toBe(200);
-      return await res.json() as { queued: boolean; runId?: string; heldBy?: string };
+      return res.body;
     };
     const runOf = async (runId: string) => {
       const read = await owner(target, `/api/projects/${target.projectId}/runs/${runId}`);
