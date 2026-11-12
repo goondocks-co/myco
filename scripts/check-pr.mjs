@@ -41,8 +41,15 @@ function git(args) {
   return execFileSync('git', args, { encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES });
 }
 
+class Stop extends Error {}
+const STOP_SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGHUP']);
+// npm reports a child stopped by a signal as exit 128 + the signal number.
+const STOP_STATUSES = new Map([[129, 'SIGHUP'], [130, 'SIGINT'], [143, 'SIGTERM']]);
+
 function command(tool, args, cwd = root) {
   const result = spawnSync(tool, args, { cwd, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES });
+  if (STOP_SIGNALS.has(result.signal) || STOP_STATUSES.has(result.status)) interrupted ??= result.signal ?? STOP_STATUSES.get(result.status);
+  if (interrupted) throw new Stop(`Interrupted by ${interrupted}`);
   if (result.error || result.status !== 0) {
     throw new Error(`${result.stdout ?? ''}${result.stderr ?? ''}${result.error?.message ?? ''}\nExit: ${result.status ?? result.signal}`);
   }
@@ -58,7 +65,11 @@ function reportCheck({ name, ci, fix, start, error, output = '' }) {
 function check(name, ci, fix, run) {
   const start = performance.now();
   let error;
-  try { run(); } catch (caught) { error = caught; }
+  if (interrupted) throw new Stop(`Interrupted by ${interrupted}`);
+  try { run(); } catch (caught) {
+    if (caught instanceof Stop) throw caught;
+    error = caught;
+  }
   reportCheck({ name, ci, fix, start, error });
 }
 
@@ -137,10 +148,14 @@ try {
   if (git(['status', '--porcelain']).trim()) {
     console.warn('WARNING: dirty tree: check:test-budget reads HEAD for the line ratio. Commit your changes and rerun check:pr before pushing.');
   }
+  const stale = [['workspace', root], ['dashboard', path.join(root, 'packages/myco-server/ui')]]
+    .map(([label, directory]) => [label, staleReason(directory)]).filter(([, reason]) => reason);
   check('workspace dependencies', 'CI setup: install dependencies', 'node scripts/ensure-deps.mjs', () => {
-    const reason = staleReason(root);
-    if (reason) throw new Error(`Workspace ${reason}; checks require dependencies from package-lock.json.`);
+    if (stale.length) throw new Error(`${stale.map(([label, reason]) => `${label} ${reason}`).join('; ')}; checks require dependencies from the lockfiles.`);
   });
+  if (stale.length) throw new Stop('dependencies are stale; install them and rerun');
+  const behind = git(['rev-list', '--count', `${base}..origin/main`]).trim();
+  if (behind !== '0') console.warn(`WARNING: branch is ${behind} commits behind origin/main; CI tests the merge with current main. git fetch origin && git rebase origin/main`);
   check('bun version', 'CI setup: oven-sh/setup-bun with .bun-version',
     'Put the pinned Bun first on PATH (the version in .bun-version), then npm run check:pr', () => {
       const pinned = fs.readFileSync('.bun-version', 'utf8').trim();
@@ -160,8 +175,8 @@ try {
     () => command(npm, ['test', '--', 'tests/myco-server/gates.test.ts']));
 
   if (changed.some(file => /^packages\/(?:myco-server|myco-shared)\//.test(file)
-    || file === CARRIER || /(?:^|\/)(?:package\.json|npm-shrinkwrap\.json|[^/]*lock[^/]*)$/.test(file)
-    || file === 'packages/myco/scripts/gen-ui-assets.ts')) {
+    || file === CARRIER || /(?:^|\/)(?:package\.json|npm-shrinkwrap\.json|package-lock\.json)$/.test(file)
+    || file === 'tsconfig.json' || file === 'packages/myco/scripts/gen-ui-assets.ts')) {
     check('dashboard bundle', BUNDLE_STEP, bundleFix, dashboard);
   }
   const files = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', 'packages', 'tests', 'scripts']).split('\0').filter(Boolean);
@@ -178,6 +193,7 @@ try {
     console.warn(`Run importing tests: npm test -- ${importers.map(quote).join(' ')}`);
     if (importers.includes('tests/parity/parity.test.ts')) console.warn('For parity: npm run test:parity');
   }
+  if (interrupted) throw new Stop(`Interrupted by ${interrupted}`);
   const testChecks = [];
   if (changed.length > 0) {
     const meta = fs.readdirSync('tests/meta', { recursive: true })
@@ -189,7 +205,12 @@ try {
   if (selected.length) testChecks.push(checkTests('changed tests', 'tests (node/DOM)',
     `Fix the reported test failures; npm test -- ${selected.map(quote).join(' ')}`, selected));
   await Promise.all(testChecks);
-  if (interrupted) throw new Error(`Interrupted by ${interrupted}`);
+  if (interrupted) throw new Stop(`Interrupted by ${interrupted}`);
+
+  check('skill content (strict)', 'lint: lint:skills:strict', 'Fix the reported skill content; npm run lint:skills:strict',
+    () => command(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/lint-skill-content.ts', '--strict']));
+  check('test shards', 'lint: check-test-shards', 'Fix the shard plan or durations; node scripts/check-test-shards.mjs',
+    () => command(process.execPath, ['scripts/run-test-command.mjs', process.execPath, 'scripts/check-test-shards.mjs']));
 
   check('worker bundle preparation', 'lint (prelint)', 'npx tsx packages/myco/scripts/gen-worker-bundle.ts',
     () => command(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']));
@@ -203,7 +224,8 @@ try {
     () => command(npm, ['run', 'check:ui', '-w', '@goondocks/myco-server']));
 } catch (error) {
   failed++;
-  console.error(`FAIL check selection: ${error.message}\nCI step: checkout/base selection\nFix: git fetch origin main, then npm run check:pr`);
+  if (error instanceof Stop) console.error(`STOPPED: ${error.message}`);
+  else console.error(`FAIL check:pr itself: ${error.stack ?? error.message}\nIf origin/main is missing: git fetch origin main, then npm run check:pr`);
 }
 console.log(`check:pr: ${passed} passed, ${failed} failed in ${Math.ceil((performance.now() - started) / 1000)} s (base ${base.slice(0, 9)})${affectedSkipped ? `, ${affectedSkipped} importing test files not run (CI runs them)` : ''}`);
 process.exitCode = failed ? 1 : 0;
