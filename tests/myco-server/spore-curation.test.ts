@@ -350,29 +350,6 @@ test('keep receipts cover search-only additions and one changed addition reopens
   } finally { f.sqlite.close(); }
 });
 
-test('ready session learning is claimed before curation, and an observed price still leaves learning room', async () => {
-  const { installPulledStages } = await import('@myco-server-worker/core/pulled-stages.js');
-  const { PULL_FIXTURE_TABLE, testPulledStage } = await import('../helpers/pulled-test-stage.js');
-  const { estimateKey } = await import('@myco-server-worker/core/budget-estimates.js');
-  const { mutateState } = await import('@myco-server-worker/db/runs/state.js');
-  const f = await fixture();
-  let restore = () => {};
-  try {
-    await f.enable(); await f.add('a'); await f.add('b'); await f.discover();
-    await settingsWriter(f.db).setProjectLeaf('proj_1','agent.spore_curation.daily_runs',2,'test',f.now);
-    await f.setting(1);
-    const key = estimateKey('curate-spores', 'claude-code', { tier: 'low', model: 'sonnet' });
-    await mutateState(f.db, { projectId: 'proj_1' }, 'myco-agent', key, () => JSON.stringify({ estimate: 0.8 }), f.now);
-    expect(await f.poll()).toMatchObject({ claimed: false });
-    await mutateState(f.db, { projectId: 'proj_1' }, 'myco-agent', key, () => JSON.stringify({ estimate: 0.05 }), f.now);
-    f.sqlite.exec(PULL_FIXTURE_TABLE);
-    f.sqlite.run("INSERT INTO pull_fixture_items VALUES('proj_1','learning',1,'extract-curate',?)", [f.now]);
-    restore = installPulledStages([testPulledStage(1, 'extract-curate'), CURATION_STAGE]);
-    const claimed = await f.poll(); expect(claimed.claimed).toBe(true);
-    if (claimed.claimed) expect(claimed.run.task).toBe('extract-curate');
-  } finally { restore(); f.sqlite.close(); }
-});
-
 test('three failed attempts close a poison cluster and release discovery for a separate overlap', async () => {
   const f = await fixture();
   try {

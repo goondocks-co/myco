@@ -51,19 +51,10 @@ export interface PulledStage {
 }
 
 /** The production stages in strict claim priority. */
-const PULLED_STAGES: readonly PulledStage[] = [...LEARNING_STAGES, CURATION_STAGE];
+export const PULLED_STAGES: readonly PulledStage[] = [...LEARNING_STAGES, CURATION_STAGE];
 
-let installed: readonly PulledStage[] = PULLED_STAGES;
-
-/** The stages claims pull from: the production registry unless a test harness installed others. */
-export const pulledStages = (): readonly PulledStage[] => installed;
-
-/** Install test-only stages for this process until the returned restore runs. No production path calls it. */
-export function installPulledStages(stages: readonly PulledStage[]): () => void {
-  const previous = installed;
-  installed = stages;
-  return () => { installed = previous; };
-}
+/** The stages claims pull from: the production registry. */
+export const pulledStages = (): readonly PulledStage[] => PULLED_STAGES;
 
 /** The stages whose switches are on, in one read regardless of the number of registered stages. */
 export async function switchedOnStages(db: RelationalStore, stages: readonly PulledStage[]): Promise<PulledStage[]> {

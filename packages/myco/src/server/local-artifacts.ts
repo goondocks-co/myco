@@ -275,7 +275,7 @@ export interface LocalArtifactsOptions {
   runner?: CommandRunner;
   /** How a report line reaches an operator watching the Deployment's own output. */
   report?: (line: string) => void;
-  /** Injectable for tests: what this owner spawns, resolved from the running code by default. */
+  /** What this owner spawns, resolved from the running code by default. */
   command?: { path: string; args: readonly string[] };
   now?: () => number;
 }

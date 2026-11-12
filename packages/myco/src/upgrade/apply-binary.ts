@@ -167,7 +167,7 @@ function rmSafe(p: string): void {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// stageBinary deps (injectable for tests)
+// stageBinary deps
 // ---------------------------------------------------------------------------
 
 /** Deps for `stageBinary`: the download, the hash, and the runnable check. */

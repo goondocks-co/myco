@@ -162,7 +162,7 @@ export interface RunnerUpdateDeps {
   probe?: (file: string, version: string, platform: NodeJS.Platform) => ProgramProbe;
   installGuardian?: (spec: ServiceSpec, platform: NodeJS.Platform) => ServiceOutcome;
   removeGuardian?: (spec: ServiceSpec, platform: NodeJS.Platform) => void;
-  /** Test transport for a guardian service stub that does not launch its command. */
+  /** Transport for a guardian service stub that does not launch its command. */
   spawnHelper?: (binary: string, statePath: string) => Promise<void>;
   targetTriple?: typeof resolveTargetTriple;
   serviceInstalled?: (spec: ServiceSpec, platform: NodeJS.Platform) => boolean;

@@ -1,6 +1,7 @@
 // The rules check-test-additions applies to each statement a change adds under tests/: patterns no behavioural test
 // needs. Each finding carries the rule and the refusal text, which says what to write instead. The rules read the
 // statement's own text, so an alias, a helper or a value held in a variable is left to review.
+import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 
 /** The owner-ratified gates may read product source and name product files; nothing else under tests/ may. */
@@ -115,11 +116,73 @@ const RULES = {
       + 'for a row that must be older than a time-to-live, call ageRows(target, { table, column, byMs, match }) from '
       + 'tests/parity/harness.ts; read rows with .sql(\'SELECT ...\') only to check what a call stored.',
   }),
+  testKnobName: (name) => ({
+    rule: 'test-knob-name',
+    message: `exports the test-only knob \`${name}\`. Product code must not expose hooks, reset functions, or fakes `
+      + 'for tests. Drive the test through a production entry with an injected dependency the product already accepts, '
+      + 'a test-owned worker entry, or a fresh process.',
+  }),
+  testKnobComment: (phrase) => ({
+    rule: 'test-knob-comment',
+    message: `marks an export as test-only (${phrase}). Product exports must serve production paths. Drive tests `
+      + 'through production entries, existing dependency injection seams, test-owned entries, or delete the test if '
+      + 'the behaviour is covered elsewhere.',
+  }),
 };
+
+const TEST_KNOB_IDENTIFIER = /^(?:_?reset|__\w*ForTests?|install\w*ForTests?|\w+ForTests?)$/;
+const TEST_COMMENT_PHRASE = /\b(?:test[- ]only|for\s+testing|exposed\s+for\s+tests?|test\s+seam)\b/i;
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*)/;
+
+function* exportedKnobNames(code) {
+  for (const m of code.matchAll(/\bexport\s+(?:default\s+)?(?:async\s+)?function\*?\s+([A-Za-z0-9_$]+)/g)) {
+    if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
+  }
+  for (const m of code.matchAll(/\bexport\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)/g)) {
+    if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
+  }
+  for (const block of code.matchAll(/\bexport\s*\{([^}]+)\}/g)) {
+    for (const spec of block[1].split(',')) {
+      const parts = spec.trim().split(/\s+as\s+/);
+      const exportedName = (parts[1] || parts[0]).trim();
+      if (TEST_KNOB_IDENTIFIER.test(exportedName)) yield exportedName;
+    }
+  }
+  for (const m of code.matchAll(/(?:^|\s)(?:public\s+|static\s+|async\s+)*([A-Za-z0-9_$]+)\s*\(/g)) {
+    if (TEST_KNOB_IDENTIFIER.test(m[1])) yield m[1];
+  }
+}
+
+function exportCommentPhrase(file, line, text) {
+  if (!TEST_COMMENT_PHRASE.test(text)) return null;
+  const match = TEST_COMMENT_PHRASE.exec(text)[0];
+  if (/\bexport\b/.test(text)) return match;
+  if (!file || typeof line !== 'number') return null;
+  try {
+    const lines = readFileSync(file, 'utf8').split('\n');
+    for (let i = line; i < Math.min(lines.length, line + 5); i++) {
+      const trimmed = lines[i]?.trim() ?? '';
+      if (!trimmed || COMMENT_LINE.test(trimmed)) continue;
+      if (/\bexport\b/.test(trimmed)) return match;
+      break;
+    }
+  } catch {}
+  return null;
+}
+
+/** Whether `file` is a test file to check. */
+export function isTestFile(file) {
+  return file.startsWith('tests/') && CODE_FILE.test(file) && !file.startsWith(EXEMPT_DIRECTORY) && !EXEMPT_FILES.has(file);
+}
+
+/** Whether `file` is a product code file to check for test knobs. */
+export function isProductFile(file) {
+  return PRODUCT_ROOT.test(file) && CODE_FILE.test(file) && !file.includes('.generated.');
+}
 
 /** Whether the rules apply to `file` at all. */
 export function checkedFile(file) {
-  return file.startsWith('tests/') && CODE_FILE.test(file) && !file.startsWith(EXEMPT_DIRECTORY) && !EXEMPT_FILES.has(file);
+  return isTestFile(file) || isProductFile(file);
 }
 
 /** Whether `specifier`, written in `file`, names a product source module. */
@@ -174,7 +237,18 @@ function* stringArguments(text, pattern) {
  * @param {{ productTables: () => ReadonlySet<string>, productFiles: ReadonlySet<string> }} facts
  * @returns {{ rule: string, message: string }[]}
  */
-export function statementFindings({ file, code, text }, facts) {
+export function statementFindings({ file, line, code, text }, facts) {
+  if (isProductFile(file)) {
+    const findings = [];
+    for (const name of new Set(exportedKnobNames(code))) {
+      findings.push(RULES.testKnobName(name));
+    }
+    const phrase = exportCommentPhrase(file, line, text);
+    if (phrase !== null) {
+      findings.push(RULES.testKnobComment(phrase));
+    }
+    return findings;
+  }
   const findings = [];
   const blanked = code.replace(STRING_LITERAL, '""');
   for (const argument of stringArguments(code, STORE_CALL)) {
