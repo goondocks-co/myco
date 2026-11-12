@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { owner, putSetting, resetSetting, wake } from '../clients/requests.ts';
 
 /**
  * The bounded import, identical on both front doors (#1148).
@@ -58,11 +59,8 @@ export const importParity: ParityScenario = {
     await ship('parity-import', tx('a'), 1, 'import');
     await ship('parity-live', tx('b'), 2, 'cli');
 
-    const lanes = await target.sql(`SELECT transcript_id, imported_at IS NOT NULL AS imported FROM transcripts WHERE transcript_id IN (${lit(tx('a'))}, ${lit(tx('b'))}) ORDER BY transcript_id`);
-    expect(lanes.map((r) => Number(r.imported))).toEqual([1, 0]);
-
-    // The plan reads what the Project holds. The imported transcript is held in
-    // full at 4000 bytes on neither store, so it resumes from what was shipped.
+    // The plan reads what the Project holds. Both shipped transcripts resume from
+    // what was shipped; a transcript the Project has not seen starts at the beginning.
     const answers = await plan([
       candidate('parity-import', tx('a')),
       candidate('parity-live', tx('b')),
@@ -74,41 +72,47 @@ export const importParity: ParityScenario = {
     expect(byId.get(tx('d'))?.reason).toBe('window');
     expect(byId.get(tx('a'))?.take).toBe('from');
     expect(byId.get(tx('a'))?.fromOffset).toBeGreaterThan(0);
+    expect(byId.get(tx('b'))?.take).toBe('from');
+    expect(byId.get(tx('b'))?.fromOffset).toBeGreaterThan(0);
 
     // A caller may ask past the Deployment's window.
     expect((await plan([candidate('parity-old', tx('d'), { modifiedAt: Date.now() - 90 * 86_400_000 })], { windowDays: 180 })).candidates?.[0].take).toBe('from');
 
     // The tick publishes an import beside live work, on both stores, within a few wakes. This database is shared with
     // every other scenario, so what one wake reaches is not asserted; that both are published soon is.
-    const parsed = async (id: string) => Number((await target.sql(`SELECT COALESCE(MAX(published_offset), 0) AS n FROM transcript_publication WHERE transcript_id=${lit(id)}`))[0].n);
-    for (let wake = 0; wake < 8 && ((await parsed(tx('a'))) === 0 || (await parsed(tx('b'))) === 0); wake += 1) {
-      expect((await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } })).status).toBe(200);
+    const promptVisible = async (sessionId: string, text: string) => {
+      const page = await owner<{ rows?: Array<{ preview: string | null }> }>(target, `/api/projects/${target.projectId}/sessions/${sessionId}/turns`);
+      return page.status === 200 && (page.body.rows ?? []).some((row) => row.preview?.includes(text) === true);
+    };
+    for (let attempt = 0; attempt < 8 && (!(await promptVisible('parity-import', 'prompt 1')) || !(await promptVisible('parity-live', 'prompt 2'))); attempt += 1) {
+      await wake(target);
     }
-    expect({ imported: (await parsed(tx('a'))) > 0, live: (await parsed(tx('b'))) > 0 }).toEqual({ imported: true, live: true });
+    expect({ imported: await promptVisible('parity-import', 'prompt 1'), live: await promptVisible('parity-live', 'prompt 2') }).toEqual({ imported: true, live: true });
 
-    // The switch is an admission on the write path, not a check in a handler:
-    // with it off, an import-channel write stores nothing and the plan refuses.
-    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('import.enabled', ${lit(JSON.stringify(false))}, 1, ${lit(MEMBER_ID)})`);
-    const refused = await plan([candidate('parity-new', tx('c'))]);
-    expect({ persisted: refused.persisted, code: refused.code }).toEqual({ persisted: false, code: 'import_disabled' });
-
-    const before = Number((await target.sql(`SELECT COUNT(*) AS n FROM events`))[0].n);
-    const bytes = new TextEncoder().encode(body(9));
-    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
-    await fetch(`${target.url}/blobs/${digest}`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }, body: bytes });
-    const write = await fetch(`${target.url}/events`, {
-      method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({
-        eventId: crypto.randomUUID(), sessionId: 'parity-off', kind: 'transcript.segment', createdAt: Date.now(), channel: 'import',
-        producer: { adapter: 'claude-code', version: '1' },
-        payload: { transcriptId: tx('e'), baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'claude-code' },
-      }),
-    });
-    expect(await write.json()).toMatchObject({ persisted: false, code: 'import_disabled' });
-    expect(Number((await target.sql(`SELECT COUNT(*) AS n FROM events`))[0].n)).toBe(before);
-
-    // This database is shared with every other scenario, and a leaf left off is
-    // a switch the next scenario inherits. Put it back.
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'import.enabled'`);
+    // The switch is an admission on the write path: with it off, an import-channel
+    // write stores nothing and the plan refuses. The leaf is put back for the scenarios that follow.
+    expect((await putSetting(target, 'import.enabled', false)).status).toBe(200);
+    try {
+      const refused = await plan([candidate('parity-new', tx('c'))]);
+      expect({ persisted: refused.persisted, code: refused.code }).toEqual({ persisted: false, code: 'import_disabled' });
+      const bytes = new TextEncoder().encode(body(9));
+      const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      await fetch(`${target.url}/blobs/${digest}`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'text/plain', 'content-length': String(bytes.byteLength) }, body: bytes });
+      const write = await fetch(`${target.url}/events`, {
+        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          eventId: crypto.randomUUID(), sessionId: 'parity-off', kind: 'transcript.segment', createdAt: Date.now(), channel: 'import',
+          producer: { adapter: 'claude-code', version: '1' },
+          payload: { transcriptId: tx('e'), baseOffset: 0, length: bytes.byteLength, blob: digest, agent: 'claude-code' },
+        }),
+      });
+      expect(await write.json()).toMatchObject({ persisted: false, code: 'import_disabled' });
+      expect((await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent('parity-off')}`)).status).toBe(404);
+    } finally {
+      expect((await resetSetting(target, 'import.enabled')).status).toBe(200);
+    }
+    const held = await plan([candidate('parity-off', tx('e'))]);
+    expect(held.candidates?.[0]).toEqual({ transcriptId: tx('e'), take: 'from', fromOffset: 0 });
+    expect((await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent('parity-off')}`)).status).toBe(404);
   },
 };

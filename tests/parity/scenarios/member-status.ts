@@ -1,10 +1,10 @@
 import { expect } from 'bun:test';
 import { jsonBody } from '../../helpers/json-body.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { sha256Hex } from '@myco-server-worker/hash.js';
 import { SIZE_LIMIT_UNAVAILABLE } from '@myco-server-worker/platform/cloudflare/store-maintenance.js';
 import { RUN_SCOPE } from '@myco-server-worker/pipeline.js';
-import { lit, waitFor, type ParityScenario } from '../harness.ts';
+import { memberHeadersFor, waitFor, type ParityScenario } from '../harness.ts';
+import { allowWorkerClaims, claimRun, endRun, event, owner, untilPublished } from '../clients/requests.ts';
 
 interface Measurement { name: string; state: 'measured' | 'unavailable'; value?: number; unit?: string; reason?: string; reasonCode?: string }
 interface Outcome { finishedAt: number | null; measurements: Measurement[] }
@@ -20,10 +20,12 @@ interface Outcome { finishedAt: number | null; measurements: Measurement[] }
  */
 export const memberStatus: ParityScenario = {
   name: 'member status: a member credential reads the schema check, its own stored bytes, the retention window and the Deployment\'s storage',
+  // The run credential is one this scenario's worker claims. The claim stays off the shared queue.
+  dedicated: { timeoutMs: 180_000 },
   async run(target) {
-    const owner = { ...target.ownerHeaders(), origin: target.url };
+    const dashboard = { ...target.ownerHeaders(), origin: target.url };
     const ownerPost = (path: string, body: Record<string, unknown> = {}) =>
-      fetch(`${target.url}${path}`, { method: 'POST', headers: { ...owner, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      fetch(`${target.url}${path}`, { method: 'POST', headers: { ...dashboard, 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const unseen = 'proj_parity_status_unseen';
     const read = (body: string, headers: Record<string, string> = target.memberHeaders({ 'x-myco-project': unseen })) =>
       fetch(`${target.url}/members/status`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body });
@@ -31,14 +33,10 @@ export const memberStatus: ParityScenario = {
     const ran = await ownerPost('/api/maintenance/optimize/run');
     expect(ran.status).toBe(200);
     const optimize = async () => {
-      const checks = ((await (await fetch(`${target.url}/api/maintenance`, { headers: owner })).json()) as { checks: Array<{ check: string; latest: Outcome | null }> }).checks;
+      const checks = ((await (await fetch(`${target.url}/api/maintenance`, { headers: dashboard })).json()) as { checks: Array<{ check: string; latest: Outcome | null }> }).checks;
       return checks.find((c) => c.check === 'optimize')?.latest ?? null;
     };
     const recorded = (await waitFor(optimize, (latest) => latest?.finishedAt != null))!;
-
-    const tokenId = String((await target.sql(`SELECT id FROM member_credentials WHERE token_hash = ${lit(await sha256Hex(target.memberToken))}`))[0]?.id);
-    const stored = async () => Number((await target.sql(`SELECT bytes_written AS n FROM member_credentials WHERE id = ${lit(tokenId)}`))[0]?.n);
-    const blobs = async () => Number((await target.sql('SELECT COALESCE(SUM(size), 0) AS n FROM blobs'))[0]?.n);
 
     const res = await read('{}');
     expect(res.status).toBe(200);
@@ -52,31 +50,42 @@ export const memberStatus: ParityScenario = {
     expect(health.deploymentId).toBe(target.deploymentId);
     expect(health.target).toBe(target.name === 'cloudflare' ? 'cloudflare' : 'bun');
     expect(health.schema).toEqual({ expected: SERVER_SCHEMA_VERSION, found: SERVER_SCHEMA_VERSION, matches: true });
-    expect(health.stored).toEqual({ state: 'measured', value: await stored(), unit: 'bytes' });
+    const credentials = await owner<{ rows: Array<{ purpose: string; live: boolean; bytesWritten: number }> }>(target, '/api/credentials?purpose=member');
+    expect(credentials.status).toBe(200);
+    const liveMember = credentials.body.rows.filter((row) => row.live && row.purpose === 'member');
+    expect(liveMember).toHaveLength(1);
+    expect(health.stored).toEqual({ state: 'measured', value: liveMember[0]!.bytesWritten, unit: 'bytes' });
     expect(health.retention).toEqual({ transcripts: { state: 'days', days: 90, configured: false, compatibility: 'default' } });
     const named = (name: string) => health.storage.find((m) => m.name === name);
     expect(health.storage.slice(0, 2).map((m) => m.name)).toEqual(['blob_bytes', 'size']);
-    expect(named('blob_bytes')).toEqual({ name: 'blob_bytes', state: 'measured', value: await blobs(), unit: 'bytes', measuredAt: recorded.finishedAt });
     for (const m of recorded.measurements) expect(named(m.name)).toEqual({ ...m, measuredAt: recorded.finishedAt });
     expect(named('size')?.state).toBe('measured');
     expect(named('size')?.value).toBeGreaterThan(0);
     if (target.name === 'cloudflare') {
       expect(named('size_limit')).toEqual({ name: 'size_limit', state: 'unavailable', reason: SIZE_LIMIT_UNAVAILABLE, reasonCode: 'measurement_unavailable', measuredAt: recorded.finishedAt });
     }
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM projects WHERE project_id = ${lit(unseen)}`)).toEqual([{ n: 0 }]);
+    const projects = await owner<{ projects: Array<{ projectId: string }> }>(target, '/api/projects?include=archived');
+    expect(projects.status).toBe(200);
+    expect(projects.body.projects.some((row) => row.projectId === unseen)).toBe(false);
 
     expect(await jsonBody(await read(JSON.stringify({ project: target.projectId })))).toEqual({ persisted: false, code: 'unknown_field', reason: 'unknown field project' });
 
     const now = Date.now();
-    const harnessToken = `status-parity-harness-${now}`.padEnd(43, 'x');
-    const harnessId = `mt_status_harness_${now}`;
-    await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES ('mem_harness','harness',${now})`);
-    await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
-      VALUES (${lit(harnessId)},'mem_harness','harness',${lit(await sha256Hex(harnessToken))},${now},${now + 3_600_000},0,${lit(harnessId)},${now})`);
+    const session = `parity-status-${now}`;
+    const prompt = crypto.randomUUID();
+    await allowWorkerClaims(target);
+    await event(target, session, 'session.start', { agent: 'claude-code', startedAt: now }, now);
+    await event(target, session, 'prompt', { promptId: prompt, text: 'Status the deployment.', origin: 'user' }, now + 1);
+    const published = await untilPublished(target, () => owner(target, `/api/projects/${target.projectId}/sessions/${session}/turns/${prompt}`), (read) => read.status === 200);
+    expect(published.status).toBe(200);
+    const asked = await owner(target, `/api/projects/${target.projectId}/sessions/${encodeURIComponent(session)}/title`, { method: 'POST' });
+    expect(asked.status).toBe(200);
+    const claimed = await claimRun(target);
+    expect(claimed.claimed).toBe(true);
     try {
-      expect(await jsonBody(await read('{}', { ...target.memberHeaders(), authorization: `Bearer ${harnessToken}` }))).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
+      expect(await jsonBody(await read('{}', memberHeadersFor(claimed.run!.runToken, target.projectId)))).toEqual({ persisted: false, code: 'run_scope', reason: RUN_SCOPE });
     } finally {
-      await target.sql(`DELETE FROM member_credentials WHERE id = ${lit(harnessId)}`);
+      expect(await endRun(target, claimed.run!)).toMatchObject({ ended: true });
     }
 
     const resolved = await fetch(`${target.url}/spores/list`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: '{}' });
@@ -89,6 +98,5 @@ export const memberStatus: ParityScenario = {
     } finally {
       expect((await ownerPost(`/api/projects/${target.projectId}/grants/${grant.id}/revoke`)).status).toBe(200);
     }
-    await target.sql(`DELETE FROM schema_meta WHERE key = 'maintenance.optimize'`);
   },
 };

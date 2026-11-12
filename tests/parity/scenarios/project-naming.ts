@@ -13,7 +13,8 @@ import { sessionStartEvent } from '@myco/member/envelope.js';
 import { runLegacyImport } from '@myco/member/legacy-import.js';
 import { runHook } from '../../member/helpers/hooks.ts';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
-import { expectPersisted, lit, MACHINE_ID, memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { expectPersisted, MACHINE_ID, memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { createProject } from '../clients/requests.ts';
 
 export const projectNaming: ParityScenario = {
   name: 'project naming: first linked-worktree capture and 1.4 import use the repository name',
@@ -28,7 +29,11 @@ export const projectNaming: ParityScenario = {
       git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty', '-qm', 'fixture');
       git('worktree', 'add', '-qb', 'worker', linked);
       const project = 'proj_worktree_name';
-      const nameOf = async (id: string) => (await target.sql(`SELECT name FROM projects WHERE project_id = ${lit(id)}`))[0]?.name;
+      const nameOf = async (id: string) => {
+        const listed = await fetch(`${target.url}/api/projects?include=archived`, { headers: target.ownerHeaders() });
+        expect(listed.status).toBe(200);
+        return ((await listed.json()) as { projects: Array<{ projectId: string; name: string }> }).projects.find((row) => row.projectId === id)?.name;
+      };
       const start = async (id: string, originPath: string, projectName?: string) => {
         const out = sessionStartEvent({ agent: 'claude-code', sessionId: crypto.randomUUID(), stage: () => { throw new Error('no blob'); } }, { originPath, projectName });
         await expectPersisted(await fetch(target.url + '/events', {
@@ -71,7 +76,7 @@ export const projectNaming: ParityScenario = {
       await start(project, linked, repositoryName(linked));
       expect(await nameOf(project)).toBe('Chosen by owner');
       const onboarded = 'proj_onboarded_name';
-      await target.sql(`INSERT INTO projects(project_id,name,created_at) VALUES (${lit(onboarded)},'Onboarded name',0)`);
+      expect((await createProject(target, onboarded, 'Onboarded name')).status).toBe(201);
       await start(onboarded, linked, repositoryName(linked));
       expect(await nameOf(onboarded)).toBe('Onboarded name');
       await start('proj_old_client_name', '/repos/older-client');

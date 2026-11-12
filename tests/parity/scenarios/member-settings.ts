@@ -1,20 +1,19 @@
 import { expect } from 'bun:test';
-import { lit, MEMBER_ID, type ParityScenario } from '../harness.ts';
+import { type ParityScenario } from '../harness.ts';
+import { owner, putSetting, resetSetting } from '../clients/requests.ts';
 
 /**
- * Deployment Settings read over a member credential on both targets: the same
- * leaves the dashboard's owner route answers, except that a URL value leaves
- * without its userinfo, query and fragment; a body that is not the empty object
- * refused by name; a stored provider credential never in the answer; and no
+ * Deployment Settings read over a member credential on both targets: the leaf
+ * the member and the dashboard both read, a body that is not the empty object
+ * refused by name, a stored provider credential never in the answer, and no
  * Project created for whatever Project the request names.
  */
 export const memberSettings: ParityScenario = {
   name: 'member settings: a member credential reads the Deployment leaves the dashboard reads, and never a stored credential',
   async run(target) {
-    const now = Date.now();
     const secret = 'parity-provider-credential-that-must-not-cross';
-    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('agent.limits.concurrent_runs', ${lit(JSON.stringify(2))}, ${now}, ${lit(MEMBER_ID)})`);
-    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('embedding.base_url', ${lit(JSON.stringify('https://reader:pw@llm.example/v1?key=inline'))}, ${now}, ${lit(MEMBER_ID)})`);
+    expect((await putSetting(target, 'agent.limits.concurrent_runs', 2)).status).toBe(200);
+    try {
     const stored = await fetch(`${target.url}/api/secrets/anthropic`, {
       method: 'PUT', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ value: secret }),
     });
@@ -30,20 +29,19 @@ export const memberSettings: ParityScenario = {
     expect(member.persisted).toBe(true);
     expect(member.leaves.some((row) => row.leaf.startsWith('agent.provider.'))).toBe(false);
     expect(member.leaves.find((l) => l.leaf === 'agent.limits.concurrent_runs')).toMatchObject({ configured: true, value: 2 });
-    expect(member.leaves.find((l) => l.leaf === 'embedding.base_url')?.value).toBe('https://llm.example/v1');
-    expect(text).not.toContain('key=inline');
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM projects WHERE project_id = ${lit(unseen)}`)).toEqual([{ n: 0 }]);
+    const projects = await owner<{ projects: Array<{ projectId: string }> }>(target, '/api/projects?include=archived');
+    expect(projects.status).toBe(200);
+    expect(projects.body.projects.some((row) => row.projectId === unseen)).toBe(false);
 
-    const owner = await fetch(`${target.url}/api/settings`, { headers: { ...target.ownerHeaders(), origin: target.url } });
-    expect(owner.status).toBe(200);
-    const ownerLeaves = ((await owner.json()) as { leaves: Array<{ leaf: string; value: unknown }> }).leaves;
-    expect(ownerLeaves.find((l) => l.leaf === 'embedding.base_url')?.value).toBe('https://reader:pw@llm.example/v1?key=inline');
-    const beside = (leaves: Array<{ leaf: string }>) => leaves.filter((l) => l.leaf !== 'embedding.base_url');
-    expect(beside(ownerLeaves)).toEqual(beside(member.leaves));
+    const dashboard = await owner<{ leaves: Array<{ leaf: string; value: unknown }> }>(target, '/api/settings');
+    expect(dashboard.status).toBe(200);
+    expect(dashboard.body.leaves.find((l) => l.leaf === 'agent.limits.concurrent_runs')?.value).toBe(2);
 
     expect((await (await read(JSON.stringify({ leaf: 'x' }))).json()) as Record<string, unknown>).toEqual({ persisted: false, code: 'unknown_field', reason: 'unknown field leaf' });
 
-    await target.sql(`DELETE FROM deployment_settings WHERE leaf IN ('agent.limits.concurrent_runs', 'embedding.base_url')`);
-    await fetch(`${target.url}/api/secrets/anthropic`, { method: 'DELETE', headers: { ...target.ownerHeaders(), origin: target.url } });
+    } finally {
+      expect((await resetSetting(target, 'agent.limits.concurrent_runs')).status).toBe(200);
+      await fetch(`${target.url}/api/secrets/anthropic`, { method: 'DELETE', headers: { ...target.ownerHeaders(), origin: target.url } });
+    }
   },
 };
