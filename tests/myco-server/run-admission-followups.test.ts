@@ -8,9 +8,10 @@ import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { runWriteStore, RunWriteExpired } from '@myco-server-worker/core/run-write-store.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { memberHeaders, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { changingAtStatement } from './helpers/store-faults.js';
 
-async function setup(onSql?: Parameters<typeof sqliteEnv>[0]) {
-  const f = sqliteEnv(onSql);
+async function setup() {
+  const f = sqliteEnv();
   const now = Date.now();
   await ensureMember(f.db, HARNESS_MEMBER_ID, now, 'member', 'harness');
   const holder = await issueMemberToken(f.db, { memberId: HARNESS_MEMBER_ID, machineId: 'machine_1' }, now);
@@ -24,30 +25,35 @@ async function setup(onSql?: Parameters<typeof sqliteEnv>[0]) {
 for (const target of ['cloudflare', 'native'] as const) describe(`${target}: MCP mutation authority`, () => {
   for (const op of ['state_set', 'report'] as const) for (const bound of ['lease', 'deadline', 'credential', 'revocation', 'terminal'] as const) {
     it(`${op} refuses ${bound} lost between admission and mutation`, async () => {
-      let armed = false;
       let now = Date.now();
-      const f = await setup({ onSql: (sql, sqlite) => {
-        const trigger = bound === 'deadline'
-          ? sql.startsWith('SELECT key, value') || sql.startsWith('SELECT id, harness')
-          : sql.startsWith('INSERT INTO agent_state') || sql.startsWith('INSERT INTO agent_reports');
-        if (!armed || !trigger) return;
-        armed = false;
-        if (bound === 'lease') sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
-        if (bound === 'deadline') sqlite.run("UPDATE agent_runs SET started_at = 1 WHERE id = 'target'");
-        if (bound === 'credential') sqlite.run("UPDATE agent_runs SET dispatched_by = NULL WHERE id = 'target'");
-        if (bound === 'terminal') sqlite.run("UPDATE agent_runs SET status = 'failed' WHERE id = 'target'");
-        if (bound === 'revocation') sqlite.run('UPDATE member_credentials SET revoked_at = 1 WHERE id = ?', [f.holder.tokenId]);
-      } });
+      const f = await setup();
       now = f.now;
       if (op === 'state_set') f.sqlite.run("UPDATE agent_runs SET task = 'extract-curate' WHERE id = 'target'");
-      const env = target === 'native' ? { ...serverEnvFromBunConfig({ sqlite: f.sqlite, blobDir: '/unused' }), db: f.db } : f.serverEnv;
       const pipeline = createServer({ now: () => now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
+      const args = op === 'state_set' ? { op, key: 'k', value: 'v' } : { op, action: 'extract', summary: 'done' };
+      const request = () => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(f.holder.token),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_run', arguments: args } }) });
+      const envFor = (db: typeof f.db) => target === 'native'
+        ? { ...serverEnvFromBunConfig({ sqlite: f.sqlite, blobDir: '/unused' }), db }
+        : { ...f.serverEnv, db };
       try {
-        const args = op === 'state_set' ? { op, key: 'k', value: 'v' } : { op, action: 'extract', summary: 'done' };
-        armed = true;
-        const response = await pipeline.handleRequest(new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(f.holder.token),
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_run', arguments: args } }),
-        }), env);
+        if (op === 'report' && bound !== 'deadline') {
+          await pipeline.handleRequest(request(), envFor(f.db));
+          f.sqlite.run("DELETE FROM agent_reports WHERE run_id='target'");
+        }
+        const lose = () => {
+          if (bound === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
+          if (bound === 'deadline') f.sqlite.run("UPDATE agent_runs SET started_at = 1 WHERE id = 'target'");
+          if (bound === 'credential') f.sqlite.run("UPDATE agent_runs SET dispatched_by = NULL WHERE id = 'target'");
+          if (bound === 'terminal') f.sqlite.run("UPDATE agent_runs SET status = 'failed' WHERE id = 'target'");
+          if (bound === 'revocation') f.sqlite.run('UPDATE member_credentials SET revoked_at = 1 WHERE id = ?', [f.holder.tokenId]);
+        };
+        const name = bound === 'deadline'
+          ? (op === 'state_set' ? 'runs.stateRead' : 'runs.getRun')
+          : (op === 'state_set' ? 'runs.stateInsert' : 'runs.insertReportAny');
+        const landing = changingAtStatement(f.db, name, lose);
+        const response = await pipeline.handleRequest(request(), envFor(landing.store));
+        expect(landing.landed()).toBe(true);
         const body = await response.json() as { error?: { message: string; data: { code: string } } };
         expect(body.error).toMatchObject({ message: expect.stringContaining('credential holds no live run'), data: { code: 'tool_call_failed' } });
         expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_state').get()).toEqual({ n: 0 });

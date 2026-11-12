@@ -14,7 +14,8 @@ import { WORKER_LEASE_MS } from '@myco-server-worker/constants.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY } from '@goondocks/myco-shared/repository';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
 import { offeredHarness } from './helpers/offered-harness.js';
-import type { PreparedStatement } from '@myco-server-worker/core/adapters.js';
+import { changingAt, pausingAtStatement, storingCall } from './helpers/store-faults.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 const RUN = { projectId: 'proj_1', runId: 'run_rotation' };
 const SOURCE = { url: 'https://example.test/team/source', branch: 'main' };
@@ -25,22 +26,8 @@ const OPERATIONS = [
   { path: '/worker/end', body: { status: 'failed' }, expected: { ended: true } },
 ] as const;
 
-const AUTHORIZATION_READ = /FROM members m LEFT JOIN deployment_ownership o/;
-
-async function rig(target: 'cloudflare' | 'bun', interceptBatches = false) {
-  const injected: { sawAuthorization: boolean; afterAuthorization: (() => void) | null } = { sawAuthorization: false, afterAuthorization: null };
-  const e = sqliteEnv({ workerLogin: true, onSql: sql => { if (AUTHORIZATION_READ.test(sql)) injected.sawAuthorization = true; } });
-  const store = e.env.MYCO_DB;
-  if (interceptBatches) e.env.MYCO_DB = new Proxy(store, {
-    get(source, property, receiver) {
-      if (property !== 'batch') return Reflect.get(source, property, receiver);
-      return async (statements: PreparedStatement[]) => {
-        const results = await source.batch(statements);
-        if (injected.sawAuthorization && injected.afterAuthorization !== null) { const change = injected.afterAuthorization; injected.afterAuthorization = null; change(); }
-        return results;
-      };
-    },
-  });
+async function rig(target: 'cloudflare' | 'bun') {
+  const e = sqliteEnv({ workerLogin: true });
   const root = mkdtempSync(join(tmpdir(), 'myco-lease-rotation-'));
   let now = Date.now();
   e.env.SECRET_WRAP_KEY = { get: async () => WRAP_KEY };
@@ -77,7 +64,7 @@ async function rig(target: 'cloudflare' | 'bun', interceptBatches = false) {
   };
   const row = () => e.sqlite.query('SELECT status, leased_by AS leasedBy, dispatched_by AS attemptId, lease_expires_at AS leaseExpiresAt FROM agent_runs WHERE id=?')
     .get(RUN.runId) as { status: string; leasedBy: string; attemptId: string; leaseExpiresAt: number | null };
-  return { e, env, owner, injected, post, claim, rotate, row,
+  return { e, env, owner, post, claim, rotate, row,
     advance: (ms: number) => { now += ms; }, clock: () => now,
     close: () => { e.sqlite.close(); rmSync(root, { recursive: true, force: true }); },
   };
@@ -89,15 +76,20 @@ describe('a worker claim whose credential ended after its authorization', () => 
     ['expired', 'UPDATE member_credentials SET expires_at=? WHERE id=?'],
   ] as const) {
     it(`takes no run and mints no run credential when the credential is ${name}`, async () => {
-      const r = await rig('cloudflare', true);
+      const r = await rig('cloudflare');
+      const pause = pausingAtStatement(r.env.db, 'authz.member', 'after');
+      r.env.db = pause.store;
       try {
-        r.injected.afterAuthorization = () => { r.e.sqlite.run(change, [r.clock(), r.owner.tokenId]); };
-        const result = await r.post(r.owner.token, '/worker/claim', { harnesses: [offeredHarness('claude-code')], capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] });
-        expect(r.injected.afterAuthorization).toBeNull();
+        const pending = r.post(r.owner.token, '/worker/claim', { harnesses: [offeredHarness('claude-code')], capabilities: [REPOSITORY_CHECKOUT_CAPABILITY] });
+        await pause.admitted;
+        r.e.sqlite.run(change, [r.clock(), r.owner.tokenId]);
+        pause.resume();
+        const result = await pending;
+        expect(pause.landed()).toBe(true);
         expect(result.body).toMatchObject({ persisted: true, claimed: false });
         expect(r.e.sqlite.query('SELECT status, leased_by AS leasedBy FROM agent_runs WHERE id=?').get(RUN.runId)).toEqual({ status: 'queued', leasedBy: null });
         expect(r.e.sqlite.query("SELECT COUNT(*) AS n FROM member_credentials WHERE member_id='mem_harness' AND revoked_at IS NULL").get()).toEqual({ n: 0 });
-      } finally { r.close(); }
+      } finally { pause.resume(); r.close(); }
     });
   }
 });
@@ -115,34 +107,65 @@ function pauseAuthenticatedOwner(r: Awaited<ReturnType<typeof rig>>) {
   return { admitted, resume: release, restore: () => { release(); r.env.tokenLimit = prior; } };
 }
 
-function pauseStatement(r: Awaited<ReturnType<typeof rig>>, match: string) {
-  const prepare = r.env.db.prepare.bind(r.env.db);
-  const batch = r.env.db.batch.bind(r.env.db);
-  const originals = new WeakMap<PreparedStatement, { statement: PreparedStatement; sql: string }>();
+type Rig = Awaited<ReturnType<typeof rig>>;
+type Row = Record<string, unknown>;
+
+function holdBefore(db: RelationalStore, at: number) {
   let release = () => {};
   let reached = () => {};
   const admitted = new Promise<void>((resolve) => { reached = resolve; });
   const paused = new Promise<void>((resolve) => { release = resolve; });
-  let held = false;
-  const before = async (sql: string) => {
-    if (!held && sql.includes(match)) { held = true; reached(); await paused; }
-  };
-  const wrap = (statement: PreparedStatement, sql: string): PreparedStatement => {
-    const wrapped: PreparedStatement = {
-      bind: (...params) => wrap(statement.bind(...params), sql),
-      first: () => statement.first(), all: () => statement.all(),
-      run: async () => { await before(sql); return statement.run(); },
-    };
-    originals.set(wrapped, { statement, sql });
-    return wrapped;
-  };
-  r.env.db.prepare = sql => wrap(prepare(sql), sql);
-  r.env.db.batch = async statements => {
-    const captured = statements.map(statement => originals.get(statement));
-    for (const entry of captured) if (entry !== undefined) await before(entry.sql);
-    return batch(statements.map((statement, index) => captured[index]?.statement ?? statement));
-  };
-  return { admitted, resume: release, restore: () => { release(); r.env.db.prepare = prepare; r.env.db.batch = batch; } };
+  const landing = changingAt(db, at, async () => { reached(); await paused; });
+  return { store: landing.store, admitted, resume: () => { release(); }, landed: () => landing.landed(), restore: () => { release(); } };
+}
+
+function runSnapshot(r: Rig): Row {
+  return r.e.sqlite.query('SELECT * FROM agent_runs WHERE id=?').get(RUN.runId) as Row;
+}
+
+function restoreRun(r: Rig, row: Row) {
+  const columns = Object.keys(row);
+  r.e.sqlite.run(
+    `UPDATE agent_runs SET ${columns.map((column) => `${column}=?`).join(',')} WHERE id=?`,
+    [...columns.map((column) => row[column]), RUN.runId],
+  );
+}
+
+async function pauseAtRepositoryPin(r: Rig, attemptId: string) {
+  const before = runSnapshot(r);
+  const body = OPERATIONS.find((operation) => operation.path === '/worker/repository')!;
+  await r.post(r.owner.token, body.path, { ...RUN, attemptId, ...body.body });
+  restoreRun(r, before);
+  const pause = pausingAtStatement(r.env.db, 'runs.pinPreparationMemberAttempt', 'before');
+  r.env.db = pause.store;
+  return { admitted: pause.admitted, resume: pause.resume, landed: pause.landed, restore: pause.resume };
+}
+
+async function pauseAtEndWrite(r: Rig, attemptId: string) {
+  const before = runSnapshot(r);
+  const credentials = r.e.sqlite.query('SELECT id, revoked_at, revoked_by FROM member_credentials').all() as Row[];
+  const attempts = r.e.sqlite.query('SELECT * FROM agent_run_attempts WHERE run_id=?').all(RUN.runId) as Row[];
+  const base = r.env.db;
+  const body = OPERATIONS.find((operation) => operation.path === '/worker/end')!;
+  const at = await storingCall(base, async (store) => {
+    r.env.db = store;
+    await r.post(r.owner.token, body.path, { ...RUN, attemptId, ...body.body });
+  }, () => r.row().status);
+  restoreRun(r, before);
+  for (const credential of credentials) {
+    r.e.sqlite.run('UPDATE member_credentials SET revoked_at=?, revoked_by=? WHERE id=?', [credential.revoked_at, credential.revoked_by, credential.id]);
+  }
+  for (const attempt of attempts) {
+    const columns = Object.keys(attempt).filter((column) => column !== 'project_id' && column !== 'run_id' && column !== 'attempt_id');
+    r.e.sqlite.run(
+      `UPDATE agent_run_attempts SET ${columns.map((column) => `${column}=?`).join(',')} WHERE project_id=? AND run_id=? AND attempt_id=?`,
+      [...columns.map((column) => attempt[column]), attempt.project_id, attempt.run_id, attempt.attempt_id],
+    );
+  }
+  if (at < 1) throw new Error('the end wrote no run status');
+  const pause = holdBefore(base, at);
+  r.env.db = pause.store;
+  return pause;
 }
 
 for (const target of ['cloudflare', 'bun'] as const) describe(`${target}: authenticated worker lease rotation`, () => {
@@ -171,17 +194,19 @@ for (const target of ['cloudflare', 'bun'] as const) describe(`${target}: authen
   for (const operation of OPERATIONS.filter((operation) => operation.path !== '/worker/lease')) {
     it(`keeps ${operation.path} valid when activation overtakes its final guarded write`, async () => {
       const r = await rig(target);
-      let pause: ReturnType<typeof pauseStatement> | undefined;
+      let pause: { admitted: Promise<void>; resume(): void; restore(): void; landed(): boolean } | undefined;
       try {
         const attemptId = await r.claim(r.owner.token);
         const next = await r.rotate(r.owner.token, r.owner.tokenId);
-        pause = pauseStatement(r, operation.path === '/worker/repository'
-          ? "UPDATE agent_runs SET run_context = json_set" : 'completed_at = ?');
+        pause = operation.path === '/worker/repository'
+          ? await pauseAtRepositoryPin(r, attemptId)
+          : await pauseAtEndWrite(r, attemptId);
         const pending = r.post(r.owner.token, operation.path, { ...RUN, attemptId, ...operation.body });
         await pause.admitted;
         expect((await r.post(next.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });
         pause.resume();
         expect((await pending).body).toMatchObject(operation.expected);
+        expect(pause.landed()).toBe(true);
         expect(r.row()).toMatchObject({ leasedBy: next.tokenId });
       } finally { pause?.restore(); r.close(); }
     });

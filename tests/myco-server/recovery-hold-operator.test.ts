@@ -112,31 +112,22 @@ describe('the operator hold a full backup takes', () => {
     expect(row(e, 'prod-1')?.released_at).toBe(99);
   });
 
-  it('is never settled against the producer, whichever open token settlement selects', async () => {
+  it('settles the open producer hold and leaves an operator hold untouched', async () => {
     const e = sqliteEnv();
     await acquireRecoveryHold(e.db, 'prod-1', 9);
     await acquireOperatorHold(e.serverEnv, 'op-1', 10);
-    // The selection is unspecified: the statement has no ORDER BY, so both are exercised by narrowing it.
-    for (const holder of ['operator', 'producer'] as const) {
-      const narrowed = {
-        ...e.serverEnv,
-        db: {
-          ...e.db,
-          prepare: (sql: string) => e.db.prepare(sql.includes('FROM recovery_holds WHERE released_at IS NULL') ? `${sql} AND holder = '${holder}'` : sql),
-        },
-      } as typeof e.serverEnv;
-      const settled = await settleOpenHold({ ...narrowed, recovery: producer(['prod-1']) }, 12).catch((error: unknown) => error);
-      expect(row(e, 'op-1')?.released_at).toBeNull();
-      if (holder === 'producer') expect(settled).toMatchObject({ state: 'closed' });
-      await e.sqlite.run("UPDATE recovery_holds SET released_at = NULL, release_reason = NULL, released_by = NULL WHERE token = 'prod-1' AND holder = 'producer'");
-    }
-    // This release's own settlement only ever reads producer holds, so an operator hold asks the producer nothing.
-    await e.sqlite.run("UPDATE recovery_holds SET released_at = 13, release_reason = 'done', released_by = 'producer' WHERE token = 'prod-1'");
-    let asked = 0;
-    const counting: RecoveryProducerPort = { ...producer([]), settleHold: async (token: string) => { asked += 1; return producer([]).settleHold(token); } };
+    const asked: string[] = [];
+    const recording: RecoveryProducerPort = { ...producer(['prod-1']), settleHold: async (token: string) => { asked.push(token); return producer(['prod-1']).settleHold(token); } };
+    expect(await settleOpenHold({ ...e.serverEnv, recovery: recording }, 12)).toMatchObject({ state: 'closed' });
+    expect(asked).toEqual(['prod-1']);
+    expect(row(e, 'op-1')?.released_at).toBeNull();
+    expect(row(e, 'prod-1')).toMatchObject({ holder: 'producer', released_at: 12, released_by: 'producer' });
+    // With the producer hold already released, settlement asks the producer nothing and the operator hold stays open.
+    let askedAgain = 0;
+    const counting: RecoveryProducerPort = { ...producer([]), settleHold: async (token: string) => { askedAgain += 1; return producer([]).settleHold(token); } };
     expect(await settleOpenHold({ ...e.serverEnv, recovery: counting }, 14)).toBeNull();
     expect(await recoveryHoldRelease({ ...e.serverEnv, recovery: counting }, 15)).toBe(0);
-    expect([asked, row(e, 'op-1')?.released_at]).toEqual([0, null]);
+    expect([askedAgain, row(e, 'op-1')?.released_at]).toEqual([0, null]);
   });
 
   it('answers this Deployment\'s own attempt still advancing ahead of an operator backup\'s hold (#1493 G2)', async () => {

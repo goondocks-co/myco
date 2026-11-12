@@ -11,6 +11,8 @@ import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { runControlResult, RunControlError } from '@goondocks/myco-shared/run-control';
 import { ROUTES } from '@myco-server-worker/routes.js';
 import { memberPost, sqliteEnv, turnOnGatedCapabilities } from './helpers/fixtures.js';
+import { changingAt, changingAtStatement, storingCall } from './helpers/store-faults.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 const OFFERS = {
   '/runs/claim': { id: 'target', agentId: 'myco-agent', task: 'embedding-reconcile', captureDriven: true, dryRun: true },
@@ -20,8 +22,8 @@ const OFFERS = {
 } as const;
 const TASKS: Record<string, string> = { '/runs/embedding-step': 'embedding-reconcile' };
 
-async function fixture(target: 'cloudflare' | 'native', path: string, onSql?: Parameters<typeof sqliteEnv>[0], controlledClock = false) {
-  const f = sqliteEnv(onSql);
+async function fixture(target: 'cloudflare' | 'native', path: string, controlledClock = false) {
+  const f = sqliteEnv();
   f.env.VECTORIZE = indexFixture();
   f.env.AI = { run: async () => ({ data: [[1, 0]] }) };
   let now = Date.now();
@@ -43,7 +45,8 @@ async function fixture(target: 'cloudflare' | 'native', path: string, onSql?: Pa
     if (path !== '/runs/claim') f.sqlite.run("UPDATE agent_runs SET status = 'running' WHERE id = ?", [id]);
   }
   const nativeBase = serverEnvFromBunConfig({ sqlite: f.sqlite, blobDir: '/unused-run-authority-blobs' });
-  const native = { ...nativeBase, vectors: cloudflareVectorStore(indexFixture()), embeddingProvider: async () => ({ modelKey: 'fixture-model', embed: async () => [1, 0] }), ...(onSql === undefined ? {} : { db: f.db }) };
+  const native = { ...nativeBase, vectors: cloudflareVectorStore(indexFixture()), embeddingProvider: async () => ({ modelKey: 'fixture-model', embed: async () => [1, 0] }) };
+  const bind = (store: RelationalStore) => { f.env.MYCO_DB = store; native.db = store; };
   const pipeline = createServer({ now: () => now, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
   const post = async (token: string, body: unknown, project = 'proj_1', route = path) => {
     const request = memberPost(token, body, route, { 'x-myco-project': project });
@@ -54,7 +57,16 @@ async function fixture(target: 'cloudflare' | 'native', path: string, onSql?: Pa
   const snapshot = () => ({ runs: f.sqlite.query("SELECT *, json_remove(run_context, '$.runControlRefusals') AS run_context FROM agent_runs ORDER BY project_id,id").all(),
     reports: f.sqlite.query('SELECT * FROM agent_reports ORDER BY id').all(),
     calls: f.sqlite.query('SELECT * FROM agent_run_events ORDER BY project_id,run_id,id').all(), projects: f.sqlite.query('SELECT * FROM projects ORDER BY project_id').all() });
-  return { ...f, holder, sibling, foreign, unheld, member, admin, post, snapshot, now, advanceClock: (at: number) => { now = at; } };
+  return { ...f, holder, sibling, foreign, unheld, member, admin, post, snapshot, bind, now, advanceClock: (at: number) => { now = at; } };
+}
+
+type RouteFixture = Awaited<ReturnType<typeof fixture>>;
+
+function restoreTarget(f: RouteFixture, row: Record<string, unknown>) {
+  const columns = Object.keys(row);
+  f.sqlite.run(`UPDATE agent_runs SET ${columns.map((column) => `${column}=?`).join(',')} WHERE id='target'`, columns.map((column) => row[column]));
+  f.sqlite.run("DELETE FROM agent_reports WHERE run_id='target'");
+  f.sqlite.run("DELETE FROM agent_run_events WHERE run_id='target'");
 }
 
 for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run route authority`, () => {
@@ -159,20 +171,16 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
     } finally { f.sqlite.close(); }
   });
   for (const path of ['/runs/claim', '/runs/update', '/runs/report']) for (const bound of ['lease', 'budget'] as const) it(`${path} checks ${bound} expiry using the write clock`, async () => {
-    let armed = false;
-    let advance: () => void = () => {};
-    const f = await fixture(target, path, { onSql: (sql) => {
-      const read = path === '/runs/claim' ? sql.startsWith('SELECT project_id AS projectId, id, harness') : sql.startsWith('SELECT id, harness');
-      if (armed && read) { armed = false; advance(); }
-    } }, true);
+    const f = await fixture(target, path, true);
     try {
       if (bound === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now + 10]);
-      advance = () => {
+      const landing = changingAtStatement(f.db, path !== '/runs/claim' && bound === 'budget' ? 'runs.getRun' : 'runs.ofCredential', () => {
         f.advanceClock(f.now + (bound === 'lease' ? 20 : 1_000_000));
         f.sqlite.run(bound === 'lease' ? "UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'" : "UPDATE agent_runs SET started_at = 1 WHERE id = 'target'");
-      };
-      armed = true;
+      });
+      f.bind(landing.store);
       const answer = await f.post(f.holder.token, OFFERS[path as keyof typeof OFFERS]);
+      expect(landing.landed()).toBe(true);
       expect(answer.body.applied).not.toBe(true);
       expect(answer.body.recorded).not.toBe(true);
       expect(answer.body.claimed).not.toBe(true);
@@ -182,20 +190,29 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
   });
   for (const path of ['/runs/claim', '/runs/update', '/runs/report']) for (const race of ['credential', 'revocation', 'lease', 'terminal'] as const) {
     it(`${path} rechecks ${race} at the mutation statement`, async () => {
-      let armed = false;
-      const f = await fixture(target, path, { onSql: (sql, sqlite) => {
-        const write = path === '/runs/claim' ? sql.startsWith('UPDATE agent_runs\n   SET status')
-          : path === '/runs/update' ? sql.startsWith('UPDATE agent_runs SET tokens_used') : sql.startsWith('INSERT INTO agent_reports');
-        if (!armed || !write) return;
-        armed = false;
-        if (race === 'credential') sqlite.run("UPDATE agent_runs SET dispatched_by = (SELECT dispatched_by FROM agent_runs WHERE id = 'sibling') WHERE id = 'target'");
-        if (race === 'lease') sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
-        if (race === 'terminal') sqlite.run("UPDATE agent_runs SET status = 'failed' WHERE id = 'target'");
-        if (race === 'revocation') sqlite.run("UPDATE member_credentials SET revoked_at = 1, revoked_by = 'mem_machine_2' WHERE id = (SELECT dispatched_by FROM agent_runs WHERE id = 'target')");
-      } });
+      const f = await fixture(target, path);
+      const lose = () => {
+        if (race === 'credential') f.sqlite.run("UPDATE agent_runs SET dispatched_by = (SELECT dispatched_by FROM agent_runs WHERE id = 'sibling') WHERE id = 'target'");
+        if (race === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
+        if (race === 'terminal') f.sqlite.run("UPDATE agent_runs SET status = 'failed' WHERE id = 'target'");
+        if (race === 'revocation') f.sqlite.run("UPDATE member_credentials SET revoked_at = 1, revoked_by = 'mem_machine_2' WHERE id = (SELECT dispatched_by FROM agent_runs WHERE id = 'target')");
+      };
       try {
-        armed = true;
-        const answer = await f.post(f.holder.token, OFFERS[path as keyof typeof OFFERS]);
+        const offer = OFFERS[path as keyof typeof OFFERS];
+        const landing = path === '/runs/claim'
+          ? changingAtStatement(f.db, 'runs.dispatchedClaimCaller', lose)
+          : await (async () => {
+            const before = f.sqlite.query("SELECT * FROM agent_runs WHERE id='target'").get() as Record<string, unknown>;
+            const at = await storingCall(f.db, async (store) => { f.bind(store); await f.post(f.holder.token, offer); }, () => path === '/runs/update'
+              ? f.sqlite.query("SELECT tokens_used AS v FROM agent_runs WHERE id='target'").get()
+              : f.sqlite.query("SELECT COUNT(*) AS v FROM agent_reports WHERE run_id='target'").get());
+            restoreTarget(f, before);
+            if (at < 1) throw new Error(`${path} stored nothing to race`);
+            return changingAt(f.db, at, lose);
+          })();
+        f.bind(landing.store);
+        const answer = await f.post(f.holder.token, offer);
+        expect(landing.landed()).toBe(true);
         expect(answer.body.applied).not.toBe(true);
         expect(answer.body.recorded).not.toBe(true);
         expect(answer.body.claimed).not.toBe(true);

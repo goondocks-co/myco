@@ -6,7 +6,8 @@ import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
  * call an operation makes — so a test can sweep every point of an operation, never by the SQL a call carries. A call is
  * one round trip to the store: a statement's `run`, `all` or `first`, or one `batch`. Where a test needs one particular
  * write to fail, or another request to land at it, `failingStatement` and `changingAtStatement` key on the name the
- * kernel gives that statement. `interleaveAt` is `changingAt` for a second writer.
+ * kernel gives that statement. `pausingAtStatement` holds that call until the test resumes, `hangingStatement` never
+ * returns it, and `failingStatementCall` fails one occurrence of it. `interleaveAt` is `changingAt` for a second writer.
  */
 
 /** A fault lands before the call reaches the store, or after the store applied it but before the caller hears. */
@@ -200,6 +201,69 @@ export function failingStatement(
   let failures = 0;
   const watched = around(db, async (_n, statements, apply) => {
     const fails = failures < times && statements.includes(sql);
+    if (fails && when === 'before') { failures += 1; throw error(); }
+    const result = await apply();
+    if (fails && when === 'after') { failures += 1; throw error(); }
+    return result;
+  });
+  return { store: watched.store, failures: () => failures };
+}
+
+/**
+ * Pauses the first call carrying the statement the kernel names `name`, before that call reaches the store or after
+ * it applied, until `resume`. `admitted` resolves once the pause has started, so another request can run while this
+ * one is held. An unknown name refuses when the fault is made. `landed` is true once the pause started.
+ */
+export function pausingAtStatement(db: RelationalStore, name: string, when: Moment = 'before'): {
+  store: RelationalStore; admitted: Promise<void>; resume(): void; landed(): boolean;
+} {
+  const sql = kernelSql(name);
+  let landed = false;
+  let release = () => {};
+  let reached = () => {};
+  const admitted = new Promise<void>((resolve) => { reached = resolve; });
+  const paused = new Promise<void>((resolve) => { release = resolve; });
+  const watched = around(db, async (_n, statements, apply) => {
+    const hit = !landed && statements.includes(sql);
+    if (hit && when === 'before') { landed = true; reached(); await paused; }
+    const result = await apply();
+    if (hit && when === 'after') { landed = true; reached(); await paused; }
+    return result;
+  });
+  return { store: watched.store, admitted, resume: () => { release(); }, landed: () => landed };
+}
+
+/**
+ * A store whose call carrying the statement the kernel names `name` never finishes. `landed` is true once that call
+ * was reached. An unknown name refuses when the fault is made.
+ */
+export function hangingStatement(db: RelationalStore, name: string): { store: RelationalStore; landed(): boolean } {
+  const sql = kernelSql(name);
+  let landed = false;
+  const watched = around(db, (_n, statements, apply) => {
+    if (statements.includes(sql)) { landed = true; return new Promise(() => {}); }
+    return apply();
+  });
+  return { store: watched.store, landed: () => landed };
+}
+
+/**
+ * A store on which the `call`-th call carrying the statement the kernel names `name` fails, before it reaches the
+ * store or after it applied. `call` counts from one: the first call carrying `name` is 1. An unknown name refuses
+ * when the fault is made. `failures` answers how often it failed.
+ */
+export function failingStatementCall(
+  db: RelationalStore, name: string, call: number, options: { when?: Moment; error?: () => Error } = {},
+): { store: RelationalStore; failures(): number } {
+  if (!Number.isInteger(call) || call < 1) throw new Error(`a statement call is counted from 1, not ${call}`);
+  const sql = kernelSql(name);
+  const { when = 'before', error = () => new Error(`${name} failed`) } = options;
+  let seen = 0;
+  let failures = 0;
+  const watched = around(db, async (_n, statements, apply) => {
+    const hit = statements.includes(sql);
+    if (hit) seen += 1;
+    const fails = hit && seen === call;
     if (fails && when === 'before') { failures += 1; throw error(); }
     const result = await apply();
     if (fails && when === 'after') { failures += 1; throw error(); }
