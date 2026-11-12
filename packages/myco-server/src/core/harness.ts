@@ -81,14 +81,14 @@ import { catalogResolution, pruneModelCatalogs, type CatalogOwner } from './mode
 import { workerKey, type WorkerPrincipal } from './worker-lease.js';
 import { runnerAcceptsWork } from '../auth/runners.js';
 import { emit } from '../telemetry.js';
-import { UNATTRIBUTED_DISPATCH_ACTOR, type ActorCeiling, type ClaimedRunRow } from './runs.js';
+import { type ActorCeiling, type ClaimedRunRow } from './runs.js';
 import { claimQueuedRun, claimPulledRun } from './worker-claim.js';
 import { deploymentTaskEntriesSince } from '../db/runs/claim.js';
 import { lapsedLeases, renewRunLeaseExpiry, settleLapsedLease } from '../db/runs/leases.js';
-import { runRemainingMs, getRun, type RunRow } from '../db/runs/lifecycle.js';
+import { runRemainingMs, getRun } from '../db/runs/lifecycle.js';
 import { applyRunUpdate, runUpdateStatement } from '../db/runs/change.js';
 import { ensureAgent } from '../db/runs/state.js';
-import { getDispatchActor, recordDispatch, hasSuccessorOf, launchQueued, recordQueued, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, successorsSince, NO_LIMITS } from '../db/runs/claim.js';
+import { recordDispatch, launchQueued, recordQueued, hasLiveTaskRun, restoreDispatchCredential, returnToQueue, skipQueued, NO_LIMITS } from '../db/runs/claim.js';
 import { dispatchLoad } from '../db/runs/live.js';
 import { INPUT_UNCHANGED } from '../db/schedule-entry.js';
 import { openHarnessCredential } from './provider-credentials.js';
@@ -118,13 +118,6 @@ export const HARNESS_AGENT_ID = 'myco-agent';
 const HARNESS_MACHINE_ID = 'harness';
 /** The admission a capture-driven task carries into its runtime, in place of a capability name. */
 const CAPTURE_DRIVEN_ADMISSION = 'captureDriven';
-
-/** How many runs of one task a Project may have re-queued in a day in place of runs the platform replaced. */
-export const REPLACED_REQUEUES_PER_DAY = 2;
-/** The window the per-day caps are counted over. */
-const DAY_MS = 86_400_000;
-/** The keys of a run's context the dispatcher writes itself; a re-queue rebuilds them rather than carrying them. */
-const DISPATCHER_CONTEXT_KEYS = new Set(['preparationTimeoutMs', 'timeoutSeconds', 'input_hash', 'counts', 'fresh', 'replaced', 'replaces']);
 
 /**
  * Why a dispatch is refused before anything is launched. Each is a settled
@@ -194,8 +187,6 @@ export interface LaunchSpec {
   counts?: Readonly<Record<string, number | boolean>>;
   /** How this run differs from an ordinary one. */
   options?: DispatchOptions;
-  /** The run this one stands in for, recorded in its context, when the platform replaced that run mid-flight. */
-  replaces?: string;
 }
 
 /** What a caller asks of one dispatch beyond the task and its parameters. */
@@ -234,20 +225,18 @@ interface StoredSpec {
   timeoutSeconds: number;
   params?: Record<string, string>;
   options?: DispatchOptions;
-  replaces?: string;
 }
 
 /** What the queue keeps of a dispatch, from the launch spec it carries. */
 /**
  * The context a run carries on its row: the task's parameters, the bound it
  * runs under, and what the server decided at dispatch — the input hash it
- * filed the ask under, the counts behind it, an owner's from-scratch ask, and
- * the run this one stands in for.
+ * filed the ask under, the counts behind it, and an owner's from-scratch ask.
  *
  * One builder serves both ways a row is written. A run that waits for a worker
  * is written once and never launched, so a context built only at launch would
  * leave every reader of these fields — the titling material, the digest's
- * substrate hash, the run bound, the replaced-run cap — with nothing to read.
+ * substrate hash, and the run bound — with nothing to read.
  */
 function runContextOf(spec: LaunchSpec, timeoutSeconds: number): string {
   return JSON.stringify({
@@ -256,7 +245,6 @@ function runContextOf(spec: LaunchSpec, timeoutSeconds: number): string {
     ...(spec.inputHash === undefined ? {} : { input_hash: spec.inputHash }),
     ...(spec.counts === undefined ? {} : { counts: spec.counts }),
     ...(spec.options?.fresh === true ? { fresh: true } : {}),
-    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
   });
 }
 
@@ -265,7 +253,6 @@ function storedSpecOf(spec: LaunchSpec): StoredSpec {
     serverUrl: spec.serverUrl, actor: spec.actor, timeoutSeconds: spec.timeoutSeconds ?? DEFAULT_DISPATCH_TIMEOUT_SECONDS,
     ...(spec.params === undefined ? {} : { params: spec.params }),
     ...(spec.options === undefined ? {} : { options: spec.options }),
-    ...(spec.replaces === undefined ? {} : { replaces: spec.replaces }),
   };
 }
 
@@ -746,112 +733,6 @@ export async function dispatchTask(env: ServerEnv, task: string, projectId: stri
     if (!(error instanceof DispatchAdmissionRefused)) throw error;
     return { dispatched: false, refusal: error.refusal, ...(error.capability === undefined ? {} : { capability: error.capability }) };
   }
-}
-
-/** The run the platform replaced, with everything a fresh dispatch of it needs that the row does not carry. */
-interface ReplacedRun {
-  run: RunRow;
-  projectId: string;
-  /** The origin the successor's runtime calls back to — the failing run's own request origin. */
-  serverUrl: string;
-  actor: string;
-}
-
-/** What became of the ask to run a replaced run again. */
-type RequeueOutcome =
-  | { requeued: true; runId: string; queued: boolean }
-  | { requeued: false; reason: 'no_task' | 'already_requeued' | 'daily_cap' | 'unchanged' | 'refused' };
-
-/**
- * The parameters a re-queue carries forward: what the dispatch's caller named,
- * without the words the dispatcher writes for itself. A task whose prompt the
- * server builds has that prompt built afresh, so the hash and the counts the
- * old context carries belong to the run that ended.
- */
-function carriedParams(runContext: string | null): Record<string, string> {
-  if (runContext === null) return {};
-  let parsed: unknown;
-  try { parsed = JSON.parse(runContext); } catch { return {}; }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-  return Object.fromEntries(
-    Object.entries(parsed as Record<string, unknown>)
-      .filter(([key, value]) => !DISPATCHER_CONTEXT_KEYS.has(key) && typeof value === 'string')
-      .map(([key, value]) => [key, value as string]),
-  );
-}
-
-/** The run's context as a record, or an empty one where it holds none the reader can parse. */
-function contextRecord(runContext: string | null): Record<string, unknown> {
-  if (runContext === null) return {};
-  try {
-    const parsed: unknown = JSON.parse(runContext);
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
-
-/** One field of a run's context, read as the type the caller expects. */
-function contextField<T>(runContext: string | null, key: string, ofType: (value: unknown) => T | undefined): T | undefined {
-  if (runContext === null) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(runContext);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    return ofType((parsed as Record<string, unknown>)[key]);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Run a replaced run again: one fresh dispatch of the same task for the same
- * Project, naming the run it stands in for.
- *
- * It goes through the dispatcher like any other ask, so the queue and the
- * limits apply. A task whose prompt the server builds has it built here, the
- * same build an owner's ask makes: a successor that launched at once with no
- * instruction and no hash would run on an empty prompt and its artifact write
- * would answer `written: false`. A Project standing where its artifact already
- * stands is left alone rather than run over unmoved material.
- *
- * Two caps hold the rest: a run already answered by a successor is never
- * answered twice, and a Project gets `REPLACED_REQUEUES_PER_DAY` of one task in
- * a day, so a Deployment rolling again and again does not turn one ask into a
- * stream of runs. The per-run cap and the per-task one are different bounds: a
- * drain that takes several un-claimed runs of one task away files a reclaim for
- * each, and they share that task's day between them — the first two are
- * answered and any beyond them are not.
- */
-export async function requeueReplaced(env: ServerEnv, replaced: ReplacedRun, now: number): Promise<RequeueOutcome> {
-  const { run, projectId } = replaced;
-  if (run.task === null) return { requeued: false, reason: 'no_task' };
-  const scope = { projectId };
-  if (await hasSuccessorOf(env.db, scope, run.id)) return { requeued: false, reason: 'already_requeued' };
-  if (await successorsSince(env.db, scope, run.task, now - DAY_MS) >= REPLACED_REQUEUES_PER_DAY) {
-    return { requeued: false, reason: 'daily_cap' };
-  }
-  const timeoutSeconds = contextField(run.runContext, 'timeoutSeconds', (v) => (typeof v === 'number' && v > 0 ? v : undefined));
-  const fresh = contextField(run.runContext, 'fresh', (v) => (v === true ? true : undefined));
-  const built = await buildTaskInput(env, run.task, projectId, now, { fresh: fresh === true, params: contextRecord(run.runContext) });
-  if (built !== null && built.unchanged) {
-    emit({ kind: 'task_skipped', task: run.task, projectId, skip: INPUT_UNCHANGED });
-    return { requeued: false, reason: 'unchanged' };
-  }
-  const input: Pick<LaunchSpec, 'instruction' | 'inputHash' | 'counts'> = built === null || built.unchanged
-    ? {}
-    : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
-  const outcome = await dispatchTask(env, run.task, projectId, {
-    serverUrl: replaced.serverUrl,
-    actor: (await getDispatchActor(env.db, scope, run.id)) ?? UNATTRIBUTED_DISPATCH_ACTOR,
-    ...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
-    params: carriedParams(run.runContext),
-    ...input,
-    options: { dryRun: run.dryRun === 1, ...(fresh === undefined ? {} : { fresh }) },
-    replaces: run.id,
-  }, now);
-  if (!outcome.dispatched) return { requeued: false, reason: 'refused' };
-  emit({ kind: 'harness_requeued', runId: outcome.runId, task: run.task, projectId, replaces: run.id, queued: outcome.queued });
-  return { requeued: true, runId: outcome.runId, queued: outcome.queued };
 }
 
 // ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ import type { RelationalStore, PreparedStatement } from '../../core/adapters.js'
 import type { ReadScope } from '../../read/scope.js';
 import { memberWriteStore, type MemberWriteActor } from '../../auth/member-write-store.js';
 import { LIVE_RUN_STATUSES, IN_FLIGHT_RUN_STATUSES, UNCLAIMED_RUN_STATUSES } from '../run-statuses.js';
-import { runOriginSql, contextValue, DISPATCH_ACTOR_SQL } from '../run-context.js';
+import { runOriginSql, DISPATCH_ACTOR_SQL } from '../run-context.js';
 import { admissionForTask } from '../../core/task-catalogue.js';
 import { settingsWriter } from '../../core/settings.js';
 import { PROJECT_WORK_SQL, CAPABILITY_ON_SQL } from '../../db/settings/admission.js';
@@ -52,7 +52,7 @@ const CLAIM_DISPATCHED_SQL = `UPDATE agent_runs
 
 const NOT_THE_RUN_ADMITTED = '(? IS NULL OR id != ?)';
 
-const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped' AND COALESCE(${contextValue('replaced')}, 0) != 1
+const ACTOR_ENTRY_SQL = `task = ? AND status != 'skipped'
        AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?`;
 
 const ACTOR_PROJECT_SQL = '(? IS NULL OR project_id = ?)';
@@ -276,11 +276,6 @@ export async function markRecordedLaunch(db: RelationalStore, runId: string): Pr
   (await commit(db, recordLaunchWrite.bind(runId)))[0];
 }
 
-export async function getDispatchActor(db: RelationalStore, scope: ReadScope, runId: string): Promise<string | null> {
-  const row = ((await readSet(db, dispatchActorRead.bind(scope.projectId, runId)))[0][0] ?? null);
-  return row?.actor ?? null;
-}
-
 export async function lastTaskEntryAt(db: RelationalStore, scope: ReadScope, task: string, actor?: string): Promise<number | null> {
   const queries = actor === undefined
     ? [lastTaskEntries[0]!.bind(scope.projectId, task), lastTaskEntries[1]!.bind(scope.projectId, task, skipContext(INPUT_UNCHANGED))]
@@ -345,25 +340,11 @@ export async function deploymentTaskRunTally(db: RelationalStore, task: string, 
 
 export function taskEntriesSql(project = '?', task = '?', actor?: string): string {
   return `SELECT COUNT(*) AS c FROM agent_runs ${actor === undefined ? '' : 'INDEXED BY idx_agent_runs_schedule_entry'} WHERE project_id = ${project} AND task = ${task} AND status != 'skipped'
-    AND COALESCE(${contextValue('replaced')},0)!=1 AND COALESCE(queued_at,started_at)>=? ${actor === undefined ? '' : `AND ${SCHEDULE_ACTOR_SQL} IN (?, '')`}`;
+    AND COALESCE(queued_at,started_at)>=? ${actor === undefined ? '' : `AND ${SCHEDULE_ACTOR_SQL} IN (?, '')`}`;
 }
 
 export async function taskEntriesSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number, actor?: string): Promise<number> {
   const row = ((await readSet(db, projectTaskEntries[Number(actor !== undefined)]!.bind(scope.projectId, task, sinceMs, ...(actor === undefined ? [] : [actor]))))[0][0] ?? null);
-  return row?.c ?? 0;
-}
-
-export async function markRunReplaced(db: RelationalStore, scope: ReadScope, runId: string): Promise<boolean> {
-  const result = (await commit(db, replaceRunWrite.bind(scope.projectId, runId)))[0];
-  return result.results.length === 1;
-}
-
-export async function hasSuccessorOf(db: RelationalStore, scope: ReadScope, runId: string): Promise<boolean> {
-  return (((await readSet(db, successorRead.bind(scope.projectId, runId)))[0][0] ?? null)) !== null;
-}
-
-export async function successorsSince(db: RelationalStore, scope: ReadScope, task: string, sinceMs: number): Promise<number> {
-  const row = ((await readSet(db, successorsRead.bind(scope.projectId, task, sinceMs)))[0][0] ?? null);
   return row?.c ?? 0;
 }
 
@@ -399,7 +380,6 @@ const skipQueuedWrite = write<readonly unknown[], { displaced: string | null }>(
      RETURNING dispatched_by AS displaced` });
 const claimInputWrite = write<readonly unknown[], { id: string }>({ name: 'runs.claimInputWrite', sql: `UPDATE agent_runs SET instruction = ?, run_context = json_patch(COALESCE(run_context, '{}'), ?) WHERE project_id = ? AND id = ? AND status = 'running' AND dispatched_by = ?` });
 const recordLaunchWrite = write<readonly unknown[], { id: string }>({ name: 'runs.recordLaunchWrite', sql: `UPDATE agent_runs SET harness = 'record' WHERE id = ?` });
-const dispatchActorRead = read<readonly unknown[], { actor: string | null }>({ name: 'runs.dispatchActorRead', sql: `SELECT ${DISPATCH_ACTOR_SQL} AS actor FROM agent_runs WHERE project_id = ? AND id = ?` });
 const lastTaskEntries = ["status != 'skipped'", "status = 'skipped' AND run_context = ?"].map((predicate, i) =>
   read<readonly unknown[], { at: number }>({ name: `runs.lastTaskEntry${i === 0 ? 'Started' : 'Unchanged'}`, sql:
     `SELECT COALESCE(queued_at, started_at) AS at FROM agent_runs WHERE project_id=? AND task=? AND ${predicate}
@@ -420,13 +400,6 @@ const taskTallyRead = read<readonly unknown[], { inFlight: number; completed: nu
        FROM agent_runs WHERE task = ? AND COALESCE(queued_at, started_at) >= ? AND ${DISPATCH_ACTOR_SQL} = ?` });
 const projectTaskEntries = [false,true].map(actor => read<readonly unknown[], { c: number }>({
   name: `runs.projectTaskEntries${actor ? 'Actor' : 'All'}`, sql: taskEntriesSql('?','?',actor ? '' : undefined) }));
-const replaceRunWrite = write<readonly unknown[], { id: string }>({ name: 'runs.replaceRunWrite', sql: `UPDATE agent_runs SET run_context = json_set(COALESCE(run_context, '{}'), '$.replaced', json('true'))
-      WHERE project_id = ? AND id = ?
-        AND (run_context IS NULL OR json_type(CASE WHEN json_valid(run_context) THEN run_context END) = 'object') RETURNING id` });
-const successorRead = read<readonly unknown[], { one: number }>({ name: 'runs.successorRead', sql: `SELECT 1 AS one FROM agent_runs WHERE project_id = ? AND ${contextValue('replaces')} = ? LIMIT 1` });
-const successorsRead = read<readonly unknown[], { c: number }>({ name: 'runs.successorsRead', sql: `SELECT COUNT(*) AS c FROM agent_runs WHERE project_id = ? AND task = ?
-       AND ${contextValue('replaces')} IS NOT NULL
-       AND COALESCE(queued_at, started_at) >= ?` });
 const liveTaskAnywhereRead = read<readonly unknown[], { one: number }>({ name: 'runs.liveTaskAnywhereRead', sql: `SELECT 1 AS one FROM agent_runs WHERE ${IN_FLIGHT_RUN_STATUSES} AND task = ? LIMIT 1` });
 const liveTaskRead = read<readonly unknown[], { one: number }>({ name: 'runs.liveTaskRead', sql: `SELECT 1 AS one FROM agent_runs WHERE project_id = ? AND task = ? AND ${IN_FLIGHT_RUN_STATUSES} LIMIT 1` });
 const skippedRunWrite = write<readonly unknown[], { id: string }>({ name: 'runs.skippedRunWrite', sql: `INSERT INTO agent_runs (project_id, id, agent_id, task, status, dry_run, started_at, completed_at, run_context)

@@ -12,7 +12,7 @@ import type { RunRow } from '../db/runs/lifecycle.js';
 import { commitRunUpdate } from '../core/release.js';
 import { recordReport, decideRunEnd, runEndingContext, emitLateHarnessError } from '../core/run-postconditions.js';
 import { closeErrorCode, diagnosticErrorCode, type RunErrorCode } from '../core/reader-codes.js';
-import { drainQueue, requeueReplaced, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
+import { drainQueue, STALE_CREDENTIAL_REFUSAL } from '../core/harness.js';
 import { HARNESS_MEMBER_ID } from '../constants.js';
 import { classify, emit, refusal } from '../telemetry.js';
 import { refused } from '../ingest/events.js';
@@ -123,33 +123,6 @@ export async function handleAgents(env: ServerEnv, _ctx: OwnerContext): Promise<
   return ok({ agents: await listAgents(env.db) });
 }
 
-/**
- * Record that a deployment ended this run, and stand one fresh run of the same
- * task in its place.
- *
- * The run's context belongs to the dispatcher and a runtime may not set it.
- * `replaced` is the single exception: a runtime that the platform is taking
- * away adds that one word through the failure it posts, and adds nothing else.
- * The word is what keeps the failed row out of the task's per-day count and
- * what names the successor's predecessor on the run the queue then holds.
- *
- * Only the runtime the dispatch minted a credential FOR may say it, keyed on
- * the run's own `dispatched_by` exactly as the release is. The word starts a
- * run on the Deployment's money: any other member holding a run id would turn
- * one failure into a dispatch nobody asked for. A caller that is not that
- * runtime is refused before a status update, replacement mark or successor dispatch.
- */
-async function recordReplacedRun(env: ServerEnv, ctx: RouteContext, runId: string): Promise<void> {
-  const scope = { projectId: ctx.projectId };
-  const run = await getRun(env.db, scope, runId);
-  if (run === null || run.dispatchedBy !== ctx.tokenId) return;
-  if (JSON.parse(run.runContext ?? 'null')?.replaced !== true) return;
-  await requeueReplaced(env, { run, projectId: ctx.projectId, serverUrl: ctx.origin, actor: ctx.memberId }, ctx.now);
-}
-
-/** Whether a failure body asks for the one context word a runtime may add. */
-const asksReplaced = (body: Record<string, unknown>, status: unknown): boolean => body.replaced === true && status === 'failed';
-
 /** Terminal writes require the credential currently named by the run. */
 function foreignCredentialAnswer(ctx: RouteContext, before: RunRow | null): Response | null {
   if (ctx.memberId === HARNESS_MEMBER_ID && before?.dispatchedBy === ctx.tokenId) return null;
@@ -162,13 +135,13 @@ type RunWrite = { refused: Response } | { changed: number };
 /** Run status and retirement of its dispatch credential commit under the caller's authority. */
 async function endRunAsCaller(
   env: ServerEnv, ctx: RouteContext, runId: string, before: RunRow | null,
-  update: RunUpdate, options: { replaced?: boolean; errorCode?: RunErrorCode; refusalId?: string | null; context?: Readonly<Record<string, string>> } = {},
+  update: RunUpdate, options: { errorCode?: RunErrorCode; refusalId?: string | null; context?: Readonly<Record<string, string>> } = {},
 ): Promise<RunWrite> {
   const foreign = foreignCredentialAnswer(ctx, before);
   if (foreign !== null) return { refused: foreign };
   const scope = { projectId: ctx.projectId };
   const changed = await commitRunUpdate(env, scope, runId, update, {
-    now: ctx.now, replaced: options.replaced, context: options.context,
+    now: ctx.now, context: options.context,
     errorCode: options.errorCode ?? diagnosticErrorCode(typeof update.error === 'string' ? update.error : null),
     caller: { ...runtimeCaller(ctx), ...(options.errorCode === undefined && options.refusalId != null ? { refusalId: options.refusalId } : {}) },
   });
@@ -176,7 +149,6 @@ async function endRunAsCaller(
     try {
       if (before !== null) emitLateHarnessError(ctx.projectId, before, options.context);
       if (isTerminalRunStatus(update.status)) await drainQueue(env, ctx.now);
-      if (options.replaced === true) await recordReplacedRun(env, ctx, runId);
     } catch (error) {
       emit({ kind: 'run_close_followup_failed', runId, error_class: classify(error) });
     }
@@ -238,14 +210,13 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
   if (foreign !== null) return foreign;
   const settled = guarded ? endedAnswer(before?.status, runUpdate.status) : null;
   if (settled !== null) return settled;
-  const replaced = asksReplaced(body, runUpdate.status);
   let context: Record<string, string> | undefined;
   if (before !== null && (runUpdate.status === 'completed' || runUpdate.status === 'failed')) {
     const reportedError = typeof runUpdate.error === 'string' ? runUpdate.error : null;
     const ending = await decideRunEnd(env.db, scope, before, runUpdate.status, reportedError);
     context = runEndingContext(ending.endedNote, reportedError);
     if (ending.unmet !== null) {
-      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { replaced, errorCode: closeErrorCode(ending.unmet), context });
+      const written = await endRunAsCaller(env, ctx, runId, before, { ...runUpdate, status: 'failed', completed_at: ctx.now, error: ending.unmet } as RunUpdate, { errorCode: closeErrorCode(ending.unmet), context });
       if ('refused' in written) return written.refused;
       const raced = written.changed === 0 ? endedAnswer((await getRun(env.db, scope, runId))?.status, 'failed') : null;
       if (raced !== null) return raced;
@@ -253,7 +224,7 @@ export async function handleUpdateRun(env: ServerEnv, ctx: RouteContext): Promis
     }
     runUpdate = { ...runUpdate, status: ending.status, ...(ending.endedNote === null ? {} : { error: null }) };
   }
-  const written = await endRunAsCaller(env, ctx, runId, before, runUpdate, { replaced: replaced && runUpdate.status === 'failed', refusalId: body.refusalId, context });
+  const written = await endRunAsCaller(env, ctx, runId, before, runUpdate, { refusalId: body.refusalId, context });
   if ('refused' in written) return written.refused;
   const changed = written.changed;
   if (changed === 1) return Response.json({ persisted: true, changed, applied: true });

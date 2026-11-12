@@ -34,8 +34,6 @@ export interface RunUpdateOptions {
   errorCode?: RunErrorCode;
   context?: Readonly<Record<string, string>>;
   caller?: RunCaller;
-  /** The run was replaced: its context records that, whether or not other context is added. */
-  replaced?: boolean;
 }
 
 /**
@@ -59,7 +57,7 @@ export interface RunUpdateOptions {
  * rather than a change of it.
  */
 export function runUpdateStatement(scope: ReadScope, runId: string, update: RunUpdate, options: RunUpdateOptions = {}): Bound<{ id: string }, 'write'> | null {
-  const { lease, errorCode = 'run_failed', context, caller, replaced = false } = options;
+  const { lease, errorCode = 'run_failed', context, caller } = options;
   if ('status' in update && !isTerminalRunStatus(update.status)) throw new Error('run updates require a terminal status');
   const columns = RUN_UPDATE_COLUMNS.filter((c) => c in update);
   if (columns.length === 0) return null;
@@ -83,11 +81,8 @@ export function runUpdateStatement(scope: ReadScope, runId: string, update: RunU
   const callerGuard = runCallerGuard(caller);
   // Context additions retain any non-object source verbatim under unparsedRunContext.
   const hasContext = context !== undefined && Object.keys(context).length > 0;
-  const contextJson = !hasContext && !replaced ? null : JSON.stringify({ ...context, ...(replaced ? { replaced: true } : {}) });
-  const contextSet = contextJson === null ? '' : replaced && !hasContext
-    ? `, run_context = CASE WHEN run_context IS NULL OR json_type(CASE WHEN json_valid(run_context) THEN run_context END) = 'object'
-        THEN json_patch(COALESCE(run_context, '{}'), ?) ELSE run_context END`
-    : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
+  const contextJson = hasContext ? JSON.stringify(context) : null;
+  const contextSet = contextJson === null ? '' : `, run_context = json_patch(${RUN_CONTEXT_OBJECT_SQL}, ?)`;
   return runChangeStatement(`UPDATE agent_runs SET ${columns.map((c) => `${c} = ?`).join(', ')}${codeSet}${contextSet}${release} WHERE project_id = ? AND id = ?${guard}${leaseGuard}${callerGuard.sql}`, [...columns.map((c) => update[c] ?? null), ...(coded ? [...(usesReceipt ? [caller!.tokenId, caller!.refusalId] : []), update.error == null ? null : errorCode] : []), ...(contextJson === null ? [] : [contextJson]), scope.projectId, runId, ...(guarded ? [update.status] : []),
       ...(authority?.params ?? []), ...callerGuard.params]);
 }

@@ -324,13 +324,6 @@ export function fleetWaitWords(run: Pick<RunFields, 'fleetWait' | 'waitReason'>)
   return reason === undefined || reason === 'ready' || reason === run.waitReason ? null : QUEUE_REASON_WORDS[reason];
 }
 
-/** What a deploy did to a run, in the reader's words: nothing for an ordinary run. */
-export function deployWords(run: { replaced: boolean; replaces: string | null }): string | null {
-  if (run.replaced) return 'Replaced during a deploy';
-  if (run.replaces !== null) return 'Started again after a deploy';
-  return null;
-}
-
 /**
  * Where a run ran, as the page may say it: the machine's name when the server
  * names it to this viewer, else whose machine it was. Never the machine's id,

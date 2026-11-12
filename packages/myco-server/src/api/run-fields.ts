@@ -52,7 +52,7 @@ export const RUN_REQUEST_FIELDS = {
     model: (value: unknown, body: Readonly<Record<string, unknown>>) => modelOrNull(value, body.task === 'embedding-reconcile'),
     runContext: (value: unknown) => value == null ? null : record(value), dryRun: boolean,
   },
-  '/runs/update': { runId: (value: unknown) => str(value), update: object, replaced: boolean, refusalId: (value: unknown) => value == null ? null : strictId(value) ?? undefined },
+  '/runs/update': { runId: (value: unknown) => str(value), update: object, refusalId: (value: unknown) => value == null ? null : strictId(value) ?? undefined },
   '/runs/report': { runId: strictId, agentId: strictName, action: strictName,
     summary: (value: unknown) => str(value, MAX_REPORT_SUMMARY_CHARS),
     details: (value: unknown) => strOrNull(value, MAX_REPORT_DETAILS_CHARS), audit: unchanged },
