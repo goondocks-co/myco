@@ -27,6 +27,14 @@ describe('a server-derived body has one owner at every step', () => {
     e.sqlite.close();
   });
 
+  it('arms the orphan audit when a derived body is admitted', async () => {
+    const e = sqliteEnv();
+    try {
+      await preparing(e);
+      expect(e.sqlite.query('SELECT armed_at FROM orphan_sweep_state WHERE id=1').get()).toEqual({ armed_at: NOW });
+    } finally { e.sqlite.close(); }
+  });
+
   it('a second body of the same content registers one object and adds its proof', async () => {
     const e = sqliteEnv();
     const first = await preparing(e);

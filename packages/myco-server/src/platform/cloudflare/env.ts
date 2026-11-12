@@ -206,6 +206,14 @@ function recordingLaunch(bindings: CloudflareBindings): ServerEnv['harnessLaunch
   return async (spec) => { await markRecordedLaunch(bindings.MYCO_DB, spec.runId); };
 }
 
+/** Request dispatch hands long-lived embedding work to the Deployment clock where one is bound. */
+function embeddingLaunch(bindings: CloudflareBindings, deferred: DeferredWork): NonNullable<ServerEnv['harnessLaunch']> {
+  const clock = bindings.CLOCK;
+  return deferred.lifetime !== 'clock' && clock !== undefined
+    ? (spec) => clockStub(clock).launchEmbedding(spec)
+    : cloudflareEmbeddingLaunch(bindings.MYCO_ORIGIN!, (work) => deferred.waitUntil(work), { lifetime: deferred.lifetime });
+}
+
 /** The fleet as the config states it, or null for an absent or malformed value: a bound that cannot be read is no bound. */
 function fleetOf(value: string | undefined): number | null {
   if (value === undefined) return null;
@@ -235,7 +243,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     ...(recoveryPort(bindings) === undefined ? {} : { recovery: recoveryPort(bindings) }),
     ...(bindings.MYCO_DB === undefined ? {} : { storeMaintenance: d1StoreMaintenance(bindings.MYCO_DB) }),
     ...(bindings.HARNESS_LAUNCH_MODE === 'record' ? { harnessLaunch: recordingLaunch(bindings) }
-      : embeddingRuntime ? { harnessLaunch: cloudflareEmbeddingLaunch(bindings.MYCO_ORIGIN!, (work) => deferred!.waitUntil(work), { lifetime: deferred!.lifetime }), harnessTasks: [EMBEDDING_TASK] } : {}),
+      : embeddingRuntime ? { harnessLaunch: embeddingLaunch(bindings, deferred!), harnessTasks: [EMBEDDING_TASK] } : {}),
     ...(bindings.MYCO_ORIGIN === undefined || bindings.MYCO_ORIGIN === '' ? {} : { origin: bindings.MYCO_ORIGIN }),
     ...(fleetOf(bindings.MYCO_FLEET) === null ? {} : { fleet: fleetOf(bindings.MYCO_FLEET)! }),
     // The runtime hands every request a deferral, and the work rides it past the

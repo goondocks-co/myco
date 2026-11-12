@@ -150,7 +150,7 @@ export const ownerLifecycle: ParityScenario = {
  */
 export const interruptedRestoreOwner: ParityScenario = {
   name: 'owner lifecycle: an interrupted restore keeps the selected owner and the imported administrator, who then links and takes ownership',
-  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/worker-entry.ts' }, stopRace: true, timeoutMs: 240_000 },
+  dedicated: { stopRace: true, timeoutMs: 240_000 },
   async run(target) {
     const restoredId = 'mem_owner_parity_restored';
     const now = Date.now();

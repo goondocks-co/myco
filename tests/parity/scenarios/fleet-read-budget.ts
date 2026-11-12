@@ -8,7 +8,7 @@ import { dispatch } from '../clients/runs.ts';
 export const fleetReadBudget: ParityScenario = {
   name: 'runner fleet: D1 rows read stay bounded as member credentials accumulate',
   only: 'cloudflare',
-  dedicated: { cloudflare: { main: '../../tests/parity/fleet-budget/worker-entry.ts' }, timeoutMs: 240_000 },
+  dedicated: { timeoutMs: 240_000 },
   async run(target) {
     await allowWorkerClaims(target);
     expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);

@@ -13,6 +13,7 @@ import { parityWranglerConfig } from '@myco/server/deploy-config.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { GITHUB_SUB, MACHINE_ID, MEMBER_ID, PROJECT_ID, SESSION_SECRET, grantHeadersFor, memberHeadersFor, type ParityTarget } from '../harness.ts';
 import {decodeReadTrace} from '../../helpers/statement-recorder.js';
+import type { EmbeddingFixture } from '../embedding/bindings.ts';
 import {CLOCK_NAME} from '@myco-server-worker/platform/cloudflare/clock-name.js';
 
 const SERVER_DIR = path.resolve(import.meta.dir, '..', '..', '..', 'packages', 'myco-server');
@@ -88,9 +89,10 @@ export function lockedRetryWaitMs(said: string, attempt: number): number | null 
 
 /** What a scenario that needs its own boot may change about the Worker it runs against. */
 export interface CloudflareBootOptions {
-  /** The Worker entry, relative to `packages/myco-server`, in place of the shipped `src/index.ts`. */
-  main?: string;
-  embeddingFixture?:boolean;
+  embeddingFixture?: true | EmbeddingFixture;
+  embeddingRuntime?: true;
+  stopRace?: boolean;
+  unconfiguredSignIn?: true;
   /** Seed the Deployment through its routes, carry its rows to the previous schema, and upgrade it with the latest migration file. */
   latestSchemaUpgrade?: boolean;
 }
@@ -105,14 +107,14 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
   const persistDir = path.join(root, 'state');
   const entryPath = path.join(root, 'entry.ts');
   fs.mkdirSync(path.dirname(entryPath), { recursive: true });
-  const main = path.resolve(SERVER_DIR, options.main ?? 'src/index.ts');
+  const main = path.resolve(SERVER_DIR, 'src/index.ts');
   const observer = path.resolve(import.meta.dir, '..', 'observed-worker.ts');
   const diagnostics = path.resolve(import.meta.dir, '..', '..', 'helpers', 'statement-recorder.ts');
   const telemetry = path.join(root, 'telemetry.ts');
   const originalTelemetry = path.join(SERVER_DIR, 'src', 'telemetry.ts');
   fs.writeFileSync(telemetry, `import { classify as original } from ${JSON.stringify(originalTelemetry)};\nimport { observeHandledException } from ${JSON.stringify(diagnostics)};\nexport * from ${JSON.stringify(originalTelemetry)};\nexport function classify(...args: Parameters<typeof original>) { observeHandledException(args[0]); return original(...args); }\n`);
   // A Deployment seeded for an upgrade recalls what its members saved, through the fixture's embedding and vector bindings.
-  const fixtureSetup=options.embeddingFixture||options.latestSchemaUpgrade?'import { installObservedEmbeddingFixture } from '+JSON.stringify(observer)+';\ninstallObservedEmbeddingFixture();\n':'';
+  const fixtureSetup = `import { installObservedFixtures } from ${JSON.stringify(observer)};\ninstallObservedFixtures(${JSON.stringify({ embedding: options.embeddingFixture === true ? 'words' : options.embeddingFixture ?? (options.latestSchemaUpgrade ? 'words' : undefined), stopRace: options.stopRace, unconfiguredSignIn: options.unconfiguredSignIn })});\n`;
   fs.writeFileSync(entryPath, fixtureSetup+`import worker from ${JSON.stringify(main)};\nimport { observedWorker } from ${JSON.stringify(observer)};\nexport * from ${JSON.stringify(main)};\nexport { ObservedDeploymentClock as DeploymentClock, ObservedRecoveryProducer as RecoveryProducer } from ${JSON.stringify(observer)};\nexport default observedWorker(worker);\n`);
   const bundledEntry=path.join(root,'observed-entry.mjs');
   await buildObservedWorker({entryPoints:[entryPath],outfile:bundledEntry,bundle:true,format:'esm',platform:'browser',target:'es2022',external:['cloudflare:workers','node:*'],tsconfig:path.join(SERVER_DIR,'tsconfig.json'),plugins:[{name:'view-read-origins',setup(build){
@@ -198,7 +200,7 @@ export async function bootCloudflare(options: CloudflareBootOptions = {}): Promi
 
     const vars = {
       SESSION_SECRET, GITHUB_CLIENT_ID: 'parity-client', GITHUB_CLIENT_SECRET: 'parity-secret',
-      HARNESS_LAUNCH_MODE: 'record', CLOCK_MODE: 'manual',
+      ...(options.embeddingRuntime ? {} : { HARNESS_LAUNCH_MODE: 'record', CLOCK_MODE: 'manual' }),
     };
     let reply = await runtime.command({ op: 'start', tag, config: configPath, persist: persistDir, vars });
     started = true;

@@ -8,7 +8,7 @@ import { assignRole, browser, credentials, deviceMachine, memberView, person, se
  */
 export const stopAfterDemotion: ParityScenario = {
   name: 'owner review: live actor scope gates credential and machine Stop after demotion',
-  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/worker-entry.ts' }, stopRace: true, timeoutMs: 240_000 },
+  dedicated: { stopRace: true, timeoutMs: 240_000 },
   async run(target) {
     await selectOwner(target);
     const admin = await person(target, '720711', { role: 'admin', login: 'review-admin' });

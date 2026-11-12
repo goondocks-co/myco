@@ -22,7 +22,7 @@ async function request(target: ParityTarget, path: string, method: string, heade
  */
 export const liveActorWrites: ParityScenario = {
   name: 'live actor writes: settings and dispatch refuse demotion at the native and D1 commit',
-  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/embedding-worker-entry.ts' }, stopRace: true, timeoutMs: 240_000 },
+  dedicated: { cloudflare: { embeddingFixture: 'constant' }, stopRace: true, timeoutMs: 240_000 },
   async run(target) {
     const stopProvider = await embeddingFixture(target);
     try {

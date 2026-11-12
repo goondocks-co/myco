@@ -180,6 +180,14 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     return serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { this.keep(promise); } });
   }
 
+  /** Owns a dispatched embedding run beyond the request that admitted it, with alarms retaining its lifetime. */
+  async launchEmbedding(spec: Parameters<NonNullable<ServerEnv['harnessLaunch']>>[0]): Promise<void> {
+    const launch = this.clockEnv().harnessLaunch;
+    if (launch === undefined) throw new Error('The Deployment clock has no embedding runtime');
+    await this.ensureWork('launch');
+    await launch(spec);
+  }
+
   /** One tick over this object's bindings, paced by what this clock kept from its last wakes. */
   protected tick(now: number): Promise<TickReport> {
     return runTick(this.clockEnv(), now, { wake: 'clock', pacer: this.pacer, workRequested: this.workRequested });
@@ -276,6 +284,10 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
 
   /** Request earlier work under the alarm gate. A retired clock holds no alarm. */
   async ensure(): Promise<void> {
+    return this.ensureWork('tick');
+  }
+
+  private async ensureWork(kind: 'tick' | 'launch'): Promise<void> {
     await this.alarms.exclusive(async () => {
       if (this.retired()) {
         await this.ctx.storage.deleteAlarm();
@@ -285,7 +297,9 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
       await this.loadTiming();
       const requested = now + ENSURE_SOON_MS;
       this.requestedAt = this.requestedAt === null ? requested : Math.min(this.requestedAt, requested);
-      await armSoon(this.ctx.storage, this.env, now, this.timing.workAt(now));
+      const notBefore = this.timing.workAt(now);
+      const latest = kind === 'launch' || this.launched.size > 0 ? Math.min(notBefore, now + LAUNCHED_WORK_WAKE_MS) : notBefore;
+      await armSoon(this.ctx.storage, this.env, now, latest);
     });
   }
 

@@ -336,16 +336,16 @@ jobs:
 
   # Every parity scenario on both stores, in the full run.
   parity:
-    name: parity (${{ matrix.shard }}/7)
+    name: parity (${{ matrix.shard }}/8)
     if: ${{ inputs.full || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      MYCO_PARITY_SHARD: ${{ matrix.shard }}/7
+      MYCO_PARITY_SHARD: ${{ matrix.shard }}/8
       MYCO_RUNNER_GROUP_BUDGET_MS: 780000
     steps:
       - uses: actions/checkout@v7

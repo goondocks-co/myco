@@ -6,7 +6,7 @@ import { revisionHeaders } from '../settings-revision.ts';
 
 export const workerWriteCompletion: ParityScenario = {
   name: 'worker writes: required state and responses commit together under late authority loss',
-  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/worker-entry.ts' }, stopRace: true, timeoutMs: 300_000 },
+  dedicated: { stopRace: true, timeoutMs: 300_000 },
   async run(target) {
     const now = Date.now();
     const request = async (path: string, body: unknown) => fetch(`${target.url}${path}`, { method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }), body: JSON.stringify(body) });

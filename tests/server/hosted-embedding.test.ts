@@ -129,6 +129,19 @@ test('hosted execution binds only when the invocation owns its lifetime and an o
   } finally { f.sqlite.close(); }
 });
 
+test('a request launch hands the unchanged run to its bound Deployment clock', async () => {
+  const f = sqliteEnv();
+  const accepted: unknown[] = [];
+  const clock = { idFromName: (name: string) => name, get: () => ({ launchEmbedding: async (spec: unknown) => { accepted.push(spec); } }) };
+  try {
+    const env = serverEnvFromBindings({ ...f.env, MYCO_ORIGIN: 'https://myco.example', CLOCK: clock } as never,
+      { waitUntil: () => { throw new Error('request retained clock-owned work'); } });
+    const spec = { runId: 'request-run', timeoutSeconds: 60, envVars: { MYCO_TASK: 'embedding-reconcile', MYCO_PROJECT: 'proj_1' } };
+    await env.harnessLaunch!(spec);
+    expect(accepted).toEqual([spec]);
+  } finally { f.sqlite.close(); }
+});
+
 test('run control rejects redirects without sending the run credential to the destination', async () => {
   let forwarded = 0;
   const destination = Bun.serve({ port: 0, fetch: () => { forwarded++; return Response.json({ persisted: true }); } });
