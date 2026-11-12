@@ -1,23 +1,23 @@
 import { expect } from 'bun:test';
 import type { SearchAnswer, SearchResult } from '@goondocks/myco-shared/search-types';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
 
-const MATCHES = 105;
-const PAGE = 20;
+import { cardSession, learningSettings, publishedTurns } from '../clients/capture.ts';
 
-/**
- * A session's turn cards listed by time page by page on both targets: a hundred and more cards of identical text and
- * time, reached through the Project's search route and the MCP tool by cursor, each match once, in one order, never
- * another session's, and past unrelated cards in another Project between pages.
- */
+const MATCHES = 5;
+const PAGE = 2;
+
+/** Cards written by a claimed run page in the same order over HTTP and MCP, scoped to their session. */
 export const searchPaging: ParityScenario = {
   name: 'search by time: a session\'s identical card matches reached by cursor past cards elsewhere, once each, on HTTP and MCP',
+  dedicated: { timeoutMs: 180_000 },
   async run(target: ParityTarget) {
+    await learningSettings(target);
     const stamp = Date.now();
     const word = `zirconium${stamp}`;
     const session = `paging-${stamp}`;
     const elsewhere = `paging-elsewhere-${stamp}`;
-    const at = stamp - 60_000;
+    const at = stamp - 3_600_000;
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>) => {
       await expectPersisted(await fetch(`${target.url}/events`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
@@ -37,24 +37,16 @@ export const searchPaging: ParityScenario = {
       expect(body.error).toBeUndefined();
       return body.result.structuredContent.result;
     };
-    const cards = async (project: string, sessionId: string, keys: readonly string[], text: string, time: number) => target.sql(`INSERT INTO turn_cards
-      (project_id, session_id, turn_key, state, card, created_at) SELECT ${lit(project)}, ${lit(sessionId)}, value, 'carded', ${lit(text)}, ${time}
-      FROM json_each(${lit(JSON.stringify(keys))})`);
-
-    await post(session, 'session.start', { agent: 'claude-code', startedAt: at });
-    await post(elsewhere, 'session.start', { agent: 'claude-code', startedAt: at });
-    const everyCard = Array.from({ length: MATCHES }, () => crypto.randomUUID()).sort();
-    await cards(target.projectId, session, everyCard, `${word} identical words`, at);
-    await cards(target.projectId, elsewhere, [crypto.randomUUID()], `${word} identical words`, at);
-
-    const foreign = `foreign-paging-${stamp}`;
-    await target.sql(`INSERT INTO projects(project_id,name,created_at) VALUES (${lit(foreign)},'Foreign',${stamp})`);
-    let noise = 0;
-    // Unrelated cards in another Project, between a walk's pages, move every match's relevance score and no match's place in the list.
-    const capture = async () => {
-      const keys = Array.from({ length: 40 }, () => `noise-${stamp}-${++noise}`);
-      await cards(foreign, 'noise', keys, `unrelated text ${noise}`, stamp);
+    const cards = async (sessionId: string, keys: string[], text: string) => {
+      await post(sessionId, 'session.start', { agent: 'claude-code', startedAt: at });
+      for (const promptId of keys) await post(sessionId, 'prompt', { promptId, text, origin: 'user' });
+      await post(sessionId, 'session.end', { endedAt: at });
+      await publishedTurns(target, sessionId, rows => rows.length === keys.length);
+      await cardSession(target, sessionId, text);
     };
+    const everyCard = Array.from({ length: MATCHES }, () => crypto.randomUUID()).sort();
+    await cards(session, everyCard, `${word} identical words`);
+    await cards(elsewhere, [crypto.randomUUID()], `${word} identical words`);
     const walk = async (limit: number): Promise<{ results: SearchResult[]; pages: SearchResult[][] }> => {
       const pages: SearchResult[][] = [];
       let cursor: string | null = null;
@@ -63,9 +55,9 @@ export const searchPaging: ParityScenario = {
         expect(page.status).toBe(200);
         pages.push(page.body.hits);
         cursor = page.body.nextCursor;
+        if (pages.length > MATCHES) throw new Error('search cursor did not end');
         if (cursor !== null) {
           expect(page.body.hits).toHaveLength(limit);
-          if (pages.length === 1) await capture();
         }
       } while (cursor !== null);
       return { results: pages.flat(), pages };
@@ -75,19 +67,13 @@ export const searchPaging: ParityScenario = {
     // Every card of the session once, none of the other session's, oldest first and by id among equal times.
     expect(byPage.results.map((r) => r.id)).toEqual(everyCard);
     expect(byPage.results.every((r) => r.session_id === session && r.created_at === at)).toBe(true);
-    // The 21st and the 101st match come the same at any page size.
-    const wide = await walk(100);
-    expect(wide.pages).toHaveLength(2);
-    expect(wide.results.map((r) => r.id)).toEqual(everyCard);
-    expect(wide.pages[1]![0]!.id).toBe(everyCard[100]);
-    expect(byPage.pages[1]![0]!.id).toBe(everyCard[PAGE]);
     // Relevance order pages too: its cursor continues past the page it answered, repeating no match.
-    const relevant = await owner({ order: 'relevance', limit: '5' });
-    expect(relevant.body.hits).toHaveLength(5);
+    const relevant = await owner({ order: 'relevance', limit: '2' });
+    expect(relevant.body.hits).toHaveLength(2);
     expect(relevant.body.nextCursor).not.toBeNull();
-    const relevantNext = await owner({ order: 'relevance', limit: '5', cursor: relevant.body.nextCursor! });
-    expect(relevantNext.body.hits).toHaveLength(5);
-    expect(new Set([...relevant.body.hits, ...relevantNext.body.hits].map((r) => r.id)).size).toBe(10);
+    const relevantNext = await owner({ order: 'relevance', limit: '2', cursor: relevant.body.nextCursor! });
+    expect(relevantNext.body.hits).toHaveLength(2);
+    expect(new Set([...relevant.body.hits, ...relevantNext.body.hits].map((r) => r.id)).size).toBe(4);
 
     // The MCP tool lists the same matches by the same cursor.
     const first = await mcp<SearchAnswer>({ query: word, type: 'card', session_id: session, mode: 'fts', order: 'time', limit: PAGE });

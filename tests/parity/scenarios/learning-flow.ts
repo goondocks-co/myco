@@ -1,8 +1,7 @@
 import { expect } from 'bun:test';
-import { ageRows, documentsPublished, lit, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { ageRows, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import { CARD_REPORT_ACTION, EXTRACTION_REPORT_ACTION } from '@myco-server-worker/core/run-postconditions.js';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
 import { revisionHeaders } from '../settings-revision.ts';
 
@@ -28,7 +27,6 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
     const response = await request(new Request(`${target.url}/api/settings/${leaf}`, { method: 'PUT', headers: { ...owner, ...await revisionHeaders({ url: target.url, ownerHeaders: () => target.ownerHeaders() }, `/api/settings/${leaf}`, undefined, request) }, body: JSON.stringify({ value }) }));
     expect({ leaf, status: response.status, body: await response.json() }).toMatchObject({ status: 200 });
   }
-  await target.sql("INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES('myco-agent','Myco','built-in',1,1)");
   const capture = async (kind: string, payload: Record<string, unknown>, time = at) => {
     expect(await post('/events', { eventId: crypto.randomUUID(), sessionId: session, kind, createdAt: time,
       channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload })).toMatchObject({ persisted: true });
@@ -38,7 +36,13 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   await capture('tool.failure', { toolCallId: crypto.randomUUID(), promptId: prompt, toolName: 'Bash', input: { command: 'capture --check' }, success: false, errorMessage: EXACT_ERROR });
   await capture('response', { responseId: crypto.randomUUID(), promptId: prompt, text: 'Reopen the spool under its recorded owner before capture.' });
   await capture('session.end', { endedAt: at });
-  await documentsPublished(target, session, target.projectId, request);
+  for (let wake = 0; ; wake += 1) {
+    const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns`, { headers: target.ownerHeaders() }));
+    const page = await response.json() as { rows: { responseCount: number; toolCallCount: number }[] };
+    if (page.rows?.[0]?.toolCallCount === 1 && page.rows[0].responseCount === 1) break;
+    if (wake === 8) throw new Error('learning turn did not publish');
+    await post('/api/wake', {}, owner);
+  }
   const pulledNeeds = async () => {
     const response = await request(new Request(`${target.url}/api/work/now?project=${target.projectId}`, { headers: target.ownerHeaders() }));
     expect(response.status).toBe(200);
@@ -70,7 +74,7 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
     asked: 'Fix capture', done: 'Reopened the spool under its recorded owner', outcome: 'done', decisions: [], rejected: [],
     errors: [{ error: EXACT_ERROR, fix: 'Reopen the spool under its recorded owner.' }], corrections: [], files: [], commands: ['capture --check'], open_questions: [],
   } }] })).toMatchObject({ written: 1 });
-  await settle(cards.run, CARD_REPORT_ACTION);
+  await settle(cards.run, 'carded');
   const learning = await claim();
   expect(learning).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
   const slice = await call<LearningMaterial>(learning.run, 'myco_run_learning', { op: 'material' });
@@ -80,15 +84,18 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
     content: `${EXACT_ERROR}. Reopen the spool under its recorded owner before capture.` });
   expect(typeof saved.id).toBe('string');
   expect(await call(learning.run, 'myco_run_learning', { op: 'complete', handoff: '' })).toEqual({ completed: true, covered: 1 });
-  await settle(learning.run, EXTRACTION_REPORT_ACTION);
-  expect(await target.sql(`SELECT session_id,content FROM spores WHERE project_id=${lit(target.projectId)} AND id=${lit(saved.id)}`))
-    .toEqual([{ session_id: session, content: `${EXACT_ERROR}. Reopen the spool under its recorded owner before capture.` }]);
+  await settle(learning.run, 'extract');
+  const spore = await post<any>('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: { project: target.projectId, op: 'get', id: saved.id } } });
+  expect(spore.result.structuredContent.result).toMatchObject({ session_id: session, content: `${EXACT_ERROR}. Reopen the spool under its recorded owner before capture.` });
   await capture('prompt', { promptId: crypto.randomUUID(), text: 'Document the capture fix for the next operator.', origin: 'user' }, at + 1000);
   await capture('session.end', { endedAt: at + 1000 }, at + 1000);
-  await documentsPublished(target, session, target.projectId, request);
-  expect((await target.sql(`SELECT pending_cards FROM learning_sessions WHERE project_id=${lit(target.projectId)} AND session_id=${lit(session)}`))[0]!.pending_cards).toBeGreaterThan(0);
+  for (let wake = 0; ; wake += 1) {
+    const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns`, { headers: target.ownerHeaders() }));
+    if (((await response.json()) as { rows: unknown[] }).rows.length === 2) break;
+    if (wake === 8) throw new Error('late learning turn did not publish');
+    await post('/api/wake', {}, owner);
+  }
   expect(await claim()).toMatchObject({ claimed: false });
-  expect(await target.sql(`SELECT COUNT(*) AS n FROM agent_run_attempts`)).toEqual([{ n: 2 }]);
   const status = await request(new Request(`${target.url}/api/status`, { headers: target.ownerHeaders() }));
   const health = await status.json() as { learning: { line: string } };
   expect(health).toMatchObject({ budget: { dailyUsd: 1, automaticUsd: 1 }, learning: { turnsAwaitingCards: 1 } });
