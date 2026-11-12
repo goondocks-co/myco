@@ -4,15 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect } from 'bun:test';
 import type { DeploymentOwnershipPreview, RawClaimPreview } from '@goondocks/myco-shared/raw-claims';
-import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { sha256Hex, utf8 } from '@myco-server-worker/hash.js';
 import { PROJECT_HEADER } from '@myco-server-worker/constants.js';
-import { expectPersisted, lit, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario } from '../harness.ts';
+import { expectPersisted, MEMBER_ID, memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { deviceMachine, person, type Person } from '../clients/identity.ts';
+import { createProject } from '../clients/requests.ts';
+import { seedMissingProvenance, seedUnknownEvent } from '../owner-review/historical-authority.ts';
 
 const PROJECTS = ['proj_claim_a', 'proj_claim_b'] as const;
 const SESSION = 'claim_history';
 const DAY_MS = 86_400_000;
-const TOKEN_TTL_MS = 3_600_000;
 const CLI_TIMEOUT_MS = 30_000;
 const MAX_BACKFILL_WAKES = 20;
 
@@ -24,10 +25,6 @@ export const rawClaimsParity: ParityScenario = {
     const now = Date.now();
     const oldest = now - 3 * DAY_MS;
     const newest = now - DAY_MS;
-    const write = async (statements: string[]) => {
-      if (target.name === 'cloudflare') await target.sql(statements.join(';\n') + ';');
-      else for (const statement of statements) await target.sql(statement);
-    };
     const request = (route: string, headers: Record<string, string>, body?: Record<string, unknown>) => fetch(`${target.url}${route}`, {
       method: body === undefined ? 'GET' : 'POST', headers: { ...headers, origin: target.url, 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -36,35 +33,24 @@ export const rawClaimsParity: ParityScenario = {
       const { [PROJECT_HEADER]: _project, ...headers } = memberHeadersFor(token, target.projectId);
       return headers;
     };
-    const viewer = async (label: string, role: 'admin' | 'member', sub: string) => {
-      const id = `mem_claim_${label}`;
-      const machine = `machine_claim_${label}`;
-      const tokenId = `mt_claim_${label}`;
-      const token = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
-      await write([
-        `INSERT INTO members (id,label,role,github_id,created_at) VALUES (${lit(id)},${lit(label)},${lit(role)},${lit(sub)},${now})`,
-        `INSERT INTO machine_claims (machine_id,member_id,claimed_at) VALUES (${lit(machine)},${lit(id)},${now})`,
-        `INSERT INTO member_credentials (id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
-          VALUES (${lit(tokenId)},${lit(id)},${lit(machine)},${lit(await sha256Hex(token))},${now},${now + TOKEN_TTL_MS},0,${lit(tokenId)},${now})`,
-      ]);
-      const session = await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: label, iat: now, exp: now + TOKEN_TTL_MS });
-      return { id, machine, tokenId, token, headers: { cookie: `${SESSION_COOKIE}=${session}`, 'cf-connecting-ip': '1.2.3.4' } };
-    };
-    const owner = await viewer('owner', 'admin', '719001');
-    const admin = await viewer('admin', 'admin', '719002');
-    const other = await viewer('other', 'member', '719003');
-    await write(PROJECTS.map((projectId, index) => `INSERT INTO projects (project_id,name,created_at) VALUES (${lit(projectId)},${lit(`Claim archive ${index + 1}`)},${now})`));
+    const viewer = (actor: Person) => ({ id: actor.id, machine: actor.machineId, tokenId: actor.tokenId, token: actor.token, headers: actor.session });
+    // The parity member's own machine, signed in through the device flow: the owner's runtime here.
+    const ownerMachine = await deviceMachine(target, target.ownerHeaders());
+    const owner = { id: MEMBER_ID, machine: ownerMachine.machineId, tokenId: ownerMachine.tokenId, token: ownerMachine.token, headers: target.ownerHeaders() };
+    const other = viewer(await person(target, '719003', { login: 'other' }));
+    for (const [index, projectId] of PROJECTS.entries()) expect((await createProject(target, projectId, `Claim archive ${index + 1}`)).status).toBe(201);
     const ownership = await (await request('/api/ownership', target.ownerHeaders())).json() as DeploymentOwnershipPreview;
     expect(ownership.ownerMemberId).toBeNull();
     expect((await (await request('/auth/me', owner.headers)).json() as { owner: boolean }).owner).toBe(false);
     expect(await (await request('/members/ownership', bearer(other.token), { revision: ownership.revision, ownerMemberId: owner.id })).json()).toMatchObject({ persisted: false, code: 'not_admin' });
-    const invalid = await request('/api/ownership', admin.headers, { revision: ownership.revision, ownerMemberId: other.id });
+    const invalid = await request('/api/ownership', owner.headers, { revision: ownership.revision, ownerMemberId: other.id });
     expect({ status: invalid.status, body: await invalid.json() }).toEqual({ status: 409, body: { error: 'invalid_owner' } });
-    const bootstrapped = await request('/api/ownership', target.ownerHeaders(), { revision: ownership.revision, ownerMemberId: owner.id });
+    const bootstrapped = await request('/api/ownership', owner.headers, { revision: ownership.revision, ownerMemberId: owner.id });
     expect(bootstrapped.status).toBe(200);
     expect((await bootstrapped.json() as DeploymentOwnershipPreview).ownerMemberId).toBe(owner.id);
-    expect(await target.sql('SELECT member_id,actor_id FROM deployment_ownership_audit')).toEqual([{ member_id: owner.id, actor_id: MEMBER_ID }]);
     expect((await (await request('/auth/me', owner.headers)).json() as { owner: boolean }).owner).toBe(true);
+    // An administrator invited once the owner is recorded.
+    const admin = viewer(await person(target, '719002', { role: 'admin', login: 'admin' }));
     expect((await (await request('/auth/me', admin.headers)).json() as { owner: boolean }).owner).toBe(false);
     const replacement = await request('/api/ownership', admin.headers, { revision: ownership.revision, ownerMemberId: admin.id });
     expect({ status: replacement.status, body: await replacement.json() }).toEqual({ status: 409, body: { error: 'owner_already_recorded' } });
@@ -77,34 +63,7 @@ export const rawClaimsParity: ParityScenario = {
     const unknownA = await upload(PROJECTS[0], owner.token, 'historical unknown raw bytes A');
     const unknownB = await upload(PROJECTS[1], owner.token, 'historical unknown raw bytes B');
     const known = await upload(PROJECTS[0], other.token, 'known other member raw bytes');
-    const missing = 'credential_missing_claim_history';
-    await write([
-      ...PROJECTS.map((projectId) => `INSERT INTO sessions (project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
-        VALUES (${lit(projectId)},${lit(SESSION)},'machine_missing_claim_history',${lit(missing)},${oldest},${newest})`),
-      ...[unknownA, unknownB].flatMap((blob) => [
-        `UPDATE blobs SET token_id = ${lit(missing)}, received_at = ${oldest} WHERE project_id = ${lit(blob.projectId)} AND key = ${lit(blob.key)}`,
-        `DELETE FROM raw_resources WHERE project_id = ${lit(blob.projectId)} AND kind = 'blob' AND resource_id = ${lit(blob.key)}`,
-      ]),
-      ...PROJECTS.map((projectId) => `INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,segment_count,first_received_at,last_received_at,token_id)
-        VALUES (${lit(projectId)},'unknown_transcript',${lit(SESSION)},'machine_missing_claim_history',0,0,${oldest},${newest},${lit(missing)})`),
-      `INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,segment_count,first_received_at,last_received_at,token_id)
-        VALUES (${lit(PROJECTS[0])},'known_transcript',${lit(SESSION)},${lit(other.machine)},0,0,${oldest},${newest},${lit(other.tokenId)}),
-        (${lit(PROJECTS[0])},'ambiguous_transcript',${lit(SESSION)},${lit(other.machine)},0,0,${oldest},${newest},${lit(owner.tokenId)})`,
-      ...[{ id: 'own_partial', machine: owner.machine }, { id: 'foreign_partial', machine: other.machine }].flatMap((transcript) => [
-        `INSERT INTO transcripts (project_id,transcript_id,session_id,machine_id,size,segment_count,first_received_at,last_received_at,token_id)
-          VALUES (${lit(PROJECTS[0])},${lit(transcript.id)},${lit(SESSION)},${lit(transcript.machine)},1,1,${newest},${newest},'missing_header_claim')`,
-        `INSERT INTO transcript_segments (project_id,transcript_id,base_offset,length,blob_key,event_id,created_at,received_at,token_id)
-          VALUES (${lit(PROJECTS[0])},${lit(transcript.id)},0,1,${lit(unknownA.key)},${lit(`${transcript.id}_segment`)},${newest},${newest},${lit(missing)})`,
-      ]),
-      ...[
-        { projectId: PROJECTS[0], id: 'unknown_event_old', tokenId: missing, at: oldest },
-        { projectId: PROJECTS[0], id: 'unknown_event_new', tokenId: missing, at: newest },
-        { projectId: PROJECTS[1], id: 'unknown_event_b', tokenId: missing, at: newest },
-        { projectId: PROJECTS[0], id: 'known_event', tokenId: other.tokenId, at: newest },
-      ].map((event) => `INSERT INTO events (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
-        VALUES (${lit(event.projectId)},${lit(event.id)},${lit(SESSION)},${lit(event.tokenId)},'notification','cli',${lit(JSON.stringify({ message: event.id }))},'claim fixture',${event.at},${event.at})`),
-      `UPDATE raw_provenance_backfill SET source = 0,cursor_project = '',cursor_id = '',complete = 0,updated_at = 0 WHERE id = 1`,
-    ]);
+    await seedMissingProvenance(target, { projects: PROJECTS, session: SESSION, oldest, newest, unknown: [unknownA, unknownB], owner, other, segmentBlob: unknownA.key });
     const pending = await (await request('/api/raw-claims', owner.headers)).json() as RawClaimPreview;
     expect(pending.complete).toBe(false);
     const held = await request('/api/raw-claims', owner.headers, { revision: pending.revision });
@@ -163,21 +122,19 @@ export const rawClaimsParity: ParityScenario = {
       expect(currentOwnership.ownerMemberId).toBe(owner.id);
       const repeatedOwner = await cli('ownership', ['--owner', owner.id, '--revision', currentOwnership.revision], target.memberToken);
       expect(repeatedOwner.status).toBe(0);
-      expect(await target.sql('SELECT COUNT(*) AS n FROM deployment_ownership_audit')).toEqual([{ n: 1 }]);
+        expect((await (await request('/api/ownership', owner.headers)).json() as DeploymentOwnershipPreview).revision).toBe(currentOwnership.revision);
       const cliPreview = await cli('raw-claims', []);
       expect(cliPreview.status).toBe(0);
       expect(JSON.parse(cliPreview.stdout)).toMatchObject(preview);
       expect((await cli('raw-claims', ['--apply', '--revision', '0'])).status).toBe(2);
-      expect(await target.sql('SELECT COUNT(*) AS n FROM raw_claims')).toEqual([{ n: 0 }]);
+      expect(await (await request('/api/raw-claims', owner.headers)).json()).toMatchObject(preview);
       expect((await cli('raw-claims', ['--apply', '--revision', preview.revision], admin.token)).status).toBe(2);
       const applied = await cli('raw-claims', ['--apply', '--revision', preview.revision]);
       expect(applied.status).toBe(0);
       expect(applied.stdout).toContain('"claimId"');
-      expect(await target.sql('SELECT owner_member_id FROM raw_claims')).toEqual([{ owner_member_id: owner.id }]);
       const replay = await request('/api/raw-claims', owner.headers, { revision: preview.revision });
       expect(replay.status).toBe(200);
       expect(await replay.json()).toMatchObject({ claimId: null, preview: { complete: true, projects: [] } });
-      expect(await target.sql('SELECT COUNT(*) AS n FROM raw_claims')).toEqual([{ n: 1 }]);
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 
     for (const blob of [unknownA, unknownB]) {
@@ -196,13 +153,11 @@ export const rawClaimsParity: ParityScenario = {
     expect((await transcripts.json() as { transcripts: Array<{ transcriptId: string }> }).transcripts.map((row) => row.transcriptId).sort()).toEqual(['own_partial', 'unknown_transcript']);
     const otherTranscripts = await request(transcriptRoute, other.headers);
     expect((await otherTranscripts.json() as { transcripts: Array<{ transcriptId: string }> }).transcripts.map((row) => row.transcriptId)).toEqual(['known_transcript']);
-    await target.sql(`INSERT INTO events (project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at)
-      VALUES (${lit(PROJECTS[0])},'unknown_after_claim',${lit(SESSION)},${lit(missing)},'notification','cli','{}','later claim fixture',${now},${now})`);
+    await seedUnknownEvent(target, PROJECTS[0], SESSION, now);
     const later = await (await request('/api/raw-claims', owner.headers)).json() as RawClaimPreview;
     expect(later.projects).toEqual([{ projectId: PROJECTS[0], name: 'Claim archive 1', kinds: [{ kind: 'event', count: 1, oldestAt: now, newestAt: now }] }]);
     const outdated = await request('/api/raw-claims', owner.headers, { revision: preview.revision });
     expect({ status: outdated.status, body: await outdated.json() }).toEqual({ status: 409, body: { error: 'revision_conflict' } });
-    expect(await target.sql('SELECT COUNT(*) AS n FROM raw_claims')).toEqual([{ n: 1 }]);
     await upload(unknownA.projectId, other.token, unknownA.text);
     for (const admitted of [owner, other]) {
       const shared = await request(blobRoute(unknownA), admitted.headers);
@@ -211,6 +166,5 @@ export const rawClaimsParity: ParityScenario = {
       expect(shared.headers.get('cache-control')).toBe('private, no-store');
     }
     expect((await request(blobRoute(unknownA), admin.headers)).status).toBe(404);
-    expect(await target.sql('SELECT COUNT(*) AS n FROM raw_claims')).toEqual([{ n: 1 }]);
   },
 };

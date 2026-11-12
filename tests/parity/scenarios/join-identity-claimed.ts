@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { run as login } from '@myco/cli/login.js';
-import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { members as people, stopMember } from '../clients/identity.ts';
 
 /**
  * A join refused because the machine identity belongs to another member writes nothing, on both targets (#1209):
@@ -26,8 +27,13 @@ export const joinIdentityClaimed: ParityScenario = {
       (await fetch(`${target.url}/members/join`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4' }, body: JSON.stringify({ key, machineId }),
       })).json() as Promise<{ joined: boolean; code?: string; memberId?: string }>;
-    const members = async () => Number((await target.sql('SELECT COUNT(*) AS n FROM members'))[0]!.n);
-    const open = async (id: string) => (await target.sql(`SELECT used_at FROM enrollment_authorities WHERE id = ${lit(id)}`))[0]!.used_at === null;
+    const members = async () => (await people(target)).length;
+    // An invitation stays open while the owner's invitation list still holds it.
+    const open = async (id: string) => {
+      const listed = await fetch(`${target.url}/api/enrollment?limit=100`, { headers: owner });
+      expect(listed.status).toBe(200);
+      return ((await listed.json()) as { invitations: Array<{ id: string }> }).invitations.some((row) => row.id === id);
+    };
 
     const created: string[] = [];
     const home = mkdtempSync(join(tmpdir(), 'myco-parity-join-'));
@@ -60,11 +66,7 @@ export const joinIdentityClaimed: ParityScenario = {
       expect({ members: await members(), open: await open(contested.id) }).toEqual({ members: before + 1, open: false });
     } finally {
       rmSync(home, { recursive: true, force: true });
-      if (created.length > 0) {
-        const ids = created.map(lit).join(', ');
-        await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE member_id IN (${ids}) AND revoked_at IS NULL`);
-        await target.sql(`UPDATE members SET revoked_at = ${Date.now()} WHERE id IN (${ids}) AND revoked_at IS NULL`);
-      }
+      for (const id of created) await stopMember(target, id);
     }
   },
 };

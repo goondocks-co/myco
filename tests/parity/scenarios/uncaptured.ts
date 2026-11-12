@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
-import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { lit, MACHINE_ID, MEMBER_ID, memberHeadersFor, SESSION_SECRET, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { browser, deviceMachine, person, stopMember } from '../clients/identity.ts';
 
 /**
  * Repositories a machine joins by itself, or cannot (#1547), on both targets: a repository joins the project created
@@ -19,31 +19,27 @@ export const uncaptured: ParityScenario = {
       expect(res.status).toBe(200);
       return res.json() as Promise<Record<string, any>>;
     };
-    const otherMachine = `m_parity_uncaptured_${now}`;
     let otherMember: string | null = null;
     let created: string | null = null;
-    const claimed = (await target.sql(`SELECT COUNT(*) AS n FROM machine_claims WHERE machine_id = ${lit(MACHINE_ID)}`))[0]!.n === 0;
-    if (claimed) await target.sql(`INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (${lit(MACHINE_ID)}, ${lit(MEMBER_ID)}, ${now})`);
+    // A machine of the parity member, signed in through the device flow.
+    const mine = await deviceMachine(target, target.ownerHeaders());
+    const MACHINE_ID = mine.machineId;
+    const mineHeaders = memberHeadersFor(mine.token, target.projectId);
     try {
       // A new repository joins a project created for it, and a second clone of it the same project.
-      const first = await machine(target.memberHeaders(), '/members/projects/resolve', { rootKey: keyOf(1), label: `auto-join-${now}`, remote });
+      const first = await machine(mineHeaders, '/members/projects/resolve', { rootKey: keyOf(1), label: `auto-join-${now}`, remote });
       expect(first).toMatchObject({ persisted: true, created: true });
       created = String(first.projectId);
-      expect(await machine(target.memberHeaders(), '/members/projects/resolve', { rootKey: keyOf(2), label: 'clone', remote: `git@github.com:parity/auto-join-${now}.git` }))
+      expect(await machine(mineHeaders, '/members/projects/resolve', { rootKey: keyOf(2), label: 'clone', remote: `git@github.com:parity/auto-join-${now}.git` }))
         .toEqual({ persisted: true, projectId: created, name: `auto-join-${now}`, created: false });
 
       // Another member, whose machine reports a repository of its own.
-      const invite = await (await fetch(`${target.url}/api/enrollment`, { method: 'POST', headers: owner, body: JSON.stringify({ role: 'member' }) })).json() as { key: string };
-      const joined = await (await fetch(`${target.url}/members/join`, {
-        method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4' }, body: JSON.stringify({ key: invite.key, machineId: otherMachine }),
-      })).json() as { joined: boolean; memberId: string; token: string };
-      expect(joined.joined).toBe(true);
-      otherMember = joined.memberId;
-      await target.sql(`UPDATE members SET github_id = '5150616' WHERE id = ${lit(joined.memberId)}`);
-      const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub: '5150616', login: 'other', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
-      const asOther = { cookie, 'cf-connecting-ip': '1.2.3.4', origin: target.url, 'content-type': 'application/json' };
-      expect(await machine(memberHeadersFor(joined.token, target.projectId), '/members/uncaptured', { rootKey: keyOf(3), label: 'theirs', reason: 'outside_folders' })).toMatchObject({ persisted: true });
-      expect(await machine(target.memberHeaders(), '/members/uncaptured', { rootKey: keyOf(4), label: 'mine', reason: 'outside_folders' })).toMatchObject({ persisted: true });
+      const other = await person(target, '5150617', { login: 'other' });
+      otherMember = other.id;
+      const otherMachine = other.machineId;
+      const asOther = { ...other.session, origin: target.url, 'content-type': 'application/json' };
+      expect(await machine(memberHeadersFor(other.token, target.projectId), '/members/uncaptured', { rootKey: keyOf(3), label: 'theirs', reason: 'outside_folders' })).toMatchObject({ persisted: true });
+      expect(await machine(mineHeaders, '/members/uncaptured', { rootKey: keyOf(4), label: 'mine', reason: 'outside_folders' })).toMatchObject({ persisted: true });
 
       const listed = async (headers: Record<string, string>) => {
         const res = await fetch(`${target.url}/api/uncaptured`, { headers });
@@ -61,15 +57,9 @@ export const uncaptured: ParityScenario = {
       expect((await connect(asOther, MACHINE_ID, keyOf(4))).status).toBe(404);
       expect((await connect(asOther, otherMachine, keyOf(3))).status).toBe(200);
     } finally {
-      await target.sql(`DELETE FROM uncaptured_roots WHERE machine_id IN (${lit(MACHINE_ID)}, ${lit(otherMachine)})`);
-      await target.sql(`DELETE FROM machine_settings WHERE machine_id IN (${lit(MACHINE_ID)}, ${lit(otherMachine)})`);
-      await target.sql(`DELETE FROM project_remotes WHERE remote = ${lit(`github.com/parity/auto-join-${now}`)}`);
-      if (created !== null) await target.sql(`UPDATE projects SET archived_at = ${Date.now()} WHERE project_id = ${lit(created)}`);
-      if (claimed) await target.sql(`DELETE FROM machine_claims WHERE machine_id = ${lit(MACHINE_ID)}`);
-      if (otherMember !== null) {
-        await target.sql(`UPDATE member_credentials SET revoked_at = ${Date.now()} WHERE member_id = ${lit(otherMember)} AND revoked_at IS NULL`);
-        await target.sql(`UPDATE members SET revoked_at = ${Date.now()}, github_id = NULL WHERE id = ${lit(otherMember)}`);
-      }
+      if (created !== null) expect((await browser(target, `/api/projects/${created}/archive`, target.ownerHeaders(), {})).status).toBe(200);
+      if (otherMember !== null) await stopMember(target, otherMember);
+      expect((await browser(target, `/api/machines/${MACHINE_ID}/stop`, target.ownerHeaders(), {})).status).toBe(200);
     }
   },
 };

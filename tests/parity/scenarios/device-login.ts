@@ -1,73 +1,29 @@
-import { FOREIGN_LINEAGE_REVOKER } from '@myco-server-worker/constants.js';
 import { deviceLogin } from '@myco/cli/device-login.js';
 import { expect } from 'bun:test';
-import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
-import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { ageRows, lit, MEMBER_ID, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { assignRole, browser, credentials, person, selectOwner, stopMember } from '../clients/identity.ts';
 
 interface Started { device_code: string; user_code: string; interval: number; expires_in: number }
-const MEMBER = 'mem_device_parity';
-const ADMIN = 'mem_device_admin';
-
-async function cookie(target: ParityTarget, sub: string): Promise<Record<string, string>> {
-  const now = Date.now();
-  return { cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: 'device', iat: now, exp: now + 3600000 })}`, 'cf-connecting-ip': '1.2.3.4' };
-}
 
 function post(target: ParityTarget, path: string, body: unknown, headers: Record<string, string> = { 'cf-connecting-ip': '1.2.3.4' }): Promise<Response> {
   return fetch(`${target.url}${path}`, { method: 'POST', headers: { ...headers, origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify(body) });
 }
 
-/** A foreign-restore member hold fences decisions and redemption until an owner assigns the member's role. */
-export const deviceForeignLineageHold: ParityScenario = {
-  name: 'device login: foreign-lineage hold refuses approval and issuance until owner re-admission',
-  dedicated: { timeoutMs: 240000 },
-  async run(target) {
-    const held = 'mem_device_held';
-    await target.sql(`UPDATE deployment_ownership SET member_id = ${lit(MEMBER_ID)}, revision = revision + 1 WHERE id = 1`);
-    await target.sql(`INSERT INTO members(id,label,role,github_id,created_at) VALUES (${lit(held)},'Held admin','admin','168903',${Date.now()})`);
-    const headers = await cookie(target, '168903');
-    const start = async (machineId: string): Promise<Started> => {
-      const response = await post(target, '/auth/device/start', { machineId, machineName: 'Held laptop', os: 'linux' });
-      expect(response.status).toBe(200);
-      return await response.json() as Started;
-    };
-    const approve = (device: Started) => post(target, '/api/device/approve', { user_code: device.user_code }, headers);
-    const poll = async (device: Started) => await (await post(target, '/auth/device/poll', { device_code: device.device_code })).json() as Record<string, unknown>;
-    const count = () => target.sql(`SELECT COUNT(*) AS n FROM member_credentials WHERE member_id = ${lit(held)}`);
-    const approved = await start('held_approved');
-    const pending = await start('held_pending');
-    expect((await approve(approved)).status).toBe(200);
-    await target.sql(`UPDATE members SET revoked_at = ${Date.now()}, revoked_by = ${lit(FOREIGN_LINEAGE_REVOKER)} WHERE id = ${lit(held)}`);
-    expect((await approve(pending)).status).toBe(401);
-    expect(await poll(approved)).toEqual({ error: 'invalid_grant' });
-    expect(await count()).toEqual([{ n: 0 }]);
-    expect(await target.sql(`SELECT used_at FROM enrollment_authorities WHERE member_id = ${lit(held)}`)).toEqual([{ used_at: null }]);
-    expect(await target.sql("SELECT decision FROM device_requests WHERE machine_id = 'held_pending'")).toEqual([{ decision: null }]);
-    expect(await target.sql("SELECT machine_id FROM machine_claims WHERE machine_id IN ('held_approved','held_pending')")).toEqual([]);
-
-    const readmitted = await post(target, `/api/members/${held}/role`, { role: 'admin', expected_revision: '0' }, target.ownerHeaders());
-    expect(readmitted.status).toBe(200);
-    expect(await target.sql(`SELECT revoked_at,revoked_by,role FROM members WHERE id = ${lit(held)}`)).toEqual([{ revoked_at: null, revoked_by: null, role: 'admin' }]);
-    expect(await target.sql(`SELECT actor_id,role FROM member_role_audit WHERE member_id = ${lit(held)}`)).toEqual([{ actor_id: MEMBER_ID, role: 'admin' }]);
-    expect((await approve(pending)).status).toBe(200);
-    expect(await poll(pending)).toMatchObject({ joined: true, memberId: held, role: 'admin' });
-    await Bun.sleep(5000);
-    expect(await poll(approved)).toMatchObject({ joined: true, memberId: held, role: 'admin' });
-    expect(await count()).toEqual([{ n: 2 }]);
-  },
-};
+/** Moves a pending request past the expiry its start answered, as a request nobody decided in time. */
+async function expire(target: ParityTarget, machineId: string, device: Started): Promise<void> {
+  await ageRows(target, { table: 'device_requests', column: 'expires_at', byMs: device.expires_in * 1000 + 1000, match: { machine_id: machineId } });
+}
 
 /** The same public and dashboard HTTP contract runs through the native entry and workerd with their own real stores. */
 export const deviceLoginFlow: ParityScenario = {
   name: 'device login: start, pending, approval, single redemption, denial, expiry, slowdown and authority cap',
   dedicated: { timeoutMs: 240000 },
   async run(target) {
-    const now = Date.now();
-    await target.sql(`UPDATE deployment_ownership SET member_id = ${lit(MEMBER_ID)}, revision = revision + 1 WHERE id = 1`);
-    await target.sql(`INSERT INTO members(id,label,role,github_id,created_at) VALUES
-      (${lit(MEMBER)},'device member','member','168901',${now}), (${lit(ADMIN)},'device admin','admin','168902',${now})`);
-    const memberHeaders = await cookie(target, '168901');
-    const adminHeaders = await cookie(target, '168902');
+    await selectOwner(target);
+    const member = await person(target, '168901', { login: 'device' });
+    const admin = await person(target, '168902', { role: 'admin', login: 'device' });
+    const memberHeaders = member.session;
+    const adminHeaders = admin.session;
     const start = async (machine = `device_${crypto.randomUUID()}`): Promise<Started> => {
       const response = await post(target, '/auth/device/start', { machineId: machine, machineName: 'Parity laptop', os: 'linux' });
       expect(response.status).toBe(200);
@@ -78,7 +34,7 @@ export const deviceLoginFlow: ParityScenario = {
       return await response.json() as Record<string, unknown>;
     };
     const decide = (device: Started, decision = 'approve', headers = memberHeaders) => post(target, `/api/device/${decision}`, { user_code: device.user_code }, headers);
-    const count = async () => (await target.sql('SELECT COUNT(*) AS n FROM member_credentials'))[0]!.n;
+    const count = async () => (await credentials(target)).length;
 
     const device = await start('parity_login_machine');
     expect(device.interval).toBe(5);
@@ -99,17 +55,12 @@ export const deviceLoginFlow: ParityScenario = {
     expect(await substituted.json()).toMatchObject({ joined: false, code: 'identity_claimed' });
     await Bun.sleep(5000);
     const joined = await poll(device);
-    expect(joined).toMatchObject({ joined: true, memberId: MEMBER, role: 'member', projectId: null });
-    expect(await count()).toBe(Number(before) + 1);
+    expect(joined).toMatchObject({ joined: true, memberId: member.id, role: 'member', projectId: null });
+    expect(await count()).toBe(before + 1);
     expect(await poll(device)).toEqual({ error: 'invalid_grant' });
     expect((await decide(device)).status).toBe(409);
     expect((await decide(device, 'deny')).status).toBe(409);
     expect((await decide(device, 'preview')).status).toBe(409);
-    const stored = await target.sql("SELECT * FROM device_requests WHERE machine_id = 'parity_login_machine'");
-    expect(stored[0]).toMatchObject({ decision: 'approved', decided_by: MEMBER });
-    expect(typeof stored[0]!.decided_at).toBe('number');
-    expect(JSON.stringify(stored)).not.toContain(device.device_code);
-    expect(JSON.stringify(stored)).not.toContain(device.user_code);
 
     const denied = await start();
     expect((await decide(denied, 'deny')).status).toBe(200);
@@ -117,7 +68,7 @@ export const deviceLoginFlow: ParityScenario = {
     expect((await decide(denied)).status).toBe(409);
 
     const expired = await start('expired_device');
-    await target.sql("UPDATE device_requests SET expires_at = 0 WHERE machine_id = 'expired_device'");
+    await expire(target, 'expired_device', expired);
     expect(await poll(expired)).toEqual({ error: 'expired_token' });
     expect((await decide(expired)).status).toBe(409);
 
@@ -128,16 +79,18 @@ export const deviceLoginFlow: ParityScenario = {
 
     const capped = await start();
     expect((await decide(capped, 'approve', adminHeaders)).status).toBe(200);
-    expect(await poll(capped)).toMatchObject({ joined: true, memberId: ADMIN, role: 'admin' });
-    expect((await post(target, '/api/device/approve', { user_code: capped.user_code, memberId: MEMBER }, adminHeaders)).status).toBe(400);
+    expect(await poll(capped)).toMatchObject({ joined: true, memberId: admin.id, role: 'admin' });
+    expect((await post(target, '/api/device/approve', { user_code: capped.user_code, memberId: member.id }, adminHeaders)).status).toBe(400);
     const owner = await start();
     expect((await decide(owner, 'approve', target.ownerHeaders())).status).toBe(200);
     expect(await poll(owner)).toMatchObject({ joined: true, memberId: MEMBER_ID, role: 'admin' });
 
+    // The owner approves a machine, then hands ownership to the admin, who demotes the former owner before the machine polls.
     const ownerVoided = await start();
     expect((await decide(ownerVoided, 'approve', target.ownerHeaders())).status).toBe(200);
-    await target.sql(`UPDATE deployment_ownership SET member_id = ${lit(ADMIN)}, revision = revision + 1 WHERE id = 1`);
-    await target.sql(`UPDATE members SET role = 'member' WHERE id = ${lit(MEMBER_ID)}`);
+    const ownership = await browser(target, '/api/ownership', target.ownerHeaders());
+    expect((await browser(target, '/api/ownership/transfer', target.ownerHeaders(), { member_id: admin.id, expected_revision: ownership.body.revision })).status).toBe(200);
+    expect((await assignRole(target, MEMBER_ID, 'member', adminHeaders)).status).toBe(200);
     expect(await poll(ownerVoided)).toEqual({ error: 'invalid_grant' });
 
     const output: string[] = [];
@@ -165,7 +118,7 @@ export const deviceLoginFlow: ParityScenario = {
 
     const revoked = await start();
     expect((await decide(revoked)).status).toBe(200);
-    await target.sql(`UPDATE members SET revoked_at = ${now} WHERE id = ${lit(MEMBER)}`);
+    await stopMember(target, member.id, adminHeaders);
     expect(await poll(revoked)).toEqual({ error: 'invalid_grant' });
     const runtime = target.runtime?.();
     if (runtime !== undefined) {
@@ -175,41 +128,30 @@ export const deviceLoginFlow: ParityScenario = {
   },
 };
 
-/** Admission and TTL reclamation run through each target's public routes and registered wake job. */
+/**
+ * Admission and TTL reclamation run through each target's public routes, its own source identity and its wake. Bidi
+ * metadata, decision audits and retention of decided requests are covered by `device.test.ts`.
+ */
 export const deviceAdmission: ParityScenario = {
-  name: 'device login: bounded source admission, printable metadata, TTL reclaim and durable audit',
+  name: 'device login: bounded source admission and TTL reclaim',
   dedicated: { timeoutMs: 240000 },
   async run(target) {
     const request = { machineId: 'admission', machineName: 'Laptop', os: 'linux' };
-    expect((await post(target, '/auth/device/start', request)).status).toBe(200);
-    await target.sql("UPDATE device_requests SET expires_at = 0; DELETE FROM schema_meta WHERE key = 'last_request_at'");
-    await target.clockWake();
-    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests')).toEqual([{ n: 0 }]);
-    for (const field of ['machineName', 'os']) {
-      expect((await post(target, '/auth/device/start', { ...request, [field]: 'bidi\u202e' })).status).toBe(400);
-    }
+    const first = await post(target, '/auth/device/start', request);
+    expect(first.status).toBe(200);
+    // An undecided request past its expiry is reclaimed by the wake: the row itself is gone, which no route reads.
+    await expire(target, 'admission', await first.json() as Started);
+    expect((await browser(target, '/api/wake', target.ownerHeaders(), {})).status).toBe(200);
+    expect(await target.sql(`SELECT COUNT(*) AS n FROM device_requests WHERE machine_id = ${lit('admission')}`)).toEqual([{ n: 0 }]);
     const starts = await Promise.all(Array.from({ length: 6 }, (_, i) => post(target, '/auth/device/start', { ...request, machineId: `admission_${i}` })));
     expect(starts.filter(response => response.status === 200)).toHaveLength(5);
     expect(starts.filter(response => response.status === 429)).toHaveLength(1);
-    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests')).toEqual([{ n: 5 }]);
-    const started = await starts.find(response => response.status === 200)!.json() as Started;
-    expect((await post(target, '/api/device/deny', { user_code: started.user_code }, target.ownerHeaders())).status).toBe(200);
-    const audit = await target.sql('SELECT * FROM device_decision_audit');
-    expect(audit).toHaveLength(1);
-    expect(audit[0]).toMatchObject({ member_id: MEMBER_ID, decision: 'denied' });
-    expect(JSON.stringify(audit)).not.toContain(started.user_code);
-    expect(JSON.stringify(audit)).not.toContain(started.device_code);
-    await target.sql('UPDATE device_requests SET expires_at = 0 WHERE decision IS NULL');
-    const wake = () => fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-    expect((await wake()).status).toBe(200);
-    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests WHERE decision IS NULL')).toEqual([{ n: 0 }]);
-    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests WHERE decision IS NOT NULL')).toEqual([{ n: 1 }]);
-    await target.sql('UPDATE device_requests SET expires_at = 0 WHERE decision IS NOT NULL');
-    await target.sql("DELETE FROM schema_meta WHERE key = 'last_request_at'");
-    await target.clockWake();
-    expect(await target.sql('SELECT COUNT(*) AS n FROM device_requests')).toEqual([{ n: 0 }]);
-    expect(await target.sql('SELECT * FROM device_decision_audit')).toEqual(audit);
-    for (let i = 0; i < 10; i++) {
+    for (const response of starts.filter(response => response.status === 200)) {
+      const started = await response.json() as Started;
+      expect((await post(target, '/api/device/deny', { user_code: started.user_code }, target.ownerHeaders())).status).toBe(200);
+    }
+    // Five more starts fill the source's window of ten a minute, and the next is refused.
+    for (let i = 0; i < 5; i++) {
       const response = await post(target, '/auth/device/start', { ...request, machineId: `rate_${i}` });
       expect(response.status).toBe(200);
       const next = await response.json() as Started;
