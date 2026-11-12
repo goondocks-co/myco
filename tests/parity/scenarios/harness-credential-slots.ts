@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { type ParityScenario } from '../harness.ts';
 import { owner, putSetting } from '../clients/requests.ts';
-import { askTitle, cancelRun, captureSession, finishRun, runDetail, worker } from '../clients/runs.ts';
+import { askTitle, cancelRun, captureSession, failRun, runDetail, worker } from '../clients/runs.ts';
 
 /** Codex consumes its own deployment slot or a worker login. */
 export const harnessCredentialSlots: ParityScenario = {
@@ -22,7 +22,7 @@ export const harnessCredentialSlots: ParityScenario = {
       const answer = await worker(target, 'claim', { harnesses: [{ id: 'codex', authenticated: true, profile: { model: 'config', efforts: ['low', 'medium', 'high'] } }], capabilities: [] });
       if (answer.claimed) expect(answer.run).toMatchObject({ id: runId, harness: 'codex' });
       const heldBy = (await runDetail(target, runId)).run.heldBy;
-      if (answer.claimed) expect(await finishRun(target, answer.run)).toMatchObject({ ended: true });
+      if (answer.claimed) expect(await failRun(target, answer.run)).toMatchObject({ ended: true });
       else await cancelRun(target, runId);
       return { claimed: answer.claimed, reason: answer.reason ?? null, heldBy, credentialEnv: answer.run?.credentialEnv ?? null };
     };

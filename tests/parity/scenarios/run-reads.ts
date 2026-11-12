@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { type ParityScenario, waitFor } from '../harness.ts';
 import { allowWorkerClaims, runTool } from '../clients/requests.ts';
-import { asMember, askTitle, captureSession, finishRun, linkedMember, runDetail, takeRun } from '../clients/runs.ts';
+import { asMember, askTitle, captureSession, failRun, linkedMember, runDetail, takeRun } from '../clients/runs.ts';
 
 /** A member reads which session a genuinely claimed title run consumed. */
 export const runReads: ParityScenario = {
@@ -25,6 +25,6 @@ export const runReads: ParityScenario = {
     const detail = await read(`/api/projects/${target.projectId}/runs/${run.id}`);
     expect(detail.read).toEqual(recorded.read);
     expect(detail.produced).toEqual({ spores: { total: 0, items: [] } });
-    expect(await finishRun(target, run)).toMatchObject({ ended: true });
+    expect(await failRun(target, run)).toMatchObject({ ended: true });
   },
 };

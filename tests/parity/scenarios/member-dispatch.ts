@@ -15,7 +15,6 @@ const TASK = 'title-summary';
  */
 export const memberDispatch: ParityScenario = {
   name: 'member dispatch: a member starts tasks up to its daily ceiling, reads capabilities, and is refused what an admin alone does',
-  dedicated: { timeoutMs: 120_000 },
   async run(target: ParityTarget) {
     const admin = { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' };
     const joined = await linkedMember(target, MEMBER_ROLE_SUB);

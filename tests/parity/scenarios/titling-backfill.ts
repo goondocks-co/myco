@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { expectPersisted, type ParityScenario } from '../harness.ts';
-import { allowWorkerClaims, event, owner, putSetting, runTool, sessionDetail, untilPublished, wake } from '../clients/requests.ts';
-import { finishRun, publishedSession, report, runList, takeRun } from '../clients/runs.ts';
+import { allowWorkerClaims, endRun, event, owner, putSetting, runTool, sessionDetail, untilPublished, wake } from '../clients/requests.ts';
+import { publishedSession, report, runList, takeRun } from '../clients/runs.ts';
 import { revisionHeaders } from '../settings-revision.ts';
 
 /** Imported history is titled only after the operator enables its backfill. */
@@ -41,6 +41,6 @@ export const titlingBackfill: ParityScenario = {
     expect(await runTool(target, run, 'myco_run_sessions', { op: 'material' })).toMatchObject({ session_id: session });
     expect(await runTool(target, run, 'myco_run_sessions', { op: 'title', title: 'Imported backfill wired', summary: 'Enabled titling for imported history.' })).toMatchObject({ written: true });
     await report(target, run, 'summary', 'Titled the imported session.');
-    expect(await finishRun(target, run, { status: 'completed' })).toMatchObject({ ended: true, status: 'completed' });
+    expect(await endRun(target, run)).toMatchObject({ ended: true, status: 'completed' });
   },
 };

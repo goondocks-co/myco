@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { type ParityScenario } from '../harness.ts';
 import { allowWorkerClaims, putCapability, putSetting, resetSetting, wake } from '../clients/requests.ts';
-import { dispatch, finishRun, repository, runDetail, runList, takeRun } from '../clients/runs.ts';
+import { dispatch, failRun, repository, runDetail, runList, takeRun } from '../clients/runs.ts';
 
 /** Worker-served runs wait in order, including after a slot becomes available. */
 export const dispatchQueue: ParityScenario = {
@@ -15,7 +15,7 @@ export const dispatchQueue: ParityScenario = {
     const blocker = await takeRun(target, (await dispatch(target, 'vault-seed')).runId);
     const a = await dispatch(target, 'vault-seed');
     expect(a).toMatchObject({ queued: true, heldBy: 'concurrent_runs' });
-    expect(await finishRun(target, blocker)).toMatchObject({ ended: true });
+    expect(await failRun(target, blocker)).toMatchObject({ ended: true });
     const b = await dispatch(target, 'vault-seed');
     expect(b).toMatchObject({ queued: true, heldBy: 'worker' });
     const queued = await runList(target, 'status=queued');
@@ -26,8 +26,8 @@ export const dispatchQueue: ParityScenario = {
     expect((await runDetail(target, a.runId)).run).toMatchObject({ status: 'queued', heldBy: 'concurrent_runs', harness: null });
     expect((await runDetail(target, b.runId)).run).toMatchObject({ status: 'queued', heldBy: 'worker', harness: null });
     const first = await takeRun(target, a.runId);
-    expect(await finishRun(target, first)).toMatchObject({ ended: true });
+    expect(await failRun(target, first)).toMatchObject({ ended: true });
     const second = await takeRun(target, b.runId);
-    expect(await finishRun(target, second)).toMatchObject({ ended: true });
+    expect(await failRun(target, second)).toMatchObject({ ended: true });
   },
 };

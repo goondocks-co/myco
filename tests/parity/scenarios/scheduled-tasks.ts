@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import { ageRows, type ParityScenario } from '../harness.ts';
 import { allowWorkerClaims, claimRun, createProject, event, owner, putCapability, putSetting, wake } from '../clients/requests.ts';
-import { cancelRun, captureSession, dispatch, finishRun, repository, runList, takeRun } from '../clients/runs.ts';
+import { cancelRun, captureSession, dispatch, failRun, repository, runList, takeRun } from '../clients/runs.ts';
 
 /** The schedule queues live map work once and keeps cold history out. */
 export const scheduledTasks: ParityScenario = {
@@ -36,7 +36,7 @@ export const scheduledTasks: ParityScenario = {
     await wake(target);
     expect(await maps()).toHaveLength(1);
     const run = await takeRun(target, queued.id);
-    expect(await finishRun(target, run)).toMatchObject({ ended: true });
+    expect(await failRun(target, run)).toMatchObject({ ended: true });
     await event(target, 'clock-session', 'prompt', { promptId: crypto.randomUUID(), text: 'Map the next change', origin: 'user' });
     expect((await tasks({ ...schedule, intervalSeconds: 0, maxRunsPerDay: 1 })).status).toBe(200);
     await wake(target);

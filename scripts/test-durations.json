@@ -958,7 +958,6 @@
     "schema upgrade: a Deployment populated by its users upgrades from the previous schema with every record, refusal and write unchanged": 125000,
     "KPI deliveries: delivery counts, served prompts and retired attention agree on both stores": 120000,
     "a join refused as identity_claimed writes no member and leaves the invitation redeemable, over the route and myco login": 17000,
-    "a replaced run: a claimed worker cannot declare an in-process runtime replacement": 41000,
     "an outcome run: the ask queues a run carrying its prompt and hash, the wake leaves it for a worker, and session start serves the Project and its instructions": 70000,
     "auth setup: no owner, unclaimed, expired owner link and unconfigured sign-in": 15000,
     "auto-join: a repository joins one project for every clone, and a member reads and connects only their own": 22000,

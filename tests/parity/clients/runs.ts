@@ -33,7 +33,7 @@ export async function takeRun(target: RouteTarget, expectedId?: string): Promise
   if (expectedId !== undefined) expect(answer.run.id).toBe(expectedId);
   return answer.run;
 }
-export async function finishRun(target: RouteTarget, run: ClaimedRun, extra: Record<string, unknown> = {}): Promise<any> {
+export async function failRun(target: RouteTarget, run: ClaimedRun, extra: Record<string, unknown> = {}): Promise<any> {
   return worker(target, 'end', { projectId: target.projectId, runId: run.id, attemptId: run.attemptId, status: 'failed', error: 'the worker stopped before completing the task', ...extra });
 }
 export async function cancelRun(target: RouteTarget, id: string): Promise<void> {

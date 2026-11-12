@@ -20,7 +20,10 @@ Write `scenarios/<feature>.ts` exporting a `ParityScenario` (`harness.ts`);
 `parity.test.ts` runs every scenario a file there exports, so there is no list
 to edit. Give it a weight under `parity` in `scripts/test-durations.json`. A
 scenario receives a `ParityTarget`; a paired scenario receives two separately
-booted targets. Create state over HTTP (`/events` with `memberHeaders()`,
+booted targets. `clients/runs.ts` supplies real dispatch/claim, run reads,
+settlement, capture publication and account-linking helpers; use `endRun` from
+`clients/requests.ts` to complete a claimed run and `failRun` from
+`clients/runs.ts` to fail one. Create state over HTTP (`/events` with `memberHeaders()`,
 `/mcp`, `/api/*` with `ownerHeaders()`, including a revisioned settings or
 capability write) and read it back through the routes a client uses. A
 `target.sql('SELECT …')` read, with every interpolated value through `lit()`
@@ -53,7 +56,10 @@ it, so review still checks for those.
 
 A scenario whose bindings or settings would change what the others observe
 sets `dedicated` and runs against targets booted for it alone. On Cloudflare it
-may name another Worker `main`.
+may name another Worker `main`. A scenario that calls `/worker/claim` must be
+`dedicated`: the claim takes any queued head on the Deployment, including a
+run another scenario queued. A shared scenario must set every capability or
+setting it depends on rather than inheriting another scenario's configuration.
 
 `dedicated.latestSchemaUpgrade` boots a Deployment whose users wrote through
 its routes (`upgrade-seed/`): sessions, a published transcript, an attachment,

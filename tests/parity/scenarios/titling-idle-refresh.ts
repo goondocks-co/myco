@@ -1,8 +1,8 @@
 import { expect } from 'bun:test';
 import { TITLING_REFRESH_MIN_PROMPTS, TITLING_REFRESH_MIN_INTERVAL_MS } from '@myco-server-worker/constants.js';
 import { ageRows, type ParityScenario } from '../harness.ts';
-import { allowWorkerClaims, event, putSetting, runTool, sessionDetail, untilPublished, wake } from '../clients/requests.ts';
-import { captureSession, finishRun, publishedSession, report, runList, takeRun } from '../clients/runs.ts';
+import { allowWorkerClaims, endRun, event, putSetting, runTool, sessionDetail, untilPublished, wake } from '../clients/requests.ts';
+import { captureSession, publishedSession, report, runList, takeRun } from '../clients/runs.ts';
 
 const HOUR = 3_600_000;
 /** An idle open session receives a title and later refreshes after new prompts. */
@@ -22,7 +22,7 @@ export const titlingIdleRefresh: ParityScenario = {
     const first = await takeRun(target, queued.id);
     expect(await runTool(target, first, 'myco_run_sessions', { op: 'title', title: 'A long job', summary: 'It began hours ago.' })).toMatchObject({ written: true });
     await report(target, first, 'summary', 'Titled the open session.');
-    expect(await finishRun(target, first, { status: 'completed' })).toMatchObject({ ended: true, status: 'completed' });
+    expect(await endRun(target, first)).toMatchObject({ ended: true, status: 'completed' });
     await ageRows(target, { table: 'sessions', column: 'titled_at', byMs: TITLING_REFRESH_MIN_INTERVAL_MS + HOUR, match: { project_id: target.projectId, session_id: id } });
     for (let i = 0; i < TITLING_REFRESH_MIN_PROMPTS; i += 1) await event(target, id, 'prompt', { promptId: crypto.randomUUID(), text: `Step ${i} of the long job`, origin: 'user' });
     await publishedSession(target, id, TITLING_REFRESH_MIN_PROMPTS + 1);
@@ -32,7 +32,7 @@ export const titlingIdleRefresh: ParityScenario = {
     const second = await takeRun(target, refresh.id);
     expect(await runTool(target, second, 'myco_run_sessions', { op: 'title', title: 'Long job completed', summary: 'Covered the work since its first title.' })).toMatchObject({ written: true });
     await report(target, second, 'summary', 'Refreshed the title.');
-    expect(await finishRun(target, second, { status: 'completed' })).toMatchObject({ ended: true, status: 'completed' });
+    expect(await endRun(target, second)).toMatchObject({ ended: true, status: 'completed' });
     await wake(target);
     expect(await runsOf()).toHaveLength(2);
     expect((await sessionDetail(target, id)).body.session).toMatchObject({ endedAt: null, title: 'Long job completed' });
