@@ -28,7 +28,8 @@ import {
 import { withLocalDiagnosticStore,withCloudflareDiagnosticStore,localUnplacedContextRecords, cloudflareUnplacedContextRecords, hookPlacementStatusLine } from '../server/hook-placement-status.js';
 import { keptArtifacts } from '../server/local-artifacts.js';
 import { volumeMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
-import { carriedNative, runLocalDeployment } from '../server/local-run.js';
+import { carriedNative, carriedNativeIfAny, runLocalDeployment } from '../server/local-run.js';
+import { requireNativeDeps } from '../runtime/native-deps.js';
 import { setupLocalOwner } from '../server/local-owner.js';
 import { setupCloudflareOwner } from '../server/cloudflare-owner.js';
 import { backupLocalDeployment, localRecoveryHold } from '../server/local-backup.js';
@@ -302,6 +303,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       return;
     }
     if (LOCAL_VERBS.has(command) && target() === 'local') {
+      requireNativeDeps();
       const paths = resolveLocalPaths();
 
       if (command === 'create') {
@@ -562,7 +564,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
         const secretsFile = flags.get('secrets-from');
         if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('hosted recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('hosted recovery provisions a new Deployment; re-run with --yes to confirm.');
-        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin'), tenantMode: flags.has('fork') ? 'fork' : 'replacement', sourceRetired: flags.has('source-retired'), native: carriedNative() });
+        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin'), tenantMode: flags.has('fork') ? 'fork' : 'replacement', sourceRetired: flags.has('source-retired'), native: carriedNativeIfAny() });
         console.log(`${flags.has('fork') ? 'Fork' : 'Replacement'} deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
         console.log(flags.has('fork') ? `A new tenant was created. Copied credentials, invitations and agent access keys are inactive. ${REJOIN_HINT}` : 'The Deployment identity and carried live authority were retained. This is the same tenant.');
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
@@ -632,6 +634,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       if (flags.has('client-secret')) fail('pipe the regenerated secret to --client-secret-stdin; do not pass --client-secret.');
       if (existing && flags.has('org')) fail('--org applies to registering a new app; omit it with --existing.');
       const target = resolveSignInTarget(flags.get('target'));
+      if (target.kind === 'local') requireNativeDeps();
       const clientSecret = existing ? await (deps.readSecret ?? readSignInSecret)() : undefined;
       if (target.kind === 'cloudflare') for (const line of credentialLines) report(line);
       const result = await registerGitHubApp({

@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { latestExactCiRun, releaseCiDecision } from '../../scripts/require-release-ci.mjs';
 import { requiresDarwinRecipe } from '../../scripts/darwin-release-inputs.mjs';
+import { RELEASE_TARGETS } from '../../packages/myco/scripts/release-targets.mjs';
 
 const ci = YAML.parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
 const release = YAML.parse(readFileSync('.github/workflows/publish.yml', 'utf8'));
@@ -206,7 +207,7 @@ function assertAggregate(workflow: typeof ci): void {
   expect(new Set(workflow.jobs.check.needs)).toEqual(new Set(jobs));
   expect(workflow.jobs.check.if).toBe('always()');
   expect(workflow.jobs.check.steps[0].run).toContain('.result == "success"');
-  for (const job of ['lint', 'build', 'tests', 'parity', 'parity-smoke', 'self-hosted-container', 'windows-native', 'ui-screens', 'hook-startup', 'hook-startup-windows']) {
+  for (const job of ['lint', 'build', 'tests', 'parity', 'parity-smoke', 'self-hosted-container', 'windows-native', 'windows-arm64', 'ui-screens', 'hook-startup', 'hook-startup-windows']) {
     expect(workflow.jobs[job]).toBeDefined();
     expect(workflow.jobs.check.needs).toContain(job);
   }
@@ -675,7 +676,7 @@ test('tracked distribution instructions contain no registry publication or Myco 
 });
 
 test('PR and manual builds verify all canonical manifest entries and bytes before uploading', () => {
-  const names = ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe'];
+  const names = ['myco-darwin-arm64', 'myco-darwin-x64', 'myco-linux-x64', 'myco-linux-arm64', 'myco-windows-x64.exe', 'myco-windows-arm64.exe'];
   const build = release.jobs.build.steps;
   const stage = build.findIndex((step: { name?: string }) => step.name === 'Stage raw binaries into flat release-binaries/ dir (myco)');
   const verify = build.findIndex((step: { name?: string }) => step.name === 'Verify release manifest');
@@ -726,4 +727,12 @@ test('PR and manual builds verify all canonical manifest entries and bytes befor
       expect(invoke(build[verify].run).status, defect).not.toBe(0);
     }
   } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('the release compiles every release target, staging native artifacts only for those that carry them, and runs the ARM64 asset before publishing', () => {
+  const compile = release.jobs['cross-compile'];
+  expect(compile.strategy.matrix.include).toEqual(RELEASE_TARGETS.map((target) => ({ target: target.name, native: target.native })));
+  expect(compile.steps.filter((step: { name?: string }) => /sqlite-vec|libsqlite3/.test(step.name ?? '')).map((step: { if?: string }) => step.if)).toEqual(['matrix.native', 'matrix.native']);
+  expect(release.jobs['verify-windows-arm64']).toMatchObject({ 'runs-on': 'windows-11-arm', needs: ['validate-tag', 'build'] });
+  expect(release.jobs['create-release'].if).toContain("needs.verify-windows-arm64.result == 'success'");
 });

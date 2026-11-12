@@ -228,4 +228,26 @@ describe('the Windows installer', () => {
     expect(fs.existsSync(path.join(run.home, 'bin', 'myco.exe'))).toBe(false);
   });
 
+  it.skipIf(PWSH === '' || process.platform === 'win32')('installs the build for the machine, ARM64 even from emulated x64 PowerShell, only against its checksum, and nothing when the machine is unknown', () => {
+    for (const [arch, asset] of [['ARM64', 'arm64'], ['x64-emulated-on-ARM64', 'arm64'], ['registry-unreadable-on-ARM64', 'arm64'], ['AMD64', 'x64']] as const) {
+      const run = select([release('2.0.0')], { arch, install: '2.0.0' });
+      expect({ status: run.status, agents: [...new Set(run.sentUserAgents)] }).toEqual({ status: 0, agents: ['myco-installer/goondocks-co'] });
+      expect(run.out).toContain(`Downloading myco-windows-${asset}.exe`);
+      expect(JSON.parse(fs.readFileSync(path.join(run.mycoHome, 'install.json'), 'utf8')).version).toBe('2.0.0');
+    }
+    for (const [arch, refusal] of [['ARM64', "Asset 'myco-windows-arm64.exe' not found in SHA256SUMS."], ['undeterminable', "Could not determine this machine's processor architecture; nothing was installed."]] as const) {
+      const refused = select([release('2.0.0')], { arch, install: '2.0.0', sumsName: 'myco-windows-x64.exe' });
+      expect([refused.status === 0, refused.out.includes(refusal), fs.existsSync(refused.exe)]).toEqual([false, true, false]);
+    }
+  });
+
+  it.skipIf(PWSH === '')('selects on ARM64 only releases that carry the ARM64 asset, and never updates 1.4 there', () => {
+    const x64Only = release('2.0.0', { assets: [{ name: 'myco-windows-x64.exe' }, { name: 'SHA256SUMS' }] });
+    expect(select([x64Only, release('2.0.0-beta.2')], { arch: 'ARM64' }).out).toContain('Found: myco/v2.0.0-beta.2');
+    expect(select([x64Only, release('2.0.0-beta.2')], { arch: 'AMD64' }).out).toMatch(/Found: myco\/v2\.0\.0\r?$/m);
+    const legacy = select([...beforeGa, release('2.0.0')], { arch: 'ARM64', current: '1.4.8' });
+    expect([legacy.status === 0, legacy.out.includes('Found: myco/v1.')]).toEqual([false, false]);
+    expect(legacy.out).toContain('Myco 1.4 is on this machine. Nothing was installed.');
+  });
+
 });

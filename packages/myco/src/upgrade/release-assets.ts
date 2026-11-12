@@ -18,6 +18,7 @@
 
 import semver from 'semver';
 import { selectChannelRelease } from '../../scripts/release-policy.mjs';
+import { hostReleaseTarget, releaseAssetName, releaseTarget, type ReleaseTargetName } from '../../scripts/release-targets.mjs';
 import type { ReleaseChannel } from '@myco/constants/update';
 
 // Derived from package.json `repository.url`
@@ -28,12 +29,7 @@ const GITHUB_BASE = 'https://github.com';
 // Public types
 // ---------------------------------------------------------------------------
 
-export type TargetTriple =
-  | 'darwin-arm64'
-  | 'darwin-x64'
-  | 'linux-x64'
-  | 'linux-arm64'
-  | 'windows-x64';
+export type TargetTriple = ReleaseTargetName;
 
 /** Minimal shape of a GitHub release API object (what we read). */
 export interface GitHubAsset {
@@ -55,37 +51,17 @@ export interface GitHubRelease {
 /**
  * Map `process.platform` + `process.arch` to a canonical asset triple.
  *
- * Throws a clear error for unsupported combinations (win32+arm64) or entirely
- * unknown platforms/architectures.
+ * Throws a clear error for an architecture or platform no release builds.
  */
 export function resolveTargetTriple(
   platform: string = process.platform,
   arch: string = process.arch,
 ): TargetTriple {
-  // Normalise arch aliases that appear in raw uname output
-  const normArch =
-    arch === 'aarch64' ? 'arm64' : arch === 'x86_64' || arch === 'amd64' ? 'x64' : arch;
-
-  if (platform === 'darwin') {
-    if (normArch === 'arm64') return 'darwin-arm64';
-    if (normArch === 'x64') return 'darwin-x64';
-    throw new Error(`Unsupported arch for darwin: ${arch}`);
+  const target = hostReleaseTarget(platform, arch);
+  if (target) return target.name;
+  if (platform === 'darwin' || platform === 'linux' || platform === 'win32') {
+    throw new Error(`Unsupported arch for ${platform}: ${arch}`);
   }
-
-  if (platform === 'linux') {
-    if (normArch === 'x64') return 'linux-x64';
-    if (normArch === 'arm64') return 'linux-arm64';
-    throw new Error(`Unsupported arch for linux: ${arch}`);
-  }
-
-  if (platform === 'win32') {
-    if (normArch === 'arm64') {
-      throw new Error('Windows arm64 is not supported — only windows-x64 is available');
-    }
-    if (normArch === 'x64') return 'windows-x64';
-    throw new Error(`Unsupported arch for win32: ${arch}`);
-  }
-
   throw new Error(`Unsupported platform: ${platform}`);
 }
 
@@ -95,10 +71,12 @@ export function resolveTargetTriple(
 
 /**
  * Canonical asset filename for a given triple.
- * Only `windows-x64` gets the `.exe` suffix.
+ * Windows triples get the `.exe` suffix.
  */
 export function assetName(triple: TargetTriple): string {
-  return triple === 'windows-x64' ? `myco-${triple}.exe` : `myco-${triple}`;
+  const target = releaseTarget(triple);
+  if (!target) throw new Error(`Unknown release target: ${triple}`);
+  return releaseAssetName(target);
 }
 
 // ---------------------------------------------------------------------------

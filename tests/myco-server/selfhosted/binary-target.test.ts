@@ -34,6 +34,7 @@ import { issueMemberToken } from '../helpers/member-token.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { FRAME_HEADERS } from '@myco-server-worker/platform/bun/static.js';
 import { memberPost, envelope } from '../helpers/fixtures.js';
+import { hostReleaseTarget } from '../../../packages/myco/scripts/release-targets.mjs';
 
 const roots: string[] = [];
 afterAll(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }); });
@@ -48,11 +49,7 @@ const require_ = createRequire(import.meta.url);
 
 /** The `vec0` artifact for this platform, as a path a deployment would carry. */
 function vec0Path(): string {
-  const target = process.platform === 'darwin'
-    ? (process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64')
-    : process.platform === 'win32'
-      ? 'windows-x64'
-      : (process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64');
+  const target = hostReleaseTarget()!.name;
   const suffix = process.platform === 'darwin' ? 'dylib' : process.platform === 'win32' ? 'dll' : 'so';
   const manifest = require_.resolve(`sqlite-vec-${target}/package.json`);
   return join(manifest, '..', `vec0.${suffix}`);
@@ -66,11 +63,7 @@ function vec0Path(): string {
  * rather than passing vacuously somewhere it could not have run.
  */
 function carriedLibrary(): string | null {
-  const target = process.platform === 'darwin'
-    ? (process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64')
-    : process.platform === 'win32'
-      ? 'windows-x64'
-      : (process.arch === 'arm64' ? 'linux-arm64' : 'linux-x64');
+  const target = hostReleaseTarget()!.name;
   const name = process.platform === 'darwin' ? 'libsqlite3.dylib' : process.platform === 'win32' ? 'libsqlite3.dll' : 'libsqlite3.so';
   const staged = join(fileURLToPath(new URL('../../../', import.meta.url)), 'packages', 'myco', 'vendor-src', 'libsqlite3', target, name);
   return existsSync(staged) ? staged : null;

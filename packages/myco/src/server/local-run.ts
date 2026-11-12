@@ -25,7 +25,7 @@ import {
 } from '@myco-server-worker/platform/bun/server-main.js';
 import type { NativeSqlite } from '@myco-server-worker/platform/bun/native.js';
 import type { StaticAssets } from '@myco-server-worker/platform/bun/static.js';
-import { getLibsqlitePath, getVec0Path } from '../runtime/native-deps.js';
+import { carriesNativeDeps, getLibsqlitePath, getVec0Path } from '../runtime/native-deps.js';
 import { BUNDLED_SERVER_UI } from '../server-ui-assets.generated.js';
 import { LocalVolume, volumeIdentity, type VolumeIdentity } from './local-volume.js';
 import { LocalArtifacts } from './local-artifacts.js';
@@ -41,6 +41,16 @@ import {
 /** The native artifacts this binary carries, as paths on disk. */
 export function carriedNative(): NativeSqlite {
   return { library: getLibsqlitePath(), vec0: getVec0Path() };
+}
+
+/**
+ * The native artifacts this binary carries, or none on a binary built without them.
+ *
+ * For work that only migrates and edits a Deployment's database, never querying vectors: no schema step loads `vec0`,
+ * and where nothing is carried the runtime's own SQLite runs every step, as it does in the Linux container image.
+ */
+export function carriedNativeIfAny(): NativeSqlite | undefined {
+  return carriesNativeDeps() ? carriedNative() : undefined;
 }
 
 /** The Deployment dashboard this binary carries, decoded once per process. */

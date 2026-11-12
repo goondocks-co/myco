@@ -15,6 +15,8 @@ check_native_build_tools() {
       compiler_remedy='Install gcc (native) or gcc-aarch64-linux-gnu (cross-build), or set CC.'
       ;;
     windows-x64) COMPILER="${CC:-x86_64-w64-mingw32-gcc}"; compiler_remedy='Install MinGW: brew install mingw-w64 or apt install gcc-mingw-w64-x86-64.' ;;
+    # Built without native artifacts: nothing is compiled for it.
+    windows-arm64) return 0 ;;
     *) echo "Unknown target: ${target}" >&2; return 2 ;;
   esac
   for tool in curl unzip "${COMPILER}"; do

@@ -14,6 +14,7 @@ import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { cliVerbModules, closureOf, pathToEntry, REPO_ROOT, runtimeEdges, withoutShebang } from '../../helpers/import-closure.ts';
+import { RELEASE_TARGETS } from '../../../packages/myco/scripts/release-targets.mjs';
 
 const SRC = path.join(REPO_ROOT, 'packages', 'myco', 'src');
 const at = (rel: string): string => path.join(SRC, rel);
@@ -42,7 +43,7 @@ const HOOK_CHUNK_ONLY_FORBIDDEN: ReadonlyArray<[string, string]> = [
   ['packages/myco/src/runtime/native-deps.ts', 'the native artifacts (sqlite, ripgrep)'],
 ];
 
-const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64'];
+const TARGETS = RELEASE_TARGETS.map((target) => target.name);
 
 /** A per-target entry with its embedded-file imports (`with { type: 'file' }`) taken out: those embed bytes, not code. */
 const withoutEmbeds = (_file: string, text: string): string =>
@@ -65,7 +66,10 @@ describe('the hook entry', () => {
     expect([...edges.specifiers].sort()).toEqual([...DISPATCH_STATIC, ...DISPATCH_DYNAMIC].sort());
     for (const target of TARGETS) {
       const entry = fs.readFileSync(at(`entries/cli.${target}.ts`), 'utf-8');
-      expect({ target, dispatches: /await dispatch\(\(\) => registerEmbeddedNativeDeps\(/.test(entry) }).toEqual({ target, dispatches: true });
+      // A target that carries native artifacts registers them once it knows the verb is not a hook; one that carries
+      // none declares so at the same point.
+      const registration = RELEASE_TARGETS.find((one) => one.name === target)!.native ? 'registerEmbeddedNativeDeps' : 'registerNoNativeDeps';
+      expect({ target, dispatches: new RegExp(`await dispatch\\(\\(\\) => ${registration}\\(`).test(entry) }).toEqual({ target, dispatches: true });
       expect({ target, importsCli: /import\(['"]\.\/cli\.js['"]\)/.test(entry) }).toEqual({ target, importsCli: false });
     }
   });

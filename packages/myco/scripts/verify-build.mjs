@@ -9,7 +9,7 @@
 //      entries/cli.<target>.ts, so a stale binary keeps reporting an
 //      old version even after the manifest is bumped.)
 //
-// For CI/release builds, you should additionally verify all 5 targets —
+// For CI/release builds, you should additionally verify every release target —
 // that loop lives in the workflow, not here.
 
 import fs from 'node:fs';
@@ -18,6 +18,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { binaryFileName, hostReleaseTarget } from './release-targets.mjs';
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -26,16 +27,9 @@ function fail(message) {
   process.exit(1);
 }
 
-function hostTarget() {
-  const { platform, arch } = process;
-  if (platform === 'darwin') return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
-  if (platform === 'linux') return arch === 'arm64' ? 'linux-arm64' : 'linux-x64';
-  if (platform === 'win32') return 'windows-x64';
-  fail(`Unsupported host platform: ${platform}-${arch}`);
-}
-
-const target = hostTarget();
-const binaryName = process.platform === 'win32' ? 'myco.exe' : 'myco';
+const host = hostReleaseTarget() ?? fail(`Unsupported host platform: ${process.platform}-${process.arch}`);
+const target = host.name;
+const binaryName = binaryFileName(host);
 const platformPkgDir = path.resolve(pkgRoot, '..', `myco-${target}`);
 const binaryPath = path.join(platformPkgDir, 'bin', binaryName);
 if (!fs.existsSync(binaryPath)) fail(`missing host binary: ${binaryPath}`);

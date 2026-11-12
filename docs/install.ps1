@@ -1,4 +1,4 @@
-# Myco installer for Windows x64 — https://myco.sh
+# Myco installer for Windows x64 and ARM64 — https://myco.sh
 # Usage: irm https://myco.sh/install.ps1 | iex
 # Fresh defaults choose 2.x stable, then beta, then alpha.
 # Existing legacy machines keep 1.x updates until -Replace14.
@@ -18,7 +18,6 @@ $Repo = "goondocks-co/myco"
 $MycoHome = if ($env:MYCO_HOME) { $env:MYCO_HOME } else { Join-Path $env:USERPROFILE '.myco' }
 $BinDir = if ($env:MYCO_BIN_DIR) { $env:MYCO_BIN_DIR } else { Join-Path $env:LOCALAPPDATA 'Myco/bin' }
 $Exe = Join-Path $BinDir 'myco.exe'
-$Asset = "myco-windows-x64.exe"
 $Marker = Join-Path $MycoHome 'install.json'
 $ReplaceCommand = '$env:MYCO_REPLACE_LEGACY="1"; irm https://myco.sh/install.ps1 | iex'
 $Replace14 = $Replace14 -or $env:MYCO_REPLACE_LEGACY -eq '1'
@@ -27,23 +26,48 @@ $ChannelAuto = $false
 $InstallMarker = $null
 
 # ---------------------------------------------------------------------------
-# Architecture check — x64 only (AMD64 in Windows terms)
+# Architecture — the machine's own, so ARM64 never receives the x64 build
 # ---------------------------------------------------------------------------
-$arch = $env:PROCESSOR_ARCHITECTURE
-# WOW64: 32-bit process on 64-bit OS — check the native arch
-if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
-
-if ($arch -eq "ARM64") {
-    Write-Host "Myco does not support Windows on ARM (ARM64) at this time." -ForegroundColor Red
-    Write-Host "  x64 native Windows is required." -ForegroundColor Red
-    exit 1
+# A process reports its own architecture, never the machine's: x64 PowerShell emulated on ARM64 sees AMD64, and
+# 32-bit PowerShell sees x86. The system environment in the registry names the machine; when it cannot be read,
+# IsWow64Process2 reports the native machine whatever this process runs as. Without either, nothing is installed.
+function Get-MachineArchitecture {
+    try {
+        $machine = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+        if ($machine) { return $machine }
+    } catch { }
+    try {
+        $kernel = Add-Type -Name 'NativeMachine' -Namespace 'MycoInstaller' -PassThru -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine);'
+        $processMachine = [uint16]0
+        $nativeMachine = [uint16]0
+        if ($kernel::IsWow64Process2([System.Diagnostics.Process]::GetCurrentProcess().Handle, [ref]$processMachine, [ref]$nativeMachine)) {
+            if ($nativeMachine -eq 0xAA64) { return 'ARM64' }
+            if ($nativeMachine -eq 0x8664) { return 'AMD64' }
+            return ('machine type 0x{0:X4}' -f $nativeMachine)
+        }
+    } catch { }
+    return $null
 }
 
-if ($arch -ne "AMD64") {
-    Write-Host "Unsupported processor architecture: $arch" -ForegroundColor Red
-    Write-Host "  Myco requires a 64-bit (x64) Windows machine." -ForegroundColor Red
+$arch = Get-MachineArchitecture
+if (-not $arch) {
+    Write-Host "Could not determine this machine's processor architecture; nothing was installed." -ForegroundColor Red
+    Write-Host "  Neither the registry's PROCESSOR_ARCHITECTURE (HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment) nor IsWow64Process2 answered." -ForegroundColor Red
+    Write-Host "  Run the installer from Windows PowerShell on Windows 10 1709 or later, with that registry value readable." -ForegroundColor Red
     exit 1
 }
+switch ($arch) {
+    'AMD64' { $Target = 'windows-x64' }
+    'ARM64' { $Target = 'windows-arm64' }
+    default {
+        Write-Host "Unsupported processor architecture: $arch" -ForegroundColor Red
+        Write-Host "  Myco requires a 64-bit Windows machine (x64 or ARM64)." -ForegroundColor Red
+        exit 1
+    }
+}
+$Asset = "myco-$Target.exe"
+# Myco 1.x shipped no Windows ARM64 build, so an ARM64 machine's 1.x is never updated in place.
+$LegacyBuilds = $Target -eq 'windows-x64'
 
 # ---------------------------------------------------------------------------
 # Channel resolution
@@ -104,8 +128,11 @@ if ($Channel -cnotin @('alpha', 'beta', 'stable')) {
 # -bor preserves existing protocols; this is a no-op on newer Windows.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-Write-Host "Myco installer — windows-x64 / channel: $Channel" -ForegroundColor Cyan
+Write-Host "Myco installer — $Target / channel: $Channel" -ForegroundColor Cyan
 Write-Host "Windows support is beta. Report issues at https://github.com/$Repo/issues" -ForegroundColor Yellow
+if ($Target -eq 'windows-arm64') {
+    Write-Host "Windows ARM64 joins Deployments and runs agent work. To host a Deployment, use Cloudflare or another machine." -ForegroundColor Yellow
+}
 Write-Host ""
 
 # ---------------------------------------------------------------------------
@@ -114,7 +141,7 @@ Write-Host ""
 function Get-AuthHeaders {
     $tok = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { "" }
     $h = @{
-        'User-Agent' = 'myco-installer/goondocks-co/myco'
+        'User-Agent' = 'myco-installer/goondocks-co'
         'Accept'     = 'application/vnd.github+json'
     }
     if ($tok -ne "") { $h['Authorization'] = "Bearer $tok" }
@@ -272,7 +299,7 @@ for ($page = 1; $page -le $MaxReleasePages; $page++) {
     if ($rows.Count -lt 100) { break }
     if ($page -eq $MaxReleasePages) { throw "GitHub release discovery exceeded $MaxReleasePages pages." }
 }
-$LegacyInstall = $Legacy -and -not $Replace14 -and -not $MemberHome
+$LegacyInstall = $Legacy -and -not $Replace14 -and -not $MemberHome -and $LegacyBuilds
 if ($LegacyInstall) {
     $tag = if ($ChannelExplicit) { Select-MycoRelease $releases $Channel $CurrentVersion } else { $null }
     if ($tag) { $LegacyInstall = $false }

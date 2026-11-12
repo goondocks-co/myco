@@ -39,7 +39,7 @@ On Windows x64, in PowerShell:
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The 2.0 Windows path is not yet verified. Windows on ARM has no supported build. A binary destination containing whitespace is refused; choose a path with no spaces rather than retrying unchanged.
+The 2.0 Windows path is not yet verified. The installer picks the x64 or ARM64 build from the machine's own architecture; if it reports that it could not determine this machine's processor architecture, nothing was installed: run it from Windows PowerShell on Windows 10 1709 or later. Windows ARM64 joins Deployments and runs work but cannot host a Deployment on that machine; create one on Cloudflare, or host it on a macOS, Linux or Windows x64 machine. A binary destination containing whitespace is refused; choose a path with no spaces rather than retrying unchanged.
 
 ## 2. Join a Deployment
 

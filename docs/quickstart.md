@@ -10,13 +10,13 @@ On macOS or Linux:
 curl -fsSL https://myco.sh/install.sh | sh
 ```
 
-Myco is a native binary; no Node runtime is needed. On Windows x64:
+Myco is a native binary; no Node runtime is needed. On Windows (x64 or ARM64):
 
 ```powershell
 irm https://myco.sh/install.ps1 | iex
 ```
 
-The 2.0 Windows path is not yet verified. The installers download an available 2.x GitHub release. Existing 1.4 installations require [explicit replacement and cutover](upgrade.md#upgrading-from-myco-14).
+The 2.0 Windows path is not yet verified. On Windows ARM64, Myco joins a Myco and runs its work; it cannot host one on that machine, so run your own on Cloudflare or another machine. The installers download an available 2.x GitHub release. Existing 1.4 installations require [explicit replacement and cutover](upgrade.md#upgrading-from-myco-14).
 
 ## 2. Sign this machine in
 

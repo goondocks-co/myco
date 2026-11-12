@@ -83,7 +83,7 @@ Installing from a Git worktree requires `ALLOW_WORKTREE_INSTALL=1 make source-in
 
 ### Source builds on Windows
 
-Build the Windows artifact on macOS or Linux with `make source-build-windows`. Record `git rev-parse --show-toplevel` and `git rev-parse HEAD` on that build machine. Copy `packages/myco-windows-x64/bin/myco.exe` to Windows, then run it in PowerShell using the recorded checkout path and full commit:
+Build the Windows artifact on macOS or Linux with `make source-build-windows` (x64), or `make source-build-windows-arm64` for an ARM64 machine (no MinGW needed; that build hosts no Deployment). Record `git rev-parse --show-toplevel` and `git rev-parse HEAD` on that build machine. Copy `packages/myco-windows-x64/bin/myco.exe` (or `packages/myco-windows-arm64/bin/myco.exe`) to Windows, then run it in PowerShell using the recorded checkout path and full commit:
 
 ```powershell
 & 'C:\scratch\myco.exe' update --source-checkout '/absolute/path/on/build-machine/myco' --source-commit '<40-hex-commit>'

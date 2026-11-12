@@ -9,11 +9,11 @@ export const PWSH = spawnSync('sh', ['-c', 'command -v pwsh'], { cwd: installRoo
 const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 export const release = (version: string, extra = {}) => ({
   tag_name: `myco/v${version}`, prerelease: version.includes('-'), draft: false,
-  assets: [{ name: 'myco-windows-x64.exe' }, { name: 'SHA256SUMS' }], ...extra,
+  assets: [{ name: 'myco-windows-x64.exe' }, { name: 'myco-windows-arm64.exe' }, { name: 'SHA256SUMS' }], ...extra,
 });
 export const beforeGa = [release('1.4.9'), release('1.4.10-beta.1'), release('2.0.0-alpha.10'), release('2.0.0-beta.2')];
 
-export function select(releases: unknown[], opts: { channel?: string; current?: string; sourceCheckout?: boolean; npmOrigin?: boolean; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean } = {}) {
+export function select(releases: unknown[], opts: { channel?: string; current?: string; sourceCheckout?: boolean; npmOrigin?: boolean; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean; arch?: 'AMD64' | 'ARM64' | 'x64-emulated-on-ARM64' | 'registry-unreadable-on-ARM64' | 'undeterminable'; sumsName?: string } = {}) {
   const home = fs.mkdtempSync(path.join(installRoot(), 'home-'));
   const mycoHome = path.join(home, '.myco');
   const bin = path.join(home, 'bin');
@@ -66,7 +66,8 @@ int main(int argc, char **argv) {
     const compiled = spawnSync('cc', ['-o', artifact, source], { cwd: home, env: sandboxChildEnv(home), encoding: 'utf8' });
     expect({ status: compiled.status, stderr: compiled.stderr }).toEqual({ status: 0, stderr: '' });
     const sums = path.join(home, 'SHA256SUMS');
-    fs.writeFileSync(sums, `${crypto.createHash('sha256').update(fs.readFileSync(artifact)).digest('hex')}  myco-windows-x64.exe\n`);
+    const asset = opts.sumsName ?? (opts.arch === undefined || opts.arch === 'AMD64' ? 'myco-windows-x64.exe' : 'myco-windows-arm64.exe');
+    fs.writeFileSync(sums, `${crypto.createHash('sha256').update(fs.readFileSync(artifact)).digest('hex')}  ${asset}\n`);
     download = `if ($OutFile) { Copy-Item $(if ($Uri.EndsWith('SHA256SUMS')) { ${quote(sums)} } else { ${quote(artifact)} }) $OutFile; return }`;
   }
   if (opts.joined || opts.state === 'member' || opts.state === 'cutover') {
@@ -89,19 +90,30 @@ int main(int argc, char **argv) {
     if ($LiteralPath) { Microsoft.PowerShell.Management\\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force }
     else { Microsoft.PowerShell.Management\\Copy-Item -Path $Path -Destination $Destination -Force }
   }` : '';
+  const userAgents = path.join(home, 'user-agents.log');
+  // The machine answers through the registry or, when that is unreadable, through IsWow64Process2 (a compiled stand-in
+  // for kernel32); x64 PowerShell under ARM64 emulation reports AMD64 in its own environment either way.
+  const registry = ({ AMD64: 'AMD64', ARM64: 'ARM64', 'x64-emulated-on-ARM64': 'ARM64' } as Record<string, string | undefined>)[opts.arch ?? 'AMD64'];
+  const kernel = `public static bool IsWow64Process2(System.IntPtr process, out ushort processMachine, out ushort nativeMachine) { processMachine = 0; nativeMachine = 0xAA64; return true; }`;
+  const machine = [registry ? `function Get-ItemProperty { [PSCustomObject]@{ PROCESSOR_ARCHITECTURE = '${registry}' } }` : "function Get-ItemProperty { throw 'registry unreadable' }",
+    opts.arch === 'registry-unreadable-on-ARM64' ? `function Add-Type { Microsoft.PowerShell.Utility\\Add-Type -Name FixtureMachine -Namespace Fixture -PassThru -MemberDefinition '${kernel}' }`
+      : "function Add-Type { throw 'IsWow64Process2 unavailable' }"].join('\n');
   const program = `${copyFailure}
+  ${machine}
   function Invoke-WebRequest { param($Uri, $Headers, $OutFile, [switch]$UseBasicParsing, $ErrorAction)
+    if ($Headers) { Add-Content -LiteralPath ${quote(userAgents)} -Value $Headers['User-Agent'] }
     ${download}
     [PSCustomObject]@{ Content = ${quote(JSON.stringify(releases))} }
   }
   & ${quote(file)} ${opts.install ? '' : '-DryRun'} ${opts.replace ? '-Replace14' : ''}
   `;
   const run = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', program], {
-    cwd: home, env: sandboxChildEnv(home, { NO_COLOR: '1', PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
+    cwd: home, env: sandboxChildEnv(home, { NO_COLOR: '1', PROCESSOR_ARCHITECTURE: opts.arch === 'ARM64' ? 'ARM64' : 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
       MYCO_BIN_DIR: bin, ...(opts.probe ? { MYCO_PROBE_LOG: path.join(home, 'probe-env.log') } : {}), ...(opts.channel ? { MYCO_CHANNEL: opts.channel } : {}) }),
     encoding: 'utf8', timeout: 60_000,
   });
   if (run.error) throw run.error;
   expect(fs.existsSync(executed)).toBe(false);
-  return { status: run.status, mycoHome, out: `${run.stdout}${run.stderr}`, home, exe, before, linkBefore };
+  const sentUserAgents = fs.existsSync(userAgents) ? fs.readFileSync(userAgents, 'utf8').trim().split(/\r?\n/) : [];
+  return { status: run.status, mycoHome, out: `${run.stdout}${run.stderr}`, home, exe, before, linkBefore, sentUserAgents };
 }

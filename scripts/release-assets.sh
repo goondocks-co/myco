@@ -6,6 +6,7 @@ readonly -a MYCO_RELEASE_BINARIES=(
   myco-linux-x64
   myco-linux-arm64
   myco-windows-x64.exe
+  myco-windows-arm64.exe
 )
 
 verify_release_assets() {

@@ -1,8 +1,8 @@
-.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install prepare-build source-build source-install worktree-sweep source-build-windows
+.PHONY: build build-all build-fast build-only build-rebuild rebuild check check-fast check-all test test-fast test-integration test-all lint clean watch install prepare-build source-build source-install worktree-sweep source-build-windows source-build-windows-arm64
 
 .DEFAULT_GOAL := build
 
-HOST_TARGET = $(shell node -e "process.stdout.write(process.platform + '-' + (process.arch === 'arm64' ? 'arm64' : 'x64'))")
+HOST_TARGET = $(shell node --input-type=module -e "import { hostReleaseTarget } from './packages/myco/scripts/release-targets.mjs'; process.stdout.write(hostReleaseTarget()?.name ?? 'unsupported-host')")
 NODE_ENGINE = $(shell sed -n 's/.*"node":[[:space:]]*"\([^"]*\)".*/\1/p' packages/myco/package.json)
 BUN_NOTICE_SHOWN_ON_ENTRY := $(MYCO_BUN_NOTICE_SHOWN)
 export MYCO_BUN_NOTICE_SHOWN := 1
@@ -10,7 +10,7 @@ export MYCO_BUN_NOTICE_SHOWN := 1
 .PHONY: deps
 deps:
 	@command -v node >/dev/null 2>&1 || { echo 'Myco: Node.js $(NODE_ENGINE) with npm is required. Install from https://nodejs.org/.' >&2; exit 1; }
-	@MYCO_BUN_NOTICE_SHOWN="$(BUN_NOTICE_SHOWN_ON_ENTRY)" node scripts/ensure-deps.mjs $(if $(filter source-build-windows,$(MAKECMDGOALS)),--windows)
+	@MYCO_BUN_NOTICE_SHOWN="$(BUN_NOTICE_SHOWN_ON_ENTRY)" node scripts/ensure-deps.mjs $(if $(filter source-build-windows,$(MAKECMDGOALS)),--target=windows-x64)$(if $(filter source-build-windows-arm64,$(MAKECMDGOALS)),--target=windows-arm64)
 
 build: check-fast
 	$(MAKE) build-only
@@ -64,3 +64,10 @@ source-build-windows: deps
 	npm i --no-save --force sqlite-vec-windows-x64
 	bash packages/myco/scripts/build-libsqlite3-target.sh windows-x64
 	cd packages/myco && BASELINE=1 TARGET=windows-x64 node scripts/build-single-target.mjs
+
+# Cross-compile the member and runner product for a Windows ARM64 machine. It carries no native SQLite artifacts, so it
+# hosts no Deployment and needs no compiler.
+source-build-windows-arm64: deps
+	npm run build:ui -w @goondocks/myco
+	cd packages/myco && npm run codegen
+	cd packages/myco && TARGET=windows-arm64 node scripts/build-single-target.mjs

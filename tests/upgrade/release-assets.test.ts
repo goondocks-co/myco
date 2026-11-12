@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'bun:test';
+import { spawnSync } from 'node:child_process';
+import { RELEASE_TARGETS } from '../../packages/myco/scripts/release-targets.mjs';
 import {
   resolveTargetTriple,
+  resolveAssetRefs,
   assetName,
   pickRelease,
   assetDownloadUrl,
@@ -11,67 +14,27 @@ import {
   type GitHubRelease,
 } from '@myco/upgrade/release-assets';
 
-// ---------------------------------------------------------------------------
-// resolveTargetTriple
-// ---------------------------------------------------------------------------
-describe('resolveTargetTriple', () => {
-  it('maps darwin + arm64 → darwin-arm64', () => {
-    expect(resolveTargetTriple('darwin', 'arm64')).toBe('darwin-arm64');
+describe('resolveTargetTriple and assetName', () => {
+  it('map each platform and architecture a release builds to the asset it publishes, the x64 build never on ARM64', () => {
+    const cases = [['darwin', 'arm64', 'myco-darwin-arm64'], ['darwin', 'x64', 'myco-darwin-x64'], ['linux', 'x86_64', 'myco-linux-x64'],
+      ['linux', 'aarch64', 'myco-linux-arm64'], ['win32', 'x64', 'myco-windows-x64.exe'], ['win32', 'arm64', 'myco-windows-arm64.exe']];
+    expect(cases.map(([platform, arch]) => assetName(resolveTargetTriple(platform, arch)))).toEqual(cases.map((one) => one[2]));
   });
 
-  it('maps darwin + x64 → darwin-x64', () => {
-    expect(resolveTargetTriple('darwin', 'x64')).toBe('darwin-x64');
-  });
-
-  it('maps linux + x64 → linux-x64', () => {
-    expect(resolveTargetTriple('linux', 'x64')).toBe('linux-x64');
-  });
-
-  it('maps linux + arm64 → linux-arm64', () => {
-    expect(resolveTargetTriple('linux', 'arm64')).toBe('linux-arm64');
-  });
-
-  it('maps win32 + x64 → windows-x64', () => {
-    expect(resolveTargetTriple('win32', 'x64')).toBe('windows-x64');
-  });
-
-  it('throws on win32 + arm64 (unsupported)', () => {
-    expect(() => resolveTargetTriple('win32', 'arm64')).toThrow(
-      /windows.*arm64.*not supported/i,
-    );
-  });
-
-  it('throws on unknown platform', () => {
+  it('refuses a platform or architecture no release builds', () => {
     expect(() => resolveTargetTriple('freebsd', 'x64')).toThrow(/unsupported platform/i);
-  });
-
-  it('throws on unknown arch for a known platform', () => {
     expect(() => resolveTargetTriple('linux', 'ia32')).toThrow(/unsupported arch/i);
   });
-});
 
-// ---------------------------------------------------------------------------
-// assetName
-// ---------------------------------------------------------------------------
-describe('assetName', () => {
-  it('darwin-arm64 → myco-darwin-arm64 (no .exe)', () => {
-    expect(assetName('darwin-arm64')).toBe('myco-darwin-arm64');
+  it('names, across every release target, exactly the assets a release publishes', () => {
+    const listed = spawnSync('bash', ['-c', 'source scripts/release-assets.sh && printf "%s\\n" "${MYCO_RELEASE_BINARIES[@]}"'], { encoding: 'utf8' });
+    expect(RELEASE_TARGETS.map((target) => assetName(target.name)).sort()).toEqual(listed.stdout.trim().split('\n').sort());
   });
 
-  it('darwin-x64 → myco-darwin-x64', () => {
-    expect(assetName('darwin-x64')).toBe('myco-darwin-x64');
-  });
-
-  it('linux-x64 → myco-linux-x64', () => {
-    expect(assetName('linux-x64')).toBe('myco-linux-x64');
-  });
-
-  it('linux-arm64 → myco-linux-arm64', () => {
-    expect(assetName('linux-arm64')).toBe('myco-linux-arm64');
-  });
-
-  it('windows-x64 → myco-windows-x64.exe (.exe suffix only for windows)', () => {
-    expect(assetName('windows-x64')).toBe('myco-windows-x64.exe');
+  it('resolves a Windows ARM64 machine\'s update to the ARM64 asset', () => {
+    const asset = (name: string) => ({ name, browser_download_url: `https://example.invalid/${name}` });
+    const release = { tag_name: 'myco/v2.0.0', prerelease: false, assets: ['myco-windows-x64.exe', 'myco-windows-arm64.exe', 'SHA256SUMS'].map(asset) };
+    expect(resolveAssetRefs(release, resolveTargetTriple('win32', 'arm64'))).toMatchObject({ assetUrl: 'https://example.invalid/myco-windows-arm64.exe', assetName: 'myco-windows-arm64.exe' });
   });
 });
 
@@ -233,42 +196,11 @@ describe('assetDownloadUrl', () => {
 // parseSha256Sum
 // ---------------------------------------------------------------------------
 describe('parseSha256Sum', () => {
-  const sha256text = [
-    'aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb  myco-darwin-arm64',
-    '1122334455667788990011223344556677889900aabbccddeeff001122334455  myco-linux-x64',
-    'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef *myco-darwin-x64',
-    '0000000000000000000000000000000000000000000000000000000000000000  other-file',
-  ].join('\n');
-
-  it('returns hex hash for exact asset name match (space-separated)', () => {
-    expect(parseSha256Sum(sha256text, 'myco-darwin-arm64')).toBe(
-      'aabbccdd0011223344556677889900aabbccdd0011223344556677889900aabb',
-    );
-  });
-
-  it('returns hex hash for linux-x64', () => {
-    expect(parseSha256Sum(sha256text, 'myco-linux-x64')).toBe(
-      '1122334455667788990011223344556677889900aabbccddeeff001122334455',
-    );
-  });
-
-  it('handles *asset binary-mode prefix', () => {
-    expect(parseSha256Sum(sha256text, 'myco-darwin-x64')).toBe(
-      'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
-    );
-  });
-
-  it('ignores lines for other files', () => {
-    expect(parseSha256Sum(sha256text, 'other-file')).toBe(
-      '0000000000000000000000000000000000000000000000000000000000000000',
-    );
-  });
-
-  it('returns null when asset is not found', () => {
-    expect(parseSha256Sum(sha256text, 'myco-windows-x64.exe')).toBeNull();
-  });
-
-  it('returns null on empty text', () => {
+  it('returns the digest listed for exactly the named asset, in text or binary mode, and null for one not listed', () => {
+    const digest = (hex: string) => hex.repeat(64);
+    const text = [`${digest('a')}  myco-darwin-arm64`, `${digest('b')} *myco-darwin-x64`, `${digest('c')}  other-file`].join('\n');
+    expect(['myco-darwin-arm64', 'myco-darwin-x64', 'other-file', 'myco-windows-x64.exe'].map((asset) => parseSha256Sum(text, asset)))
+      .toEqual([digest('a'), digest('b'), digest('c'), null]);
     expect(parseSha256Sum('', 'myco-darwin-arm64')).toBeNull();
   });
 });

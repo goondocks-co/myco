@@ -14,11 +14,12 @@ import { readDefaultDeployment } from '@myco/member/default-deployment.js';
 import { deploymentUrl, readDeploymentMembershipResult, readRegistryEntryResult, registryEntryPath } from '@myco/member/registry.js';
 import { renderSetupStatus } from '@myco/cli/setup-status.js';
 import { setupChecks } from '@myco/cli/member-doctor.js';
-import { conductSetup, type SetupDeps } from '@myco/setup/steps.js';
+import { askCreateTarget, conductSetup, type SetupDeps } from '@myco/setup/steps.js';
 import { askOnTerminal, askRequired } from '@myco/setup/prompt.js';
 import { APP_NAME_MAX } from '@myco/server/github-app.js';
 import { parseArgs as parseCutoverArgs } from '@myco/cli/cutover.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { requireNativeDeps } from '@myco/runtime/native-deps.js';
 
 export const SETUP_HELP = `Usage: myco setup [options]
 
@@ -176,6 +177,7 @@ export function parseSetupOptions(args: readonly string[]): Options {
 }
 
 function validateCreationOptions(answers: SetupAnswers): void {
+  if (answers.target === 'local') requireNativeDeps();
   if (answers.target === 'local' && (answers.customUrl || answers.accountId || answers.org)) throw new Error('Local setup is loopback only; use --port and --serve, without --url, --account-id or --org.');
   if (answers.target === 'cloudflare' && (answers.port !== undefined || answers.serve !== undefined)) throw new Error('Cloudflare setup uses --account-id and --url, without --port or --serve.');
   if (answers.role && answers.role !== 'create' && [answers.target, answers.customUrl, answers.accountId, answers.org, answers.appName, answers.port, answers.serve].some(value => value !== undefined)) throw new Error('Creation options require --create cloudflare or --create local.');
@@ -267,6 +269,7 @@ export async function run(args: readonly string[], deps: SetupDeps = {}): Promis
       if (!['1', '2', '3'].includes(role)) throw new Error('Choose 1, 2 or 3; run myco setup --help for the available choices.');
       file.answers.role = role === '1' ? 'create' : role === '2' ? 'join' : 'runner';
       freshJoin = file.answers.role === 'join';
+      if (file.answers.role === 'create') file.answers.target ??= await askCreateTarget(ask);
       validateCreationOptions(file.answers);
       saveSetupFile(home, file);
     }

@@ -1,6 +1,9 @@
+import { RELEASE_TARGETS } from '../../scripts/release-targets.mjs';
+
+const PLATFORM_BUILD = new RegExp(`/packages/myco-(?:${RELEASE_TARGETS.map((target) => target.name).join('|')})/bin/`);
+const LEGACY_VENDOR = /\/packages\/[^/]+\/vendor\//;
+
 /** Whether an executable names a checkout's per-platform or vendor build. */
 export function looksLikeDevBuildExecutable(executable: string): boolean {
-  const platformPkgPattern = /\/packages\/myco-(?:darwin-arm64|darwin-x64|linux-x64|linux-arm64|windows-x64)\/bin\//;
-  const legacyVendorPattern = /\/packages\/[^/]+\/vendor\//;
-  return platformPkgPattern.test(executable) || legacyVendorPattern.test(executable);
+  return PLATFORM_BUILD.test(executable) || LEGACY_VENDOR.test(executable);
 }
