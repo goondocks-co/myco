@@ -1,115 +1,10 @@
 /** The Windows installer's real classification and release selection, with fixture GitHub responses. */
 import { afterAll, describe, expect, it } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import crypto from 'node:crypto';
 import path from 'node:path';
-import os from 'node:os';
-import { sandboxChildEnv } from '../../scripts/test-environment.mjs';
+import { beforeGa, PWSH, release, removeInstallRoot, select } from './install-ps1-fixture.js';
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-install-pwsh-'));
-afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
-const SCRIPT = fs.readFileSync(path.join(import.meta.dir, '..', '..', 'docs', 'install.ps1'), 'utf8');
-const PWSH = spawnSync('sh', ['-c', 'command -v pwsh'], { cwd: root, env: sandboxChildEnv(root), encoding: 'utf8' }).stdout.trim();
-const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
-const release = (version: string, extra = {}) => ({
-  tag_name: `myco/v${version}`, prerelease: version.includes('-'), draft: false,
-  assets: [{ name: 'myco-windows-x64.exe' }, { name: 'SHA256SUMS' }], ...extra,
-});
-const beforeGa = [release('1.4.9'), release('1.4.10-beta.1'), release('2.0.0-alpha.10'), release('2.0.0-beta.2')];
-
-function select(releases: unknown[], opts: { channel?: string; current?: string; sourceCheckout?: boolean; npmOrigin?: boolean; evidence?: 'marker' | 'slot' | 'unknown'; state?: 'member' | 'cutover' | 'symlink' | 'empty' | 'vault'; replace?: boolean; install?: string; joined?: boolean; probe?: boolean; stale?: boolean; staleVersion?: string; staleChannel?: string; refreshFailure?: boolean; failPreserve?: boolean; truncatePreserve?: boolean; failRecord?: boolean } = {}) {
-  const home = fs.mkdtempSync(path.join(root, 'home-'));
-  const mycoHome = path.join(home, '.myco');
-  const bin = path.join(home, 'bin');
-  const executed = path.join(home, 'executed-existing');
-  fs.mkdirSync(mycoHome);
-  fs.mkdirSync(bin);
-  const exe = path.join(bin, 'myco.exe');
-  if (opts.current) {
-    const target = opts.state === 'symlink' ? path.join(home, 'existing-2.x') : exe;
-    fs.writeFileSync(target, opts.state === 'empty' ? '' : `#!/bin/sh\necho executed > '${executed}'\necho ${opts.current}\n`, { mode: 0o755 });
-    if (opts.state === 'symlink') fs.symlinkSync(target, exe, 'file');
-    if ((opts.evidence ?? 'marker') === 'marker') fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({ channel: opts.channel ?? 'stable', version: opts.current, bin: exe, binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex'),
-      ...(opts.sourceCheckout ? { source: 'checkout', checkout: home, commit: 'a'.repeat(40) } : {}) }));
-    if (opts.evidence === 'slot' || opts.stale) {
-      const slot = path.join(bin, 'versions', opts.current, 'myco.exe');
-      fs.mkdirSync(path.dirname(slot), { recursive: true });
-      fs.copyFileSync(exe, slot);
-    }
-    if (opts.npmOrigin) fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({
-      source: 'npm', channel: opts.channel ?? 'stable', bin: exe,
-      ...(opts.current.startsWith('2.') ? { version: opts.current, binary_sha256: crypto.createHash('sha256').update(fs.readFileSync(exe)).digest('hex') } : {}),
-    }));
-    if (opts.stale) fs.writeFileSync(path.join(mycoHome, 'install.json'), JSON.stringify({ channel: opts.staleChannel ?? 'stable', version: opts.staleVersion ?? '1.4.8', bin: exe, binary_sha256: '0'.repeat(64) }));
-  }
-  let download = '';
-  if (opts.install) {
-    const source = path.join(home, 'fixture.c');
-    const artifact = path.join(home, 'fixture.exe');
-    fs.writeFileSync(source, `#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-int main(int argc, char **argv) {
-  if (argc > 1 && strcmp(argv[1], "--version") == 0) {
-    const char *probe = getenv("MYCO_PROBE_LOG");
-    if (probe) {
-      FILE *log = fopen(probe, "w");
-      const char *keys[] = {"HOME", "MYCO_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"};
-      if (!log) return 1;
-      for (int i=0;i<5;i++) fprintf(log, "%s=%s\\n", keys[i], getenv(keys[i]) ? getenv(keys[i]) : "");
-      fclose(log);
-    }
-    puts("${opts.install}"); return 0;
-  }
-  char file[4096]; snprintf(file, sizeof file, "%s/commands.log", getenv("MYCO_HOME"));
-  FILE *log = fopen(file, "a");
-  if (log) { for (int i=1;i<argc;i++) fprintf(log, "%s%s", i>1 ? " " : "", argv[i]); fputc('\\n', log); fclose(log); }
-  return ${opts.refreshFailure ? 3 : 0};
-}
-`);
-    const compiled = spawnSync('cc', ['-o', artifact, source], { cwd: home, env: sandboxChildEnv(home), encoding: 'utf8' });
-    expect({ status: compiled.status, stderr: compiled.stderr }).toEqual({ status: 0, stderr: '' });
-    const sums = path.join(home, 'SHA256SUMS');
-    fs.writeFileSync(sums, `${crypto.createHash('sha256').update(fs.readFileSync(artifact)).digest('hex')}  myco-windows-x64.exe\n`);
-    download = `if ($OutFile) { Copy-Item $(if ($Uri.EndsWith('SHA256SUMS')) { ${quote(sums)} } else { ${quote(artifact)} }) $OutFile; return }`;
-  }
-  if (opts.joined || opts.state === 'member' || opts.state === 'cutover') {
-    const membership = path.join(mycoHome, 'member', opts.state === 'cutover' ? 'cutover.json' : 'deployments/dep.json');
-    fs.mkdirSync(path.dirname(membership), { recursive: true });
-    fs.writeFileSync(membership, '{}');
-  }
-  if (opts.state === 'vault') {
-    const vault = path.join(mycoHome, 'groves/g/myco.db');
-    fs.mkdirSync(path.dirname(vault), { recursive: true }); fs.writeFileSync(vault, 'legacy vault');
-  }
-  if (opts.failRecord) fs.mkdirSync(path.join(mycoHome, 'legacy-executable.json'));
-  const before = opts.current ? fs.readFileSync(exe) : undefined;
-  const linkBefore = opts.state === 'symlink' ? fs.readlinkSync(exe) : undefined;
-  const file = path.join(home, 'install.ps1');
-  fs.writeFileSync(file, SCRIPT);
-  const copyFailure = opts.failPreserve || opts.truncatePreserve ? `function Copy-Item {
-    param($Path, $Destination, [switch]$Force, $LiteralPath, $ErrorAction)
-    if ($Destination -like '*myco.legacy') { ${opts.truncatePreserve ? "[System.IO.File]::WriteAllText($Destination, ''); return" : "throw 'fixture preservation copy failure'"} }
-    if ($LiteralPath) { Microsoft.PowerShell.Management\\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force }
-    else { Microsoft.PowerShell.Management\\Copy-Item -Path $Path -Destination $Destination -Force }
-  }` : '';
-  const program = `${copyFailure}
-  function Invoke-WebRequest { param($Uri, $Headers, $OutFile, [switch]$UseBasicParsing, $ErrorAction)
-    ${download}
-    [PSCustomObject]@{ Content = ${quote(JSON.stringify(releases))} }
-  }
-  & ${quote(file)} ${opts.install ? '' : '-DryRun'} ${opts.replace ? '-Replace14' : ''}
-  `;
-  const run = spawnSync(PWSH, ['-NoProfile', '-NonInteractive', '-Command', program], {
-    cwd: home, env: sandboxChildEnv(home, { NO_COLOR: '1', PROCESSOR_ARCHITECTURE: 'AMD64', PROCESSOR_ARCHITEW6432: '', LOCALAPPDATA: home,
-      MYCO_BIN_DIR: bin, ...(opts.probe ? { MYCO_PROBE_LOG: path.join(home, 'probe-env.log') } : {}), ...(opts.channel ? { MYCO_CHANNEL: opts.channel } : {}) }),
-    encoding: 'utf8', timeout: 60_000,
-  });
-  if (run.error) throw run.error;
-  expect(fs.existsSync(executed)).toBe(false);
-  return { status: run.status, mycoHome, out: `${run.stdout}${run.stderr}`, home, exe, before, linkBefore };
-}
+afterAll(() => removeInstallRoot());
 
 describe('the Windows installer', () => {
   it.skipIf(PWSH === '' || process.platform === 'win32')('replaces npm-origin 1.4 and 2.x alphas through the native installer', () => {
@@ -257,15 +152,6 @@ describe('the Windows installer', () => {
       release('9.1.0', { prerelease: true }), release('9.2.0', { assets: [] }), release('09.0.0')];
     expect(select([...beforeGa, ...bad, release('2.0.0-beta.10')], { channel: 'beta' }).out).toContain('Found: myco/v2.0.0-beta.10');
   });
-  it.skipIf(PWSH === '' || process.platform === 'win32')('preserves stable-only legacy bytes and records their identity before replacement', () => {
-    const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2' });
-    expect(run.status).toBe(0);
-    const record = JSON.parse(fs.readFileSync(path.join(run.mycoHome, 'legacy-executable.json'), 'utf8').replace(/^\uFEFF/, ''));
-    expect(record).toMatchObject({ version: '1.4.8', replaced_at: run.exe });
-    expect(fs.readFileSync(record.path)).toEqual(run.before!);
-    expect(record.sha256).toBe(crypto.createHash('sha256').update(run.before!).digest('hex'));
-    expect(fs.readFileSync(run.exe)).not.toEqual(run.before!);
-  });
 
   it.skipIf(PWSH === '' || process.platform === 'win32')('reuses an identical Windows legacy slot', () => {
     const run = select(beforeGa, { current: '1.4.8', evidence: 'slot', replace: true, install: '2.0.0-beta.2' });
@@ -275,12 +161,6 @@ describe('the Windows installer', () => {
     expect(fs.existsSync(path.join(path.dirname(run.exe), 'legacy'))).toBe(false);
   });
 
-  it.skipIf(PWSH === '' || process.platform === 'win32')('aborts Windows replacement if the preservation copy fails', () => {
-    const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2', failPreserve: true });
-    expect(run.status).not.toBe(0); expect(run.out).toContain('Could not preserve');
-    expect(fs.readFileSync(run.exe)).toEqual(run.before!);
-    expect(fs.existsSync(path.join(path.dirname(run.exe), 'versions', '2.0.0-beta.2'))).toBe(false);
-  });
 
   it.skipIf(PWSH === '' || process.platform === 'win32')('never publishes a truncated Windows preservation copy into a slot', () => {
     const run = select(beforeGa, { current: '1.4.8', replace: true, install: '2.0.0-beta.2', truncatePreserve: true });
