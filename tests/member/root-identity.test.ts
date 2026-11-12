@@ -26,7 +26,6 @@ import { readSessionState } from '@myco/member/session-state.js';
 import { flushHeldCapture, restoreHeldReceiptsForHook } from '@myco/member/held.js';
 import { cacheMachineSettings } from '@myco/member/machine-settings.js';
 import { memberRig, TEST_MACHINE_ID, TEST_PROJECT_ID } from './helpers/server.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 
 
 function supportsCaseAliases(): boolean {
@@ -92,7 +91,6 @@ beforeEach(() => {
   process.env.MYCO_TEMPORARY_FOLDERS = path.join(base, 'excluded');
 });
 afterEach(() => {
-  resetMachineIdCache();
   fs.rmSync(base, { recursive: true, force: true });
   if (savedHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = savedHome;
   if (savedTemporary === undefined) delete process.env.MYCO_TEMPORARY_FOLDERS; else process.env.MYCO_TEMPORARY_FOLDERS = savedTemporary;
@@ -213,7 +211,6 @@ it.skipIf(!caseAliases)('a saved old-key dashboard choice reaches that Project t
   writeDeploymentMembership({ serverUrl, token: rig.token, machineId: TEST_MACHINE_ID, joinedAt: 1, updatedAt: 1 }, { mycoHome });
   recordDefaultDeployment(serverUrl, { mycoHome });
   fs.writeFileSync(path.join(mycoHome, 'machine_id'), TEST_MACHINE_ID, { mode: 0o600 });
-  resetMachineIdCache();
   rig.env.sqlite.run('INSERT INTO machine_claims (machine_id, member_id, claimed_at) VALUES (?, ?, ?)', [TEST_MACHINE_ID, `mem_${TEST_MACHINE_ID}`, Date.now()]);
   const oldKey = legacyRootKey(alias);
   writeAutoJoinState({ root: alias, rootKey: oldKey, label: 'Repo', serverUrl, outcome: 'outside_folders', attemptAt: 1 }, mycoHome);

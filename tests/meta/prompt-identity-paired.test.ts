@@ -13,7 +13,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import { deriveId } from '@myco/member/envelope.js';
@@ -23,7 +22,7 @@ import { runHook } from '../member/helpers/hooks.js';
 import { identityRig, RELEVANT_WORD, type IdentityRig } from './helpers/prompt-identity-rig.js';
 
 const savedHome = process.env.MYCO_HOME;
-afterEach(() => { process.env.MYCO_HOME = savedHome; resetMachineIdCache(); });
+afterEach(() => { process.env.MYCO_HOME = savedHome; });
 
 const FIRST = `How long does the ${RELEVANT_WORD} window keep records?`;
 const SECOND = `And does the ${RELEVANT_WORD} window cover plans too?`;

@@ -21,7 +21,6 @@ import { appendPending, flushPending } from '@myco/member/pending.js';
 import { reconcileSessionState, type SourceSessionState } from '@myco/member/session-reconcile.js';
 import { emptySessionState, readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import type { FetchLike } from '@myco/member/transport.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -33,11 +32,10 @@ const savedHome = process.env.MYCO_HOME;
 beforeEach(async () => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
 });
-afterEach(() => { process.env.MYCO_HOME = savedHome; resetMachineIdCache(); });
+afterEach(() => { process.env.MYCO_HOME = savedHome; });
 
 type Ask = { promptId?: string; promptScheme?: string; scopeReason?: string; identity?: number; at?: number; text: string };
 

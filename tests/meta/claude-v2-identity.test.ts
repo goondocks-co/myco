@@ -9,7 +9,6 @@ import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 import { afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { parserFor } from '@myco-server-worker/ingest/parsers/registry.js';
 import { claudeCodeParser } from '@myco-server-worker/ingest/parsers/claude-code.js';
 import { claudeRecordIdFor, promptOwners, type DerivedEvent, type ParsedLine, type ParserInput } from '@myco-server-worker/ingest/parsers/index.js';
@@ -47,7 +46,7 @@ const promptAt = (events: readonly DerivedEvent[], offset: number) => events.fil
 const repliesTo = (events: readonly DerivedEvent[]) => events.filter((e) => e.kind === 'response').map((e) => e.payload.promptId);
 
 const savedHome = process.env.MYCO_HOME;
-afterEach(() => { process.env.MYCO_HOME = savedHome; resetMachineIdCache(); });
+afterEach(() => { process.env.MYCO_HOME = savedHome; });
 
 describe('claude-v2 dispositions over every fixture record', () => {
   for (const [file, groups] of Object.entries(EXPECTED)) {

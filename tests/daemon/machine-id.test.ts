@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { computeMachineHash, resolveGitHubUser, getMachineId, resetMachineIdCache } from '@myco/machine-id.js';
+import { resolveGitHubUser, getMachineId } from '@myco/machine-id.js';
 
 /** Create an isolated MYCO_HOME so the test doesn't depend on or mutate `~/.myco`. */
 function makeTmpHome(): string {
@@ -19,19 +19,6 @@ function makeTmpHome(): string {
 }
 
 describe('machine-id', () => {
-  describe('computeMachineHash()', () => {
-    it('returns a hex string of expected length', () => {
-      const hash = computeMachineHash();
-      expect(hash).toMatch(/^[0-9a-f]{8}$/);
-    });
-
-    it('is deterministic — same result on repeated calls', () => {
-      const h1 = computeMachineHash();
-      const h2 = computeMachineHash();
-      expect(h1).toBe(h2);
-    });
-  });
-
   describe('resolveGitHubUser()', () => {
     // Drives the runner seam rather than invoking the real `gh` binary, which
     // is slow/absent/unauthenticated under CI and full-suite contention and
@@ -73,9 +60,6 @@ describe('machine-id', () => {
       tmpHome = makeTmpHome();
       priorEnv = process.env.MYCO_HOME;
       process.env.MYCO_HOME = tmpHome;
-      // Reset the module-level cache so each test gets a fresh read under the
-      // test-specific MYCO_HOME rather than the value cached by a prior test.
-      resetMachineIdCache();
     });
 
     afterEach(() => {

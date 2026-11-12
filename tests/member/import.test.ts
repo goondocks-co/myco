@@ -43,7 +43,6 @@ import { repositoryAt, rootKeyFor } from '@myco/member/auto-join.js';
 import { Client } from '@modelcontextprotocol/client';
 import { deploymentTransport, resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 import { memberTranscriptRoutingKey } from '@myco/member/transcript-routing.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 
 const line = (o: Record<string, unknown>): string => `${JSON.stringify(o)}\n`;
 
@@ -975,7 +974,6 @@ describe('worktree capture and import attribution (#1722)', () => {
     const r = await rig([root], 1, store(base, [cwd], 1));
     const heldHome = process.env.MYCO_HOME;
     process.env.MYCO_HOME = r.mycoHome;
-    resetMachineIdCache();
     try {
       const credential = resolveCredential('registry', { cwd, mycoHome: r.mycoHome });
       expect(credential?.projectId).toBe('proj_1');
@@ -994,7 +992,6 @@ describe('worktree capture and import attribution (#1722)', () => {
     } finally {
       r.restore();
       if (heldHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = heldHome;
-      resetMachineIdCache();
     }
   });
 

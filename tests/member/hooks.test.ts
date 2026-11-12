@@ -18,7 +18,6 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { evaluateUserPromptRules, resolveSubagentThread } from '@myco/hooks/capture-rules.js';
 import { deriveId, mintId, planKeyForPromptTag, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
@@ -49,14 +48,12 @@ const savedHome = process.env.MYCO_HOME;
 beforeEach(async () => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
   fetchSpy = recordingFetch(rig.fetch);
 });
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 /** 1.4 wire paths no hook may dial; a path under one of these is the same violation. */

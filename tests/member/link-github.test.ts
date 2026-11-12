@@ -4,7 +4,6 @@
  * the browser opener runs only on request.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { LINK_REQUIRES_ADMIN_HINT, linkUrl, runLinkGithub } from '@myco/cli/member.js';
 import { LINK_REQUIRES_ADMIN } from '@myco-server-worker/auth/members.js';
 import { MEMBER_TOKEN_REFRESH_WINDOW_MS } from '@myco/member/constants.js';
@@ -27,13 +26,11 @@ beforeEach(() => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
   delete process.env[ENV_MEMBER_TOKEN];
-  resetMachineIdCache();
   root = resolveMemberProjectRoot(process.cwd());
 });
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
   if (savedToken === undefined) delete process.env[ENV_MEMBER_TOKEN]; else process.env[ENV_MEMBER_TOKEN] = savedToken;
-  resetMachineIdCache();
 });
 
 const answering = (body: unknown, status = 200): FetchLike => async () => Response.json(body, { status });

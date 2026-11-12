@@ -119,16 +119,17 @@ export function jobHoldsChildren(flags: number): boolean {
 }
 
 /**
- * Read the job this process was started in, before it spawns anything (Windows only; a no-op elsewhere, and once).
+ * Record the job this process was started in, before it spawns anything.
+ * An inherited holds or free value is that job. Otherwise the job is queried once on Windows and recorded free elsewhere.
  * What a detached start from this process can do depends on it (`spawnDetached`).
  */
 export function recordStartingJob(env: NodeJS.ProcessEnv = process.env): void {
-  if (startingJobHolds !== null) return;
   const inherited = env[STARTING_JOB_ENV];
   if (inherited === 'holds' || inherited === 'free') {
     startingJobHolds = inherited === 'holds';
     return;
   }
+  if (startingJobHolds !== null) return;
   if (process.platform !== 'win32') {
     startingJobHolds = false;
     return;
@@ -149,19 +150,9 @@ export function startedContained(): boolean {
   return startingJobHolds === true;
 }
 
-/** Whether the job this process began in has been read: a hook reads it before anything else it does. */
-export function startingJobRecorded(): boolean {
-  return startingJobHolds !== null;
-}
-
 /** The variable a process this one starts in its own job reads its starting job from; none until it is recorded. */
 export function startingJobEnv(): Record<string, string> {
   return startingJobHolds === null ? {} : { [STARTING_JOB_ENV]: startingJobHolds ? 'holds' : 'free' };
-}
-
-/** Forget the job this process began in: for a test that records it again. */
-export function resetStartingJob(): void {
-  startingJobHolds = null;
 }
 
 const winSpawnDetached: DetachedSpawn = (command, args, opts) => {

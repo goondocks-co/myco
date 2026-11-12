@@ -18,7 +18,6 @@ import { runProvision } from '@myco/cli/member.js';
 import { MEMBER_SETTINGS_ISSUE, MEMBER_TIER_LEAVES } from '@myco/cli/member-config.js';
 import type { MemberVerb } from '@myco/cli/member-verbs.js';
 import { describeWorkerService } from '@myco/cli/worker-service.js';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { REJOIN_HINT } from '@myco/member/delivery-notice.js';
 import { readRegistryEntry, registryEntryPath } from '@myco/member/registry.js';
 import { unmemberedDir } from '@myco/member/no-membership.js';
@@ -48,7 +47,6 @@ function freshCheckout(): string {
 beforeEach(() => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   checkout = freshCheckout();
   userHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-user-')));
   process.env.HOME = userHome;
@@ -56,7 +54,6 @@ beforeEach(() => {
 afterEach(() => {
   process.env.MYCO_HOME = savedHome;
   if (savedUserHome === undefined) delete process.env.HOME; else process.env.HOME = savedUserHome;
-  resetMachineIdCache();
 });
 
 function legacyArtifacts(): string[] {

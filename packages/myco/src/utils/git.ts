@@ -17,9 +17,19 @@
 import { normalizeRemote } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
-let cachedGitBinary: string | undefined;
+let cachedGitBinary: { key: string; binary: string } | undefined;
+
+function gitBinaryKey(): string {
+  return [
+    process.platform,
+    process.env.PATH ?? '',
+    process.env.ProgramFiles ?? '',
+    process.env['ProgramFiles(x86)'] ?? '',
+    process.env.LOCALAPPDATA ?? '',
+  ].join('\0');
+}
 
 /** Injectable seams so the platform-specific resolution order is unit-testable
  *  on any host without mocking the global fs/env. */
@@ -43,7 +53,7 @@ function defaultGitDeps(): GitResolveDeps {
   };
 }
 
-/** Resolution logic — exported for tests; production uses the cached wrapper. */
+/** Where `git` is for the given host facts. A caller that inspects another host passes those facts. */
 export function findGitBinary(deps: GitResolveDeps = defaultGitDeps()): string {
   const isWin = deps.platform === 'win32';
   const exeName = isWin ? 'git.exe' : 'git';
@@ -78,15 +88,13 @@ export function findGitBinary(deps: GitResolveDeps = defaultGitDeps()): string {
   return exeName;
 }
 
-/** Absolute path to a usable `git`, or the bare name if none is found. Cached. */
+/** Absolute path to a usable `git` for this process, or the bare name if none is found. */
 export function resolveGitBinary(): string {
-  if (cachedGitBinary === undefined) cachedGitBinary = findGitBinary();
-  return cachedGitBinary;
-}
-
-/** Reset the cache. Tests only. */
-export function __resetGitBinaryCacheForTest(): void {
-  cachedGitBinary = undefined;
+  const key = gitBinaryKey();
+  if (cachedGitBinary?.key === key) return cachedGitBinary.binary;
+  const binary = findGitBinary();
+  cachedGitBinary = { key, binary };
+  return binary;
 }
 
 export interface GitQueryBudget {
@@ -111,7 +119,7 @@ export function runGit(args: string[], cwd: string, budget: GitQueryBudget = {})
 }
 
 /** How many times a git query that always answers something is asked before an empty answer counts as a failure. */
-export const GIT_ANSWER_ATTEMPTS = 3;
+const GIT_ANSWER_ATTEMPTS = 3;
 
 /**
  * Run a git query whose success always prints something — a path, a ref, a
@@ -135,19 +143,7 @@ export function runGitAnswer(args: string[], cwd: string, run: (args: string[], 
   throw new Error(`git ${args.join(' ')} answered nothing in ${cwd} after ${GIT_ANSWER_ATTEMPTS} attempts`);
 }
 
-/**
- * Run `git <args>` in `cwd` for its exit status alone, with no output read:
- * the status survives what drops a child's stdout (see `runGitAnswer`). Null
- * when git could not be run or ended on a signal.
- */
-export function gitExitStatus(args: string[], cwd: string, budget: GitQueryBudget = {}): number | null {
-  const timeout = gitTimeout(budget);
-  if (timeout !== undefined && timeout <= 0) return null;
-  const result = spawnSync(resolveGitBinary(), args, { cwd, stdio: 'ignore', timeout, killSignal: 'SIGKILL' });
-  return result.error === undefined ? result.status : null;
-}
-
-/** `gitExitStatus` without blocking: several can be asked at once. */
+/** The exit status of `git <args>` in `cwd`, without blocking and without reading output. Null when git could not be run, the budget was already spent, or the process ended on a signal. */
 export function gitExitStatusAsync(args: string[], cwd: string, budget: GitQueryBudget = {}): Promise<number | null> {
   return new Promise((resolve) => {
     const timeout = gitTimeout(budget);

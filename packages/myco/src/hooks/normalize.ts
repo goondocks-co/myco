@@ -42,24 +42,23 @@ interface HookSymbiont {
   promptKeyField?: string;
 }
 
-/** Cached identity for the detected agent — resolved once per process. */
-let cachedManifest: HookSymbiont | null | undefined;
-
-export { readSymbiontFlag } from './symbiont-flag.js';
+/** The manifest last resolved for one symbiont flag and one config entry. */
+let cachedManifest: { name: string | undefined; entry: HookConfigEntry | undefined; manifest: HookSymbiont | null } | undefined;
 
 /**
  * The symbiont driving this hook invocation: the one its command names (`--symbiont <name>`), which the installer
  * renders into every hook command it writes. Nothing else names one: a command that names none, or a harness no
  * manifest knows, is no symbiont's, and the hook refuses it (`member/capture.ts`).
  *
- * Cached per process: each hook invocation is a short-lived process.
+ * Resolved again when the command names a different symbiont or its config entry is a different object.
  */
 function detectManifest(): HookSymbiont | null {
-  if (cachedManifest !== undefined) return cachedManifest;
   const name = readSymbiontFlag(process.argv);
   const entry = name === undefined ? undefined : HOOK_CONFIG[name];
-  cachedManifest = entry === undefined ? null : { name: name!, hookFields: entry.hookFields, promptKeyField: entry.promptIdentity.hookKey };
-  return cachedManifest;
+  if (cachedManifest && cachedManifest.name === name && cachedManifest.entry === entry) return cachedManifest.manifest;
+  const manifest = entry === undefined ? null : { name: name!, hookFields: entry.hookFields, promptKeyField: entry.promptIdentity.hookKey };
+  cachedManifest = { name, entry, manifest };
+  return manifest;
 }
 
 /**
@@ -123,9 +122,4 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
     ...(promptKey === undefined ? {} : { promptKey }),
     raw: input,
   };
-}
-
-/** Reset cached manifest — exposed for testing only. */
-export function _resetManifestCache(): void {
-  cachedManifest = undefined;
 }

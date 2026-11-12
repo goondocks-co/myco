@@ -16,7 +16,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { resetMachineIdCache } from '@myco/machine-id.js';
 import { cacheDeploymentFeatures, readDeploymentFeatures, readProjectContext, updateProjectContext } from '@myco/member/context-cache.js';
 import { projectLine } from '@goondocks/myco-shared/recall';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
@@ -44,7 +43,6 @@ beforeEach(async () => {
   mycoHome = tempMycoHome();
   scratch.push(mycoHome);
   process.env.MYCO_HOME = mycoHome;
-  resetMachineIdCache();
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
 });
@@ -64,7 +62,6 @@ const scratch: string[] = [];
 afterEach(() => {
   for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   process.env.MYCO_HOME = savedHome;
-  resetMachineIdCache();
 });
 
 const transcript = (id: string): string => {
@@ -240,7 +237,6 @@ describe('a session start', () => {
     const fresh = tempMycoHome();
     scratch.push(fresh);
     process.env.MYCO_HOME = fresh;
-    resetMachineIdCache();
     const issued = await issueEnrollmentAuthority(rig.env.db, Date.now(), { issuer: { kind: 'operator' }, role: 'member', projectId: 'proj_1' });
     process.env[ENV_JOIN_CODE] = `https://s/join#${issued.key}`;
     try {

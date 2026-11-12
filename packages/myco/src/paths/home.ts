@@ -10,7 +10,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readTrustedPin, reportPinRefusal, resetPinRefusalReports, type PinRefusalReporter, type PinTrustOptions } from './pin-trust.js';
+import { readTrustedPin, reportPinRefusal, type PinRefusalReporter, type PinTrustOptions } from './pin-trust.js';
 
 export const MYCO_HOME_ENV = 'MYCO_HOME';
 
@@ -159,11 +159,6 @@ export function readHomePin(pinPath: string, options: MycoHomeOptions = {}): str
 
 /** One stderr line per launch, shared with program-pin resolution. */
 const reportPinRefusalOnce = reportPinRefusal;
-
-/** Test seam: forget the refusal reported by this process. */
-export function _resetPinRefusalReports(): void {
-  resetPinRefusalReports();
-}
 
 /**
  * Resolve the canonical path for the cached machine identity. One file

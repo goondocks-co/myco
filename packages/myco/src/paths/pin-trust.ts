@@ -96,12 +96,9 @@ export function readTrustedPin(
 }
 
 const PIN_REFUSAL_REPORTED_ENV = 'MYCO_PIN_REFUSAL_REPORTED';
-let refusalReported = false;
 
-export function resetPinRefusalReports(): void {
-  refusalReported = false;
-  delete process.env[PIN_REFUSAL_REPORTED_ENV];
-}
+/** One refusal line per process, even after the inherited marker changes. */
+let refusalReported = false;
 
 export function reportPinRefusal(pinPath: string, reason: string): void {
   if (refusalReported || process.env[PIN_REFUSAL_REPORTED_ENV] === '1') return;
