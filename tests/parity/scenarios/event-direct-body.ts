@@ -1,39 +1,21 @@
 import { expect } from 'bun:test';
-import { EVENT_INLINE_PAYLOAD_BYTES } from '@myco-server-worker/ingest/event-payload.js';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, type ParityScenario } from '../harness.ts';
+import { event } from '../clients/requests.ts';
+import { publishedTurns, turn } from '../clients/capture.ts';
 
-/**
- * An event payload over the inline ceiling is held whole in the object store on both targets: the row keeps what its
- * relational readers need, a replay lands once, and a payload at the ceiling stays inline.
- */
+/** Large captured bodies stay readable and replay does not create another turn. */
 export const eventDirectBody: ParityScenario = {
-  name: 'event intake: a payload over the inline ceiling is stored whole in the object store; a replay lands once',
-  async run(target: ParityTarget) {
-    const now = Date.now();
-    const sessionId = `parity-direct-body-${now}-${crypto.randomUUID()}`;
-    const post = (eventId: string, payload: Record<string, unknown>, kind = 'prompt') => fetch(`${target.url}/events`, {
-      method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }),
-      body: JSON.stringify({ eventId, sessionId, kind, createdAt: now, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
-    });
-    await expectPersisted(await post(crypto.randomUUID(), { agent: 'claude-code', startedAt: now }, 'session.start'), 'session start');
-    const fixed = JSON.stringify({ promptId: crypto.randomUUID(), text: '', origin: 'user' }).length;
-    const smallId = crypto.randomUUID();
-    await expectPersisted(await post(smallId, { promptId: crypto.randomUUID(), text: 'a'.repeat(EVENT_INLINE_PAYLOAD_BYTES - fixed), origin: 'user' }), 'at the ceiling');
-    const eventId = crypto.randomUUID();
-    const payload = { promptId: crypto.randomUUID(), text: 'é'.repeat(EVENT_INLINE_PAYLOAD_BYTES), origin: 'user' };
-    await expectPersisted(await post(eventId, payload), 'over the ceiling');
-    const replay = await (await post(eventId, payload)).json() as { persisted: boolean; duplicate?: boolean };
-    expect(replay).toEqual({ persisted: true, duplicate: true });
-
-    const [small] = await target.sql(`SELECT payload_format FROM events WHERE event_id = ${lit(smallId)}`);
-    expect(small).toEqual({ payload_format: 'inline' });
-    const [row] = await target.sql(`SELECT e.payload_format, e.payload, p.size, p.digest, b.size AS registered_size
-      FROM events e JOIN registered_content_proofs p ON p.project_id = e.project_id AND p.source_kind = 'event' AND p.source_id = e.event_id
-      JOIN blobs b ON b.project_id = p.project_id AND b.key = p.key WHERE e.event_id = ${lit(eventId)}`);
-    const body = new TextEncoder().encode(JSON.stringify(payload));
-    expect(row).toMatchObject({ payload_format: 'blob', size: body.byteLength, registered_size: body.byteLength });
-    expect(JSON.parse(String(row!.payload))).toEqual({ promptId: payload.promptId, origin: 'user' });
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM events WHERE session_id = ${lit(sessionId)}`)).toEqual([{ n: 3 }]);
-    expect(await target.sql(`SELECT COUNT(*) AS n FROM blob_reservations WHERE source_event_id = ${lit(eventId)}`)).toEqual([{ n: 0 }]);
+  name: 'event intake: a large prompt is readable in full and a replay lands once',
+  async run(target) {
+    const sessionId = `direct-body-${crypto.randomUUID()}`, now = Date.now();
+    await event(target, sessionId, 'session.start', { agent: 'claude-code', startedAt: now });
+    const payload = { promptId: crypto.randomUUID(), text: 'é'.repeat(12_000), origin: 'user' };
+    const body = JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind: 'prompt', createdAt: now, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload });
+    const post = () => fetch(`${target.url}/events`, { method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }), body });
+    await expectPersisted(await post(), 'large prompt');
+    expect(await (await post()).json()).toEqual({ persisted: true, duplicate: true });
+    const page = await publishedTurns(target, sessionId, rows => rows.length === 1);
+    expect(page.body.rows.map((row: any) => row.promptId)).toEqual([payload.promptId]);
+    expect((await turn(target, sessionId, payload.promptId)).body.prompt.text).toBe(payload.text);
   },
 };

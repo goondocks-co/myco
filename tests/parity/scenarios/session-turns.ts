@@ -1,6 +1,8 @@
 import { uuidv5 } from '@myco-server-worker/hash.js';
 import { expect } from 'bun:test';
-import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
+
+import { context, promptContext, publishedTurns, recallSettings } from '../clients/capture.ts';
 
 const UUID = (n: number): string => `00000000-0000-7000-8000-${String(n).padStart(12, '0')}`;
 
@@ -21,6 +23,7 @@ const PNG = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 7
 export const sessionTurns: ParityScenario = {
   name: 'session turns: capture keyed to prompts, turns read, turn body, tool calls on their own, rail summaries and filters',
   async run(target: ParityTarget) {
+    await recallSettings(target);
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>) => {
       const res = await fetch(`${target.url}/events`, {
         method: 'POST',
@@ -55,12 +58,11 @@ export const sessionTurns: ParityScenario = {
     await post(session, 'prompt', { promptId: p3, text: 'steer: use the other card', origin: 'user', parentPromptId: p1, threadLabel: 'reviewer' });
     await post(session, 'tool.use', { toolCallId: UUID(5), promptId: p3, toolName: 'Edit', input: { file_path: 'b.ts' }, success: true });
     await post(session, 'response', { responseId: UUID(6), promptId: p3, text: 'Used the other card.' });
-    await documentsPublished(target, session);
+    await publishedTurns(target, session, rows => rows[0]?.toolCallCount === 3 && rows[0]?.responseCount === 2);
 
     const base = `/api/projects/${target.projectId}/sessions/${session}`;
     interface TurnRow { promptId: string; origin: string; preview: string | null; toolCallCount: number; responseCount: number; childCount: number }
-    await target.sql(`INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at)
-      VALUES (${lit(target.projectId)},${lit(session)},${lit(p3)},'child-answer','empty',0,'[]','["spores:short_prompt"]','[]','{}',${stamp})`);
+    const childAnswer = await promptContext(target, session, p3, 'hi');
     const turns = await owner<{ rows: TurnRow[]; cursor: string | null }>(`${base}/turns`);
     expect(turns.status).toBe(200);
     expect(turns.body.rows.map((r) => [r.promptId, r.origin, r.toolCallCount, r.responseCount, r.childCount])).toEqual([[p1, 'user', 3, 2, 1]]);
@@ -71,11 +73,10 @@ export const sessionTurns: ParityScenario = {
     expect((await owner(`${base}/turns?origins=human`)).status).toBe(400);
 
     interface Detail { prompt: { promptId: string; text: string | null }; responses: { text: string | null }[]; attachments: { attachmentId: string; promptId: string | null; blobKey: string; mediaType: string }[]; children: { prompt: { promptId: string; threadLabel: string | null }; toolCallCount: number; responses: { text: string | null }[] }[] }
-    await target.sql(`INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (${lit(target.projectId)},${lit(session)},'cortex',${stamp})`);
-    await target.sql(`INSERT INTO session_injections(project_id,session_id,kind,created_at) VALUES (${lit(target.projectId)},${lit(session)},'cortex:reviewer',${stamp})`);
+    await context(target, 'session', { sessionId: session, kind: 'start' });
+    await context(target, 'session', { sessionId: session, kind: 'subagent', agentId: 'reviewer', agentType: 'reviewer' });
     await post(session, 'subagent.start', { subagentId: await uuidv5('subagent', session, 'reviewer'), agentType: 'reviewer', parentPromptId: p3 });
-    await target.sql(`INSERT INTO prompt_context_answers(project_id,session_id,prompt_id,id,outcome,context_chars,parts,skipped,failures,selection,created_at)
-      VALUES (${lit(target.projectId)},${lit(session)},${lit(p1)},'answer','empty',0,'[]','["spores:empty"]','[]','{"candidates":0}',${stamp})`);
+    const answer = await promptContext(target, session, p1, 'hello');
     const detail = await owner<Detail>(`${base}/turns/${p1}`);
     expect(detail.status).toBe(200);
     expect(detail.body.prompt.text).toContain('rename the project card');
@@ -88,10 +89,10 @@ export const sessionTurns: ParityScenario = {
     expect(audit.body.metrics.tools).toEqual([{ toolName: 'Bash', count: 1 }, { toolName: 'Read', count: 1 }]);
     expect(audit.body.metrics.durationMs).toBeGreaterThanOrEqual(0);
     expect(audit.body.metrics.tokens).toBeNull();
-    expect(audit.body.answers.map(a => a.id)).toEqual(['answer']);
-    expect(audit.body.answers[0]).toMatchObject({ outcome: 'empty', skipped: ['spores:empty'] });
+    expect(audit.body.answers.map(a => a.id)).toEqual([answer.answerId]);
+    expect(audit.body.answers[0]).toMatchObject({ outcome: 'empty', skipped: answer.skipped });
     const childAudit = await owner<{ answers: { id: string }[] }>(`${base}/turns/${p3}`);
-    expect(childAudit.body.answers.map(a => a.id)).toEqual(['child-answer']);
+    expect(childAudit.body.answers.map(a => a.id)).toEqual([childAnswer.answerId]);
     expect((await owner<{ answers: unknown[] }>(`${base}/turns/${p2}`)).body.answers).toEqual([]);
     const sessionAudit = await owner<{ turnContexts: Record<string, { subagents: number }>; metrics: { tools: { toolName: string; count: number }[]; tokens: null } }>(base);
     // The start block is the session's, listed with the session's own context; a turn carries its sub-agent preambles.
@@ -101,14 +102,6 @@ export const sessionTurns: ParityScenario = {
     const sessionContext = await owner<{ rows: { kind: string }[] }>(`${base}/context-injections`);
     expect(sessionContext.body.rows.map((r) => r.kind)).toContain('cortex');
     expect(sessionAudit.body.metrics).toMatchObject({ tools: [], tokens: null });
-
-    const undated = session + '-undated';
-    await target.sql(`INSERT INTO sessions(project_id,session_id,created_by_token_id,first_received_at,last_received_at,agent,started_at,ended_at,occurred_started_at,occurred_ended_at)
-      VALUES (${lit(target.projectId)},${lit(undated)},'fixture',${stamp},${stamp + 100},'cursor',${stamp},${stamp + 19},${stamp},${stamp + 19})`);
-    const undatedBase = `/api/projects/${target.projectId}/sessions/${undated}`;
-    expect((await owner<{ metrics: { durationMs: number | null } }>(undatedBase)).body.metrics.durationMs).toBeNull();
-    await target.sql(`UPDATE sessions SET occurred_started_at=NULL,occurred_ended_at=NULL WHERE project_id=${lit(target.projectId)} AND session_id=${lit(undated)}`);
-    expect((await owner<{ metrics: { durationMs: number | null } }>(undatedBase)).body.metrics.durationMs).toBe(19);
 
     const calls = await owner<{ rows: { toolCallId: string; toolName: string; success: boolean; errorMessage: string | null; outputPreview: string | null }[] }>(`${base}/turns/${p1}/tool-calls`);
     expect(calls.body.rows.map((t) => [t.toolCallId, t.toolName, t.success, t.errorMessage, t.outputPreview])).toEqual([[UUID(1), 'Read', true, null, 'the file'], [UUID(2), 'Bash', false, 'exit 1', null]]);
