@@ -1,9 +1,9 @@
 import { expect } from 'bun:test';
-import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.ts';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
-import { memberHeadersFor, SESSION_SECRET, type ParityTarget } from '../harness.ts';
+import { memberHeadersFor, type ParityTarget } from '../harness.ts';
+import { person } from './identity.ts';
 import { event, owner, runTool, untilPublished, type ClaimedRun, type RouteTarget } from './requests.ts';
 
 export async function worker(target: RouteTarget, path: string, body: unknown): Promise<any> {
@@ -59,16 +59,9 @@ export async function askTitle(target: RouteTarget, sessionId: string): Promise<
 export async function report(target: RouteTarget, run: ClaimedRun, action: string, summary: string): Promise<void> {
   await runTool(target, run, 'myco_run', { op: 'report', action, summary, audit: RUN_AUDIT });
 }
-export async function linkedMember(target: ParityTarget, sub: string): Promise<{ memberId: string; token: string; headers: Record<string, string> }> {
-  const invite = await owner(target, '/api/enrollment', { method: 'POST', body: JSON.stringify({ role: 'member' }) });
-  expect(invite.status).toBe(201);
-  const joinedResponse = await fetch(`${target.url}/members/join`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4' }, body: JSON.stringify({ key: invite.body.key, machineId: `member-${crypto.randomUUID()}` }) });
-  expect(joinedResponse.status).toBe(200); const joined = await joinedResponse.json() as { joined: boolean; memberId: string; token: string }; expect(joined.joined).toBe(true);
-  const cookie = `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: 'member', iat: Date.now(), exp: Date.now() + 3_600_000 })}`;
-  const headers = { cookie, 'cf-connecting-ip': '1.2.3.4', origin: target.url, 'content-type': 'application/json' };
-  const link = await owner(target, `/api/members/${joined.memberId}/link-github`, { method: 'POST' }); expect(link.status).toBe(201);
-  const confirmed = await fetch(`${target.url}/auth/link`, { method: 'POST', headers, body: JSON.stringify({ key: link.body.key, confirm: true }) }); expect(confirmed.status).toBe(200);
-  return { ...joined, headers };
+export async function linkedMember(target: ParityTarget, sub: string): Promise<{ memberId: string; token: string; machineId: string; headers: Record<string, string> }> {
+  const joined = await person(target, sub);
+  return { memberId: joined.id, token: joined.token, machineId: joined.machineId, headers: { ...joined.session, origin: target.url, 'content-type': 'application/json' } };
 }
 export function asMember(target: RouteTarget, token: string): RouteTarget {
   return { ...target, memberHeaders: (extra = {}) => memberHeadersFor(token, target.projectId, extra) };

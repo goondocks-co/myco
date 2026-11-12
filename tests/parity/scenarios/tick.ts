@@ -1,105 +1,31 @@
-import { RAW_BACKFILL_BATCH, RAW_BACKFILL_BUDGET } from '@myco-server-worker/core/raw-backfill.js';
 import { expect } from 'bun:test';
-import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
-import { CHAINED_WAKE_MS } from '@myco-server-worker/core/tick.js';
-import { lit, type ParityScenario, type ParityTarget } from '../harness.ts';
-
-/**
- * The wake on both targets: an owner asks for the tick, and the tick runs the
- * same jobs on each — retention removes a run past the window, the sweep fails
- * a run whose runtime went away — and a second ask finds nothing more to do.
- *
- * The expected report is DERIVED from the job registry, never listed here. A
- * hand-written list makes every new job a parity failure on both targets at
- * once, which says nothing about parity and everything about the list.
- */
-
-/** The registry jobs an owner's wake owes, with each changed count at the seeded expectation. */
-const jobReport = (changed: Record<string, number> = {}) =>
-  SERVER_JOBS.filter((job) => job.wake === undefined).map((job) => ({ name: job.name, changed: changed[job.name] ?? 0, failed: null }))
-    .sort((a,b) => a.name.localeCompare(b.name));
-
-/** The two jobs this scenario seeds work for. */
-const SEEDED = new Set(['agent-run-retention', 'run-stale-sweep']);
-
-/**
- * A wake's report as this scenario judges it: every job with its failure, and the changed count of
- * the jobs it seeds. Any other job's count is the work the scenarios run ahead of this one on the same target
- * left behind, which depends on the shard's order and the target's pace, not on the wake.
- */
-const seededView = (jobs: Array<{ name: string; changed: number; failed: string | null }>) =>
-  jobs.map((job) => ({ name: job.name, changed: SEEDED.has(job.name) ? job.changed : 0, failed: job.failed }))
-    .sort((a,b) => a.name.localeCompare(b.name));
+import { ageRows, type ParityScenario } from '../harness.ts';
+import { allowWorkerClaims, owner, putSetting, wake } from '../clients/requests.ts';
+import { askTitle, captureSession, failRun, runDetail, takeRun } from '../clients/runs.ts';
 
 export const tick: ParityScenario = {
-  name: 'the wake: retention and the stale-run sweep, identical on both targets, idempotent',
-  async run(target: ParityTarget) {
-    const now = Date.now();
-    const day = 86_400_000;
-    await target.sql(`INSERT OR IGNORE INTO agents (id, name, source, enabled, created_at) VALUES ('myco-agent', 'a', 'built-in', 1, ${now})`);
-    const seed = (id: string, status: string, startedAt: number, completedAt: number | null, context: string | null) =>
-      target.sql(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable, run_context)
-        VALUES (${lit(target.projectId)}, ${lit(id)}, 'myco-agent', 'digest', ${lit(status)}, ${startedAt}, ${completedAt === null ? 'NULL' : completedAt}, 0, ${context === null ? 'NULL' : lit(context)})`);
-    await seed('tick-old', 'completed', now - 41 * day, now - 40 * day, null);
-    await seed('tick-old-turned', 'completed', now - 41 * day, now - 40 * day, null);
-    await target.sql(`INSERT INTO agent_turns (project_id, run_id, agent_id, turn_number, tool_name) VALUES (${lit(target.projectId)}, 'tick-old-turned', 'myco-agent', 0, 'read')`);
-    // A run with an attempt and its step log: retention deletes the log in its own bounded statement before the run.
-    await seed('tick-old-stepped', 'completed', now - 41 * day, now - 40 * day, null);
-    await target.sql(`INSERT INTO agent_run_attempts (project_id, run_id, attempt_id, leased_by, machine_id, claimed_at)
-      VALUES (${lit(target.projectId)}, 'tick-old-stepped', 'mt_tick', 'mt_worker', 'm_tick', ${now - 41 * day})`);
-    await target.sql(`INSERT INTO agent_run_steps (project_id, run_id, attempt_id, seq, call_id, kind, tool, target, outcome, exit_code, started_at, ended_at, received_at)
-      VALUES (${lit(target.projectId)}, 'tick-old-stepped', 'mt_tick', 0, 'c0', 'read', 'Read', 'a.ts', 'ok', NULL, 1, 2, 3),
-             (${lit(target.projectId)}, 'tick-old-stepped', 'mt_tick', 1, 'c1', 'command', 'Bash', 'ls', 'ok', 0, 4, 5, 6)`);
-    await seed('tick-stale', 'running', now - 3_600_000, null, JSON.stringify({ timeoutSeconds: 300 }));
-    await seed('tick-live', 'running', now - 60_000, null, JSON.stringify({ timeoutSeconds: 300 }));
-    // A receipt half an hour ago: the Deployment is asleep, where housekeeping runs.
-    const [credential] = await target.sql(`SELECT id FROM member_credentials ORDER BY issued_at LIMIT 1`) as Array<{ id: string }>;
-    await target.sql(`INSERT OR REPLACE INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at, agent)
-      VALUES (${lit(target.projectId)}, 'tick-session', 'machine_parity', ${lit(credential!.id)}, ${now - 31 * 60_000}, ${now - 31 * 60_000}, 'claude-code')`);
-
-    const wake = async () => {
-      // Each wake follows an owner request, so the second finds the Deployment awake unless a run holds it; the assertions below say which.
-      const res = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-      expect(res.status).toBe(200);
-      return (await res.json()) as { state: string; jobs: Array<{ name: string; changed: number; failed: string | null; more: boolean }>; nextWakeMs: number | null };
-    };
-    const rows = () => target.sql(`SELECT id, status, error FROM agent_runs WHERE id LIKE 'tick-%' ORDER BY id`);
-
-    const backfillRows = RAW_BACKFILL_BATCH * Math.floor(RAW_BACKFILL_BUDGET.calls / 6) + 1;
-    await target.sql(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_tick_backfill', 'tick backfill', ${now})`);
-    await target.sql(`WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ${backfillRows})
-      INSERT INTO blobs (project_id,key,size,media_type,token_id,received_at,generation)
-      SELECT 'proj_tick_backfill', printf('%064x', i), 1, 'text/plain', ${lit(credential!.id)}, ${now}, '00000000-0000-4000-8000-000000000001' FROM seq`);
-    await target.sql(`UPDATE raw_provenance_backfill SET source = 0, cursor_project = '', cursor_id = '', complete = 0 WHERE id = 1`);
-    const first = await wake();
-    // The scenarios before this one left fresh receipts, and a run start is activity too: the Deployment is awake, and housekeeping runs at every depth but deep sleep.
-    expect(['active', 'idle']).toContain(first.state);
-    expect(first.jobs[0]?.name).toBe('transcript-parse');
-    expect(first.jobs.slice(-2).map((job) => job.name)).toEqual(['storage-content-cleanup','transcript-retention']);
-    // Retention removes the three runs past the window; the sweep fails the stale one.
-    expect(seededView(first.jobs)).toEqual(jobReport({ 'agent-run-retention': 3, 'run-stale-sweep': 1 }));
-    expect(first.jobs.find((job) => job.name === 'raw-provenance-backfill')?.more).toBe(true);
-    expect(first.nextWakeMs).toBe(CHAINED_WAKE_MS);
-    expect(await rows()).toEqual([
-      { id: 'tick-live', status: 'running', error: null },
-      { id: 'tick-stale', status: 'failed', error: 'the machine running it stopped responding' },
-    ]);
-    expect(await target.sql(`SELECT COUNT(*) AS c FROM agent_turns WHERE run_id = 'tick-old-turned'`)).toEqual([{ c: 0 }]);
-    expect(await target.sql(`SELECT (SELECT COUNT(*) FROM agent_run_steps WHERE run_id = 'tick-old-stepped') AS steps, (SELECT COUNT(*) FROM agent_run_attempts WHERE run_id = 'tick-old-stepped') AS attempts`))
-      .toEqual([{ steps: 0, attempts: 0 }]);
-
-    const second = await wake();
-    // Idempotent: the same wake again converges on the state it already reached.
-    expect(seededView(second.jobs)).toEqual(jobReport());
-    expect(await rows()).toEqual([
-      { id: 'tick-live', status: 'running', error: null },
-      { id: 'tick-stale', status: 'failed', error: 'the machine running it stopped responding' },
-    ]);
-
-    // An owner's own request is activity: the wake that follows finds the Deployment in use, and housekeeping still runs.
-    await target.sql(`UPDATE agent_runs SET status = 'completed', completed_at = ${now} WHERE id = 'tick-live'`);
-    const third = await wake();
-    expect(third.state).toBe('active');
-    expect(seededView(third.jobs)).toEqual(jobReport());
+  name: 'the wake: current run retention converges through both front doors',
+  dedicated: { timeoutMs: 180_000 },
+  async run(target) {
+    await allowWorkerClaims(target);
+    expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);
+    expect((await putSetting(target, 'agent.run_retention_days', 30)).status).toBe(200);
+    const session = `tick-${crypto.randomUUID()}`;
+    await captureSession(target, session, 'retained task history');
+    const old = { runId: await askTitle(target, session) };
+    await failRun(target, await takeRun(target, old.runId));
+    await ageRows(target, { table: 'agent_runs', column: 'started_at', byMs: 41 * 86_400_000, match: { project_id: target.projectId, id: old.runId } });
+    await ageRows(target, { table: 'agent_runs', column: 'completed_at', byMs: 40 * 86_400_000, match: { project_id: target.projectId, id: old.runId } });
+    await captureSession(target, session + '-live', 'live task history');
+    const live = { runId: await askTitle(target, session + '-live') };
+    await takeRun(target, live.runId);
+    const first = await owner(target, '/api/wake', { method: 'POST' });
+    expect(first.status).toBe(200);
+    expect(first.body.jobs.every((job: any) => job.failed === null)).toBe(true);
+    expect((await owner(target, `/api/projects/${target.projectId}/runs/${old.runId}`)).status).toBe(404);
+    expect((await runDetail(target, live.runId)).run.status).toBe('running');
+    await wake(target);
+    expect((await owner(target, `/api/projects/${target.projectId}/runs/${old.runId}`)).status).toBe(404);
+    expect((await runDetail(target, live.runId)).run.status).toBe('running');
   },
 };

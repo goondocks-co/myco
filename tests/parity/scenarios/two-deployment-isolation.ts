@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { sha256Hex, sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { sqliteVectorStore } from '@myco-server-worker/platform/bun/vectors.js';
 import { vectorId, type VectorMetadata } from '@myco-server-worker/core/embedding/vectors.js';
 import { NO_OP, RUN_TOOLS, SERVED_TOOLS } from '@myco-server-worker/core/tool-catalogue.js';
@@ -12,6 +11,10 @@ import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
 import { RUN_TOOL_REGISTRY } from '@myco-server-worker/mcp/run-surface.js';
 import { matchRoute, ROUTES, type Route } from '@myco-server-worker/routes.js';
 import { lit, MACHINE_ID, MEMBER_ID, SESSION_SECRET, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { credentials, selectOwner } from '../clients/identity.ts';
+import { linkedMember, dispatch, takeRun, repository, runDetail } from '../clients/runs.ts';
+import { allowWorkerClaims, owner, putCapability, putSetting } from '../clients/requests.ts';
+import { transplantSecret } from '../historical-storage/sealed-secret.ts';
 import { revisionHeaders } from '../settings-revision.ts';
 
 const ROUTE_VALUES: Record<string, string> = {
@@ -45,6 +48,7 @@ async function request(target: ParityTarget, method: string, path: string, heade
   });
 }
 
+// A physical snapshot witnesses that rejected foreign authority changes no stored row.
 function sqliteRows(database: Database): Record<string, string> {
   const tables = (database.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>)
     .filter(({ name }) => !name.startsWith('sqlite_') && !name.startsWith('_cf_'));
@@ -116,27 +120,22 @@ async function seedAuthorities(target: ParityTarget): Promise<Authorities> {
   const grantKey = String((await grant.json() as { key: string }).key);
   const localGrant = await request(target, 'POST', '/mcp', target.grantHeaders(grantKey), JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
   expect(localGrant.status).toBe(200);
-  const runToken = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
-  const tokenId = `mt_run_isolation_${target.deploymentId}`;
-  await target.sql(`INSERT OR IGNORE INTO members(id,label,created_at) VALUES (${lit(HARNESS_MEMBER_ID)},'harness',${now})`);
-  await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at,rotates)
-    VALUES (${lit(tokenId)},${lit(HARNESS_MEMBER_ID)},'harness',${lit(await sha256Hex(runToken))},${now},${now + 3_600_000},0,${lit(tokenId)},${now},0)`);
-  await target.sql(`INSERT OR IGNORE INTO agents(id,name,source,enabled,created_at) VALUES ('agent_isolation','isolation','built-in',1,${now})`);
-  await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatched_by)
-    VALUES (${lit(target.projectId)},'run_isolation','agent_isolation','extract-curate','running',${now},${lit(tokenId)})`);
+  await allowWorkerClaims(target);
+  expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);
+  expect((await putCapability(target, 'vault_evolution', true)).status).toBe(200);
+  await repository(target);
+  const dispatched = await dispatch(target, 'vault-seed');
+  const { runToken } = await takeRun(target, dispatched.runId);
   const runHeaders = { ...target.memberHeaders(), authorization: `Bearer ${runToken}` };
-  const localRun = await request(target, 'POST', '/runs/update', runHeaders, JSON.stringify({ runId: 'run_isolation', update: {} }));
-  expect(localRun.status).toBe(200);
-  expect((await localRun.json() as { code?: string }).code).not.toBe('no_run');
   const runTools = await request(target, 'POST', '/mcp', runHeaders, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }));
   expect(runTools.status).toBe(200);
   const runRead = await request(target, 'POST', '/mcp', runHeaders, JSON.stringify({
-    jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'myco_run', arguments: { op: 'state_get', key: 'isolation' } },
+    jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'myco_run_spores', arguments: { project: target.projectId, op: 'list' } },
   }));
   expect(runRead.status).toBe(200);
-  const runResult = await runRead.json() as { error?: unknown; result?: { structuredContent?: { result?: { key?: string; value?: string | null } } } };
+  const runResult = await runRead.json() as { error?: unknown; result?: { structuredContent?: { result?: { spores?: unknown[] } } } };
   expect(runResult.error).toBeUndefined();
-  expect(runResult.result?.structuredContent?.result).toMatchObject({ key: 'isolation', value: null });
+  expect(runResult.result?.structuredContent?.result?.spores).toEqual([]);
   return { grantKey, runToken };
 }
 
@@ -209,6 +208,7 @@ async function bindingControls(target: ParityTarget, peer: ParityTarget, label: 
 }
 
 async function sealedSecretIsolation(from: ParityTarget, to: ParityTarget): Promise<void> {
+  // Sealed ciphertext is unreadable under another tenant's wrapping key and readable again after restoration.
   const source = (await from.sql("SELECT ciphertext,iv,key_version FROM deployment_secrets WHERE name = 'anthropic'"))[0];
   const original = (await to.sql("SELECT ciphertext,iv,key_version FROM deployment_secrets WHERE name = 'anthropic'"))[0];
   expect(source).toBeDefined();
@@ -222,28 +222,25 @@ async function sealedSecretIsolation(from: ParityTarget, to: ParityTarget): Prom
     return slot?.readable;
   };
   expect(await readable()).toBe(true);
-  const set = async (row: Record<string, unknown>): Promise<void> => {
-    await to.sql(`UPDATE deployment_secrets SET ciphertext = ${lit(String(row.ciphertext))}, iv = ${lit(String(row.iv))}, key_version = ${Number(row.key_version)} WHERE name = 'anthropic'`);
-  };
   try {
-    await set(source!);
+    await transplantSecret(to, source!);
     expect(await readable()).toBe(false);
-  } finally { await set(original!); }
+  } finally { await transplantSecret(to, original!); }
   expect(await readable()).toBe(true);
 }
 
 async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
   const now = Date.now();
-  await target.sql("UPDATE deployment_ownership SET bootstrap_mode = 'selection' WHERE id = 1");
-  const preview = await request(target, 'GET', '/api/ownership', target.ownerHeaders());
-  expect(preview.status).toBe(200);
-  const revision = String((await preview.json() as { revision: string }).revision);
-  const selected = await request(target, 'POST', '/api/ownership', target.ownerHeaders(), JSON.stringify({ ownerMemberId: MEMBER_ID, revision }));
-  expect(selected.status).toBe(200);
-  await target.sql(`INSERT OR IGNORE INTO machine_claims(machine_id,member_id,claimed_at) VALUES (${lit(MACHINE_ID)},${lit(MEMBER_ID)},${now})`);
-  for (const [id, role, sub] of [['mem_matrix_admin', 'admin', '730001'], ['mem_matrix_member', 'member', '730002']] as const) {
-    await target.sql(`INSERT INTO members(id,label,role,github_id,created_at) VALUES (${lit(id)},${lit(id)},${lit(role)},${lit(sub)},${now})`);
-  }
+  await selectOwner(target);
+  const ownerTokenId = (await credentials(target)).find(row => row.memberId === MEMBER_ID && row.machineId === MACHINE_ID && row.live)!.id;
+  const deviceStart = await request(target, 'POST', '/auth/device/start', {}, JSON.stringify({ machineId: MACHINE_ID, machineName: 'Owner laptop', os: 'linux' }));
+  expect(deviceStart.status).toBe(200);
+  const device = await deviceStart.json() as { user_code: string; device_code: string };
+  expect((await request(target, 'POST', '/api/device/approve', target.ownerHeaders(), JSON.stringify({ user_code: device.user_code }))).status).toBe(200);
+  expect(await (await request(target, 'POST', '/auth/device/poll', {}, JSON.stringify({ device_code: device.device_code }))).json()).toMatchObject({ joined: true, memberId: MEMBER_ID });
+  const adminMember = await linkedMember(target, '730001');
+  const plainMember = await linkedMember(target, '730002');
+  expect((await owner(target, `/api/members/${adminMember.memberId}/role`, { method: 'POST', body: JSON.stringify({ role: 'admin', expected_revision: '0' }) })).status).toBe(200);
   const session = async (sub: string) => ({
     cookie: `${SESSION_COOKIE}=${await signSession(SESSION_SECRET, { aud: target.deploymentId, sub, login: sub, iat: now, exp: now + 3_600_000 })}`,
   });
@@ -260,8 +257,8 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     expect(memberList.status).toBe(200);
     const memberRows = (await memberList.json() as { members: Array<{ id: string; effectiveRole: string }> }).members;
     expect(memberRows.find(member => member.id === MEMBER_ID)?.effectiveRole).toBe('owner');
-    expect(memberRows.find(member => member.id === 'mem_matrix_admin')?.effectiveRole).toBe('admin');
-    expect(memberRows.find(member => member.id === 'mem_matrix_member')?.effectiveRole).toBe('member');
+    expect(memberRows.find(member => member.id === adminMember.memberId)?.effectiveRole).toBe('admin');
+    expect(memberRows.find(member => member.id === plainMember.memberId)?.effectiveRole).toBe('member');
     expect(await status(actor, 'GET', '/api/credentials')).toBe(200);
     expect(await status(actor, 'GET', '/api/projects')).toBe(200);
     expect(await status(actor, 'GET', `/api/projects/${target.projectId}/runs`)).toBe(200);
@@ -275,7 +272,7 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     expect(await status(actor, 'POST', '/api/device/approve', { user_code: device.user_code, role: 'owner' })).toBe(400);
     expect(await status(actor, 'POST', '/api/device/approve', { user_code: device.user_code })).toBe(200);
     const redeemed = await request(target, 'POST', '/auth/device/poll', {}, JSON.stringify({ device_code: device.device_code }));
-    expect(await redeemed.json()).toMatchObject({ joined: true, memberId: actor.role === 'owner' ? MEMBER_ID : `mem_matrix_${actor.role}`, role: actor.role === 'member' ? 'member' : 'admin' });
+    expect(await redeemed.json()).toMatchObject({ joined: true, memberId: actor.role === 'owner' ? MEMBER_ID : actor.role === 'admin' ? adminMember.memberId : plainMember.memberId, role: actor.role === 'member' ? 'member' : 'admin' });
     const deniedStart = await request(target, 'POST', '/auth/device/start', {}, JSON.stringify({ machineId: `${machineId}_denied`, machineName: 'Matrix laptop', os: 'linux' }));
     expect(deniedStart.status).toBe(200);
     const denied = await deniedStart.json() as { user_code: string; device_code: string };
@@ -293,11 +290,11 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     expect(await status(actor, 'GET', `/api/machines/${MACHINE_ID}/settings`)).toBe(actor.role === 'owner' ? 200 : 403);
     expect(await status(actor, 'GET', `/api/projects/${target.projectId}/blobs/${rawKey}`)).toBe(actor.role === 'owner' ? 200 : 404);
     if (actor.role !== 'owner') {
-      expect(await status(actor, 'POST', '/api/ownership/transfer', { member_id: 'mem_matrix_admin', expected_revision: '1' })).toBe(403);
+      expect(await status(actor, 'POST', '/api/ownership/transfer', { member_id: adminMember.memberId, expected_revision: '1' })).toBe(403);
       expect(await status(actor, 'POST', `/api/members/${MEMBER_ID}/revoke`)).toBe(403);
     }
   }
-  expect(await target.sql(`SELECT revoked_at FROM members WHERE id = ${lit(MEMBER_ID)}`)).toEqual([{ revoked_at: null }]);
+  expect((await owner(target, '/api/members')).body.members.find((row: any) => row.id === MEMBER_ID)).toMatchObject({ revokedAt: null });
 
   for (const actor of actors) {
     const admin = actor.role !== 'member';
@@ -306,14 +303,14 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     expect(await status(actor, 'GET', '/api/enrollment')).toBe(admin ? 200 : 403);
     expect(await status(actor, 'POST', '/api/enrollment', { role: 'member' })).toBe(admin ? 201 : 403);
     expect(await status(actor, 'POST', '/api/enrollment', { role: 'admin' })).toBe(actor.role === 'owner' ? 201 : 403);
-    for (const memberId of [MEMBER_ID, 'mem_matrix_admin']) {
+    for (const memberId of [MEMBER_ID, adminMember.memberId]) {
       expect(await status(actor, 'POST', '/api/enrollment', { memberId, role: 'member' })).toBe(actor.role === 'owner' ? 201 : 403);
     }
-    expect(await status(actor, 'POST', `/api/members/mem_matrix_member/role`, { role: 'admin', expected_revision: '0' }))
+    expect(await status(actor, 'POST', `/api/members/${plainMember.memberId}/role`, { role: 'admin', expected_revision: '0' }))
       .toBe(actor.role === 'owner' ? 200 : 403);
     if (actor.role === 'owner') {
-      const revision = String((await target.sql("SELECT role_revision FROM members WHERE id = 'mem_matrix_member'"))[0]?.role_revision);
-      expect(await status(actor, 'POST', '/api/members/mem_matrix_member/role', { role: 'member', expected_revision: revision })).toBe(200);
+      const revision = String((await owner(target, '/api/members')).body.members.find((row: any) => row.id === plainMember.memberId).roleRevision);
+      expect(await status(actor, 'POST', `/api/members/${plainMember.memberId}/role`, { role: 'member', expected_revision: revision })).toBe(200);
     }
     expect(await status(actor, 'PUT', `/api/machines/${MACHINE_ID}/settings/capture.plan_dirs`, { value: ['~/matrix'] }))
       .toBe(actor.role === 'owner' ? 200 : 403);
@@ -323,17 +320,12 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
   const invitationId = (await issued.json() as { id: string }).id;
   expect(await status(actors[2], 'POST', `/api/enrollment/${invitationId}/revoke`)).toBe(403);
   expect(await status(actors[1], 'POST', `/api/enrollment/${invitationId}/revoke`)).toBe(200);
-  await target.sql(`INSERT INTO members(id,label,role,github_id,created_at) VALUES ('mem_matrix_revoke','revoke','member','730003',${now})`);
-  expect(await status(actors[2], 'POST', '/api/members/mem_matrix_revoke/revoke')).toBe(403);
-  expect(await status(actors[1], 'POST', '/api/members/mem_matrix_revoke/revoke')).toBe(200);
-  expect((await target.sql("SELECT revoked_at FROM members WHERE id = 'mem_matrix_revoke'"))[0]?.revoked_at).not.toBeNull();
-
-  const memberToken = crypto.randomUUID().replaceAll('-', '').padEnd(43, 'x');
-  const memberTokenId = `mt_matrix_member_${target.deploymentId}`;
-  const memberMachine = 'machine_matrix_member';
-  await target.sql(`INSERT INTO machine_claims(machine_id,member_id,claimed_at) VALUES (${lit(memberMachine)},'mem_matrix_member',${now})`);
-  await target.sql(`INSERT INTO member_credentials(id,member_id,machine_id,token_hash,issued_at,expires_at,bytes_written,lineage_root,lineage_started_at)
-    VALUES (${lit(memberTokenId)},'mem_matrix_member',${lit(memberMachine)},${lit(await sha256Hex(memberToken))},${now},${now + 3_600_000},0,${lit(memberTokenId)},${now})`);
+  const revokedMember = await linkedMember(target, '730003');
+  expect(await status(actors[2], 'POST', `/api/members/${revokedMember.memberId}/revoke`)).toBe(403);
+  expect(await status(actors[1], 'POST', `/api/members/${revokedMember.memberId}/revoke`)).toBe(200);
+  expect((await owner(target, '/api/members')).body.members.find((row: any) => row.id === revokedMember.memberId).revokedAt).not.toBeNull();
+  const memberToken = plainMember.token;
+  const memberMachine = (await credentials(target)).find(row => row.memberId === plainMember.memberId && row.live)!.machineId;
   const rawContent = `matrix-member-${target.deploymentId}`;
   const rawKeyOfMember = await sha256Hex(rawContent);
   const rawUpload = await fetch(`${target.url}/blobs/${rawKeyOfMember}`, { method: 'POST',
@@ -347,26 +339,26 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
   expect(await status(actors[2], 'GET', `/api/machines/${memberMachine}/settings`)).toBe(200);
   expect(await status(actors[0], 'GET', `/api/machines/${memberMachine}/settings`)).toBe(403);
 
-  for (const [runId, actorId] of [['run_matrix_own', 'mem_matrix_member'], ['run_matrix_other', 'mem_matrix_admin']] as const) {
-    await target.sql(`INSERT INTO agent_runs(project_id,id,agent_id,task,status,started_at,dispatched_by,dispatch_spec)
-      VALUES (${lit(target.projectId)},${lit(runId)},'agent_isolation','extract-curate','pending',${now},NULL,${lit(JSON.stringify({ actor: actorId }))})`);
-  }
+  const dispatchAs = async (headers: Record<string, string>) => {
+    const answer = await request(target, 'POST', '/api/harness/dispatch', headers, JSON.stringify({ task: 'title-summary', projectId: target.projectId }));
+    expect(answer.status).toBe(200); return String((await answer.json() as { runId: string }).runId);
+  };
+  const ownRun = await dispatchAs(plainMember.headers), otherRun = await dispatchAs(adminMember.headers);
   const cancelPath = (runId: string) => `/api/projects/${target.projectId}/runs/${runId}/cancel`;
   for (const actor of actors) {
-    for (const runId of ['run_matrix_own', 'run_matrix_other']) {
+    for (const runId of [ownRun, otherRun]) {
       const response = await request(target, 'GET', `/api/projects/${target.projectId}/runs/${runId}`, actor.headers);
       expect(response.status).toBe(200);
       const { run } = await response.json() as { run: { canCancel: boolean; cancelReason: string | null } };
-      const allowed = actor.role !== 'member' || runId === 'run_matrix_own';
+      const allowed = actor.role !== 'member' || runId === ownRun;
       expect(run.canCancel).toBe(allowed);
       expect(run.cancelReason).toBe(allowed ? null : 'Only the member who requested this run or an administrator can cancel it.');
     }
   }
-  expect(await status(actors[2], 'POST', cancelPath('run_matrix_other'))).toBe(404);
-  expect(await status(actors[2], 'POST', cancelPath('run_matrix_own'))).toBe(200);
-  expect(await status(actors[1], 'POST', cancelPath('run_matrix_other'))).toBe(200);
-  expect(await target.sql("SELECT id,status FROM agent_runs WHERE id LIKE 'run_matrix_%' ORDER BY id"))
-    .toEqual([{ id: 'run_matrix_other', status: 'failed' }, { id: 'run_matrix_own', status: 'failed' }]);
+  expect(await status(actors[2], 'POST', cancelPath(otherRun))).toBe(404);
+  expect(await status(actors[2], 'POST', cancelPath(ownRun))).toBe(200);
+  expect(await status(actors[1], 'POST', cancelPath(otherRun))).toBe(200);
+  for (const id of [ownRun, otherRun]) expect((await runDetail(target, id)).run.status).toBe('failed');
 
   expect(await status(actors[2], 'POST', '/api/backups')).toBe(403);
   for (const actor of actors.slice(0, 2)) {
@@ -388,7 +380,7 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     expect(await status(actor, 'POST', `/api/backups/${backupId}/restore`)).toBe(actor.role === 'owner' ? 200 : 403);
   }
 
-  const ownerTokenId = String((await target.sql(`SELECT id FROM member_credentials WHERE token_hash = ${lit(await sha256Hex(target.memberToken))}`))[0]?.id);
+  const ownerCredential = async () => (await credentials(target)).find(row => row.id === ownerTokenId)!;
   const memberStop = await request(target, 'POST', `/api/machines/${MACHINE_ID}/stop`, actors[2].headers);
   expect(memberStop.status).toBe(404);
   const adminStop = await request(target, 'POST', `/api/machines/${MACHINE_ID}/stop`, actors[1].headers);
@@ -397,13 +389,14 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
   const adminCredentialStop = await request(target, 'POST', `/api/credentials/${ownerTokenId}/revoke`, actors[1].headers);
   expect(adminCredentialStop.status).toBe(200);
   expect((await adminCredentialStop.json() as { revoked: boolean }).revoked).toBe(false);
-  expect((await target.sql(`SELECT revoked_at FROM member_credentials WHERE id = ${lit(ownerTokenId)}`))[0]?.revoked_at).toBeNull();
+  expect((await ownerCredential()).revokedAt).toBeNull();
   const ownerStop = await request(target, 'POST', `/api/machines/${MACHINE_ID}/stop`, actors[0].headers);
   expect(ownerStop.status).toBe(200);
   expect((await ownerStop.json() as { revoked: number }).revoked).toBeGreaterThan(0);
-  expect((await target.sql(`SELECT revoked_at FROM member_credentials WHERE id = ${lit(ownerTokenId)}`))[0]?.revoked_at).not.toBeNull();
+  expect((await ownerCredential()).revokedAt).not.toBeNull();
 }
 
+// Native vector writes bind to each tenant's independent physical SQLite file.
 async function nativeVectorIsolation(a: ParityTarget, b: ParityTarget): Promise<void> {
   if (a.name !== 'selfhosted') return;
   const scope = { projectId: a.projectId, modelKey: 'isolation-model' };
@@ -471,8 +464,9 @@ export const twoDeploymentIsolation: ParityScenario = {
     expect(await blobState(b)).toEqual(blobsBeforeB);
     const rawA = await bindingControls(a, b, 'A');
     const rawB = await bindingControls(b, a, 'B');
-    expect((await a.sql("SELECT value FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'"))[0]?.value).toBe('2');
-    expect((await b.sql("SELECT value FROM deployment_settings WHERE leaf = 'agent.limits.concurrent_runs'"))[0]?.value).toBe('3');
+    expect((await owner(a, '/api/settings')).body.leaves.find((row: any) => row.leaf === 'agent.limits.concurrent_runs').value).toBe(2);
+    expect((await owner(b, '/api/settings')).body.leaves.find((row: any) => row.leaf === 'agent.limits.concurrent_runs').value).toBe(3);
+    // Independently sealed provider keys must have different ciphertext in the two stores.
     const secretA = await a.sql("SELECT ciphertext FROM deployment_secrets WHERE name = 'anthropic'");
     const secretB = await b.sql("SELECT ciphertext FROM deployment_secrets WHERE name = 'anthropic'");
     expect(secretA).toHaveLength(1);
