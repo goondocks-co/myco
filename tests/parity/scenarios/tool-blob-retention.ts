@@ -1,8 +1,8 @@
 import { expect } from 'bun:test';
-import { SERVER_JOBS } from '@myco-server-worker/core/jobs.js';
-import { ORPHAN_AUDIT_PAGE } from '@myco-server-worker/db/storage/blob-orphan-audit.js';
-import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
-import { ageRows, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+
+const DAY_MS = 86_400_000;
+const MAX_CLOCK_PASSES = 12;
 
 async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -17,6 +17,7 @@ async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
  */
 export const toolBlobRetention: ParityScenario = {
   name: 'tool-call blobs: kept by the orphan sweep while referenced, read back whole; the deleted session\'s and the unreferenced freed',
+  dedicated: { timeoutMs: 180_000 },
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const post = async (sessionId: string, kind: string, payload: Record<string, unknown>) => {
@@ -55,40 +56,28 @@ export const toolBlobRetention: ParityScenario = {
     await post(kept, 'tool.use', { toolCallId, promptId, toolName: 'Read', blob: input, outputBlob: output, success: true });
     await post(deleted, 'session.start', { agent: 'claude-code', startedAt: stamp });
     await post(deleted, 'attachment', { attachmentId: crypto.randomUUID(), blob: doomed, description: 'goes with its session' });
-    // A row no object and no row names: what a deletion that hit its bound leaves for the sweep.
-    await target.sql('UPDATE orphan_sweep_state SET armed_at=-1');
-    const orphan = '5'.repeat(64);
-    await target.sql(`INSERT INTO blobs (project_id, key, size, media_type, token_id, received_at, generation)
-      SELECT ${lit(target.projectId)}, ${lit(orphan)}, 1, 'text/plain', id, ${stamp - BLOB_RESERVATION_TTL_MS - 1}, ${lit(crypto.randomUUID())} FROM member_credentials ORDER BY issued_at LIMIT 1`);
-
-    await ageRows(target, { table: 'blobs', column: 'received_at', byMs: BLOB_RESERVATION_TTL_MS + 1000, match: { project_id: target.projectId, key: doomed } });
+    const orphan = await upload(`upload without an event ${stamp}`);
     const tombstone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${deleted}/tombstone`, {
       method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: '{}',
     });
     expect(tombstone.status).toBe(202);
     await tombstone.body?.cancel();
 
-    expect(SERVER_JOBS.some((job) => job.name === 'transcript-retention')).toBe(true);
-    // A restore in an earlier scenario moves the audit's floor past this fixture's old registration.
-    await target.sql("UPDATE orphan_sweep_state SET armed_at=1,next_pass_at=0,cursor_project='',cursor_key='' WHERE id=1");
-    const identities = Number((await target.sql('SELECT COUNT(*) AS n FROM blobs'))[0].n);
-    const passes = Math.ceil(identities / ORPHAN_AUDIT_PAGE) + 12;
-    let swept = 0;
-    for (let pass = 0; pass < passes; pass++) {
-      const wake = await fetch(`${target.url}/api/wake`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url } });
-      expect(wake.status).toBe(200);
-      const { jobs } = (await wake.json()) as { jobs: Array<{ name: string; changed: number; failed: string | null }> };
-      const retention = jobs.find((job) => job.name === 'transcript-retention');
-      expect(retention?.failed).toBeNull();
-      swept += retention?.changed ?? 0;
-      if ((await target.sql(`SELECT key FROM blobs WHERE key IN (${lit(orphan)}, ${lit(doomed)})`)).length === 0) break;
+    const future = stamp + 3 * DAY_MS;
+    let released = false;
+    for (let pass = 0; pass < MAX_CLOCK_PASSES; pass++) {
+      if (target.clockAlarm !== undefined) await target.clockAlarm(future + pass * DAY_MS);
+      else await target.clockWake(future + pass * DAY_MS);
+      if ((await read(doomed)).status === 404 && (await read(orphan)).status === 404) { released = true; break; }
     }
-    expect(swept).toBeGreaterThanOrEqual(1);
+
+    if (!released) throw new Error(`The clock did not reclaim the deleted session and orphan uploads within ${MAX_CLOCK_PASSES} alarms`);
 
     expect(await read(input)).toEqual({ status: 200, text: `tool input ${stamp}` });
     expect(await read(output)).toEqual({ status: 200, text: `tool output ${stamp}` });
     expect((await read(doomed)).status).toBe(404);
     expect((await read(orphan)).status).toBe(404);
+    // Stored deletion witnesses distinguish reclaimed registrations from hidden HTTP resources.
     expect(await target.sql(`SELECT key FROM blobs WHERE key IN (${lit(input)}, ${lit(output)}, ${lit(doomed)}, ${lit(orphan)}) ORDER BY key`))
       .toEqual([input, output].sort().map((key) => ({ key })));
   },

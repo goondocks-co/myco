@@ -2,6 +2,7 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { blobObjectKeySql } from '../../core/blob-objects.js';
 import { TOKEN_LIVE } from '../identity/capture-credential.js';
 import { commit, read, write } from '../index.js';
+import { armOrphanAudit } from './blob-orphan-audit.js';
 import { objectJournalSql } from './object-journal.js';
 const journal = write<[token: string, now: number]>({ name: 'storage.expireCredentialUploads', sql:
   objectJournalSql(`SELECT ${blobObjectKeySql('r.project_id','r.key','r.reservation_id')},'upload',?2
@@ -18,7 +19,7 @@ const held = read<[id: string], { reservation_id: string }>({ name: 'storage.blo
 export async function admitBlobUpload(db: RelationalStore, id: string, project: string, key: string, token: string,
   size: number, expires: number, now: number) {
   const [,,result] = await commit(db,journal.bind(token,now),expire.bind(token,now),
-    reserve.bind(id,project,key,token,size,expires,token));
+    reserve.bind(id,project,key,token,size,expires,token),armOrphanAudit(now,id));
   return result.results.length===1;
 }
 export async function reconcileBlobUpload(db: RelationalStore, size: number, expires: number, id: string, token: string) {

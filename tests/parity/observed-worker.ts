@@ -1,12 +1,11 @@
 import type { CloudflareBindings, DeferredWork } from '../../packages/myco-server/src/platform/cloudflare/env.ts';
 import { DeploymentClock as RawDeploymentClock } from '../../packages/myco-server/src/platform/cloudflare/deployment-clock.ts';
 import { RecoveryProducer as RawRecoveryProducer } from '../../packages/myco-server/src/platform/cloudflare/recovery-producer-object.ts';
-import { statementRecorder,withObservedClock, handledRequestContext as requests, type StatementFrame } from '../helpers/statement-recorder.ts';
+import { statementRecorder,withObservedClock,observedClockInstant, handledRequestContext as requests, type StatementFrame } from '../helpers/statement-recorder.ts';
 import { PARITY_REQUEST_HEADER, PARITY_WORKER_HEADER } from './requests.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import {indexFixture} from '../myco-server/helpers/vector-index.ts';
-import {EMBEDDING_CATALOGUE} from '../../packages/myco-shared/src/settings-contract.ts';
-import {wordVector} from './embedding/word-vectors.ts';
+import { embeddingBindings, type EmbeddingFixture } from './embedding/bindings.ts';
+import { stopRaceFixture } from './owner-review/stop-race.ts';
 import {serverEnvFromBindings} from '../../packages/myco-server/src/platform/cloudflare/env.ts';
 import {reconcileEmbedding} from '../../packages/myco-server/src/core/embedding/reconcile.ts';
 import {reconcileReleaseProvenance} from '../../packages/myco-server/src/core/release-provenance.ts';
@@ -17,17 +16,15 @@ import type {ServerEnv} from '../../packages/myco-server/src/core/adapters.ts';
 
 const spans = new AsyncLocalStorage<StatementFrame>();
 let nextSpan=0;
-let embeddingFixture=false;
-const fixtureVectors=indexFixture();
-export function installObservedEmbeddingFixture(){embeddingFixture=true;}
-function fixtureBindings(bindings:CloudflareBindings):CloudflareBindings{
- if(!embeddingFixture)return bindings;
- return {...bindings,VECTORIZE:fixtureVectors,AI:{async run(model,input){
-  const size=EMBEDDING_CATALOGUE['workers-ai'].models.find(row=>row.id===model)?.dimensions;
-  if(size===undefined||input.text.length!==1)throw new Error('Unknown fixture embedding request');
-  return {data:[wordVector(input.text[0]!,size)]};
- }}};
+let fixture: ReturnType<typeof embeddingBindings> | undefined;
+let race: ReturnType<typeof stopRaceFixture> | undefined;
+let unconfiguredSignIn = false;
+export function installObservedFixtures(options: { embedding?: EmbeddingFixture; stopRace?: boolean; unconfiguredSignIn?: boolean }) {
+ fixture = options.embedding ? embeddingBindings(options.embedding) : undefined;
+ race = options.stopRace ? stopRaceFixture() : undefined;
+ unconfiguredSignIn = options.unconfiguredSignIn === true;
 }
+
 export async function primeObservedEmbedding(env:ServerEnv,projectId:string){
  const configured=await env.embeddingProvider?.();
  if(!configured||!env.vectors)throw new Error('Embedding fixture has no configured provider or vector store');
@@ -56,14 +53,16 @@ function runSpan<T>(operation:string,phase:string,parent:StatementFrame|undefine
 }
 
 function observedBindings(bindings:CloudflareBindings, fallback:StatementFrame) {
- bindings=fixtureBindings(bindings);
+ if (fixture) bindings = { ...bindings, ...fixture };
  const recorder=statementRecorder(bindings.MYCO_DB,{accounting:'d1',context:()=>spans.getStore()??fallback});
  let published=0;
+ let flushedRows=0;
  const flush=async()=>{
   await recorder.drain();
   for(const event of recorder.events.slice(published))console.log(JSON.stringify({kind:'view_read_event',event}));
   published=recorder.events.length;
   for(const statement of recorder.statements)console.log(JSON.stringify({kind:'view_read_statement',...statement}));
+  flushedRows += recorder.statements.reduce((sum, row) => sum + (row.rowsRead ?? 0), 0);
   recorder.statements.length=0;
  };
  const clock=bindings.CLOCK;
@@ -73,13 +72,13 @@ function observedBindings(bindings:CloudflareBindings, fallback:StatementFrame) 
    return new Proxy(stub,{get(stub,key,receiver){
     const value=Reflect.get(stub,key,receiver);
     if((key==='wake'||key==='ensure')&&typeof value==='function')return (...args:unknown[])=>Reflect.apply(value,stub,[...args,spans.getStore()]);
-    return typeof value==='function'?value.bind(stub):value;
+    return typeof value==='function'? (...args: unknown[]) => Reflect.apply(value, stub, args) : value;
    }});
   };
   const value=Reflect.get(target,key,receiver);
   return typeof value==='function'?value.bind(target):value;
  }});
- return {bindings:{...bindings,MYCO_DB:recorder.db,...(wrappedClock?{CLOCK:wrappedClock}:{})},flush};
+ return {bindings:{...bindings,MYCO_DB:recorder.db,...(wrappedClock?{CLOCK:wrappedClock}:{})},flush, rowsRead: () => flushedRows + recorder.statements.reduce((sum, row) => sum + (row.rowsRead ?? 0), 0)};
 }
 
 export {observeHandledException} from '../helpers/statement-recorder.ts';
@@ -95,13 +94,18 @@ export function observedWorker<T extends Worker>(worker: T): Omit<T, 'fetch'|'sc
   async fetch(request,bindings,deferred){
    const id=request.headers.get(PARITY_REQUEST_HEADER),path=new URL(request.url).pathname;
    if(id)console.log(JSON.stringify({kind:'parity_request',id,method:request.method,path}));
-   const observed=observedBindings(bindings,{operation:'fetch',phase:'entry'});
-   const trackedDeferred=deferred===undefined?undefined:{waitUntil(work:Promise<unknown>){deferred.waitUntil(work.finally(observed.flush));}};
+   const configured = unconfiguredSignIn && request.headers.get('x-test-sign-in-unconfigured') === '1'
+    ? { ...bindings, GITHUB_CLIENT_ID: undefined, GITHUB_CLIENT_SECRET: undefined } : bindings;
+   const observed=observedBindings(configured,{operation:'fetch',phase:'entry'});
+   const trackedDeferred=deferred===undefined?undefined:{...deferred,waitUntil(work:Promise<unknown>){deferred.waitUntil(work.finally(observed.flush));}};
    try {
-    const response=await requests.run({id,path},()=>runSpan(request.method+' '+path,'entry',undefined,()=>worker.fetch(request,observed.bindings,trackedDeferred)));
-    if(!id)return response;
+    const response=await race?.endpoint(request) ?? await requests.run({id,path},()=>runSpan(request.method+' '+path,'entry',undefined,()=>worker.fetch(request,race ? {...observed.bindings, MYCO_DB: race.wrap(observed.bindings.MYCO_DB)} : observed.bindings,trackedDeferred)));
+    const measured = new Response(response.body, response);
+    measured.headers.set('x-parity-rows-read', String(observed.rowsRead()));
+    if(id) measured.headers.set(PARITY_WORKER_HEADER, id);
+    if(!id)return measured;
     console.log(JSON.stringify({kind:'parity_response',id,status:response.status}));
-    const marked=new Response(response.body,response);marked.headers.set(PARITY_WORKER_HEADER,id);return marked;
+    return measured;
    }catch(error){
     console.error(JSON.stringify({kind:'parity_exception',id,path,error:error instanceof Error?error.stack:String(error)}));throw error;
    }finally{await observed.flush();}
@@ -118,10 +122,7 @@ export function observedWorker<T extends Worker>(worker: T): Omit<T, 'fetch'|'sc
 export class ObservedDeploymentClock extends RawDeploymentClock {
  private readonly flushObservations:()=>Promise<void>;
  private readonly observedEnvironment:ServerEnv;
- private readonly fixtureRuns=new Set<Promise<void>>();
- protected override clockEnv():ServerEnv{
-  const env=super.clockEnv();if(embeddingFixture)installObservedEmbeddingRuntime(env,this.fixtureRuns);return env;
- }
+ protected override tick(now: number) { return super.tick(observedClockInstant() ?? now); }
  constructor(ctx:DurableObjectState,bindings:CloudflareBindings){
   const frame={operation:'DeploymentClock.constructor',phase:'clock'};
   console.log(JSON.stringify({kind:'view_read_constructor',...frame}));
@@ -130,7 +131,7 @@ export class ObservedDeploymentClock extends RawDeploymentClock {
  }
  override async wake(parent?:StatementFrame){
   try{return await runSpan('DeploymentClock.wake','clock',parent??spans.getStore(),()=>super.wake());}
-  finally{while(this.fixtureRuns.size)await Promise.all([...this.fixtureRuns]);await this.flushObservations();}
+  finally{await this.flushObservations();}
  }
  override async ensure(parent?:StatementFrame){
   try{return await runSpan('DeploymentClock.ensure','clock',parent??spans.getStore(),()=>super.ensure());}

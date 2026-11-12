@@ -187,6 +187,8 @@ const nativeSpans=new AsyncLocalStorage<StatementFrame>();
 
 const clockInstants=new AsyncLocalStorage<number>();
 
+export function observedClockInstant(): number | undefined { return clockInstants.getStore(); }
+
 export function withObservedClock<T>(at:number|undefined,run:()=>T):T{return at===undefined?run():clockInstants.run(at,run);}
 
 let spanSequence=0;

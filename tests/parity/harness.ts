@@ -104,12 +104,12 @@ export interface ParityScenario {
   paired?: true;
   /**
    * A scenario whose bindings or settings would change what the others observe runs against targets booted for it
-   * alone. On Cloudflare, `main` names the Worker entry that boot serves, relative to `packages/myco-server`;
+   * alone. Cloudflare fixtures supply external bindings to the production Worker and clock;
    * Self-hosted `embeddingRuntime` launches the real embedding runtime without replacing Cloudflare bindings.
    * `sqliteVec` marks a scenario whose self-hosted run queries vectors, which needs an extension-enabled SQLite;
    * `latestSchemaUpgrade` boots a Deployment its users populated at the previous schema, upgraded to the latest.
    */
-  dedicated?: { selfhosted?: { embeddingRuntime?: boolean }; cloudflare?: { main?: string; embeddingFixture?:boolean }; latestSchemaUpgrade?: boolean; stopRace?: boolean; viewWriter?:boolean; sqliteVec?: boolean; timeoutMs: number };
+  dedicated?: { selfhosted?: { embeddingRuntime?: boolean }; cloudflare?: { embeddingFixture?: true | import('./embedding/bindings.ts').EmbeddingFixture; embeddingRuntime?: true; unconfiguredSignIn?: true }; latestSchemaUpgrade?: boolean; stopRace?: boolean; viewWriter?:boolean; sqliteVec?: boolean; timeoutMs: number };
 }
 
 export const MEMBER_ID = 'mem_parity';

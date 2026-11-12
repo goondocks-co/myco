@@ -20,7 +20,12 @@ const auditPage = read<[project: string, key: string, limit: number], { project_
 const unchanged = assertion<[revision: number]>({ name: 'storage.orphanAuditHeld', refusal: moved, when: 'EXISTS(SELECT 1 FROM orphan_sweep_state WHERE id=1 AND revision=?1)' });
 const advance = write<[project: string, key: string, nextPass: number]>({ name: 'storage.advanceOrphanAudit', sql:
   'UPDATE orphan_sweep_state SET cursor_project=?1,cursor_key=?2,next_pass_at=?3,revision=revision+1 WHERE id=1' });
-const armAudit = write<[now: number]>({ name: 'storage.armOrphanAudit', sql: 'UPDATE orphan_sweep_state SET armed_at=?1,revision=revision+1 WHERE id=1 AND armed_at=0' });
+const armAudit = write<[now: number, reservation: string | null]>({ name: 'storage.armOrphanAudit', sql:
+  `UPDATE orphan_sweep_state SET armed_at=?1,revision=revision+1 WHERE id=1 AND armed_at=0
+    AND (?2 IS NULL OR EXISTS(SELECT 1 FROM blob_reservations WHERE reservation_id=?2))` });
+
+/** Arms the audit before newly admitted bytes move, retaining any established historical floor. */
+export const armOrphanAudit = (now: number, reservation: string | null) => armAudit.bind(now, reservation);
 /** Restarts the audit with its object lifecycle: a restored database audits only what it registers after now. */
 const resetAudit = write<[now: number]>({ name: 'storage.resetOrphanAudit', sql:
   "UPDATE orphan_sweep_state SET cursor_project='',cursor_key='',next_pass_at=0,revision=revision+1,armed_at=?1 WHERE id=1" });
@@ -34,16 +39,16 @@ export async function resetOrphanAudit(db: RelationalStore, now: number): Promis
  * Examines one page of registered blobs for what no row references: an upload whose event never arrived, or anything a
  * deletion should have recorded and did not. Walks every registration from a durable position, then rests.
  *
- * A registration is released only when it arrived after this database armed the audit, its upload grace has passed, and
- * no reference holds it in the commit that decides it; the store delete then waits out a quarantine. Older orphans cost
- * only storage. Answers how many were released.
+ * A registration is released only when it arrived after the audit floor, its upload grace has passed, and no reference
+ * holds it in the commit that decides it; the store delete then waits out a quarantine. Upload admission or the first
+ * audit pass arms the floor. Older orphans cost only storage. Answers how many were released.
  */
 export async function auditBlobOrphans(db: RelationalStore, now: number): Promise<{ released: number; deferred: number }> {
   const [[state]] = await readSet(db, auditState.bind());
   if (state === undefined) throw new Error('orphan audit position is missing');
   if (state.held === 1 || now < state.next_pass_at) return { released: 0, deferred: 0 };
   // The first audit pass arms the floor: everything this database already holds stays out of its reach.
-  if (state.armed_at === 0) { await commitNamed(db, { armed: armAudit.bind(now) }); return { released: 0, deferred: 0 }; }
+  if (state.armed_at === 0) { await commitNamed(db, { armed: armOrphanAudit(now, null) }); return { released: 0, deferred: 0 }; }
   const [page] = await readSet(db, auditPage.bind(state.cursor_project, state.cursor_key, ORPHAN_AUDIT_PAGE));
   const cutoff = now - BLOB_RESERVATION_TTL_MS;
   const aged = page.filter(row => row.received_at >= state.armed_at && row.received_at <= cutoff);

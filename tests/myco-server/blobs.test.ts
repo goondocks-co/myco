@@ -12,6 +12,7 @@ import { classifyBlobStore } from '@myco-server-worker/telemetry.js';
 import { canonicalMediaType, MAX_MEDIA_TYPE_CHARS } from '@myco-server-worker/ingest/blobs.js';
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { blobPost, bytesWritten, count, envelope, journaled, memberHeaders, memberPost, noOutboundFetch, registeredObject, RETIRED_BYTE_CEILING, sqliteEnv } from './helpers/fixtures.js';
+import { freeOrphanedBlobs } from '@myco-server-worker/ingest/retention.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { GENERATION_GRAMMAR } from '@myco-server-worker/core/blob-objects.js';
 import { changingAt, counting } from './helpers/store-faults.js';
@@ -86,6 +87,21 @@ describe('blob route', () => {
     for (const bad of [null, '', 'text', 'text/', '/plain', 'text/plain; charset', 'text/plain; =x', 'text plain', `text/${'a'.repeat(MAX_MEDIA_TYPE_CHARS)}`, 'text/plain; charset=utf-8; a=b; c=<', 'text/plain; name="a;b"', 'text/plain; charset=utf-8; name="x=y"', 'text/plain; name="a\r\nb"']) {
       expect({ bad, canonical: canonicalMediaType(bad) }).toEqual({ bad, canonical: null });
     }
+  });
+
+  it('reclaims an upload admitted before its first audit while preserving historical registrations', async () => {
+    const e = sqliteEnv();
+    const now = Date.now();
+    const t = await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, now);
+    const key = await keyOf(bytes);
+    const historical = 'a'.repeat(64);
+    registerBlob(e.sqlite, { projectId: 'proj_1', key: historical, size: 1, receivedAt: now - 1 });
+    try {
+      expect(await json(await worker.fetch(blobPost(t.token, key, bytes), e.env))).toMatchObject({ stored: true });
+      await freeOrphanedBlobs(e.serverEnv, Date.now() + BLOB_RESERVATION_TTL_MS + 1);
+      expect(blobRow(e, key)).toBeNull();
+      expect(blobRow(e, historical)).not.toBeNull();
+    } finally { e.sqlite.close(); }
   });
 
   it('ages an upload from when it was registered, not from when its request began', async () => {

@@ -1,6 +1,7 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { rawCredentialOwner } from '../raw/provenance.js';
 import { assertion, commitAfter, commitNamed, read, readSet, write, refusalCode, type BatchGuard } from '../index.js';
+import { armOrphanAudit } from './blob-orphan-audit.js';
 import { objectJournalSql } from './object-journal.js';
 import { clearSettledIntent, beginUploadIntentStatement } from './object-lifecycle.js';
 
@@ -99,7 +100,8 @@ export async function admitDerivedUpload(db: RelationalStore, guards: readonly B
   const { projectId, key, tokenId, size, sourceKind, sourceId, eventId, envelopeHash, sessionId } = authority;
   const [reserved, intent] = await commitAfter(db, guards,
     reserveDerived.bind(generation, projectId, key, tokenId, size, expires, sourceKind, sourceId, eventId, envelopeHash, sessionId),
-    beginUploadIntentStatement.bind(generation, now));
+    beginUploadIntentStatement.bind(generation, now),
+    armOrphanAudit(now, generation));
   const physical = intent.results[0]?.physical;
   if (reserved.results.length !== 1 || physical === undefined) throw new Error('content_reservation_refused');
   return physical;

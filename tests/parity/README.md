@@ -112,7 +112,7 @@ without claiming a Vectorize read/write proof.
 
 The recall gold set (`scenarios/recall-gold.ts`, #1154) is the one today. It:
 - configures a self-hosted embedding provider and adds `AI` and `VECTORIZE`
-  stand-ins to the Worker (`recall/worker-entry.ts`), which would otherwise
+  stand-ins to the production Worker and its clock through `embedding/bindings.ts`, which would otherwise
   break the `provider_unavailable` assertions in `recall` and `search`;
 - holds each target's served blocks to
   `packages/myco-server/src/evals/recall-baseline.ts`.

@@ -180,6 +180,14 @@ export class DeploymentClock extends DurableObject<CloudflareBindings> {
     return serverEnvFromBindings(this.env, { lifetime: 'clock', waitUntil: (promise) => { this.keep(promise); } });
   }
 
+  /** Owns a dispatched embedding run beyond the request that admitted it, with alarms retaining its lifetime. */
+  async launchEmbedding(spec: Parameters<NonNullable<ServerEnv['harnessLaunch']>>[0]): Promise<void> {
+    const launch = this.clockEnv().harnessLaunch;
+    if (launch === undefined) throw new Error('The Deployment clock has no embedding runtime');
+    await this.ensure();
+    await launch(spec);
+  }
+
   /** One tick over this object's bindings, paced by what this clock kept from its last wakes. */
   protected tick(now: number): Promise<TickReport> {
     return runTick(this.clockEnv(), now, { wake: 'clock', pacer: this.pacer, workRequested: this.workRequested });

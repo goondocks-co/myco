@@ -4,7 +4,7 @@ import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario } from '../harness.
 
 export const setupProgress: ParityScenario = {
   name: 'setup progress: scoped observations and bounded D1 reads',
-  dedicated: { timeoutMs: 180_000, cloudflare: { main: '../../tests/parity/setup-budget/worker-entry.ts' } },
+  dedicated: { timeoutMs: 180_000 },
   async run(target) {
     const now = Date.now();
     const read = async (headers = target.ownerHeaders()) => {
@@ -46,9 +46,9 @@ export const setupProgress: ParityScenario = {
     type Measurement = { rowsRead: number | null; progress: { liveCapture: boolean; workProduced: boolean } };
     const measure = async (): Promise<Measurement> => {
       if (target.name !== 'cloudflare') return { rowsRead: null, progress: await read() };
-      const response = await fetch(`${target.url}/__setup-read-budget`);
+      const response = await fetch(`${target.url}/api/setup`, { headers: target.ownerHeaders() });
       expect(response.status).toBe(200);
-      return await response.json() as Measurement;
+      return { rowsRead: Number(response.headers.get('x-parity-rows-read')), progress: await response.json() as Measurement['progress'] };
     };
     const expectFlat = (label: string, before: Measurement, after: Measurement) => {
       if (target.name !== 'cloudflare') return;

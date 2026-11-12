@@ -6,7 +6,7 @@ import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario } from '../harness.
 /** Fresh-owner recovery uses the same HTTP contract on native SQLite and local D1. */
 export const authSetupRefusals: ParityScenario = {
   name: 'auth setup: no owner, unclaimed, expired owner link and unconfigured sign-in',
-  dedicated: { cloudflare: { main: '../../tests/parity/owner-review/sign-in-unconfigured.ts' }, timeoutMs: 240000 },
+  dedicated: { cloudflare: { unconfiguredSignIn: true }, timeoutMs: 240000 },
   async run(target) {
     const headers = { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' };
     const post = (path: string, body: unknown) => fetch(target.url + path, { method: 'POST', headers, body: JSON.stringify(body) });
