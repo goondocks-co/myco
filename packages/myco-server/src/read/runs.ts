@@ -61,10 +61,6 @@ interface RunListRow {
   waitingSince: number | null;
   /** How many runs of this task wait in this Project, this one included; null for any other run, and while the queue is measured. */
   taskQueued: number | null;
-  /** Whether a deployment ended this run rather than its own work. */
-  replaced: boolean;
-  /** The run this one stands in for: the deployment that ended that run put this one in its place. */
-  replaces: string | null;
   /** The harness the claim chose; null when the row records none. */
   harness: string | null;
   /** The worker credential holding the run now — a legacy worker's member credential or a runner's — null once the run ends or returns to the queue, and for a run no worker took. */
@@ -295,8 +291,6 @@ function toListRow(row: Record<string, unknown>, ownNames: ReadonlyMap<string, s
     waitReason: visibleRunHolder(text(row.wait_reason), includeSignIn),
     waitingSince: num(row.waiting_since),
     taskQueued: num(row.task_queued),
-    replaced: flag(row.replaced),
-    replaces: text(row.replaces),
     harness: text(row.harness),
     leasedBy: ended ? null : text(row.leased_by) ?? text(row.leased_runner_credential_id),
     worker: row.leased_by == null && row.leased_runner_id == null ? null : workerOf(row, ownNames),

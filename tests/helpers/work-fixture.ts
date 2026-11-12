@@ -96,7 +96,7 @@ export const runRow = (over: Partial<RunPageRow> & Pick<RunPageRow, 'id' | 'task
   identity: { status: 'not_recorded' }, costProvenance: null,
   result: over.status === 'failed' ? ((over.outcome?.spores ?? 0) > 0 ? 'failed_with_output' : 'failed') : over.status === 'skipped' || over.status === 'queued' ? null : 'produced',
   agentId: 'myco-agent', subject: null, status: 'completed', model: null, startedAt: (over.completedAt ?? NOW - HOUR) - 5 * MINUTE, completedAt: NOW - HOUR, tokensUsed: 20_000, costUsd: 0.5,
-  costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, waitReason: null, waitingSince: null, taskQueued: null, replaced: false, replaces: null, harness: 'claude-code', worker: null,
+  costSource: 'estimated', failed: false, queuedAt: null, heldBy: null, waitReason: null, waitingSince: null, taskQueued: null, harness: 'claude-code', worker: null,
   startedBy: 'clock', targetSessionId: null, skipReason: null, outcome: { spores: 0, sessions: 0, readsRecorded: false },
   provider: null, resumedAt: null, dryRun: false, resumable: false, resumeStatus: null, leasedBy: null, leaseExpiresAt: null, ...over,
 });

@@ -18,7 +18,7 @@ import { AskedVersusDid, SourceMark, Tries, WhatHappened } from './RunStory';
 import { inferredEnd, recordedOutputWords, runStory, SOURCE_WORDS, type Source } from './story';
 import { stepsKnown } from './activity';
 import {
-  atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, deployWords, fullErrorWords, dollars, fleetWaitWords, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, fullErrorWords, dollars, fleetWaitWords, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -91,7 +91,6 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
   const cause = failed ? causeOf(answer) : null;
   const repositoryFailure = failed && run.errorCode === 'repository_unprepared';
   const fullError = failed ? fullErrorWords(run.errorCode, ranOn(run.worker, name)?.machine ?? null) : null;
-  const deploy = deployWords(run);
   const kept = run.result === 'failed_with_output';
   const calls = useRunCallsOf(projectId, answer);
   const latest = useAttemptEvidence(projectId, answer, calls, answer.attempts.length - 1);
@@ -110,7 +109,6 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
           {at !== null && <span>{capitalize(atWords(at, now))}</span>}
           {took !== null && <><span aria-hidden>·</span><span>took {took}</span></>}
           {startedBy !== null && <><span aria-hidden>·</span><span data-started-by="">{startedKicker(startedBy)}</span></>}
-          {deploy !== null && <><span aria-hidden>·</span><span>{deploy}</span></>}
         </p>
         {run.status === 'completed' && run.endedNote === LATE_HARNESS_ERROR_NOTE &&
           <p data-run-ended-note="" className="t-small text-muted">{lateSessionWords(diagnosticReaderCode(run.harnessStop?.code ?? null))}</p>}

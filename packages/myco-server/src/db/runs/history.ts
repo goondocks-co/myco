@@ -190,7 +190,6 @@ const COLUMNS = `id, agent_id, task, subject, status, provider, model, usage_dat
   ${costProvenanceValue()} AS cost_provenance, started_at, resumed_at, completed_at,
   tokens_used, cost_usd, cost_source, dry_run, resumable, resume_status, (error IS NOT NULL) AS failed,
   queued_at, held_by,
-  ${contextValue('replaced')} AS replaced, ${contextValue('replaces')} AS replaces,
   harness, leased_by, lease_expires_at, leased_runner_id, leased_runner_credential_id,
   (SELECT r.name FROM runners r WHERE r.id = agent_runs.leased_runner_id) AS leased_runner_name,
   (SELECT c.machine_id FROM member_credentials c WHERE c.id = agent_runs.leased_by) AS leased_machine,

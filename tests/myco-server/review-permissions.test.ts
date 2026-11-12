@@ -213,19 +213,6 @@ async function embedding(f: Awaited<ReturnType<typeof rig>>) {
   return (path: string, body: unknown) => f.server.handleRequest(memberPost(token.token, body, path), f.serverEnv);
 }
 
-test('failed completion postconditions cannot grant replacement eligibility', async () => {
-  const f = await rig();
-  try {
-    const post = await embedding(f);
-    const result = await (await post('/runs/update', { runId: 'embedding-run', update: { status: 'completed' }, replaced: true })).json();
-    expect(result).toMatchObject({ persisted: true, applied: false, reason: 'postcondition' });
-    const row = f.sqlite.query("SELECT status,run_context FROM agent_runs WHERE id='embedding-run'").get() as any;
-    expect(row.status).toBe('failed');
-    expect(JSON.parse(row.run_context).replaced).not.toBe(true);
-    expect(f.sqlite.query("SELECT COUNT(*) n FROM agent_runs").get()).toEqual({ n: 1 });
-  } finally { f.sqlite.close(); }
-});
-
 test('postcommit call observation failures preserve the accepted embedding result', async () => {
   const f = sqliteEnv();
   const now = Date.now();

@@ -1,6 +1,3 @@
-import { recordReport } from '@myco-server-worker/core/run-postconditions.js';
-import { handleUpdateRun } from '@myco-server-worker/api/runs.js';
-import { HARNESS_MEMBER_ID } from '@myco-server-worker/constants.js';
 import { indexFixture } from './helpers/vector-index.js';
 import { runRouteFixture } from './helpers/run-routes.js';
 import { shapeRunError } from '@goondocks/myco-shared/run-text';
@@ -415,14 +412,13 @@ describe('POST /runs/update at a terminal status from the dispatched runtime', (
     expect({ persisted: answered.persisted, reason: answered.reason }).toEqual({ persisted: false, reason: 'credential holds no live run' });
   });
 
-  it('refuses a failure recorded under a credential the row does not name, and queues no successor for it', async () => {
+  it('refuses a failure recorded under a credential the row does not name', async () => {
     const { db, minted, post, dispatch, run, sqlite } = await dispatchedRun();
     const sibling = await issueMemberToken(db, { memberId: 'mem_harness', machineId: 'harness' }, Date.now());
     await dispatch('run_t6', sibling);
     expect((await post(sibling.token, '/runs/claim', { id: 'run_t6', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' })).claimed).toBe(true);
 
-    // A failure can ask for a successor; it is keyed on the row's credential.
-    const failed = await post(minted.token, '/runs/update', { runId: 'run_t6', update: { status: 'failed', completed_at: Date.now(), error: 'stale' }, replaced: true });
+    const failed = await post(minted.token, '/runs/update', { runId: 'run_t6', update: { status: 'failed', completed_at: Date.now(), error: 'stale' } });
     expect({ persisted: failed.persisted, reason: failed.reason }).toEqual({ persisted: false, reason: 'credential holds no live run' });
     expect(run('run_t6')?.status).toBe('running');
     expect((sqlite.query(`SELECT COUNT(*) c FROM agent_runs`).get() as { c: number }).c).toBe(1);
@@ -510,25 +506,11 @@ it('judges a late harness error on the run update route after its accepted repor
     await f.post('/runs/claim', { id: 'late_error', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' });
     f.sqlite.run("UPDATE agent_runs SET run_context='7' WHERE id='late_error'");
     expect(await f.post('/runs/report', { runId: 'late_error', agentId: AGENT, action: 'embedding', summary: 'index checked' })).toMatchObject({ recorded: true });
-    expect(await f.post('/runs/update', { runId: 'late_error', replaced: true, update: { status: 'failed', completed_at: 42, error: 'the harness stopped: error (crashed; exit code 1)' } })).toMatchObject({ persisted: true, changed: 1, applied: true });
+    expect(await f.post('/runs/update', { runId: 'late_error', update: { status: 'failed', completed_at: 42, error: 'the harness stopped: error (crashed; exit code 1)' } })).toMatchObject({ persisted: true, changed: 1, applied: true });
     const row = f.sqlite.query('SELECT status,error,run_context FROM agent_runs WHERE id=?').get('late_error') as { status: string; error: string | null; run_context: string };
     expect(row).toMatchObject({ status: 'completed', error: null });
     expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_runs').get()).toEqual({ n: 1 });
     expect(JSON.parse(row.run_context)).toMatchObject({ unparsedRunContext: '7', endedNote: 'the agent session ended with an error after the work was done' });
     expect(JSON.parse(JSON.parse(row.run_context).harnessStop)).toMatchObject({ code: 'crashed', exitCode: 1 });
-  } finally { f.sqlite.close(); }
-});
-
-it('preserves the runtime replacement mark when an accepted report lacks its artifact', async () => {
-  const f = await harness();
-  try {
-    await f.post('/runs/claim', { id: 'missing_artifact', agentId: AGENT, task: 'embedding-reconcile', capability: 'cortex' });
-    f.sqlite.run("UPDATE agent_runs SET task='title-summary' WHERE id='missing_artifact'");
-    expect(await recordReport(f.db, { projectId: 'proj_1' }, { runId: 'missing_artifact', agentId: AGENT, action: 'summary', summary: 'Done', details: null, audit: JSON.stringify(RUN_AUDIT), createdAt: Date.now() })).toMatchObject({ recorded: true });
-    expect(await (await handleUpdateRun(f.serverEnv, { projectId: 'proj_1', memberId: HARNESS_MEMBER_ID, tokenId: f.token.tokenId, machineId: 'harness', expiresAt: Date.now() + 10000, lineageRoot: f.token.tokenId, lineageStartedAt: Date.now(), runtime: { runtimeLabel: null, runtimeKind: null }, runDeadline: Date.now() + 60000, now: Date.now(), origin: 'https://s', bodyBytes: 0, body: JSON.stringify({ runId: 'missing_artifact', replaced: true, update: { status: 'failed', error: 'the harness stopped: error (harness_error)' } }) })).json()).toMatchObject({ changed: 1, applied: false, reason: 'postcondition' });
-    const row = f.sqlite.query('SELECT status,run_context FROM agent_runs WHERE id=?').get('missing_artifact') as { status: string; run_context: string };
-    expect(row.status).toBe('failed');
-    expect(JSON.parse(row.run_context)).toMatchObject({ replaced: true });
-    expect(JSON.parse(row.run_context)).not.toHaveProperty('endedNote');
   } finally { f.sqlite.close(); }
 });
