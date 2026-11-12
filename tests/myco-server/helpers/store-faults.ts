@@ -209,61 +209,39 @@ export function failingStatement(
   return { store: watched.store, failures: () => failures };
 }
 
-/**
- * Pauses the first call carrying the statement the kernel names `name`, before that call reaches the store or after
- * it applied, until `resume`. `admitted` resolves once the pause has started, so another request can run while this
- * one is held. An unknown name refuses when the fault is made. `landed` is true once the pause started.
- */
-export function pausingAtStatement(db: RelationalStore, name: string, when: Moment = 'before'): {
-  store: RelationalStore; admitted: Promise<void>; resume(): void; landed(): boolean;
-} {
+/** Holds the first call carrying `name` until `resume`. `admitted` resolves when the hold starts. An unknown name refuses at creation. */
+export function pausingAtStatement(db: RelationalStore, name: string, when: Moment = 'before') {
   const sql = kernelSql(name);
-  let landed = false;
-  let release = () => {};
-  let reached = () => {};
+  let landed = false, release = () => {}, reached = () => {};
   const admitted = new Promise<void>((resolve) => { reached = resolve; });
   const paused = new Promise<void>((resolve) => { release = resolve; });
+  const hold = () => { landed = true; reached(); return paused; };
   const watched = around(db, async (_n, statements, apply) => {
     const hit = !landed && statements.includes(sql);
-    if (hit && when === 'before') { landed = true; reached(); await paused; }
+    if (hit && when === 'before') await hold();
     const result = await apply();
-    if (hit && when === 'after') { landed = true; reached(); await paused; }
+    if (hit && when === 'after') await hold();
     return result;
   });
   return { store: watched.store, admitted, resume: () => { release(); }, landed: () => landed };
 }
 
-/**
- * A store whose call carrying the statement the kernel names `name` never finishes. `landed` is true once that call
- * was reached. An unknown name refuses when the fault is made.
- */
-export function hangingStatement(db: RelationalStore, name: string): { store: RelationalStore; landed(): boolean } {
+/** A call carrying `name` never finishes. `landed` is true once that call was reached. An unknown name refuses at creation. */
+export function hangingStatement(db: RelationalStore, name: string) {
   const sql = kernelSql(name);
   let landed = false;
-  const watched = around(db, (_n, statements, apply) => {
-    if (statements.includes(sql)) { landed = true; return new Promise(() => {}); }
-    return apply();
-  });
+  const watched = around(db, (_n, statements, apply) => statements.includes(sql) ? (landed = true, new Promise(() => {})) : apply());
   return { store: watched.store, landed: () => landed };
 }
 
-/**
- * A store on which the `call`-th call carrying the statement the kernel names `name` fails, before it reaches the
- * store or after it applied. `call` counts from one: the first call carrying `name` is 1. An unknown name refuses
- * when the fault is made. `failures` answers how often it failed.
- */
-export function failingStatementCall(
-  db: RelationalStore, name: string, call: number, options: { when?: Moment; error?: () => Error } = {},
-): { store: RelationalStore; failures(): number } {
+/** The `call`-th call carrying `name` fails. `call` counts from one. An unknown name refuses at creation. */
+export function failingStatementCall(db: RelationalStore, name: string, call: number, options: { when?: Moment; error?: () => Error } = {}) {
   if (!Number.isInteger(call) || call < 1) throw new Error(`a statement call is counted from 1, not ${call}`);
   const sql = kernelSql(name);
   const { when = 'before', error = () => new Error(`${name} failed`) } = options;
-  let seen = 0;
-  let failures = 0;
+  let seen = 0, failures = 0;
   const watched = around(db, async (_n, statements, apply) => {
-    const hit = statements.includes(sql);
-    if (hit) seen += 1;
-    const fails = hit && seen === call;
+    const fails = statements.includes(sql) && ++seen === call;
     if (fails && when === 'before') { failures += 1; throw error(); }
     const result = await apply();
     if (fails && when === 'after') { failures += 1; throw error(); }

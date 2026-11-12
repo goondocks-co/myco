@@ -176,8 +176,7 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
       if (bound === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = ? WHERE id = 'target'", [f.now + 10]);
       const landing = changingAtStatement(f.db, path !== '/runs/claim' && bound === 'budget' ? 'runs.getRun' : 'runs.ofCredential', () => {
         f.advanceClock(f.now + (bound === 'lease' ? 20 : 1_000_000));
-        f.sqlite.run(bound === 'lease' ? "UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'" : "UPDATE agent_runs SET started_at = 1 WHERE id = 'target'");
-      });
+        f.sqlite.run(bound === 'lease' ? "UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'" : "UPDATE agent_runs SET started_at = 1 WHERE id = 'target'"); });
       f.bind(landing.store);
       const answer = await f.post(f.holder.token, OFFERS[path as keyof typeof OFFERS]);
       expect(landing.landed()).toBe(true);
@@ -203,13 +202,10 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: run
           ? changingAtStatement(f.db, 'runs.dispatchedClaimCaller', lose)
           : await (async () => {
             const before = f.sqlite.query("SELECT * FROM agent_runs WHERE id='target'").get() as Record<string, unknown>;
-            const at = await storingCall(f.db, async (store) => { f.bind(store); await f.post(f.holder.token, offer); }, () => path === '/runs/update'
-              ? f.sqlite.query("SELECT tokens_used AS v FROM agent_runs WHERE id='target'").get()
-              : f.sqlite.query("SELECT COUNT(*) AS v FROM agent_reports WHERE run_id='target'").get());
+            const at = await storingCall(f.db, async (store) => { f.bind(store); await f.post(f.holder.token, offer); }, () => path === '/runs/update' ? f.sqlite.query("SELECT tokens_used AS v FROM agent_runs WHERE id='target'").get() : f.sqlite.query("SELECT COUNT(*) AS v FROM agent_reports WHERE run_id='target'").get());
             restoreTarget(f, before);
             if (at < 1) throw new Error(`${path} stored nothing to race`);
-            return changingAt(f.db, at, lose);
-          })();
+            return changingAt(f.db, at, lose); })();
         f.bind(landing.store);
         const answer = await f.post(f.holder.token, offer);
         expect(landing.landed()).toBe(true);

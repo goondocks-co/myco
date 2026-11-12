@@ -73,12 +73,9 @@ for (const op of ['learning', 'title', 'map'] as const) for (const loss of ['lea
       if (loss === 'mid_batch_revocation') f.sqlite.exec(`CREATE TRIGGER revoke_domain AFTER ${op === 'title' ? 'UPDATE' : 'INSERT'}
         ON ${op === 'learning' ? 'extraction_acks' : op === 'title' ? 'sessions' : 'canopy_maps'} BEGIN
         UPDATE members SET revoked_at = 1 WHERE id = '${HARNESS_MEMBER_ID}'; END`);
-      const landing = loss === 'lease' || loss === 'revocation'
-        ? changingAtStatement(f.db, 'runs.attributeWrite', () => {
-          if (loss === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
-          if (loss === 'revocation') f.sqlite.run('UPDATE members SET revoked_at = 1 WHERE id = ?', [HARNESS_MEMBER_ID]);
-        })
-        : undefined;
+      const landing = loss === 'lease' || loss === 'revocation' ? changingAtStatement(f.db, 'runs.attributeWrite', () => {
+        if (loss === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
+        if (loss === 'revocation') f.sqlite.run('UPDATE members SET revoked_at = 1 WHERE id = ?', [HARNESS_MEMBER_ID]); }) : undefined;
       if (landing !== undefined) f.env.MYCO_DB = landing.store;
       const answer = op === 'learning' ? await f.call('myco_run_learning', { op: 'complete', handoff: '' })
         : op === 'title' ? await f.call('myco_run_sessions', { op: 'title', title: 'title', summary: 'summary' })

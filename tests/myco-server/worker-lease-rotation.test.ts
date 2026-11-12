@@ -111,8 +111,7 @@ type Rig = Awaited<ReturnType<typeof rig>>;
 type Row = Record<string, unknown>;
 
 function holdBefore(db: RelationalStore, at: number) {
-  let release = () => {};
-  let reached = () => {};
+  let release = () => {}, reached = () => {};
   const admitted = new Promise<void>((resolve) => { reached = resolve; });
   const paused = new Promise<void>((resolve) => { release = resolve; });
   const landing = changingAt(db, at, async () => { reached(); await paused; });
@@ -125,42 +124,29 @@ function runSnapshot(r: Rig): Row {
 
 function restoreRun(r: Rig, row: Row) {
   const columns = Object.keys(row);
-  r.e.sqlite.run(
-    `UPDATE agent_runs SET ${columns.map((column) => `${column}=?`).join(',')} WHERE id=?`,
-    [...columns.map((column) => row[column]), RUN.runId],
-  );
+  r.e.sqlite.run(`UPDATE agent_runs SET ${columns.map((column) => `${column}=?`).join(',')} WHERE id=?`, [...columns.map((column) => row[column]), RUN.runId]);
 }
 
-async function pauseAtRepositoryPin(r: Rig, attemptId: string) {
-  const before = runSnapshot(r);
-  const body = OPERATIONS.find((operation) => operation.path === '/worker/repository')!;
-  await r.post(r.owner.token, body.path, { ...RUN, attemptId, ...body.body });
-  restoreRun(r, before);
-  const pause = pausingAtStatement(r.env.db, 'runs.pinPreparationMemberAttempt', 'before');
-  r.env.db = pause.store;
-  return { admitted: pause.admitted, resume: pause.resume, landed: pause.landed, restore: pause.resume };
-}
-
-async function pauseAtEndWrite(r: Rig, attemptId: string) {
+async function pauseAtGuardedWrite(r: Rig, path: '/worker/repository' | '/worker/end', attemptId: string) {
   const before = runSnapshot(r);
   const credentials = r.e.sqlite.query('SELECT id, revoked_at, revoked_by FROM member_credentials').all() as Row[];
   const attempts = r.e.sqlite.query('SELECT * FROM agent_run_attempts WHERE run_id=?').all(RUN.runId) as Row[];
   const base = r.env.db;
-  const body = OPERATIONS.find((operation) => operation.path === '/worker/end')!;
-  const at = await storingCall(base, async (store) => {
-    r.env.db = store;
-    await r.post(r.owner.token, body.path, { ...RUN, attemptId, ...body.body });
-  }, () => r.row().status);
+  const body = OPERATIONS.find((operation) => operation.path === path)!;
+  const posted = { ...RUN, attemptId, ...body.body };
+  const at = path === '/worker/end'
+    ? await storingCall(base, async (store) => { r.env.db = store; await r.post(r.owner.token, path, posted); }, () => r.row().status)
+    : (await r.post(r.owner.token, path, posted), 0);
   restoreRun(r, before);
-  for (const credential of credentials) {
-    r.e.sqlite.run('UPDATE member_credentials SET revoked_at=?, revoked_by=? WHERE id=?', [credential.revoked_at, credential.revoked_by, credential.id]);
-  }
+  for (const credential of credentials) r.e.sqlite.run('UPDATE member_credentials SET revoked_at=?, revoked_by=? WHERE id=?', [credential.revoked_at, credential.revoked_by, credential.id]);
   for (const attempt of attempts) {
-    const columns = Object.keys(attempt).filter((column) => column !== 'project_id' && column !== 'run_id' && column !== 'attempt_id');
-    r.e.sqlite.run(
-      `UPDATE agent_run_attempts SET ${columns.map((column) => `${column}=?`).join(',')} WHERE project_id=? AND run_id=? AND attempt_id=?`,
-      [...columns.map((column) => attempt[column]), attempt.project_id, attempt.run_id, attempt.attempt_id],
-    );
+    const columns = Object.keys(attempt).filter((column) => !['project_id', 'run_id', 'attempt_id'].includes(column));
+    r.e.sqlite.run(`UPDATE agent_run_attempts SET ${columns.map((column) => `${column}=?`).join(',')} WHERE project_id=? AND run_id=? AND attempt_id=?`, [...columns.map((column) => attempt[column]), attempt.project_id, attempt.run_id, attempt.attempt_id]);
+  }
+  if (path === '/worker/repository') {
+    const pause = pausingAtStatement(base, 'runs.pinPreparationMemberAttempt', 'before');
+    r.env.db = pause.store;
+    return { admitted: pause.admitted, resume: pause.resume, landed: pause.landed, restore: pause.resume };
   }
   if (at < 1) throw new Error('the end wrote no run status');
   const pause = holdBefore(base, at);
@@ -198,9 +184,7 @@ for (const target of ['cloudflare', 'bun'] as const) describe(`${target}: authen
       try {
         const attemptId = await r.claim(r.owner.token);
         const next = await r.rotate(r.owner.token, r.owner.tokenId);
-        pause = operation.path === '/worker/repository'
-          ? await pauseAtRepositoryPin(r, attemptId)
-          : await pauseAtEndWrite(r, attemptId);
+        pause = await pauseAtGuardedWrite(r, operation.path, attemptId);
         const pending = r.post(r.owner.token, operation.path, { ...RUN, attemptId, ...operation.body });
         await pause.admitted;
         expect((await r.post(next.token, '/worker/lease', { ...RUN, attemptId })).body).toMatchObject({ held: true });

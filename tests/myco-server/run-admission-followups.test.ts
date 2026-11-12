@@ -33,14 +33,9 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: MCP
       const args = op === 'state_set' ? { op, key: 'k', value: 'v' } : { op, action: 'extract', summary: 'done' };
       const request = () => new Request('https://s/mcp', { method: 'POST', headers: memberHeaders(f.holder.token),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_run', arguments: args } }) });
-      const envFor = (db: typeof f.db) => target === 'native'
-        ? { ...serverEnvFromBunConfig({ sqlite: f.sqlite, blobDir: '/unused' }), db }
-        : { ...f.serverEnv, db };
+      const envFor = (db: typeof f.db) => target === 'native' ? { ...serverEnvFromBunConfig({ sqlite: f.sqlite, blobDir: '/unused' }), db } : { ...f.serverEnv, db };
       try {
-        if (op === 'report' && bound !== 'deadline') {
-          await pipeline.handleRequest(request(), envFor(f.db));
-          f.sqlite.run("DELETE FROM agent_reports WHERE run_id='target'");
-        }
+        if (op === 'report' && bound !== 'deadline') { await pipeline.handleRequest(request(), envFor(f.db)); f.sqlite.run("DELETE FROM agent_reports WHERE run_id='target'"); }
         const lose = () => {
           if (bound === 'lease') f.sqlite.run("UPDATE agent_runs SET lease_expires_at = 1 WHERE id = 'target'");
           if (bound === 'deadline') f.sqlite.run("UPDATE agent_runs SET started_at = 1 WHERE id = 'target'");
@@ -48,9 +43,7 @@ for (const target of ['cloudflare', 'native'] as const) describe(`${target}: MCP
           if (bound === 'terminal') f.sqlite.run("UPDATE agent_runs SET status = 'failed' WHERE id = 'target'");
           if (bound === 'revocation') f.sqlite.run('UPDATE member_credentials SET revoked_at = 1 WHERE id = ?', [f.holder.tokenId]);
         };
-        const name = bound === 'deadline'
-          ? (op === 'state_set' ? 'runs.stateRead' : 'runs.getRun')
-          : (op === 'state_set' ? 'runs.stateInsert' : 'runs.insertReportAny');
+        const name = bound === 'deadline' ? (op === 'state_set' ? 'runs.stateRead' : 'runs.getRun') : (op === 'state_set' ? 'runs.stateInsert' : 'runs.insertReportAny');
         const landing = changingAtStatement(f.db, name, lose);
         const response = await pipeline.handleRequest(request(), envFor(landing.store));
         expect(landing.landed()).toBe(true);
