@@ -4,7 +4,8 @@ import {
   type lineage_SessionLineage as SessionLineage,
 } from '@myco-server-worker/read/catalog/lineage.js';
 import { type session_activity_SessionActivityRow as SessionActivityRow } from '@myco-server-worker/read/catalog/session-activity.js';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event } from '../clients/requests.ts';
 
 /** Launch and continuation parents recorded by `session.start`, read back as a family and as agent activity on both front doors. */
 export const sessionLineageParity: ParityScenario = {
@@ -12,13 +13,8 @@ export const sessionLineageParity: ParityScenario = {
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const id = (name: string) => `parity-lineage-${name}-${stamp}`;
-    const start = async (name: string, at: number, payload: Record<string, unknown>) => {
-      const response = await fetch(`${target.url}/events`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: id(name), kind: 'session.start', createdAt: at, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload: { agent: 'claude-code', startedAt: at, ...payload } }),
-      });
-      await expectPersisted(response, `session.start ${name}`);
-    };
+    const start = (name: string, at: number, payload: Record<string, unknown>) =>
+      event(target, id(name), 'session.start', { agent: 'claude-code', startedAt: at, ...payload }, at);
     const read = async <T>(name: string, path: string): Promise<T> => {
       const response = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${encodeURIComponent(id(name))}/${path}`, { headers: target.ownerHeaders() });
       expect(response.status).toBe(200);
@@ -34,12 +30,13 @@ export const sessionLineageParity: ParityScenario = {
     await start('next', stamp + 2, { ...launched('next', 'root'), parentSessionId: id('worker'), parentReason: 'compact continuation' });
     await start('fixer', stamp + 3, launched('fixer', 'worker'));
 
-    expect(await target.sql(`SELECT session_id, launch_parent_session_id, parent_session_id FROM sessions
-      WHERE project_id = ${lit(target.projectId)} AND session_id IN (${['worker', 'next'].map((name) => lit(id(name))).join(',')}) ORDER BY started_at`))
-      .toEqual([
-        { session_id: id('worker'), launch_parent_session_id: id('root'), parent_session_id: null },
-        { session_id: id('next'), launch_parent_session_id: id('root'), parent_session_id: id('worker') },
-      ]);
+    const opened = async (name: string) => {
+      const response = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${encodeURIComponent(id(name))}`, { headers: target.ownerHeaders() });
+      expect(response.status).toBe(200);
+      return (await response.json() as { session: { launchParentSessionId: string | null; parentSessionId: string | null } }).session;
+    };
+    expect(await opened('worker')).toMatchObject({ launchParentSessionId: id('root'), parentSessionId: null });
+    expect(await opened('next')).toMatchObject({ launchParentSessionId: id('root'), parentSessionId: id('worker') });
     const lineage = await read<SessionLineage>('worker', 'lineage');
     expect(lineage.nodes.map((node) => [node.sessionId, node.depth, node.captured, node.current, node.placedUnder?.kind ?? null])).toEqual([
       [id('not-captured'), 0, false, false, null],

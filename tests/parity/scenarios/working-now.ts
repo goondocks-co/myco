@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event } from '../clients/requests.ts';
 
 /** A prompt id as the member mints one: a UUIDv7 whose timestamp is `at`. */
 const promptIdAt = (at: number): string => {
@@ -17,13 +18,7 @@ export const workingNow: ParityScenario = {
   async run(target: ParityTarget) {
     const now = Date.now();
     const session = `parity-working-${now}`;
-    const post = async (kind: string, createdAt: number, payload: Record<string, unknown>) => {
-      const res = await fetch(`${target.url}/events`, {
-        method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: session, kind, createdAt, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
-      });
-      await expectPersisted(res, kind);
-    };
+    const post = (kind: string, createdAt: number, payload: Record<string, unknown>) => event(target, session, kind, payload, createdAt);
     const ask = async (promptId: string) => {
       const res = await fetch(`${target.url}/context/prompt`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
@@ -31,21 +26,17 @@ export const workingNow: ParityScenario = {
       });
       expect(res.status).toBe(200);
     };
-    const stamped = async (): Promise<number | null> => {
-      const at = (await target.sql(`SELECT working_since AS at FROM sessions WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))[0]?.at;
-      return typeof at === 'number' ? at : null;
-    };
-    /** The stamp is written past the answer: wait for it to land, or for it not to. */
-    const settled = async (expected: number | null) => {
-      for (let tries = 0; tries < 50 && (await stamped()) !== expected; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(await stamped()).toBe(expected);
-    };
     const detail = async () => {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}`, { headers: target.ownerHeaders() });
       expect(res.status).toBe(200);
       return ((await res.json()) as { session: { working: boolean; workingSince: number | null } }).session;
     };
-
+    const stamped = async (): Promise<number | null> => (await detail()).workingSince;
+    /** The stamp is written past the answer: wait for it to land, or for it not to. */
+    const settled = async (expected: number | null) => {
+      for (let tries = 0; tries < 50 && (await stamped()) !== expected; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(await stamped()).toBe(expected);
+    };
     const promptId = crypto.randomUUID();
     await post('session.start', now - 120_000, { agent: 'claude-code', startedAt: now - 120_000 });
     await post('prompt', now - 110_000, { promptId, text: 'hi', origin: 'user' });

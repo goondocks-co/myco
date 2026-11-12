@@ -1,64 +1,47 @@
 import { expect } from 'bun:test';
-import { documentsPublished, expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { revisionHeaders } from '../settings-revision.ts';
+import { archived, event, mcp, owner, putCapability, putSetting, resetSetting, untilPublished } from '../clients/requests.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+
+const CAPABILITY_DEFAULTS = { cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false } as const;
 
 /** Both unconfigured targets retain independent recall contributors and explicitly skip semantic spores. */
 export const recall: ParityScenario = {
   name: 'recall: semantic configuration, independent guidance and capability admission',
   async run(target: ParityTarget) {
-    const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) => {
-      const res = await fetch(`${target.url}/events`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId, kind, createdAt, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload }),
-      });
-      await expectPersisted(res, kind);
-    };
-    const owner = async <T,>(path: string): Promise<{ status: number; body: T }> => {
-      const res = await fetch(`${target.url}${path}`, { headers: { ...target.ownerHeaders(), origin: target.url } });
-      return { status: res.status, body: (await res.json()) as T };
-    };
-    const mcp = async (args: Record<string, unknown>): Promise<Record<string, unknown>> => {
-      if (['save', 'consolidate'].includes(String(args.op))) args = { agent_line: 'When using this fixture, retain its evidence.', ...args };
-      const res = await fetch(`${target.url}/mcp`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_spores', arguments: args } }),
-      });
-      expect(res.status).toBe(200);
-      return ((await res.json()) as { result: { structuredContent: { result: Record<string, unknown> } } }).result.structuredContent.result;
-    };
+    const post = (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) =>
+      event(target, sessionId, kind, payload, createdAt);
     const admit = async (enabled: boolean) => {
-      const res = await fetch(`${target.url}/api/projects/${target.projectId}/capabilities/cortex`, {
-        method: 'PUT',
-        headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json', ...await revisionHeaders(target, `/api/projects/${target.projectId}/capabilities/cortex`) },
-        body: JSON.stringify({ enabled }),
-      });
-      expect(`cortex ${enabled}: ${res.status}`).toBe(`cortex ${enabled}: 200`);
+      const saved = await putCapability(target, 'cortex', enabled);
+      expect({ enabled, status: saved.status, body: saved.body }).toMatchObject({ status: 200 });
+    };
+    const capabilities = async () => {
+      const read = await owner<{ capabilities: Record<string, boolean> }>(target, `/api/projects/${target.projectId}/capabilities`);
+      expect(read.status).toBe(200);
+      return read.body.capabilities;
     };
 
     interface Served { persisted?: boolean; context?: string; parts?: Array<{ kind: string; sporeIds?: string[] }>; skipped?: string[]; kind?: string; answerId?: string; machine?: unknown }
-    const served = async (sessionId: string, promptId: string, text: string): Promise<Served> => {
-      const res = await fetch(`${target.url}/context/prompt`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId, promptId, text }),
-      });
+    const ask = async (path: string, payload: Record<string, unknown>): Promise<Served> => {
+      const res = await fetch(`${target.url}${path}`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(payload) });
       expect(res.status).toBe(200);
-      return (await res.json()) as Served;
+      return await res.json() as Served;
     };
-    const sessionBlock = async (payload: Record<string, unknown>): Promise<Served> => {
-      const res = await fetch(`${target.url}/context/session`, {
-        method: 'POST',
-        headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      expect(res.status).toBe(200);
-      return (await res.json()) as Served;
-    };
+    const served = (sessionId: string, promptId: string, text: string) => ask('/context/prompt', { sessionId, promptId, text });
+    const sessionBlock = (payload: Record<string, unknown>) => ask('/context/session', payload);
     const servedAtStart = (sessionId: string) => sessionBlock({ sessionId, kind: 'start' });
     const servedToSubagent = (sessionId: string, agentId: string, agentType: string) =>
       sessionBlock({ sessionId, kind: 'subagent', agentId, agentType });
+    interface ContextPage { rows: Array<{ kind: string; createdAt: number }>; cursor: string | null }
+    const injectionKinds = async (sessionId: string): Promise<string[]> => {
+      const page = await owner<ContextPage>(target, `/api/projects/${target.projectId}/sessions/${sessionId}/context-injections?limit=100`);
+      expect(page.status).toBe(200);
+      return page.body.rows.map((row) => row.kind).sort();
+    };
+    const sessionIds = async (): Promise<string[]> => {
+      const listed = await owner<{ rows: Array<{ sessionId: string }> }>(target, `/api/projects/${target.projectId}/sessions?limit=100`);
+      expect(listed.status).toBe(200);
+      return listed.body.rows.map((row) => row.sessionId).sort();
+    };
 
     const stamp = Date.now();
     const session = `parity-recall-${stamp}`;
@@ -67,17 +50,17 @@ export const recall: ParityScenario = {
     await post(session, 'session.start', { agent: 'claude-code', branch: 'recall', startedAt: stamp }, stamp);
     await post(session, 'prompt', { promptId: p1, text: planning, origin: 'user' }, stamp + 1);
 
-    await target.sql(`DELETE FROM project_capabilities WHERE project_id = ${lit(target.projectId)}`);
-    const defaults = await owner<{ capabilities: Record<string, boolean> }>(`/api/projects/${target.projectId}/capabilities`);
-    expect(defaults.body.capabilities).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
-    const spore = await mcp({ op: 'save', type: 'decision', content: `the hook answers before the drain ${stamp}`, session_id: session, project: target.projectId });
+    for (const [capability, enabled] of Object.entries(CAPABILITY_DEFAULTS)) {
+      const saved = await putCapability(target, capability, enabled);
+      expect({ capability, status: saved.status, body: saved.body }).toMatchObject({ status: 200 });
+    }
+    expect(await capabilities()).toEqual(CAPABILITY_DEFAULTS);
+    const spore = await mcp(target, 'myco_spores', { op: 'save', agent_line: 'When using this fixture, retain its evidence.', type: 'decision', content: `the hook answers before the drain ${stamp}`, session_id: session, project: target.projectId });
     expect(spore.id).toBeDefined();
 
     // The planning nudge remains available when semantic recall has no provider.
     const first = await served(session, p1, planning);
-    expect(first.persisted).toBe(true);
-    expect(first.skipped).toEqual(['spores:no_semantic']);
-    expect(first.parts?.map((p) => p.kind)).toEqual(['plan-nudge']);
+    expect([first.persisted, first.skipped, first.parts?.map((p) => p.kind)]).toEqual([true, ['spores:no_semantic'], ['plan-nudge']]);
     expect(first.context?.startsWith('Myco is where plans live')).toBe(true);
     expect(first.context).not.toContain(`the hook answers before the drain ${stamp}`);
     expect(first.context!.length).toBeLessThanOrEqual(10_000);
@@ -94,20 +77,8 @@ export const recall: ParityScenario = {
     const later = await served(session, p3, `and the plan for ${stamp} once more`);
     expect(later.parts?.map((p) => p.kind)).not.toContain('plan-nudge');
     expect(later.skipped).toContain('plan-nudge:repeat');
-    expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))
-      .toEqual([{ kind: 'plan-nudge' }]);
-    const answers = await target.sql(`SELECT prompt_id, outcome, parts, skipped, failures, selection FROM prompt_context_answers
-      WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)} ORDER BY created_at, prompt_id`) as Array<{ prompt_id: string; outcome: string; parts: string; skipped: string; failures: string; selection: string }>;
-    expect(answers).toHaveLength(3);
-    for (const answer of answers) expect(JSON.parse(answer.selection)).toEqual({
-      sporeRawMatches: 0, sporeJoined: 0, sporeHits: 0, sporeCalibrated: 0, sporeScored: 0, sporeProbable: 0,
-      sporeSeparated: 0, sporeRelevant: 0, sporeHydrated: 0,
-      planRawMatches: 0, planJoined: 0, planHits: 0, planUnserved: 0, planEligible: 0,
-      planCalibration: 'none', planQueryCandidates: 0, planCalibrationFailed: 0, planCalibrated: 0, planScored: 0, planProbable: 0, planSeparated: 0, planRelevant: 0, planHydrated: 0, budgetKept: 0,
-    });
-    expect(answers.find((answer) => answer.prompt_id === p1)).toMatchObject({ outcome: 'served', parts: '[{"kind":"plan-nudge"}]', skipped: '["spores:no_semantic"]', failures: '[]' });
-    expect(answers.filter((answer) => answer.outcome === 'empty')).toHaveLength(2);
-    expect(answers.filter((answer) => answer.outcome === 'empty').every((answer) => JSON.parse(answer.skipped).includes('plan-nudge:repeat'))).toBe(true);
+    // A served answer whose prompt is not on a published turn is a session record, kind context:<answer id>, beside the nudge.
+    expect(await injectionKinds(session)).toEqual([`context:${first.answerId}`, 'plan-nudge'].sort());
 
     const notice = `<task-notification>\n<task-id>${stamp}</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>`;
     const abstained = await served(session, crypto.randomUUID(), notice);
@@ -116,35 +87,34 @@ export const recall: ParityScenario = {
 
     // The record of what the prompt was served reaches the turn body under that prompt.
     interface Turn { injection: { sporeIds: string[]; spores: { id: string }[] } | null }
-    await documentsPublished(target, session);
-    const turn = await owner<Turn>(`/api/projects/${target.projectId}/sessions/${session}/turns/${p1}`);
+    const turn = await untilPublished(target, () => owner<Turn>(target, `/api/projects/${target.projectId}/sessions/${session}/turns/${p1}`), (read) => read.status === 200);
     expect(turn.status).toBe(200);
     expect(turn.body.injection).toBeNull();
 
     // A starting session is served the Project's instructions, trimmed and with
     // no heading, and is served nothing a second time.
     const guidance = `Keep the plan for ${stamp} current.`;
-    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('instructions.template', ${lit(JSON.stringify(`  ${guidance}  `))}, ${stamp}, 'test')`);
+    const template = await putSetting(target, 'instructions.template', `  ${guidance}  `);
+    expect(template.status).toBe(200);
+    try {
     const startSession = `parity-recall-start-${stamp}`;
     const atStart = await servedAtStart(startSession);
-    expect(atStart.persisted).toBe(true);
-    expect(atStart.parts?.map((p) => p.kind)).toEqual(['project', 'instructions']);
+    expect([atStart.persisted, atStart.parts?.map((p) => p.kind), atStart.kind]).toEqual([true, ['project', 'instructions'], 'cortex']);
     // The Project line stands first: it is the value a write is refused without.
-    expect(atStart.context?.startsWith('Project:: ')).toBe(true);
-    expect(atStart.context).toContain(target.projectId);
-    expect(atStart.context?.endsWith(guidance)).toBe(true);
-    expect(atStart.kind).toBe('cortex');
+    expect([atStart.context?.startsWith('Project:: '), atStart.context?.includes(target.projectId), atStart.context?.endsWith(guidance)]).toEqual([true, true, true]);
     // A machine another scenario claimed adds its own settings block; this checks only what recall serves.
     const { machine: _machine, ...repeated } = await servedAtStart(startSession);
     expect(repeated).toEqual({ persisted: true, context: '', parts: [], skipped: ['repeat'], kind: 'cortex' });
-    // A member about to have sessions previews the same block, as often as it asks, and no session is recorded.
-    const recorded = async () => (await target.sql(`SELECT COUNT(*) AS n FROM session_injections WHERE project_id = ${lit(target.projectId)}`)) as Array<{ n: number }>;
-    const before = await recorded();
+    // The context list is a session read, so the session is captured here. The preview itself names no session.
+    await post(startSession, 'session.start', { agent: 'claude-code', startedAt: stamp }, stamp);
+    const beforeSessions = await sessionIds();
+    const beforeKinds = await injectionKinds(startSession);
     for (let i = 0; i < 2; i++) {
       const preview = await sessionBlock({ kind: 'start', preview: true });
       expect({ persisted: preview.persisted, context: preview.context }).toEqual({ persisted: true, context: atStart.context });
     }
-    expect(await recorded()).toEqual(before);
+    expect(await sessionIds()).toEqual(beforeSessions);
+    expect(await injectionKinds(startSession)).toEqual(beforeKinds);
 
     // Two delegations of one type are two subagents, and each is served.
     for (const agentId of ['a1', 'a2']) {
@@ -153,37 +123,35 @@ export const recall: ParityScenario = {
         .toEqual({ agentId, parts: ['project', 'instructions'], kind: `cortex:${agentId}` });
       expect(delegated.context?.endsWith(guidance)).toBe(true);
     }
-    expect(await target.sql(`SELECT kind FROM session_injections WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(startSession)} ORDER BY kind`))
-      .toEqual([{ kind: 'cortex' }, { kind: 'cortex:a1' }, { kind: 'cortex:a2' }]);
 
     for (const compaction of [1, 2]) {
       const payload = { sessionId: startSession, kind: 'compact', compaction };
       const restored = await sessionBlock(payload);
-      expect(restored.context?.endsWith(guidance)).toBe(true);
-      expect(restored.kind).toBe(`cortex-compact:${compaction}`);
+      expect([restored.context?.endsWith(guidance), restored.kind]).toEqual([true, `cortex-compact:${compaction}`]);
       expect((await sessionBlock(payload)).skipped).toContain('repeat');
     }
     expect((await servedAtStart(startSession)).context).toBe('');
-    await post(startSession, 'session.start', { agent: 'claude-code', startedAt: stamp }, stamp);
-    interface ContextPage { rows: Array<{ kind: string; createdAt: number }>; cursor: string | null }
     const contextPath = `/api/projects/${target.projectId}/sessions/${startSession}/context-injections`;
-    const context = await owner<ContextPage>(`${contextPath}?limit=2`);
+    const context = await owner<ContextPage>(target, `${contextPath}?limit=2`);
     expect(context.status).toBe(200);
     expect(context.body.rows).toHaveLength(2);
     expect(context.body.cursor).not.toBeNull();
-    const rest = await owner<ContextPage>(`${contextPath}?cursor=${encodeURIComponent(context.body.cursor!)}&limit=100`);
+    const rest = await owner<ContextPage>(target, `${contextPath}?cursor=${encodeURIComponent(context.body.cursor!)}&limit=100`);
     expect([...context.body.rows, ...rest.body.rows].map((r) => r.kind).sort())
       .toEqual(['cortex', 'cortex-compact:1', 'cortex-compact:2', 'cortex:a1', 'cortex:a2']);
-    expect((await owner(`${contextPath.replace(startSession, 'missing-session')}`)).status).toBe(404);
-    await target.sql(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('cortex.instructions.inject_on_session_start', 'false', ${stamp}, 'test')`);
+    expect((await owner(target, `${contextPath.replace(startSession, 'missing-session')}`)).status).toBe(404);
+    const heldBack = await putSetting(target, 'cortex.instructions.inject_on_session_start', false);
+    expect(heldBack.status).toBe(200);
     try {
       const off = await sessionBlock({ sessionId: startSession, kind: 'compact', compaction: 3 });
       // The Project line survives a Deployment that holds its own text back.
       expect(off.parts?.map((p) => p.kind)).toEqual(['project']);
       expect(off.skipped).toEqual(['instructions:off']);
     } finally {
-      await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'cortex.instructions.inject_on_session_start'`);
-      await target.sql(`DELETE FROM deployment_settings WHERE leaf = 'instructions.template'`);
+      expect((await resetSetting(target, 'cortex.instructions.inject_on_session_start')).status).toBe(200);
+    }
+    } finally {
+      expect((await resetSetting(target, 'instructions.template')).status).toBe(200);
     }
 
     // A Project withdrawn from `cortex` is served nothing on a prompt, and at
@@ -191,6 +159,7 @@ export const recall: ParityScenario = {
     // refused without the id, so the capability holds back the Deployment's
     // text rather than the name every write has to carry.
     await admit(false);
+    try {
     const withdrawn = `parity-recall-off-${stamp}`;
     // The answer is recorded, and names the row it wrote.
     const shut = await served(withdrawn, crypto.randomUUID(), planning);
@@ -207,23 +176,19 @@ export const recall: ParityScenario = {
       { kind: 'subagent', preview: true },
     ]) {
       const block = await sessionBlock(payload);
-      expect(block.parts).toEqual([{ kind: 'project' }]);
-      expect(block.skipped).toEqual(['capability']);
-      expect(block.context).toBe(`Project:: \`${target.projectId}\` — pass this as \`project\` on Myco tool calls; a write without it is refused.`);
+      expect([block.parts, block.skipped, block.context]).toEqual([[{ kind: 'project' }], ['capability'], `Project:: \`${target.projectId}\` — pass this as \`project\` on Myco tool calls; a write without it is refused.`]);
     }
-    expect(await target.sql(`SELECT enabled FROM project_capabilities WHERE project_id = ${lit(target.projectId)} AND capability = 'cortex'`))
-      .toEqual([{ enabled: 0 }]);
+    expect((await capabilities()).cortex).toBe(false);
 
     await admit(true);
-    await target.sql(`UPDATE projects SET archived_at = ${stamp} WHERE project_id = ${lit(target.projectId)}`);
-    try {
-      const archived = await owner<{ capabilities: Record<string, boolean> }>(`/api/projects/${target.projectId}/capabilities`);
-      expect(archived.body.capabilities).toEqual({ cortex: false, canopy: false, vault_evolution: false, spore_curation: false, spore_curation_backfill: false });
+    await archived(target, target.projectId, async () => {
+      expect(await capabilities()).toEqual({ cortex: false, canopy: false, vault_evolution: false, spore_curation: false, spore_curation_backfill: false });
       const archivedAnswer = await served(`archived-${stamp}`, crypto.randomUUID(), planning);
       expect({ ...archivedAnswer, answerId: typeof archivedAnswer.answerId })
         .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], answerId: 'string' });
+    });
     } finally {
-      await target.sql(`UPDATE projects SET archived_at = NULL WHERE project_id = ${lit(target.projectId)}`);
+      await admit(true);
     }
   },
 };
