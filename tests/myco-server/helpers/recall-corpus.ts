@@ -1,5 +1,5 @@
-import { lit } from '../harness.ts';
-import type { Corpus } from './fixture.ts';
+import { lit } from '../../parity/harness.ts';
+import type { Corpus } from '../../parity/recall/fixture.ts';
 
 /** Longest SQL text one native geometry fixture statement carries. */
 const SEED_CHUNK_CHARS = 60_000;

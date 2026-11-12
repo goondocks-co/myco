@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { createProject, mcp, owner } from '../clients/requests.ts';
+import { createProject, event, owner } from '../clients/requests.ts';
 
 /**
  * A Project's plan list at the size a real Project reaches: more plans than one statement may bind as parameters,
@@ -19,13 +19,14 @@ export const plansAtScale: ParityScenario = {
     await expectPersisted(await fetch(`${target.url}/events`, { method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: session, kind: 'session.start', createdAt: stamp, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload: { agent: 'claude-code', startedAt: stamp } }) }), 'session.start');
     const saved: Array<{ id: string; updated: number }> = [];
     for (let i = 0; i < count; i++) {
-      const plan = await mcp(target, 'myco_plans', { op: 'save', session_id: session, plan_key: `scale-${i}`, title: `Plan ${i}`, content: '- [x] one', tags: [`t${i % 3}`] });
-      saved.push({ id: String(plan.id), updated: Number(plan.updated_at) });
+      const id = crypto.randomUUID(), updated = stamp + Math.floor(i / 5);
+      await event(target, session, 'plan', { planKey: id, title: `Plan ${i}`, content: '- [x] one', tags: [`t${i % 3}`] }, updated);
+      saved.push({ id, updated });
     }
     try {
       const read = async (query: string) => {
         const res = await fetch(`${target.url}/api/projects/${target.projectId}/plans?${query}`, { headers: { ...target.ownerHeaders(), origin: target.url } });
-        return { status: res.status, body: await res.json() as { plans: { planKey: string; tags: string[] }[]; cursor?: string | null } };
+        return { status: res.status, body: await res.json() as { plans: { planKey: string; tags: string[]; updatedAt: number }[]; cursor?: string | null } };
       };
       for (const limit of [100, 200]) {
         const answer = await read(`limit=${limit}`);
@@ -33,6 +34,7 @@ export const plansAtScale: ParityScenario = {
         const ours = answer.body.plans.filter((p) => saved.some(row => row.id === p.planKey));
         expect(ours.length).toBe(limit);
         expect(ours.every((p) => p.tags.length === 1)).toBe(true);
+        expect(ours.map(p => [p.planKey, p.updatedAt])).toEqual(saved.toSorted((a,b) => b.updated - a.updated || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)).slice(0, limit).map(row => [row.id, row.updated]));
       }
       // Page by page to the end, every plan once, in the order the list keeps.
       const seen: string[] = [];
@@ -46,7 +48,7 @@ export const plansAtScale: ParityScenario = {
       }
       expect(cursor).toBeNull();
       expect(new Set(seen).size).toBe(seen.length);
-      expect(seen).toEqual(saved.sort((a,b) => b.updated - a.updated || b.id.localeCompare(a.id)).map(row => row.id));
+      expect(seen).toEqual(saved.sort((a,b) => b.updated - a.updated || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)).map(row => row.id));
     } finally {
       expect((await owner(target, `/api/projects/${projectId}/archive`, { method: 'POST' })).status).toBe(200);
     }

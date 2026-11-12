@@ -111,19 +111,21 @@ export const storageCleanupParity: ParityScenario = {
     for (const column of ['received_at', 'eligible_at']) await ageRows(target, { table: 'raw_archive_refs', column, byMs: 2 * DAY_MS, match: { project_id: target.projectId, source_kind: 'transcript', transcript_id: transcriptId } });
     expect((await putSetting(target, 'retention.raw_days', 1)).status).toBe(200);
 
+    // Stored source preservation: archival clears the hot payload only after retaining the response identity.
+    const eventState = async () => (await target.sql(`SELECT payload,payload_format,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`))[0];
     let done = false;
     for (let pass = 0; pass < 16; pass += 1) {
       await wake();
       const response = await rawGet(transcriptPath);
       const state = await response.json() as { transcripts: Array<{ segments: Array<{ availability: string }> }> };
-      done = state.transcripts.some(row => row.segments.some(segment => segment.availability === 'archived'));
+      const source = await eventState();
+      done = state.transcripts.some(row => row.segments.some(segment => segment.availability === 'archived')) && source?.payload_format === 'archived' && source.payload_bytes === 0;
       if (done) break;
     }
     expect(done).toBe(true);
-    // Stored source preservation: archival clears the hot payload only after retaining its response identity.
-    const [eventState] = await target.sql(`SELECT payload,payload_format,payload_bytes FROM events WHERE project_id=${project} AND event_id=${event}`);
-    expect(eventState).toMatchObject({ payload_format: 'archived', payload_bytes: 0 });
-    expect(JSON.parse(String(eventState.payload))).toMatchObject({ responseId });
+    const source = await eventState();
+    expect(source).toMatchObject({ payload_format: 'archived', payload_bytes: 0 });
+    expect(JSON.parse(String(source.payload))).toMatchObject({ responseId });
     const [toolState]=await toolFacts();
     expect(Number(toolState!.inputBytes)).toBe(new TextEncoder().encode(fullInput).byteLength);
     const fullResponse=await processedBody('tool-input',toolCallId,toolState!.locator);

@@ -13,7 +13,7 @@ import { EMBEDDING_TEXT_CHARS } from '@myco-server-worker/core/embedding/provide
 import { INJECTION_TARGET_ITEMS, selectSporesForPrompt } from '@myco-server-worker/core/injection.js';
 import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
 import { loadRecallFixture } from '../parity/recall/fixture.ts';
-import { seedStatements } from '../parity/recall/stored-fixture.ts';
+import { seedStatements } from './helpers/recall-corpus.ts';
 import { UnknownFixtureText } from '../parity/recall/lookup.ts';
 import { compareToBaseline, describeComparison, mustNotRegressions, scoreCase, summarize, summarizeMustNot, withTarget, type GoldCase, type RecallBaseline } from '../parity/recall/score.ts';
 import { caseCount, recallBaseline, recallQuality } from '@myco-server-worker/evals/recall-baseline.js';

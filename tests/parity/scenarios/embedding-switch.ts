@@ -37,7 +37,7 @@ function startStub(dimensions: Record<string, number>): { url: string; stop(): v
  */
 export const embeddingSwitch: ParityScenario = {
   name: 'embedding switch: search answers by meaning between runtime passes and changes model once the switch finishes',
-  dedicated: { cloudflare: { main: '../../tests/parity/embedding-switch/worker-entry.ts', embeddingFixture: true }, sqliteVec: true, timeoutMs: 120_000 },
+  dedicated: { cloudflare: { main: '../../tests/parity/embedding-switch/worker-entry.ts' }, selfhosted: { embeddingRuntime: true }, sqliteVec: true, timeoutMs: 120_000 },
   async run(target: ParityTarget) {
     const projectId = target.projectId;
     const models = MODELS[target.name];

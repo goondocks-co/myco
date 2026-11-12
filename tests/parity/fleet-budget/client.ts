@@ -1,18 +1,18 @@
-import { PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
-import { toBase64Url } from '@myco-server-worker/base64.js';
 import { expect } from 'bun:test';
-import type { RouteTarget } from '../clients/requests.ts';
-import { owner } from '../clients/requests.ts';
+import type { ParityTarget } from '../harness.ts';
+import { client, joinMember, lapse } from '../clients/identity.ts';
 
-export async function registerRunner(target: RouteTarget): Promise<void> {
-  const candidate = `mycorun_${toBase64Url(crypto.getRandomValues(new Uint8Array(32)))}`;
-  const post = async (path: string, body: unknown, token?: string) => {
-    const response = await fetch(`${target.url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4', ...(token ? { authorization: `Bearer ${token}`, [PROTOCOL_HEADER]: String(SERVER_PROTOCOL) } : {}) }, body: JSON.stringify(body) });
-    expect(response.status).toBe(200); return response.json() as Promise<any>;
+/** One offline machine renews its credential lineage; its member and machine claim stay fixed. */
+export async function credentialHistory(target: ParityTarget): Promise<(count: number) => Promise<void>> {
+  let { token, tokenId } = await joinMember(target);
+  return async (count) => {
+    for (let i = 0; i < count; i++) {
+      await lapse(target, tokenId);
+      const renewed = await client(target, '/tokens/refresh', {}, token);
+      expect({ status: renewed.status, refreshed: renewed.body.refreshed, code: renewed.body.code }).toEqual({ status: 200, refreshed: true, code: undefined });
+      expect(typeof renewed.body.token).toBe('string');
+      expect(typeof renewed.body.tokenId).toBe('string');
+      ({ token, tokenId } = renewed.body);
+    }
   };
-  const machineId = `fleet-${crypto.randomUUID()}`;
-  const started = await post('/auth/runner/start', { candidate, name: 'fleet-runner', machineId, machineName: 'Fleet laptop', os: 'linux' });
-  expect((await owner(target, '/api/device/approve-runner', { method: 'POST', body: JSON.stringify({ user_code: started.user_code }) })).status).toBe(200);
-  expect(await post('/auth/runner/poll', { device_code: started.device_code })).toMatchObject({ registered: true });
-  expect(await post('/runners/contact', { machineId }, candidate)).toMatchObject({ persisted: true });
 }

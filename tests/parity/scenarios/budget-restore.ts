@@ -1,7 +1,7 @@
 import { expect } from 'bun:test';
 import type { ParityScenario } from '../harness.ts';
 import { owner, wake } from '../clients/requests.ts';
-import { selectOwner } from '../historical-storage/clients.ts';
+import { selectOwner } from '../clients/identity.ts';
 import { budgetArtifact } from '../historical-storage/budget.ts';
 
 export const budgetRestore: ParityScenario = {

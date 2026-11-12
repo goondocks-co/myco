@@ -26,7 +26,7 @@ const FRONT_DOOR = { selfhosted: 'self-hosted', cloudflare: 'hosted' } as const;
  */
 export const recallGold: ParityScenario = {
   name: 'recall gold set: real prompts served through the shipped path hold to the recorded baseline',
-  dedicated: { cloudflare: { main: '../../tests/parity/recall/worker-entry.ts', embeddingFixture: true }, sqliteVec: true, timeoutMs: 600_000 },
+  dedicated: { cloudflare: { main: '../../tests/parity/recall/worker-entry.ts' }, selfhosted: { embeddingRuntime: true }, sqliteVec: true, timeoutMs: 600_000 },
   async run(target: ParityTarget) {
     const { gold, corpus, lookup } = loadRecallFixture();
     const now = Date.now();

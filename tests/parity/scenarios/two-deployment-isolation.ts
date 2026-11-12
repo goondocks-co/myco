@@ -11,7 +11,7 @@ import { TOOL_REGISTRY } from '@myco-server-worker/mcp/registry.js';
 import { RUN_TOOL_REGISTRY } from '@myco-server-worker/mcp/run-surface.js';
 import { matchRoute, ROUTES, type Route } from '@myco-server-worker/routes.js';
 import { lit, MACHINE_ID, MEMBER_ID, SESSION_SECRET, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { credentials, selectOwner } from '../historical-storage/clients.ts';
+import { credentials, selectOwner } from '../clients/identity.ts';
 import { linkedMember, dispatch, takeRun, repository, runDetail } from '../clients/runs.ts';
 import { allowWorkerClaims, owner, putCapability, putSetting } from '../clients/requests.ts';
 import { transplantSecret } from '../historical-storage/sealed-secret.ts';
@@ -135,7 +135,7 @@ async function seedAuthorities(target: ParityTarget): Promise<Authorities> {
   expect(runRead.status).toBe(200);
   const runResult = await runRead.json() as { error?: unknown; result?: { structuredContent?: { result?: { spores?: unknown[] } } } };
   expect(runResult.error).toBeUndefined();
-  expect(runResult.result?.structuredContent?.result).toBeDefined();
+  expect(runResult.result?.structuredContent?.result?.spores).toEqual([]);
   return { grantKey, runToken };
 }
 
@@ -232,7 +232,7 @@ async function sealedSecretIsolation(from: ParityTarget, to: ParityTarget): Prom
 async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
   const now = Date.now();
   await selectOwner(target);
-  const ownerTokenId = (await credentials(target)).find(row => row.memberId === MEMBER_ID && row.machineId === MACHINE_ID && row.live).id;
+  const ownerTokenId = (await credentials(target)).find(row => row.memberId === MEMBER_ID && row.machineId === MACHINE_ID && row.live)!.id;
   const deviceStart = await request(target, 'POST', '/auth/device/start', {}, JSON.stringify({ machineId: MACHINE_ID, machineName: 'Owner laptop', os: 'linux' }));
   expect(deviceStart.status).toBe(200);
   const device = await deviceStart.json() as { user_code: string; device_code: string };
@@ -325,7 +325,7 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
   expect(await status(actors[1], 'POST', `/api/members/${revokedMember.memberId}/revoke`)).toBe(200);
   expect((await owner(target, '/api/members')).body.members.find((row: any) => row.id === revokedMember.memberId).revokedAt).not.toBeNull();
   const memberToken = plainMember.token;
-  const memberMachine = (await credentials(target)).find(row => row.memberId === plainMember.memberId && row.live).machineId;
+  const memberMachine = (await credentials(target)).find(row => row.memberId === plainMember.memberId && row.live)!.machineId;
   const rawContent = `matrix-member-${target.deploymentId}`;
   const rawKeyOfMember = await sha256Hex(rawContent);
   const rawUpload = await fetch(`${target.url}/blobs/${rawKeyOfMember}`, { method: 'POST',
@@ -380,7 +380,7 @@ async function roleMatrix(target: ParityTarget, rawKey: string): Promise<void> {
     expect(await status(actor, 'POST', `/api/backups/${backupId}/restore`)).toBe(actor.role === 'owner' ? 200 : 403);
   }
 
-  const ownerCredential = async () => (await credentials(target)).find(row => row.id === ownerTokenId);
+  const ownerCredential = async () => (await credentials(target)).find(row => row.id === ownerTokenId)!;
   const memberStop = await request(target, 'POST', `/api/machines/${MACHINE_ID}/stop`, actors[2].headers);
   expect(memberStop.status).toBe(404);
   const adminStop = await request(target, 'POST', `/api/machines/${MACHINE_ID}/stop`, actors[1].headers);

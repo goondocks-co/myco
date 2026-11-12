@@ -10,8 +10,8 @@ export async function embeddingPass(target: RouteTarget): Promise<string> {
   expect({ status: answer.run.status, error: answer.run.error }).toMatchObject({ status: 'completed' });
   const report = answer.reports.find((row: any) => row.action === 'embedding');
   expect(report).toBeDefined();
-  const phase = /; ([a-z-]+)\./.exec(report.summary)?.[1];
-  if (phase === undefined) throw new Error(`embedding report has no phase: ${report.summary}`);
+  const phase = answer.toolCalls.filter((call: { tool: string }) => call.tool === '/runs/embedding-step').at(-1)?.op;
+  if (typeof phase !== 'string' || phase.length === 0) throw new Error('completed embedding run has no recorded step phase');
   return phase;
 }
 export async function embeddingSettings(target: RouteTarget): Promise<void> {

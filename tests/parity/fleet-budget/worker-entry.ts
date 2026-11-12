@@ -16,7 +16,7 @@ export function measured(db: RelationalStore): { store: RelationalStore; rowsRea
 export default {
   async fetch(request: Request, bindings: CloudflareBindings, deferred?: DeferredWork) {
     const url = new URL(request.url);
-    if (url.pathname !== '/api/status') return worker.fetch(request, bindings, deferred);
+    if (url.pathname !== '/api/runners') return worker.fetch(request, bindings, deferred);
     const { store, rowsRead } = measured(bindings.MYCO_DB);
     const response = await worker.fetch(request, { ...bindings, MYCO_DB: store }, deferred);
     const answer = new Response(response.body, response);

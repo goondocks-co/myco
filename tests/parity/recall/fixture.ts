@@ -7,9 +7,10 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expectPersisted } from '../harness.ts';
-import { event, type RouteTarget } from '../clients/requests.ts';
+import { event } from '../clients/requests.ts';
+import type { IdentityTarget } from '../clients/identity.ts';
 import { fixtureLookup, type VectorIndexFile } from './lookup.ts';
-import { joinMachine } from '../historical-storage/clients.ts';
+import { joinMember } from '../clients/identity.ts';
 import { asMember } from '../clients/runs.ts';
 import type { GoldCase, MustNotSummary } from './score.ts';
 
@@ -32,8 +33,8 @@ export function loadRecallFixture() {
 }
 
 /** Imports the frozen identities and source times through the same channel as a member's legacy import. */
-export async function importCorpus(target: RouteTarget, corpus: Corpus): Promise<void> {
-  const importers = await Promise.all(Array.from({ length: 4 }, async () => asMember(target, (await joinMachine(target)).token)));
+export async function importCorpus(target: IdentityTarget, corpus: Corpus): Promise<void> {
+  const importers = await Promise.all(Array.from({ length: 4 }, async () => asMember(target, (await joinMember(target)).token)));
   for (const [index, spore] of corpus.spores.entries()) {
     const importer = importers[index % importers.length]!;
     await expectPersisted(await fetch(`${target.url}/spores/save`, { method: 'POST', headers: importer.memberHeaders({ 'content-type': 'application/json' }), body: JSON.stringify({ channel: 'import', id: spore.id, agentId: 'recall-gold', observationType: spore.observationType, content: spore.content, agentLine: spore.agentLine, createdAt: spore.createdAt, status: spore.status }) }), `corpus ${spore.id}`);

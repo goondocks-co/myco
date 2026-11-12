@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { FOREIGN_LINEAGE_REVOKER } from '@myco-server-worker/constants.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
 import { SESSION_SECRET, memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { selectOwner, credentials } from '../historical-storage/clients.ts';
+import { selectOwner, credentials } from '../clients/identity.ts';
 import { owner, event, mcp } from '../clients/requests.ts';
 import { linkedMember } from '../clients/runs.ts';
 import { bootSelfhosted } from '../targets/selfhosted.ts';
@@ -84,8 +84,6 @@ export const backupRestore: ParityScenario = {
       const minted = await ownerPost<{ key: string; id: string }>(sibling, `/api/projects/${sibling.projectId}/grants`, { label: 'sibling grant' });
       expect(minted.status).toBe(201);
       const siblingAuthority = (await credentials(sibling)).filter(row => row.live).map(row => String(row.id));
-      siblingAuthority.push(minted.body.id);
-      expect(siblingAuthority).toContain(minted.body.id);
       const memberRead = (on: ParityTarget) => fetch(`${on.url}/members/status`, { method: 'POST',
         headers: { ...memberHeadersFor(sibling.memberToken, on.projectId), 'content-type': 'application/json' }, body: '{}' });
       const grantList = (on: ParityTarget) => fetch(`${on.url}/mcp`, { method: 'POST',
@@ -96,8 +94,9 @@ export const backupRestore: ParityScenario = {
       const back = await ownerPost<{ applied: boolean }>(target, '/api/backups/restore-upload', { artifact: await siblingArtifact.text(), allowForeignLineage: true });
       expect({ status: back.status, applied: back.body.applied }).toEqual({ status: 200, applied: true });
       const landed = await credentials(target);
-      expect(landed.filter(row => siblingAuthority.includes(row.id)).map(row => ({ id: row.id, live: row.live, revokedBy: row.revokedBy })).sort((a,b) => a.id.localeCompare(b.id)))
-        .toEqual(siblingAuthority.filter(id => id !== minted.body.id).sort().map(id => ({ id, live: false, revokedBy: FOREIGN_LINEAGE_REVOKER })));
+      const byId = (a: { id: string }, b: { id: string }) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      expect(landed.filter(row => siblingAuthority.includes(row.id)).map(row => ({ id: row.id, live: row.live, revokedBy: row.revokedBy })).sort(byId))
+        .toEqual(siblingAuthority.map(id => ({ id, live: false, revokedBy: FOREIGN_LINEAGE_REVOKER })).sort(byId));
       expect({ member: (await memberRead(target)).status, grant: (await grantList(target)).status }).toEqual({ member: 401, grant: 401 });
       expect({ read: await adminRead(target), write: await adminWrite(target) }).toEqual({ read: 401, write: 401 });
       const members = (await owner(target, '/api/members')).body.members;

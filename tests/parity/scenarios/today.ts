@@ -40,7 +40,7 @@ export const today: ParityScenario = {
     expect(work.body.timeline.map((row: any) => [row.id, row.result])).toEqual([[run.id, 'produced']]);
     expect(work.body.upkeep).toMatchObject({ task: 'embedding-reconcile' });
     const status = await read('/api/status'); expect(status.status).toBe(200);
-    expect(status.body.capture.some((row: any) => row.projectId === target.projectId && row.agent === 'claude-code')).toBe(true);
+    expect(status.body.capture.some((row: any) => row.projectId === target.projectId && row.agent === 'claude-code' && row.machineId === joined.machineId)).toBe(true);
     expect(await read('/api/attention')).toMatchObject({ status: 403, body: { error: 'not_admin' } });
     const needs = await owner(target, '/api/attention'); expect(needs.status).toBe(200);
     expect(Array.isArray(needs.body.items)).toBe(true);
