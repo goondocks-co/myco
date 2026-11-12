@@ -116,7 +116,7 @@ export function resolveGitHubUser(run: GhRunner = defaultGhRunner): string {
 export function getMachineId(): string {
   const cachePath = resolveMachineIdPath();
   // The path above is resolved on every call. A hit returns the id without reading machine_id.
-  if (cachedMachineId?.path === cachePath) return cachedMachineId.id
+  if (cachedMachineId?.path === cachePath) return cachedMachineId.id;
 
   try {
     const persisted = fs.readFileSync(cachePath, 'utf-8').trim();
