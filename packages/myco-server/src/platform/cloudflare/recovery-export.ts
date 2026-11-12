@@ -107,7 +107,7 @@ interface ExportTarget {
   tables: readonly string[];
   /** The credential, held only here and sent only to `CLOUDFLARE_API_ORIGIN`. */
   token: string;
-  /** Test-only: a stand-in for the provider API, refused outside a test runtime. */
+  /** Stand-in for the provider API, refused outside a loopback recording runtime. */
   apiOrigin?: string;
 }
 

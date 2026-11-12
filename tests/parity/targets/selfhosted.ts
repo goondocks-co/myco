@@ -1,6 +1,4 @@
 import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
-import {PARITY_PULLED_STAGES} from '../../helpers/pulled-test-stage.ts';
-import {installPulledStages} from '@myco-server-worker/core/pulled-stages.js';
 import {checkObservedRelease,primeObservedEmbedding,installObservedEmbeddingRuntime} from '../observed-worker.ts';
 import { wordVectorProvider } from '../embedding/word-vectors.ts';
 import { revisionHeaders } from '../settings-revision.ts';
@@ -25,7 +23,7 @@ import { upgradeNativeStore } from '../schema-carry.ts';
 import { seedDeployment } from '../upgrade-seed/index.ts';
 
 /** The shipped self-hosted server, in-process: real entry, real migrations, a temp volume. */
-export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; pulledStage?: boolean; embeddingFixture?:boolean; latestSchemaUpgrade?: boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
+export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnapshots?: boolean; embeddingFixture?:boolean; latestSchemaUpgrade?: boolean; uiAssets?: BunServerOptions['uiAssets'] } = {}): Promise<ParityTarget> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-parity-'));
   const databasePath = path.join(root, 'myco.sqlite');
 
@@ -84,9 +82,8 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
       upgradeNativeStore(databasePath);
     } catch (error) { provider.stop(); throw error; }
   }
-  const started = options.stopRace === true || options.receiptSnapshots === true || options.pulledStage===true ? await (async () => {
+  const started = options.stopRace === true || options.receiptSnapshots === true ? await (async () => {
     const handler = await createBunHandler(serverOptions);
-    const restoreStages = options.pulledStage === true ? installPulledStages(PARITY_PULLED_STAGES) : () => {};
     const race = stopRaceFixture();
     if (options.stopRace === true) handler.env.db = race.wrap(handler.env.db);
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, development: false,
@@ -96,7 +93,7 @@ export async function bootSelfhosted(options: { stopRace?: boolean; receiptSnaps
       error: () => new Response(null, { status: 503 }),
     });
     handler.bind(server);
-    return { port: server.port, env: handler.env, stop: async () => { server.stop(); await handler.close(); restoreStages(); } };
+    return { port: server.port, env: handler.env, stop: async () => { server.stop(); await handler.close(); } };
   })() : await serve(serverOptions);
   const recorded=statementRecorder(started.env.db,{accounting:'native'});
   started.env.db=recorded.db;

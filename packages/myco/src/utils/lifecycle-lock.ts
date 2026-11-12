@@ -478,16 +478,6 @@ export const LifecycleLock = {
       lock: { release, update, path: lockPath, pid: process.pid },
     };
   },
-
-  /** Test-only seam: clears the cached FFI binding so a subsequent
-   *  `acquire` re-runs `dlopen`. Used in unit tests that exercise the
-   *  refuse-to-start path. */
-  __resetForTests(): void {
-    flockBinding = null;
-    flockBindingError = null;
-    kernel32Binding = null;
-    kernel32BindingError = null;
-  },
 };
 
 /**

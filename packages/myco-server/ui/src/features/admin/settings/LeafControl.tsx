@@ -82,8 +82,7 @@ const STACKED: ReadonlySet<LeafField['kind']> = new Set(['text', 'textarea', 'js
  * a document or a long text on Save. A setting nothing reads, or one the viewer
  * may not change, is shown and never offered.
  *
- * Exported so a test can render a field of every kind: the catalogue holds no
- * read-only `select` or `textarea` today.
+ * The catalogue holds no read-only `select` or `textarea` today.
  */
 export function LeafControl({ field, row }: { field: LeafField; row: LeafRow | undefined }) {
   if (field.kind === 'embedding-provider' || field.kind === 'embedding-model' || field.kind === 'embedding-endpoint') return <EmbeddingRow field={field} row={row} />;

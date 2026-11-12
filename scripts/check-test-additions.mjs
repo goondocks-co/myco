@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { checkedFile, PRODUCT_ROOT, statementFindings } from './test-addition-rules.mjs';
+import { checkedFile, isProductFile, isTestFile, PRODUCT_ROOT, statementFindings } from './test-addition-rules.mjs';
 
 const MIGRATIONS_DIR = 'packages/myco-server/migrations';
 /** A statement longer than this is checked in pieces, so one unbalanced line cannot swallow a file. */
@@ -104,7 +104,7 @@ function statements(lines) {
     out.push({
       line: current[0].line,
       code: current.map((part) => part.code.trim()).filter(Boolean).join(' '),
-      text: current.map((part) => part.text.trim()).join(' '),
+      text: current.map((part) => part.text.trim()).join('\n'),
       fresh: current.some((part) => !part.old),
     });
     current = [];
@@ -122,7 +122,9 @@ function statements(lines) {
     const next = lines[index + 1];
     const continues = next !== undefined && next.line === line.line + 1 && /^\s*\??\./.test(next.text);
     const opensBlock = /(?:\)|=>|\belse|\btry|\bfinally|\bdo)\s*\{$/.test(scanned.code);
-    if (opensBlock || (depth <= 0 && !continues) || current.length >= MAX_STATEMENT_LINES) flush();
+    const onlyCommentsSoFar = current.every((part) => !part.code);
+    const nextConsecutive = next !== undefined && next.line === line.line + 1;
+    if (opensBlock || (depth <= 0 && !continues && !(onlyCommentsSoFar && nextConsecutive)) || current.length >= MAX_STATEMENT_LINES) flush();
   });
   flush();
   return out;
@@ -168,9 +170,9 @@ async function migratedTables() {
   return new Set(rows.map((row) => String(row.name).toLowerCase()));
 }
 
-/** Untracked files under tests/, every line added. */
+/** Untracked files under tests/ and packages/, every line added. */
 function untrackedFiles(files) {
-  for (const file of git(['ls-files', '-z', '--others', '--exclude-standard', '--', 'tests/']).split('\0').filter(Boolean)) {
+  for (const file of git(['ls-files', '-z', '--others', '--exclude-standard', '--', 'tests/', 'packages/']).split('\0').filter(Boolean)) {
     if (!existsSync(file)) continue;
     files.set(file, { added: readFileSync(file, 'utf8').split('\n').map((text, index) => ({ line: index + 1, text })), removed: [] });
   }
@@ -179,7 +181,7 @@ function untrackedFiles(files) {
 /** Each refusal, as `file:line [rule] message` and the statement's first line, and how many added statements were checked. */
 async function refusals(files, mergeBase) {
   const checked = [...files].filter(([file]) => checkedFile(file));
-  const createsTables = checked.some(([, { added, removed }]) => [...added, ...removed].some((line) => /CREATE\s+(?:\w+\s+)?TABLE/i.test(line.text)));
+  const createsTables = checked.some(([file, { added, removed }]) => isTestFile(file) && [...added, ...removed].some((line) => /CREATE\s+(?:\w+\s+)?TABLE/i.test(line.text)));
   const tables = createsTables ? await migratedTables() : new Set();
   const facts = { productTables: () => tables, productFiles: productFiles(mergeBase) };
   const problems = [];
@@ -218,15 +220,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(`Cannot find the merge base of ${base} and HEAD. Fetch it first (\`git fetch origin main\`, and \`git fetch --unshallow\` in a shallow clone), or pass the base ref: node scripts/check-test-additions.mjs <base-ref>`);
     process.exit(2);
   }
-  const files = diffLines(git(['diff', '--no-color', '--no-ext-diff', '--find-renames', '-U0', mergeBase, '--', 'tests/']));
+  const files = diffLines(git(['diff', '--no-color', '--no-ext-diff', '--find-renames', '-U0', mergeBase, '--', 'tests/', 'packages/']));
   untrackedFiles(files);
   markMoves(files);
   const { problems, count } = await refusals(files, mergeBase);
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);
-    console.error(`\n${problems.length} added test statement${problems.length === 1 ? '' : 's'} since the merge base with ${base} (${mergeBase.slice(0, 12)}) `
-      + 'couple a test to code instead of behaviour. Rewrite each as the message says; the rules are in AGENTS.md (Test behavior, not code).');
+    console.error(`\n${problems.length} added statement${problems.length === 1 ? '' : 's'} since the merge base with ${base} (${mergeBase.slice(0, 12)}) `
+      + 'couple a test to code instead of behaviour, or expose a product knob for tests. Rewrite each as the message says; the rules are in AGENTS.md (Test behavior, not code).');
     process.exit(1);
   }
-  console.log(`${count} added test statements since the merge base with ${base} (${mergeBase.slice(0, 12)}) pass the checks for code coupling.`);
+  console.log(`${count} added statements since the merge base with ${base} (${mergeBase.slice(0, 12)}) pass the checks for code coupling and test knobs.`);
 }
