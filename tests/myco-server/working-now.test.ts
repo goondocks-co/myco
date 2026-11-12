@@ -28,45 +28,16 @@ import { blobPost, envelope, memberHeaders, memberPost, recordingDeferred, sqlit
 import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
 import { FEATURES_HEADER, featuresNamed, TURN_END_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { definedStatements } from '@myco-server-worker/db/kernel/statement.js';
-import { failingStatement } from './helpers/store-faults.js';
-import type { PreparedStatement, RelationalStore, RunResult } from '@myco-server-worker/core/adapters.js';
+import { failingStatement, hangingStatement } from './helpers/store-faults.js';
+import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 
 const TURN_STAMPS = ['sessions.startTurn', 'sessions.startTurnFromEvent'] as const;
-const turnStampSql = () => new Set(TURN_STAMPS.map((name) => {
-  const sql = definedStatements().get(name);
-  if (sql === undefined) throw new Error(`no kernel statement is named ${name}`);
-  return sql;
-}));
 
 /** A store whose turn-stamp calls never finish. `landed` is true once that stamp was reached. The prompt answers before it. */
 function stallingTurn(db: RelationalStore): { store: RelationalStore; landed(): boolean } {
-  const stamps = turnStampSql();
-  let landed = false;
-  const held = new WeakMap<PreparedStatement, { raw: PreparedStatement; sql: string }>();
-  const hang = <T>(): Promise<T> => { landed = true; return new Promise<T>(() => {}); };
-  const wrap = (raw: PreparedStatement, sql: string): PreparedStatement => {
-    const statement: PreparedStatement = {
-      bind: (...values: unknown[]) => wrap(raw.bind(...values), sql),
-      first: <T>() => raw.first<T>(),
-      all: <T>() => raw.all<T>(),
-      run: () => stamps.has(sql) ? hang<RunResult>() : raw.run(),
-    };
-    held.set(statement, { raw, sql });
-    return statement;
-  };
-  return {
-    store: {
-      ...db,
-      prepare: (sql) => wrap(db.prepare(sql), sql),
-      batch: (statements) => {
-        const originals = statements.map((statement) => held.get(statement));
-        if (originals.some((original) => original !== undefined && stamps.has(original.sql))) return hang<RunResult[]>();
-        return db.batch(statements.map((statement, index) => originals[index]?.raw ?? statement));
-      },
-    },
-    landed: () => landed,
-  };
+  const first = hangingStatement(db, 'sessions.startTurn');
+  const second = hangingStatement(first.store, 'sessions.startTurnFromEvent');
+  return { store: second.store, landed: () => first.landed() || second.landed() };
 }
 
 /** A prompt id as the member mints one: a UUIDv7 whose timestamp is `at`. */
