@@ -3,7 +3,7 @@ import { MEMBER_ID, lit, type ParityScenario } from '../harness.ts';
 
 /** The deployed native and Cloudflare stores expose the same retired schema boundary. */
 export const retiredSchema: ParityScenario = {
-  name: 'retired schema: generated skills and digests have no tables, FTS objects or embedding source',
+  name: 'retired schema: backup restore-upload skips retired tables and refuses unknown tables',
   async run(target) {
     const owner = { ...target.ownerHeaders(), 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4', origin: target.url };
     const selection = await target.sql(`SELECT member_id FROM deployment_ownership WHERE id = 1`);

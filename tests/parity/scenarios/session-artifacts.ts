@@ -1,5 +1,5 @@
 import { expect } from 'bun:test';
-import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
 
 /**
  * What a session reported it created, on both targets: a session started through /events, a pull request reported
@@ -7,7 +7,7 @@ import { expectPersisted, type ParityScenario, type ParityTarget } from '../harn
  * page's read serving it, and a deleted session refusing a report and losing the one it held.
  */
 export const sessionArtifactsParity: ParityScenario = {
-  name: 'session artifacts: declared report, idempotent re-report, conflict refusal, deletion, index-backed page read',
+  name: 'session artifacts: declared report, idempotent re-report, conflict refusal, deletion',
   async run(target: ParityTarget) {
     const stamp = Date.now();
     const session = `parity-artifacts-${stamp}`;
@@ -42,6 +42,10 @@ export const sessionArtifactsParity: ParityScenario = {
     });
     expect(gone.status).toBe(202);
     expect(await call({ ...report, artifact_id: '1932' })).toEqual({ ok: false, error: 'session_id not found' });
+    // Witnesses stored physical deletion of artifact rows after session tombstone on both targets.
+    const held = async () => Number((await target.sql(`SELECT COUNT(*) AS n FROM session_artifacts WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`))[0]!.n);
+    for (let wake = 0; wake < 40 && await held() > 0; wake += 1) await target.clockWake();
+    expect(await target.sql(`SELECT COUNT(*) AS n FROM session_artifacts WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`)).toEqual([{ n: 0 }]);
     expect((await page()).status).toBe(404);
   },
 };

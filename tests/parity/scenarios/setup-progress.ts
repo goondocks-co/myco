@@ -3,7 +3,7 @@ import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cook
 import { MEMBER_ID, SESSION_SECRET, lit, type ParityScenario } from '../harness.ts';
 
 export const setupProgress: ParityScenario = {
-  name: 'setup progress: scoped observations and bounded D1 reads with misleading history',
+  name: 'setup progress: scoped observations and bounded D1 reads',
   dedicated: { timeoutMs: 180_000, cloudflare: { main: '../../tests/parity/setup-budget/worker-entry.ts' } },
   async run(target) {
     const now = Date.now();
@@ -42,5 +42,32 @@ export const setupProgress: ParityScenario = {
     await target.sql(`INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,author,created_at)
       VALUES('proj_setup_parity','run_output','agent_setup_parity','gotcha','active','Run knowledge','run_setup_empty',${now})`);
     expect((await read()).workProduced).toBe(true);
+
+    type Measurement = { rowsRead: number | null; progress: { liveCapture: boolean; workProduced: boolean } };
+    const measure = async (): Promise<Measurement> => {
+      if (target.name !== 'cloudflare') return { rowsRead: null, progress: await read() };
+      const response = await fetch(`${target.url}/__setup-read-budget`);
+      expect(response.status).toBe(200);
+      return await response.json() as Measurement;
+    };
+    const expectFlat = (label: string, before: Measurement, after: Measurement) => {
+      if (target.name !== 'cloudflare') return;
+      if (before.rowsRead === null || after.rowsRead === null) throw new Error('D1 read measurement unavailable');
+      console.info(`setup D1 ${label} rows_read: ${before.rowsRead} -> ${after.rowsRead}`);
+      expect(before.rowsRead).toBeGreaterThan(0);
+      expect(after.rowsRead).toBeLessThan(200);
+      expect(after.rowsRead).toBeLessThanOrEqual(before.rowsRead + 5);
+    };
+
+    // 50 vs 500 unrelated sessions: setup reads remain bounded.
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 50)
+      INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
+      SELECT 'proj_setup_parity','small_' || i,'established_setup_machine','mt_setup_established',${now},${now},${now} FROM n`);
+    const small = await measure();
+    await target.sql(`WITH RECURSIVE n(i) AS (SELECT 51 UNION ALL SELECT i + 1 FROM n WHERE i < 500)
+      INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,last_live_received_at)
+      SELECT 'proj_setup_parity','bulk_' || i,'established_setup_machine','mt_setup_established',${now},${now},${now} FROM n`);
+    const large = await measure();
+    expectFlat('unrelated session history', small, large);
   },
 };
