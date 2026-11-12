@@ -1,5 +1,6 @@
 import { expect } from 'bun:test';
-import { expectPersisted, lit, type ParityScenario, type ParityTarget } from '../harness.ts';
+import { type ParityScenario, type ParityTarget } from '../harness.ts';
+import { event, sessionDetail, untilPublished } from '../clients/requests.ts';
 
 /**
  * A deleted session leaves the project list on both targets: the project's
@@ -30,30 +31,21 @@ export const projectCounts: ParityScenario = {
       expect(res.status).toBe(200);
       return ((await res.json()) as { stats: { sessions: number } }).stats.sessions;
     };
-    const liveCount = async () => {
-      const rows = await target.sql(`SELECT COUNT(*) AS n FROM sessions s WHERE s.project_id = ${lit(target.projectId)} AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = s.project_id AND t.session_id = s.session_id)`);
-      return Number(rows[0]!.n);
-    };
-
     const before = await projectOrEmpty();
-    const res = await fetch(`${target.url}/events`, {
-      method: 'POST',
-      headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ eventId: crypto.randomUUID(), sessionId: session, kind: 'session.start', createdAt: stamp, channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload: { agent: 'claude-code', startedAt: stamp } }),
-    });
-    await expectPersisted(res, 'session.start');
-    const added = await project();
-    expect(added.sessionCount).toBe(before.sessionCount + 1);
-    expect(added.sessionCount).toBe(await liveCount());
-    const [receipt] = await target.sql(`SELECT last_received_at AS at FROM sessions WHERE project_id = ${lit(target.projectId)} AND session_id = ${lit(session)}`);
-    expect(added.lastActivityAt).toBe(Number(receipt!.at));
+    await event(target, session, 'session.start', { agent: 'claude-code', startedAt: stamp }, stamp);
+    const added = await untilPublished(target, async () => ({ row: await project(), stats: await railTotal(), session: await sessionDetail(target, session) }),
+      (read) => read.row.sessionCount === before.sessionCount + 1 && read.row.sessionCount === read.stats && read.session.status === 200 && read.row.lastActivityAt === read.session.body.session.lastReceivedAt);
+    expect(added.row.sessionCount).toBe(before.sessionCount + 1);
+    expect(added.row.sessionCount).toBe(added.stats);
+    const receiptAt = added.session.body.session.lastReceivedAt as number;
+    expect(added.row.lastActivityAt).toBe(receiptAt);
 
     const gone = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/tombstone`, { method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'parity' }) });
     expect(gone.status).toBe(202);
-    const after = await project();
-    expect(after.sessionCount).toBe(before.sessionCount);
-    expect(after.sessionCount).toBe(await liveCount());
-    expect(after.sessionCount).toBe(await railTotal());
-    expect(after.lastActivityAt === null || after.lastActivityAt < Number(receipt!.at)).toBe(true);
+    const after = await untilPublished(target, async () => ({ row: await project(), stats: await railTotal() }),
+      (read) => read.row.sessionCount === before.sessionCount && read.row.sessionCount === read.stats);
+    expect(after.row.sessionCount).toBe(before.sessionCount);
+    expect(after.row.sessionCount).toBe(after.stats);
+    expect(after.row.lastActivityAt === null || after.row.lastActivityAt < receiptAt).toBe(true);
   },
 };
