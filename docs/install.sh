@@ -205,7 +205,7 @@ gh_request() (
     fi
   } | curl -q --config - \
       -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: myco-installer/${REPO}" \
+      -H "User-Agent: myco-installer/${REPO%%/*}" \
       "$@"
 )
 

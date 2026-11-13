@@ -312,7 +312,7 @@ export function githubHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': `myco-installer/${MYCO_REPO}`,
+    'User-Agent': `myco-installer/${MYCO_REPO.split('/')[0]}`,
   };
 
   const token = env['GITHUB_TOKEN'] ?? env['GH_TOKEN'];

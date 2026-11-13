@@ -78,7 +78,7 @@ describe('installer credential logging protections', () => {
 import { assertPrivate, assertTokenFree } from ${JSON.stringify(resolve('tests/support/installer-token-gate.ts'))};
 const token = process.env.MYCO_FAKE_TOKEN!;
 it('rejects argv leaks', () => assertPrivate([{ argv: ['-H', 'Authorization: Bearer ' + token], config: '' }], token));
-it('rejects incorrect config', () => assertPrivate([{ argv: ['-q', '--config', '-', 'Accept: application/vnd.github+json', 'User-Agent: myco-installer/goondocks-co/myco'], config: token }], token));
+it('rejects incorrect config', () => assertPrivate([{ argv: ['-q', '--config', '-', 'Accept: application/vnd.github+json', 'User-Agent: myco-installer/goondocks-co'], config: token }], token));
 it('rejects child output leaks', () => assertTokenFree(token, [token]));
 `);
     try {
