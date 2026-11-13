@@ -11,7 +11,7 @@ export function assertPrivate(calls: { argv: string[]; config: string }[], token
     expect(call.argv.includes('--config'), 'curl must read explicit config').toBe(true);
     expect(call.argv[call.argv.indexOf('--config') + 1] === '-', 'config must arrive on stdin').toBe(true);
     expect(call.argv.includes('Accept: application/vnd.github+json')).toBe(true);
-    expect(call.argv.includes('User-Agent: myco-installer/goondocks-co/myco')).toBe(true);
+    expect(call.argv.includes('User-Agent: myco-installer/goondocks-co')).toBe(true);
     const escaped = token.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
     expect(call.config === (token ? `header = "Authorization: Bearer ${escaped}"\n` : ''), 'config must carry the expected authorization').toBe(true);
   }
