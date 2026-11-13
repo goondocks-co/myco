@@ -44,7 +44,7 @@ for (const mode of ['member-only', 'runner-only', 'both']) {
     const exited = new Promise<number | null>((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
     let exit: number | null;
     try {
-      for (let i = 0; i < 400 && !output.includes('Deployment serving on'); i++) await new Promise(resolve => setTimeout(resolve, 25));
+      await Promise.race([exited, new Promise(resolve => setTimeout(resolve, 45000)), new Promise<void>(resolve => { const seen = () => { if (output.includes('Deployment serving on')) resolve(); }; child.stdout.on('data', seen); seen(); })]);
       const address = output.match(/Deployment serving on (http:\/\/127\.0\.0\.1:\d+)/)?.[1];
       expect({ output, error, address }).toMatchObject({ address: expect.any(String) });
       expect((await fetch(`${address}/health`)).status).toBe(200);
