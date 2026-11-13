@@ -1,4 +1,4 @@
-# Myco installer for Windows x64 and ARM64 — https://myco.sh
+# Myco installer for Windows x64 and ARM64 - https://myco.sh
 # Usage: irm https://myco.sh/install.ps1 | iex
 # Fresh defaults choose 2.x stable, then beta, then alpha.
 # Existing legacy machines keep 1.x updates until -Replace14.
@@ -26,7 +26,7 @@ $ChannelAuto = $false
 $InstallMarker = $null
 
 # ---------------------------------------------------------------------------
-# Architecture — the machine's own, so ARM64 never receives the x64 build
+# Architecture - the machine's own, so ARM64 never receives the x64 build
 # ---------------------------------------------------------------------------
 # A process reports its own architecture, never the machine's: x64 PowerShell emulated on ARM64 sees AMD64, and
 # 32-bit PowerShell sees x86. The system environment in the registry names the machine; when it cannot be read,
@@ -123,12 +123,12 @@ if ($Channel -cnotin @('alpha', 'beta', 'stable')) {
     throw "Unknown channel '$Channel'. Use alpha, beta or stable."
 }
 
-# Ensure TLS 1.2 is enabled — PowerShell 5.1 on older Windows (pre-1709 / Server 2016)
+# Ensure TLS 1.2 is enabled - PowerShell 5.1 on older Windows (pre-1709 / Server 2016)
 # does not include it by default, causing SSL/TLS failures against api.github.com.
 # -bor preserves existing protocols; this is a no-op on newer Windows.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-Write-Host "Myco installer — $Target / channel: $Channel" -ForegroundColor Cyan
+Write-Host "Myco installer - $Target / channel: $Channel" -ForegroundColor Cyan
 Write-Host "Windows support is beta. Report issues at https://github.com/$Repo/issues" -ForegroundColor Yellow
 if ($Target -eq 'windows-arm64') {
     Write-Host "Windows ARM64 joins Deployments and runs agent work. To host a Deployment, use Cloudflare or another machine." -ForegroundColor Yellow
@@ -136,7 +136,7 @@ if ($Target -eq 'windows-arm64') {
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# GitHub API helpers — token-aware, token never printed
+# GitHub API helpers - token-aware, token never printed
 # ---------------------------------------------------------------------------
 function Get-AuthHeaders {
     $tok = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } elseif ($env:GH_TOKEN) { $env:GH_TOKEN } else { "" }
@@ -294,7 +294,8 @@ $releases = @()
 $MaxReleasePages = 100
 for ($page = 1; $page -le $MaxReleasePages; $page++) {
     $resp = Invoke-GhApi -Url "https://api.github.com/repos/$Repo/releases?per_page=100&page=$page"
-    $rows = @($resp.Content | ConvertFrom-Json)
+    # Windows PowerShell 5.1 emits a JSON array as one object; ForEach-Object unrolls it there and changes nothing on 7.
+    $rows = @($resp.Content | ConvertFrom-Json | ForEach-Object { $_ })
     $releases += $rows
     if ($rows.Count -lt 100) { break }
     if ($page -eq $MaxReleasePages) { throw "GitHub release discovery exceeded $MaxReleasePages pages." }
@@ -314,7 +315,7 @@ if ($LegacyInstall) {
     } else { $tag = Select-MycoRelease $releases $Channel $CurrentVersion }
 }
 if ($tag -eq 'stay-put') { Write-Host "Newest eligible release is older than installed $CurrentVersion; staying put."; exit 0 }
-if (-not $tag) { throw "No eligible Myco release found on channel $Channel; nothing was installed. For published alpha builds, retry with MYCO_CHANNEL=alpha. Check https://github.com/$Repo/releases" }
+if (-not $tag) { $hint = if ($Channel -ne 'alpha') { ' For published alpha builds, retry with MYCO_CHANNEL=alpha.' } else { '' }; throw "No eligible Myco release found on channel $Channel; nothing was installed.$hint Check https://github.com/$Repo/releases" }
 Write-Host "Found: $tag" -ForegroundColor Cyan
 if ($Legacy -and -not $Replace14 -and -not $LegacyInstall) {
     throw "Myco 1.4 is on this machine. Nothing was installed. To move to 2.0: $ReplaceCommand (equivalent to --replace-1.4, or -Replace14 when invoking the script), then run myco setup --cutover. Manual path: myco login <your-myco-address>, then myco cutover --dry-run (changes nothing). Guide: https://github.com/goondocks-co/myco/blob/main/docs/upgrade.md#upgrading-from-myco-14"
@@ -322,7 +323,7 @@ if ($Legacy -and -not $Replace14 -and -not $LegacyInstall) {
 
 # ---------------------------------------------------------------------------
 # Download binary + SHA256SUMS to a temp dir under LOCALAPPDATA\Myco\bin
-# (same volume as destination — enables Move-Item without cross-device copy)
+# (same volume as destination - enables Move-Item without cross-device copy)
 # ---------------------------------------------------------------------------
 $encodedTag = $tag -replace '/', '%2F'
 $dlBase     = "https://github.com/$Repo/releases/download/$encodedTag"
@@ -354,7 +355,7 @@ try {
     Invoke-GhDownload -Url "$dlBase/SHA256SUMS"  -OutFile $tmpSums
 
     # -------------------------------------------------------------------------
-    # Checksum verification — no bypass
+    # Checksum verification - no bypass
     # -------------------------------------------------------------------------
     Write-Host "Verifying checksum..." -ForegroundColor Cyan
 
@@ -407,12 +408,12 @@ try {
     # Versioned placement + atomic stable copy
     #
     # Installed binary layout:
-    #   %LOCALAPPDATA%\Myco\bin\versions\<bare-semver>\myco.exe  — versioned slot
-    #   %LOCALAPPDATA%\Myco\bin\myco.exe                         — stable (current) slot
+    #   %LOCALAPPDATA%\Myco\bin\versions\<bare-semver>\myco.exe  - versioned slot
+    #   %LOCALAPPDATA%\Myco\bin\myco.exe                         - stable (current) slot
     #
-    # Sequence: place in version dir → temp+rename to stable path.
+    # Sequence: place in version dir -> temp+rename to stable path.
     # The temp file lives under $BinDir (same volume) so the final rename is
-    # atomic — a partial copy can never leave a broken stable binary.
+    # atomic - a partial copy can never leave a broken stable binary.
     # -------------------------------------------------------------------------
 
     # Keep the replaced executable before publishing any 2.x binary.
@@ -491,7 +492,7 @@ try {
 }
 
 # ---------------------------------------------------------------------------
-# User PATH — idempotent
+# User PATH - idempotent
 # ---------------------------------------------------------------------------
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (-not $userPath) { $userPath = "" }
