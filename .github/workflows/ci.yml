@@ -598,6 +598,26 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
+      # `irm https://myco.sh/install.ps1 | iex` runs in Windows PowerShell 5.1 on a stock machine, and every other
+      # installer test runs pwsh 7. Resolve a real release here both ways the script is run: as text, as the one-liner
+      # does, and as a file, which 5.1 reads as Windows-1252.
+      - name: The installer resolves a release under Windows PowerShell 5.1
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYCO_HOME: ${{ runner.temp }}\installer-5.1\home
+          MYCO_BIN_DIR: ${{ runner.temp }}\installer-5.1\bin
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw "expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)" }
+          $runs = @{
+            text = @('-Command', '& ([scriptblock]::Create((Get-Content -Raw -Encoding UTF8 docs/install.ps1))) -Channel alpha -DryRun')
+            file = @('-File', 'docs/install.ps1', '-Channel', 'alpha', '-DryRun')
+          }
+          foreach ($way in $runs.Keys) {
+            $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass @($runs[$way]) *>&1 | Out-String
+            Write-Host "--- as $way`n$out"
+            if ($LASTEXITCODE -ne 0 -or $out -notmatch 'Dry run: would install myco-windows-(x64|arm64)\.exe \(2\.') { throw "install.ps1 run as $way resolved no 2.x release under Windows PowerShell 5.1" }
+          }
       - name: Configure Windows native contract paths
         shell: pwsh
         run: |
