@@ -14,7 +14,7 @@ const PIN_FILENAME = 'runtime.command';
 // trusted. Win32 has no POSIX modes; always trusted. The stat is an `lstat`:
 // following the link would report the target's owner and mode.
 function checkPinTrust(filePath) {
-  if (process.platform === 'win32') return { ok: true };
+  if (process.platform === 'win32') return fs.existsSync(filePath) ? { ok: true } : { ok: false, reason: 'pin file missing' };
   let stat;
   try {
     stat = fs.lstatSync(filePath);
