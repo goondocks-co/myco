@@ -32,8 +32,8 @@ export interface PinTrustOptions {
 
 /**
  * Refuse a pin owned by another uid, writable by group/other, or reached
- * through a symlink. `0o644` is trusted. Win32 has no POSIX modes — always
- * trusted.
+ * through a symlink. `0o644` is trusted. Win32 has no POSIX modes: a pin that
+ * exists there is trusted.
  *
  * The stat is an `lstat`: following the link would report the TARGET's owner
  * and mode, so a link planted in a world-writable ancestor (`/tmp/.myco/`) and
@@ -41,7 +41,7 @@ export interface PinTrustOptions {
  */
 export function checkPinTrust(filePath: string, options: PinTrustOptions = {}): PinTrust {
   const platform = options.platform ?? process.platform;
-  if (platform === 'win32') return { ok: true };
+  if (platform === 'win32') return fs.existsSync(filePath) ? { ok: true } : { ok: false, reason: PIN_MISSING_REASON };
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(filePath);

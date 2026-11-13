@@ -35,7 +35,7 @@ for (const [file, name, mask] of copies) it(`${file} refuses unsafe pins through
       return { uid, mode, isSymbolicLink: () => symlink };
     };
     const readFileSync = () => '/trusted';
-    const context = { fs: { lstatSync, readFileSync }, lstatSync, readFileSync, PIN_MISSING_REASON: 'pin file missing',
+    const context = { fs: { lstatSync, readFileSync, existsSync: () => !missing }, lstatSync, readFileSync, PIN_MISSING_REASON: 'pin file missing',
       process: { platform, getuid: () => 42 }, answer: undefined as unknown };
     vm.runInNewContext(code, context);
     expect({ platform, uid, mode, symlink, missing, trusted: name === 'readTrustedPin' ? context.answer === '/trusted' : (context.answer as { ok: boolean }).ok })

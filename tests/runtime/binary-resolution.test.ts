@@ -87,10 +87,10 @@ describe('pin trust (G7)', () => {
     expect((trust as { reason: string }).reason).toContain('owned by uid');
   });
 
-  it('always trusts on win32 (no POSIX modes)', () => {
+  it('trusts an existing pin on win32 (no POSIX modes) and finds a missing one missing', () => {
     const fx = fixture({ platform: 'win32' });
     const pinPath = writePin(fx, 'C:\\x\\myco.exe', 0o666);
-    expect(checkPinTrust(pinPath, fx.env)).toEqual({ ok: true });
+    expect([checkPinTrust(pinPath, fx.env), checkPinTrust(`${pinPath}.absent`, fx.env)]).toEqual([{ ok: true }, { ok: false, reason: 'pin file missing' }]);
   });
 
   it('an untrusted pin resolves as if absent', () => {
