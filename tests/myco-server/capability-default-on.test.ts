@@ -33,7 +33,7 @@ describe('project capability defaults across readers', () => {
         for (const capability of PROJECT_CAPABILITIES) await writer.setCapability('proj_1', capability, state, 'test', 1);
       }
       const expected = state !== false;
-      expect(await writer.capabilities('proj_1')).toEqual({ cortex: expected, canopy: expected, vault_evolution: expected, spore_curation: state === true, spore_curation_backfill: state === true });
+      expect(await writer.capabilities('proj_1')).toEqual({ cortex: expected, canopy: expected, vault_evolution: expected, spore_curation: state === true });
       for (const capability of PROJECT_CAPABILITIES) {
         const admitted = capability.startsWith('spore_curation') ? state === true : expected;
         expect(await writer.capabilityEnabled('proj_1', capability)).toBe(admitted);
@@ -45,7 +45,7 @@ describe('project capability defaults across readers', () => {
         expect(rows.filter((row) => row.projectId === 'proj_1').map((row) => row.capability).sort())
           .toEqual(PROJECT_CAPABILITIES.filter(c => c.startsWith('spore_curation') ? state === true : expected).sort());
       }
-      expect(await writer.capabilities('proj_2')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
+      expect(await writer.capabilities('proj_2')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false });
     }
     expect(sqlite.query('SELECT capability, enabled FROM project_capabilities WHERE project_id = ? ORDER BY capability').all('proj_1'))
       .toEqual([...PROJECT_CAPABILITIES].sort().map((capability) => ({ capability, enabled: 1 })));
@@ -57,7 +57,7 @@ describe('project capability defaults across readers', () => {
       sqlite.run("UPDATE projects SET archived_at = ? WHERE project_id = 'proj_1'", [NOW]);
       for (const explicit of [false, true]) {
         if (explicit) for (const capability of PROJECT_CAPABILITIES) await writer.setCapability('proj_1', capability, true, 'test', NOW);
-        expect(await writer.capabilities('proj_1')).toEqual({ cortex: false, canopy: false, vault_evolution: false, spore_curation: false, spore_curation_backfill: false });
+        expect(await writer.capabilities('proj_1')).toEqual({ cortex: false, canopy: false, vault_evolution: false, spore_curation: false });
         for (const capability of PROJECT_CAPABILITIES) {
           expect(await writer.capabilityEnabled('proj_1', capability)).toBe(false);
           expect(await db.prepare(`SELECT ${CAPABILITY_ON_SQL} AS enabled`).bind('proj_1', capability).first<{ enabled: number }>())
@@ -71,7 +71,7 @@ describe('project capability defaults across readers', () => {
         expect([...facts.capabilities]).toEqual([]);
       }
       sqlite.run("UPDATE projects SET archived_at = NULL WHERE project_id = 'proj_1'");
-      expect(await writer.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: true, spore_curation_backfill: true });
+      expect(await writer.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: true });
     } finally { sqlite.close(); }
   });
 

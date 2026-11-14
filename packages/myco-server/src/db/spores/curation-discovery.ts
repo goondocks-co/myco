@@ -18,7 +18,7 @@ export const clearCurationDirty = (db: RelationalStore, project: string): Promis
 const enabledRow = read<[project: string], { enabled: number }>({ name: 'curationDiscovery.enabled', sql: `SELECT ${capabilityOnSql('?1', "'spore_curation'")} AS enabled` });
 const floorRow = read<[project: string], { floor: number | null }>({
   name: 'curationDiscovery.floor',
-  sql: `SELECT CASE WHEN ${capabilityOnSql('?1', "'spore_curation_backfill'")} THEN 0 ELSE ${curationEnabledAtSql('?1')} END AS floor`,
+  sql: `SELECT CASE WHEN ${curationEnabledAtSql('?1')} IS NULL THEN NULL ELSE 0 END AS floor`,
 });
 const IN_FLIGHT = `EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id=w.project_id AND r.id=w.run_id AND r.${IN_FLIGHT_RUN_STATUSES})`;
 type OpenWork = CurationWork & { live: number };
@@ -28,8 +28,8 @@ const openWork = read<[project: string, now: number, maxFailures: number], OpenW
     WHERE w.project_id=?1 AND w.due_at IS NOT NULL AND (w.failures=0 OR w.due_at<=?2 OR w.failures>=?3 OR ${IN_FLIGHT}) LIMIT 1`,
 });
 const frontierRow = read<[project: string], { revision: number; pending_at: number | null }>({ name: 'curationDiscovery.frontier', sql: 'SELECT revision,pending_at FROM spore_curation_changes WHERE project_id=?1' });
-interface CurationCursor { after_at: number; after_id: string; pass_revision: number; active: number }
-const cursorRow = read<[project: string], CurationCursor>({ name: 'curationDiscovery.cursor', sql: 'SELECT after_at,after_id,pass_revision,active FROM spore_curation_cursor WHERE project_id=?1' });
+interface CurationCursor { after_at: number; after_id: string; pass_revision: number; active: number; priority_at: number; history_complete: number }
+const cursorRow = read<[project: string], CurationCursor>({ name: 'curationDiscovery.cursor', sql: 'SELECT after_at,after_id,pass_revision,active,priority_at,history_complete FROM spore_curation_cursor WHERE project_id=?1' });
 
 interface CurationProjectState {
   enabled: boolean;
@@ -42,20 +42,24 @@ interface CurationProjectState {
 /** Everything one discovery pass decides from, read in one batch. */
 export async function readCurationProjectState(db: RelationalStore, project: string, now: number): Promise<CurationProjectState> {
   const [enabled, open, frontier, cursor, floor] = await readSet(db, enabledRow.bind(project), openWork.bind(project, now, CURATION_MAX_FAILURES), frontierRow.bind(project), cursorRow.bind(project), floorRow.bind(project));
-  return { enabled: enabled[0]!.enabled === 1, open: open[0] ?? null, frontier: frontier[0]!, cursor: cursor[0] ?? null, floor: floor[0]!.floor };
+  const held = cursor[0] ?? null;
+  const changedDuringHistory = held?.active === 1 && held.after_at < held.priority_at
+    && frontier[0]!.pending_at !== null && frontier[0]!.revision > held.pass_revision;
+  return { enabled: enabled[0]!.enabled === 1, open: open[0] ?? null, frontier: frontier[0]!, cursor: changedDuringHistory ? null : held, floor: floor[0]!.floor };
 }
 
 const beginCursor = write<[start: number, project: string, revision: number], CurationCursor>({
   name: 'curationDiscovery.beginCursor',
-  sql: `INSERT INTO spore_curation_cursor(project_id,after_at,after_id,pass_revision,active)
-    SELECT project_id,?1,'',revision,1 FROM spore_curation_changes WHERE project_id=?2 AND revision=?3 AND dirty=1
-    ON CONFLICT(project_id) DO UPDATE SET after_at=excluded.after_at,after_id='',pass_revision=excluded.pass_revision,active=1
-    WHERE spore_curation_cursor.active=0 RETURNING after_at,after_id,pass_revision,active`,
+  sql: `INSERT INTO spore_curation_cursor(project_id,after_at,after_id,pass_revision,active,priority_at)
+    SELECT project_id,MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)),'',revision,1,MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)) FROM spore_curation_changes WHERE project_id=?2 AND revision=?3 AND dirty=1
+    ON CONFLICT(project_id) DO UPDATE SET after_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN ?1 ELSE excluded.after_at END,after_id='',pass_revision=excluded.pass_revision,active=1,priority_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN 0 ELSE excluded.priority_at END
+    WHERE spore_curation_cursor.active=0 OR EXISTS (SELECT 1 FROM spore_curation_changes WHERE project_id=?2 AND revision=?3 AND pending_at IS NOT NULL)
+    RETURNING after_at,after_id,pass_revision,active,priority_at,history_complete`,
 });
 const clearPending = write<[project: string, revision: number, start: number]>({
   name: 'curationDiscovery.clearPending',
   sql: `UPDATE spore_curation_changes SET pending_at=NULL WHERE project_id=?1 AND revision=?2 AND EXISTS
-    (SELECT 1 FROM spore_curation_cursor WHERE project_id=?1 AND active=1 AND pass_revision=?2 AND after_at=?3 AND after_id='')`,
+    (SELECT 1 FROM spore_curation_cursor WHERE project_id=?1 AND active=1 AND pass_revision=?2 AND after_at>=?3 AND after_id='')`,
 });
 
 /** Starts a seed pass at this frontier, or answers null when another pass or a newer change got there first. */
@@ -66,19 +70,34 @@ export async function beginCurationPass(db: RelationalStore, project: string, st
 
 type CurationSeed = { id: string; revision: number; stamp: number };
 const SEED_STAMP = 'COALESCE(updated_at,created_at)';
+const seedPageSql = ({ position, before }: { position: 'at' | 'after'; before: string | null }): string => `SELECT id,revision,${SEED_STAMP} AS stamp FROM spores INDEXED BY idx_spores_curation_seek
+  WHERE project_id=?1 AND status='active' AND ${SEED_STAMP}${position === 'at' ? '=?2 AND id>?3' : '>?2'}${before === null ? '' : ` AND ${SEED_STAMP}<${before}`}
+  ORDER BY ${SEED_STAMP},id LIMIT ${position === 'at' ? '?4' : '?3'}`;
 const seedsAtStamp = read<[project: string, stamp: number, afterId: string, limit: number], CurationSeed>({
-  name: 'curationDiscovery.seedsAtStamp',
-  sql: `SELECT id,revision,${SEED_STAMP} AS stamp FROM spores INDEXED BY idx_spores_curation_seek WHERE project_id=?1 AND status='active' AND ${SEED_STAMP}=?2 AND id>?3 ORDER BY ${SEED_STAMP},id LIMIT ?4`,
+  name: 'curationDiscovery.seedsAtStamp', sql: seedPageSql({position:'at',before:null}),
 });
 const seedsAfterStamp = read<[project: string, stamp: number, limit: number], CurationSeed>({
-  name: 'curationDiscovery.seedsAfterStamp',
-  sql: `SELECT id,revision,${SEED_STAMP} AS stamp FROM spores INDEXED BY idx_spores_curation_seek WHERE project_id=?1 AND status='active' AND ${SEED_STAMP}>?2 ORDER BY ${SEED_STAMP},id LIMIT ?3`,
+  name: 'curationDiscovery.seedsAfterStamp', sql: seedPageSql({position:'after',before:null}),
+});
+const historicalAtStamp = read<[project: string, stamp: number, afterId: string, limit: number, before: number], CurationSeed>({
+  name: 'curationDiscovery.historicalAtStamp', sql: seedPageSql({position:'at',before:'?5'}),
+});
+const historicalAfterStamp = read<[project: string, stamp: number, limit: number, before: number], CurationSeed>({
+  name: 'curationDiscovery.historicalAfterStamp', sql: seedPageSql({position:'after',before:'?4'}),
 });
 
-/** The next seeds after the cursor: the remainder of its instant, then later instants. */
-export async function readCurationSeeds(db: RelationalStore, project: string, cursor: Pick<CurationCursor, 'after_at' | 'after_id'>, limit: number): Promise<CurationSeed[]> {
-  const [tied, later] = await readSet(db, seedsAtStamp.bind(project, cursor.after_at, cursor.after_id, limit), seedsAfterStamp.bind(project, cursor.after_at, limit));
-  return [...tied, ...later].slice(0, limit);
+/** Changed seeds precede the historical walk; a new frontier interrupts that walk on the next wake. */
+export async function readCurationSeeds(db: RelationalStore, project: string, cursor: Pick<CurationCursor, 'after_at' | 'after_id' | 'priority_at'>, limit: number): Promise<CurationSeed[]> {
+  const page = async (stamp: number, afterId: string, size: number, before: number | null) => {
+    const [tied, later] = await readSet(db,
+      before === null ? seedsAtStamp.bind(project, stamp, afterId, size) : historicalAtStamp.bind(project, stamp, afterId, size, before),
+      before === null ? seedsAfterStamp.bind(project, stamp, size) : historicalAfterStamp.bind(project, stamp, size, before));
+    return [...tied, ...later].slice(0, size);
+  };
+  if (cursor.priority_at === 0) return page(cursor.after_at, cursor.after_id, limit, null);
+  if (cursor.after_at < cursor.priority_at) return page(cursor.after_at, cursor.after_id, limit, cursor.priority_at);
+  const recent = await page(cursor.after_at, cursor.after_id, limit, null);
+  return recent.length === limit ? recent : [...recent, ...await page(0, '', limit - recent.length, cursor.priority_at)];
 }
 
 interface CurationSeedState { id: string; acked: number | null; receipt_id: string | null; updated_at: number | null; neighbor_mean: number | null; neighbor_std: number | null }
@@ -146,9 +165,9 @@ export async function offerCurationCluster(db: RelationalStore, project: string,
   return committed.work.results.length === 1;
 }
 
-const advanceCursor = write<[stamp: number, id: string, active: number, project: string, pass: number, afterAt: number, afterId: string]>({
+const advanceCursor = write<[stamp: number, id: string, active: number, project: string, pass: number, afterAt: number, afterId: string, completed: number]>({
   name: 'curationDiscovery.advanceCursor',
-  sql: `UPDATE spore_curation_cursor SET after_at=?1,after_id=?2,active=?3 WHERE project_id=?4 AND pass_revision=?5 AND active=1 AND after_at=?6 AND after_id=?7`,
+  sql: `UPDATE spore_curation_cursor SET after_at=?1,after_id=?2,active=?3,history_complete=CASE WHEN ?3=0 AND ?8=1 THEN 1 ELSE history_complete END WHERE project_id=?4 AND pass_revision=?5 AND active=1 AND after_at=?6 AND after_id=?7`,
 });
 const CHECKPOINT = (project: string, pass: string, stamp: string, id: string) => `EXISTS (SELECT 1 FROM spore_curation_cursor WHERE project_id=${project} AND active=0 AND pass_revision=${pass} AND after_at=${stamp} AND after_id=${id})`;
 const deferredChange = write<[project: string, deferredAt: number, pass: number, stamp: number, id: string]>({
@@ -175,7 +194,7 @@ interface CurationPassProgress {
 export async function commitCurationProgress(db: RelationalStore, progress: CurationPassProgress): Promise<void> {
   const { project, pass, from, to, finished, deferredAt } = progress;
   await commitNamed(db, {
-    cursor: advanceCursor.bind(to.stamp, to.id, finished ? 0 : 1, project, pass, from.after_at, from.after_id),
+    cursor: advanceCursor.bind(to.stamp, to.id, finished ? 0 : 1, project, pass, from.after_at, from.after_id, finished && deferredAt === null ? 1 : 0),
     change: deferredAt !== null ? [deferredChange.bind(project, deferredAt, pass, to.stamp, to.id)]
       : finished ? [finishedChange.bind(pass, project, to.stamp, to.id)] : [],
   });

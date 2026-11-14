@@ -99,12 +99,14 @@ describe('a project\'s settings', () => {
   it('saves this Project’s numeric curation limit through the settings route', async () => {
     let value=5;
     const {sent}=server(base({
-      [`${api}/capabilities`]:()=>Response.json({revisions:{},capabilityRevisions:{},capabilities:{cortex:true},settings:{'agent.spore_curation.daily_runs':value}}),
+      [`${api}/capabilities`]:()=>Response.json({revisions:{},capabilityRevisions:{},capabilities:{cortex:true,spore_curation:true},settings:{'agent.spore_curation.daily_runs':value}}),
       'PUT /api/settings/agent.spore_curation.daily_runs':async init=>{value=JSON.parse(String(init?.body)).value;return Response.json({applied:true});},
     }));
     mount(`/p/${P}/settings`);
     const input=await screen.findByRole('spinbutton',{name:'Curation clusters per day'});
     expect((input as HTMLInputElement).value).toBe('5');
+    expect(screen.getByRole('switch',{name:'Curate overlapping spores'}).getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByText(/Off until you enable it|Include older spores/)).toBeNull();
     fireEvent.change(input,{target:{value:'20'}}); fireEvent.click(screen.getByRole('button',{name:'Save limit'}));
     await waitFor(()=>expect(sent).toEqual([{method:'PUT',path:'/api/settings/agent.spore_curation.daily_runs',body:{project_id:P,value:20}}]));
     await waitFor(()=>expect((screen.getByRole('button',{name:'Save limit'}) as HTMLButtonElement).disabled).toBe(true));

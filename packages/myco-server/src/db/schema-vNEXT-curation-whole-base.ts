@@ -1,0 +1,4 @@
+import { LAST_PUBLICATION_REOPEN } from './schema-vNEXT-publication-reopen.js';
+
+export const NEXT_CURATION_WHOLE_BASE = LAST_PUBLICATION_REOPEN + 1;
+export const LAST_CURATION_WHOLE_BASE = NEXT_CURATION_WHOLE_BASE;

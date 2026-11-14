@@ -38,7 +38,7 @@ import { SWITCH_STANDS_SQL, heldModels } from '../db/embeddings/switch.js';
  */
 
 /** A capability the Deployment may admit a Project to. */
-export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution', 'spore_curation', 'spore_curation_backfill'] as const;
+export const PROJECT_CAPABILITIES = ['cortex', 'canopy', 'vault_evolution', 'spore_curation'] as const;
 export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
 
 /**

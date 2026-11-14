@@ -10,7 +10,7 @@ import { first, read, rows, type Bound } from '../index.js';
  */
 
 /** Capabilities a Project must opt into; every other capability is on while its Project is live. */
-export const DEFAULT_OFF_CAPABILITIES: readonly string[] = ['spore_curation', 'spore_curation_backfill'];
+export const DEFAULT_OFF_CAPABILITIES: readonly string[] = ['spore_curation'];
 
 /**
  * SQL over one leaf's stored text. `admission` holds while the leaf is absent or carries anything but `off`; `read`
