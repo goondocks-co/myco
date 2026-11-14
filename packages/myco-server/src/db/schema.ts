@@ -2176,8 +2176,8 @@ const CURATION_WHOLE_BASE_STEPS: readonly SchemaStep[] = [{
     ...capabilityTriggers.flatMap(operation => {
       const row = operation === 'delete' ? 'OLD' : 'NEW';
       return [
-        `DROP TRIGGER curation_capability_${operation}`,
-        `CREATE TRIGGER curation_capability_${operation} AFTER ${operation.toUpperCase()} ON project_capabilities
+        `DROP TRIGGER IF EXISTS curation_capability_${operation}`,
+        `CREATE TRIGGER IF NOT EXISTS curation_capability_${operation} AFTER ${operation.toUpperCase()} ON project_capabilities
           WHEN ${row}.capability='spore_curation' BEGIN ${curationChangeSql(`${row}.project_id`, `${row}.updated_at`)} END`,
       ];
     }),

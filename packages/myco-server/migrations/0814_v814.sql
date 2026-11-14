@@ -8,23 +8,23 @@ ALTER TABLE spore_curation_cursor ADD COLUMN history_at INTEGER NOT NULL DEFAULT
 
 ALTER TABLE spore_curation_cursor ADD COLUMN history_id TEXT NOT NULL DEFAULT '';
 
-DROP TRIGGER curation_capability_insert;
+DROP TRIGGER IF EXISTS curation_capability_insert;
 
-CREATE TRIGGER curation_capability_insert AFTER INSERT ON project_capabilities
+CREATE TRIGGER IF NOT EXISTS curation_capability_insert AFTER INSERT ON project_capabilities
           WHEN NEW.capability='spore_curation' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
   SELECT NEW.project_id,1,1,NEW.updated_at WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
 
-DROP TRIGGER curation_capability_update;
+DROP TRIGGER IF EXISTS curation_capability_update;
 
-CREATE TRIGGER curation_capability_update AFTER UPDATE ON project_capabilities
+CREATE TRIGGER IF NOT EXISTS curation_capability_update AFTER UPDATE ON project_capabilities
           WHEN NEW.capability='spore_curation' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
   SELECT NEW.project_id,1,1,NEW.updated_at WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
 
-DROP TRIGGER curation_capability_delete;
+DROP TRIGGER IF EXISTS curation_capability_delete;
 
-CREATE TRIGGER curation_capability_delete AFTER DELETE ON project_capabilities
+CREATE TRIGGER IF NOT EXISTS curation_capability_delete AFTER DELETE ON project_capabilities
           WHEN OLD.capability='spore_curation' BEGIN INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
   SELECT OLD.project_id,1,1,OLD.updated_at WHERE 1 ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,
   pending_at=CASE WHEN pending_at IS NULL THEN excluded.pending_at ELSE MIN(pending_at,excluded.pending_at) END; END;
