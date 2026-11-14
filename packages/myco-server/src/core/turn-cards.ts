@@ -21,7 +21,6 @@ import { CARD_MAX_CHARS, CARD_RUN_INPUT_CHARS } from './read-window.js';
 import type { TrimmedTurn } from './turn-card-rules.js';
 import { CARD_SIGNALS, type CardSignal } from './turn-card-prompt.js';
 import { claimLearningRetryWrite, LEARNING_BACKOFF_MS } from './learning-sessions.js';
-import { FRESH_LEARNING_MS } from '../db/runs/learning-policy.js';
 import { SessionMaterialPendingError } from '../db/sessions/material.js';
 
 /** Due turns one claim reads at most. */
@@ -32,7 +31,7 @@ const CARD_RETRY_MS = 3_600_000;
 /** A card claim advances the session backoff and holds its assigned turns until the claim is presumed lost. */
 export function claimCardsWrites(projectId: string, sessionId: string, turnKeys: readonly string[], now: number,
   run: { runId: string; dispatchedBy: string }): Bound[] {
-  return [claimLearningRetryWrite(projectId, sessionId, run), cardBackoffWrite.bind(now - FRESH_LEARNING_MS, now, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy),
+  return [claimLearningRetryWrite(projectId, sessionId, run), cardBackoffWrite.bind(now, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy),
     cardDueWrite.bind(now + CARD_RETRY_MS, projectId, sessionId, JSON.stringify(turnKeys), run.runId, run.dispatchedBy)];
 }
 
@@ -139,7 +138,7 @@ export async function reusableCard(db: RelationalStore, projectId: string, sessi
  * stops at its limit whatever the session holds: turns due at one instant, or turns postponed past now.
  */
 export async function dueCardTurns(db: RelationalStore, projectId: string, sessionId: string, now: number): Promise<DueTurn[]> {
-  const rows = await claimableCardTurns(db, projectId, sessionId, now, CARD_CLAIM_TURNS, now - FRESH_LEARNING_MS);
+  const rows = await claimableCardTurns(db, projectId, sessionId, now, CARD_CLAIM_TURNS);
   const turns: DueTurn[] = [];
   let room = CARD_RUN_INPUT_CHARS;
   for (const row of rows) {

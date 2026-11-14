@@ -17,7 +17,9 @@
 import { harnessName, PROFILE_HARNESSES } from './execution-profile.js';
 import { REPOSITORY_CHECKOUT_CAPABILITY, REPOSITORY_DIGESTS_CAPABILITY } from './repository.js';
 
-export type HeldBy = 'concurrent_runs' | 'task_concurrent_runs' | 'task_runs_per_hour' | 'fleet' | 'runtime' | 'worker' | 'budget' | 'admission_building' | 'queue_building' | CapabilityHold;
+export const CARDS_PENDING_HOLD = 'cards_pending';
+
+export type HeldBy = 'concurrent_runs' | 'task_concurrent_runs' | 'task_runs_per_hour' | 'fleet' | 'runtime' | 'worker' | 'budget' | 'admission_building' | 'queue_building' | typeof CARDS_PENDING_HOLD | CapabilityHold;
 
 /** A run held for a worker capability is held by the capability's own name. */
 export type CapabilityHold = typeof REPOSITORY_CHECKOUT_CAPABILITY | typeof REPOSITORY_DIGESTS_CAPABILITY;
@@ -41,6 +43,7 @@ export const HELD_BY_WORDS: Readonly<Record<HeldBy, string>> = {
   queue_building: 'Waiting for the work queue to be ready.',
   admission_building: 'Measuring recent spend: automatic work waits until the server has counted the last day’s runs.',
   worker: 'Waiting for a machine to pick it up.',
+  [CARDS_PENDING_HOLD]: 'Waiting for this session’s turns to be summarized.',
   [REPOSITORY_CHECKOUT_CAPABILITY]: 'Waiting for a machine that can read the repository. None that checked in lately can.',
   [REPOSITORY_DIGESTS_CAPABILITY]: 'Waiting for an up-to-date machine. The machines that checked in lately run a Myco too old to run it, so update Myco there.',
 };

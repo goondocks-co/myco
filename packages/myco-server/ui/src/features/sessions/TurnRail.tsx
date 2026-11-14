@@ -38,7 +38,7 @@ function isBackground(origin: string): boolean {
   return origin !== 'user' && origin !== 'agent_dispatch';
 }
 
-function OutlineRow({ turn, to, open, replace, showError, agent }: { turn: TurnRow; to: string; open: boolean; replace: boolean; showError: boolean; agent: string | null }) {
+function OutlineRow({ turn, to, open, replace, showError, agent, learningAgedOut }: { turn: TurnRow; to: string; open: boolean; replace: boolean; showError: boolean; agent: string | null; learningAgedOut: boolean }) {
   const time = <time dateTime={new Date(turn.createdAt).toISOString()} className="pt-px t-meta tabular-nums text-faint">{clockTime(turn.createdAt)}</time>;
   const prompt = promptPreview(turn, agent);
   if (isBackground(turn.origin)) {
@@ -65,7 +65,7 @@ function OutlineRow({ turn, to, open, replace, showError, agent }: { turn: TurnR
         ) : (
           <>
             <span className="line-clamp-2 t-small font-medium text-ink">{prompt}</span>
-            {!mechanical && <span className="t-meta text-faint">Not summarized yet</span>}
+            {!mechanical && <span className="t-meta text-faint">{learningAgedOut ? 'Not summarized: this session was not learned' : 'Not summarized yet'}</span>}
           </>
         )}
         {firstError !== null && <span className="truncate t-mono text-bad" data-first-error="">{firstError}</span>}
@@ -120,6 +120,7 @@ function Outline({ rows, now, children }: { rows: readonly TurnRow[]; now: numbe
 }
 
 export interface TurnRailProps {
+  learningAgedOut?: boolean;
   search: ConversationQuery;
   filter: TurnFilter;
   onFilter: (filter: TurnFilter) => void;
@@ -139,7 +140,7 @@ export interface TurnRailProps {
 }
 
 /** Search above the filters above the outline of turns; a row or a hit opens its turn. */
-export const TurnRail = forwardRef<HTMLDivElement, TurnRailProps>(function TurnRail({ search, filter, onFilter, order, onOrder, onNewest, outline, found, openId, linkTo, replace, agent, now }, listRef) {
+export const TurnRail = forwardRef<HTMLDivElement, TurnRailProps>(function TurnRail({ search, filter, onFilter, order, onOrder, onNewest, outline, found, openId, linkTo, replace, agent, learningAgedOut = false, now }, listRef) {
   const { params, draft, query } = search;
   const searching = query !== '';
   return (
@@ -169,7 +170,7 @@ export const TurnRail = forwardRef<HTMLDivElement, TurnRailProps>(function TurnR
             <>
               {outline.error ? <div className="p-s3"><ErrorState error={outline.error} onRetry={outline.retry} /></div> : null}
               <Outline rows={outline.rows} now={now}>
-                {(turn) => <OutlineRow turn={turn} to={linkTo(turn.promptId)} open={turn.promptId === openId} replace={replace} showError={filter === 'failed'} agent={agent} />}
+                {(turn) => <OutlineRow learningAgedOut={learningAgedOut} turn={turn} to={linkTo(turn.promptId)} open={turn.promptId === openId} replace={replace} showError={filter === 'failed'} agent={agent} />}
               </Outline>
               {outline.hasMore && <div className="px-s3"><ShowMore shown={outline.rows.length} noun="turns" onMore={outline.more} pending={outline.isFetchingMore} hasMore /></div>}
             </>

@@ -15,7 +15,7 @@ import { budgetStatusLine } from '@goondocks/myco-shared/budget-status';
 import { claimSettings } from '@myco-server-worker/core/worker-selection.js';
 import { selectWorkerExecution } from '@myco-server-worker/core/harness.js';
 import { capabilitiesRequiredBy, WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
-import { capture, GOTCHAS, ready } from './helpers/learning-stages.js';
+import { capture, GOTCHAS, ready, NOW as CAPTURE_NOW } from './helpers/learning-stages.js';
 import { runStaleSweep,QUEUE_MAX_AGE_MS } from '@myco-server-worker/core/jobs-run.js';
 import { engineAssertions } from '@myco-server-worker/core/tick.js';
 import { BUDGET_WINDOW_MS,BUDGET_WORKER_TASKS } from '@myco-server-worker/core/budget-policy.js';
@@ -419,7 +419,7 @@ async function pulledFixture() {
     claimNextRun(f.serverEnv, { principal: f.principal, harnesses: h, capabilities: WORKER_CAPABILITIES, now });
 
   const seedCards = async (projectId = 'proj_1', sessionId = 'sess-1', turns = GOTCHAS) => {
-    await capture(f.db, sessionId, turns, projectId, f.now);
+    await capture(f.db, sessionId, turns.map(turn => ({ ...turn, at: turn.at + f.now - CAPTURE_NOW })), projectId, f.now);
     await ready(f.db, f.now);
     const row = f.sqlite.query<{ card_deadline: number }, []>(
       `SELECT card_deadline FROM learning_sessions WHERE project_id='${projectId}' AND card_deadline IS NOT NULL LIMIT 1`

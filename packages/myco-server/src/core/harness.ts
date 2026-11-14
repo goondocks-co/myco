@@ -1,3 +1,5 @@
+import { CARDS_PENDING_HOLD } from '@goondocks/myco-shared/run-holds';
+import { manualLearningNeedsCards } from '../db/learning/manual.js';
 import { queuedPriority, queuedAdmissible } from '../db/runs/pull-policy.js';
 import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
@@ -476,7 +478,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     // A task whose prompt the server builds has it built again here: the run
     // launches with the vault as it stands at this instant, and a Project that
     // has not moved past the artifact it already holds costs nothing.
-    const built = await buildTaskInput(env, queued.task, queued.projectId, now, { fresh: stored.options?.fresh === true, params: stored.params });
+    const built = await buildTaskInput(env, queued.task, queued.projectId, now, { runId: queued.id, fresh: stored.options?.fresh === true, params: stored.params });
     if (built !== null && built.unchanged) {
       await endQueuedRun(env, scope, queued, now, { skipped: INPUT_UNCHANGED });
       emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: INPUT_UNCHANGED });
@@ -875,13 +877,14 @@ export async function claimNextRun(
   if (!activation.active && queued) await recordTaskHolder(env.db, BUDGET_WORKER_TASKS, [null, 'worker'], 'budget');
   const claimLimits = await readDispatchLimits({ ...env, db: policy.view });
   const refusedHeads = new Set<string>();
+  const waitingHeads = new Set<string>();
   const headKey=(row:ClaimCandidate)=>JSON.stringify([row.projectId,row.id]);
   const limitHolders=new Map<string,ReturnType<typeof heldBy>>();
   let limitHeld=false;
   const next = async () => {
     if(!queued)return null;
-    if(!activation.active)return nextClaimable(env.db,excluded,{active:false,estimate:0,profileJson:''},worker.now);
-    const heads=await queueHeads(env.db,excluded);
+    if(!activation.active)return nextClaimable(env.db,excluded,{active:false,estimate:0,profileJson:''},worker.now,[...waitingHeads]);
+    const heads=await queueHeads(env.db,excluded,[...waitingHeads]);
     for(const task of new Set(heads.map(row=>row.task))) {
       if(limitHolders.has(task))continue;
       const holder=heldBy(await dispatchLoad(env.db,task,worker.now),claimLimits);
@@ -889,15 +892,40 @@ export async function claimNextRun(
       const limitNames=['fleet',...Object.keys(LIMIT_LEAVES)];
       if(holder!==null) {
         limitHeld=true;
-        await recordTaskHolder(env.db,[task],[null,'worker','budget',...limitNames],holder,true);
+        await recordTaskHolder(env.db,[task],[null,'worker','budget',CARDS_PENDING_HOLD,...limitNames],holder,true);
       } else await recordTaskHolder(env.db,[task],limitNames,'worker');
     }
     return heads.find(row=>limitHolders.get(row.task)===null&&!refusedHeads.has(headKey(row)))??null;
+  };
+  const candidateRefusal = async (row: ClaimCandidate): Promise<string | null> => {
+    if (!(await projectWorkEnabled(env.db, row.projectId))) return 'unknown_project';
+    const capability = capabilityOf(row.task);
+    return capability !== null && !(await capabilityOn(env.db, row.projectId, capability)) ? CAPABILITY_OFF : null;
+  };
+  const skipCandidate = async (row: ClaimCandidate, skip: string): Promise<void> => {
+    await endQueuedRun(env, { projectId: row.projectId }, row, worker.now, { skipped: skip });
+    emit({ kind: 'task_skipped', task: row.task, projectId: row.projectId, skip });
   };
   let candidate = await next();
   let chosen: SelectedExecution | null = null;
   let held = false;
   while (candidate !== null) {
+    const refusal = await candidateRefusal(candidate);
+    if (refusal !== null) {
+      await skipCandidate(candidate, refusal);
+      candidate = await next();
+      chosen = null;
+      continue;
+    }
+    if (candidate.task === EXTRACTION_TASK && await manualLearningNeedsCards(env.db, candidate.projectId, candidate.id)) {
+      await recordQueueHolder(env.db, { projectId: candidate.projectId }, candidate.id, CARDS_PENDING_HOLD);
+      refusedHeads.add(headKey(candidate));
+      waitingHeads.add(headKey(candidate));
+      candidate = await next();
+      chosen = null;
+      continue;
+    }
+    await recordQueueHolder(env.db, { projectId: candidate.projectId }, candidate.id, 'worker', { from: CARDS_PENDING_HOLD });
     const { selected } = await select(candidate.task, settings);
     chosen = selected;
     if (chosen !== null) {
@@ -916,10 +944,12 @@ export async function claimNextRun(
     excluded.push(candidate.task);
     candidate = await next();
   }
-  if (candidate === null || chosen === null) {
-    // Pull runs only when no queued head is admitted: queued automatic work that fits is claimed first.
+  const pull = async (): Promise<ClaimOutcome | null> => {
     const pulled = activation.active ? await pullAtClaim(env, worker, excluded, select, { policy, settings, limits: claimLimits, activation }) : null;
-    if (pulled === 'queued') return retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
+    return pulled === 'queued' ? retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' } : pulled;
+  };
+  if (candidate === null || chosen === null) {
+    const pulled = await pull();
     if (pulled !== null) return pulled;
   }
   if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : limitHeld&&refusedHeads.size===0?'at_limit':'no_work' };
@@ -939,15 +969,11 @@ export async function claimNextRun(
   const scope = { projectId: candidate.projectId };
   // A run of a task whose capability the Project turned off after it queued is skipped where it waits, naming why:
   // held, it would stand at the head of the queue for good. The claim's own write checks it again.
-  const capability = capabilityOf(candidate.task);
   const skipRefused = async (skip: string): Promise<ClaimOutcome> => {
-    await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: skip });
-    emit({ kind: 'task_skipped', task: candidate.task, projectId: candidate.projectId, skip });
+    await skipCandidate(candidate, skip);
     return claimNextRun(env, worker);
   };
-  if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
-  if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
-  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true, params: stored?.params });
+  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params });
   if (built === null && candidate.task === EXTRACTION_TASK) return skipRefused(NOTHING_DUE);
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });
@@ -976,8 +1002,8 @@ export async function claimNextRun(
   const minted=claimed?.issued;
   if (row === null) {
     if (worker.principal.kind === 'runner' && !(await runnerAcceptsWork(env.db, worker.principal.runnerId))) return { claimed: false, reason: 'paused' };
-    if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
-    if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
+    const refusal = await candidateRefusal(candidate);
+    if (refusal !== null) return skipRefused(refusal);
     const held = await admitDispatch(env, candidate.task, worker.now, limits, candidate.id);
     if (held === null) {
       const budgetWait = await budgetHold(env.db,candidate.projectId,candidate.id,price.estimate,worker.now);

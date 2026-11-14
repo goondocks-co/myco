@@ -75,6 +75,7 @@ export function runControlClient(
 export const RUN_FAILURE_WORDS: Readonly<Record<string, string>> = {
   ...RUN_CONTROL_REFUSAL_WORDS,
   machine_did_not_start: 'No machine started the task within a day.',
+  cards_wait_expired: 'Its turns were not summarized within a day.',
   machine_unresponsive: 'Its time limit passed, so Myco ended it. Whether its machine stopped is not known.',
   task_start_failed: 'The machine could not start the task.',
   model_not_applied: 'The agent couldn’t use the chosen model.',

@@ -1,5 +1,5 @@
 import { BUDGET_LEAF } from './budget-policy.js';
-import { learningHistoryEnabled, dailyBudget } from './settings.js';
+import { dailyBudget } from './settings.js';
 /**
  * The settings contract: every live Deployment leaf bound to the policy that acts on it.
  *
@@ -97,15 +97,6 @@ const scheduling: SettingPolicy = {
         : !map.enabled ? { effective: minutes, state: 'inactive', reason: 'The code map task’s own schedule is off under Per-task overrides.' }
           : { effective: minutes, meanwhile: `The map updates every ${minutes} minutes`, ...off },
     };
-  },
-};
-
-const learningHistory: SettingPolicy = {
-  id: 'learning-history',
-  owners: ['core/settings.ts'],
-  leaves: ['agent.learning_history_enabled'],
-  async resolve(env) {
-    return { 'agent.learning_history_enabled': { effective: await learningHistoryEnabled(env.db) } };
   },
 };
 
@@ -365,7 +356,7 @@ export const SETTING_POLICIES: readonly SettingPolicy[] = [
   { id:'budget', owners:['core/settings.ts'], leaves:[BUDGET_LEAF], async resolve(env) {
     return { [BUDGET_LEAF]:{effective:await dailyBudget(env.db)} };
   } },
-  scheduling, learningHistory, titling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides,
+  scheduling, titling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides,
 ];
 
 /** The live leaves: every Deployment leaf not retired. */

@@ -30,13 +30,11 @@ export const learningRetryWrite = write<readonly unknown[]>({name:'claim.learnin
             AND c.turn_key IN (SELECT json_extract(value, '$.turnKey') FROM json_each(agent_runs.run_context, '$.assignment.turns')))))
         FROM learning_sessions l WHERE l.project_id = ? AND l.session_id = ?)))
     WHERE project_id = ? AND id = ? AND dispatched_by = ? AND status = 'running'`});
-export const learningBackoffWrite = write<readonly unknown[]>({name:'claim.learningBackoffWrite',sql:`UPDATE learning_sessions SET fresh_admitted = CASE WHEN source_activity_at > ? THEN 1 ELSE fresh_admitted END,
-      failures = failures + 1,
+export const learningBackoffWrite = write<readonly unknown[]>({name:'claim.learningBackoffWrite',sql:`UPDATE learning_sessions SET failures = failures + 1,
       eligible_at = ? + CASE WHEN failures = 0 THEN 0 WHEN failures = 1 THEN ? WHEN failures = 2 THEN ? ELSE ? END
     WHERE project_id = ? AND session_id = ? AND eligible_at IS NOT NULL
       AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`});
-export const cardBackoffWrite = write<readonly unknown[]>({name:'claim.cardBackoffWrite',sql:`UPDATE learning_sessions SET fresh_admitted = CASE WHEN source_activity_at > ? THEN 1 ELSE fresh_admitted END,
-      card_failures = card_failures + 1,
+export const cardBackoffWrite = write<readonly unknown[]>({name:'claim.cardBackoffWrite',sql:`UPDATE learning_sessions SET card_failures = card_failures + 1,
       card_retry_at = ? + CASE WHEN card_failures = 0 THEN ? WHEN card_failures = 1 THEN ? ELSE ? END
     WHERE project_id = ? AND session_id = ?
       AND EXISTS (SELECT 1 FROM agent_runs r WHERE r.project_id = learning_sessions.project_id AND r.id = ? AND r.dispatched_by = ?)`});

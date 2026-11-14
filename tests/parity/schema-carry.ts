@@ -158,7 +158,9 @@ export function carryToPreviousSchema(input: { source: string; previous: string;
   } finally { db.close(); }
   // A table a step since the release retires holds nothing to seed.
   const retiredTables = new Set(input.upgrade.flatMap((step) => step.retires ?? []).filter((item) => item.kind === 'table').map((item) => item.name));
-  const empty = [...changedBy].filter(([table]) => !retiredTables.has(table) && (seeded.get(table) ?? 0) === 0);
+  // These tables are populated by schema steps rather than user routes.
+  const STEP_ONLY_TABLES = new Set(['retired_deployment_settings']);
+  const empty = [...changedBy].filter(([table]) => !retiredTables.has(table) && !STEP_ONLY_TABLES.has(table) && (seeded.get(table) ?? 0) === 0);
   if (empty.length > 0) {
     throw new Error(empty.map(([table, versions]) => `${steps(versions)} change${versions.length === 1 ? 's' : ''} ${table}, which the upgrade seed leaves empty`).join('; ')
       + `: seed ${empty.length === 1 ? 'it' : 'each'} through its route in ${SEED} so the upgrade runs over its rows`);

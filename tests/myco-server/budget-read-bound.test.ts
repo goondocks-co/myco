@@ -229,7 +229,6 @@ it('stops card and learning heads at the first source-ordered ready row as the r
   const { LEARNING_STAGES } = await import('@myco-server-worker/core/learning-stages.js');
   try {
     await settingsWriter(f.db).setLeaf('agent.scheduled_tasks_enabled', true, 'mem_worker', f.now);
-    await settingsWriter(f.db).setLeaf('agent.learning_history_enabled', true, 'mem_worker', f.now);
     const session = f.sqlite.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at,ended_at)
       VALUES('proj_1',?,'fake','fake',1,?,?)`);
     const progress = f.sqlite.prepare(`INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards,due_cards,eligible_at)
@@ -252,27 +251,27 @@ it('stops card and learning heads at the first source-ordered ready row as the r
     } } as unknown as RelationalStore;
     const { advanceLearningDeadlines } = await import('@myco-server-worker/db/learning/ready.js');
     const samples: unknown[] = [];
-    for (const fresh of [true, false]) {
+    {
       f.sqlite.exec('DELETE FROM learning_sessions; DELETE FROM turn_cards; DELETE FROM sessions');
       let previous = 0;
       let baseline: number[] | undefined;
-      for (const size of [1, 100, 1900]) {
+      for (const size of [100, 1900]) {
         f.sqlite.transaction(() => {
           for (let n = previous; n < size; n++) {
             const id = `ready-${String(n).padStart(4, '0')}`;
-            const source = f.now - (fresh ? 0 : 30 * 86_400_000) - n;
+            const source = f.now - n;
             session.run(id, source, source); card.run(id, f.now); progress.run(id, source, f.now);
           }
         })();
         while ((await advanceLearningDeadlines(f.db, f.now, { page: 500, age: true })).more);
         const reads: number[] = [];
-        for (const stage of LEARNING_STAGES.slice(fresh ? 0 : 2, fresh ? 2 : 4)) {
+        for (const stage of LEARNING_STAGES) {
           expect((await stage.head(measuredDb, 'proj_1', f.now))?.key).toBe('ready-0000');
           reads.push(measured);
         }
         baseline ??= reads;
         expect(reads).toEqual(baseline);
-        samples.push({ fresh, size, reads }); previous = size;
+        samples.push({ size, reads }); previous = size;
       }
     }
     console.info('ready head read bounds', { samples });

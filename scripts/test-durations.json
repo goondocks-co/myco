@@ -502,7 +502,6 @@
     "tests/myco-server/learning-cutover.test.ts": 579,
     "tests/myco-server/learning-documents.test.ts": 24000,
     "tests/myco-server/learning-flow.test.ts": 22000,
-    "tests/myco-server/learning-history.test.ts": 96800,
     "tests/myco-server/learning-hold.test.ts": 21241,
     "tests/myco-server/learning-pause-migration.test.ts": 13000,
     "tests/myco-server/learning-pause.test.ts": 6784,
@@ -955,7 +954,8 @@
     "tests/utils/lock-file-identity.test.ts": 4872,
     "tests/utils/order-stamp.test.ts": 149,
     "tests/utils/repository-name.test.ts": 514,
-    "tests/utils/windows-atomic-replace.test.ts": 52
+    "tests/utils/windows-atomic-replace.test.ts": 52,
+    "tests/myco-server/learning-window-migration.test.ts": 25000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,

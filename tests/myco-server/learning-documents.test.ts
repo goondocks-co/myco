@@ -4,6 +4,7 @@ import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { processedBody } from '@myco-server-worker/read/processed.js';
 import { documentTurn } from '@myco-server-worker/content/turn-material.js';
 import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { CARD_CLAIM_TURNS } from '@myco-server-worker/core/turn-cards.js';
 import { captureDocumentSession, captureDocumentTranscript } from './helpers/document-stores.js';
@@ -33,6 +34,7 @@ const reply = (text: string) => item('response_item', { type: 'message', role: '
 it('the publisher settles cards, keeps transcript plans canonical and reopens a resumed session', async () => {
   await withDocumentStores(async (db, name) => (async () => {
     const t0 = Date.now() - 2 * 60 * MIN;
+    await settingsWriter(db).setLeaf('agent.scheduled_tasks_enabled', true, 'owner', t0);
     const blobs = memoryBlobStore();
     const text = user('turn-0', 'Plan the release') + reply('<proposed_plan>\n# Ship the release\nTag, then publish.\n</proposed_plan>') + user('turn-1', 'continue');
     const env = await captureDocumentTranscript(db, blobs, 'session', 'tx_' + 'a'.repeat(32), text, t0, 0, 'codex');
@@ -169,6 +171,7 @@ async function placeRecords(env: { db: RelationalStore; blobs: ReturnType<typeof
 
 it('a card claim reads the same catalog rows whatever the session holds', async () => {
   await withDocumentStores(async (db, name) => {
+    await settingsWriter(db).setLeaf('agent.scheduled_tasks_enabled', true, 'owner', NOW);
     // Every turn is created and falls due at one instant, and as many again are postponed past now.
     const claim = async (session: string, turns: number) => {
       await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,pending_cards) VALUES('project',?,'ready',?,?)").bind(session, NOW, 2 * turns).run();

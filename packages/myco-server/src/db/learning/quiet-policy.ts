@@ -2,9 +2,10 @@ import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet, write, type Bound } from '../index.js';
 import { jsonKeys } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
-import { FRESH_LEARNING_MS } from '../runs/learning-policy.js';
+/** Maximum source interval used to clamp an idle close. */
+const QUIET_ADMISSION_MS = 86_400_000;
 
-/** Fresh sessions keep an hour of their source freshness window ahead of an idle close running past it. */
+/** An idle close leaves an hour inside the source admission interval. */
 const ADMISSION_MARGIN_MS = 3_600_000;
 const POLICY_PAGE = 100;
 const POLICY_MINUTES = '(SELECT minutes FROM learning_quiet_policy WHERE id=1)';
@@ -29,7 +30,7 @@ export const handQuietPolicy = (input: { generation: number; minutes: number; no
   [record.bind(input.generation, input.minutes, input.now), restart.bind(input.generation)];
 
 const quietAt = `CASE WHEN s.ended_at IS NOT NULL THEN 0
-  WHEN learning_sessions.source_activity_at+${FRESH_LEARNING_MS}>s.last_received_at THEN MIN(s.last_received_at+60000*${POLICY_MINUTES},learning_sessions.source_activity_at+${FRESH_LEARNING_MS - ADMISSION_MARGIN_MS})
+  WHEN learning_sessions.source_activity_at+${QUIET_ADMISSION_MS}>s.last_received_at THEN MIN(s.last_received_at+60000*${POLICY_MINUTES},learning_sessions.source_activity_at+${QUIET_ADMISSION_MS - ADMISSION_MARGIN_MS})
   ELSE s.last_received_at+60000*${POLICY_MINUTES} END`;
 const rebuild = write<[keys: string]>({ name: 'learningQuietPolicy.rebuildPage', sql: `WITH keys AS (${PAGE_KEYS}) UPDATE learning_sessions SET
     quiet_at=COALESCE((SELECT ${quietAt} FROM sessions s WHERE s.project_id=learning_sessions.project_id AND s.session_id=learning_sessions.session_id),0),

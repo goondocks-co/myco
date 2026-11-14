@@ -2,8 +2,6 @@ import { expect, test } from 'bun:test';
 import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
 import { publicationRebuildProgress } from '@myco-server-worker/db/documents/rebuild.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { NEXT_PUBLICATION_REOPEN } from '@myco-server-worker/db/schema-vNEXT-publication-reopen.js';
 import { PUBLICATION_REOPEN_PHASE } from '@myco-server-worker/db/documents/reopen.js';
 import { PARSER_VERSION } from '@myco-server-worker/constants.js';
 import { withDocumentStores, captureDocumentTranscript } from './helpers/document-stores.js';
@@ -56,7 +54,7 @@ test('version reopen arms only older reopenable failures and preserves newer sto
 });
 
 
-test('an admission upgrade retries stopped transcripts once without rebuilding healthy or tombstoned sessions',async()=>{
+test('an admission revision retries stopped transcripts once without rebuilding healthy or tombstoned sessions',async()=>{
   await withDocumentStores(async(db,target)=>{
     const blobs=memoryBlobStore(),at=Date.now()-60*MIN;
     const healthy='tx_00000000000000000000000000000001',good='tx_00000000000000000000000000000004';
@@ -80,8 +78,7 @@ test('an admission upgrade retries stopped transcripts once without rebuilding h
     }
     await db.prepare("INSERT INTO session_tombstones(project_id,session_id,created_at,created_by) VALUES('project','gone',1,'owner')").run();
     await db.prepare("UPDATE session_documents SET due_at=NULL WHERE session_id<>'healthy'").run();
-    for(const step of SCHEMA_STEPS.filter(step=>step.version>=NEXT_PUBLICATION_REOPEN))
-      await db.batch(step.statements.map(sql=>db.prepare(sql)));
+    await db.prepare("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE phase=?").bind(PUBLICATION_REOPEN_PHASE).run();
     for(let pass=0;pass<8;pass++){
       const previous=await one(db,"SELECT state,diagnostic FROM transcript_publication WHERE session_id='refused'");
       const changed=await catchUpPhase(db,PUBLICATION_REOPEN_PHASE);
@@ -105,5 +102,5 @@ test('an admission upgrade retries stopped transcripts once without rebuilding h
     expect(await catchUpPhase(db,PUBLICATION_REOPEN_PHASE),target).toBe(0);
     await publishDocuments(env,at+22*MIN,limits());
     expect(await one(db,"SELECT state,failure,diagnostic FROM transcript_publication WHERE session_id='refused'"),target).toEqual(stopped);
-  },NEXT_PUBLICATION_REOPEN-1);
+  });
 });

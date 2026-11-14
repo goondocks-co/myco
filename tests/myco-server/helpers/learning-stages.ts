@@ -26,7 +26,7 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 export const NOW = 1_800_000_000_000;
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
-export const enable = "INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner'),('agent.learning_history_enabled','true',1,'owner')";
+export const enable = "INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')";
 
 export interface Turn {
   id: string; text: string; at: number; origin?: string; parent?: string;
@@ -37,7 +37,7 @@ export interface Turn {
 export const BLOBS = memoryBlobStore();
 
 export let serial = 0;
-export async function capture(db: RelationalStore, sessionId: string, turns: readonly Turn[], projectId = 'project', receiptAt = 1) {
+export async function capture(db: RelationalStore, sessionId: string, turns: readonly Turn[], projectId = 'project', receiptAt = NOW - 4 * HOUR) {
   await ensureMember(db, 'member', 1, 'member');
   const issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, 1);
   const ctx = { projectId, machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: receiptAt };
@@ -93,16 +93,16 @@ export async function ready(db: RelationalStore, now = NOW): Promise<BlobStore> 
 }
 
 export const GOTCHAS: Turn[] = [
-  { id: uuid(1), text: 'Run the server tests', at: 10, replies: ['The suite fails: bun needs the pinned version. The fix that works is PATH=$HOME/tools/bun-1.4.0:$PATH npm test.'],
+  { id: uuid(1), text: 'Run the server tests', at: NOW - DAY + 10, replies: ['The suite fails: bun needs the pinned version. The fix that works is PATH=$HOME/tools/bun-1.4.0:$PATH npm test.'],
     tools: [{ name: 'Bash', input: { command: 'npm test -- tests/server.test.ts' }, ok: false, error: 'exit 1',
       output: `${'ok line\n'.repeat(300)}error: Cannot find module '@myco-server-worker/core/x.js' from 'tests/a.test.ts'\n${'ok line\n'.repeat(200)}` }] },
-  { id: uuid(2), text: 'Store the cursor in schema_meta', at: 20, replies: ['Using schema_meta instead of agent_state, rejected agent_state because it is per Project and the cursor is Deployment-wide.'] },
-  { id: uuid(3), text: 'Deploy the worker', at: 30, replies: ['Deployed.'],
+  { id: uuid(2), text: 'Store the cursor in schema_meta', at: NOW - DAY + 20, replies: ['Using schema_meta instead of agent_state, rejected agent_state because it is per Project and the cursor is Deployment-wide.'] },
+  { id: uuid(3), text: 'Deploy the worker', at: NOW - DAY + 30, replies: ['Deployed.'],
     tools: [{ name: 'Bash', input: { command: 'npx wrangler deploy --minify --compatibility-date=2026-08-01' }, output: 'Uploaded myco (1.2 sec)' }] },
-  { id: uuid(4), text: 'Delete the old rows', at: 40, replies: ['Deleting with DELETE FROM runs.'] },
-  { id: uuid(5), text: 'no, don\'t delete them; archive them with myco server archive --keep', at: 41, parent: uuid(4) },
-  { id: uuid(6), text: '<task-notification><status>completed</status></task-notification>', at: 50, replies: ['Noted.'] },
-  { id: uuid(7), text: 'check CI', at: 60, tools: [{ name: 'Bash', input: { command: 'gh run watch 123' }, output: 'completed success' }] },
+  { id: uuid(4), text: 'Delete the old rows', at: NOW - DAY + 40, replies: ['Deleting with DELETE FROM runs.'] },
+  { id: uuid(5), text: 'no, don\'t delete them; archive them with myco server archive --keep', at: NOW - DAY + 41, parent: uuid(4) },
+  { id: uuid(6), text: '<task-notification><status>completed</status></task-notification>', at: NOW - DAY + 50, replies: ['Noted.'] },
+  { id: uuid(7), text: 'check CI', at: NOW - DAY + 60, tools: [{ name: 'Bash', input: { command: 'gh run watch 123' }, output: 'completed success' }] },
 ];
 
 export const failedCommand = (at: number, chars: number) => ({ name: 'Bash', input: { command: `echo ${at} ${'é"\n'.repeat(chars / 3)}` }, ok: false, error: `exit ${at}` });
@@ -121,12 +121,12 @@ export async function cardWorker(db: RelationalStore) {
   await ensureMember(db, 'mem_worker', NOW, 'admin');
   const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
   const poll = (now: number) => claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
-  const request = (token: string, name: string, input: Record<string, unknown>) => worker.fetch(new Request('https://myco.test/mcp', {
-    method: 'POST', headers: memberHeaders(token, { [PROJECT_HEADER]: 'project' }),
+  const request = (token: string, name: string, input: Record<string, unknown>, projectId = 'project') => worker.fetch(new Request('https://myco.test/mcp', {
+    method: 'POST', headers: memberHeaders(token, { [PROJECT_HEADER]: projectId }),
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }),
   }), bindings as never);
-  const call = async (token: string, name: string, input: Record<string, unknown>) => {
-    const body = await (await request(token, name, input)).json() as { result: { content: { text: string }[] } };
+  const call = async (token: string, name: string, input: Record<string, unknown>, projectId = 'project') => {
+    const body = await (await request(token, name, input, projectId)).json() as { result: { content: { text: string }[] } };
     return JSON.parse(body.result.content[0]!.text) as Record<string, unknown>;
   };
   return { bindings, env, principal, poll, request, call };
@@ -204,4 +204,4 @@ export async function learningRun(db: RelationalStore, turns: readonly Turn[], s
   return { bindings, env, principal, claimed:learn.run, raw, call, material, readAll, save, complete: (text: string) => call('myco_run_learning', { op: 'complete', handoff: text }) };
 }
 
-export const plainTurns = (count: number, base = 500): Turn[] => Array.from({ length: count }, (_, at) => ({ id: uuid(base + at), text: `Work on the part ${at}`, at: 10 + at, replies: ['Done.'] }));
+export const plainTurns = (count: number, base = 500): Turn[] => Array.from({ length: count }, (_, at) => ({ id: uuid(base + at), text: `Work on the part ${at}`, at: NOW - DAY + 10 + at, replies: ['Done.'] }));

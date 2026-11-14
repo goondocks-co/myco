@@ -1,3 +1,4 @@
+import { manualLearningNeedsCardsSql } from '../learning/manual.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, read, readSet, type Bound } from '../index.js';
 import { CLAIM_SELECTION_REFUSED } from './claim-refusals.js';
@@ -69,17 +70,17 @@ export function definePullPolicy(name:string,task:string,due:string,head:string,
   };
   return {head:(...args)=>definitions.head.bind(values(...args)),higher:(...args)=>definitions.higher.bind(values(...args)),fair:(...args)=>definitions.fair.bind(values(...args))};
 }
-export const learningPolicies = (['cards','learning'] as const).map(kind => [false,true].map(fresh => definePullPolicy(
-  `${kind}${fresh?'Fresh':'History'}`,kind==='cards'?CARD_TASK:EXTRACTION_TASK,learningDue(kind,fresh,'p.project_id','i.now'),
+export const learningPolicies = (['cards','learning'] as const).map(kind => definePullPolicy(
+  kind,kind==='cards'?CARD_TASK:EXTRACTION_TASK,learningDue(kind,'p.project_id','i.now'),
   `EXISTS(SELECT 1 FROM learning_sessions l WHERE l.project_id=i.projectId AND l.session_id=i.key
-    AND l.${kind==='cards'?'source_activity_at':'eligible_at'}=i.observed AND ${learningEligible(kind,fresh,'i.now')})`,learningReadyProjects(kind,fresh))));
+    AND l.${kind==='cards'?'source_activity_at':'eligible_at'}=i.observed AND ${learningEligible(kind,'i.now')})`,learningReadyProjects(kind)));
 export const curationPolicy=definePullPolicy('curation',CURATION_TASK,curationAdmissionSql('p.project_id','i.now',undefined,'i.estimateKey'),
   `${curationAdmissionSql('i.projectId','i.now',undefined,'i.estimateKey')} AND EXISTS(SELECT 1 FROM spore_curation_work w
     WHERE ${curationDueWorkSql('i.projectId','i.now')} AND cluster_key=i.key AND due_at=i.observed AND decision IS NULL)`);
 const qTask="json_extract(q.value,'$.task')",qCapability="json_extract(q.value,'$.capability')";
 const queuedClearSql = `NOT EXISTS(SELECT 1 FROM json_each(?1,'$.queues') q
   CROSS JOIN json_each('["manual","automatic"]') origins WHERE ${limitSql(qTask)} AND EXISTS(
-    SELECT 1 FROM (${queueHeadSeek('project_id, task',qTask,'origins.value')}) head
+    SELECT 1 FROM (${queueHeadSeek('project_id, id, task',qTask,'origins.value',`NOT ${manualLearningNeedsCardsSql({ project: 'd.project_id', run: 'd.run_id' })}`)}) head
       WHERE ${projectAcceptsWorkSql('head.project_id')} AND (${qCapability} IS NULL OR ${capabilityOnSql('head.project_id',qCapability)})
       AND (origins.value='manual' OR ${spendReadySql(`i.now-${BUDGET_WINDOW_MS}`)} AND ${spentUsdSql(`i.now-${BUDGET_WINDOW_MS}`)}
         + COALESCE((SELECT json_extract(s.value,'$.estimate') FROM agent_state s WHERE s.project_id=head.project_id

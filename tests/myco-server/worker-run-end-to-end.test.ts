@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { expectRunRefusal } from '../helpers/run-refusal.js';
 import { runningEnv as sqliteEnv } from './helpers/running-env.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
@@ -144,6 +145,7 @@ describe('a titling run a worker claimed', () => {
 describe('the context a claimed run carries', () => {
   it('is the one the dispatch decided: the task\'s budget and the hash the server filed it under', async () => {
     const r = await rig();
+    await settingsWriter(r.e.db).setLeaf('agent.scheduled_tasks_enabled', true, 'mem_worker', NOW);
     r.learningDue('s9', 'p9');
     r.e.sqlite.run(
       `INSERT INTO agent_runs (project_id, id, agent_id, task, status, queued_at, held_by, dispatch_spec, run_context, instruction)

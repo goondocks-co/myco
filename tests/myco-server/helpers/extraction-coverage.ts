@@ -107,7 +107,7 @@ export async function seedAcknowledgedHistory(db: RelationalStore, end = ACKS, b
   if (sliceCount > 1) {
     statements.push(
       db.prepare(`UPDATE learning_sessions
-        SET revision = revision + CAST(? AS INTEGER), due_cards = 0, pending_cards = 0, eligible_at = NULL, fresh_admitted = 0, last_completed_run = ?
+        SET revision = revision + CAST(? AS INTEGER), due_cards = 0, pending_cards = 0, eligible_at = NULL, last_completed_run = ?
         WHERE project_id = ? AND session_id = 'session'`)
         .bind(sliceCount - 1, lastSliceRun, scope.projectId),
     );

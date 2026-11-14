@@ -11,7 +11,7 @@
  * it is refused and reconsidered at the next wake (`scheduled-tasks.ts`).
  */
 import type { RelationalStore } from './adapters.js';
-import { HELD_BY_WORDS, type CapabilityHold, type HeldBy } from '@goondocks/myco-shared/run-holds';
+import { HELD_BY_WORDS, type HeldBy } from '@goondocks/myco-shared/run-holds';
 
 import { settingTexts } from './settings.js';
 
@@ -19,14 +19,14 @@ import { settingTexts } from './settings.js';
 export const DEPLOYMENT_WIDE_HOLDS: ReadonlySet<HeldBy> = new Set<HeldBy>(['fleet', 'concurrent_runs', 'runtime']);
 
 /** The three limits an owner sets in Settings. The fleet is the size of what the operator deployed; a runtime hold is not a limit at all. */
-export const LIMIT_LEAVES: Readonly<Record<Exclude<HeldBy, 'fleet' | 'runtime' | 'worker' | 'budget' | 'admission_building' | 'queue_building' | CapabilityHold>, string>> = {
+export const LIMIT_LEAVES = {
   concurrent_runs: 'agent.limits.concurrent_runs',
   task_concurrent_runs: 'agent.limits.task_concurrent_runs',
   task_runs_per_hour: 'agent.limits.task_runs_per_hour',
-};
+} as const satisfies Readonly<Partial<Record<HeldBy, string>>>;
 
 /** Each resolved limit, or null where no bound applies. A runtime hold has no number to compare against and is absent here. */
-export type DispatchLimits = Readonly<Record<Exclude<HeldBy, 'runtime' | 'worker' | 'budget' | 'admission_building' | 'queue_building' | CapabilityHold>, number | null>>;
+export type DispatchLimits = Readonly<Record<keyof typeof LIMIT_LEAVES | 'fleet', number | null>>;
 
 /** What the Deployment is doing when a dispatch asks to run. */
 export interface DispatchLoad {
@@ -69,7 +69,7 @@ export function resolvedConcurrency(limits: Pick<DispatchLimits, 'fleet' | 'conc
  * names the input that owns the resolved concurrency limit before task limits.
  * A runtime hold is never decided here; it is what a launch answers.
  */
-export function heldBy(load: DispatchLoad, limits: DispatchLimits): Exclude<HeldBy, 'runtime' | 'worker' | 'budget' | CapabilityHold> | null {
+export function heldBy(load: DispatchLoad, limits: DispatchLimits): keyof DispatchLimits | 'queue_building' | null {
   if (load.ready === false) return 'queue_building';
   const concurrency = resolvedConcurrency(limits);
   if (concurrency.value !== null && load.liveRuns >= concurrency.value) return concurrency.input;

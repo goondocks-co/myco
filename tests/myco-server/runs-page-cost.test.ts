@@ -47,7 +47,7 @@ it('pulled work costs D1 the same as unrelated live runs, its ready backlog and 
     setup: async db => {
       await completeBudgetMigration(db, NOW);
       await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('load-agent','load','built-in',1,1)").run();
-      await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner'),('agent.learning_history_enabled','true',1,'owner')").run();
+      await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')").run();
       for (const project of page) await work(db, project);
     },
     grow: async (db, from, to) => {
@@ -58,7 +58,7 @@ it('pulled work costs D1 the same as unrelated live runs, its ready backlog and 
       await eachUnit(db, from, to, "INSERT INTO project_capabilities SELECT 'proj_unrelated_'||i,'spore_curation',1,1,'owner' FROM n");
       await eachUnit(db, from, to, "INSERT INTO spore_curation_work(project_id,cluster_key,members,due_at) SELECT 'proj_unrelated_'||i,'group','[]',?3 FROM n", NOW - HOUR);
       await eachUnit(db, from, to, `INSERT INTO agent_runs(project_id,id,agent_id,task,status,origin,queued_at,started_at)
-        SELECT 'proj_unrelated_'||i,'busy-'||i,'load-agent','title-summary',CASE WHEN i%2=0 THEN 'queued' ELSE 'running' END,'manual',?3,CASE WHEN i%2=1 THEN ?3 END FROM n`, NOW - HOUR);
+        SELECT 'proj_unrelated_'||i,'busy-'||i,'load-agent',CASE WHEN i%2=0 THEN 'extract-curate' ELSE 'title-summary' END,CASE WHEN i%2=0 THEN 'queued' ELSE 'running' END,'manual',?3,CASE WHEN i%2=1 THEN ?3 END FROM n`, NOW - HOUR);
       await eachUnit(db, from, to, `INSERT INTO learning_sessions(project_id,session_id,init_state,counted,source_activity_at,pending_cards,next_model_due_at,quiet_at,card_promoted_at,eligible_at,learning_promoted_at)
         SELECT ?3,'own-'||i,'ready',1,?4,1,?5,?5,?5,?5,?5 FROM n`, page[0], NOW - 2 * HOUR, NOW - 45 * 60_000);
       await eachUnit(db, from, to, "UPDATE learning_sessions SET next_model_due_at=?4,card_promoted_at=?4 WHERE project_id=?3 AND session_id IN (SELECT 'own-'||i FROM n)", page[0], NOW - 45 * 60_000);

@@ -31,7 +31,7 @@ function addCard(db: RelationalStore, session: string, card: Card) {
 const counts = (db: RelationalStore, session: string) => db.prepare(
   'SELECT pending_cards,due_cards,signal_cards,last_carded_at,counted FROM learning_sessions WHERE session_id=?').bind(session).first();
 const rollup = (db: RelationalStore) => db.prepare(
-  "SELECT pending_cards,due_cards,signal_cards,fresh_pending,fresh_due,ready_sessions,fresh_ready_sessions,history_waiting FROM learning_project_counts WHERE project_id='project'").first();
+  "SELECT pending_cards,due_cards,signal_cards,ready_sessions,aged_out_sessions FROM learning_project_counts WHERE project_id='project'").first();
 
 it('moves each session\'s card counts old to new through insert, carding, coverage, reset and delete, and the Project rollup follows', async () => {
   await withDocumentStores(async db => {
@@ -104,35 +104,18 @@ it('promotes a session at its deadline, drops it when the deadline moves, and of
     await addCard(db, 'waits', { key: 'w', due: NOW + HOUR });
     await sessionRow(db, 'ready');
     await addCard(db, 'ready', { key: 'r', due: NOW });
-    const head = () => stageHead(db, 'cardsFresh', 'project', NOW + 1);
+    const head = () => stageHead(db, 'cards', 'project', NOW + 1);
 
     expect(await head()).toBeNull();
     await advanceLearningDeadlines(db, NOW + 1, { page: LEARNING_ADVANCE_PAGE, age: true });
     expect(await head()).toMatchObject({ sessionId: 'ready' });
-    expect((await db.prepare("SELECT ready FROM learning_ready_projects WHERE stage='cardsFresh' AND project_id='project'").first())).toEqual({ ready: 1 });
+    expect((await db.prepare("SELECT ready FROM learning_ready_projects WHERE stage='cards' AND project_id='project'").first())).toEqual({ ready: 1 });
 
     await db.prepare("UPDATE turn_cards SET due_at=? WHERE session_id='ready'").bind(NOW + 2 * HOUR).run();
     expect(await head()).toBeNull();
-    expect((await db.prepare("SELECT ready FROM learning_ready_projects WHERE stage='cardsFresh' AND project_id='project'").first())).toEqual({ ready: 0 });
+    expect((await db.prepare("SELECT ready FROM learning_ready_projects WHERE stage='cards' AND project_id='project'").first())).toEqual({ ready: 0 });
     await advanceLearningDeadlines(db, NOW + 3 * HOUR, { page: LEARNING_ADVANCE_PAGE, age: true });
-    expect(await stageHead(db, 'cardsFresh', 'project', NOW + 3 * HOUR)).toMatchObject({ sessionId: 'ready' });
-  });
-});
-
-it('ages a session out of the fresh stage after its source window and keeps a retry-admitted one fresh', async () => {
-  await withDocumentStores(async db => {
-    await db.prepare("INSERT OR REPLACE INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')").run();
-    await settingsWriter(db).setLeaf('agent.learning_history_enabled', true, 'owner', NOW);
-    await sessionRow(db, 'old', NOW - 2 * DAY);
-    await addCard(db, 'old', { key: 'o', due: NOW });
-    await sessionRow(db, 'retry', NOW - 2 * DAY, 'fresh_admitted=1,card_failures=1');
-    await addCard(db, 'retry', { key: 'r', due: NOW });
-    await advanceLearningDeadlines(db, NOW + 1, { page: LEARNING_ADVANCE_PAGE, age: true });
-    expect(await stageHead(db, 'cardsHistory', 'project', NOW + 1)).toMatchObject({ sessionId: 'old' });
-    expect(await stageHead(db, 'cardsFresh', 'project', NOW + 1)).toMatchObject({ sessionId: 'retry' });
-    await db.prepare("UPDATE learning_sessions SET source_activity_at=? WHERE session_id='old'").bind(NOW).run();
-    await advanceLearningDeadlines(db, NOW + 1, { page: LEARNING_ADVANCE_PAGE, age: true });
-    expect((await db.prepare("SELECT card_stage,aged FROM learning_sessions WHERE session_id='old'").first())).toEqual({ card_stage: 'cardsFresh', aged: 0 });
+    expect(await stageHead(db, 'cards', 'project', NOW + 3 * HOUR)).toMatchObject({ sessionId: 'ready' });
   });
 });
 
@@ -245,8 +228,8 @@ it('finds a hand start its due session during a promotion backlog in another Pro
       await db.prepare("INSERT INTO learning_sessions(project_id,session_id,init_state,source_activity_at,eligible_at,due_cards) VALUES('other',?,'ready',?,?,1)").bind(`busy-${i}`, NOW - HOUR, NOW - 1).run();
     }
     await advanceLearningDeadlines(db, NOW);
-    expect(await stageHead(db, 'learningFresh', 'project', NOW)).toBeNull();
-    expect(await learningHeadSession(db, 'project', NOW, true)).toBe('mine');
+    expect(await stageHead(db, 'learning', 'project', NOW)).toBeNull();
+    expect(await learningHeadSession(db, 'project', NOW)).toBe('mine');
   });
 });
 

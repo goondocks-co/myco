@@ -128,7 +128,7 @@ function Reading({ answer, projectId, projectName, now, actions }: { answer: Ses
   const name = projectName ?? 'A project';
   useFollowLive(projectId, session);
   const content: Record<Tab, ReactNode> = {
-    conversation: <Conversation projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} turnsTotal={counts.prompts} typedTotal={counts.userPrompts} now={now} />,
+    conversation: <Conversation learningAgedOut={answer.learningAgedOutAt != null} projectId={projectId} sessionId={session.sessionId} agent={session.agent} contexts={answer.turnContexts} turnsTotal={counts.prompts} typedTotal={counts.userPrompts} now={now} />,
     activity: <SessionActivity projectId={projectId} sessionId={session.sessionId} now={now} />,
     outcomes: <SessionOutcomes projectId={projectId} sessionId={session.sessionId} now={now} />,
     spores: <SessionSpores projectId={projectId} sessionId={session.sessionId} now={now} />,
