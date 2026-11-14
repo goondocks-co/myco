@@ -121,12 +121,12 @@ export async function cardWorker(db: RelationalStore) {
   await ensureMember(db, 'mem_worker', NOW, 'admin');
   const principal = legacyWorker((await issueMemberToken(db, { memberId: 'mem_worker', machineId: 'm1' }, NOW)).tokenId, 'm1');
   const poll = (now: number) => claimNextRun(env, { principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
-  const request = (token: string, name: string, input: Record<string, unknown>) => worker.fetch(new Request('https://myco.test/mcp', {
-    method: 'POST', headers: memberHeaders(token, { [PROJECT_HEADER]: 'project' }),
+  const request = (token: string, name: string, input: Record<string, unknown>, projectId = 'project') => worker.fetch(new Request('https://myco.test/mcp', {
+    method: 'POST', headers: memberHeaders(token, { [PROJECT_HEADER]: projectId }),
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: input } }),
   }), bindings as never);
-  const call = async (token: string, name: string, input: Record<string, unknown>) => {
-    const body = await (await request(token, name, input)).json() as { result: { content: { text: string }[] } };
+  const call = async (token: string, name: string, input: Record<string, unknown>, projectId = 'project') => {
+    const body = await (await request(token, name, input, projectId)).json() as { result: { content: { text: string }[] } };
     return JSON.parse(body.result.content[0]!.text) as Record<string, unknown>;
   };
   return { bindings, env, principal, poll, request, call };

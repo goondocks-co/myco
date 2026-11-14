@@ -5,13 +5,13 @@ INSERT OR IGNORE INTO retired_deployment_settings(leaf,value,updated_at,updated_
 
 DROP TABLE IF EXISTS _learning_window_guard_settings;
 
-CREATE TABLE _learning_window_guard_settings(ok INTEGER NOT NULL CHECK(ok=1));
+CREATE TABLE IF NOT EXISTS _learning_window_guard_settings(ok INTEGER NOT NULL CHECK(ok=1));
 
 INSERT INTO _learning_window_guard_settings SELECT NOT EXISTS(SELECT 1 FROM deployment_settings live
       WHERE leaf='agent.learning_history_enabled' AND NOT EXISTS(SELECT 1 FROM retired_deployment_settings saved WHERE saved.leaf=live.leaf
         AND saved.value=live.value AND saved.updated_at=live.updated_at AND saved.updated_by=live.updated_by));
 
-DROP TABLE _learning_window_guard_settings;
+DROP TABLE IF EXISTS _learning_window_guard_settings;
 
 DELETE FROM deployment_settings WHERE leaf='agent.learning_history_enabled';
 
@@ -32,7 +32,10 @@ DROP TRIGGER IF EXISTS learning_ready_project_delete;
 
 DROP TRIGGER IF EXISTS learning_source_refreshed;
 
-DELETE FROM learning_project_counts;
+DROP TABLE IF EXISTS learning_project_counts;
+
+CREATE TABLE IF NOT EXISTS learning_project_counts(project_id TEXT NOT NULL PRIMARY KEY CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),
+      pending_cards INTEGER NOT NULL DEFAULT 0,due_cards INTEGER NOT NULL DEFAULT 0,signal_cards INTEGER NOT NULL DEFAULT 0,ready_sessions INTEGER NOT NULL DEFAULT 0,awaiting_publication INTEGER NOT NULL DEFAULT 0,aged_out_sessions INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
 
 DELETE FROM learning_ready_projects;
 
@@ -50,29 +53,98 @@ DROP INDEX IF EXISTS idx_learning_card_waiting;
 
 DROP INDEX IF EXISTS idx_learning_stage_waiting;
 
-ALTER TABLE learning_sessions DROP COLUMN card_stage;
+DROP TABLE IF EXISTS _learning_window_sessions;
 
-ALTER TABLE learning_sessions DROP COLUMN learning_stage;
+CREATE TABLE IF NOT EXISTS _learning_window_sessions AS SELECT rowid AS saved_rowid,project_id,session_id,next_seq,max_seq,revision,learned_seq,init_state,eligible_at,pending_cards,due_cards,failures,skipped_by_owner,handoff,carded_seq,last_completed_at,last_completed_reason,last_completed_run,source_activity_at,quiet_at,card_failures,card_retry_at,signal_cards,last_carded_at,next_model_due_at,counted,card_promoted_at,learning_promoted_at,quiet_generation,aged_out_at FROM learning_sessions;
 
-ALTER TABLE learning_sessions DROP COLUMN fresh_admitted;
+DROP TABLE IF EXISTS learning_sessions;
 
-ALTER TABLE learning_sessions DROP COLUMN aged;
+CREATE TABLE IF NOT EXISTS learning_sessions (project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),session_id TEXT NOT NULL,next_seq INTEGER NOT NULL DEFAULT 1 CHECK(next_seq>0),
+    max_seq INTEGER NOT NULL DEFAULT 0 CHECK(max_seq>=0),revision INTEGER NOT NULL DEFAULT 0,
+  learned_seq INTEGER NOT NULL DEFAULT 0,
+  init_state TEXT NOT NULL DEFAULT 'pending' CHECK (init_state IN ('pending','awaiting_publication','ready')),
+  eligible_at INTEGER,
+  pending_cards INTEGER NOT NULL DEFAULT 0,
+  due_cards INTEGER NOT NULL DEFAULT 0,
+  failures INTEGER NOT NULL DEFAULT 0,
+  skipped_by_owner INTEGER NOT NULL DEFAULT 0,
+  handoff TEXT CHECK (handoff IS NULL OR length(CAST(handoff AS BLOB)) <= 4096),
+  carded_seq INTEGER NOT NULL DEFAULT 0,
+  last_completed_at INTEGER,
+  last_completed_reason TEXT,
+  last_completed_run TEXT,
+  source_activity_at INTEGER,
+  source_day INTEGER GENERATED ALWAYS AS (CAST(source_activity_at / 86400000 AS INTEGER)) VIRTUAL,
+  quiet_at INTEGER NOT NULL DEFAULT 0,
+  card_failures INTEGER NOT NULL DEFAULT 0,
+  card_retry_at INTEGER NOT NULL DEFAULT 0,
+  card_ready_at INTEGER GENERATED ALWAYS AS (MAX(quiet_at,card_retry_at)) VIRTUAL,
+  learning_ready_at INTEGER GENERATED ALWAYS AS (MAX(quiet_at,COALESCE(eligible_at,0))) VIRTUAL,
+  signal_cards INTEGER NOT NULL DEFAULT 0,
+  last_carded_at INTEGER,
+  next_model_due_at INTEGER,
+  counted INTEGER NOT NULL DEFAULT 0,
+  card_promoted_at INTEGER,
+  learning_promoted_at INTEGER,
+  quiet_generation INTEGER,
+  card_deadline INTEGER GENERATED ALWAYS AS (CASE WHEN pending_cards>0 AND source_activity_at IS NOT NULL AND (counted=0 OR next_model_due_at IS NOT NULL) THEN MAX(quiet_at,card_retry_at,COALESCE(next_model_due_at,0)) END) VIRTUAL,
+  learning_deadline INTEGER GENERATED ALWAYS AS (CASE WHEN eligible_at IS NOT NULL AND source_activity_at IS NOT NULL THEN MAX(quiet_at,eligible_at) END) VIRTUAL,
+  aged_out_at INTEGER,
+  card_stage TEXT GENERATED ALWAYS AS
+      (CASE WHEN aged_out_at IS NULL AND card_deadline IS NOT NULL AND card_promoted_at=card_deadline THEN 'cards' END) VIRTUAL,
+  learning_stage TEXT GENERATED ALWAYS AS
+      (CASE WHEN aged_out_at IS NULL AND learning_deadline IS NOT NULL AND learning_promoted_at=learning_deadline THEN 'learning' END) VIRTUAL,PRIMARY KEY(project_id,session_id),FOREIGN KEY(project_id) REFERENCES projects(project_id));
 
-ALTER TABLE learning_sessions ADD COLUMN card_stage TEXT GENERATED ALWAYS AS
-      (CASE WHEN aged_out_at IS NULL AND card_deadline IS NOT NULL AND card_promoted_at=card_deadline THEN 'cards' END) VIRTUAL;
+INSERT INTO learning_sessions(rowid,project_id,session_id,next_seq,max_seq,revision,learned_seq,init_state,eligible_at,pending_cards,due_cards,failures,skipped_by_owner,handoff,carded_seq,last_completed_at,last_completed_reason,last_completed_run,source_activity_at,quiet_at,card_failures,card_retry_at,signal_cards,last_carded_at,next_model_due_at,counted,card_promoted_at,learning_promoted_at,quiet_generation,aged_out_at) SELECT saved_rowid,project_id,session_id,next_seq,max_seq,revision,learned_seq,init_state,eligible_at,pending_cards,due_cards,failures,skipped_by_owner,handoff,carded_seq,last_completed_at,last_completed_reason,last_completed_run,source_activity_at,quiet_at,card_failures,card_retry_at,signal_cards,last_carded_at,next_model_due_at,counted,card_promoted_at,learning_promoted_at,quiet_generation,aged_out_at FROM _learning_window_sessions;
 
-ALTER TABLE learning_sessions ADD COLUMN learning_stage TEXT GENERATED ALWAYS AS
-      (CASE WHEN aged_out_at IS NULL AND learning_deadline IS NOT NULL AND learning_promoted_at=learning_deadline THEN 'learning' END) VIRTUAL;
+DROP TABLE IF EXISTS _learning_window_sessions;
 
-ALTER TABLE learning_project_counts DROP COLUMN fresh_pending;
+CREATE INDEX IF NOT EXISTS idx_learning_completed ON learning_sessions (last_completed_at) WHERE last_completed_at IS NOT NULL;
 
-ALTER TABLE learning_project_counts DROP COLUMN fresh_due;
+CREATE INDEX IF NOT EXISTS idx_learning_source_eligible ON learning_sessions (project_id,source_activity_at DESC,session_id,eligible_at)
+    WHERE eligible_at IS NOT NULL;
 
-ALTER TABLE learning_project_counts DROP COLUMN fresh_ready_sessions;
+CREATE INDEX IF NOT EXISTS idx_learning_source_missing ON learning_sessions (source_activity_at) WHERE source_activity_at IS NULL;
 
-ALTER TABLE learning_project_counts DROP COLUMN history_waiting;
+CREATE TRIGGER IF NOT EXISTS learning_session_counted AFTER INSERT ON learning_sessions BEGIN
+      UPDATE learning_sessions SET pending_cards=CASE WHEN EXISTS(SELECT 1 FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id) THEN (SELECT COUNT(*) FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id AND c.state='pending') ELSE pending_cards END,
+      due_cards=CASE WHEN EXISTS(SELECT 1 FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id) THEN (SELECT COUNT(*) FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id AND c.state='carded' AND c.covered=0) ELSE due_cards END,
+      signal_cards=CASE WHEN EXISTS(SELECT 1 FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id) THEN (SELECT COUNT(*) FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id AND c.state='carded' AND IFNULL(c.signal,'none')<>'none') ELSE signal_cards END,
+      last_carded_at=(SELECT MAX(c.carded_at) FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id AND c.state='carded'),
+      next_model_due_at=(SELECT MIN(c.due_at) FROM turn_cards c WHERE c.project_id=NEW.project_id AND c.session_id=NEW.session_id AND c.state='pending' AND c.due_at IS NOT NULL),
+      counted=1 WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END;
 
-ALTER TABLE learning_project_counts ADD COLUMN aged_out_sessions INTEGER NOT NULL DEFAULT 0;
+CREATE TRIGGER IF NOT EXISTS learning_session_quiet_insert AFTER INSERT ON learning_sessions BEGIN
+      UPDATE learning_sessions SET quiet_at = COALESCE((SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
+  WHEN learning_sessions.source_activity_at + 86400000 > s.last_received_at
+    THEN MIN(s.last_received_at + 60000 * COALESCE((SELECT minutes FROM learning_quiet_policy WHERE id=1),COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings WHERE leaf = 'agent.titling_idle_close_minutes'),120)), learning_sessions.source_activity_at + 82800000)
+  ELSE s.last_received_at + 60000 * COALESCE((SELECT minutes FROM learning_quiet_policy WHERE id=1),COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings WHERE leaf = 'agent.titling_idle_close_minutes'),120)) END FROM sessions s
+  WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id),0),
+        quiet_generation = (SELECT generation FROM learning_quiet_policy WHERE id=1)
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END;
+
+CREATE TRIGGER IF NOT EXISTS learning_source_quiet AFTER UPDATE OF source_activity_at ON learning_sessions
+      WHEN NEW.source_activity_at IS NOT OLD.source_activity_at BEGIN
+      UPDATE learning_sessions SET quiet_at = COALESCE((SELECT CASE WHEN s.ended_at IS NOT NULL THEN 0
+  WHEN learning_sessions.source_activity_at + 86400000 > s.last_received_at
+    THEN MIN(s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN learning_sessions.quiet_generation IS generation THEN minutes ELSE COALESCE(effective_minutes,minutes) END
+  FROM learning_quiet_policy WHERE id=1),COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings WHERE leaf = 'agent.titling_idle_close_minutes'),120)), learning_sessions.source_activity_at + 82800000)
+  ELSE s.last_received_at + 60000 * COALESCE((SELECT CASE WHEN learning_sessions.quiet_generation IS generation THEN minutes ELSE COALESCE(effective_minutes,minutes) END
+  FROM learning_quiet_policy WHERE id=1),COALESCE((SELECT CASE WHEN json_valid(value) THEN CASE
+  WHEN json_type(value) IN ('integer','real') AND json_extract(value,'$') = CAST(json_extract(value,'$') AS INTEGER)
+    AND json_extract(value,'$') BETWEEN 5 AND 10080
+  THEN json_extract(value,'$') END END FROM deployment_settings WHERE leaf = 'agent.titling_idle_close_minutes'),120)) END FROM sessions s
+  WHERE s.project_id = learning_sessions.project_id AND s.session_id = learning_sessions.session_id),0)
+      WHERE project_id = NEW.project_id AND session_id = NEW.session_id; END;
 
 CREATE TRIGGER IF NOT EXISTS learning_counts_update AFTER UPDATE OF counted,aged_out_at,pending_cards,due_cards,signal_cards,eligible_at,quiet_at,card_retry_at,init_state,card_promoted_at,learning_promoted_at,source_activity_at,next_model_due_at ON learning_sessions
       WHEN (NEW.counted*(CASE WHEN NEW.aged_out_at IS NULL THEN NEW.pending_cards ELSE 0 END)-OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.pending_cards ELSE 0 END))<>0 OR (NEW.counted*(CASE WHEN NEW.aged_out_at IS NULL THEN NEW.due_cards ELSE 0 END)-OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.due_cards ELSE 0 END))<>0 OR (NEW.counted*(NEW.signal_cards)-OLD.counted*(OLD.signal_cards))<>0 OR (NEW.counted*((NEW.learning_stage IS NOT NULL))-OLD.counted*((OLD.learning_stage IS NOT NULL)))<>0 OR (NEW.counted*((NEW.aged_out_at IS NOT NULL))-OLD.counted*((OLD.aged_out_at IS NOT NULL)))<>0 OR (NEW.counted*((NEW.aged_out_at IS NULL AND NEW.init_state='awaiting_publication'))-OLD.counted*((OLD.aged_out_at IS NULL AND OLD.init_state='awaiting_publication')))<>0 BEGIN
@@ -120,7 +192,7 @@ CREATE INDEX IF NOT EXISTS idx_learning_stage_deadline
 CREATE INDEX IF NOT EXISTS idx_learning_aging ON learning_sessions(source_activity_at) WHERE aged_out_at IS NULL AND source_activity_at IS NOT NULL AND (pending_cards>0 OR due_cards>0);
 
 CREATE TRIGGER IF NOT EXISTS learning_source_refreshed AFTER UPDATE OF source_activity_at ON learning_sessions
-      WHEN NEW.aged_out_at IS NOT NULL AND NEW.source_activity_at>OLD.source_activity_at BEGIN
+      WHEN NEW.aged_out_at IS NOT NULL AND NEW.source_activity_at>OLD.source_activity_at AND NEW.source_activity_at>unixepoch()*1000-604800000 BEGIN
       UPDATE learning_sessions SET aged_out_at=NULL WHERE project_id=NEW.project_id AND session_id=NEW.session_id;
       UPDATE learning_sessions SET eligible_at=CASE WHEN aged_out_at IS NULL AND init_state='ready' AND skipped_by_owner=0 AND pending_cards=0 AND due_cards>0 THEN COALESCE(eligible_at,unixepoch()*1000) ELSE NULL END,
     learned_seq=CASE WHEN (aged_out_at IS NULL AND init_state='ready' AND pending_cards=0 AND due_cards=0 AND last_carded_at IS NOT NULL AND last_carded_at>COALESCE(last_completed_at,-1)

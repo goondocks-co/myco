@@ -1,3 +1,5 @@
+import { CARDS_PENDING_HOLD } from '@goondocks/myco-shared/run-holds';
+import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
 import { catchUpProjections } from '../db/projections/catchup.js';
 import { expireSpend } from '../db/runs/admission.js';
 import { discoverSporeClusters } from './spore-curation.js';
@@ -175,8 +177,9 @@ const BUDGET_QUEUE_SETTLE_MS = 3_600_000;
 export const BUDGET_QUEUE_MAX_AGE_MS = QUEUE_MAX_AGE_MS+BUDGET_WINDOW_MS+BUDGET_QUEUE_SETTLE_MS;
 export const QUEUE_EXPIRED_ERROR = STALE_PENDING_REASON;
 
-/** Why a queued run past its bound ended: the capability it waited for, where it waited for one. */
+/** Why a queued run past its bound ended, naming the work or capability it waited for. */
 export function queueExpiredError(heldBy: string | null): string {
+  if (heldBy === CARDS_PENDING_HOLD) return RUN_FAILURE_WORDS.cards_wait_expired!;
   return heldBy !== null && (CAPABILITY_HOLDS as readonly string[]).includes(heldBy)
     ? `no worker reporting ${heldBy} took the run within a day`
     : QUEUE_EXPIRED_ERROR;
@@ -214,7 +217,7 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
     if (!tooSmall && now - ageFrom < maximumAge) continue;
     const guard={heldBy:queued.heldBy,queuedAt:queued.queuedAt,automatic,openedAt:opened,...(tooSmall?{quote}: {})};
     const failed=tooSmall?`the last estimate $${quote} exceeds the daily budget`:budgetHeld?'the budget window did not free before the queued run expired':queueExpiredError(queued.heldBy);
-    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed,errorCode:tooSmall?'budget_too_small':budgetHeld?'budget_wait_expired':'machine_did_not_start',guard }))) continue;
+    if (!(await endQueuedRun(env, { projectId: queued.projectId }, queued, now, { failed,errorCode:tooSmall?'budget_too_small':budgetHeld?'budget_wait_expired':queued.heldBy===CARDS_PENDING_HOLD?'cards_wait_expired':'machine_did_not_start',guard }))) continue;
     emit({ kind: 'harness_queue_expired', runId: queued.id, task: queued.task, projectId: queued.projectId });
     changed += 1;
   }

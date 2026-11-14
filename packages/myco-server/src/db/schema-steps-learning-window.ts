@@ -1,3 +1,5 @@
+import { LEARNING_WINDOW_SESSION_REBUILD, LEARNING_WINDOW_RETAINED_OBJECTS } from './schema-learning-window-tables.js';
+import { PROJECT_ID_GRAMMAR } from './project-id.js';
 import { IN_FLIGHT_RUN_STATUSES } from './run-statuses.js';
 import { MANUAL_LEARNING_INDEX_SQL } from './learning/manual.js';
 import { settledLearningSql } from './learning/progress.js';
@@ -33,28 +35,24 @@ export const LEARNING_WINDOW_STEPS: readonly SchemaStep[] = [{
     `INSERT OR IGNORE INTO retired_deployment_settings(leaf,value,updated_at,updated_by,retired_at)
       SELECT leaf,value,updated_at,updated_by,${NOW} FROM deployment_settings WHERE leaf='${RETIRED_LEAF}'`,
     `DROP TABLE IF EXISTS _learning_window_guard_settings`,
-    `CREATE TABLE _learning_window_guard_settings(ok INTEGER NOT NULL CHECK(ok=1))`,
+    `CREATE TABLE IF NOT EXISTS _learning_window_guard_settings(ok INTEGER NOT NULL CHECK(ok=1))`,
     `INSERT INTO _learning_window_guard_settings SELECT NOT EXISTS(SELECT 1 FROM deployment_settings live
       WHERE leaf='${RETIRED_LEAF}' AND NOT EXISTS(SELECT 1 FROM retired_deployment_settings saved WHERE saved.leaf=live.leaf
         AND saved.value=live.value AND saved.updated_at=live.updated_at AND saved.updated_by=live.updated_by))`,
-    'DROP TABLE _learning_window_guard_settings',
+    'DROP TABLE IF EXISTS _learning_window_guard_settings',
     `DELETE FROM deployment_settings WHERE leaf='${RETIRED_LEAF}'`,
     'ALTER TABLE learning_sessions ADD COLUMN aged_out_at INTEGER',
     `UPDATE learning_sessions SET aged_out_at=${NOW},eligible_at=NULL
       WHERE source_activity_at<=${NOW}-${LEARNING_WINDOW_MS} AND (pending_cards>0 OR due_cards>0 OR init_state<>'ready')`,
     'UPDATE learning_sessions SET counted=0,card_promoted_at=NULL,learning_promoted_at=NULL',
     ...TRIGGERS.map(name => `DROP TRIGGER IF EXISTS ${name}`),
-    'DELETE FROM learning_project_counts',
+    'DROP TABLE IF EXISTS learning_project_counts',
+    `CREATE TABLE IF NOT EXISTS learning_project_counts(project_id TEXT NOT NULL PRIMARY KEY CHECK (${PROJECT_ID_GRAMMAR}),
+      ${['pending_cards', 'due_cards', 'signal_cards', 'ready_sessions', 'awaiting_publication', 'aged_out_sessions'].map(column => `${column} INTEGER NOT NULL DEFAULT 0`).join(',')}) WITHOUT ROWID`,
     'DELETE FROM learning_ready_projects',
     ...INDEXES.map(name => `DROP INDEX IF EXISTS ${name}`),
-    'ALTER TABLE learning_sessions DROP COLUMN card_stage',
-    'ALTER TABLE learning_sessions DROP COLUMN learning_stage',
-    'ALTER TABLE learning_sessions DROP COLUMN fresh_admitted',
-    'ALTER TABLE learning_sessions DROP COLUMN aged',
-    ...(['card', 'learning'] as const).map(kind => `ALTER TABLE learning_sessions ADD COLUMN ${kind}_stage TEXT GENERATED ALWAYS AS
-      (CASE WHEN aged_out_at IS NULL AND ${kind}_deadline IS NOT NULL AND ${kind}_promoted_at=${kind}_deadline THEN '${kind === 'card' ? 'cards' : 'learning'}' END) VIRTUAL`),
-    ...RETIRED_COUNTS.map(column => `ALTER TABLE learning_project_counts DROP COLUMN ${column}`),
-    'ALTER TABLE learning_project_counts ADD COLUMN aged_out_sessions INTEGER NOT NULL DEFAULT 0',
+    ...LEARNING_WINDOW_SESSION_REBUILD,
+    ...LEARNING_WINDOW_RETAINED_OBJECTS,
     `CREATE TRIGGER IF NOT EXISTS learning_counts_update AFTER UPDATE OF ${COLUMNS.join(',')} ON learning_sessions
       WHEN ${deltas.map(delta => `${delta}<>0`).join(' OR ')} BEGIN
       INSERT INTO learning_project_counts(project_id,${contributions.map(([column]) => column).join(',')}) VALUES(NEW.project_id,${deltas.join(',')})
@@ -77,7 +75,7 @@ export const LEARNING_WINDOW_STEPS: readonly SchemaStep[] = [{
       ON learning_sessions(${kind}_deadline DESC,project_id,session_id) WHERE aged_out_at IS NULL AND ${kind}_deadline IS NOT NULL AND ${kind}_promoted_at IS NOT ${kind}_deadline`),
     `CREATE INDEX IF NOT EXISTS idx_learning_aging ON learning_sessions(source_activity_at) WHERE aged_out_at IS NULL AND source_activity_at IS NOT NULL AND (pending_cards>0 OR due_cards>0)`,
     `CREATE TRIGGER IF NOT EXISTS learning_source_refreshed AFTER UPDATE OF source_activity_at ON learning_sessions
-      WHEN NEW.aged_out_at IS NOT NULL AND NEW.source_activity_at>OLD.source_activity_at BEGIN
+      WHEN NEW.aged_out_at IS NOT NULL AND NEW.source_activity_at>OLD.source_activity_at AND NEW.source_activity_at>${NOW}-${LEARNING_WINDOW_MS} BEGIN
       UPDATE learning_sessions SET aged_out_at=NULL WHERE project_id=NEW.project_id AND session_id=NEW.session_id;
       UPDATE learning_sessions SET ${settledLearningSql(NOW)} WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END`,
     MANUAL_LEARNING_INDEX_SQL,

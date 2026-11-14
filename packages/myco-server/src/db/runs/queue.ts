@@ -23,8 +23,8 @@ export function storedQueueHold(holder: string): string | null {
 export const taskHoldSql = (hold: string, origin: string) => `CASE WHEN ${origin}='manual' AND ${hold} IN ('budget','admission_building') THEN NULL ELSE ${hold} END`;
 
 /** One task/origin's first eligible identity; the row's payload is fetched only after the seek. */
-export const queueHeadSeek = (columns: string, task: string, origin: string): string => `SELECT ${columns} FROM agent_runs
-  WHERE (project_id,id)=(SELECT project_id,run_id FROM task_due WHERE task=${task} AND origin=${origin} AND claimable=1 ORDER BY queued_at,run_id,project_id LIMIT 1)`;
+export const queueHeadSeek = (columns: string, task: string, origin: string, eligible = '1'): string => `SELECT ${columns} FROM agent_runs
+  WHERE (project_id,id)=(SELECT d.project_id,d.run_id FROM task_due d WHERE d.task=${task} AND d.origin=${origin} AND d.claimable=1 AND (${eligible}) ORDER BY d.queued_at,d.run_id,d.project_id LIMIT 1)`;
 /** While the task queues are still being built, a queued run must not read as no work: the source table answers. */
 const BUILDING_QUEUED = `EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_claimable WHERE r.status='queued')`;
 const anyQueued = read<[], { queued: number }>({ name: 'runs.unclaimedQueued', sql:
@@ -33,13 +33,14 @@ export async function unclaimedQueued(db: RelationalStore): Promise<boolean> {
   const [rows] = await readSet(db, anyQueued.bind());
   return rows[0]!.queued === 1;
 }
-const heads = read<[string], ClaimCandidate & { queuedAt: number }>({ name: 'runs.queueHeads', sql: `SELECT r.project_id AS projectId,r.id,r.task,r.instruction,r.dispatch_spec AS dispatchSpec,r.queued_at AS queuedAt
+const heads = read<[tasks: string, excludedRuns: string], ClaimCandidate & { queuedAt: number }>({ name: 'runs.queueHeads', sql: `SELECT r.project_id AS projectId,r.id,r.task,r.instruction,r.dispatch_spec AS dispatchSpec,r.queued_at AS queuedAt
   FROM json_each(?1) tasks CROSS JOIN json_each('["manual","automatic"]') origins
   JOIN agent_runs r ON (r.project_id,r.id)=(SELECT d.project_id,d.run_id FROM task_due d
-    WHERE d.task=tasks.value AND d.origin=origins.value AND d.claimable=1 ORDER BY d.queued_at,d.run_id,d.project_id LIMIT 1)
+    WHERE d.task=tasks.value AND d.origin=origins.value AND d.claimable=1
+      AND NOT EXISTS(SELECT 1 FROM json_each(?2) held WHERE json_extract(held.value,'$[0]')=d.project_id AND json_extract(held.value,'$[1]')=d.run_id) ORDER BY d.queued_at,d.run_id,d.project_id LIMIT 1)
   ORDER BY r.queued_at,r.id,r.project_id` });
-export async function queueHeads(db: RelationalStore, excluded: readonly string[]): Promise<ClaimCandidate[]> {
-  const [rows] = await readSet(db, heads.bind(JSON.stringify(BUDGET_WORKER_TASKS.filter(task => !excluded.includes(task)))));
+export async function queueHeads(db: RelationalStore, excluded: readonly string[], waiting: readonly string[] = []): Promise<ClaimCandidate[]> {
+  const [rows] = await readSet(db, heads.bind(JSON.stringify(BUDGET_WORKER_TASKS.filter(task => !excluded.includes(task))), JSON.stringify(waiting)));
   return rows;
 }
 
@@ -49,8 +50,8 @@ const candidateBudget = [false, true].map(active => [false, true].map(observed =
     sql: `SELECT id FROM agent_runs WHERE project_id=? AND id=? AND status='queued' AND ${predicate.sql}` });
 }));
 /** Fixed task heads are checked against the caller's fenced budget inputs, without sweeping the queue. */
-export async function nextClaimable(db: RelationalStore, excluded: readonly string[], budget?: ClaimBudget, now = Date.now()): Promise<ClaimCandidate | null> {
-  for (const candidate of await queueHeads(db, excluded)) {
+export async function nextClaimable(db: RelationalStore, excluded: readonly string[], budget?: ClaimBudget, now = Date.now(), waiting: readonly string[] = []): Promise<ClaimCandidate | null> {
+  for (const candidate of await queueHeads(db, excluded, waiting)) {
     if (budget === undefined) return candidate;
     const predicate = budgetClaimPredicate(budget, now);
     const [rows] = await readSet(db, candidateBudget[Number(budget.active)]![Number(budget.stateKey !== undefined)]!
@@ -92,15 +93,16 @@ export const RUN_CONTEXT_OBJECT_SQL = `CASE
   WHEN json_valid(run_context) THEN CASE WHEN json_type(run_context) = 'object' THEN run_context ELSE json_object('unparsedRunContext', run_context) END
   ELSE json_object('unparsedRunContext', run_context) END`;
 
-const queueHolder = write<[string, number | null, number | null, string, string]>({ name: 'runs.queueHolder', sql: `UPDATE agent_runs SET held_by=?1,
+const queueHolder = write<[holder: string, quoteUsd: number | null, quoteAt: number | null, project: string, run: string, from: string | null]>({ name: 'runs.queueHolder', sql: `UPDATE agent_runs SET held_by=?1,
   run_context=CASE WHEN ?2 IS NULL THEN run_context ELSE json_set(${RUN_CONTEXT_OBJECT_SQL},'$.${BUDGET_QUOTE_USD_KEY}',?2,'$.${BUDGET_QUOTE_AT_KEY}',?3) END
-  WHERE project_id=?4 AND id=?5 AND status='queued' AND (?1 NOT IN ('budget','admission_building') OR ${runOriginSql()}='automatic')
+  WHERE project_id=?4 AND id=?5 AND status='queued' AND (?6 IS NULL OR held_by=?6) AND (?1 NOT IN ('budget','admission_building') OR ${runOriginSql()}='automatic')
     AND (held_by IS NOT ?1 OR (?2 IS NOT NULL AND (${contextValue(BUDGET_QUOTE_USD_KEY)} IS NOT ?2 OR ${contextValue(BUDGET_QUOTE_AT_KEY)} IS NOT ?3)))` });
 /** A quote belongs to its run; the current waiting reason belongs to its task head. */
-export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string, quote?: { usd: number; at: number }): Promise<void> {
+export async function recordQueueHolder(db: RelationalStore, scope: ReadScope, runId: string, heldBy: string, detail?: { usd: number; at: number } | { from: string }): Promise<void> {
+  const quote = detail !== undefined && 'usd' in detail ? detail : undefined;
   if (quote !== undefined && (heldBy !== 'budget' || !Number.isFinite(quote.usd) || quote.usd < 0 || !Number.isSafeInteger(quote.at))) throw new Error('Invalid queued budget quote');
   if (storedQueueHold(heldBy) === null) return;
-  await commit(db, queueHolder.bind(heldBy, quote?.usd ?? null, quote?.at ?? null, scope.projectId, runId));
+  await commit(db, queueHolder.bind(heldBy, quote?.usd ?? null, quote?.at ?? null, scope.projectId, runId, detail !== undefined && 'from' in detail ? detail.from : null));
 }
 
 const budgetLeaf = read<[], { budget: number }>({ name: 'runs.taskBudgetLimit', sql: `SELECT ${effectiveBudgetSql()} AS budget` });
