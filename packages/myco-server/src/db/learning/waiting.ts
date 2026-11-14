@@ -12,7 +12,7 @@ const waits = (['cards', 'learning'] as const).map(kind => ({
     name: `learning.waiting${kind}`,
     sql: `WITH candidates AS MATERIALIZED (SELECT k.value AS projectId,(SELECT l.${kind === 'cards' ? 'card' : 'learning'}_promoted_at
       FROM learning_sessions l INDEXED BY ${kind === 'cards' ? 'idx_learning_card_waiting' : 'idx_learning_stage_waiting'}
-      WHERE l.project_id=k.value AND l.${kind === 'cards' ? 'card' : 'learning'}_promoted_at<=?3
+      WHERE l.project_id=k.value AND l.${kind === 'cards' ? 'card' : 'learning'}_stage='${kind}' AND l.${kind === 'cards' ? 'card' : 'learning'}_promoted_at<=?3
         AND ${learningEligible(kind, '?2')} AND ${learningNotInFlight(kind)}
         AND ${taskAcceptedSql('l.project_id', kind === 'cards' ? CARD_TASK : EXTRACTION_TASK)}
       ORDER BY l.${kind === 'cards' ? 'card' : 'learning'}_promoted_at,l.session_id LIMIT 1) AS since FROM json_each(?1) k) SELECT * FROM candidates WHERE since IS NOT NULL`,

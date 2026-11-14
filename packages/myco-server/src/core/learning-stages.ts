@@ -1,4 +1,4 @@
-import { learningRunAdmitted } from '../db/learning/admission.js';
+import { cardLearningEnabledSql, learningRunAdmitted } from '../db/learning/admission.js';
 import { learningPolicies } from '../db/runs/pull-policy.js';
 import { learningWaiting } from '../db/learning/waiting.js';
 import { learningDue, learningHeadSession, learningReadyProjects, stageHead } from '../db/learning/ready.js';
@@ -118,7 +118,7 @@ function learningStage(level: number): PulledStage {
 
 function cardStage(level: number): PulledStage {
   return {
-    level, task: CARD_TASK, policy:learningPolicies[0]!, switchedOn: learningEnabledSql(),
+    level, task: CARD_TASK, policy:learningPolicies[0]!, switchedOn: cardLearningEnabledSql(),
     due: (project, now) => ({ sql: learningDue('cards', project, String(Math.floor(now))), params: [] }),
     candidates: learningReadyProjects('cards'),
     waiting: (db, scope) => learningWaiting(db, 'cards', scope),

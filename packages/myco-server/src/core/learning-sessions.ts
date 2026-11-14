@@ -171,12 +171,13 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now(), 
 /** The status line: what is due, what waits and why, the last completion, and spend against the day's budget. */
 export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number, waitingForSignIn = false, heldByBudget = false): string {
   const n = (count: number, singular: string, plural = `${singular}s`) => `${status.state === 'building' ? `at least ${count}` : count} ${count === 1 && status.state !== 'building' ? singular : plural}`;
+  const agedOutOne = status.agedOutSessions === 1 && status.state !== 'building';
   const spent = budget?.automaticUsd == null ? null : budget.automaticUsd + (budget.manualUsd ?? 0);
   const ready = status.dueSessions > 0 || status.turnsAwaitingCards > 0 || status.state === 'building';
   const parts = [
     `${n(status.dueSessions, 'session')} ready to learn (${n(status.dueCards, 'summary', 'summaries')} to learn from)`,
     `${n(status.turnsAwaitingCards, 'turn')} waiting to be summarized`,
-    ...(status.agedOutSessions > 0 ? [`${n(status.agedOutSessions, 'session')} ${status.agedOutSessions === 1 ? 'was' : 'were'} not learned because ${status.agedOutSessions === 1 ? 'it' : 'they'} went quiet more than ${LEARNING_WINDOW_MS / 86_400_000} days before Myco reached ${status.agedOutSessions === 1 ? 'it' : 'them'}`] : []),
+    ...(status.agedOutSessions > 0 ? [`${n(status.agedOutSessions, 'session')} ${agedOutOne ? 'was' : 'were'} not learned because ${agedOutOne ? 'it' : 'they'} went quiet more than ${LEARNING_WINDOW_MS / 86_400_000} days before Myco reached ${agedOutOne ? 'it' : 'them'}`] : []),
     ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication, 'session')} waiting to become readable`] : []),
     ...(ready && waitingForSignIn ? ['waiting for a runner that can sign in'] : []),
     ...(ready && (heldByBudget || (spent !== null && budget !== null && spent >= budget.dailyUsd))

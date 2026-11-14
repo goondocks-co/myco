@@ -1,3 +1,4 @@
+import { manualLearningNeedsCards } from '../db/learning/manual.js';
 import { queuedPriority, queuedAdmissible } from '../db/runs/pull-policy.js';
 import { ensureAgentWrite as ensureAgentStatement } from '../db/runs/claim.js';
 import { estimateForClaim, estimateKey } from './budget-estimates.js';
@@ -916,10 +917,12 @@ export async function claimNextRun(
     excluded.push(candidate.task);
     candidate = await next();
   }
-  if (candidate === null || chosen === null) {
-    // Pull runs only when no queued head is admitted: queued automatic work that fits is claimed first.
+  const pull = async (): Promise<ClaimOutcome | null> => {
     const pulled = activation.active ? await pullAtClaim(env, worker, excluded, select, { policy, settings, limits: claimLimits, activation }) : null;
-    if (pulled === 'queued') return retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' };
+    return pulled === 'queued' ? retries<2 ? claimNextRun(env,worker,retries+1) : { claimed:false,reason:'lost_race' } : pulled;
+  };
+  if (candidate === null || chosen === null) {
+    const pulled = await pull();
     if (pulled !== null) return pulled;
   }
   if (candidate === null || chosen === null) return { claimed: false, reason: held ? 'no_harness' : limitHeld&&refusedHeads.size===0?'at_limit':'no_work' };
@@ -947,6 +950,9 @@ export async function claimNextRun(
   };
   if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
   if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
+  if (candidate.task === EXTRACTION_TASK && await manualLearningNeedsCards(env.db, candidate.projectId, candidate.id)) {
+    return await pull() ?? { claimed: false, reason: 'no_work' };
+  }
   const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params });
   if (built === null && candidate.task === EXTRACTION_TASK) return skipRefused(NOTHING_DUE);
   if (built !== null && built.unchanged) {

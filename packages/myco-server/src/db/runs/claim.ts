@@ -1,4 +1,4 @@
-import { learningClaimAdmission } from '../learning/admission.js';
+import { learningClaimAdmission, cardClaimAdmission } from '../learning/admission.js';
 import { storedQueueHold } from './queue.js';
 import { CREDENTIAL_INSERT_SQL } from './claim-companions.js';
 import { observedRevisionPredicate } from '../settings/leaves.js';
@@ -495,7 +495,8 @@ export function workerClaimAssertions(form: ClaimForm, claim: WorkerClaim, admis
   return [
     claim.worker.kind === 'runner' ? claimRunnerAuthority.bind(claim.worker.credentialId, claim.worker.runnerId) : claimMemberAuthority.bind(claim.worker.tokenId, claim.now),
     definition.guard.bind(...authority),
-    ...(session === null ? [] : [learningClaimAdmission.bind(candidate.projectId, session, candidate.id, claim.now)]),
+    ...(session === null ? [] : [claim.input?.context?.assignment && (claim.input.context.assignment as { kind: string }).kind === 'cards'
+      ? cardClaimAdmission.bind(candidate.projectId, session, claim.now) : learningClaimAdmission.bind(candidate.projectId, session, candidate.id, claim.now)]),
   ];
 }
 

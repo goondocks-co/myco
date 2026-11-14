@@ -1,4 +1,5 @@
-import { expect, it } from 'bun:test';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { afterAll, beforeAll, expect, it } from 'bun:test';
 import { ensureMember } from '@myco-server-worker/auth/enrollment.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { ensureAgent } from '@myco-server-worker/db/runs/state.js';
@@ -14,7 +15,8 @@ import { buildLearningAssignment, assignedCards, completeLearning, readLearningS
 import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
-import { withDocumentStores } from './helpers/document-stores.js';
+import { documentFileStores } from './helpers/document-stores.js';
+import { schemaSqlite, schemaD1Root } from './helpers/schema-template.js';
 import { sweepChange } from './helpers/store-faults.js';
 import { memberHeaders, recordingDeferred, recordingLimiter, uuid } from './helpers/fixtures.js';
 import worker from '@myco-server-worker/entry/cloudflare.js';
@@ -32,6 +34,10 @@ import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { cardsWrittenBy } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { BLOBS, NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, cardRun, cardWorker, longTurn } from './helpers/learning-stages.ts';
+
+const withDocumentStores = documentFileStores(16);
+beforeAll(async () => { schemaSqlite().close(); await schemaD1Root(); });
+afterAll(() => withDocumentStores.close());
 
 it('cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice', async () => {
   await withDocumentStores(async (db) => {
@@ -105,6 +111,8 @@ it('closes an all-mechanical session without a run and orders sessions newest fi
     expect(status).toMatchObject({ dueSessions: 2, dueCards: 2, turnsAwaitingCards: 0, lastCompleted: { reason: 'no_signal', sessionId: 'quiet' } });
     expect(learningStatusLine(status, { dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5 }, NOW + 120_000))
       .toBe('2 sessions ready to learn (2 summaries to learn from); 0 turns waiting to be summarized; last session closed with nothing to learn 2 min ago; spent $2.00 of $20.00 in the last 24 hours.');
+    await settingsWriter(db).setLeaf('agent.scheduled_tasks_enabled', false, 'owner', NOW + 3 * HOUR);
+    expect(await dispatchTask(harness.env, 'extract-curate', 'project', { serverUrl: 'https://myco.test', actor: 'mem_worker' }, NOW + 3 * HOUR)).toMatchObject({ dispatched: true });
     const claim = await harness.poll(NOW + 3 * HOUR);
     if (!claim.claimed) throw new Error('newest quiet session did not reach learning');
     expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' })).toMatchObject({ session_id: 'newer' });

@@ -3,47 +3,52 @@
 INSERT OR IGNORE INTO retired_deployment_settings(leaf,value,updated_at,updated_by,retired_at)
       SELECT leaf,value,updated_at,updated_by,unixepoch()*1000 FROM deployment_settings WHERE leaf='agent.learning_history_enabled';
 
-CREATE TABLE _learning_window_settings_guard(ok INTEGER NOT NULL CHECK(ok=1));
+DROP TABLE IF EXISTS _learning_window_guard_settings;
 
-INSERT INTO _learning_window_settings_guard SELECT NOT EXISTS(SELECT 1 FROM deployment_settings live
+CREATE TABLE _learning_window_guard_settings(ok INTEGER NOT NULL CHECK(ok=1));
+
+INSERT INTO _learning_window_guard_settings SELECT NOT EXISTS(SELECT 1 FROM deployment_settings live
       WHERE leaf='agent.learning_history_enabled' AND NOT EXISTS(SELECT 1 FROM retired_deployment_settings saved WHERE saved.leaf=live.leaf
         AND saved.value=live.value AND saved.updated_at=live.updated_at AND saved.updated_by=live.updated_by));
 
-DROP TABLE _learning_window_settings_guard;
+DROP TABLE _learning_window_guard_settings;
 
 DELETE FROM deployment_settings WHERE leaf='agent.learning_history_enabled';
 
 ALTER TABLE learning_sessions ADD COLUMN aged_out_at INTEGER;
 
 UPDATE learning_sessions SET aged_out_at=unixepoch()*1000,eligible_at=NULL
-      WHERE card_stage='cardsHistory' OR learning_stage='learningHistory'
-        OR (source_activity_at<=unixepoch()*1000-604800000 AND (pending_cards>0 OR due_cards>0 OR init_state<>'ready'));
+      WHERE source_activity_at<=unixepoch()*1000-604800000 AND (pending_cards>0 OR due_cards>0 OR init_state<>'ready');
 
 UPDATE learning_sessions SET counted=0,card_promoted_at=NULL,learning_promoted_at=NULL;
 
-DROP TRIGGER learning_counts_update;
+DROP TRIGGER IF EXISTS learning_counts_update;
 
-DROP TRIGGER learning_counts_delete;
+DROP TRIGGER IF EXISTS learning_counts_delete;
 
-DROP TRIGGER learning_ready_project_update;
+DROP TRIGGER IF EXISTS learning_ready_project_update;
 
-DROP TRIGGER learning_ready_project_delete;
+DROP TRIGGER IF EXISTS learning_ready_project_delete;
 
-DROP TRIGGER learning_source_refreshed;
+DROP TRIGGER IF EXISTS learning_source_refreshed;
 
-DROP INDEX idx_learning_card_ready;
+DELETE FROM learning_project_counts;
 
-DROP INDEX idx_learning_stage_ready;
+DELETE FROM learning_ready_projects;
 
-DROP INDEX idx_learning_card_deadline;
+DROP INDEX IF EXISTS idx_learning_card_ready;
 
-DROP INDEX idx_learning_stage_deadline;
+DROP INDEX IF EXISTS idx_learning_stage_ready;
 
-DROP INDEX idx_learning_aging;
+DROP INDEX IF EXISTS idx_learning_card_deadline;
 
-DROP INDEX idx_learning_card_waiting;
+DROP INDEX IF EXISTS idx_learning_stage_deadline;
 
-DROP INDEX idx_learning_stage_waiting;
+DROP INDEX IF EXISTS idx_learning_aging;
+
+DROP INDEX IF EXISTS idx_learning_card_waiting;
+
+DROP INDEX IF EXISTS idx_learning_stage_waiting;
 
 ALTER TABLE learning_sessions DROP COLUMN card_stage;
 
@@ -69,17 +74,17 @@ ALTER TABLE learning_project_counts DROP COLUMN history_waiting;
 
 ALTER TABLE learning_project_counts ADD COLUMN aged_out_sessions INTEGER NOT NULL DEFAULT 0;
 
-CREATE TRIGGER learning_counts_update AFTER UPDATE OF counted,aged_out_at,pending_cards,due_cards,signal_cards,eligible_at,quiet_at,card_retry_at,init_state,card_promoted_at,learning_promoted_at,source_activity_at,next_model_due_at ON learning_sessions
+CREATE TRIGGER IF NOT EXISTS learning_counts_update AFTER UPDATE OF counted,aged_out_at,pending_cards,due_cards,signal_cards,eligible_at,quiet_at,card_retry_at,init_state,card_promoted_at,learning_promoted_at,source_activity_at,next_model_due_at ON learning_sessions
       WHEN (NEW.counted*(CASE WHEN NEW.aged_out_at IS NULL THEN NEW.pending_cards ELSE 0 END)-OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.pending_cards ELSE 0 END))<>0 OR (NEW.counted*(CASE WHEN NEW.aged_out_at IS NULL THEN NEW.due_cards ELSE 0 END)-OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.due_cards ELSE 0 END))<>0 OR (NEW.counted*(NEW.signal_cards)-OLD.counted*(OLD.signal_cards))<>0 OR (NEW.counted*((NEW.learning_stage IS NOT NULL))-OLD.counted*((OLD.learning_stage IS NOT NULL)))<>0 OR (NEW.counted*((NEW.aged_out_at IS NOT NULL))-OLD.counted*((OLD.aged_out_at IS NOT NULL)))<>0 OR (NEW.counted*((NEW.aged_out_at IS NULL AND NEW.init_state='awaiting_publication'))-OLD.counted*((OLD.aged_out_at IS NULL AND OLD.init_state='awaiting_publication')))<>0 BEGIN
       INSERT INTO learning_project_counts(project_id,pending_cards,due_cards,signal_cards,ready_sessions,aged_out_sessions,awaiting_publication) VALUES(NEW.project_id,(NEW.counted*(CASE WHEN NEW.aged_out_at IS NULL THEN NEW.pending_cards ELSE 0 END)-OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.pending_cards ELSE 0 END)),(NEW.counted*(CASE WHEN NEW.aged_out_at IS NULL THEN NEW.due_cards ELSE 0 END)-OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.due_cards ELSE 0 END)),(NEW.counted*(NEW.signal_cards)-OLD.counted*(OLD.signal_cards)),(NEW.counted*((NEW.learning_stage IS NOT NULL))-OLD.counted*((OLD.learning_stage IS NOT NULL))),(NEW.counted*((NEW.aged_out_at IS NOT NULL))-OLD.counted*((OLD.aged_out_at IS NOT NULL))),(NEW.counted*((NEW.aged_out_at IS NULL AND NEW.init_state='awaiting_publication'))-OLD.counted*((OLD.aged_out_at IS NULL AND OLD.init_state='awaiting_publication'))))
         ON CONFLICT(project_id) DO UPDATE SET pending_cards=pending_cards+excluded.pending_cards,due_cards=due_cards+excluded.due_cards,signal_cards=signal_cards+excluded.signal_cards,ready_sessions=ready_sessions+excluded.ready_sessions,aged_out_sessions=aged_out_sessions+excluded.aged_out_sessions,awaiting_publication=awaiting_publication+excluded.awaiting_publication;
       UPDATE change_marks SET revision=revision+1 WHERE kind='learning'; END;
 
-CREATE TRIGGER learning_counts_delete AFTER DELETE ON learning_sessions WHEN OLD.counted=1 BEGIN
+CREATE TRIGGER IF NOT EXISTS learning_counts_delete AFTER DELETE ON learning_sessions WHEN OLD.counted=1 BEGIN
       UPDATE learning_project_counts SET pending_cards=pending_cards-(OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.pending_cards ELSE 0 END)),due_cards=due_cards-(OLD.counted*(CASE WHEN OLD.aged_out_at IS NULL THEN OLD.due_cards ELSE 0 END)),signal_cards=signal_cards-(OLD.counted*(OLD.signal_cards)),ready_sessions=ready_sessions-(OLD.counted*((OLD.learning_stage IS NOT NULL))),aged_out_sessions=aged_out_sessions-(OLD.counted*((OLD.aged_out_at IS NOT NULL))),awaiting_publication=awaiting_publication-(OLD.counted*((OLD.aged_out_at IS NULL AND OLD.init_state='awaiting_publication'))) WHERE project_id=OLD.project_id;
       UPDATE change_marks SET revision=revision+1 WHERE kind='learning'; END;
 
-CREATE TRIGGER learning_ready_project_update AFTER UPDATE OF counted,aged_out_at,pending_cards,due_cards,signal_cards,eligible_at,quiet_at,card_retry_at,init_state,card_promoted_at,learning_promoted_at,source_activity_at,next_model_due_at ON learning_sessions
+CREATE TRIGGER IF NOT EXISTS learning_ready_project_update AFTER UPDATE OF counted,aged_out_at,pending_cards,due_cards,signal_cards,eligible_at,quiet_at,card_retry_at,init_state,card_promoted_at,learning_promoted_at,source_activity_at,next_model_due_at ON learning_sessions
       WHEN OLD.card_stage IS NOT NEW.card_stage OR OLD.learning_stage IS NOT NEW.learning_stage BEGIN
       INSERT INTO learning_ready_projects(stage,project_id,ready)
   SELECT OLD.card_stage,OLD.project_id,-1 WHERE OLD.card_stage IS NOT NULL AND OLD.card_stage IS NOT NEW.card_stage
@@ -92,7 +97,7 @@ CREATE TRIGGER learning_ready_project_update AFTER UPDATE OF counted,aged_out_at
   SELECT NEW.learning_stage,NEW.project_id,1 WHERE NEW.learning_stage IS NOT NULL AND OLD.learning_stage IS NOT NEW.learning_stage
   ON CONFLICT(stage,project_id) DO UPDATE SET ready=ready+excluded.ready; END;
 
-CREATE TRIGGER learning_ready_project_delete AFTER DELETE ON learning_sessions WHEN OLD.card_stage IS NOT NULL OR OLD.learning_stage IS NOT NULL BEGIN
+CREATE TRIGGER IF NOT EXISTS learning_ready_project_delete AFTER DELETE ON learning_sessions WHEN OLD.card_stage IS NOT NULL OR OLD.learning_stage IS NOT NULL BEGIN
       UPDATE learning_ready_projects SET ready=ready-1 WHERE stage=OLD.card_stage AND project_id=OLD.project_id;
       UPDATE learning_ready_projects SET ready=ready-1 WHERE stage=OLD.learning_stage AND project_id=OLD.project_id; END;
 
@@ -113,6 +118,22 @@ CREATE INDEX IF NOT EXISTS idx_learning_stage_deadline
       ON learning_sessions(learning_deadline DESC,project_id,session_id) WHERE aged_out_at IS NULL AND learning_deadline IS NOT NULL AND learning_promoted_at IS NOT learning_deadline;
 
 CREATE INDEX IF NOT EXISTS idx_learning_aging ON learning_sessions(source_activity_at) WHERE aged_out_at IS NULL AND source_activity_at IS NOT NULL AND (pending_cards>0 OR due_cards>0);
+
+CREATE TRIGGER IF NOT EXISTS learning_source_refreshed AFTER UPDATE OF source_activity_at ON learning_sessions
+      WHEN NEW.aged_out_at IS NOT NULL AND NEW.source_activity_at>OLD.source_activity_at BEGIN
+      UPDATE learning_sessions SET aged_out_at=NULL WHERE project_id=NEW.project_id AND session_id=NEW.session_id;
+      UPDATE learning_sessions SET eligible_at=CASE WHEN aged_out_at IS NULL AND init_state='ready' AND skipped_by_owner=0 AND pending_cards=0 AND due_cards>0 THEN COALESCE(eligible_at,unixepoch()*1000) ELSE NULL END,
+    learned_seq=CASE WHEN (aged_out_at IS NULL AND init_state='ready' AND pending_cards=0 AND due_cards=0 AND last_carded_at IS NOT NULL AND last_carded_at>COALESCE(last_completed_at,-1)
+    AND EXISTS(SELECT 1 FROM turn_cards c WHERE c.project_id=learning_sessions.project_id AND c.session_id=learning_sessions.session_id AND c.state='carded' AND c.carded_at>COALESCE(learning_sessions.last_completed_at,-1))) THEN max_seq ELSE learned_seq END,
+    last_completed_reason=CASE WHEN (aged_out_at IS NULL AND init_state='ready' AND pending_cards=0 AND due_cards=0 AND last_carded_at IS NOT NULL AND last_carded_at>COALESCE(last_completed_at,-1)
+    AND EXISTS(SELECT 1 FROM turn_cards c WHERE c.project_id=learning_sessions.project_id AND c.session_id=learning_sessions.session_id AND c.state='carded' AND c.carded_at>COALESCE(learning_sessions.last_completed_at,-1))) THEN CASE WHEN last_completed_at=unixepoch()*1000 AND last_completed_reason='completed' THEN 'completed' ELSE 'no_signal' END ELSE last_completed_reason END,
+    last_completed_at=CASE WHEN (aged_out_at IS NULL AND init_state='ready' AND pending_cards=0 AND due_cards=0 AND last_carded_at IS NOT NULL AND last_carded_at>COALESCE(last_completed_at,-1)
+    AND EXISTS(SELECT 1 FROM turn_cards c WHERE c.project_id=learning_sessions.project_id AND c.session_id=learning_sessions.session_id AND c.state='carded' AND c.carded_at>COALESCE(learning_sessions.last_completed_at,-1))) THEN unixepoch()*1000 ELSE last_completed_at END WHERE project_id=NEW.project_id AND session_id=NEW.session_id; END;
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_manual_learning
+  ON agent_runs(project_id,CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec,'$.params.session_id')='text' THEN NULLIF(json_extract(dispatch_spec,'$.params.session_id'),'') END END) WHERE task='extract-curate' AND origin='manual' AND status IN ('pending', 'running', 'queued') AND CASE WHEN json_valid(dispatch_spec) THEN CASE WHEN json_type(dispatch_spec,'$.params.session_id')='text' THEN NULLIF(json_extract(dispatch_spec,'$.params.session_id'),'') END END IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_learning_subject_live ON agent_runs(task,subject,status) WHERE status IN ('pending', 'running', 'queued');
 
 UPDATE learning_sessions SET
     pending_cards=(SELECT COUNT(*) FROM turn_cards c INDEXED BY idx_turn_cards_session_pending WHERE c.project_id=learning_sessions.project_id AND c.session_id=learning_sessions.session_id AND c.state='pending'),

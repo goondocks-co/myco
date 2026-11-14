@@ -1,3 +1,4 @@
+import { manualLearningNeedsCardsSql } from '../learning/manual.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, read, readSet, type Bound } from '../index.js';
 import { CLAIM_SELECTION_REFUSED } from './claim-refusals.js';
@@ -79,8 +80,8 @@ export const curationPolicy=definePullPolicy('curation',CURATION_TASK,curationAd
 const qTask="json_extract(q.value,'$.task')",qCapability="json_extract(q.value,'$.capability')";
 const queuedClearSql = `NOT EXISTS(SELECT 1 FROM json_each(?1,'$.queues') q
   CROSS JOIN json_each('["manual","automatic"]') origins WHERE ${limitSql(qTask)} AND EXISTS(
-    SELECT 1 FROM (${queueHeadSeek('project_id, task',qTask,'origins.value')}) head
-      WHERE ${projectAcceptsWorkSql('head.project_id')} AND (${qCapability} IS NULL OR ${capabilityOnSql('head.project_id',qCapability)})
+    SELECT 1 FROM (${queueHeadSeek('project_id, id, task',qTask,'origins.value')}) head
+      WHERE NOT ${manualLearningNeedsCardsSql({ project: 'head.project_id', run: 'head.id' })} AND ${projectAcceptsWorkSql('head.project_id')} AND (${qCapability} IS NULL OR ${capabilityOnSql('head.project_id',qCapability)})
       AND (origins.value='manual' OR ${spendReadySql(`i.now-${BUDGET_WINDOW_MS}`)} AND ${spentUsdSql(`i.now-${BUDGET_WINDOW_MS}`)}
         + COALESCE((SELECT json_extract(s.value,'$.estimate') FROM agent_state s WHERE s.project_id=head.project_id
           AND s.agent_id='myco-agent' AND s.key=json_extract(q.value,'$.estimateKey')),json_extract(q.value,'$.seed'))<=${effectiveBudgetSql()})))`;

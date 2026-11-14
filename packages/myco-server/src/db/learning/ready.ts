@@ -1,3 +1,5 @@
+import { cardLearningAdmittedSql } from './admission.js';
+import { MANUAL_LEARNING_REQUEST, manualCardSessionsSql } from './manual.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { commitNamed, read, readSet, write } from '../index.js';
 import { IN_FLIGHT_RUN_STATUSES } from '../run-statuses.js';
@@ -57,31 +59,37 @@ export async function learningDeadlinesPending(db: RelationalStore, now: number)
 
 const taskOf = (kind: 'cards' | 'learning') => kind === 'cards' ? CARD_TASK : EXTRACTION_TASK;
 const subjectPrefix = (kind: 'cards' | 'learning') => kind === 'cards' ? 'cards:' : 'session:';
-export const learningNotInFlight = (kind: 'cards' | 'learning') => `NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_task_live
+export const learningNotInFlight = (kind: 'cards' | 'learning') => `NOT EXISTS(SELECT 1 FROM agent_runs r INDEXED BY idx_agent_runs_learning_subject_live
   WHERE r.task='${taskOf(kind)}' AND r.${IN_FLIGHT_RUN_STATUSES} AND r.subject='${subjectPrefix(kind)}'||l.session_id)`;
 const readyIndex = (kind: 'cards' | 'learning') => kind === 'cards' ? 'idx_learning_card_ready' : 'idx_learning_stage_ready';
 const stageColumn = (kind: 'cards' | 'learning') => kind === 'cards' ? 'card_stage' : 'learning_stage';
 
-/** A promoted session inside the learning window, with model-due turns when cards need a run. */
+/** Automatic sessions and named manual requests admit model-due turns for card runs. */
 export function learningEligible(kind: LearningStage, now: string): string {
-  return `l.${stageColumn(kind)}='${kind}' AND ${learningEnabledSql()} AND ${learningWindowSql(now)}${kind === 'cards' ? ` AND (l.counted=1 OR EXISTS(SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
+  const ready = kind === 'cards' ? cardLearningAdmittedSql(now, { automatic: "l.card_stage='cards'", manual: `l.card_deadline<=${now}` })
+    : `l.learning_stage='learning' AND ${learningEnabledSql()} AND ${learningWindowSql(now)}`;
+  return `${ready}${kind === 'cards' ? ` AND (l.counted=1 OR EXISTS(SELECT 1 FROM turn_cards c INDEXED BY idx_turn_cards_model_due
     WHERE c.project_id=l.project_id AND c.session_id=l.session_id AND c.state='pending' AND c.due_at IS NOT NULL AND c.due_at<=${now}))` : ''}`;
 }
 
 /** The Project has a ready session with no run in flight. */
 export const learningDue = (kind: LearningStage, project: string, now: string): string =>
-  `EXISTS(SELECT 1 FROM learning_sessions l INDEXED BY ${readyIndex(kind)} WHERE l.project_id=${project} AND ${learningEligible(kind, now)} AND ${learningNotInFlight(kind)})`;
+  `(EXISTS(SELECT 1 FROM learning_sessions l INDEXED BY ${readyIndex(kind)} WHERE l.project_id=${project} AND l.${stageColumn(kind)}='${kind}' AND ${learningEligible(kind, now)} AND ${learningNotInFlight(kind)})${kind === 'cards' ? ` OR EXISTS(SELECT 1 FROM ${manualCardSessionsSql(project)} WHERE ${learningEligible(kind, now)} AND ${learningNotInFlight(kind)})` : ''})`;
 
-/** Projects with promoted rows in this stage. */
+/** Projects with automatic readiness or named manual card work. */
 export const learningReadyProjects = (kind: LearningStage): string =>
-  `learning_ready_projects r CROSS JOIN projects p ON p.project_id=r.project_id AND r.stage='${kind}' AND r.ready>0`;
+  kind === 'learning' ? `learning_ready_projects r CROSS JOIN projects p ON p.project_id=r.project_id AND r.stage='learning' AND r.ready>0`
+    : `(SELECT project_id FROM learning_ready_projects WHERE stage='cards' AND ready>0
+      UNION SELECT r.project_id FROM agent_runs r INDEXED BY idx_agent_runs_manual_learning WHERE ${MANUAL_LEARNING_REQUEST}) ready CROSS JOIN projects p ON p.project_id=ready.project_id`;
 
-const heads = Object.fromEntries(LEARNING_STAGE_NAMES.map(kind => [kind, read<[project: string, now: number], Head>({
-  name: `learningReady.head${kind}`,
-  sql: `SELECT l.session_id AS sessionId,l.${kind === 'cards' ? 'source_activity_at' : 'eligible_at'} AS observed
+const automaticHead = (kind: LearningStage) => `SELECT l.session_id AS sessionId,l.${kind === 'cards' ? 'source_activity_at' : 'eligible_at'} AS observed
     FROM learning_sessions l INDEXED BY ${readyIndex(kind)}
-    WHERE l.project_id=?1 AND l.${kind === 'cards' ? 'card' : 'learning'}_deadline<=?2 AND ${learningEligible(kind, '?2')} AND ${learningNotInFlight(kind)}
-    ORDER BY l.source_activity_at DESC,l.session_id LIMIT 1`,
+    WHERE l.project_id=?1 AND l.${stageColumn(kind)}='${kind}' AND l.${kind === 'cards' ? 'card' : 'learning'}_deadline<=?2 AND ${learningEligible(kind, '?2')} AND ${learningNotInFlight(kind)}
+    ORDER BY l.source_activity_at DESC,l.session_id LIMIT 1`;
+const heads = Object.fromEntries(LEARNING_STAGE_NAMES.map(kind => [kind, read<[project: string, now: number], Head>({
+  name: `learningReady.head${kind}`, sql: kind === 'learning' ? automaticHead(kind) : `SELECT * FROM (${automaticHead(kind)})
+    UNION ALL SELECT l.session_id AS sessionId,l.source_activity_at AS observed FROM ${manualCardSessionsSql('?1')}
+      WHERE ${learningEligible(kind, '?2')} AND ${learningNotInFlight(kind)} ORDER BY observed DESC,sessionId LIMIT 1`,
 })])) as Record<LearningStage, ReturnType<typeof read<[string, number], Head>>>;
 type Head = { sessionId: string; observed: number };
 

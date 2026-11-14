@@ -12,13 +12,13 @@ import { notTombstonedSql } from '../session-read-model.js';
  */
 const finished = `(aged_out_at IS NULL AND init_state='ready' AND pending_cards=0 AND due_cards=0 AND last_carded_at IS NOT NULL AND last_carded_at>COALESCE(last_completed_at,-1)
     AND EXISTS(SELECT 1 FROM turn_cards c WHERE c.project_id=learning_sessions.project_id AND c.session_id=learning_sessions.session_id AND c.state='carded' AND c.carded_at>COALESCE(learning_sessions.last_completed_at,-1)))`;
-const settled = (now: string) => `eligible_at=CASE WHEN aged_out_at IS NULL AND init_state='ready' AND skipped_by_owner=0 AND pending_cards=0 AND due_cards>0 THEN COALESCE(eligible_at,${now}) ELSE NULL END,
+export const settledLearningSql = (now: string) => `eligible_at=CASE WHEN aged_out_at IS NULL AND init_state='ready' AND skipped_by_owner=0 AND pending_cards=0 AND due_cards>0 THEN COALESCE(eligible_at,${now}) ELSE NULL END,
     learned_seq=CASE WHEN ${finished} THEN max_seq ELSE learned_seq END,
     last_completed_reason=CASE WHEN ${finished} THEN CASE WHEN last_completed_at=${now} AND last_completed_reason='completed' THEN 'completed' ELSE 'no_signal' END ELSE last_completed_reason END,
     last_completed_at=CASE WHEN ${finished} THEN ${now} ELSE last_completed_at END`;
 
 const progress = write<[now: number, project: string, session: string]>({
-  name: 'learningProgress.settle', sql: `UPDATE learning_sessions SET ${settled('?1')} WHERE project_id=?2 AND session_id=?3` });
+  name: 'learningProgress.settle', sql: `UPDATE learning_sessions SET ${settledLearningSql('?1')} WHERE project_id=?2 AND session_id=?3` });
 
 /** The session's progress follows its card counts: commit this after any card change. */
 export const sessionProgressStatement = (project: string, session: string, now: number): Bound =>
@@ -29,7 +29,7 @@ const SURVIVING = `(SELECT COUNT(*) FROM json_each(?6) j CROSS JOIN turn_cards c
 const LANDED = 'EXISTS(SELECT 1 FROM learning_sessions l WHERE l.project_id=?2 AND l.session_id=?3 AND l.revision=?4 AND l.last_completed_run=?5)';
 
 const completionProgress = write<[now: number, project: string, session: string, landedRevision: number, run: string, assigned: string]>({
-  name: 'learningProgress.completed', sql: `UPDATE learning_sessions SET aged_out_at=CASE WHEN pending_cards=0 AND due_cards=0 THEN NULL ELSE aged_out_at END,${settled('?1')}
+  name: 'learningProgress.completed', sql: `UPDATE learning_sessions SET aged_out_at=CASE WHEN pending_cards=0 AND due_cards=0 THEN NULL ELSE aged_out_at END,${settledLearningSql('?1')}
     WHERE project_id=?2 AND session_id=?3 AND ${LANDED} AND ${SURVIVING}>0` });
 
 /** Completion's progress holds only for the revision this run landed, and only when the slice covered a card. */

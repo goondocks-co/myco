@@ -200,7 +200,7 @@ The 1.4 homes and vaults stay on disk as a read-only archive; the import opens a
 
 ### 3.6 Run outcomes and the runner
 
-Learning runs in two stages on registered runners. Card runs read turns from published session documents and write revision-bound cards; extraction runs learn assigned cards and record their coverage. Claims enforce the session's quiet deadline, source-recency admission and retry backoff. Automatic learning serves the newest quiet sessions first within seven days of their last source activity. Unfinished sessions outside that window are stored as not learned; only a hand start naming a session can learn it later.
+Learning runs in two stages on registered runners. Card runs read turns from published session documents and write revision-bound cards; extraction runs learn assigned cards and record their coverage. Claims enforce the session's quiet deadline, source-recency admission and retry backoff. Automatic learning serves the newest quiet sessions first within seven days of their last source activity. Unfinished sessions outside that window are stored as not learned until new source activity reopens them or a hand start names the session.
 
 Raw retention holds sessions until a live document has published material when Project learning, the Deployment schedule switch and the task preference are enabled. One hold predicate applies at selection and archive commit, alongside recovery, parser, source and policy guards. Held rows advance the bounded cursor and are revisited after wrap. Live unlearned sessions can archive because learning reads their documents; archived source remains readable for later conversion.
 

@@ -142,7 +142,7 @@ it('reports readable storage and identifies worker and learning query failures w
   try {
     const aud = await deploymentIdentity(f.db);
     const db: RelationalStore = { ...f.db, prepare: query => {
-      if (query.includes('FROM deployment_settings')) throw new Error('D1_ERROR: no such table: private-settings-detail');
+      if (query.includes('FROM deployment_settings') || query.includes('FROM learning_project_counts')) throw new Error('D1_ERROR: no such table: private-settings-detail');
       return f.db.prepare(query);
     } };
     const body = await jsonBody<StatusResponse & { readFailures: Record<string, { read_failure: string }> }>(await handleStatus({ ...f.serverEnv, db }, context(aud)));

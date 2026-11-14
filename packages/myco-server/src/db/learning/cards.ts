@@ -1,4 +1,4 @@
-import { learningWindowSql } from '../runs/learning-policy.js';
+import { cardLearningAdmittedSql } from './admission.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { assertion, commit, read, readSet, refusalCode, write, type Bound } from '../index.js';
 
@@ -100,7 +100,7 @@ const claimableTurns = read<[project: string, session: string, now: number, limi
   name: 'learningCards.claimable', sql: `SELECT turn_key AS turnKey,changes,input_chars AS chars FROM turn_cards INDEXED BY idx_turn_cards_model_due
     WHERE project_id=?1 AND session_id=?2 AND state='pending' AND due_at IS NOT NULL AND due_at<=?3
       AND EXISTS (SELECT 1 FROM learning_sessions l WHERE l.project_id=?1 AND l.session_id=?2 AND l.card_ready_at<=?3
-        AND ${learningWindowSql('?3')})
+        AND ${cardLearningAdmittedSql('?3')})
     ORDER BY due_at,turn_key LIMIT ?4` });
 
 /** A session's turns due for a model at `now`, oldest first, up to `limit`. */

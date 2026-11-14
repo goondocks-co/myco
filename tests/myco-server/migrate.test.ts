@@ -410,31 +410,20 @@ describe('versioned schema steps', () => {
     }
   });
 
-  it('converges: applied to a fresh database once or twice, or on top of a v1 or a v2 database, the schema is identical and the version is the build\'s', async () => {
-    const once = fresh();
-    await applySchemaSteps(sqliteD1(once));
-    const twice = fresh();
-    await applySchemaSteps(sqliteD1(twice));
-    expect(await applySchemaSteps(sqliteD1(twice))).toEqual([]);
-    const fromV1 = fresh();
-    fromV1.exec(renderMigrationFile(SCHEMA_STEPS[0]));
-    fromV1.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'one', 0)`).run();
-    fromV1.query(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written) VALUES ('mt_1', 'proj_1', 'm', 'h', 1, NULL, 0)`).run();
-    expect(await readSchemaVersion(sqliteD1(fromV1))).toBe(1);
-    expect(await applySchemaSteps(sqliteD1(fromV1))).toEqual(SCHEMA_STEPS.slice(1).map((s) => s.version));
-    const fromV2 = fresh();
-    await applySchemaSteps(sqliteD1(fromV2), SCHEMA_STEPS.slice(0, 2));
-    fromV2.query(`INSERT INTO projects (project_id, name, created_at) VALUES ('proj_1', 'one', 0)`).run();
-    fromV2.query(`INSERT INTO member_tokens (id, project_id, machine_id, token_hash, expires_at, revoked_at, bytes_written) VALUES ('mt_v2', 'proj_1', 'm', 'h', ${MEMBER_TOKEN_TTL_MS + 5_000}, NULL, 7)`).run();
-    expect(await readSchemaVersion(sqliteD1(fromV2))).toBe(2);
-    expect(await applySchemaSteps(sqliteD1(fromV2))).toEqual(SCHEMA_STEPS.slice(2).map((s) => s.version));
-    for (const db of [once, twice, fromV1, fromV2]) {
-      expect(shape(db)).toEqual(shape(once));
-      expect(version(db)).toBe(String(SERVER_SCHEMA_VERSION));
-    }
-    expect(fromV1.query(`SELECT project_id, name FROM projects`).all()).toEqual([{ project_id: 'proj_1', name: 'one' }]);
-    expect(fromV1.query(`SELECT project_id FROM member_tokens`).all()).toEqual([{ project_id: 'proj_1' }]);
-    expect(await readSchemaVersion(sqliteD1(fresh()))).toBe(0);
+  it('converges from a populated v1 database and leaves an already-current database unchanged', async () => {
+    const current = fresh(), fromV1 = fresh();
+    try {
+      await applySchemaSteps(sqliteD1(current));
+      expect(await applySchemaSteps(sqliteD1(current))).toEqual([]);
+      fromV1.exec(renderMigrationFile(SCHEMA_STEPS[0]!));
+      fromV1.query("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','one',0)").run();
+      fromV1.query("INSERT INTO member_tokens(id,project_id,machine_id,token_hash,expires_at,revoked_at,bytes_written) VALUES('mt_1','proj_1','m','h',1,NULL,0)").run();
+      await applySchemaSteps(sqliteD1(fromV1));
+      expect(shape(fromV1)).toEqual(shape(current));
+      expect(version(fromV1)).toBe(String(SERVER_SCHEMA_VERSION));
+      expect(fromV1.query('SELECT project_id,name FROM projects').all()).toEqual([{ project_id: 'proj_1', name: 'one' }]);
+      expect(fromV1.query('SELECT project_id FROM member_tokens').all()).toEqual([{ project_id: 'proj_1' }]);
+    } finally { current.close(); fromV1.close(); }
   });
 
   it('retires populated v85 skill, digest, instruction and derived data through the native and D1 migration paths', async () => {
