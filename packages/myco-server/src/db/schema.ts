@@ -2171,6 +2171,8 @@ const CURATION_WHOLE_BASE_STEPS: readonly SchemaStep[] = [{
   statements: [
     'ALTER TABLE spore_curation_cursor ADD COLUMN priority_at INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE spore_curation_cursor ADD COLUMN history_complete INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE spore_curation_cursor ADD COLUMN history_at INTEGER NOT NULL DEFAULT 0',
+    "ALTER TABLE spore_curation_cursor ADD COLUMN history_id TEXT NOT NULL DEFAULT ''",
     ...capabilityTriggers.flatMap(operation => {
       const row = operation === 'delete' ? 'OLD' : 'NEW';
       return [

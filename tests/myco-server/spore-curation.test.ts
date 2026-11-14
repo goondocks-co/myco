@@ -33,8 +33,9 @@ async function fixture(deferred = false) {
   const index = indexFixture({deferred:true});
   const vectors = cloudflareVectorStore(index);
   const calls = { get: 0, query: 0, embed: 0 };
+  const visits: string[] = [];
   const get = vectors.get.bind(vectors), query = vectors.query.bind(vectors);
-  vectors.get = (...args) => { calls.get++; return get(...args); };
+  vectors.get = async (...args) => { calls.get++; const found=await get(...args); visits.push(...found.map(row=>row.metadata.record_id)); return found; };
   vectors.query = (...args) => { calls.query++; return query(...args); };
   const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
   const enable = () => settingsWriter(f.db).setCapability('proj_1', 'spore_curation', true, 'test', f.now - 10);
@@ -64,7 +65,7 @@ async function fixture(deferred = false) {
     JSON.parse((await request(token,'tools/call',{name,arguments:{project:'proj_1',...args}}))?.content?.[0]?.text ?? '{}') as unknown;
   const list = async (token: string) => (await request(token,'tools/list'))!.tools!;
 
-  return { ...f, env, enable, add, discover, poll, ctx, call, list, calls, applyVectors:()=>index.apply() };
+  return { ...f, env, enable, add, discover, poll, ctx, call, list, calls, visits, applyVectors:()=>index.apply() };
 }
 
 test('curation starts with new spores, then discovers older active spores under the same daily limit', async () => {
@@ -385,19 +386,20 @@ test('three failed attempts close a poison cluster and release discovery for a s
   } finally {f.sqlite.close();}
 });
 
-test('a completed no-overlap pass rests with zero vector calls and writes; late vector readiness restarts it', async () => {
+test('changes interrupt an older walk, which resumes past its checkpoint and finishes', async () => {
   const f = await fixture();
   try {
-    await f.enable(); await f.add('a'); await f.add('b');
-    f.sqlite.run("DELETE FROM embedding_receipts WHERE record_id='b'");
-    await f.discover();
-    expect(f.sqlite.query('SELECT dirty FROM spore_curation_changes').get()).toEqual({dirty:0});
-    const before={...f.calls}, mark=f.executed.length;
-    await f.discover(); await f.discover();
-    expect(f.calls).toEqual(before);
-    expect(f.executed.slice(mark).filter(sql=>/^\s*(INSERT|UPDATE|DELETE)/i.test(sql))).toEqual([]);
-    await f.add('b'); await f.discover();
-    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_work').get()).toEqual({n:1});
+    const older = Array.from({length:20},(_,i)=>`old-${i+1}`);
+    for (const [index,id] of older.entries()) await f.add(id,[1,0],index+1);
+    f.env.vectors.query=async()=>[];
+    await f.enable(); await discoverSporeClusters(f.env,f.now);
+    const checkpoint=[...f.visits];
+    await f.add('changed',[1,0],f.now+1); await discoverSporeClusters(f.env,f.now+1);
+    expect(f.visits.slice(checkpoint.length,checkpoint.length+2)).toEqual(['changed',older[checkpoint.length]]);
+    await f.add('changed-again',[1,0],f.now+2); await f.discover();
+    expect(f.visits.filter(id=>id.startsWith('old-'))).toEqual(older);
+    expect(f.sqlite.query('SELECT history_complete,active FROM spore_curation_cursor').get()).toEqual({history_complete:1,active:0});
+    expect(f.sqlite.query('SELECT dirty,pending_at FROM spore_curation_changes').get()).toEqual({dirty:0,pending_at:null});
   } finally {f.sqlite.close();}
 });
 
@@ -491,16 +493,19 @@ test('a closed seed outcome deduplicates its original set without acknowledging 
   } finally {f.sqlite.close();}
 });
 
-test('one new spore restarts at its changed stamp with one vector query', async () => {
+test('a finished older walk rests, and a new spore visits only that spore', async () => {
   const f=await fixture();
   try {
-    await f.enable(); for(let i=0;i<64;i++) await f.add(`s${i}`,[1,i+10]);
-    const query=f.env.vectors.query.bind(f.env.vectors);
-    f.env.vectors.query=(...args)=>args[1].values[1]===0?query(...args):(f.calls.query++,Promise.resolve([]));
-    for(let i=0;i<12;i++) await discoverSporeClusters(f.env,f.now);
-    const prior={...f.calls}; await f.add('new',[1,0],f.now+1); await f.discover();
-    expect(f.calls.query-prior.query).toBe(1); expect(f.calls.get-prior.get).toBe(1);
-    expect(f.sqlite.query('SELECT dirty FROM spore_curation_changes').get()).toEqual({dirty:0});
+    await f.add('a',[1,0],1); await f.add('b',[1,0],2); f.env.vectors.query=async()=>[];
+    await f.enable(); await f.discover();
+    expect(f.visits).toEqual(['a','b']);
+    const settled=f.sqlite.query('SELECT * FROM spore_curation_cursor').get();
+    await f.discover(); expect(f.visits).toEqual(['a','b']);
+    expect(f.sqlite.query('SELECT * FROM spore_curation_cursor').get()).toEqual(settled);
+    await f.add('new',[1,0],f.now+1); await f.discover();
+    expect(f.visits).toEqual(['a','b','new']);
+    expect(f.sqlite.query('SELECT priority_at,history_complete FROM spore_curation_cursor').get()).toEqual({priority_at:0,history_complete:1});
+    expect(f.sqlite.query('SELECT dirty,pending_at FROM spore_curation_changes').get()).toEqual({dirty:0,pending_at:null});
   } finally {f.sqlite.close();}
 });
 

@@ -28,8 +28,8 @@ const openWork = read<[project: string, now: number, maxFailures: number], OpenW
     WHERE w.project_id=?1 AND w.due_at IS NOT NULL AND (w.failures=0 OR w.due_at<=?2 OR w.failures>=?3 OR ${IN_FLIGHT}) LIMIT 1`,
 });
 const frontierRow = read<[project: string], { revision: number; pending_at: number | null }>({ name: 'curationDiscovery.frontier', sql: 'SELECT revision,pending_at FROM spore_curation_changes WHERE project_id=?1' });
-interface CurationCursor { after_at: number; after_id: string; pass_revision: number; active: number; priority_at: number; history_complete: number }
-const cursorRow = read<[project: string], CurationCursor>({ name: 'curationDiscovery.cursor', sql: 'SELECT after_at,after_id,pass_revision,active,priority_at,history_complete FROM spore_curation_cursor WHERE project_id=?1' });
+interface CurationCursor { after_at: number; after_id: string; pass_revision: number; active: number; priority_at: number; history_complete: number; history_at: number; history_id: string }
+const cursorRow = read<[project: string], CurationCursor>({ name: 'curationDiscovery.cursor', sql: 'SELECT after_at,after_id,pass_revision,active,priority_at,history_complete,history_at,history_id FROM spore_curation_cursor WHERE project_id=?1' });
 
 interface CurationProjectState {
   enabled: boolean;
@@ -52,9 +52,11 @@ const beginCursor = write<[start: number, project: string, revision: number], Cu
   name: 'curationDiscovery.beginCursor',
   sql: `INSERT INTO spore_curation_cursor(project_id,after_at,after_id,pass_revision,active,priority_at)
     SELECT project_id,MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)),'',revision,1,MAX(?1,COALESCE(${curationEnabledAtSql('?2')},0)) FROM spore_curation_changes WHERE project_id=?2 AND revision=?3 AND dirty=1
-    ON CONFLICT(project_id) DO UPDATE SET after_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN ?1 ELSE excluded.after_at END,after_id='',pass_revision=excluded.pass_revision,active=1,priority_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN 0 ELSE excluded.priority_at END
+    ON CONFLICT(project_id) DO UPDATE SET after_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN ?1 ELSE excluded.after_at END,after_id='',pass_revision=excluded.pass_revision,active=1,priority_at=CASE WHEN spore_curation_cursor.history_complete=1 THEN 0 ELSE excluded.priority_at END,
+      history_at=CASE WHEN ?1<=spore_curation_cursor.history_at THEN ?1 ELSE spore_curation_cursor.history_at END,
+      history_id=CASE WHEN ?1<=spore_curation_cursor.history_at THEN '' ELSE spore_curation_cursor.history_id END
     WHERE spore_curation_cursor.active=0 OR EXISTS (SELECT 1 FROM spore_curation_changes WHERE project_id=?2 AND revision=?3 AND pending_at IS NOT NULL)
-    RETURNING after_at,after_id,pass_revision,active,priority_at,history_complete`,
+    RETURNING after_at,after_id,pass_revision,active,priority_at,history_complete,history_at,history_id`,
 });
 const clearPending = write<[project: string, revision: number, start: number]>({
   name: 'curationDiscovery.clearPending',
@@ -87,7 +89,7 @@ const historicalAfterStamp = read<[project: string, stamp: number, limit: number
 });
 
 /** Changed seeds precede the historical walk; a new frontier interrupts that walk on the next wake. */
-export async function readCurationSeeds(db: RelationalStore, project: string, cursor: Pick<CurationCursor, 'after_at' | 'after_id' | 'priority_at'>, limit: number): Promise<CurationSeed[]> {
+export async function readCurationSeeds(db: RelationalStore, project: string, cursor: Pick<CurationCursor, 'after_at' | 'after_id' | 'priority_at' | 'history_at' | 'history_id'>, limit: number): Promise<CurationSeed[]> {
   const page = async (stamp: number, afterId: string, size: number, before: number | null) => {
     const [tied, later] = await readSet(db,
       before === null ? seedsAtStamp.bind(project, stamp, afterId, size) : historicalAtStamp.bind(project, stamp, afterId, size, before),
@@ -97,7 +99,7 @@ export async function readCurationSeeds(db: RelationalStore, project: string, cu
   if (cursor.priority_at === 0) return page(cursor.after_at, cursor.after_id, limit, null);
   if (cursor.after_at < cursor.priority_at) return page(cursor.after_at, cursor.after_id, limit, cursor.priority_at);
   const recent = await page(cursor.after_at, cursor.after_id, limit, null);
-  return recent.length === limit ? recent : [...recent, ...await page(0, '', limit - recent.length, cursor.priority_at)];
+  return recent.length === limit ? recent : [...recent, ...await page(cursor.history_at, cursor.history_id, limit - recent.length, cursor.priority_at)];
 }
 
 interface CurationSeedState { id: string; acked: number | null; receipt_id: string | null; updated_at: number | null; neighbor_mean: number | null; neighbor_std: number | null }
@@ -167,7 +169,9 @@ export async function offerCurationCluster(db: RelationalStore, project: string,
 
 const advanceCursor = write<[stamp: number, id: string, active: number, project: string, pass: number, afterAt: number, afterId: string, completed: number]>({
   name: 'curationDiscovery.advanceCursor',
-  sql: `UPDATE spore_curation_cursor SET after_at=?1,after_id=?2,active=?3,history_complete=CASE WHEN ?3=0 AND ?8=1 THEN 1 ELSE history_complete END WHERE project_id=?4 AND pass_revision=?5 AND active=1 AND after_at=?6 AND after_id=?7`,
+  sql: `UPDATE spore_curation_cursor SET after_at=?1,after_id=?2,active=?3,
+    history_at=CASE WHEN priority_at>0 AND ?1<priority_at THEN ?1 ELSE history_at END,
+    history_id=CASE WHEN priority_at>0 AND ?1<priority_at THEN ?2 ELSE history_id END,history_complete=CASE WHEN ?3=0 AND ?8=1 THEN 1 ELSE history_complete END WHERE project_id=?4 AND pass_revision=?5 AND active=1 AND after_at=?6 AND after_id=?7`,
 });
 const CHECKPOINT = (project: string, pass: string, stamp: string, id: string) => `EXISTS (SELECT 1 FROM spore_curation_cursor WHERE project_id=${project} AND active=0 AND pass_revision=${pass} AND after_at=${stamp} AND after_id=${id})`;
 const deferredChange = write<[project: string, deferredAt: number, pass: number, stamp: number, id: string]>({

@@ -4,6 +4,10 @@ ALTER TABLE spore_curation_cursor ADD COLUMN priority_at INTEGER NOT NULL DEFAUL
 
 ALTER TABLE spore_curation_cursor ADD COLUMN history_complete INTEGER NOT NULL DEFAULT 0;
 
+ALTER TABLE spore_curation_cursor ADD COLUMN history_at INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE spore_curation_cursor ADD COLUMN history_id TEXT NOT NULL DEFAULT '';
+
 DROP TRIGGER curation_capability_insert;
 
 CREATE TRIGGER curation_capability_insert AFTER INSERT ON project_capabilities
