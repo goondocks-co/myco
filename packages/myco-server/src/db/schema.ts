@@ -1,3 +1,6 @@
+import { curationChangeSql } from './curation-changes.js';
+import { changing, reaching, retiring } from './schema-step.js';
+import { NEXT_CURATION_WHOLE_BASE } from './schema-vNEXT-curation-whole-base.js';
 import { V723, V723_STATEMENTS, V723_REACHES, V723_DEPLOYMENT_INDEXES } from './schema-v723.js';
 import type { SchemaStep, DeploymentIndex } from './schema-step.js';
 import { V727, V727_STATEMENTS, V727_REACHES, V727_DEPLOYMENT_INDEXES } from './schema-v727.js';
@@ -2160,6 +2163,38 @@ const V89_STATEMENTS: readonly string[] = [
   `ALTER TABLE session_injections ADD COLUMN delivered_scope_reason TEXT CHECK (delivered_scope_reason IN (${SCOPE_REASONS}))`,
 ];
 
+const capabilityTriggers = ['insert', 'update', 'delete'];
+
+/** Retired capability rows retain their original value and attribution in the capability inventory. */
+const CURATION_WHOLE_BASE_STEPS: readonly SchemaStep[] = [{
+  version: NEXT_CURATION_WHOLE_BASE,
+  statements: [
+    'ALTER TABLE spore_curation_cursor ADD COLUMN priority_at INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE spore_curation_cursor ADD COLUMN history_complete INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE spore_curation_cursor ADD COLUMN history_at INTEGER NOT NULL DEFAULT 0',
+    "ALTER TABLE spore_curation_cursor ADD COLUMN history_id TEXT NOT NULL DEFAULT ''",
+    ...capabilityTriggers.flatMap(operation => {
+      const row = operation === 'delete' ? 'OLD' : 'NEW';
+      return [
+        `DROP TRIGGER IF EXISTS curation_capability_${operation}`,
+        `CREATE TRIGGER IF NOT EXISTS curation_capability_${operation} AFTER ${operation.toUpperCase()} ON project_capabilities
+          WHEN ${row}.capability='spore_curation' BEGIN ${curationChangeSql(`${row}.project_id`, `${row}.updated_at`)} END`,
+      ];
+    }),
+    'UPDATE spore_curation_cursor SET active=0',
+    `INSERT INTO spore_curation_changes(project_id,revision,dirty,pending_at)
+      SELECT project_id,1,1,updated_at FROM project_capabilities WHERE capability='spore_curation' AND enabled=1
+      ON CONFLICT(project_id) DO UPDATE SET revision=revision+1,dirty=1,pending_at=excluded.pending_at`,
+  ],
+  retires: retiring('trigger', capabilityTriggers.map(operation => `curation_capability_${operation}`),
+    'Only the curation capability admits discovery; older-spore admission is retired.'),
+  reaches: [
+    ...changing(['spore_curation_cursor'], 'Each discovery pass visits changed spores before walking the rest of the active knowledge.'),
+    ...changing(['spore_curation_changes'], 'Enabled Projects resume discovery over their whole active knowledge.'),
+    ...reaching(['project_capabilities'], 'Curation admission changes restart discovery; retired capability rows retain their stored attribution.'),
+  ],
+}];
+
 /** Ordered schema steps; each step's last statement stamps its version. A database at version n receives steps n+1 and later. Step 2 opens with two guard tables, ahead of every ADD COLUMN so a repaired database re-applies the step whole: one CHECK fails when an existing project id is out of grammar, the other when a session has no machine identity and the token that minted it has none to backfill from. The step aborts on the guard's insert and the applier records nothing. Identity binding reads `machine_id`, so a session that kept a NULL refuses every later write to itself; BREAK-GLASS.md carries the repair. */
 
 export const SCHEMA_STEPS: readonly SchemaStep[] = [
@@ -2361,6 +2396,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...RUN_LIVENESS_STEPS.map(stamp),
   ...RUN_DRIFT_STEPS.map(stamp),
   ...PUBLICATION_REOPEN_STEPS.map(stamp),
+  ...CURATION_WHOLE_BASE_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

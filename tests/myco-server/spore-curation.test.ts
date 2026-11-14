@@ -33,8 +33,9 @@ async function fixture(deferred = false) {
   const index = indexFixture({deferred:true});
   const vectors = cloudflareVectorStore(index);
   const calls = { get: 0, query: 0, embed: 0 };
+  const visits: string[] = [];
   const get = vectors.get.bind(vectors), query = vectors.query.bind(vectors);
-  vectors.get = (...args) => { calls.get++; return get(...args); };
+  vectors.get = async (...args) => { calls.get++; const found=await get(...args); visits.push(...found.map(row=>row.metadata.record_id)); return found; };
   vectors.query = (...args) => { calls.query++; return query(...args); };
   const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
   const enable = () => settingsWriter(f.db).setCapability('proj_1', 'spore_curation', true, 'test', f.now - 10);
@@ -64,21 +65,30 @@ async function fixture(deferred = false) {
     JSON.parse((await request(token,'tools/call',{name,arguments:{project:'proj_1',...args}}))?.content?.[0]?.text ?? '{}') as unknown;
   const list = async (token: string) => (await request(token,'tools/list'))!.tools!;
 
-  return { ...f, env, enable, add, discover, poll, ctx, call, list, calls, applyVectors:()=>index.apply() };
+  return { ...f, env, enable, add, discover, poll, ctx, call, list, calls, visits, applyVectors:()=>index.apply() };
 }
 
-test('off by default; no overlap creates no work or run; historical seeds require separate opt-in', async () => {
+test('curation starts with new spores, then discovers older active spores under the same daily limit', async () => {
   const f = await fixture();
   try {
-    expect(await settingsWriter(f.db).capabilityEnabled('proj_1', 'spore_curation')).toBe(false);
-    await f.add('a', [1,0], 1); await f.add('b', [0,1], 1);
+    await f.add('old-a', [0,1], 1); await f.add('old-b', [0,1], 1);
     await f.discover(); expect(await f.poll()).toMatchObject({ claimed: false });
-    await f.enable(); await f.discover(); expect(await f.poll()).toMatchObject({ claimed: false });
-    expect(f.sqlite.query('SELECT COUNT(*) AS n FROM spore_curation_work').get()).toEqual({ n: 0 });
-    await settingsWriter(f.db).setCapability('proj_1', 'spore_curation_backfill', true, 'test', f.now);
-    await f.discover(); expect(await f.poll()).toMatchObject({ claimed: false });
-    expect(f.sqlite.query('SELECT COUNT(*) AS n FROM agent_runs').get()).toEqual({ n: 0 });
-    expect(f.sqlite.query('SELECT after_at FROM spore_curation_cursor').get()).not.toBeNull();
+    await f.enable(); await f.add('new-a'); await f.add('new-b');
+    await settingsWriter(f.db).setProjectLeaf('proj_1','agent.spore_curation.daily_runs',1,'test',f.now);
+    await f.discover();
+    const first = await f.poll();
+    if (!first.claimed) throw new Error('new cluster not claimed');
+    const assignment = curationAssignment((await getRun(f.db,{projectId:'proj_1'},first.run.id))!.runContext);
+    expect(assignment!.members.map(member => member.id).sort()).toEqual(['new-a','new-b']);
+    expect(await f.call(first.run.runToken,'myco_run_curation',{op:'complete',decision:'keep',members:assignment!.members,reason:'Distinct guidance.'})).toEqual({completed:true});
+    await f.call(first.run.runToken,'myco_run',{op:'report',action:'curated',summary:'Kept apart.'});
+    await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:first.run.id,attemptId:first.run.attemptId,status:'completed'});
+    await f.discover();
+    expect(await f.poll(f.now+2)).toMatchObject({claimed:false});
+    await settingsWriter(f.db).setProjectLeaf('proj_1','agent.spore_curation.daily_runs',2,'test',f.now+2);
+    const older = await f.poll(f.now+3);
+    if (!older.claimed) throw new Error('older cluster not claimed');
+    expect(curationAssignment((await getRun(f.db,{projectId:'proj_1'},older.run.id))!.runContext)!.members.map(member=>member.id).sort()).toEqual(['old-a','old-b']);
   } finally { f.sqlite.close(); }
 });
 
@@ -376,19 +386,20 @@ test('three failed attempts close a poison cluster and release discovery for a s
   } finally {f.sqlite.close();}
 });
 
-test('a completed no-overlap pass rests with zero vector calls and writes; late vector readiness restarts it', async () => {
+test('changes interrupt an older walk, which resumes past its checkpoint and finishes', async () => {
   const f = await fixture();
   try {
-    await f.enable(); await f.add('a'); await f.add('b');
-    f.sqlite.run("DELETE FROM embedding_receipts WHERE record_id='b'");
-    await f.discover();
-    expect(f.sqlite.query('SELECT dirty FROM spore_curation_changes').get()).toEqual({dirty:0});
-    const before={...f.calls}, mark=f.executed.length;
-    await f.discover(); await f.discover();
-    expect(f.calls).toEqual(before);
-    expect(f.executed.slice(mark).filter(sql=>/^\s*(INSERT|UPDATE|DELETE)/i.test(sql))).toEqual([]);
-    await f.add('b'); await f.discover();
-    expect(f.sqlite.query('SELECT COUNT(*) n FROM spore_curation_work').get()).toEqual({n:1});
+    const older = Array.from({length:20},(_,i)=>`old-${i+1}`);
+    for (const [index,id] of older.entries()) await f.add(id,[1,0],index+1);
+    f.env.vectors.query=async()=>[];
+    await f.enable(); await discoverSporeClusters(f.env,f.now);
+    const checkpoint=[...f.visits];
+    await f.add('changed',[1,0],f.now+1); await discoverSporeClusters(f.env,f.now+1);
+    expect(f.visits.slice(checkpoint.length,checkpoint.length+2)).toEqual(['changed',older[checkpoint.length]]);
+    await f.add('changed-again',[1,0],f.now+2); await f.discover();
+    expect(f.visits.filter(id=>id.startsWith('old-'))).toEqual(older);
+    expect(f.sqlite.query('SELECT history_complete,active FROM spore_curation_cursor').get()).toEqual({history_complete:1,active:0});
+    expect(f.sqlite.query('SELECT dirty,pending_at FROM spore_curation_changes').get()).toEqual({dirty:0,pending_at:null});
   } finally {f.sqlite.close();}
 });
 
@@ -482,16 +493,19 @@ test('a closed seed outcome deduplicates its original set without acknowledging 
   } finally {f.sqlite.close();}
 });
 
-test('one new spore restarts at its changed stamp with one vector query', async () => {
+test('a finished older walk rests, and a new spore visits only that spore', async () => {
   const f=await fixture();
   try {
-    await f.enable(); for(let i=0;i<64;i++) await f.add(`s${i}`,[1,i+10]);
-    const query=f.env.vectors.query.bind(f.env.vectors);
-    f.env.vectors.query=(...args)=>args[1].values[1]===0?query(...args):(f.calls.query++,Promise.resolve([]));
-    for(let i=0;i<12;i++) await discoverSporeClusters(f.env,f.now);
-    const prior={...f.calls}; await f.add('new',[1,0],f.now+1); await f.discover();
-    expect(f.calls.query-prior.query).toBe(1); expect(f.calls.get-prior.get).toBe(1);
-    expect(f.sqlite.query('SELECT dirty FROM spore_curation_changes').get()).toEqual({dirty:0});
+    await f.add('a',[1,0],1); await f.add('b',[1,0],2); f.env.vectors.query=async()=>[];
+    await f.enable(); await f.discover();
+    expect(f.visits).toEqual(['a','b']);
+    const settled=f.sqlite.query('SELECT * FROM spore_curation_cursor').get();
+    await f.discover(); expect(f.visits).toEqual(['a','b']);
+    expect(f.sqlite.query('SELECT * FROM spore_curation_cursor').get()).toEqual(settled);
+    await f.add('new',[1,0],f.now+1); await f.discover();
+    expect(f.visits).toEqual(['a','b','new']);
+    expect(f.sqlite.query('SELECT priority_at,history_complete FROM spore_curation_cursor').get()).toEqual({priority_at:0,history_complete:1});
+    expect(f.sqlite.query('SELECT dirty,pending_at FROM spore_curation_changes').get()).toEqual({dirty:0,pending_at:null});
   } finally {f.sqlite.close();}
 });
 
@@ -646,7 +660,7 @@ test('the strong gate offers a lone pair, excludes distribution-typical noise, a
       SELECT 'proj_1',printf('s-%06d',x),'agent','body','decision',x FROM n`).run();
     await d1.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
       SELECT project_id,'curation-fixture',record_id,type,record_id,revision,1,1,1,0.125 FROM embedding_versions WHERE type='spore'`).run();
-    await settingsWriter(d1).setCapability('proj_1','spore_curation',true,'test',1);
+    await settingsWriter(d1).setCapability('proj_1','spore_curation',true,'test',4000);
     const meter = measuredStore(d1), recorded = statementRecorder(meter.db,{accounting:'d1'});
     const vectors = { ...g.env.vectors,
       get: async (_scope: unknown, ids: string[]) => ids.map(id=>({id,values:[1,0],metadata:{type:'spore' as const,record_id:id,revision:'fixture',status:'active',session_id:'',created_at:1,observation_type:'decision',release_state:'',release_confidence:''}})),
@@ -661,18 +675,9 @@ test('the strong gate offers a lone pair, excludes distribution-typical noise, a
       SELECT 'proj_2',printf('s-%06d',x),'agent','body','decision',x FROM n`).run();
     await d1.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
       SELECT project_id,'curation-fixture',record_id,type,record_id,revision,1,1,1,0.125 FROM embedding_versions WHERE type='spore' AND project_id='proj_2'`).run();
-    await settingsWriter(d1).setCapability('proj_2','spore_curation',true,'test',1);
+    await settingsWriter(d1).setCapability('proj_2','spore_curation',true,'test',4000);
     meter.reset(); expect(await discoverSporeClusters(env,g.now)).toBe(0);
     expect(Math.abs(meter.reads()-walkRows)).toBeLessThanOrEqual(40);
-    await d1.prepare("UPDATE spore_curation_cursor SET active=0").run();
-    await d1.prepare("UPDATE spore_curation_changes SET dirty=0,pending_at=NULL").run();
-    await d1.prepare("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES('proj_1','new','agent','body','decision',4000)").run();
-    await d1.prepare(`INSERT INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
-      SELECT project_id,'curation-fixture',record_id,type,record_id,revision,1,1,1,0.125 FROM embedding_versions WHERE record_id='new'`).run();
-    meter.reset(); expect(await discoverSporeClusters(env,g.now)).toBe(0);
-    const newRows = meter.reads(); expect(newRows).toBeLessThan(walkRows);
-    expect(await d1.prepare('SELECT COUNT(*) n FROM spore_curation_work').first()).toEqual({n:0});
-    console.info('CURATION_WEAK_GATE_ROWS',{corpus:3800,walkRows,newRows});
   } finally { await mf.dispose(); }
 });
 

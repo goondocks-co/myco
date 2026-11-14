@@ -13,6 +13,9 @@ import { issueMemberToken } from './helpers/member-token.js';
 import { PROJECT_HEADER, PROTOCOL_HEADER, SERVER_PROTOCOL } from '@myco-server-worker/constants.js';
 import { seededSqlite } from './helpers/d1.js';
 import { envelope, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { schemaSqlite } from './helpers/schema-template.js';
+import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
+import { NEXT_CURATION_WHOLE_BASE } from '@myco-server-worker/db/schema-vNEXT-curation-whole-base.js';
 import { changingAtStatement } from './helpers/store-faults.js';
 
 function rig(opts: Parameters<typeof settingsWriter>[1] = {}) {
@@ -174,14 +177,14 @@ describe('task document repair', () => {
 describe('project capability admission', () => {
   it('reads capability defaults for a Project with no rows', async () => {
     const r = rig();
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false });
     for (const c of PROJECT_CAPABILITIES) expect(await r.w.capabilityEnabled('proj_1', c)).toBe(!c.startsWith('spore_curation'));
   });
 
   it('switches off one capability without changing the others', async () => {
     const r = rig();
     expect(await r.w.setCapability('proj_1', 'cortex', false, 'mem_1', 1_000)).toEqual({ applied: true });
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
+    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: false, canopy: true, vault_evolution: true, spore_curation: false });
   });
 
   it('withdraws an admitted capability', async () => {
@@ -219,7 +222,7 @@ describe('a Project created by ingest', () => {
     expect(e.sqlite.query(`SELECT 1 FROM projects WHERE project_id='proj_brand_new'`).get()).not.toBeNull();
 
     const w = settingsWriter(e.db);
-    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
+    expect(await w.capabilities('proj_brand_new')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false });
     // And nothing wrote a row on its behalf.
     expect((e.sqlite.query(`SELECT COUNT(*) c FROM project_capabilities`).get() as any).c).toBe(0);
   });
@@ -301,13 +304,20 @@ describe('the instructions template leaf', () => {
 });
 
 describe('obsolete capability contracts', () => {
-  it('refuses the generated-skill capability while preserving its stored history', async () => {
-    const r = rig();
-    r.sqlite.run(`INSERT INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'skills', 1, 1, 'historic')`);
-    expect(await r.w.setCapability('proj_1', 'skills', false, 'mem_1', 2)).toEqual({ applied: false, refusal: { reason: 'unknown_capability', capability: 'skills' } });
-    expect(await r.w.capabilities('proj_1')).toEqual({ cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false });
-    expect(await r.w.retiredCapabilities('proj_1')).toEqual({ skills: true });
-    expect(r.sqlite.query(`SELECT enabled, updated_by FROM project_capabilities WHERE capability='skills'`).get()).toEqual({ enabled: 1, updated_by: 'historic' });
+  it('upgrades curation admission while preserving the retired switch’s stored history', async () => {
+    const sqlite = schemaSqlite({through:NEXT_CURATION_WHOLE_BASE-1});
+    const w = settingsWriter(sqliteRelationalStore(sqlite));
+    try {
+      sqlite.run("INSERT INTO projects(project_id,name,created_at) VALUES('proj_1','Project',1)");
+      sqlite.run("INSERT INTO project_capabilities(project_id,capability,enabled,updated_at,updated_by) VALUES('proj_1','spore_curation_backfill',1,1,'historic')");
+      await w.setCapability('proj_1','spore_curation',true,'owner',2);
+      for (const sql of SCHEMA_STEPS.find(step=>step.version===NEXT_CURATION_WHOLE_BASE)!.statements) sqlite.exec(sql);
+      expect(await w.setCapability('proj_1','spore_curation_backfill',false,'mem_1',3)).toEqual({applied:false,refusal:{reason:'unknown_capability',capability:'spore_curation_backfill'}});
+      expect(await w.capabilities('proj_1')).toEqual({cortex:true,canopy:true,vault_evolution:true,spore_curation:true});
+      expect(await w.retiredCapabilities('proj_1')).toEqual({spore_curation_backfill:true});
+      expect(sqlite.query("SELECT enabled,updated_by FROM project_capabilities WHERE capability='spore_curation_backfill'").get()).toEqual({enabled:1,updated_by:'historic'});
+      expect(sqlite.query("SELECT dirty,pending_at FROM spore_curation_changes WHERE project_id='proj_1'").get()).toEqual({dirty:1,pending_at:2});
+    } finally { sqlite.close(); }
   });
 });
 

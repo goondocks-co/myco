@@ -2,7 +2,7 @@ import { expect } from 'bun:test';
 import { archived, event, mcp, owner, putCapability, putSetting, resetSetting, untilPublished } from '../clients/requests.ts';
 import { type ParityScenario, type ParityTarget } from '../harness.ts';
 
-const CAPABILITY_DEFAULTS = { cortex: true, canopy: true, vault_evolution: true, spore_curation: false, spore_curation_backfill: false } as const;
+const CAPABILITY_DEFAULTS = { cortex: true, canopy: true, vault_evolution: true, spore_curation: false } as const;
 
 /** Both unconfigured targets retain independent recall contributors and explicitly skip semantic spores. */
 export const recall: ParityScenario = {
@@ -182,7 +182,7 @@ export const recall: ParityScenario = {
 
     await admit(true);
     await archived(target, target.projectId, async () => {
-      expect(await capabilities()).toEqual({ cortex: false, canopy: false, vault_evolution: false, spore_curation: false, spore_curation_backfill: false });
+      expect(await capabilities()).toEqual({ cortex: false, canopy: false, vault_evolution: false, spore_curation: false });
       const archivedAnswer = await served(`archived-${stamp}`, crypto.randomUUID(), planning);
       expect({ ...archivedAnswer, answerId: typeof archivedAnswer.answerId })
         .toEqual({ persisted: true, context: '', parts: [], skipped: ['capability'], answerId: 'string' });

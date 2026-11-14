@@ -14,8 +14,7 @@ import type { TaskDescription } from '../../tasks/wire';
 const CAPABILITY_WORDS: Readonly<Record<string, { label: string; note: string }>> = {
   cortex: { label: 'Context for sessions', note: 'Sessions here are handed the instructions at start, and spores and plans on their prompts.' },
   canopy: { label: 'Code map', note: 'Myco keeps a map of where things live in this project’s code, from its repository.' },
-  spore_curation: { label: 'Curate overlapping spores', note: 'Review close spore clusters within this Project’s daily limit, starting with new or changed spores. Off until you enable it.' },
-  spore_curation_backfill: { label: 'Include older spores in curation', note: 'Enable after reviewing a small live batch. Older memory uses the same Project daily limit.' },
+  spore_curation: { label: 'Curate overlapping spores', note: 'Review overlapping spores across this Project’s knowledge, starting with new or changed spores, within its daily limit.' },
   vault_evolution: { label: 'Learning', note: 'Myco learns spores from this project’s sessions and keeps them current.' },
 };
 
@@ -99,7 +98,7 @@ function CurationLimit({ projectId, value, revision }: { projectId: string; valu
     });
   };
   return <SettingRow setting={CURATION_LIMIT.leaf} label="Curation clusters per day" htmlFor="curation-daily-limit"
-    note={`Starts at ${CURATION_LIMIT.rule.default}. Raise this Project’s limit after judging a live batch.`} status={error ?? undefined} refused={error !== null}
+    note={`Up to this many spore clusters can start each day across this Project’s knowledge. Starts at ${CURATION_LIMIT.rule.default}.`} status={error ?? undefined} refused={error !== null}
     control={<div className="flex items-center gap-2"><Input id="curation-daily-limit" type="number" min={CURATION_LIMIT.rule.min} max={CURATION_LIMIT.rule.max} value={shown}
       onChange={event => { if (draft === null) setDraftRevision(revision); setDraft(event.target.value); }} />
       <Button pending={actions.setProjectSetting.isPending} disabled={!Number.isInteger(Number(shown)) || Number(shown)<CURATION_LIMIT.rule.min || Number(shown)>CURATION_LIMIT.rule.max || Number(shown)===value}
