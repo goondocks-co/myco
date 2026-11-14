@@ -476,7 +476,7 @@ export async function drainQueue(env: ServerEnv, now: number): Promise<number> {
     // A task whose prompt the server builds has it built again here: the run
     // launches with the vault as it stands at this instant, and a Project that
     // has not moved past the artifact it already holds costs nothing.
-    const built = await buildTaskInput(env, queued.task, queued.projectId, now, { fresh: stored.options?.fresh === true, params: stored.params });
+    const built = await buildTaskInput(env, queued.task, queued.projectId, now, { runId: queued.id, fresh: stored.options?.fresh === true, params: stored.params });
     if (built !== null && built.unchanged) {
       await endQueuedRun(env, scope, queued, now, { skipped: INPUT_UNCHANGED });
       emit({ kind: 'task_skipped', task: queued.task, projectId: queued.projectId, skip: INPUT_UNCHANGED });
@@ -947,7 +947,7 @@ export async function claimNextRun(
   };
   if (!(await projectWorkEnabled(env.db, candidate.projectId))) return skipRefused('unknown_project');
   if (capability !== null && !(await capabilityOn(env.db, candidate.projectId, capability))) return skipRefused(CAPABILITY_OFF);
-  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { fresh: stored?.options?.fresh === true, params: stored?.params });
+  const built = await buildTaskInput(env, candidate.task, candidate.projectId, worker.now, { runId: candidate.id, fresh: stored?.options?.fresh === true, params: stored?.params });
   if (built === null && candidate.task === EXTRACTION_TASK) return skipRefused(NOTHING_DUE);
   if (built !== null && built.unchanged) {
     await endQueuedRun(env, scope, { id: candidate.id }, worker.now, { skipped: INPUT_UNCHANGED });

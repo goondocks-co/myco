@@ -1,6 +1,7 @@
 import { curationChangeSql } from './curation-changes.js';
 import { changing, reaching, retiring } from './schema-step.js';
 import { NEXT_CURATION_WHOLE_BASE } from './schema-vNEXT-curation-whole-base.js';
+import { LEARNING_WINDOW_STEPS } from './schema-steps-learning-window.js';
 import { V723, V723_STATEMENTS, V723_REACHES, V723_DEPLOYMENT_INDEXES } from './schema-v723.js';
 import type { SchemaStep, DeploymentIndex } from './schema-step.js';
 import { V727, V727_STATEMENTS, V727_REACHES, V727_DEPLOYMENT_INDEXES } from './schema-v727.js';
@@ -2397,6 +2398,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...RUN_DRIFT_STEPS.map(stamp),
   ...PUBLICATION_REOPEN_STEPS.map(stamp),
   ...CURATION_WHOLE_BASE_STEPS.map(stamp),
+  ...LEARNING_WINDOW_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

@@ -69,10 +69,10 @@ export function definePullPolicy(name:string,task:string,due:string,head:string,
   };
   return {head:(...args)=>definitions.head.bind(values(...args)),higher:(...args)=>definitions.higher.bind(values(...args)),fair:(...args)=>definitions.fair.bind(values(...args))};
 }
-export const learningPolicies = (['cards','learning'] as const).map(kind => [false,true].map(fresh => definePullPolicy(
-  `${kind}${fresh?'Fresh':'History'}`,kind==='cards'?CARD_TASK:EXTRACTION_TASK,learningDue(kind,fresh,'p.project_id','i.now'),
+export const learningPolicies = (['cards','learning'] as const).map(kind => definePullPolicy(
+  kind,kind==='cards'?CARD_TASK:EXTRACTION_TASK,learningDue(kind,'p.project_id','i.now'),
   `EXISTS(SELECT 1 FROM learning_sessions l WHERE l.project_id=i.projectId AND l.session_id=i.key
-    AND l.${kind==='cards'?'source_activity_at':'eligible_at'}=i.observed AND ${learningEligible(kind,fresh,'i.now')})`,learningReadyProjects(kind,fresh))));
+    AND l.${kind==='cards'?'source_activity_at':'eligible_at'}=i.observed AND ${learningEligible(kind,'i.now')})`,learningReadyProjects(kind)));
 export const curationPolicy=definePullPolicy('curation',CURATION_TASK,curationAdmissionSql('p.project_id','i.now',undefined,'i.estimateKey'),
   `${curationAdmissionSql('i.projectId','i.now',undefined,'i.estimateKey')} AND EXISTS(SELECT 1 FROM spore_curation_work w
     WHERE ${curationDueWorkSql('i.projectId','i.now')} AND cluster_key=i.key AND due_at=i.observed AND decision IS NULL)`);

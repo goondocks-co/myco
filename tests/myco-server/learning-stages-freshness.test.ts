@@ -1,3 +1,7 @@
+import { LEARNING_WINDOW_MS } from '@myco-server-worker/db/runs/learning-policy.js';
+import { advanceLearningDeadlines, LEARNING_ADVANCE_PAGE } from '@myco-server-worker/db/learning/ready.js';
+import { dispatchTask } from '@myco-server-worker/core/harness.js';
+import { learningStatusLine } from '@myco-server-worker/core/learning-sessions.js';
 import { expect, it } from 'bun:test';
 import { commit } from '@myco-server-worker/db/index.js';
 import { forgetTurnStatement } from '@myco-server-worker/db/learning/cards.js';
@@ -13,18 +17,17 @@ import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { NOW, HOUR, DAY, capture, publish, cardAll, GOTCHAS, EMPTY_CARD, cardWorker, cardRun, plainTurns } from './helpers/learning-stages.ts';
 
-for (const late of [false, true]) it(`admits long-idle and late-received sessions just before source freshness ends (late: ${late})`, async () => {
+it('admits long-idle sessions just before the learning window ends', async () => {
   await withDocumentStores(async db => {
     const harness = await cardWorker(db);
-    await settingsWriter(db).setLeaf('agent.learning_history_enabled', false, 'owner', NOW);
-    await settingsWriter(db).setLeaf('agent.titling_idle_close_minutes', late ? 120 : 1440, 'owner', NOW);
-    const receipt = NOW + (late ? 23 * HOUR : 0);
+    await settingsWriter(db).setLeaf('agent.titling_idle_close_minutes', 1440, 'owner', NOW);
+    const receipt = NOW;
     await capture(db, 'quiet-clamp', [{ id: uuid(995), text: 'Admit the quiet deadline within the source window', at: NOW }], 'project', receipt);
     await publish(db, receipt + HOUR / 4, harness.bindings.BUCKET);
     const deadline = NOW + 23 * HOUR;
     expect(await db.prepare("SELECT quiet_at,source_activity_at FROM learning_sessions WHERE session_id='quiet-clamp'").first())
       .toEqual({ quiet_at: deadline, source_activity_at: NOW });
-    if (!late) expect(await harness.poll(deadline - 1)).toMatchObject({ claimed: false });
+    expect(await harness.poll(deadline - 1)).toMatchObject({ claimed: false });
     const claimed = await harness.poll(deadline + HOUR / 2);
     if (!claimed.claimed) throw new Error('clamped quiet deadline missed source freshness');
     expect(await harness.call(claimed.run.runToken, 'myco_run_cards', { op: 'material' })).toMatchObject({ session_id: 'quiet-clamp' });
@@ -35,7 +38,7 @@ for (const mode of ['not-live', 'recovered-before-write', 'changed-after-read'])
   await withDocumentStores(async db => {
     const changesAfterRead = mode === 'changed-after-read';
     const keys = [uuid(1001), uuid(1002)];
-    const run = await cardRun(db, keys.map((id, n) => ({ id, text: 'Keep this pending turn until its document is live', at: 10 + n })));
+    const run = await cardRun(db, keys.map((id, n) => ({ id, text: 'Keep this pending turn until its document is live', at: NOW - DAY + 10 + n })));
     if (changesAfterRead) {
       const missing = uuid(1003);
       await db.prepare("INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at) VALUES('project','long',?,10,?)").bind(missing, NOW).run();
@@ -68,10 +71,10 @@ for (const mode of ['not-live', 'recovered-before-write', 'changed-after-read'])
   });
 }, 60_000);
 
-for (const age of [24, 30]) it(`retains the shared idle wait for a session received after its source freshness expired (age: ${age})`, async () => {
+it('retains the shared idle wait for a late-received session inside the learning window', async () => {
   await withDocumentStores(async db => {
     const harness = await cardWorker(db);
-    const source = NOW - age * HOUR;
+    const source = NOW - 3 * DAY;
     await capture(db, 'past-fresh', [{ id: uuid(1010), text: 'Wait for this historical session to become quiet', at: source }], 'project', NOW);
     await publish(db, NOW + HOUR / 4, harness.bindings.BUCKET);
     expect(await db.prepare("SELECT quiet_at FROM learning_sessions WHERE session_id='past-fresh'").first()).toEqual({ quiet_at: NOW + 2 * HOUR });
@@ -81,36 +84,6 @@ for (const age of [24, 30]) it(`retains the shared idle wait for a session recei
     expect(await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'material' })).toMatchObject({ session_id: 'past-fresh' });
     await db.prepare("UPDATE sessions SET ended_at=? WHERE session_id='past-fresh'").bind(NOW + HOUR).run();
     expect(await db.prepare("SELECT quiet_at FROM learning_sessions WHERE session_id='past-fresh'").first()).toEqual({ quiet_at: 0 });
-  });
-});
-
-it('admits a first fresh learning claim and retains its bounded retries after source aging', async () => {
-  await withDocumentStores(async db => {
-    const harness = await cardWorker(db);
-    await settingsWriter(db).setLeaf('agent.learning_history_enabled', false, 'owner', NOW);
-    const turn = uuid(1020);
-    await capture(db, 'learning-first', [{ id: turn, text: 'Read this rule-carded session first as learning', at: NOW }], 'project', NOW);
-    await db.prepare("UPDATE sessions SET ended_at=? WHERE session_id='learning-first'").bind(NOW).run();
-    await publish(db, NOW + HOUR / 4, harness.bindings.BUCKET);
-    expect(await cardAll(db, harness.bindings.BUCKET, 'learning-first', NOW + HOUR / 4)).toMatchObject({ written: 1 });
-    expect(await db.prepare("SELECT fresh_admitted FROM learning_sessions WHERE session_id='learning-first'").first()).toEqual({ fresh_admitted: 0 });
-    let at = NOW + 23.5 * HOUR;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const claim = await harness.poll(at);
-      if (!claim.claimed) throw new Error('first-learning admission or retry missed');
-      expect(claim.run.task).toBe('extract-curate');
-      await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' });
-      expect(await db.prepare("SELECT fresh_admitted,source_activity_at FROM learning_sessions WHERE session_id='learning-first'").first())
-        .toEqual({ fresh_admitted: 1, source_activity_at: NOW });
-      expect(await endLeasedRun(harness.env, { principal: harness.principal, now: at + 1 }, {
-        projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', error: 'learning unavailable',
-      })).toMatchObject({ ended: true, status: 'failed' });
-      const retry = await db.prepare("SELECT eligible_at AS at FROM learning_sessions WHERE session_id='learning-first'").first<{ at: number }>();
-      at = Math.max(retry!.at, NOW + DAY + 1);
-    }
-    expect(await harness.poll(at)).toMatchObject({ claimed: false });
-    expect((await readLearningStatus(db, at)).historyWaiting).toBe(1);
-    expect(await db.prepare("SELECT COUNT(*) AS n FROM agent_runs WHERE task='turn-cards'").first()).toEqual({ n: 0 });
   });
 });
 
@@ -243,5 +216,55 @@ it('retains earlier card failure backoff after a runner sign-in failure', async 
       error: 'the harness stopped: error (login_missing)',
     });
     expect(await db.prepare("SELECT card_failures,card_retry_at FROM learning_sessions WHERE session_id='prior-backoff'").first()).toEqual(before);
+  });
+});
+
+it('closes unfinished sessions outside the window and never automatically retries them', async () => {
+  await withDocumentStores(async db => {
+    const harness = await cardWorker(db);
+    await capture(db, 'aged', [{ id: uuid(1200), text: 'Learn the cause of this failure', at: NOW - 5 * HOUR }]);
+    await publish(db, NOW + HOUR, harness.bindings.BUCKET);
+    const first = await harness.poll(NOW + HOUR);
+    if (!first.claimed) throw new Error('initial card work was not claimed');
+    await endLeasedRun(harness.env, { principal: harness.principal, now: NOW + HOUR + 1 }, {
+      projectId: 'project', runId: first.run.id, attemptId: first.run.attemptId, status: 'failed', error: 'model unavailable',
+    });
+    const at = NOW + LEARNING_WINDOW_MS - 4 * HOUR;
+    await advanceLearningDeadlines(db, at, { page: LEARNING_ADVANCE_PAGE, age: true });
+    const status = await readLearningStatus(db, at);
+    expect(status).toMatchObject({ agedOutSessions: 1, turnsAwaitingCards: 0, dueCards: 0, dueSessions: 0 });
+    expect(learningStatusLine(status, null, at)).toContain('1 session was not learned because it went quiet more than 7 days before Myco reached it');
+    expect(await harness.poll(at)).toMatchObject({ claimed: false });
+    await db.prepare("UPDATE learning_sessions SET source_activity_at=?,card_retry_at=0 WHERE session_id='aged'").bind(at).run();
+    await advanceLearningDeadlines(db, at + HOUR, { page: LEARNING_ADVANCE_PAGE, age: true });
+    expect(await harness.poll(at + HOUR)).toMatchObject({ claimed: false });
+    expect(await db.prepare("SELECT state FROM turn_cards WHERE session_id='aged'").first()).toEqual({ state: 'pending' });
+    expect((await readLearningStatus(db, at + HOUR)).agedOutSessions).toBe(1);
+  });
+});
+
+it('learns an aged-out session only when a hand start names it', async () => {
+  await withDocumentStores(async db => {
+    const harness = await cardWorker(db);
+    await capture(db, 'named-aged', [{ id: uuid(1210), text: 'Keep the explicit recovery decision', at: NOW - 5 * HOUR }]);
+    await publish(db, NOW + HOUR, harness.bindings.BUCKET);
+    await cardAll(db, harness.bindings.BUCKET, 'named-aged', NOW + HOUR);
+    const at = NOW + LEARNING_WINDOW_MS - 4 * HOUR;
+    await advanceLearningDeadlines(db, at, { page: LEARNING_ADVANCE_PAGE, age: true });
+    expect(await harness.poll(at)).toMatchObject({ claimed: false });
+    expect(await dispatchTask(harness.env, 'extract-curate', 'project', {
+      serverUrl: 'https://myco.test', actor: 'clock', params: { session_id: 'named-aged' },
+    }, at)).toMatchObject({ dispatched: true });
+    expect(await harness.poll(at + 1)).toMatchObject({ claimed: false });
+    expect(await dispatchTask(harness.env, 'extract-curate', 'project', {
+      serverUrl: 'https://myco.test', actor: 'mem_worker', params: { session_id: 'named-aged' },
+    }, at)).toMatchObject({ dispatched: true });
+    const claim = await harness.poll(at + 1);
+    if (!claim.claimed) throw new Error(`named hand start did not claim the aged-out session: ${claim.reason}`);
+    expect(claim.run.task).toBe('extract-curate');
+    expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' })).toMatchObject({ session_id: 'named-aged' });
+    expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'complete', handoff: '' })).toMatchObject({ completed: true, covered: 1 });
+    expect((await readLearningStatus(db, at + 2)).agedOutSessions).toBe(0);
+    expect(await db.prepare("SELECT covered FROM turn_cards WHERE session_id='named-aged'").first()).toEqual({ covered: 1 });
   });
 });

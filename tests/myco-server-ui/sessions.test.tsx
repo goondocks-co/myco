@@ -450,6 +450,15 @@ describe('the session reading page', () => {
     return { transcript: primary, transcripts: [primary], segments };
   };
 
+  it('explains an unsummarized turn when its session was not learned', async () => {
+    server(routes({ '/api/projects/x/sessions/s1': () => detail({}, { learningAgedOutAt: NOW }) }));
+    mount('/p/x/sessions/s1');
+    expect(await screen.findByText('Not summarized because this session was not learned.')).toBeTruthy();
+    expect(screen.getAllByText('Not summarized: this session was not learned').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Myco writes this once the turn settles.')).toBeNull();
+    expect(screen.queryByText('Not summarized yet')).toBeNull();
+  });
+
   it('reads records not placed on a turn only when their disclosure opens, including a session with no prompts', async () => {
     const { requested } = server(routes({
       '/api/projects/x/sessions/s1/turns': () => page([]),

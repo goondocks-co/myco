@@ -13,18 +13,18 @@ const count = (predicate: string, hint = '') => `(SELECT COUNT(*) FROM turn_card
  * settled, so a session reaches `counted = 1` holding its exact counts. Replaying a key is harmless: the values are
  * absolute, and from here on the triggers move them.
  */
-const reconcile = write<[keys: string]>({ name: 'learningCounts.page', sql: `WITH keys AS (${PAGE_KEYS}) UPDATE learning_sessions SET
+export const LEARNING_COUNTS_RECONCILE_SQL = `UPDATE learning_sessions SET
     pending_cards=${count("c.state='pending'", 'INDEXED BY idx_turn_cards_session_pending')},
     due_cards=${count("c.state='carded' AND c.covered=0", 'INDEXED BY idx_turn_cards_uncovered')},
     signal_cards=${count("c.state='carded' AND IFNULL(c.signal,'none')<>'none'")},
     last_carded_at=(SELECT MAX(c.carded_at) FROM turn_cards c WHERE c.project_id=learning_sessions.project_id AND c.session_id=learning_sessions.session_id AND c.state='carded'),
     next_model_due_at=(SELECT MIN(c.due_at) FROM turn_cards c WHERE c.project_id=learning_sessions.project_id AND c.session_id=learning_sessions.session_id AND c.state='pending' AND c.due_at IS NOT NULL),
-    counted=1
+    counted=1`;
+const reconcile = write<[keys: string]>({ name: 'learningCounts.page', sql: `WITH keys AS (${PAGE_KEYS}) ${LEARNING_COUNTS_RECONCILE_SQL}
   WHERE (project_id,session_id) IN (SELECT project_id,session_id FROM keys)` });
 
 const settleProgress = write<[keys: string, now: number]>({ name: 'learningCounts.progress', sql: `WITH keys AS (${PAGE_KEYS}) UPDATE learning_sessions SET
-    fresh_admitted=CASE WHEN pending_cards=0 AND due_cards=0 THEN 0 ELSE fresh_admitted END,
-    eligible_at=CASE WHEN init_state='ready' AND skipped_by_owner=0 AND pending_cards=0 AND due_cards>0 THEN COALESCE(eligible_at,?2) ELSE NULL END
+    eligible_at=CASE WHEN aged_out_at IS NULL AND init_state='ready' AND skipped_by_owner=0 AND pending_cards=0 AND due_cards>0 THEN COALESCE(eligible_at,?2) ELSE NULL END
   WHERE (project_id,session_id) IN (SELECT project_id,session_id FROM keys)` });
 
 export const LEARNING_COUNT_CATCHUP = {
@@ -36,10 +36,10 @@ export const LEARNING_COUNT_CATCHUP = {
 } as const satisfies CatchupFamily;
 
 export interface LearningRollup {
-  pending_cards: number; due_cards: number; signal_cards: number; fresh_pending: number; fresh_due: number; ready_sessions: number;
-  fresh_ready_sessions: number; history_waiting: number; awaiting_publication: number;
+  pending_cards: number; due_cards: number; signal_cards: number; ready_sessions: number;
+  aged_out_sessions: number; awaiting_publication: number;
 }
-const ROLLUP = 'COALESCE(SUM(pending_cards),0) AS pending_cards,COALESCE(SUM(due_cards),0) AS due_cards,COALESCE(SUM(signal_cards),0) AS signal_cards,COALESCE(SUM(fresh_pending),0) AS fresh_pending,COALESCE(SUM(fresh_due),0) AS fresh_due,COALESCE(SUM(ready_sessions),0) AS ready_sessions,COALESCE(SUM(fresh_ready_sessions),0) AS fresh_ready_sessions,COALESCE(SUM(history_waiting),0) AS history_waiting,COALESCE(SUM(awaiting_publication),0) AS awaiting_publication';
+const ROLLUP = 'COALESCE(SUM(pending_cards),0) AS pending_cards,COALESCE(SUM(due_cards),0) AS due_cards,COALESCE(SUM(signal_cards),0) AS signal_cards,COALESCE(SUM(ready_sessions),0) AS ready_sessions,COALESCE(SUM(aged_out_sessions),0) AS aged_out_sessions,COALESCE(SUM(awaiting_publication),0) AS awaiting_publication';
 const deploymentRollup = read<[], LearningRollup>({ name: 'learningCounts.deployment', sql: `SELECT ${ROLLUP} FROM learning_project_counts` });
 const projectRollup = read<[project: string], LearningRollup>({ name: 'learningCounts.project', sql: `SELECT ${ROLLUP} FROM learning_project_counts WHERE project_id=?1` });
 const readyProjects = read<[], { n: number }>({ name: 'learningCounts.readyProjects', sql: 'SELECT COUNT(*) AS n FROM (SELECT DISTINCT project_id FROM learning_ready_projects WHERE ready>0)' });

@@ -182,7 +182,7 @@ function CodeLines({ lines }: { lines: readonly string[] }) {
 }
 
 /** What the turn's card says happened: laid out by part, or as written when it reads as no card. */
-function WhatHappened({ card }: { card: string | null | undefined }) {
+function WhatHappened({ card, learningAgedOut }: { card: string | null | undefined; learningAgedOut: boolean }) {
   const parsed = card == null ? null : parseCard(card);
   if (isMechanical(parsed?.done ?? card)) return null;
   let body: ReactNode;
@@ -203,7 +203,7 @@ function WhatHappened({ card }: { card: string | null | undefined }) {
   } else if (card != null && card !== '') {
     body = <p className="whitespace-pre-wrap break-words t-small text-ink-2">{card}</p>;
   } else {
-    body = <p className="t-small text-muted">Myco writes this once the turn settles.</p>;
+    body = <p className="t-small text-muted">{learningAgedOut ? 'Not summarized because this session was not learned.' : 'Myco writes this once the turn settles.'}</p>;
   }
   return (
     <section aria-label="What happened" className="flex flex-col gap-s2" data-testid="what-happened">
@@ -310,6 +310,7 @@ export interface TurnReaderProps {
   projectId: string;
   sessionId: string;
   turn: TurnRow;
+  learningAgedOut?: boolean;
   agent?: string | null;
   contexts?: Record<string, { subagents: number }>;
   now: number;
@@ -325,7 +326,7 @@ export interface TurnReaderProps {
  * The one open turn: its prompt, what happened, the reply, then its tool use. This
  * is the only turn whose body is read; a steering prompt's body comes inside its parent's.
  */
-export function TurnReader({ projectId, sessionId, turn, agent = null, contexts, now, back, steps, link }: TurnReaderProps) {
+export function TurnReader({ projectId, sessionId, turn, agent = null, contexts, learningAgedOut = false, now, back, steps, link }: TurnReaderProps) {
   const detail = useTurnDetail(projectId, sessionId, turn.promptId, true);
   const body = detail.data;
   const elapsed = body?.metrics?.durationMs ?? null;
@@ -352,7 +353,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
           <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="attachments" initial={read.attachments} cursor={read.cursors?.attachments} rowKey={(row) => row.attachmentId} label="attachments">
             {(rows) => <Attachments projectId={projectId} attachments={rows} />}
           </TurnPages>
-          {!isMechanical(turn.headline) && <WhatHappened card={read.card} />}
+          {!isMechanical(turn.headline) && <WhatHappened learningAgedOut={learningAgedOut} card={read.card} />}
           <TurnContent projectId={projectId} sessionId={sessionId} promptId={turn.promptId} agent={agent} contexts={contexts} body={read} total={turn.toolCallCount} failed={turn.failedTools} rollup={turn.toolRollup ?? null} held={{ replies: turn.responseCount, children: turn.childCount, plans: turn.planCount }} />
         </>}
       </ReadState>

@@ -8,7 +8,7 @@ import { uuid } from './helpers/fixtures.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_EXAMPLE } from '@myco-server-worker/core/injection.js';
 import { STATE_CHANGED } from '@myco-server-worker/mcp/tools/run.js';
-import { longTurn, heavyCard, learningRun, plainTurns } from './helpers/learning-stages.ts';
+import { NOW, DAY, longTurn, heavyCard, learningRun, plainTurns } from './helpers/learning-stages.ts';
 
 it('serves a learning run\'s slice in answers the harness holds whole, losing nothing', async () => {
   await withDocumentStores(async (db) => {
@@ -227,7 +227,7 @@ it('keeps the prior handoff and failure count when every assigned card changes m
 it('holds one raw turn to an answer the harness keeps, and says how much it cut', async () => {
   await withDocumentStores(async (db) => {
     const key = uuid(600);
-    const run = await learningRun(db, [longTurn(key, 'a turn longer than one answer', 10, 24)], 'high');
+    const run = await learningRun(db, [longTurn(key, 'a turn longer than one answer', NOW - DAY + 10, 24)], 'high');
     const answer = await run.raw('myco_run_learning', { op: 'get', turn_key: key });
     expect(new TextEncoder().encode(JSON.stringify(answer.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
     expect((answer.structuredContent as { result: { raw: string } }).result.raw).toMatch(/\[… \d+ more characters\]$/);

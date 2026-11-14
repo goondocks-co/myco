@@ -47,7 +47,7 @@ it('pulled work costs D1 the same as unrelated live runs, its ready backlog and 
     setup: async db => {
       await completeBudgetMigration(db, NOW);
       await db.prepare("INSERT INTO agents(id,name,source,enabled,created_at) VALUES('load-agent','load','built-in',1,1)").run();
-      await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner'),('agent.learning_history_enabled','true',1,'owner')").run();
+      await db.prepare("INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.scheduled_tasks_enabled','true',1,'owner')").run();
       for (const project of page) await work(db, project);
     },
     grow: async (db, from, to) => {

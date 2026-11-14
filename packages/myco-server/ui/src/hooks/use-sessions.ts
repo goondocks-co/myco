@@ -63,6 +63,7 @@ export const UNTITLED_REASON_TEXT: Record<UntitledReason, string> = {
 };
 
 export interface SessionResponse {
+  learningAgedOutAt?: number | null;
   session: SessionRow;
   /** Why the ended session has no title; null when it has one or is still open. */
   untitled?: UntitledReason | null;

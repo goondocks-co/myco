@@ -42,6 +42,8 @@ export interface TaskInput {
 
 /** What a caller asks of one build beyond the Project and the instant. */
 export interface TaskInputOptions {
+  /** The queued run whose stored origin authorizes a named learning input. */
+  runId?: string;
   /** The run writes its artifact from the material alone rather than carrying the current one forward. */
   fresh?: boolean;
   /** The parameters the dispatch carries, for a task whose instruction is about one thing the dispatch names rather than the Project as a whole. */
@@ -75,7 +77,7 @@ interface TaskInputBuilder {
 
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
   [EXTRACTION_TASK]: {
-    build: (env, projectId, now, options) => buildHandStartLearning(env, projectId, now, options.params ?? {}),
+    build: (env, projectId, now, options) => buildHandStartLearning(env, projectId, now, options.params ?? {}, options.runId),
     template: () => ({ promptTemplate: learningPrompt('{{session.id}}', { cards: '{{slice.cards}}', more: false, handoff: null }), standingRules: EXTRACTION_RULES, templateVariants: [] }),
   },
   [SEEDING_TASK]: { build: (env, projectId) => buildSeedingInput(env, projectId), template: () => ({ promptTemplate: seedingPrompt(TEMPLATE_REPOSITORY), standingRules: SEEDING_RULES, templateVariants: [] }) },

@@ -23,7 +23,6 @@ import { asOwner, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
  * raw retention window, the import bounds, and the per-task ceilings.
  */
 const LEAVES: ReadonlyArray<[leaf: string, value: unknown]> = [
-  ['agent.learning_history_enabled', true],
   ['instructions.template', '# House rules\n\nRead the ledger first.'],
   ['worker.harness', 'claude-code'],
   ['worker.harness_fallback', ['codex', 'cursor']],

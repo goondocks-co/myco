@@ -1,3 +1,4 @@
+import { LEARNING_WINDOW_MS } from '../db/runs/learning-policy.js';
 import { servedRecords } from '../db/runs/served.js';
 import { learningCompleted } from '../db/runs/attributed-writes.js';
 import type { Bound } from '../db/index.js';
@@ -20,8 +21,6 @@ import { LEARNING_SLICE_CHARS } from './read-window.js';
 import { answerRoom, materialPages, type PagedEntry } from './material-pages.js';
 import { commitAttributedWrite } from '../db/runs/attribution.js';
 import { LEARNING_TOOL } from './tool-catalogue.js';
-import { learningHistoryEnabled } from './settings.js';
-import { FRESH_LEARNING_MS } from '../db/runs/learning-policy.js';
 import { ackRecordStatement, assignableCards, assignedCardRows, completionProgressStatement, coverCardsStatement } from '../db/learning/progress.js';
 import { advanceLearningDeadlines, learningDeadlinesPending } from '../db/learning/ready.js';
 import { latestLearningCompletion, learningCountsReady, readLearningRollup } from '../db/learning/counts.js';
@@ -69,7 +68,7 @@ export function claimLearningRetryWrite(projectId: string, sessionId: string,
 /** A slice claim holds its session out of the eligible set until completion or lease loss. */
 export function claimLearningWrites(projectId: string, sessionId: string, now: number,
   run: { runId: string; dispatchedBy: string }): Bound[] {
-  return [claimLearningRetryWrite(projectId, sessionId, run), learningBackoffWrite.bind(now - FRESH_LEARNING_MS, now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy)];
+  return [claimLearningRetryWrite(projectId, sessionId, run), learningBackoffWrite.bind(now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy)];
 }
 
 interface LearningCard { turnKey: string; card: string; signal: string; records: string; promptIds: string[] }
@@ -135,7 +134,7 @@ interface LearningStatus {
   dueCards: number;
   signalCards: number;
   turnsAwaitingCards: number;
-  historyWaiting: number;
+  agedOutSessions: number;
   awaitingPublication: number;
   readyProjects: number;
   /** The latest completion; null when none happened, undefined for a Project's status, which reads no completion. */
@@ -150,20 +149,19 @@ interface LearningStatus {
  */
 export async function readLearningStatus(db: RelationalStore, now = Date.now(), scope?: { projectId: string }): Promise<LearningStatus> {
   await advanceLearningDeadlines(db, now);
-  const [pending, historyEnabled, rollup, counted, last] = await Promise.all([
+  const [pending, rollup, counted, last] = await Promise.all([
     learningDeadlinesPending(db, now),
-    learningHistoryEnabled(db),
     readLearningRollup(db, scope),
     learningCountsReady(db),
     scope === undefined ? latestLearningCompletion(db) : Promise.resolve(undefined),
   ]);
   return {
     state: pending || !counted ? 'building' : 'ready', asOf: now,
-    dueSessions: historyEnabled ? rollup.ready_sessions : rollup.fresh_ready_sessions,
-    dueCards: historyEnabled ? rollup.due_cards : rollup.fresh_due,
+    dueSessions: rollup.ready_sessions,
+    dueCards: rollup.due_cards,
     signalCards: rollup.signal_cards,
-    turnsAwaitingCards: historyEnabled ? rollup.pending_cards : rollup.fresh_pending,
-    historyWaiting: historyEnabled ? 0 : rollup.history_waiting,
+    turnsAwaitingCards: rollup.pending_cards,
+    agedOutSessions: rollup.aged_out_sessions,
     awaitingPublication: rollup.awaiting_publication,
     readyProjects: rollup.readyProjects,
     lastCompleted: last,
@@ -178,7 +176,7 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
   const parts = [
     `${n(status.dueSessions, 'session')} ready to learn (${n(status.dueCards, 'summary', 'summaries')} to learn from)`,
     `${n(status.turnsAwaitingCards, 'turn')} waiting to be summarized`,
-    ...(status.historyWaiting > 0 ? [`${n(status.historyWaiting, 'older session')} waiting for history learning to be enabled`] : []),
+    ...(status.agedOutSessions > 0 ? [`${n(status.agedOutSessions, 'session')} ${status.agedOutSessions === 1 ? 'was' : 'were'} not learned because ${status.agedOutSessions === 1 ? 'it' : 'they'} went quiet more than ${LEARNING_WINDOW_MS / 86_400_000} days before Myco reached ${status.agedOutSessions === 1 ? 'it' : 'them'}`] : []),
     ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication, 'session')} waiting to become readable`] : []),
     ...(ready && waitingForSignIn ? ['waiting for a runner that can sign in'] : []),
     ...(ready && (heldByBudget || (spent !== null && budget !== null && spent >= budget.dailyUsd))

@@ -31,6 +31,7 @@ export interface ConversationProps {
   projectId: string;
   sessionId: string;
   agent?: string | null;
+  learningAgedOut?: boolean;
   contexts?: Record<string, { subagents: number }>;
   /** How many prompts the session holds, of every origin. */
   turnsTotal: number;
@@ -45,7 +46,7 @@ export interface ConversationProps {
  * turn's body is read. `?turn=` names the open turn, and a link to one opens the
  * outline around it.
  */
-export function Conversation({ projectId, sessionId, agent = null, contexts, turnsTotal, typedTotal, now }: ConversationProps) {
+export function Conversation({ projectId, sessionId, agent = null, contexts, learningAgedOut = false, turnsTotal, typedTotal, now }: ConversationProps) {
   const [params, setParams] = useSearchParams();
   const compact = useMediaQuery(COMPACT_QUERY);
   const wanted = params.get('turn');
@@ -167,7 +168,7 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
   return (
     <div className="grid items-start gap-s5 lg:grid-outline xl:gap-s8">
       {showRail && (
-        <TurnRail
+        <TurnRail learningAgedOut={learningAgedOut}
           ref={listRef}
           search={search}
           filter={filter}
@@ -187,7 +188,7 @@ export function Conversation({ projectId, sessionId, agent = null, contexts, tur
       {showReader && (
         <div ref={readerRef} tabIndex={-1} className="min-w-0 scroll-mt-s3 outline-none">
           {openTurn !== undefined ? (
-            <TurnReader
+            <TurnReader learningAgedOut={learningAgedOut}
               key={openTurn.promptId}
               projectId={projectId}
               sessionId={sessionId}

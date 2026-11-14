@@ -1,3 +1,4 @@
+import { learningAgedOutAt } from '../db/learning/state.js';
 import {
   hook_placement_listUnplacedHookRecords as listUnplacedHookRecords,
 } from '../read/catalog/hook-placement.js';
@@ -159,6 +160,7 @@ export async function handleSession(env: ServerEnv, ctx: OwnerContext): Promise<
   const [session] = nameOwnMachines([read], await ownMachineNames(env.db, ctx.member.id, ctx.now));
   const counters = await documentCounters(env.db, scope, sessionId);
   return ok({
+    learningAgedOutAt: await learningAgedOutAt(env.db, scope.projectId, sessionId),
     filesEdited: counters?.filesEdited ?? 0,
     turnContexts: await sessionTurnContexts(env.db, scope, sessionId),
     metrics: { tools: [], tokens: null, durationMs: await sessionDurationMs(env.db, scope, sessionId) },

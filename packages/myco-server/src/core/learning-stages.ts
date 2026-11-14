@@ -1,6 +1,7 @@
+import { learningRunAdmitted } from '../db/learning/admission.js';
 import { learningPolicies } from '../db/runs/pull-policy.js';
 import { learningWaiting } from '../db/learning/waiting.js';
-import { learningDue, learningHeadSession, learningReadyProjects, stageHead, stageOf } from '../db/learning/ready.js';
+import { learningDue, learningHeadSession, learningReadyProjects, stageHead } from '../db/learning/ready.js';
 import { sessionQuiet } from '../db/learning/progress.js';
 import { knowledgeRepositoryInput } from './knowledge-repository.js';
 /**
@@ -75,10 +76,12 @@ async function buildLearningInput(db: RelationalStore, projectId: string, sessio
 }
 
 /** A hand start of `extract-curate` learns the session it names, or the Project's freshest eligible one, regardless of budget. */
-export async function buildHandStartLearning(env: Pick<ServerEnv, 'db'>, projectId: string, now: number, params: Record<string, unknown>): Promise<TaskInput | null> {
+export async function buildHandStartLearning(env: Pick<ServerEnv, 'db'>, projectId: string, now: number, params: Record<string, unknown>, runId?: string): Promise<TaskInput | null> {
   const named = typeof params.session_id === 'string' && params.session_id !== '' ? params.session_id : null;
-  const session = named ?? await learningHeadSession(env.db, projectId, now, true) ?? await learningHeadSession(env.db, projectId, now, false);
-  return session === null ? null : buildLearningInput(env.db, projectId, session, now);
+  const session = named ?? await learningHeadSession(env.db, projectId, now);
+  if (session === null) return null;
+  if (runId !== undefined && !await learningRunAdmitted(env.db, { project: projectId, session, run: runId, now })) return null;
+  return buildLearningInput(env.db, projectId, session, now);
 }
 
 /** A card run's input: this session's turns due for a model, up to one run's budget, read from the catalog alone. */
@@ -98,14 +101,14 @@ export async function buildCardInput(env: Pick<ServerEnv, 'db'>, projectId: stri
  * just before this selection; the claim write reasserts the same predicate. Registering a stage adds no parameters to
  * the pulled write's level and fairness probes.
  */
-function learningStage(level: number, fresh: boolean): PulledStage {
+function learningStage(level: number): PulledStage {
   return {
-    level, task: EXTRACTION_TASK, policy:learningPolicies[1]![Number(fresh)]!, switchedOn: learningEnabledSql(!fresh),
-    due: (project, now) => ({ sql: learningDue('learning', fresh, project, String(Math.floor(now))), params: [] }),
-    candidates: learningReadyProjects('learning', fresh),
-    waiting: (db, scope) => learningWaiting(db, stageOf('learning', fresh), scope),
+    level, task: EXTRACTION_TASK, policy:learningPolicies[1]!, switchedOn: learningEnabledSql(),
+    due: (project, now) => ({ sql: learningDue('learning', project, String(Math.floor(now))), params: [] }),
+    candidates: learningReadyProjects('learning'),
+    waiting: (db, scope) => learningWaiting(db, 'learning', scope),
     head: async (db, projectId, now) => {
-      const row = await stageHead(db, stageOf('learning', fresh), projectId, now);
+      const row = await stageHead(db, 'learning', projectId, now);
       return row === null ? null : { projectId, subject: learningSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },
     build: (env, item, now) => buildLearningInput(env.db, item.projectId, item.key, now),
@@ -113,14 +116,14 @@ function learningStage(level: number, fresh: boolean): PulledStage {
   };
 }
 
-function cardStage(level: number, fresh: boolean): PulledStage {
+function cardStage(level: number): PulledStage {
   return {
-    level, task: CARD_TASK, policy:learningPolicies[0]![Number(fresh)]!, switchedOn: learningEnabledSql(!fresh),
-    due: (project, now) => ({ sql: learningDue('cards', fresh, project, String(Math.floor(now))), params: [] }),
-    candidates: learningReadyProjects('cards', fresh),
-    waiting: (db, scope) => learningWaiting(db, stageOf('cards', fresh), scope),
+    level, task: CARD_TASK, policy:learningPolicies[0]!, switchedOn: learningEnabledSql(),
+    due: (project, now) => ({ sql: learningDue('cards', project, String(Math.floor(now))), params: [] }),
+    candidates: learningReadyProjects('cards'),
+    waiting: (db, scope) => learningWaiting(db, 'cards', scope),
     head: async (db, projectId, now) => {
-      const row = await stageHead(db, stageOf('cards', fresh), projectId, now);
+      const row = await stageHead(db, 'cards', projectId, now);
       return row === null ? null : { projectId, subject: cardSubject(row.sessionId), key: row.sessionId, observed: row.observed };
     },
     build: (env, item, now) => buildCardInput(env, item.projectId, item.key, now),
@@ -129,13 +132,5 @@ function cardStage(level: number, fresh: boolean): PulledStage {
   };
 }
 
-/**
- * The learning stages by strict level. Fresh cards come before fresh learning, which needs them; history cards come
- * before history learning for the same reason. Digest and curation hold the levels between.
- */
-export const LEARNING_STAGES: readonly PulledStage[] = [
-  cardStage(0.5, true),
-  learningStage(1, true),
-  cardStage(3.5, false),
-  learningStage(4, false),
-];
+/** Cards precede the learning that consumes them. */
+export const LEARNING_STAGES: readonly PulledStage[] = [cardStage(0.5), learningStage(1)];

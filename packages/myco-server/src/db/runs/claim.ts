@@ -1,3 +1,4 @@
+import { learningClaimAdmission } from '../learning/admission.js';
 import { storedQueueHold } from './queue.js';
 import { CREDENTIAL_INSERT_SQL } from './claim-companions.js';
 import { observedRevisionPredicate } from '../settings/leaves.js';
@@ -489,9 +490,12 @@ const claimMemberAuthority = assertion<[token: string, now: number]>({ name: 'ru
 /** Authority and admission are asserted before any claim companion can commit. */
 export function workerClaimAssertions(form: ClaimForm, claim: WorkerClaim, admission: WriteAdmission): Bound[] {
   const { definition, authority } = claimBinding(form, claim, admission);
+  const session = quietSession(claim.input);
+  const candidate = form.kind === 'queued' ? form.candidate : form.pull;
   return [
     claim.worker.kind === 'runner' ? claimRunnerAuthority.bind(claim.worker.credentialId, claim.worker.runnerId) : claimMemberAuthority.bind(claim.worker.tokenId, claim.now),
     definition.guard.bind(...authority),
+    ...(session === null ? [] : [learningClaimAdmission.bind(candidate.projectId, session, candidate.id, claim.now)]),
   ];
 }
 

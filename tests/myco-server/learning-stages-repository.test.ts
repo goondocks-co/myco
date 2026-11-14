@@ -85,7 +85,7 @@ it('continues a learning attempt after unavailable source, preserving material a
 it('repairs card refusals through the next named call without losing assigned turns', async () => {
   await withDocumentStores(async db => {
     const keys = [uuid(1301),uuid(1302)];
-    const run = await cardRun(db,keys.map((id,index) => ({id,text:'Repair capture delivery '+index,at:10+index})));
+    const run = await cardRun(db,keys.map((id,index) => ({id,text:'Repair capture delivery '+index,at:NOW-DAY+10+index})));
     const unread = JSON.parse((await run.raw({op:'write',cards:[]})).content[0]!.text) as {error:string};
     expect(unread.error).toContain('Next call: myco_run_cards {"op":"material","page":1');
     const material = await run.material();

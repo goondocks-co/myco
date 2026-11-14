@@ -111,7 +111,6 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.run_retention_days': { type: 'integer', min: 1, max: 365 },
   'agent.scheduled_tasks_active_window_days': { type: 'integer', min: 0, max: 365 },
   'agent.scheduled_tasks_enabled': BOOLEAN_SPEC,
-  'agent.learning_history_enabled': BOOLEAN_SPEC,
   'agent.tasks': { type: 'task-overrides' },
   'agent.titling_idle_close_minutes': { type: 'integer', min: 5, max: 10_080 },
   'backup.auto_interval_hours': { type: 'integer', min: 1, max: 720 },
@@ -978,12 +977,6 @@ export function settingsWriter(
 export async function dailyBudget(db: RelationalStore): Promise<number> {
   const text=(await settingTexts(db,[BUDGET_LEAF])).get(BUDGET_LEAF);
   return text===undefined?BUDGET_DEFAULT_USD:JSON.parse(text) as number;
-}
-
-/** The history switch as the learning stages and settings surface both resolve it. */
-export async function learningHistoryEnabled(db: RelationalStore): Promise<boolean> {
-  const text = (await settingTexts(db, ['agent.learning_history_enabled'])).get('agent.learning_history_enabled');
-  return text !== undefined && JSON.parse(text) === true;
 }
 
 export const CURATION_DAILY_LIMIT_LEAF = CURATION_DAILY_LIMIT_SETTING.leaf;

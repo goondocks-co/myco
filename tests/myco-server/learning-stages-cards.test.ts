@@ -31,7 +31,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { cardsWrittenBy } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
-import { BLOBS, NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, cardRun, longTurn } from './helpers/learning-stages.ts';
+import { BLOBS, NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, cardRun, cardWorker, longTurn } from './helpers/learning-stages.ts';
 
 it('cards each turn once by code or model, keeps gotcha strings verbatim and learns them through a guarded slice', async () => {
   await withDocumentStores(async (db) => {
@@ -74,7 +74,7 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
     expect(await learningHolds(db, 'project', 'session')).toBe(false);
 
     // A record published later into a carded turn makes only that turn due again, and reaches its card input.
-    await capture(db, 'session', [{ id: uuid(1), text: 'Run the server tests', at: 10, tools: [{ name: 'Bash', input: { command: 'myco server repair --keep-capture' }, ok: false, error: 'EXACT_LATE_GOTCHA: capture lease refused' }] }]);
+    await capture(db, 'session', [{ id: uuid(1), text: 'Run the server tests', at: NOW - DAY + 10, tools: [{ name: 'Bash', input: { command: 'myco server repair --keep-capture' }, ok: false, error: 'EXACT_LATE_GOTCHA: capture lease refused' }] }]);
     await publish(db, due + HOUR, blobs);
     expect(await learningHolds(db, 'project', 'session')).toBe(false);
     const again = (await buildCardInput({ db }, 'project', 'session', due + HOUR))!;
@@ -89,21 +89,28 @@ it('cards each turn once by code or model, keeps gotcha strings verbatim and lea
 
 it('closes an all-mechanical session without a run and orders sessions newest first', async () => {
   await withDocumentStores(async (db) => {
-    await capture(db, 'quiet', [{ id: uuid(11), text: 'continue', at: 10 }, { id: uuid(12), text: 'check status', at: 20, tools: [{ name: 'TaskOutput', input: { id: 'x' } }] }]);
-    await capture(db, 'older', [{ id: uuid(21), text: 'Fix the flaky test', at: 30, replies: ['Fixed by awaiting the batch.'] }]);
-    await capture(db, 'newer', [{ id: uuid(31), text: 'Add the index', at: 40, replies: ['Added idx_turn_cards_due.'] }]);
-    const blobs = await ready(db);
+    const harness = await cardWorker(db);
+    await capture(db, 'quiet', [{ id: uuid(11), text: 'continue', at: NOW - DAY + 10 }, { id: uuid(12), text: 'check status', at: NOW - DAY + 20, tools: [{ name: 'TaskOutput', input: { id: 'x' } }] }]);
+    await capture(db, 'older', [{ id: uuid(21), text: 'Fix the flaky test', at: NOW - DAY + 30, replies: ['Fixed by awaiting the batch.'] }]);
+    await capture(db, 'newer', [{ id: uuid(31), text: 'Add the index', at: NOW - DAY + 40, replies: ['Added idx_turn_cards_due.'] }]);
+    const blobs = await publish(db, NOW, harness.bindings.BUCKET);
     expect(await buildCardInput({ db }, 'project', 'quiet', NOW + HOUR)).toBeNull();
     expect(await db.prepare(`SELECT last_completed_reason AS reason, eligible_at FROM learning_sessions WHERE session_id='quiet'`).first())
       .toEqual({ reason: 'no_signal', eligible_at: null });
     expect(await learningHolds(db, 'project', 'quiet')).toBe(false);
     await cardAll(db, blobs, 'older', NOW + HOUR);
     await cardAll(db, blobs, 'newer', NOW + 2 * HOUR);
-    expect(await learningHead(db, 'project', NOW + 3 * HOUR, false)).toBe('newer');
+    expect(await learningHead(db, 'project', NOW + 3 * HOUR)).toBe('newer');
     const status = await readLearningStatus(db, NOW + 3 * HOUR);
     expect(status).toMatchObject({ dueSessions: 2, dueCards: 2, turnsAwaitingCards: 0, lastCompleted: { reason: 'no_signal', sessionId: 'quiet' } });
     expect(learningStatusLine(status, { dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5 }, NOW + 120_000))
       .toBe('2 sessions ready to learn (2 summaries to learn from); 0 turns waiting to be summarized; last session closed with nothing to learn 2 min ago; spent $2.00 of $20.00 in the last 24 hours.');
+    const claim = await harness.poll(NOW + 3 * HOUR);
+    if (!claim.claimed) throw new Error('newest quiet session did not reach learning');
+    expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' })).toMatchObject({ session_id: 'newer' });
+    expect(await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'complete', handoff: '' })).toMatchObject({ completed: true, covered: 1 });
+    expect((await db.prepare("SELECT session_id,covered FROM turn_cards WHERE session_id IN ('older','newer') ORDER BY session_id").all()).results)
+      .toEqual([{ session_id: 'newer', covered: 1 }, { session_id: 'older', covered: 0 }]);
   });
 });
 
@@ -131,8 +138,8 @@ it('triages only mechanical turns by rule', () => {
 it('sends human requests and a turn whose failure comes after a hundred calls to the model, verbatim', async () => {
   await withDocumentStores(async (db) => {
     await capture(db, 'human', [
-      { id: uuid(70), text: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3; never retry a refused credential.', at: 10, replies: ['Set jobs.maxRetries to 3 and skipped refused credentials.'] },
-      { id: uuid(71), text: 'Repair capture', at: 20, tools: [
+      { id: uuid(70), text: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3; never retry a refused credential.', at: NOW - DAY + 10, replies: ['Set jobs.maxRetries to 3 and skipped refused credentials.'] },
+      { id: uuid(71), text: 'Repair capture', at: NOW - DAY + 20, tools: [
         ...Array.from({ length: 120 }, (_, i) => ({ name: 'Read', input: { file_path: `src/f${i}.ts` }, output: 'ok' })),
         { name: 'Bash', input: { command: 'myco server repair --keep-capture' }, ok: false, error: 'EXACT_GOTCHA_AT_121: capture lease refused' },
       ] },
@@ -152,7 +159,7 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     const bindings = { MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() };
     const env = serverEnvFromBindings(bindings as never, recordingDeferred());
     await capture(db, 'session', GOTCHAS);
-    await capture(db, 'quiet', [{ id: uuid(20), text: '<task-notification>done</task-notification>', at: 100, replies: ['Noted.'] }]);
+    await capture(db, 'quiet', [{ id: uuid(20), text: '<task-notification>done</task-notification>', at: NOW - DAY + 100, replies: ['Noted.'] }]);
     await db.prepare(enable).run();
     await publish(db, NOW, bindings.BUCKET);
     await db.prepare(`INSERT INTO deployment_settings(leaf,value,updated_at,updated_by) VALUES('agent.harnesses.claude-code.credential','"worker-login"',0,'test')`).run();
@@ -251,7 +258,7 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
 
 it('serves a card run\'s material in answers the harness holds whole, losing nothing', async () => {
   await withDocumentStores(async (db) => {
-    const run = await cardRun(db, [longTurn(uuid(30), 'a turn longer than one answer', 10, 24), { id: uuid(31), text: 'a short turn', at: 20, replies: ['Done.'] }]);
+    const run = await cardRun(db, [longTurn(uuid(30), 'a turn longer than one answer', NOW - DAY + 10, 24), { id: uuid(31), text: 'a short turn', at: NOW - DAY + 20, replies: ['Done.'] }]);
     const { inputs, revision, pages } = await run.readAll();
     expect(pages).toBeGreaterThan(1);
     for (let page = 1; page <= pages; page += 1) {
@@ -268,7 +275,7 @@ it('serves a card run\'s material in answers the harness holds whole, losing not
 it('refuses a card write until this attempt has read every page, and names the next one', async () => {
   await withDocumentStores(async (db) => {
     const key = uuid(30);
-    const run = await cardRun(db, [longTurn(key, '😀'.repeat(4_000), 10, 24)]);
+    const run = await cardRun(db, [longTurn(key, '😀'.repeat(4_000), NOW - DAY + 10, 24)]);
     const pendingCard = () => db.prepare(`SELECT state FROM turn_cards WHERE turn_key = ?`).bind(key).first();
     expect(await run.write([key])).toMatchObject({ ok: false, code: MATERIAL_UNREAD, next_page: 1 });
 
@@ -297,13 +304,13 @@ it('refuses a continuation when capture publishes between pages, and a restart r
   await withDocumentStores(async (db) => {
     const a = uuid(40);
     const b = uuid(41);
-    const run = await cardRun(db, [{ id: a, text: 'first turn', at: 10, replies: ['r'.repeat(1_000)] }, longTurn(b, 'second turn', 20, 16)]);
+    const run = await cardRun(db, [{ id: a, text: 'first turn', at: NOW - DAY + 10, replies: ['r'.repeat(1_000)] }, longTurn(b, 'second turn', 20, 16)]);
     const first = await run.material();
     const second = await run.material({ page: first.next_page!, revision: first.revision });
     expect(first.turns.map((turn) => turn.turn_key)).toEqual([a]);
     expect(second.turns[0]).toMatchObject({ turn_key: b, continues: true });
 
-    await capture(db, 'long', [{ id: uuid(42), text: '増'.repeat(8_000), at: 30, parent: a }, { id: uuid(43), text: '増'.repeat(8_000), at: 31, parent: a }]);
+    await capture(db, 'long', [{ id: uuid(42), text: '増'.repeat(8_000), at: NOW - DAY + 30, parent: a }, { id: uuid(43), text: '増'.repeat(8_000), at: NOW - DAY + 31, parent: a }]);
     await publish(db, NOW + DAY + 1, run.bindings.BUCKET);
 
     expect(await run.material({ page: second.next_page!, revision: second.revision })).toMatchObject({ ok: false, code: MATERIAL_CHANGED });

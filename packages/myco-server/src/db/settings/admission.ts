@@ -58,17 +58,11 @@ function taskEnabledSql(task: typeof EXTRACTION_TASK): string {
     AND CASE WHEN json_valid(value) THEN json_type(value, '$."${task}".enabled') = 'false' ELSE 0 END)`;
 }
 
-/** History learning requires an explicit Deployment opt-in; absence keeps it off. */
-export function learningHistoryEnabledSql(): string {
-  return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.learning_history_enabled'
-    AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)`;
-}
-
 /** The Deployment's automatic learning switch and per-task preference apply together. */
-export function learningEnabledSql(history = false): string {
+export function learningEnabledSql(): string {
   return `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = 'agent.scheduled_tasks_enabled'
       AND CASE WHEN json_valid(value) THEN json_type(value) = 'true' ELSE 0 END)
-    AND ${taskEnabledSql(EXTRACTION_TASK)}${history ? ` AND ${learningHistoryEnabledSql()}` : ''}`;
+    AND ${taskEnabledSql(EXTRACTION_TASK)}`;
 }
 
 /** The admitted effective value, evaluated by the automatic claim write. */

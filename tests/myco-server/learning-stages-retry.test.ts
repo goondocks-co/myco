@@ -121,7 +121,7 @@ it('backs failed card attempts off for one, six and then twenty-four hours, and 
   await withDocumentStores(async db => {
     const harness = await cardWorker(db);
     const turn = uuid(910);
-    await capture(db, 'retry-cards', [{ id: turn, text: 'Card work that can fail', at: 10 }]);
+    await capture(db, 'retry-cards', [{ id: turn, text: 'Card work that can fail', at: NOW - DAY + 10 }]);
     await publish(db, NOW, harness.bindings.BUCKET);
     let at = NOW;
     for (const [index, delay] of [HOUR, 6 * HOUR, DAY, DAY].entries()) {
@@ -149,7 +149,7 @@ it('backs failed card attempts off for one, six and then twenty-four hours, and 
     })).toEqual({ ended: true, status: 'completed' });
     expect(await db.prepare("SELECT card_failures,card_retry_at FROM learning_sessions WHERE session_id='retry-cards'").first())
       .toEqual({ card_failures: 0, card_retry_at: 0 });
-    await capture(db, 'retry-cards', [{ id: uuid(911), text: 'Another card after success', at: 20 }]);
+    await capture(db, 'retry-cards', [{ id: uuid(911), text: 'Another card after success', at: NOW - DAY + 20 }]);
     await publish(db, at + 2, harness.bindings.BUCKET);
     const again = await harness.poll(at + 2);
     if (!again.claimed) throw new Error('new cards not claimed after reset');
@@ -210,9 +210,9 @@ it('finishes escaped and multibyte cards through smaller revision-bound requests
 it('finishes a card run when every assigned turn changed after its material was served', async () => {
   await withDocumentStores(async db => {
     const turn = uuid(950);
-    const run = await cardRun(db, [{ id: turn, text: 'Fix the first material', at: 10 }]);
+    const run = await cardRun(db, [{ id: turn, text: 'Fix the first material', at: NOW - DAY + 10 }]);
     const { revision } = await run.readAll();
-    await capture(db, 'long', [{ id: turn, text: 'Fix the first material', at: 10, replies: ['A new finding changes this turn.'] }]);
+    await capture(db, 'long', [{ id: turn, text: 'Fix the first material', at: NOW - DAY + 10, replies: ['A new finding changes this turn.'] }]);
     await publish(db, NOW + DAY + 1, run.bindings.BUCKET);
     expect(JSON.parse((await run.raw({ op: 'write', revision, cards: [{ turns: [turn], signal: 'high', card: EMPTY_CARD }] })).content[0]!.text))
       .toEqual({ written: 0, changed_since_served: [turn] });
@@ -230,7 +230,7 @@ it('retires card credentials after lease expiry, stale sweep and a direct runtim
     for (const [index, mode] of ['lease', 'stale', 'runtime'].entries()) {
       const session = `crash-${mode}`;
       const at = NOW + DAY + index * 10;
-      await capture(db, session, [{ id: uuid(970 + index), text: 'Card this work before the runtime ends', at: 10 + index }]);
+      await capture(db, session, [{ id: uuid(970 + index), text: 'Card this work before the runtime ends', at: NOW - DAY + 10 + index }]);
       await publish(db, NOW, harness.bindings.BUCKET);
       const claim = await harness.poll(at);
       if (!claim.claimed) throw new Error('card run not claimed');
@@ -260,7 +260,7 @@ it('retires card credentials after lease expiry, stale sweep and a direct runtim
 
 it('finishes and retires an assigned pending turn that its material cannot serve', async () => {
   await withDocumentStores(async db => {
-    const run = await cardRun(db, [{ id: uuid(980), text: 'Keep the live turn intact', at: 10 }]);
+    const run = await cardRun(db, [{ id: uuid(980), text: 'Keep the live turn intact', at: NOW - DAY + 10 }]);
     const missing = uuid(981);
     await db.prepare("INSERT INTO turn_cards(project_id,session_id,turn_key,created_at,due_at) VALUES('project','long',?,10,?)").bind(missing, NOW).run();
     await db.prepare("UPDATE agent_runs SET run_context=json_set(run_context,'$.assignment.turns',json(?)) WHERE id=?")
@@ -275,77 +275,5 @@ it('finishes and retires an assigned pending turn that its material cannot serve
     expect(await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 }, {
       projectId: 'project', runId: run.claimed.run.id, attemptId: run.claimed.run.attemptId, status: 'completed',
     })).toEqual({ ended: true, status: 'completed' });
-  });
-});
-
-for (const outcome of ['cards-exhausted', 'learning-complete', 'learning-exhausted']) it(`keeps a fresh admission through four card attempts after source aging: ${outcome}`, async () => {
-  await withDocumentStores(async db => {
-    const succeeds = outcome !== 'cards-exhausted';
-    const harness = await cardWorker(db);
-    await settingsWriter(db).setLeaf('agent.learning_history_enabled', false, 'owner', NOW);
-    const turn = uuid(990);
-    await capture(db, 'fresh-retry', [{ id: turn, text: 'Keep retrying this initially fresh work', at: NOW }], 'project', NOW);
-    await db.prepare("UPDATE sessions SET ended_at=? WHERE session_id='fresh-retry'").bind(NOW).run();
-    await publish(db, NOW + HOUR / 2, harness.bindings.BUCKET);
-    let at = NOW + HOUR / 2;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      const claim = await harness.poll(at);
-      if (!claim.claimed) throw new Error(`fresh retry ${attempt + 1} was not claimed`);
-      expect(claim.run.task).toBe('turn-cards');
-      const material = await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'material' });
-      expect(material).toMatchObject({ session_id: 'fresh-retry' });
-      if (attempt === 3 && succeeds) {
-        expect(at).toBeGreaterThan(NOW + DAY);
-        expect(await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision,
-          cards: [{ turns: [turn], signal: 'high', card: EMPTY_CARD }] })).toMatchObject({ written: 1 });
-        await harness.call(claim.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'carded', audit: RUN_AUDIT });
-      }
-      expect(await endLeasedRun(harness.env, { principal: harness.principal, now: at + 1 }, {
-        projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId,
-        status: attempt === 3 && succeeds ? 'completed' : 'failed', error: attempt === 3 && succeeds ? undefined : 'model unavailable',
-      })).toMatchObject({ ended: true, status: attempt === 3 && succeeds ? 'completed' : 'failed' });
-      if (attempt < 3) {
-        const next = at + 1 + [HOUR, 6 * HOUR, DAY][attempt]!;
-        expect(await harness.poll(next - 1)).toMatchObject({ claimed: false });
-        at = next;
-      }
-    }
-    expect(await db.prepare("SELECT source_activity_at FROM learning_sessions WHERE session_id='fresh-retry'").first())
-      .toEqual({ source_activity_at: NOW });
-    if (!succeeds) {
-      expect(await harness.poll(at + DAY + 1)).toMatchObject({ claimed: false });
-      expect((await readLearningStatus(db, at + DAY + 1)).historyWaiting).toBe(1);
-      await settingsWriter(db).setLeaf('agent.learning_history_enabled', true, 'owner', at + DAY + 1);
-      expect(await harness.poll(at + DAY + 1)).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
-    } else {
-      const learning = await harness.poll(at + 2);
-      if (!learning.claimed) throw new Error('admitted session did not reach learning after its cards');
-      expect(learning.run.task).toBe('extract-curate');
-      expect((await readLearningStatus(db, at + 2)).historyWaiting).toBe(0);
-      if (outcome === 'learning-complete') {
-        await harness.call(learning.run.runToken, 'myco_run_learning', { op: 'material' });
-        expect(await harness.call(learning.run.runToken, 'myco_run_learning', { op: 'complete', handoff: '' })).toMatchObject({ completed: true, covered: 1 });
-        expect(await db.prepare("SELECT fresh_admitted FROM learning_sessions WHERE session_id='fresh-retry'").first()).toEqual({ fresh_admitted: 0 });
-      } else {
-        let claim = learning;
-        let learningAt = at + 2;
-        for (let attempt = 0; attempt < 4; attempt++) {
-          await harness.call(claim.run.runToken, 'myco_run_learning', { op: 'material' });
-          expect(await endLeasedRun(harness.env, { principal: harness.principal, now: learningAt + 1 }, {
-            projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', error: 'learning unavailable',
-          })).toMatchObject({ ended: true, status: 'failed' });
-          const retry = await db.prepare("SELECT eligible_at AS at FROM learning_sessions WHERE session_id='fresh-retry'").first<{ at: number }>();
-          learningAt = retry!.at;
-          const next = await harness.poll(learningAt);
-          if (attempt < 3) {
-            if (!next.claimed) throw new Error('admitted learning retry missed');
-            claim = next;
-          } else expect(next).toMatchObject({ claimed: false });
-        }
-        expect((await readLearningStatus(db, learningAt)).historyWaiting).toBe(1);
-        await settingsWriter(db).setLeaf('agent.learning_history_enabled', true, 'owner', learningAt);
-        expect(await harness.poll(learningAt)).toMatchObject({ claimed: true, run: { task: 'extract-curate' } });
-      }
-    }
   });
 });
