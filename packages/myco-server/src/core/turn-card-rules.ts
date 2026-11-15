@@ -15,6 +15,7 @@ interface TurnToolInput {
   input: string | null;
   output: string | null;
   success: boolean;
+  fileChanging?: boolean;
   errorMessage: string | null;
 }
 export interface TurnInput {
@@ -97,21 +98,9 @@ export function trimTurn(turn: TurnInput): TrimmedTurn {
     const routine = (kept || part.kept.length === 0) && part.routine.length > 0 && size(part.routine) <= routineRoom;
     if (routine) { routineRoom -= size(part.routine); lines.push(...part.routine); }
     if (!kept && !routine) counted.set(part.tool.toolName, (counted.get(part.tool.toolName) ?? 0) + 1);
-    const command = commandOf(part.tool);
-    const args = command ?? part.tool.input ?? '';
-    const heldArgs = command ?? (part.tool.input ?? '').replace(/\s+/g, ' ');
-    const commandOnly = command === null || part.tool.input === null || (() => {
-      try { return Object.keys(JSON.parse(part.tool.input)).every(key => key === 'command' || key === 'cmd'); }
-      catch { return true; }
-    })();
-    if (!commandOnly || args !== heldArgs || (!kept && part.kept.length > 0) || (!routine && part.routine.length > 0)
-      || args.length > (command !== null || failed(part.tool) ? B.commandChars : B.toolArgChars)
-      || (part.tool.errorMessage?.length ?? 0) > B.errorChars
-      || (part.tool.output !== null && trimResult(part.tool.output) !== part.tool.output)) complete = false;
   }
   if (counted.size > 0) lines.push(`TOOLS NOT LISTED: ${[...counted].map(([name, n]) => `${name}×${n}`).join(', ')}`);
   for (const plan of turn.plans) lines.push(`PLAN ${plan.title ?? plan.planKey} (${plan.status})`);
-  if (turn.plans.length > 0) complete = false;
   const rawChars = turn.prompt.length + turn.steering.reduce((n, s) => n + s.text.length, 0)
     + turn.replies.reduce((n, r) => n + r.text.length, 0)
     + turn.tools.reduce((n, t) => n + (t.input?.length ?? 0) + (t.output?.length ?? 0) + (t.errorMessage?.length ?? 0), 0)
@@ -153,27 +142,16 @@ function polling(tool: TurnToolInput): boolean {
   return command !== null && command.split(/&&|;|\|\|/).every((part) => POLLING_COMMAND.test(part));
 }
 
-/**
- * The declared triage rules, in order: the first that matches marks the turn `none` and names itself on the card.
- * A turn holding substantive replies, non-polling work, a failed call, a plan or a steering prompt reaches the model.
- */
-const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) => boolean }[] = [
-  {
-    name: 'no_human_text',
-    matches: (turn) => turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt),
-  },
-  {
-    name: 'polling_only',
-    matches: (turn) => turn.tools.length > 0 && turn.prompt.length <= POLLING_TEXT_CHARS && turn.tools.every(polling),
-  },
-];
+/** Reply characters a control or notification turn needs when no successful file edit is present. */
+export const CONTROL_REPLY_CHARS = 800;
 
-/** The rule that marks this turn `none`, or null when the turn needs a card from the model. */
+/** Only a successful file-changing call or a substantial reply admits a turn with no human request. */
 export function triageTurn(turn: TurnInput): string | null {
+  const replies = turn.replies.reduce((total, reply) => total + reply.text.length, 0);
+  const control = (turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt))
+    && turn.steering.every(prompt => noHumanText(prompt.text));
+  if (control)
+    return replies > CONTROL_REPLY_CHARS || turn.tools.some(tool => tool.success && tool.fileChanging === true) ? null : 'no_human_text';
   if (turn.steering.length > 0 || turn.plans.length > 0 || turn.tools.some(failed)) return null;
-  if (turn.tools.some(tool => !polling(tool)) || turn.replies.some(reply => {
-    const text = reply.text.trim();
-    return !noHumanText(text) && !/^(noted|done|waiting)\s*[.!]?$/i.test(text);
-  })) return null;
-  return TRIAGE_RULES.find((rule) => rule.matches(turn))?.name ?? null;
+  return turn.tools.length > 0 && turn.prompt.length + replies <= POLLING_TEXT_CHARS && turn.tools.every(polling) ? 'polling_only' : null;
 }

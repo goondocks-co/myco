@@ -183,13 +183,14 @@ function CodeLines({ lines }: { lines: readonly string[] }) {
 }
 
 /** What the turn's card says happened: laid out by part, or as written when it reads as no card. */
-function WhatHappened({ card, learningAgedOut }: { card: string | null | undefined; learningAgedOut: boolean }) {
+function WhatHappened({ card, learningAgedOut, partial }: { partial?: boolean; card: string | null | undefined; learningAgedOut: boolean }) {
   const parsed = card == null ? null : parseCard(card);
-  if (isMechanical(parsed?.done ?? card)) return null;
+  if (isMechanical(parsed?.done ?? card)) return partial ? <p>Written from part of the turn.</p> : null;
   let body: ReactNode;
   if (parsed !== null) {
     body = (
       <dl className="flex flex-col gap-s2">
+        {partial && <CardRow term="Read">Written from part of the turn.</CardRow>}
         <CardRow term="Done"><span className="whitespace-pre-wrap break-words">{parsed.done}</span></CardRow>
         {parsed.outcome !== '' && <CardRow term="Outcome"><span className="whitespace-pre-wrap break-words">{parsed.outcome}</span></CardRow>}
         {parsed.decisions.length > 0 && <CardRow term="Decided"><Pairs items={parsed.decisions} render={reasoned} /></CardRow>}
@@ -354,7 +355,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
           <TurnPages projectId={projectId} sessionId={sessionId} promptId={turn.promptId} collection="attachments" initial={read.attachments} cursor={read.cursors?.attachments} rowKey={(row) => row.attachmentId} label="attachments">
             {(rows) => <Attachments projectId={projectId} attachments={rows} />}
           </TurnPages>
-          {!isMechanical(turn.headline) && <WhatHappened learningAgedOut={learningAgedOut} card={read.card} />}
+          {(!isMechanical(turn.headline) || read.cardPartial) && <WhatHappened learningAgedOut={learningAgedOut} partial={read.cardPartial} card={read.card} />}
           <TurnContent projectId={projectId} sessionId={sessionId} promptId={turn.promptId} agent={agent} contexts={contexts} body={read} total={turn.toolCallCount} failed={turn.failedTools} rollup={turn.toolRollup ?? null} held={{ replies: turn.responseCount, children: turn.childCount, plans: turn.planCount }} />
         </>}
       </ReadState>

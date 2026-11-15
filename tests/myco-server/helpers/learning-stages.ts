@@ -184,7 +184,7 @@ export async function cardRun(db: RelationalStore, turns: readonly Turn[]) {
     for (;;) {
       for (const turn of answer.turns) {
         inputs.set(turn.turn_key, (inputs.get(turn.turn_key) ?? '') + turn.input);
-        if (turn.complete === false) incomplete.add(turn.turn_key);
+        if (turn.complete === false && turn.partial_reason === undefined) incomplete.add(turn.turn_key);
       }
       if (answer.next_page === undefined) {
         for (const key of incomplete) await readSource(key);

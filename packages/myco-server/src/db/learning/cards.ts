@@ -24,6 +24,7 @@ const documentLive = assertion<[project: string, session: string]>({
 
 /** A card's model or settlement output, as stored. */
 export interface StoredCard {
+  partialReason?: string | null;
   headline: string; marks: string; card: string; fields: string | null;
   signal: string; reason: string; sharedWith: string | null;
   /** The coverage a reused card carries, or null to keep it unless the input changed. */
@@ -34,11 +35,11 @@ export interface StoredCard {
 export interface CardMaterialColumns { records: string; inputChars: number; rawChars: number }
 
 const writeCard = write<[records: string | null, inputChars: number | null, rawChars: number | null, headline: string, marks: string, card: string, fields: string | null, signal: string, reason: string, sharedWith: string | null,
-  coveredKnown: number | null, covered: number, runId: string | null, model: string | null, now: number, project: string, session: string, turn: string, changes: number], { turn_key: string }>({
+  coveredKnown: number | null, covered: number, runId: string | null, model: string | null, now: number, project: string, session: string, turn: string, changes: number, partialReason: string | null], { turn_key: string }>({
   name: 'learningCards.write', sql: `UPDATE turn_cards SET state='carded',due_at=NULL,settle_at=NULL,
     records=COALESCE(?1,records),input_chars=COALESCE(?2,input_chars),raw_chars=COALESCE(?3,raw_chars),
     headline=?4,marks=?5,card=?6,fields=?7,signal=?8,signal_reason=?9,shared_with=?10,
-    covered=CASE WHEN ?8='none' THEN 1 WHEN ?11 IS NOT NULL THEN ?12 WHEN input_hash IS ${LIVE_HASH} THEN covered ELSE 0 END,
+    partial_reason=COALESCE(?20,partial_reason),covered=CASE WHEN ?11 IS NOT NULL THEN ?12 WHEN COALESCE(?20,partial_reason) IS NOT NULL THEN 0 WHEN ?8='none' THEN 1 WHEN input_hash IS ${LIVE_HASH} THEN covered ELSE 0 END,
     input_hash=${LIVE_HASH},run_id=?13,model=?14,carded_at=?15
     WHERE project_id=?16 AND session_id=?17 AND turn_key=?18 AND state='pending' AND changes=?19 AND ${LIVE_HASH} IS NOT NULL
     RETURNING turn_key` });
@@ -47,7 +48,7 @@ const writeCard = write<[records: string | null, inputChars: number | null, rawC
 export function writeCardStatement(project: string, session: string, turn: DueTurn, card: StoredCard, now: number, material?: CardMaterialColumns): Bound<{ turn_key: string }, 'write'> {
   return writeCard.bind(material?.records ?? null, material?.inputChars ?? null, material?.rawChars ?? null,
     card.headline, card.marks, card.card, card.fields, card.signal, card.reason, card.sharedWith,
-    card.covered === null ? null : 1, card.covered ? 1 : 0, card.runId, card.model, now, project, session, turn.turnKey, turn.changes);
+    card.covered === null ? null : 1, card.covered ? 1 : 0, card.runId, card.model, now, project, session, turn.turnKey, turn.changes, card.partialReason ?? null);
 }
 
 const forget = write<[project: string, session: string, turn: string, changes: number], { turn_key: string }>({
@@ -68,9 +69,9 @@ export async function commitCardWrites<const Statements extends readonly Bound[]
   return results;
 }
 
-interface ReusableRow { turnKey: string; card: string; fields: string | null; signal: string; reason: string; covered: number; headline: string | null; marks: string | null }
+interface ReusableRow { partialReason: string | null; turnKey: string; card: string; fields: string | null; signal: string; reason: string; covered: number; headline: string | null; marks: string | null }
 const reusable = read<[project: string, session: string, turn: string], ReusableRow>({
-  name: 'learningCards.reusable', sql: `SELECT c.turn_key AS turnKey,c.card,c.fields,c.signal,c.signal_reason AS reason,c.covered,c.headline,c.marks FROM turn_cards c INDEXED BY idx_turn_cards_reuse
+  name: 'learningCards.reusable', sql: `SELECT c.partial_reason AS partialReason,c.turn_key AS turnKey,c.card,c.fields,c.signal,c.signal_reason AS reason,c.covered,c.headline,c.marks FROM turn_cards c INDEXED BY idx_turn_cards_reuse
     WHERE c.project_id=?1 AND c.session_id=?2 AND c.card IS NOT NULL AND c.input_hash=(SELECT sp.input_hash FROM session_prompts sp
       JOIN session_documents d ON d.project_id=sp.project_id AND d.session_id=sp.session_id AND d.generation=sp.generation AND d.state='live'
       WHERE sp.project_id=?1 AND sp.session_id=?2 AND sp.prompt_id=?3)

@@ -1773,7 +1773,7 @@ describe('the session reading page', () => {
         })])),
         [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
           prompt: { promptId: P1, origin: 'user', text: 'Build it.', blobKey: null, createdAt: NOW }, responses: [{ responseId: 'a', text: 'Earlier word', blobKey: null, createdAt: NOW }, { responseId: 'b', text: 'Last word', blobKey: null, createdAt: NOW }], attachments: [], plans: [], children: [], injection: null,
-          card, toolCounts: { total: 1204, shown: 300 },
+          card, cardPartial: true, toolCounts: { total: 1204, shown: 300 },
           tools: { complete: false, total: 300, failed: 1, byTool: [], failures: [failure], files: ['a.ts', 'b.ts', 'c.ts'], filesNamed: 9, myco: [] },
         }),
       }));
@@ -1782,6 +1782,7 @@ describe('the session reading page', () => {
       for (const mark of ['Decision', 'Rejected', 'Corrected', 'Fixed', 'Open question', '41 failed', 'Myco 20', '1,204 calls']) expect(row.textContent).toContain(mark);
       const reader = await screen.findByTestId(`turn-${P1}`);
       const happened = await within(reader).findByTestId('what-happened');
+      expect(within(happened).getByText('Written from part of the turn.')).toBeTruthy();
       for (const words of ['Implemented the sweep.', 'Off by default.', 'A sweep deletes data', 'Counts rows', 'Sums bytes', 'src/card-file.ts', 'src/other, named.ts', 'npm test -- sweep', 'Pause the whole sweep?']) expect(happened.textContent).toContain(words);
       expect(within(reader).getByText('Key moment')).toBeTruthy();
       expect(within(reader).getByText('Last word')).toBeTruthy();

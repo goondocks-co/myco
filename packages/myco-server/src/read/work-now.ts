@@ -248,7 +248,7 @@ async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly Wo
   const projectId = 'projectId' in scope ? scope.projectId : null;
   const learning = await readLearningStatus(env.db, now, projectId === null ? undefined : { projectId });
   const learningLive = [...live].some((key) => key.endsWith(`\u0000${EXTRACTION_TASK}`) || key.endsWith(`\u0000${CARD_TASK}`));
-  if (!learningLive && (learning.dueSessions > 0 || learning.turnsAwaitingCards > 0)) {
+  if (!learningLive && (learning.dueSessions > 0 || learning.turnsAwaitingCards > 0 || learning.partialTurns > 0)) {
     const task = learning.turnsAwaitingCards > 0 ? CARD_TASK : EXTRACTION_TASK;
     const waits = await fleetWaits(env, [task], now, includeSignIn, fleet);
     const reason = [...waits.values()][0]?.reason;

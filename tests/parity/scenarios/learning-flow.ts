@@ -122,5 +122,5 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
 export const learningFlow: ParityScenario = {
   name: 'learning: verbatim failure becomes a session-citing spore and daily spend stops the next claim',
   dedicated: { timeoutMs: 180_000 },
-  run: target => runLearningFlow(target, fetch, repairReply(12_000)),
+  run: target => runLearningFlow(target),
 };

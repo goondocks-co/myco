@@ -68,6 +68,7 @@ interface PromptAnswer {
   selection: Record<string, number>;
 }
 export interface DocumentTurnDetail {
+  cardPartial?: boolean;
   card: string | null;
   prompt: PromptWireRow;
   responses: ResponseWireRow[];
@@ -283,6 +284,7 @@ export async function documentTurnDetail(env: ContentStore, scope: ReadScope, se
     const shown = toolSummary(records.filter(({ record }) => record.k === 'tool'), whole, catalog?.agent ?? null, calls);
     const rollup = catalog?.tool_rollup == null ? null : JSON.parse(catalog.tool_rollup) as ToolRollup;
     body.toolCounts = { total: catalog?.tools ?? shown.total, shown: shown.total };
+    if (catalog?.partial_reason != null) body.cardPartial = true;
     body.card = catalog?.fields ?? catalog?.card ?? null;
     body.tools = rollup === null ? shown : { ...shown, total: catalog!.tools, failed: catalog!.failed_tools,
       filesNamed: catalog!.files_named, byTool: rollup.tools.map(row => ({ toolName: row.name, count: row.count })) };

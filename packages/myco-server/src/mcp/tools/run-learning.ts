@@ -42,7 +42,7 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
   const scope = { projectId: ctx.projectId };
   const cards = await assignedCards(db, ctx.projectId, held.sessionId, held.assignment);
   if (input.op === 'material') {
-    const entries: LearningMaterial[] = cards.map((card) => ({ turn_key: card.turnKey, signal: card.signal, card: card.card }));
+    const entries: LearningMaterial[] = cards.map((card) => ({ turn_key: card.turnKey, signal: card.signal, card: card.card, ...(card.partial ? { partial: true as const } : {}) }));
     const opening = {
       handoff: held.assignment.handoff,
       more_slices: held.assignment.more,

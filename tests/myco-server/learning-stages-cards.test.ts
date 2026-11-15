@@ -12,6 +12,11 @@ import { MATERIAL_CHANGED, MATERIAL_UNREAD, materialRead } from '@myco-server-wo
 import { RUN_ANSWER_BYTES } from '@myco-server-worker/core/read-window.js';
 import { trimTurn, triageTurn } from '@myco-server-worker/core/turn-card-rules.js';
 import { buildLearningAssignment, assignedCards, completeLearning, readLearningStatus, learningStatusLine } from '@myco-server-worker/core/learning-sessions.js';
+import { liveChunk } from '@myco-server-worker/db/documents/live-document.js';
+import { documentTurnDetail } from '@myco-server-worker/content/session-turns.js';
+import { SessionDocument } from '@myco-server-worker/content/session-pages.js';
+import { DOCUMENT_PAGE_BYTES } from '@myco-server-worker/content/document.js';
+import { TURN_SOURCE_MAX_BYTES, TURN_SOURCE_FAILURE_LIMIT } from '@myco-server-worker/core/turn-source.js';
 import { documentTurnInput } from '@myco-server-worker/content/turn-material.js';
 import { buildCardInput } from '@myco-server-worker/core/learning-stages.js';
 import { recordServedPrompts } from '@myco-server-worker/db/runs/served.js';
@@ -35,7 +40,7 @@ import { cardsWrittenBy } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
 import { BLOBS, NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, EMPTY_CARD, cardRun, cardWorker, longTurn } from './helpers/learning-stages.ts';
 
-const withDocumentStores = documentFileStores(16);
+const withDocumentStores = documentFileStores(24);
 beforeAll(async () => { schemaSqlite().close(); await schemaD1Root(); });
 afterAll(() => withDocumentStores.close());
 
@@ -128,8 +133,9 @@ it('triages only mechanical turns by rule', () => {
   expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\n<task-notification><status>done</status></task-notification>' }))).toBe('no_human_text');
   expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\nPin bun to 1.4.0 in .bun-version' }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3.' }))).toBeNull();
-  expect(triageTurn(turn({ prompt: 'continue', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"npm test"}', output: 'boom', success: false, errorMessage: 'exit 1' }] }))).toBeNull();
+  expect(triageTurn(turn({ prompt: 'continue', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"npm test"}', output: 'boom', success: false, errorMessage: 'exit 1' }] }))).toBe('no_human_text');
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && sleep 30"}', output: '', success: true, errorMessage: null }] }))).toBe('polling_only');
+  expect(triageTurn(turn({ prompt: 'wait for CI', replies: [{ responseId: 'r', text: 'CI is still running; I will check again.' }], tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12"}', output: '', success: true, errorMessage: null }] }))).toBe('polling_only');
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && git push"}', output: '', success: true, errorMessage: null }] }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'continue', steering: [{ promptId: 's', text: 'no, stop' }] }))).toBeNull();
 
@@ -308,8 +314,6 @@ it('refuses a card write until this attempt has read every page, and names the n
 
     const last = await run.material({ page: 3, revision: first.revision });
     expect(last.next_page).toBeUndefined();
-    expect(await run.write([key])).toMatchObject({ code: MATERIAL_UNREAD });
-    await run.readSource(key);
     expect(await run.write([key])).toEqual({ written: 1, changed_since_served: [] });
     expect(await pendingCard()).toEqual({ state: 'carded' });
   });
@@ -382,54 +386,117 @@ it('cards a continue turn with successful edits and a substantive decision', asy
   await withDocumentStores(async db => {
     const key = uuid(801);
     const run = await cardRun(db, [{ id: key, text: 'continue', at: NOW - DAY,
-      replies: ['Keep the guard in the writer because callers race.'], tools: [{ name: 'Edit', input: { path: 'capture.ts', replacement: 'guarded write' } }] }]);
+      replies: ['Keep the guard in the writer because callers race.'], tools: [{ name: 'Edit', input: { file_path: 'capture.ts', replacement: 'guarded write' } }] },
+      { id: uuid(800), text: 'continue', at: NOW - DAY + 1, replies: ['Read the file.'], tools: [{ name: 'Read', input: { file_path: 'capture.ts' } }] }]);
     const { inputs } = await run.readAll();
     expect(inputs.get(key)).toContain('Keep the guard in the writer because callers race.');
+    expect(inputs.has(uuid(800))).toBe(false);
     expect(await run.write([key])).toMatchObject({ written: 1 });
   });
 });
 
-it('requires every source page and spilled body before publishing a complete card', async () => {
+it('reads clipped human text by continuation and keeps reads stable during unrelated session activity', async () => {
   await withDocumentStores(async db => {
     const key = uuid(802);
-    const run = await cardRun(db, [{ id: key, text: '😀'.repeat(80_000) + 'PROMPT_BODY_END', at: NOW - DAY,
-      replies: Array.from({ length: 6 }, (_, page) => 'x'.repeat(page === 0 ? 300_000 : 220_000)
-        + (page === 0 ? 'REPLY_BODY_END' : '') + (page === 4 ? 'CORRECTION_FOURTH_PAGE: preserve history.' : '')),
-      tools: [{ name: 'Edit', input: { replacement: 'y'.repeat(300_000) + 'TOOL_BODY_END' } }] }]);
-    let material = await run.material();
+    const run = await cardRun(db, [{ id: key, text: '😀'.repeat(18_000) + 'PROMPT_BODY_END', at: NOW - DAY,
+      replies: ['r'.repeat(20_000) + 'REPLY_BODY_END'] }]);
+    const material = await run.material();
     expect(material.turns[0]).toMatchObject({ complete: false });
-    while (material.next_page !== undefined) material = await run.material({ page: material.next_page, revision: material.revision });
-    expect(await run.write([key])).toMatchObject({ code: MATERIAL_UNREAD });
     const first = JSON.parse((await run.raw({ op: 'get', turn_key: key })).content[0]!.text);
-    expect(await run.write([key])).toMatchObject({ code: MATERIAL_UNREAD });
-    const raw = await run.readSource(key);
-    expect(raw).not.toContain('�');
-    for (const exact of ['PROMPT_BODY_END', 'REPLY_BODY_END', 'CORRECTION_FOURTH_PAGE: preserve history.', 'TOOL_BODY_END']) expect(raw).toContain(exact);
-    const correction = /CORRECTION_FOURTH_PAGE: preserve history\./.exec(raw)![0];
-    expect(JSON.parse((await run.raw({ op: 'write', cards: [{ turns: [key], signal: 'high',
-      card: { ...EMPTY_CARD, corrections: [{ wrong: '', right: correction }] } }] })).content[0]!.text)).toMatchObject({ written: 1 });
-    expect((await db.prepare('SELECT card FROM turn_cards WHERE turn_key=?').bind(key).first<{ card: string }>())!.card).toContain(correction);
-    await capture(db, 'long', [{ id: key, text: '😀'.repeat(80_000) + 'PROMPT_BODY_END', at: NOW - DAY, replies: ['LATE_CORRECTION: retain the original history.'] }]);
+    await capture(db, 'long', [{ id: uuid(820), text: 'A different turn', at: NOW - DAY + 100 }]);
     await publish(db, NOW + DAY + HOUR, run.bindings.BUCKET);
-    const stale = JSON.parse((await run.raw({ op: 'get', turn_key: key, cursor: first.next_cursor })).content[0]!.text);
-    expect(stale).toMatchObject({ code: MATERIAL_CHANGED, error: expect.stringContaining('Next call: myco_run_cards {"op":"material","page":1}') });
-    expect(await db.prepare('SELECT state,covered FROM turn_cards WHERE turn_key=?').bind(key).first()).toEqual({ state: 'pending', covered: 0 });
-    await run.material();
-    expect(JSON.parse((await run.raw({ op: 'get', turn_key: key })).content[0]!.text)).toMatchObject({ complete: false });
+    let cursor = first.next_cursor, raw = first.raw;
+    while (cursor) {
+      const part = JSON.parse((await run.raw({ op: 'get', turn_key: key, cursor })).content[0]!.text);
+      raw += part.raw; cursor = part.next_cursor;
+    }
+    expect(raw).toContain('PROMPT_BODY_END'); expect(raw).toContain('REPLY_BODY_END'); expect(raw).not.toContain('�');
+    expect(await run.write([key])).toMatchObject({ written: 1 });
   });
 });
 
-it('records an unfinished source read as a failed run and leaves the card pending', async () => {
+it('cards a turn above the read cap as visibly partial and lets its session learn', async () => {
+  await withDocumentStores(async db => {
+    const key = uuid(805);
+    const body = 'x'.repeat(DOCUMENT_PAGE_BYTES + 1);
+    const run = await cardRun(db, [{ id: key, text: 'Read this full turn', at: NOW - DAY,
+      replies: [body] }]);
+    const material = await run.material();
+    expect(material.turns[0]).toMatchObject({ partial_reason: 'source_cap' });
+    expect(await run.write([key])).toMatchObject({ written: 1 });
+    const status = await readLearningStatus(db, NOW + DAY, { projectId: 'project' });
+    expect(status.partialTurns).toBe(1);
+    expect(learningStatusLine(status, null)).toContain('1 turn summarized from only part of the turn');
+    expect((await documentTurnDetail(run.env, { projectId: 'project' }, 'long', key))?.cardPartial).toBe(true);
+    const duplicate = uuid(815);
+    await capture(db, 'long', [{ id: duplicate, text: 'Read this full turn', at: NOW - DAY + 100, replies: [body] }]);
+    await publish(db, NOW + DAY + HOUR, run.bindings.BUCKET);
+    expect((await documentTurnDetail(run.env, { projectId: 'project' }, 'long', duplicate))?.cardPartial).toBe(true);
+    const assignment = await buildLearningAssignment(db, 'project', 'long');
+    expect(assignment?.turns.map(turn => turn.turnKey)).toEqual([key, duplicate]);
+    await capture(db, 'long', [{ id: duplicate, text: 'Read this full turn', at: NOW - DAY + 100 }], 'project', NOW + DAY + HOUR);
+    await publish(db, NOW + DAY + 2 * HOUR, run.bindings.BUCKET);
+    expect(await buildCardInput({ db }, 'project', 'long', NOW + DAY + 3 * HOUR)).toBeNull();
+    const different = uuid(816);
+    await capture(db, 'long', [{ id: different, text: 'Read this full turn', at: NOW - DAY + 200, replies: [`${body.slice(0, -1)}y`] }]);
+    await publish(db, NOW + DAY + 4 * HOUR, run.bindings.BUCKET);
+    expect(await buildCardInput({ db }, 'project', 'long', NOW + DAY + 5 * HOUR)).toMatchObject({ counts: { turns: 1 } });
+  });
+});
+
+it('admits 63 complete turns and refuses only the unread turn', async () => {
+  await withDocumentStores(async db => {
+    const key = uuid(806), turns = [{ id: key, text: 'Read the whole reply', at: NOW - DAY, replies: ['r'.repeat(100_000)] },
+      ...Array.from({ length: 63 }, (_, n) => ({ id: uuid(9000 + n), text: 'A short ordinary request', at: NOW - DAY + n + 1,
+        tools: [{ name: 'Bash', input: { command: 'npm test', description: 'Run tests' }, output: n === 0 ? 'ok'.repeat(1_000) : 'ok' }] }))];
+    const harness = await cardWorker(db);
+    await capture(db, 'many', turns);
+    await publish(db, NOW, harness.bindings.BUCKET);
+    await publish(db, NOW + 1, harness.bindings.BUCKET);
+    const claim = await harness.poll(NOW + DAY);
+    if (!claim.claimed) throw new Error('No card run');
+    let material = await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'material' });
+    while (material.next_page) material = await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'material', page: material.next_page, revision: material.revision });
+    expect(await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision,
+      cards: turns.map(turn => ({ turns: [turn.id], signal: 'low', card: EMPTY_CARD })) })).toMatchObject({ written: 63, refused: [{ turns: [key], code: MATERIAL_UNREAD }] });
+  });
+});
+
+it('refuses an absent stored body by name and accepts the excerpt as a partial card', async () => {
+  await withDocumentStores(async db => {
+    const key = uuid(807);
+    const run = await cardRun(db, [{ id: key, text: 'x'.repeat(300_000), at: NOW - DAY }]);
+    await run.material();
+    const page = (await (await SessionDocument.open(run.env, 'project', 'long'))!.ownerPages(key, 0, 1)).pages[0]!;
+    const ref = page.records.find(record => record.id === key)!.bodies!.text!;
+    const row = await liveChunk(db, { project: 'project', session: 'long', generation: 1 }, ref.chunk);
+    await run.env.blobs.delete(row!.object_key!);
+    expect(JSON.parse((await run.raw({ op: 'get', turn_key: key })).content[0]!.text)).toMatchObject({ code: 'source_body_unavailable' });
+    expect(await run.write([key])).toMatchObject({ written: 1 });
+    expect((await readLearningStatus(db, NOW, { projectId: 'project' })).partialTurns).toBe(1);
+  });
+});
+
+it('keeps a second unfinished read retryable and uses a partial card after three failed runs', async () => {
   await withDocumentStores(async db => {
     const key = uuid(803);
-    const run = await cardRun(db, [longTurn(key, 'Finish within the run deadline', NOW - DAY, 24)]);
-    let page = await run.material();
-    while (page.next_page) page = await run.material({ page: page.next_page, revision: page.revision });
-    await run.raw({ op: 'get', turn_key: key });
-    await run.harness.call(run.claimed.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'Deadline reached with unread turn source.' });
-    expect(await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 },
-      { projectId: 'project', runId: run.claimed.run.id, attemptId: run.claimed.run.attemptId, status: 'completed' })).toMatchObject({ status: 'failed' });
-    expect(await db.prepare('SELECT state,covered FROM turn_cards WHERE turn_key=?').bind(key).first()).toEqual({ state: 'pending', covered: 0 });
-    expect(await getRun(db, { projectId: 'project' }, run.claimed.run.id)).toMatchObject({ status: 'failed', error: expect.any(String) });
+    const run = await cardRun(db, [{ id: key, text: 'Read a long reply', at: NOW - DAY, replies: ['r'.repeat(100_000)] }]);
+    let claim = run.claimed, at = NOW + DAY;
+    for (let failed = 0; failed < TURN_SOURCE_FAILURE_LIMIT; failed++) {
+      const material = await run.harness.call(claim.run.runToken, 'myco_run_cards', { op: 'material' });
+      expect((material.turns as CardMaterial[])[0]!.partial_reason).toBeUndefined();
+      await run.harness.call(claim.run.runToken, 'myco_run_cards', { op: 'get', turn_key: key });
+      await endLeasedRun(run.env, { principal: run.principal, now: at + 1 },
+        { projectId: 'project', runId: claim.run.id, attemptId: claim.run.attemptId, status: 'failed', error: 'Read unfinished' });
+      at += [HOUR, 6 * HOUR, DAY][failed]! + 1;
+      const next = await run.harness.poll(at);
+      if (!next.claimed) throw new Error('Retry was not offered');
+      claim = next;
+    }
+    const material = await run.harness.call(claim.run.runToken, 'myco_run_cards', { op: 'material' });
+    expect((material.turns as CardMaterial[])[0]).toMatchObject({ partial_reason: 'read_failed' });
+    expect(await run.harness.call(claim.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision,
+      cards: [{ turns: [key], signal: 'low', card: EMPTY_CARD }] })).toMatchObject({ written: 1 });
+    expect(await buildLearningAssignment(db, 'project', 'long')).not.toBeNull();
   });
 });

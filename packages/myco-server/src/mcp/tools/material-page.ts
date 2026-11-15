@@ -1,4 +1,3 @@
-import { turnSourceUnread } from './turn-source.js';
 import type { RequiredTurnSource } from '../../core/turn-source.js';
 import { runRefusal } from '../../core/run-tool-contract.js';
 import { assignmentOf } from '../../db/run-context.js';
@@ -25,11 +24,11 @@ const unreadRefusal = (run: RunPrincipal, nextPage: number, revision: string | u
 });
 
 /** The refusal of a write ahead of the pages served, or null once this attempt has read every page of the last revision it started. */
-export function materialUnread(run: RunPrincipal): ReturnType<typeof unreadRefusal> | ReturnType<typeof turnSourceUnread> {
+export function materialUnread(run: RunPrincipal): ReturnType<typeof unreadRefusal> | null {
   const read = materialRead(run.runContext, run.tokenId);
   if (read !== null && read.sources === undefined) return unreadRefusal(run, 1, undefined);
   return read === null || read.through < read.pages ? unreadRefusal(run, (read?.through ?? 0) + 1, read?.revision)
-    : turnSourceUnread(run, materialTool(run), read.sources, read.unavailable);
+    : null;
 }
 
 /**
