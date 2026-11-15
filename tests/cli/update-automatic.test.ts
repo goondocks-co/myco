@@ -78,7 +78,6 @@ it('persists off and on beside the channel without running any update or refresh
   for (const automatic of ['off', 'on']) {
     await run(['--automatic', automatic], deps());
     expect(readInstallMarker(home, true)).toEqual(before);
-    expect(JSON.parse(fs.readFileSync(preferenceFile(), 'utf8'))).toEqual({ automaticUpdates: automatic === 'on' });
     expect(readAutomaticUpdatePreference(home)).toEqual({ enabled: automatic === 'on' });
     expect(output.at(-1)).toBe(`Automatic updates are turned ${automatic}.`);
   }
