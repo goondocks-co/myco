@@ -424,7 +424,7 @@ describe('the read window binds on the MCP path', () => {
     const forRun = (await call(harness.token, 'myco_run_sessions', { op: 'list' }) as any).result.sessions.map((s: any) => s.id);
     expect(forRun).not.toContain('sess_degraded');
     const forMember = await call(member.token, 'myco_sessions', { op: 'list' }) as any;
-    expect((forMember.result as Array<{ id: string }>).map((s) => s.id)).toContain('sess_degraded');
+    expect((forMember.result.sessions as Array<{ id: string }>).map((s) => s.id)).toContain('sess_degraded');
   });
 });
 

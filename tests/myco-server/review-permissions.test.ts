@@ -181,8 +181,9 @@ test('external reads and filters withhold grant identity and human session label
     await f.post('/events', envelope());
     for (const args of [{ op: 'list' }, { op: 'get', id: 'sess_1' }]) {
       const result = await f.rpc(grant.key, 'myco_sessions', args);
-      const row = Array.isArray(result) ? result[0] : result;
+      const row = args.op === 'list' ? result.sessions[0] : result;
       expect(row.user).toBeNull();
+      expect(row).not.toHaveProperty('turns');
     }
     expect(await f.rpc(grant.key, 'myco_sessions', { op: 'list', user: 'machine_2' })).toMatchObject({ ok: false });
     const own = await f.rpc(f.token.token, 'myco_sessions', { op: 'get', id: 'sess_1' });

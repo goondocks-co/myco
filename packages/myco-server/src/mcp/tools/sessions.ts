@@ -91,9 +91,11 @@ async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
       return await documentTurnDetail(ctx.env, scope, id, promptId) ?? failure('Turn not found; call myco_sessions with op get and id to list its turns.');
     }
     if (cursor !== undefined && decodeCursor(cursor) === null) return failure('Invalid cursor; call myco_sessions with op get and id without cursor to list its turns.');
-    const turns = await listCatalogTurns(db, scope, id, { origins: PROMPT_ORIGINS, limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT, cursor });
+    const turns = ctx.principal.kind === 'grant' ? undefined : await listCatalogTurns(db, scope, id, {
+      origins: PROMPT_ORIGINS, limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT, cursor,
+    });
     const counts = await sessionCounts(db, scope, id);
-    return { ...summary(row, counts), counts, turns, release: await getReleaseStatus(db, scope, 'session', id) };
+    return { ...summary(row, counts), counts, ...(turns === undefined ? {} : { turns }), release: await getReleaseStatus(db, scope, 'session', id) };
   }
 
   let sessionId: string | undefined;
