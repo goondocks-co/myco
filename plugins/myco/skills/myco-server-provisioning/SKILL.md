@@ -90,7 +90,7 @@ To build it by hand: `npx tsx packages/myco/scripts/gen-worker-bundle.ts`. It bu
 
 ## The free-tier rule
 
-The Deployment is meant to run on the Workers free plan. **Containers are a paid surface** (`Free: N/A` in Cloudflare's pricing), which is why the harness container was removed and why the free tier became reachable. Durable Objects are on the free plan only with the **SQLite** backend, which is what `new_sqlite_classes` gives.
+The Deployment uses only Cloudflare surfaces that need no paid add-on. Myco makes no claim about which Workers plan a Deployment fits: its usage decides that. **Containers are a paid surface** (`Free: N/A` in Cloudflare's pricing), which is why the harness container was removed. Durable Objects are on the free plan only with the **SQLite** backend, which is what `new_sqlite_classes` gives.
 
 Before adding any table to `wrangler.toml`, add it to `FREE_TIER_SURFACES` (`packages/myco/src/server/deploy-config.ts`). The gate holds in both directions over the committed base and the rendered config, so an unlisted surface fails by name rather than at an operator's first bill, and a retired one cannot sit in the list granting silent permission to a future one.
 
