@@ -9,6 +9,8 @@ import { runLaunchPreamble } from '../cli/launch-preamble.js';
 import { recordStartingJob } from '../runtime/spawn-detached.js';
 import { parseCredentialFlag } from '../member/credential.js';
 import { readSymbiontFlag } from './symbiont-flag.js';
+import { recordRefusedHook } from '../member/refused-hooks.js';
+import { resolveMycoHome } from '../paths/home.js';
 import type { HookMainOptions } from '../member/capture.js';
 
 type HookModule = { main: (opts: HookMainOptions) => Promise<void> };
@@ -39,17 +41,20 @@ export const isHookName = (name: string): name is HookName => Object.hasOwn(HOOK
 
 /**
  * Run `myco hook <name> [flags]`: anchor the process to the harness's project and honour its runtime pin, then run the
- * named hook with the credential source its command declares. Unknown harness hooks are ignored; a bare unknown name
- * exits 1 and names the hooks there are.
+ * named hook with the credential source its command declares. Unhandled harness hooks are counted and ignored;
+ * a bare unknown name exits 1 and names the hooks there are.
  */
 export async function runHook(args: readonly string[], deps: { preamble?: typeof runLaunchPreamble } = {}): Promise<void> {
   const hookName = args[0] ?? '';
-  if (!isHookName(hookName) && readSymbiontFlag(args) !== undefined) return;
   // Before anything is spawned, the preamble's runtime-pin re-exec included: what a helper started from this hook can
   // outlive depends on the job it began in.
   recordStartingJob();
   (deps.preamble ?? runLaunchPreamble)('hook', [...args]);
   if (!isHookName(hookName)) {
+    if (readSymbiontFlag(args) !== undefined) {
+      recordRefusedHook('unknown-hook', { mycoHome: resolveMycoHome({ cwd: process.cwd() }), now: Date.now(), hook: hookName });
+      return;
+    }
     console.error(`Unknown hook: ${hookName}. Available: ${Object.keys(HOOK_DISPATCH).join(', ')}`);
     process.exit(1);
   }

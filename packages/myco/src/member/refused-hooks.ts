@@ -1,8 +1,7 @@
 /**
- * The record a hook leaves when its own command refuses it: one that names no harness (`--symbiont`, or a harness no
- * manifest knows) or declares no credential source (`--credential`). Either prints one stderr line and exits 0, so the
- * harness reports success and nothing is captured; the refusal is also counted here, under the home the hook resolved,
- * and `myco member status` and `myco doctor` read the count back.
+ * The record a hook leaves when its own command refuses it: a missing harness, a missing credential source, or an
+ * unknown hook name. These refusals exit 0; `myco member status` and `myco doctor` report their counts under the home
+ * the hook resolved.
  *
  * One file per kind under `<MYCO_HOME>/member/refused-hooks/`, in the member's private store. Counting is best-effort:
  * racing hooks may merge to one increment, and a write that fails never costs the hook. A record not added to in
@@ -17,9 +16,9 @@ export const REFUSED_HOOK_VERSION = 1;
 /** How long a kind of refusal is reported after its last one. */
 export const REFUSED_HOOK_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Why a hook's own command refused it: it names no harness, or no credential source. */
-export type RefusedHookKind = 'no-harness' | 'no-credential';
-export const REFUSED_HOOK_KINDS: readonly RefusedHookKind[] = ['no-harness', 'no-credential'];
+/** Why a hook's own command refused it. */
+export const REFUSED_HOOK_KINDS = ['no-harness', 'no-credential', 'unknown-hook'] as const;
+export type RefusedHookKind = typeof REFUSED_HOOK_KINDS[number];
 
 export interface RefusedHookRecord {
   version: number;
@@ -77,8 +76,10 @@ export function readRefusedHook(kind: RefusedHookKind, mycoHome: string, now: nu
 
 /** What a refusal kind means, in the words status and doctor use. */
 export function refusedHookWords(record: RefusedHookRecord): string {
-  const what = record.kind === 'no-harness'
-    ? 'named no harness Myco knows (`--symbiont <harness>`)'
-    : 'declared no credential source (`--credential registry|env`)';
-  return `${record.count} hook invocation(s) on this machine ${what}, so captured nothing`;
+  const reasons: Record<RefusedHookKind, string> = {
+    'no-harness': 'named no harness Myco knows (`--symbiont <harness>`)',
+    'no-credential': 'declared no credential source (`--credential registry|env`)',
+    'unknown-hook': 'named an unknown hook',
+  };
+  return `${record.count} hook invocation(s) on this machine ${reasons[record.kind]}, so captured nothing`;
 }
