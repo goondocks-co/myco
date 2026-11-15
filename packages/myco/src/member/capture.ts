@@ -294,6 +294,7 @@ export async function runMemberHook(
     response = outcome.response ?? {};
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     let claimed: HookClaim | undefined;
+    let transcriptWork = false;
     const ask = (): ContextAskRequest | undefined => claimed?.ask ?? outcome.ask;
     const record = outcome.events.length > 0 || outcome.record || outcome.ask || outcome.claim || outcome.respond ? (state: SessionState) => {
       state.agent ??= input.agent;
@@ -301,6 +302,7 @@ export async function runMemberHook(
       // A session id that hooks again after its end has resumed: its transcript waits on turn ends once more.
       if (hookName !== 'session-end') delete state.endedAt;
       outcome.record?.(state);
+      transcriptWork = state.promptBackfill !== undefined;
       const asked = ask();
       if (asked) state.contextAsks = withAsk(state.contextAsks, asked);
     } : undefined;
@@ -379,7 +381,7 @@ export async function runMemberHook(
         if (outcome.ends !== undefined && shipsInline(kicked)) await shipInline(run, opts, appended);
       }
     };
-    if (appendedEvents.length > 0 || ask() !== undefined || outcome.ends !== undefined || outcome.respond !== undefined) await deliver(appendedEvents);
+    if (appendedEvents.length > 0 || ask() !== undefined || outcome.ends !== undefined || outcome.respond !== undefined || transcriptWork) await deliver(appendedEvents);
 
     if (pending === null && outcome.respond !== undefined) {
       try {

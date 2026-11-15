@@ -20,8 +20,8 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
   it.skipIf(tty && process.platform === 'win32')(`${operation} exits after its capture summary with ${stalled ? 'stalled' : 'responsive'} backlog (${tty ? 'TTY' : 'pipe'})`, async () => {
     const isSetup = operation.startsWith('setup');
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-login-exit-'));
-    const env = sandboxChildEnv(home);
-    for (const dir of [env.CODEX_HOME!, env.CLAUDE_CONFIG_DIR!, path.join(home, '.codeium/windsurf')]) fs.mkdirSync(dir, { recursive: true });
+    const env = sandboxChildEnv(home, { PATH: [path.dirname(process.execPath), ...(process.platform === 'win32' ? [path.join(process.env.SystemRoot!, 'System32')] : ['/usr/bin', '/bin'])].join(path.delimiter) });
+    for (const dir of [env.CODEX_HOME!, env.CLAUDE_CONFIG_DIR!]) fs.mkdirSync(dir, { recursive: true });
     const e = sqliteEnv();
     e.sqlite.run("UPDATE members SET role = 'admin', github_id = '770001' WHERE id = 'mem_machine_2'");
     const deployment = createServer({ now: Date.now, sourceOf: () => '192.0.2.10', fetchImpl: () => { throw new Error('unexpected outbound request'); } });
@@ -103,7 +103,7 @@ for (const [operation, tty, stalled] of [['login', false, true], ['login', true,
     let timer: ReturnType<typeof setTimeout>;
     const capture = (chunk: Buffer) => {
       output += chunk.toString();
-      if (summaryAt === undefined && output.includes(operation === 'setup-new' ? `Connected ${root}` : !isSetup ? 'Skipped Windsurf:' : 'Checking waiting capture')) {
+      if (summaryAt === undefined && output.includes(operation === 'setup-new' ? `Connected ${root}` : !isSetup ? 'Capture is set up for Claude Code, Codex.' : 'Checking waiting capture')) {
         summaryAt = Date.now();
         clearTimeout(timer);
         timer = setTimeout(() => child.kill(tty ? 'SIGTERM' : 'SIGKILL'), operation !== 'setup' ? (stalled ? EXIT_WINDOW_MS : 2_000) : 8_000);

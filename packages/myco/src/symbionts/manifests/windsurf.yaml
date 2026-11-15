@@ -2,10 +2,9 @@ name: windsurf
 displayName: Windsurf
 binary: windsurf
 health:
-  installLocations: ["~/.codeium/windsurf", "/Applications/Windsurf.app", "~/Applications/Windsurf.app"]
+  installLocations: ["/Applications/Windsurf.app", "~/Applications/Windsurf.app"]
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .windsurf
-detectionDir: ~/.codeium/windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
 projectDirEnvVar: WINDSURF_PROJECT_DIR
 hookFields:
@@ -44,8 +43,10 @@ registration:
   # NOT required for the hook command to execute — confirmed live on a
   # wrapped file with no `show_output`.
   globalMcpTarget: ~/.codeium/windsurf/mcp_config.json
-  skillsTarget: .windsurf/skills
-  globalSkillsTarget: ~/.codeium/windsurf/skills
+  skillsTarget: .agents/skills
+  globalSkillsTarget: ~/.agents/skills
+  retiredGlobalSkillsTargets:
+    - ~/.codeium/windsurf/skills
   settingsTarget: null
   globalSettingsTarget: null
 capabilities:

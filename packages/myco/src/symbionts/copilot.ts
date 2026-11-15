@@ -15,7 +15,7 @@ export const copilotAdapter: SymbiontAdapter = {
     prompt: 'prompt',
     toolName: ['tool_name', 'toolName'],
     toolInput: ['tool_input', 'toolArgs'],
-    toolOutput: ['tool_response', 'toolResult'],
+    toolOutput: ['tool_result', 'tool_response', 'toolResult'],
   },
 
   findTranscript: (sessionId) => findTranscriptFor('copilot', sessionId),

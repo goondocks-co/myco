@@ -52,7 +52,7 @@ export const SESSION_FIELD_RULES = {
   contextAsks: 'context', renderedAsk: 'context',
   hookAt: 'lifecycle', endedAt: 'lifecycle',
   promptId: 'targetElseSource', agent: 'targetElseSource', promptBackfill: 'targetElseSource',
-  startSettled: 'or', startedAt: 'min', planTagCount: 'max', compactionOrdinal: 'max',
+  startSettled: 'or', sessionStartRecorded: 'or', startedAt: 'min', planTagCount: 'max', compactionOrdinal: 'max',
   // Report instants: shown, never used to order anything.
   lastAckAt: 'max', lastAccountedAt: 'max', lastDeliveryAt: 'max',
   prompts: 'union', planHashes: 'union', pastedPlans: 'union', planPaths: 'union', attachmentKeys: 'union',

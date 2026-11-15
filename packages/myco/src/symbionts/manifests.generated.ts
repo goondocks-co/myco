@@ -14,13 +14,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "displayName": "Google Antigravity",
     "binary": "agy",
     "configDir": ".agents/plugins/myco",
-    "detectionDir": "~/.gemini",
     "health": {
-      "installLocations": [
-        "~/.gemini",
-        "/Applications/Antigravity.app",
-        "~/Applications/Antigravity.app"
-      ],
+      "installLocations": [],
       "activityLocations": [
         {
           "kind": "file",
@@ -71,7 +66,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "hooksTarget": ".agents/hooks.json",
       "memberHooksTarget": ".agents/hooks.json",
       "hooksRootKey": "myco",
-      "memberCaptureLimits": "Prompts and replies come from the transcript; no prompt-time or tool-time memory hook. Earlier transcripts need project attribution.",
+      "memberCaptureLimits": "Prompts and replies come from the transcript; PreInvocation prompt memory is not wired; no tool-time memory output. Earlier transcripts need project attribution.",
       "globalHooksTarget": "~/.gemini/config/hooks.json",
       "globalMcpTarget": [
         {
@@ -96,6 +91,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
@@ -669,6 +665,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -1214,6 +1211,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -1583,6 +1581,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -1902,11 +1901,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "displayName": "GitHub Copilot",
     "binary": "copilot",
     "configDir": ".copilot",
-    "detectionDir": "~/.copilot",
     "health": {
-      "installLocations": [
-        "~/.copilot"
-      ],
+      "installLocations": [],
       "activityLocations": [
         {
           "kind": "file",
@@ -1938,6 +1934,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "toolArgs"
       ],
       "toolOutput": [
+        "tool_result",
         "tool_response",
         "toolResult"
       ]
@@ -1961,7 +1958,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "registration": {
       "hooksTarget": ".github/hooks/myco-hooks.json",
       "memberHooksTarget": ".github/hooks/myco-hooks.json",
-      "memberCaptureLimits": "Prompt hooks cannot inject; memory arrives after a tool. Earlier transcripts need project attribution.",
+      "memberCaptureLimits": "Prompt-hook injection is unverified; registry memory arrives after a tool. Earlier transcripts need project attribution.",
       "globalHooksTarget": "~/.copilot/hooks/myco-hooks.json",
       "globalMcpTarget": [
         {
@@ -2003,6 +2000,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -2358,6 +2356,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": true,
       "promptRecallToolDelivery": false,
@@ -2731,6 +2730,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -3137,6 +3137,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -3254,10 +3255,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "displayName": "Windsurf",
     "binary": "windsurf",
     "configDir": ".windsurf",
-    "detectionDir": "~/.codeium/windsurf",
     "health": {
       "installLocations": [
-        "~/.codeium/windsurf",
         "/Applications/Windsurf.app",
         "~/Applications/Windsurf.app"
       ],
@@ -3307,18 +3306,22 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "path": "~/.codeium/windsurf/mcp_config.json"
         }
       ],
-      "globalSkillsTarget": "~/.codeium/windsurf/skills",
+      "globalSkillsTarget": "~/.agents/skills",
+      "retiredGlobalSkillsTargets": [
+        "~/.codeium/windsurf/skills"
+      ],
       "globalSettingsTarget": null,
       "hooksFormat": "json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
-      "skillsTarget": ".windsurf/skills",
+      "skillsTarget": ".agents/skills",
       "settingsTarget": null,
       "settingsFormat": "json"
     },
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": false,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,

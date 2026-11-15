@@ -276,37 +276,57 @@ describe('myco cutover', () => {
     expect(fs.existsSync(path.join(plugin, 'plugin.json'))).toBe(false);
   });
 
-  it('removes 1.4 from agents 2.0 does not capture and from every place 1.4.8 wrote, keeping the person\'s own entries', async () => {
+  it('reconnects supported harnesses and removes their retired 1.4 registrations while keeping user entries', async () => {
     const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
+    const oldMcp = { type: 'stdio', command: legacyBin, args: ['mcp'] };
+    const mine = { command: 'mine' };
+    const ownHook = { command: 'echo mine' };
     const copilotHooks = path.join(m.home, '.copilot', 'hooks', 'myco-hooks.json');
     const copilotMcp = path.join(m.home, '.copilot', 'mcp-config.json');
     const vscodeMcp = path.join(m.home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json');
+    const projectMcp = path.join(m.root, '.vscode', 'mcp.json');
     const clinePlugin = path.join(m.home, '.cline', 'plugins', 'myco.ts');
-    writeJson(copilotHooks, { version: 1, hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${legacyBin} hook session-start --symbiont copilot --myco-managed` }] }] } });
-    writeJson(copilotMcp, { mcpServers: { myco: { type: 'stdio', command: legacyBin, args: ['mcp'] }, mine: { command: 'mine' } } });
+    const agyPlugin = path.join(m.home, '.gemini', 'config', 'plugins', 'myco');
+    const agyHooks = path.join(m.home, '.gemini', 'config', 'hooks.json');
+    const agyMcp = path.join(m.home, '.gemini', 'config', 'mcp_config.json');
+    const windsurfHooks = path.join(m.home, '.codeium', 'windsurf', 'hooks.json');
+    const windsurfMcp = path.join(m.home, '.codeium', 'windsurf', 'mcp_config.json');
+    writeJson(copilotHooks, { version: 1, hooks: { SessionStart: [ownHook, { command: `${legacyBin} hook session-start --symbiont copilot --myco-managed` }] } });
+    for (const file of [copilotMcp, path.join(agyPlugin, 'mcp_config.json'), windsurfMcp]) writeJson(file, { mcpServers: { myco: oldMcp, mine } });
     fs.chmodSync(copilotMcp, 0o640);
-    writeJson(vscodeMcp, { servers: { myco: { type: 'stdio', command: legacyBin, args: ['mcp'] } } });
+    writeJson(vscodeMcp, { servers: { myco: oldMcp, mine } });
+    writeJson(projectMcp, { mcpServers: { myco: oldMcp, mine } });
+    writeJson(path.join(agyPlugin, 'hooks.json'), { myco: { Stop: [{ command: `${legacyBin} hook stop --symbiont antigravity --myco-managed` }] } });
+    writeJson(path.join(agyPlugin, 'plugin.json'), { name: 'myco' });
+    writeJson(agyHooks, { lint: { Stop: [ownHook] } });
+    writeJson(windsurfHooks, { hooks: { pre_user_prompt: [ownHook, { command: `${legacyBin} hook user-prompt-submit --symbiont windsurf --myco-managed` }] } });
     fs.mkdirSync(path.dirname(clinePlugin), { recursive: true });
     fs.writeFileSync(clinePlugin, '// myco:plugin-marker — Myco owns this file\nexport default {};\n');
-    // 1.4.8 wrote Claude Code's MCP entry into settings.json; 2.0 writes ~/.claude.json.
-    writeJson(settingsFile(), { ...readJson(settingsFile()), mcpServers: { myco: { type: 'stdio', command: legacyBin, args: ['mcp'] } } });
-
-    const dry = await m.run(['--dry-run']);
+    writeJson(settingsFile(), { ...readJson(settingsFile()), mcpServers: { myco: oldMcp } });
+    const installed = { agents: ['claude-code', 'copilot', 'antigravity', 'windsurf'] };
+    const dry = await m.run(['--dry-run'], installed);
     expect(dry.ok).toBe(true);
-    expect(dry.out.join('\n')).toContain(`GitHub Copilot: would remove the \`myco\` MCP entry from ${copilotMcp}; GitHub Copilot is no longer captured by Myco 2.0`);
+    expect(dry.out.join('\n')).toContain(`GitHub Copilot: would remove the \`myco\` MCP entry from ${vscodeMcp}`);
+    expect(readJson(vscodeMcp).servers).toEqual({ myco: oldMcp, mine });
 
-    const result = await m.run();
+    const result = await m.run([], installed);
     expect(result.err).toEqual([]);
     expect(result.ok).toBe(true);
-    const said = result.out.join('\n');
-    expect(said).toContain(`GitHub Copilot: removed 1 1.4 hook from ${copilotHooks}; GitHub Copilot is no longer captured by Myco 2.0`);
-    expect(said).toContain(`Cline: removed ${clinePlugin}`);
-    expect(said).not.toContain('Cline is no longer captured');
-    expect(hookCommands(readJson(copilotHooks).hooks)).toEqual([]);
-    expect(readJson(copilotMcp).mcpServers).toEqual({ mine: { command: 'mine' } });
+    expect(result.out.join('\n')).not.toContain('is no longer captured');
+    expect(hookCommands(readJson(copilotHooks).hooks)).toContain('echo mine');
+    expect(hookCommands(readJson(copilotHooks).hooks).some(command => command.includes(CREDENTIAL_FLAG + ' registry'))).toBe(true);
+    for (const file of [copilotMcp, agyMcp, windsurfMcp]) expect(readJson(file)).toMatchObject({ mcpServers: { myco: { args: ['mcp', CREDENTIAL_FLAG, 'registry'] } } });
+    expect(readJson(copilotMcp)).toMatchObject({ mcpServers: { mine } });
     expect(fs.statSync(copilotMcp).mode & 0o777).toBe(0o640);
     expect(backupsOf(copilotMcp)).toHaveLength(1);
-    expect(readJson(vscodeMcp).servers).toEqual({});
+    expect(readJson(vscodeMcp).servers).toEqual({ mine });
+    expect(readJson(projectMcp).mcpServers).toEqual({ mine });
+    expect(readJson(agyHooks).lint).toEqual({ Stop: [ownHook] });
+    expect(fs.existsSync(path.join(agyPlugin, 'hooks.json'))).toBe(false);
+    expect(fs.existsSync(path.join(agyPlugin, 'plugin.json'))).toBe(false);
+    expect(readJson(path.join(agyPlugin, 'mcp_config.json')).mcpServers).toEqual({ mine });
+    expect(readJson(windsurfHooks)).toMatchObject({ hooks: { pre_user_prompt: expect.arrayContaining([ownHook]) } });
+    expect(readJson(windsurfMcp)).toMatchObject({ mcpServers: { mine } });
     expect(fs.existsSync(clinePlugin)).toBe(false);
     expect(backupsOf(clinePlugin)).toHaveLength(1);
     expect(readJson(settingsFile()).mcpServers).toEqual({});

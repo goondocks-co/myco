@@ -1529,6 +1529,7 @@ export class SymbiontInstaller {
       settings[this.hooksRootKey] = kept;
     } else {
       delete settings[this.hooksRootKey];
+      if (Object.keys(settings).length === 1 && settings.version === this.manifest.registration?.hooksConfigVersion) delete settings.version;
     }
     this.writeMemberJson(targetPath, settings, this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined);
     return true;

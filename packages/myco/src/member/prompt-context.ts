@@ -79,7 +79,7 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
   const started = Date.now();
   const original = readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id];
   if (original === undefined) return { events: [], claim: () => ({ events: [] }) };
-  if (HOOK_CONFIG[run.agent]?.capabilities.promptSubmitInjection === false) {
+  if (run.credentialSource === 'registry' && HOOK_CONFIG[run.agent]?.capabilities.promptSubmitInjection === false) {
     return { events: [], claim: () => ({ events: [], response: {} }) };
   }
   const capMs = promptContextCapMs(original);
@@ -106,7 +106,12 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
       return { events: [], response: { ...response, recallPending: true } };
     }
     if (held.stage === 'pending') held.stage = 'discarded';
-    return consumePromptRecall(run, state, { id, response, delivery: 'inline' });
+    const rendered = consumePromptRecall(run, state, { id, response, delivery: 'inline' });
+    if (run.credentialSource === 'env' && held.stage === 'discarded') {
+      held.request.text = '';
+      if (held.answer?.receiptId === undefined) delete state.promptRecall!.asks[id];
+    }
+    return rendered;
   } };
 }
 

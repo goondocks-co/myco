@@ -2,10 +2,9 @@ name: copilot
 displayName: GitHub Copilot
 binary: copilot
 health:
-  installLocations: ["~/.copilot"]
+  installLocations: []
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .copilot
-detectionDir: ~/.copilot
 pluginRootEnvVar: COPILOT_PLUGIN_ROOT
 # PascalCase hook registrations select Copilot CLI's compatible snake_case payload.
 # https://docs.github.com/en/copilot/reference/hooks-reference
@@ -16,7 +15,7 @@ hookFields:
   prompt: prompt
   toolName: [tool_name, toolName]
   toolInput: [tool_input, toolArgs]
-  toolOutput: [tool_response, toolResult]
+  toolOutput: [tool_result, tool_response, toolResult]
 capture:
   # One directory per session, holding an events log.
   transcriptDiscovery:
@@ -31,7 +30,7 @@ registration:
   hooksConfigVersion: 1
   mcpTarget: .mcp.json
   globalMcpTarget: ~/.copilot/mcp-config.json
-  memberCaptureLimits: "Prompt hooks cannot inject; memory arrives after a tool. Earlier transcripts need project attribution."
+  memberCaptureLimits: "Prompt-hook injection is unverified; registry memory arrives after a tool. Earlier transcripts need project attribution."
   skillsTarget: .agents/skills
   globalSkillsTarget: ~/.agents/skills
   retiredGlobalSkillsTargets:

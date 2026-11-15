@@ -5,6 +5,7 @@ import path from 'node:path';
 import { run as logoutCli } from '@myco/cli/logout.js';
 import { run as memberCli } from '@myco/cli/member.js';
 import { normalizeHookInput } from '@myco/hooks/normalize.js';
+import { detectedProvisionLines, provisionDetectedAgents } from '@myco/cli/member.js';
 import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
@@ -32,7 +33,7 @@ afterEach(() => {
 const targets = [
   { name: 'copilot', hooks: '.copilot/hooks/myco-hooks.json', mcp: '.copilot/mcp-config.json', skills: '.agents/skills', key: 'hooks', event: 'SessionStart' },
   { name: 'antigravity', hooks: '.gemini/config/hooks.json', mcp: '.gemini/config/mcp_config.json', skills: '.gemini/config/skills', key: 'myco', event: 'SessionStart' },
-  { name: 'windsurf', hooks: '.codeium/windsurf/hooks.json', mcp: '.codeium/windsurf/mcp_config.json', skills: '.codeium/windsurf/skills', key: 'hooks', event: 'pre_user_prompt' },
+  { name: 'windsurf', hooks: '.codeium/windsurf/hooks.json', mcp: '.codeium/windsurf/mcp_config.json', skills: '.agents/skills', key: 'hooks', event: 'pre_user_prompt' },
 ];
 const read = (file: string) => JSON.parse(fs.readFileSync(path.join(home, file), 'utf8'));
 const write = (file: string, value: unknown) => {
@@ -75,9 +76,9 @@ it('normalizes vendor hook payloads without inventing unavailable fields', () =>
   // Inputs from https://docs.github.com/en/copilot/reference/hooks-reference#posttooluse--posttooluse
   process.argv = ['bun', 'myco', '--symbiont', 'copilot'];
   expect(normalizeHookInput({ session_id: 'c1', cwd: '/workspace', tool_name: 'view',
-    tool_input: { path: 'README.md' }, tool_response: { textResultForLlm: 'read' } }))
+    tool_input: { path: 'README.md' }, tool_result: { result_type: 'success', text_result_for_llm: 'read' } }))
     .toMatchObject({ agent: 'copilot', sessionId: 'c1', toolName: 'view',
-      toolInput: { path: 'README.md' }, toolOutput: { textResultForLlm: 'read' } });
+      toolInput: { path: 'README.md' }, toolOutput: { result_type: 'success', text_result_for_llm: 'read' } });
   // https://antigravity.google/docs/hooks#posttooluse
   process.argv = ['bun', 'myco', '--symbiont', 'antigravity'];
   const antigravity = normalizeHookInput({ conversationId: 'a1', workspacePaths: ['/workspace'],
@@ -106,4 +107,41 @@ it('retains shared skills for another member and removes all owned skills on the
     expect(fs.existsSync(path.join(home, target.skills, 'myco'))).toBe(false);
   }
   expect(readProvisionRecord(mycoHome)).toBeNull();
+});
+
+
+it('does not enroll absent harnesses from configuration directories alone', () => {
+  const previousPath = process.env.PATH;
+  process.env.PATH = process.platform === 'win32' ? process.env.SystemRoot + '\\System32' : '/usr/bin:/bin';
+  try {
+    for (const dir of ['.claude', '.codex', '.copilot', '.gemini', '.codeium/windsurf']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    const found = provisionDetectedAgents(mycoHome, 'https://myco.example', null);
+    expect(detectedProvisionLines(found)).toEqual(['Capture is set up for Claude Code, Codex.']);
+    expect(readProvisionRecord(mycoHome)?.agents).toEqual(['claude-code', 'codex']);
+    for (const target of targets) {
+      expect(fs.existsSync(path.join(home, target.hooks))).toBe(false);
+      expect(fs.existsSync(path.join(home, target.mcp))).toBe(false);
+    }
+  } finally { process.env.PATH = previousPath; }
+});
+
+it('removes a Myco-only Copilot hooks file completely', async () => {
+  const deps = { cwd: scratch, mycoHome, env: {}, stdout: () => {}, stderr: () => {} };
+  await memberCli(['provision', 'copilot', '--server', 'https://myco.example'], deps);
+  expect(fs.existsSync(path.join(home, targets[0]!.hooks))).toBe(true);
+  await memberCli(['provision', '--remove', 'copilot'], deps);
+  expect(fs.existsSync(path.join(home, targets[0]!.hooks))).toBe(false);
+});
+
+it('keeps shared skills when the provision record and destination cannot be read', async () => {
+  const deps = { cwd: scratch, mycoHome, env: {}, stdout: () => {}, stderr: () => {} };
+  await memberCli(['provision', 'codex', '--server', 'https://myco.example'], deps);
+  await memberCli(['provision', 'copilot', '--server', 'https://myco.example'], deps);
+  const { provisionRecordPath } = await import('@myco/symbionts/member-provision-record.js');
+  fs.writeFileSync(provisionRecordPath(mycoHome), '{torn');
+  fs.rmSync(path.join(mycoHome, 'member', 'deployments'), { recursive: true, force: true });
+  fs.rmSync(path.join(mycoHome, 'member', 'registry'), { recursive: true, force: true });
+  await memberCli(['provision', '--remove', 'copilot'], deps);
+  expect(fs.existsSync(path.join(home, '.agents/skills/myco/SKILL.md'))).toBe(true);
+  expect(fs.readFileSync(provisionRecordPath(mycoHome), 'utf8')).toBe('{torn');
 });

@@ -77,12 +77,12 @@ describe('session reconciler rules', () => {
 
   it.each([['target', 'source'], ['source', 'target']] as const)('applies each scalar rule with the %s side present', (present) => {
     const fields: Partial<SessionState> = {
-      promptId: 'p', agent: 'codex', promptBackfill: { transcriptPath: '/t', at: 1 }, startSettled: true, startedAt: 5, planTagCount: 2,
+      promptId: 'p', agent: 'codex', promptBackfill: { transcriptPath: '/t', at: 1 }, startSettled: true, sessionStartRecorded: true, startedAt: 5, planTagCount: 2,
       compactionOrdinal: 3, lastAckAt: 4, lastAccountedAt: 4, lastDeliveryAt: 4, highWater: 7, markWater: 2, markGeneration: 'g',
       eventRetry: { at: 1, backoffMs: 1 }, transcriptRetry: { at: 1, backoffMs: 1 }, agentUnknown: true,
     };
     const merged = present === 'target' ? reconciled(state(fields), state()).state : reconciled(state(), state(fields)).state;
-    const carried = { promptId: 'p', agent: 'codex', promptBackfill: { transcriptPath: '/t', at: 1 }, startSettled: true, startedAt: 5, planTagCount: 2, compactionOrdinal: 3, lastAckAt: 4, lastAccountedAt: 4, lastDeliveryAt: 4 };
+    const carried = { promptId: 'p', agent: 'codex', promptBackfill: { transcriptPath: '/t', at: 1 }, startSettled: true, sessionStartRecorded: true, startedAt: 5, planTagCount: 2, compactionOrdinal: 3, lastAckAt: 4, lastAccountedAt: 4, lastDeliveryAt: 4 };
     expect(merged).toMatchObject(carried);
     const targetOwned = { highWater: merged.highWater, markWater: merged.markWater, markGeneration: merged.markGeneration, eventRetry: merged.eventRetry, transcriptRetry: merged.transcriptRetry, agentUnknown: merged.agentUnknown };
     expect(targetOwned).toEqual(present === 'target'

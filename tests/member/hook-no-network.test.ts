@@ -77,7 +77,7 @@ describe('only prompt recall waits on the network, within its cap (G1)', () => {
       expect({ status: result.status, signal: result.signal }).toEqual({ status: 0, signal: null });
       expect(elapsed).toBeLessThan(Math.min(timeoutMs, ANSWER_MS));
       const requests = fs.existsSync(fetchLog) ? fs.readFileSync(fetchLog, 'utf-8').trim().split('\n') : [];
-      if (hook === 'user-prompt-submit' && source === 'env' && HOOK_CONFIG[symbiont]?.capabilities.promptSubmitInjection !== false) expect(requests).toHaveLength(1);
+      if (hook === 'user-prompt-submit' && source === 'env' && (HOOK_CONFIG[symbiont]?.capabilities.promptSubmitInjection !== false || HOOK_CONFIG[symbiont]?.capabilities.promptRecallToolDelivery === true)) expect(requests).toHaveLength(1);
       else if (source === 'registry' || !ENDS.includes(hook)) expect(requests).toEqual([]);
 
       const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });

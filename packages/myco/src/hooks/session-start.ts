@@ -2,7 +2,7 @@ import { transcriptPromptBackfill } from '../member/transcript-prompts.js';
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { gitHead, sessionRepositoryName } from '../member/git-facts.js';
-import { hookCwd, runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
+import { hookCwd, runMemberHook, type HookMainOptions, type HookRun, type HookOutcome } from '../member/capture.js';
 import { sessionStartEvent, type OutboundEvent } from '../member/envelope.js';
 import { withNotice } from '../member/delivery-notice.js';
 import { compactionStart, recordCompaction } from '../member/compaction.js';
@@ -70,7 +70,7 @@ export async function main(opts: HookMainOptions = {}) {
     const response = served?.response;
     // A harness with no prompt hook (`capture.promptsFromTranscript`) has its prompts read from the transcript by the helper.
     const backfill = transcriptPromptBackfill(agent, transcriptPath, run.now());
-    return {
+    const outcome: HookOutcome = {
       events,
       response,
       // Asked for by the session that renders it: the Deployment's record of having served it names this session.
@@ -83,6 +83,20 @@ export async function main(opts: HookMainOptions = {}) {
         if (servedAs !== undefined && !state.delivered.includes(servedAs)) state.delivered.push(servedAs);
         if (backfill !== undefined) state.promptBackfill = backfill;
       },
+    };
+    if (HOOK_CONFIG[agent]?.capabilities.sessionStartOnce !== true) return outcome;
+    let first = false;
+    return {
+      events: [],
+      claim: state => {
+        if (backfill !== undefined) state.promptBackfill = backfill;
+        if (state.sessionStartRecorded) return { events: [], response: {} };
+        state.sessionStartRecorded = true;
+        first = true;
+        outcome.record?.(state);
+        return { events, response: outcome.response, ask: outcome.ask };
+      },
+      notice: (text, response) => first ? withNotice(text, response) : response,
     };
   });
 }

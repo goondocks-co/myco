@@ -585,6 +585,7 @@ const CapabilitiesSchema = z.object({
    * `injection-support.ts` is retained as a drift check.
    */
   sessionStartInjection: z.boolean().default(false),
+  sessionStartOnce: z.boolean().default(false),
   /**
    * Whether this symbiont has a subagent-start lifecycle hook whose
    * response can place model-visible context into the child agent before
@@ -652,6 +653,7 @@ const CapabilitiesSchema = z.object({
 }).strict().default(() => ({
   preToolUseInjection: false,
   sessionStartInjection: false,
+  sessionStartOnce: false,
   subagentStartInjection: false,
   postToolUseInjection: false,
   promptRecallToolDelivery: false,
@@ -1015,17 +1017,7 @@ export const SymbiontManifestSchema = z.object({
   displayName: z.string(),
   binary: z.string(),
   configDir: z.string(),
-  /**
-   * User-global directory whose existence signals that this agent is
-   * installed on the machine. The detection function walks the manifest
-   * registry and checks each declared `detectionDir`. Use the canonical
-   * user-home location (e.g. `~/.claude`, `~/.codex`); `~` is expanded by
-   * the consumer. Manifests that have no global surface (or that should be
-   * detected by a different signal) may omit this field. An explicit `null`
-   * means "intentionally no global detection" — used during the Gemini→
-   * Antigravity transition where two manifests share `~/.gemini` but only
-   * Antigravity should claim detection.
-   */
+  /** Global detection directory; omitted uses executable/install locations, null disables detection. */
   detectionDir: z.string().nullable().optional(),
   health: z.object({
     installLocations: z.array(z.string()),

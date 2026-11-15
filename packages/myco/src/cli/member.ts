@@ -486,12 +486,12 @@ export function registeredMemberHarnesses(mycoHome: string, serverUrl: string, o
 }
 
 /** Chosen agents, including surviving owned registrations absent from the provision record. */
-export function managedMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; onInspectionError?: (message: string) => void } = {}): string[] {
+export function managedMemberHarnesses(mycoHome: string, serverUrl: string, opts: { packageRoot?: string; onInspectionError?: (message: string) => void; exclude?: string[] } = {}): string[] {
   const uncaptured = uncapturableMemberHarnesses(mycoHome, opts);
   const record = readProvisionRecordStrict(mycoHome);
   const recorded = (record?.agents ?? []).filter(agent => !uncaptured.has(agent));
   if (record?.discoverAgents === false) return recorded;
-  return [...new Set([...recorded, ...registeredMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: recorded })])].sort();
+  return [...new Set([...recorded, ...registeredMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: [...recorded, ...opts.exclude ?? []] })])].sort();
 }
 
 function uncapturableMemberHarnesses(mycoHome: string, opts: { packageRoot?: string }): Set<string> {
@@ -565,7 +565,7 @@ export function withManagedMemberHarnesses<T>(mycoHome: string, opts: { packageR
       }
     }
     const before = readProvisionRecordStrict(mycoHome);
-    const agents = managedMemberHarnesses(mycoHome, serverUrl, opts);
+    const agents = managedMemberHarnesses(mycoHome, serverUrl, { ...opts, exclude: [...retiredSettingsProblems] });
     if (before === null && agents.length === 0) return null;
     const discovered = agents.filter(agent => !before?.agents.includes(agent));
     const record = reconcileProvisionAgents(mycoHome, { version: getPluginVersion(), serverUrl, discovered }, uncapturableMemberHarnesses(mycoHome, opts));
@@ -870,7 +870,7 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
         const shared = target !== undefined && target !== null && loadManifests().some(other =>
           others.has(other.name) && other.registration?.globalSkillsTarget != null
           && skillsFolder(other.registration.globalSkillsTarget) === skillsFolder(target));
-        const removeSkills = target && !shared ? prepareMemberSkillRemoval(mycoHome, skillsFolder(target)) : () => {};
+        const removeSkills = target && recordedServer !== undefined && !shared ? prepareMemberSkillRemoval(mycoHome, skillsFolder(target)) : () => {};
         installer.uninstallMemberRegistration();
         removeSkills();
         forgetProvision(mycoHome, agent);

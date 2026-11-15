@@ -27,6 +27,7 @@ export interface HookEventEntry {
 export interface HookCapabilities {
   preToolUseInjection: boolean;
   sessionStartInjection: boolean;
+  sessionStartOnce: boolean;
   subagentStartInjection: boolean;
   postToolUseInjection: boolean;
   promptRecallToolDelivery: boolean;
@@ -109,6 +110,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
@@ -192,6 +194,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -465,6 +468,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -573,6 +577,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -801,6 +806,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "toolArgs"
       ],
       "toolOutput": [
+        "tool_result",
         "tool_response",
         "toolResult"
       ]
@@ -856,6 +862,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -940,6 +947,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": true,
       "promptRecallToolDelivery": false,
@@ -1012,6 +1020,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -1065,6 +1074,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
@@ -1138,6 +1148,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "capabilities": {
       "preToolUseInjection": false,
       "sessionStartInjection": false,
+      "sessionStartOnce": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,

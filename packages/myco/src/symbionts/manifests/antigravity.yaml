@@ -2,32 +2,14 @@ name: antigravity
 displayName: Google Antigravity
 binary: agy
 health:
-  installLocations: ["~/.gemini", "/Applications/Antigravity.app", "~/Applications/Antigravity.app"]
+  installLocations: []
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .agents/plugins/myco
-# Antigravity uses the same ~/.gemini/ user-home directory as the retired
-# Gemini CLI — Google reused the dir under the new product. The detection
-# signal is the user-home dir's presence; existing installs with stale Myco
-# Gemini config are migrated away in Step 16.
-detectionDir: ~/.gemini
 pluginRootEnvVar: ANTIGRAVITY_PLUGIN_ROOT
-# Hook input shape per the official Antigravity hooks docs
-# (https://antigravity.google/docs/hooks). Every event includes a common
-# block: conversationId, workspacePaths, transcriptPath, artifactDirectoryPath.
-# Event-specific fields layer on top.
-#
-#   - PreInvocation:  invocationNum, initialNumSteps. NO prompt field —
-#                     the user message lives in the transcript file at
-#                     transcriptPath, not on the hook payload.
-#   - PreToolUse:     toolCall { name, args }, stepIdx.
-#   - PostToolUse:    stepIdx, error (optional). NO result body — the tool
-#                     output also reads from the transcript.
-#   - PostInvocation: same as PreInvocation.
-#   - Stop:           executionNum, terminationReason, error, fullyIdle.
-#
-# We omit `prompt`, `lastResponse`, and `toolOutput` deliberately — none
-# exist in Antigravity's payload schema, and previous mappings here were
-# wrong (read from the spec, not from inference).
+# https://antigravity.google/docs/hooks
+# Common input includes conversationId, workspacePaths, transcriptPath and lastUserInput.
+# PreInvocation accepts injectSteps; Myco wires session context only, once per conversation.
+# PostToolUse carries toolCall and optional error, with no result body.
 hookFields:
   sessionId: conversationId
   transcriptPath: transcriptPath
@@ -38,7 +20,7 @@ hookFields:
 hookInput:
   workspaceFromStdin: workspacePaths
 capture:
-  # Antigravity has no prompt hook: its prompts are read from its transcript by the member helper.
+  # Prompts are read from the transcript; PreInvocation prompt memory is not wired.
   promptsFromTranscript: true
   # One brain dir per conversation, under whichever surface produced it.
   transcriptDiscovery:
@@ -60,7 +42,7 @@ registration:
   memberHooksTarget: .agents/hooks.json
   globalHooksTarget: ~/.gemini/config/hooks.json
   hooksRootKey: myco
-  memberCaptureLimits: "Prompts and replies come from the transcript; no prompt-time or tool-time memory hook. Earlier transcripts need project attribution."
+  memberCaptureLimits: "Prompts and replies come from the transcript; PreInvocation prompt memory is not wired; no tool-time memory output. Earlier transcripts need project attribution."
   # https://antigravity.google/docs/hooks
   # Context is carried in injectSteps; tool completion returns {}, Stop returns an allow decision.
   hookResponse:
@@ -72,6 +54,7 @@ registration:
     - ~/.gemini/antigravity/skills
 capabilities:
   sessionStartInjection: true
+  sessionStartOnce: true
   subagentStartInjection: false
   preToolUseInjection: false
   # Tools whose toolCall.args carry a file path. Antigravity's current app

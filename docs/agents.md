@@ -49,9 +49,8 @@ Shipped skills are linked to the agent's live skills location:
 | Agent | Location |
 |---|---|
 | Claude Code | `~/.claude/skills` |
-| Codex, Cursor, OpenCode, Pi and Copilot CLI | `~/.agents/skills` |
+| Codex, Cursor, OpenCode, Pi, Copilot CLI and Windsurf | `~/.agents/skills` |
 | Antigravity | `~/.gemini/config/skills` |
-| Windsurf | `~/.codeium/windsurf/skills` |
 | Cline | `~/.cline/skills` |
 
 To disconnect one agent:
@@ -72,15 +71,15 @@ When the server cannot be reached, capture waits on the machine. `myco member st
 
 ## Copilot CLI, Antigravity and Windsurf limits
 
-These agents use the same login, provision and logout commands above. Copilot means the terminal CLI; provisioning it leaves VS Code's configuration alone. Doctor shows connected hooks and their limits on one line. Connected configuration does not prove a session has reached Myco.
+These agents use the same login, provision and logout commands above. Copilot means the terminal CLI; provisioning it leaves VS Code's configuration alone. Antigravity is detected by the `agy` command on PATH. Windsurf’s English documentation now redirects to Devin Desktop, which uses a different hooks file; Myco follows the installed Windsurf IDE’s contract. Doctor shows connected hooks and their limits on one line. Connected configuration does not prove a session has reached Myco.
 
 The matrix separates available contracts from live verification. The supported paths below have isolated configuration and payload tests. Copilot CLI also recognizes the installed MCP entry and lists the Myco skills; Antigravity CLI recognizes its MCP entry. End-to-end capture, model-visible context, MCP calls and skill discovery still need a signed-in harness and an isolated Myco Deployment; no account sign-in or real Deployment was used for this verification.
 
 | Capability | Copilot CLI | Antigravity | Windsurf |
 |---|---|---|---|
 | Session start context | unverified: signed-in CLI needed [C-hooks] | unverified: signed-in agent needed [A-hooks] | no: no session-start hook [W-hooks] |
-| Prompt-time memory | no: command prompt-hook output is discarded [C-hooks] | no: no per-prompt hook [A-hooks] | no: prompt hook has no model-context output [W-hooks] |
-| Late memory at the first tool call | unverified: signed-in CLI needed [C-hooks], [recall] | no: tool-hook output carries no context [A-hooks] | no: tool hooks have no model-context output [W-hooks] |
+| Prompt-time memory | unverified: hook docs say output is dropped; CLI 1.0.65 release notes say included [C-hooks], [C-releases] | not wired: PreInvocation carries lastUserInput and accepts injectSteps [A-hooks] | no: prompt hook has no model-context output [W-hooks] |
+| Late memory at the first tool call | unverified: signed-in CLI with registry credentials needed [C-hooks], [recall] | no: tool-hook output carries no context [A-hooks] | no: tool hooks have no model-context output [W-hooks] |
 | Prompt capture | unverified: signed-in CLI needed; prompt hook [C-hooks] | unverified: signed-in agent needed; transcript backfill [backfill] | unverified: installed, signed-in app needed; prompt hook [W-hooks] |
 | Tool-call capture | unverified: signed-in CLI needed; post-tool hooks [C-hooks] | unverified: signed-in agent needed; post-tool hook, no result body [A-hooks] | unverified: installed, signed-in app needed; read/write/command/MCP hooks [W-hooks] |
 | Response capture | unverified: signed-in CLI needed; transcript at Stop [transcripts] | unverified: signed-in agent needed; transcript at Stop [transcripts] | unverified: installed, signed-in app needed; response hook [W-hooks] |
@@ -89,11 +88,12 @@ The matrix separates available contracts from live verification. The supported p
 | MCP tools | unverified: signed-in CLI and reachable Myco needed [C-mcp] | unverified: signed-in agent and reachable Myco needed [A-mcp] | unverified: installed, signed-in app and reachable Myco needed [W-mcp] |
 | Skills | unverified: model invocation needs sign-in; CLI discovery passes [C-skills] | unverified: agent discovery needed [A-skills] | unverified: app discovery needed [W-skills] |
 
-Copilot queues prompt recall for a completed tool hook because its command prompt hook cannot inject. A turn with no tool call receives no prompt recall. Antigravity reads prompts from its transcript by source step identity; it injects the session block through SessionStart or PreInvocation, once available. Windsurf captures through its hooks and transcript while knowledge is available on demand through MCP and skills. Missing injection hooks do not block any session.
+Under registry credentials, Copilot queues prompt recall for a completed tool hook; environment credentials retain bounded inline recall. Prompt-hook injection remains unverified because the hook documentation and CLI release notes disagree. A registry turn with no tool call receives no prompt recall. Antigravity reads prompts from its transcript by source step identity; it injects the session block through SessionStart or PreInvocation once per conversation. Windsurf captures through its hooks and transcript while knowledge is available on demand through MCP and skills. Missing injection hooks do not block any session.
 
 Transcripts are shipped at turn end. Earlier on-disk transcripts are discovered, but these three manifests declare no trustworthy Project attribution field, so automatic history import reports them as unattributable. It does not assign them to the current folder. Antigravity and Windsurf lack an explicit session-end hook; server idle closure remains available.
 
 [C-hooks]: https://docs.github.com/en/copilot/reference/hooks-reference
+[C-releases]: https://github.com/github/copilot-cli/releases/tag/v1.0.65
 [C-mcp]: https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers
 [C-skills]: https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills
 [A-hooks]: https://antigravity.google/docs/hooks

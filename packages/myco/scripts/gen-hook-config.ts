@@ -69,6 +69,7 @@ interface HookConfigEntry {
   capabilities: {
     preToolUseInjection: boolean;
     sessionStartInjection: boolean;
+  sessionStartOnce: boolean;
     subagentStartInjection: boolean;
     postToolUseInjection: boolean;
   promptRecallToolDelivery: boolean;
@@ -182,6 +183,7 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
     capabilities: {
       preToolUseInjection: manifest.capabilities?.preToolUseInjection === true,
       sessionStartInjection: manifest.capabilities?.sessionStartInjection === true,
+      sessionStartOnce: manifest.capabilities?.sessionStartOnce === true,
       subagentStartInjection: manifest.capabilities?.subagentStartInjection === true,
       postToolUseInjection: manifest.capabilities?.postToolUseInjection === true,
       promptRecallToolDelivery: manifest.capabilities?.promptRecallToolDelivery === true,
@@ -339,6 +341,7 @@ export interface HookEventEntry {
 export interface HookCapabilities {
   preToolUseInjection: boolean;
   sessionStartInjection: boolean;
+  sessionStartOnce: boolean;
   subagentStartInjection: boolean;
   postToolUseInjection: boolean;
   promptRecallToolDelivery: boolean;
