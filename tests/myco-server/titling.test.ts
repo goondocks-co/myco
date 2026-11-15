@@ -384,7 +384,7 @@ describe('direct session titles', () => {
     h.env.completionProvider = async () => ({ model: '@cf/openai/gpt-oss-20b', complete });
     h.env.afterResponse = work => { pending.push(work()); };
     h.session('direct');
-    h.prompt('direct', 'opening', 'Read /task.md and do it.', NOW - 8000);
+    h.prompt('direct', 'opening', 'Read docs/task.md and do it.', NOW - 8000);
     return { ...h, settle: () => Promise.all(pending) };
   }
 
@@ -463,6 +463,34 @@ describe('direct session titles', () => {
     h.sqlite.close();
   });
 
+  it('bounds unreadable material attempts and titles an older healthy session behind them', async () => {
+    let calls = 0;
+    const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
+    await h.convert();
+    const readable = new Set(h.bucket.objects.keys());
+    const broken = Array.from({ length: 30 }, (_, i) => 'broken-' + i);
+    for (const [i, id] of broken.entries()) {
+      h.session(id, { endedAt: NOW + i + 1 });
+      h.prompt(id, 'prompt-' + id, 'Unreadable work ' + i, NOW - 100 + i);
+    }
+    await h.convert();
+    h.env.blobs = { ...h.env.blobs, get: async (key, options) => {
+      if (!readable.has(key)) throw new Error('document storage unavailable');
+      return h.bucket.get(key, options);
+    } };
+    for (let tick = 0; tick < 60; tick++) {
+      await backfillTitles(h.env, NOW + 60_000 * tick, 'idle'); await h.settle();
+    }
+    expect(h.row('direct')).toMatchObject(answer);
+    expect(calls).toBe(1);
+    expect(h.runRows().filter(run => run.error === 'title_material_or_write_failed').length).toBeLessThanOrEqual(broken.length * TITLING_MAX_ATTEMPTS);
+    for (const id of broken) {
+      const row = h.sqlite.query('SELECT titling_attempts FROM sessions WHERE session_id=?').get(id) as { titling_attempts: number };
+      expect(row.titling_attempts).toBe(TITLING_MAX_ATTEMPTS);
+    }
+    h.sqlite.close();
+  });
+
   it('closes abandoned direct work without reserving runner capacity', async () => {
     const h = direct(async () => { throw new Error('not called'); });
     h.env.afterResponse = () => {};
@@ -503,8 +531,8 @@ describe('direct session titles', () => {
   it('uses the head and tail, final replies and the stored task-file read rather than harness notices', async () => {
     const h = direct(async () => ({ text: JSON.stringify(answer), usage: null }));
     h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1','read-task','direct','tok_1','tool.use','cli',?,'hash',?,?)",
-      [JSON.stringify({ toolCallId: 'read-task', promptId: 'opening', toolName: 'Read', input: { file_path: '/task.md' }, output: 'Build direct session titles with bounded calls.', success: true }), NOW - 7900, NOW - 7900]);
-    for (const [id, toolName, input] of [['shell', 'Bash', { command: 'env | head' }], ['unrelated', 'Read', { file_path: '/unrelated.md' }]] as const) {
+      [JSON.stringify({ toolCallId: 'read-task', promptId: 'opening', toolName: 'Read', input: { file_path: '/work/docs/task.md' }, output: 'Build direct session titles with bounded calls.', success: true }), NOW - 7900, NOW - 7900]);
+    for (const [id, toolName, input] of [['shell', 'Bash', { command: 'env | head' }], ['unrelated', 'Read', { file_path: '/work/docs/other-task.md' }]] as const) {
       h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1',?,'direct','tok_1','tool.use','cli',?,'hash',?,?)",
         [id, JSON.stringify({ toolCallId: id, promptId: 'opening', toolName, input, output: 'DO NOT SEND UNRELATED OUTPUT', success: true }), NOW - 7950, NOW - 7950]);
     }

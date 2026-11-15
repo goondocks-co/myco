@@ -20,7 +20,7 @@ const READ_TOOLS = new Set(['read', 'read_file', 'readfile', 'file_read', 'read_
 const PATH_FIELDS = ['file_path', 'path', 'filePath', 'target_file'] as const;
 const pathBoundary = (char: string | undefined) => char === undefined || /[\s`"'()[\]{},;!?]/.test(char);
 
-/** Only a read-type tool naming the exact path in the person's prompt contributes a file excerpt. */
+/** A read-type tool contributes an excerpt for a bounded prompt path matching its full path or a path-segment suffix. */
 function fileRead(record: DocRecord, prompt: string): boolean {
   if (record.k !== 'tool' || record.success === 0 || !READ_TOOLS.has(String(record.tool_name).split(/[./]/).at(-1)!.toLowerCase())) return false;
   let input: unknown = record.input;
@@ -29,8 +29,13 @@ function fileRead(record: DocRecord, prompt: string): boolean {
   return PATH_FIELDS.some(field => {
     const path = (input as Record<string, unknown>)[field];
     if (typeof path !== 'string' || path.length === 0) return false;
-    const at = prompt.indexOf(path);
-    return at >= 0 && pathBoundary(prompt[at - 1]) && pathBoundary(prompt[at + path.length]);
+    const suffixes = [path, ...Array.from(path.matchAll(/[\\/]/g), match => path.slice(match.index + 1)).filter(Boolean)];
+    return suffixes.some(named => {
+      for (let at = prompt.indexOf(named); at >= 0; at = prompt.indexOf(named, at + 1)) {
+        if (pathBoundary(prompt[at - 1]) && pathBoundary(prompt[at + named.length])) return true;
+      }
+      return false;
+    });
   });
 }
 

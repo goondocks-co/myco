@@ -121,7 +121,7 @@ const deferUncalled = write<[project: string, session: string, mode: string, run
 const unmark = write<[project: string, run: string], never>({ name: 'sessionTitle.unmarkUncalled', sql: `
   UPDATE agent_runs SET attempt_counted=0 WHERE project_id=?1 AND id=?2 AND ${uncalled('?1', '?2')}` });
 
-/** An uncalled attempt gives back its claim and sleeps before the same commit ends its run. */
+/** An uncalled rate-limited attempt gives back its claim and sleeps before the same commit ends its run. */
 export function uncalledTitleRelease(ask: { project: string; session: string; run: string; stamp: number; previous: number | null; mode: string; now: number }): Bound[] {
   return [uncount.bind(ask.project, ask.session, ask.stamp, ask.run), restoreUncalled.bind(ask.project, ask.session, ask.stamp, ask.previous, ask.run),
     deferUncalled.bind(ask.project, ask.session, ask.mode, ask.run, ask.now), unmark.bind(ask.project, ask.run)];

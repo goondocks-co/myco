@@ -52,8 +52,9 @@ export async function completeDirectTitle(db: RelationalStore, s: DirectTitleSet
 export async function failDirectTitle(db: RelationalStore, s: DirectTitleSettlement, failure: {
   code: string; session: string; stamp: number; previous: number | null; mode: string;
 }): Promise<void> {
-  await commit(db, ...uncalledTitleRelease({ project: s.project, run: s.run, session: failure.session, stamp: failure.stamp,
-    previous: failure.previous, mode: failure.mode, now: s.now }), settlement(s, failure.code));
+  const release = failure.code === 'completion_rate_limited' ? uncalledTitleRelease({ project: s.project, run: s.run, session: failure.session, stamp: failure.stamp,
+    previous: failure.previous, mode: failure.mode, now: s.now }) : [];
+  await commit(db, ...release, settlement(s, failure.code));
 }
 
 
