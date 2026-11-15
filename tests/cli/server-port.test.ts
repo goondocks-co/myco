@@ -1,5 +1,6 @@
 /** Port validation for a native Deployment through the operator's CLI arguments. */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { readLocalRecord, resolveLocalPaths } from '@myco/server/local.js';
 import { run } from '@myco/cli/server';
 import { sandboxMycoHome } from '../helpers/myco-home-sandbox.js';
 
@@ -65,4 +66,10 @@ describe('the native Deployment port flag', () => {
       expect(message).toMatch(/(?:--port needs a whole number|port must be a whole number from 1 to 65535)/);
     }
   });
+});
+
+it('keeps the recorded custom port when create is repeated without a port', async () => {
+  await run(['create', '--target', 'local', '--port', '9000']);
+  await run(['create', '--target', 'local']);
+  expect(readLocalRecord(resolveLocalPaths()).port).toBe(9000);
 });

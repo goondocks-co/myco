@@ -166,8 +166,26 @@ async function waitForHealth(url: string, spec: ServiceSpec, terminal: boolean, 
     const holder = liveServeHolder(peekLocalPaths(spec.env.MYCO_HOME!).root);
     if (answered && holder !== null && (terminal || holder.pid === statusOfService(spec, { ...deps.service, includePid: true }).pid)) return;
     if (!terminal && now() >= deadline) {
-      throw new Error(`Your Myco did not answer at ${url}; data was kept. Check ${servicePaths(spec, deps.service?.platform).errLog}`);
+      throw new Error(`Your Myco did not answer at ${url}; data was kept. Check ${servicePaths(spec, deps.service?.platform).errLog}; run myco server status --target local, then myco server install --target local`);
     }
+    await pause(deps, HEALTH_POLL_MS);
+  }
+}
+
+/** Start the native service and prove that its process holds the answering volume. */
+export async function startLocalService(spec: ServiceSpec, url: string, deps: LocalLifecycleDeps = {}, action: 'install' | 'start' = 'start') {
+  const outcome = action === 'install' ? installService(spec, deps.service) : startService(spec, deps.service);
+  if (!outcome.loaded) throw new Error(`native service was not registered: ${outcome.detail ?? 'platform refused'}. Run myco server install --target local; check ${servicePaths(spec, deps.service?.platform).errLog}`);
+  deps.log?.('Deployment service registered; waiting for its listener.');
+  await waitForHealth(url, spec, false, deps);
+  return outcome;
+}
+
+/** Wait until the previous service releases its serving volume. */
+export async function waitForLocalStop(home: string, deps: LocalLifecycleDeps): Promise<void> {
+  const deadline = (deps.now ?? Date.now)() + LOCAL_SERVICE_WAIT_MS;
+  while (liveServeHolder(peekLocalPaths(home).root) !== null) {
+    if ((deps.now ?? Date.now)() >= deadline) throw new Error('native service did not release its volume; run myco server status --target local before retrying');
     await pause(deps, HEALTH_POLL_MS);
   }
 }
@@ -207,11 +225,7 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
   try {
     if (exclusive && before.serving.mode === 'service') {
       stopService(spec, deps.service);
-      const deadline = (deps.now ?? Date.now)() + LOCAL_SERVICE_WAIT_MS;
-      while (liveServeHolder(paths.root) !== null) {
-        if ((deps.now ?? Date.now)() >= deadline) throw new Error('native service did not release its volume; wait for it to stop before setup');
-        await pause(deps, HEALTH_POLL_MS);
-      }
+      await waitForLocalStop(home, deps);
     }
     if (create) createLocalDeployment(record, deps.native, paths);
     if (signIn && plan.signIn !== 'skip') {
@@ -224,10 +238,9 @@ export async function prepareLocal(home: string, plan: LocalPreparePlan, deps: L
       const shouldServe = workFailed ? restoreService : service;
       if (shouldServe) {
         const current = statusOfService(spec, deps.service);
-        const started = workFailed || current.installed ? startService(spec, deps.service) : installService(spec, deps.service);
-        if (!started.running) throw new Error(`Your Myco could not start: ${started.detail ?? 'service not running'}. Check ${servicePaths(spec, deps.service?.platform).errLog}`);
+        await startLocalService(spec, url, deps, workFailed || current.installed ? 'start' : 'install');
       } else if (!workFailed) deps.log?.(deps.terminalInstruction ?? 'In another terminal, run: myco server run --target local');
-      if (!workFailed || shouldServe) await waitForHealth(url, spec, !shouldServe, deps);
+      if (!workFailed && !shouldServe) await waitForHealth(url, spec, true, deps);
     } catch (error) {
       if (workFailed) throw new AggregateError([failed, error], `native preparation failed (${cause(failed)}) and serving could not be restored (${cause(error)})`);
       throw error;

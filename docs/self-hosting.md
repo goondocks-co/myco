@@ -163,6 +163,8 @@ For a code rollback:
 myco server rollback --target cloudflare
 ```
 
+Bare rollback selects the version observed serving before the last successful update, including a code-only update. If that earlier version could not be proved (including older operator records), it refuses and asks for `--version <id>`; `wrangler deployments list` lists the versions. After a failed or unacknowledged update, check `myco server status --target cloudflare` and choose an explicit version.
+
 This rolls back the Worker, **not the database or blobs**. For a schema rollback, use the exact database restore command printed by the update while its bookmark remains within Time Travel retention, then return to the compatible Worker version:
 
 ```bash

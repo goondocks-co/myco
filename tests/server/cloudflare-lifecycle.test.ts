@@ -85,7 +85,7 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       'd1 time-travel info': { stdout: JSON.stringify({ bookmark: '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683' }) },
       'secrets-store store list': { stdout: '', code: 0 },
       'secrets-store store create': { stdout: `Created store myco (${STORE})` },
-      'deploy -c wrangler.deploy.toml': { stdout: 'Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
+      'deploy -c wrangler.deploy.toml': { stdout: 'https://myco-server.example.workers.dev\nCurrent Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
       'versions upload': { stdout: 'Worker Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
       ...over,
     };
@@ -285,6 +285,18 @@ describe('create', () => {
     expect(calls.some((c) => c.args.some((arg) => ['myco-server', 'myco-server-blobs', 'myco-server-memory', 'myco-server-recovery'].includes(arg)))).toBe(false);
     // The staging store a recorded Deployment provisions is its own, on create and on update alike.
     expect(calls.filter((c) => c.args.includes('recovery-worker-recovery')).length).toBe(2);
+  });
+
+  it('activates its discovered workers.dev origin before create completes', async () => {
+    const { options } = setup();
+    const provider = runner();
+    let active: { vars?: { MYCO_ORIGIN?: string } } | undefined;
+    const result = await createCloudflareDeployment({ ...options, runner: { async run(command, args, runOptions) {
+      if (args[2] === 'deploy') active = Bun.TOML.parse(readFileSync(join(runOptions!.cwd!, args[args.indexOf('-c') + 1]!), 'utf8'));
+      return provider.run(command, args, runOptions);
+    } } });
+    expect(result.record.url).toBe('https://myco-server.example.workers.dev');
+    expect(active?.vars?.MYCO_ORIGIN).toBe(result.record.url);
   });
 
   it('provisions the resources and records their ids and the serving version', async () => {
@@ -701,15 +713,19 @@ describe('rollback', () => {
     expect(readDeploymentRecord(home)!.versionId).toBe(VERSION);
   });
 
-  it('defaults to the record version, and refuses when neither the flag nor the record names one', async () => {
+  it('refuses an unproved earlier version, then undoes a successful code-only update', async () => {
     const { home, options } = setup();
-    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(join(home, 'server', 'cloudflare', 'record.json'));
-    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID }, home);
-    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no version to roll back to/);
-    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: VERSION, deployedAt: 'then', databaseId: DB_ID }, home);
-    const rolled = await rollbackCloudflareDeployment({ ...options, runner: runner() });
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: VERSION, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
+    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow('myco server rollback --target cloudflare --version <id>');
+    const provider = runner({ 'deployments list': { stdout: `Version(s): (100%) ${VERSION}` },
+      'd1 execute': { stdout: JSON.stringify([{ results: [{ value: String(SERVER_SCHEMA_VERSION) }], success: true }]) } });
+    const updated = await updateCloudflareDeployment({ ...options, runner: provider });
+    expect(updated.summary.schema).toBe('unchanged');
+    expect(readDeploymentRecord(home)?.versionId).not.toBe(VERSION);
+    const rolled = await rollbackCloudflareDeployment({ ...options, runner: provider });
     expect(rolled.versionId).toBe(VERSION);
-    expect(calls.some((c) => c.args.join(' ').includes('rollback ' + VERSION))).toBe(true);
+    expect(readDeploymentRecord(home)?.versionId).toBe(VERSION);
+    await expect(rollbackCloudflareDeployment({ ...options, runner: provider })).rejects.toThrow('no earlier serving version can be proved');
   });
 });
 
@@ -904,7 +920,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     `  *"secrets-store secret list"*) echo 'List request returned no secrets.' >&2; exit 1;;`,
     `  *"d1 create"*) echo 'database_id = "${DB_ID}"';;`,
     `  *"secrets-store store list"*) echo '${STORE}';;`,
-    '  *" deploy "*) echo "Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b";;',
+    '  *" deploy "*) echo "https://myco-server.example.workers.dev"; echo "Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b";;',
     '  *whoami*) echo "account";;',
     `  *--version*) echo " wrangler ${version}";;`,
     'esac',

@@ -238,6 +238,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     accountId: options.accountId, workerName: resources.workerName, databaseName: resources.databaseName,
     bucketName: resources.bucketName, vectorIndexName: resources.vectorIndexName,
     wrapKeySecretName: resources.wrapKeySecretName, recoveryBucketName: resources.recoveryBucketName,
+    previousVersionId: existing?.previousVersionId,
     versionId: existing?.versionId ?? null, deployedAt: existing?.deployedAt ?? new Date().toISOString(),
     ...(existing?.release === undefined ? {} : { release: existing.release }),
     ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
@@ -276,7 +277,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
       return prepared;
     },
   });
-  const deployed = await deployWorker(withConfig);
+  let deployed = await deployWorker(withConfig);
 
   // After the deploy: a secret lands on the live Worker; putting one ahead of a Worker that is not there yet is
   // version-dependent behavior. It is put wherever the Worker lacks it, so a first create that stopped after writing its
@@ -284,6 +285,13 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
   if (!(await workerSecretNames({ ...withConfig, workerName: resources.workerName })).includes('SESSION_SECRET')) {
     await putWorkerSecretValue({ ...withConfig, workerName: resources.workerName, name: 'SESSION_SECRET', value: randomBytes(32).toString('base64url') });
     createdResources.push('worker secret SESSION_SECRET');
+  }
+
+  if (record.url === undefined) {
+    if (deployed.url === null) throw new Error('Cloudflare create incomplete: the Worker did not report its origin. Run myco server create --target cloudflare --url <https://worker.account.workers.dev> to finish origin activation.');
+    record = { ...record, url: new URL(deployed.url).origin };
+    writeDeploymentRecord(record, options.mycoHome);
+    deployed = await deployWorker(staged(record, options));
   }
 
   record = { ...record, release: getPluginVersion(), versionId: deployed.versionId, deployedAt: new Date().toISOString(), ...(record.url === undefined && deployed.url !== null ? { url: deployed.url } : {}) };
@@ -311,6 +319,7 @@ export interface CloudflareUpdateSummary {
   upload: 'not attempted' | 'attempted; outcome unknown' | { versionId: string };
   workerStop?: WorkerUpdateStopped;
   workerSchemaBefore?: number;
+  servingBefore?: { versionId: string | null; error?: string };
   record: 'updated' | 'not updated';
   resources: Array<{ operation: string; state: 'attempted; outcome unknown' | 'refused: not applied' | 'applied' | 'already exists' }>;
   recordPath: string;
@@ -345,6 +354,10 @@ export function cloudflareUpdateLines(summary: CloudflareUpdateSummary): string[
     lines.push('Nothing changed in Cloudflare; a rerun is safe. A recorded bookmark is a recovery point, not an applied migration.');
   } else if (summary.workerStop === undefined && (summary.schema.includes('unknown') || summary.worker.includes('unknown') || summary.resources.some((r) => r.state.includes('unknown')))) {
     lines.push('An attempted change has an unknown outcome; run myco server status --target cloudflare before retrying.');
+  }
+  if (summary.servingBefore !== undefined) {
+    lines.push(`  Pre-update serving version: ${summary.servingBefore.versionId ?? 'unproved'}${summary.servingBefore.error === undefined ? '' : ` (${summary.servingBefore.error})`}.`);
+    if (summary.servingBefore.versionId === null) lines.push('No earlier serving version was proved; rollback requires myco server rollback --target cloudflare --version <id>.');
   }
   if (summary.schemaStop !== undefined) lines.push(...schemaStopLines(summary.schemaStop.stop, summary.schemaStop.worker));
   if (summary.workerStop !== undefined) {
@@ -399,6 +412,15 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     const resources = cloudflareResources(record);
     const withConfig = staged(record, options);
     const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
+    let previousVersionId: string | null = null;
+    summary.servingBefore = { versionId: null };
+    try {
+      const serving = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry });
+      if (!/\((?!100%\))\d+%\)/.test(serving.raw)) previousVersionId = serving.versionId;
+      summary.servingBefore.versionId = previousVersionId;
+    } catch (error) {
+      summary.servingBefore.error = error instanceof Error ? error.message : String(error);
+    }
     const uploader = new CloudflareWorkerUpdate(workerOptions);
     let uploadedVersion: string | undefined;
     record = await applyCloudflareSchema({ ...withConfig, record,
@@ -430,6 +452,7 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
 
     writeDeploymentRecord({
       ...record, recoveryBucketName: resources.recoveryBucketName,
+      previousVersionId: previousVersionId === uploadedVersion ? null : previousVersionId,
       release: summary.releaseTarget, versionId: uploadedVersion, deployedAt: new Date().toISOString(),
     }, options.mycoHome);
     summary.record = 'updated';
@@ -456,22 +479,14 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
   }
 });
 
-/**
- * Return the Worker to an earlier version.
- *
- * The target defaults to the record's last recorded version — a failed update
- * never records one, so after a deploy that threw, the record still names the
- * version that served. A deploy that succeeded and then failed its smoke has
- * already recorded the bad version, and that caller passes the pre-deploy
- * version it captured.
- */
+/** Return to the provider-observed version from before the last successful update. */
 export const rollbackCloudflareDeployment = lifecycleOperation('rollback', async (options: LifecycleOptions & { versionId?: string; message?: string }, record): Promise<{ versionId: string }> => {
   await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
-  const target = options.versionId ?? record.versionId ?? '';
-  if (target === '') throw new Error('no version to roll back to: pass --version <id> (`wrangler deployments list` names them)');
+  const target = options.versionId ?? record.previousVersionId ?? '';
+  if (target === '' || (options.versionId === undefined && target === record.versionId)) throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (wrangler deployments list names the versions).');
   await rollbackWorker({ ...bareCommand(options), workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
-  writeDeploymentRecord({ ...record, release: undefined, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
+  writeDeploymentRecord({ ...record, release: undefined, previousVersionId: null, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: target };
 });
 

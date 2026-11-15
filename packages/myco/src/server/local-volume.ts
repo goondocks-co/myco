@@ -4,6 +4,9 @@ import { LifecycleLock, type LockHandle } from '@myco/utils/lifecycle-lock.js';
 import type { VolumeMetaKey } from '@myco-server-worker/platform/bun/server-main.js';
 import type { LocalDeploymentPaths } from './local.js';
 
+const BACKUP_ADMISSION_LOCK = '.backup.lock';
+const VOLUME_BUSY = 'local Deployment volume is in use; stop its serving process or wait for the active operation';
+
 /**
  * What a start does before it serves, and how the lease proves the volume did not change under it.
  *
@@ -68,9 +71,9 @@ export class LocalVolume {
     return lockPath;
   }
 
-  private lease(mode: 'exclusive' | 'shared'): LockHandle {
-    const held = LifecycleLock.acquire(this.lockPath('.lock'), { command: 'myco server local volume', mode });
-    if (!held.acquired) throw new Error('local Deployment volume is in use; stop its serving process or wait for the active operation');
+  private lease(mode: 'exclusive' | 'shared', suffix = '.lock', refusal = VOLUME_BUSY): LockHandle {
+    const held = LifecycleLock.acquire(this.lockPath(suffix), { command: 'myco server local volume', mode });
+    if (!held.acquired) throw new Error(refusal);
     return held.lock;
   }
 
@@ -92,8 +95,23 @@ export class LocalVolume {
    * Replacement and startup migrations require exclusive ownership and refuse while any such read is active.
    */
   async reading<T>(read: () => Promise<T>): Promise<T> {
-    const held = this.lease('shared');
-    try { return await read(); } finally { held.release(); }
+    const admission = this.lease('shared', BACKUP_ADMISSION_LOCK);
+    try {
+      const held = this.lease('shared');
+      try { return await read(); } finally { held.release(); }
+    } finally { admission.release(); }
+  }
+
+  /** Exclude backups before stopping a service, through the completion of its update. */
+  async updating<Accepted, T>(admit: () => Accepted, update: (accepted: Accepted) => Promise<T>): Promise<T> {
+    const admission = this.lease('exclusive', BACKUP_ADMISSION_LOCK,
+      'native update refused before stopping: a backup or volume read is active; wait for it to finish, then run myco server update --target local');
+    try {
+      const volume = this.lease('shared');
+      let accepted: Accepted;
+      try { accepted = admit(); } finally { volume.release(); }
+      return await update(accepted);
+    } finally { admission.release(); }
   }
 
   /**

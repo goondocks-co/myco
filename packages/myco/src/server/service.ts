@@ -29,6 +29,7 @@ const { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeF
 import path from 'node:path';
 import { commandArgument, commandLine, systemdEnvironment, systemdWords } from '@goondocks/myco-shared/shell-command';
 import { homedir } from 'node:os';
+import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { canonicalHomePath } from '../paths/home.js';
 
 /** What a service is: the names the platform records it under, what it runs, and where it writes. */
@@ -163,37 +164,53 @@ export function servicePaths(spec: ServiceSpec, platform = process.platform): Se
   throw new ServicePlatformUnsupported(`no per-user service is defined for ${platform}`);
 }
 
-/** Ownership recorded by a native unit; ambiguous records do not authorize lifecycle changes. */
-export function serviceHomeOwnership(spec: ServiceSpec, options: ServiceOptions = {}): 'same' | 'foreign' | 'unknown' | 'absent' {
-  const expected = spec.env.MYCO_HOME;
+/** The home recorded by a native unit; ambiguous records authorize no mutation. */
+function installedServiceHome(spec: ServiceSpec, options: ServiceOptions): string | null {
   const platform = options.platform ?? process.platform;
-  const paths = servicePaths(spec, platform);
-  if (!existsSync(paths.unitFile)) return 'absent';
-  if (expected === undefined) return 'same';
-  const source = readFileSync(paths.unitFile, 'utf8');
+  const source = readFileSync(servicePaths(spec, platform).unitFile, 'utf8');
   if (platform === 'linux') {
     const environment = systemdEnvironment(source);
-    if (environment === null) return 'unknown';
-    const home = environment.MYCO_HOME ?? (!source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : undefined);
-    return home === undefined || !path.isAbsolute(home) ? 'unknown'
-      : canonicalHomePath(home) === canonicalHomePath(expected) ? 'same' : 'foreign';
+    if (environment === null) return null;
+    return environment.MYCO_HOME ?? (!source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null);
   }
   const pattern = platform === 'darwin' ? /<key>MYCO_HOME<\/key>\s*<string>([^<]*)<\/string>/g
     : /set &quot;MYCO_HOME=(.*?)&quot;/g;
-  const homes = [...source.matchAll(pattern)].map(match => match[1]);
-  const same = (target: string): 'same' | 'foreign' | 'unknown' => !path.isAbsolute(target) ? 'unknown'
-    : canonicalHomePath(target) === canonicalHomePath(expected) ? 'same' : 'foreign';
-  if (homes.length === 1) return same(xmlUnescape(homes[0]));
-  if (homes.length === 0 && !source.includes('MYCO_HOME')) return same(path.join(spec.home, '.myco'));
-  return 'unknown';
+  const homes = [...source.matchAll(pattern)].map(match => xmlUnescape(match[1]!));
+  return homes.length === 1 ? homes[0]! : homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
+}
+
+export function serviceHomeOwnership(spec: ServiceSpec, options: ServiceOptions = {}): 'same' | 'foreign' | 'unknown' | 'absent' {
+  if (!existsSync(servicePaths(spec, options.platform).unitFile)) return 'absent';
+  const home = installedServiceHome(spec, options);
+  return home === null || !path.isAbsolute(home) ? 'unknown'
+    : canonicalHomePath(home) === canonicalHomePath(spec.env.MYCO_HOME ?? path.join(spec.home, '.myco')) ? 'same' : 'foreign';
 }
 
 /** Refuse a native unit that points at another Deployment's home. */
 export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptions = {}): void {
-  if (spec.env.MYCO_HOME === undefined) return;
+  if (spec.unit.label !== SERVER_UNIT.label) return;
   const ownership = serviceHomeOwnership(spec, options);
   if (ownership === 'same' || ownership === 'absent') return;
-  throw new Error(`the installed native service does not belong to ${spec.env.MYCO_HOME}; keep its Deployment running and reconcile its service before setup`);
+  const file = servicePaths(spec, options.platform).unitFile;
+  const owner = installedServiceHome(spec, options);
+  const platform = options.platform ?? process.platform;
+  const remedy = owner !== null && path.isAbsolute(owner)
+    ? `run ${platform === 'win32' ? `set "MYCO_HOME=${owner}" &&` : `MYCO_HOME=${commandArgument(owner)}`} myco server uninstall --target local from its owning home before installing another Deployment`
+    : `inspect ${file} and restore its owning MYCO_HOME before running myco server uninstall --target local`;
+  throw new Error(`native service mutation refused: the installed native service does not belong to ${spec.env.MYCO_HOME ?? path.join(spec.home, '.myco')}; owning home: ${owner ?? 'unknown'}. Nothing changed; ${remedy}.`);
+}
+
+/** Every native service mutation admits the installed home's ownership first. */
+function serviceMutation<O extends ServiceOptions, T>(operation: (spec: ServiceSpec, options: O) => T) {
+  return (spec: ServiceSpec, options: O = {} as O): T => {
+    const mutate = () => {
+      assertServiceTargetHome(spec, options);
+      return operation(spec, options);
+    };
+    return spec.unit.label === SERVER_UNIT.label
+      ? withFileLockSync(`${servicePaths(spec, options.platform).unitFile}.lock`, mutate)
+      : mutate();
+  };
 }
 
 const XML_ENTITIES: Readonly<Record<string, string>> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"' };
@@ -439,13 +456,13 @@ const RELOAD_SCRIPT = [
  * delay later. A unit loaded here carries no such requirement. Only macOS: a
  * systemd unit restarts its replaced program, and stopping it kills its cgroup.
  */
-export function reloadServiceDetached(spec: ServiceSpec, options: ServiceOptions & { spawnDetached?: DetachedSpawner; replacing?: number } = {}): boolean {
+export const reloadServiceDetached = serviceMutation((spec: ServiceSpec, options: ServiceOptions & { spawnDetached?: DetachedSpawner; replacing?: number }): boolean => {
   const platform = options.platform ?? process.platform;
   if (platform !== 'darwin') return false;
   const paths = servicePaths(spec, platform);
   if (!existsSync(paths.unitFile)) return false;
   return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', RELOAD_SCRIPT, 'myco-reload', spec.unit.label, paths.unitFile, options.replacing === undefined ? '' : String(options.replacing)], paths.errLog);
-}
+});
 
 /** The unit's text with its `PATH` value blanked, so two units differing only there compare equal. */
 function withoutPath(unit: string): string {
@@ -487,7 +504,7 @@ export interface InstallOptions extends ServiceOptions {
  * Write the unit and hand it to the platform, which starts it, or restarts it
  * where it was already running.
  */
-export function installService(spec: ServiceSpec, options: InstallOptions = {}): ServiceOutcome {
+export const installService = serviceMutation((spec: ServiceSpec, options: InstallOptions): ServiceOutcome => {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   assertInstalledBinary(spec.binaryPath);
@@ -512,19 +529,19 @@ export function installService(spec: ServiceSpec, options: InstallOptions = {}):
   }
   const verify = statusOfService(spec, options);
   return { unitFile: paths.unitFile, loaded: verify.loaded, running: verify.running, changed: true, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
-}
+});
 
 /** Stop the running service without removing its unit, for an operator acting on the volume underneath it. */
-export function stopService(spec: ServiceSpec, options: ServiceOptions = {}): void {
+export const stopService = serviceMutation((spec: ServiceSpec, options: ServiceOptions): void => {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
   if (!existsSync(paths.unitFile)) return;
   for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).unload) runner(command!, args);
-}
+});
 
 /** Start a service whose unit is already written. */
-export function startService(spec: ServiceSpec, options: ServiceOptions = {}): ServiceOutcome {
+export const startService = serviceMutation((spec: ServiceSpec, options: ServiceOptions): ServiceOutcome => {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
@@ -534,7 +551,7 @@ export function startService(spec: ServiceSpec, options: ServiceOptions = {}): S
   for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).load) runner(command!, args);
   const verify = statusOfService(spec, options);
   return { unitFile: paths.unitFile, loaded: verify.loaded, running: verify.running, changed: true, ...(verify.detail === undefined ? {} : { detail: verify.detail }) };
-}
+});
 
 export class ServiceStopFailed extends Error {}
 
@@ -543,7 +560,7 @@ export class ServiceStopFailed extends Error {}
  * unit whether or not its file is still there; removing a unit that is not
  * there is not an error.
  */
-export function uninstallService(spec: ServiceSpec, options: ServiceOptions = {}): { unitFile: string; removed: boolean } {
+export const uninstallService = serviceMutation((spec: ServiceSpec, options: ServiceOptions): { unitFile: string; removed: boolean } => {
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
@@ -555,7 +572,7 @@ export function uninstallService(spec: ServiceSpec, options: ServiceOptions = {}
   const removed = existsSync(paths.unitFile);
   rmSync(paths.unitFile, { force: true });
   return { unitFile: paths.unitFile, removed };
-}
+});
 
 /** Why a written unit is not loaded, when the platform answered and does not hold it. */
 export const UNIT_NOT_HELD = 'the unit is installed and the platform is not holding it';

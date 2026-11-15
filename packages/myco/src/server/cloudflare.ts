@@ -870,6 +870,8 @@ export interface DeploymentRecord {
   databaseName: string;
   bucketName: string;
   versionId: string | null;
+  /** Provider-observed serving version before the last successful update. */
+  previousVersionId?: string | null;
   deployedAt: string;
   /** Binary release recorded after a successful Worker deployment; absent on older records. */
   release?: string;
