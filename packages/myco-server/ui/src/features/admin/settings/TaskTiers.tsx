@@ -4,7 +4,6 @@ import { Button, Select } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
-import { taskWords } from '../workers';
 import type { TaskTierRow } from './wire';
 
 /** The effective tier is server-owned; an edit patches one task against the live overrides. */
@@ -33,9 +32,7 @@ export function TaskTiers({ tiers }: { tiers: readonly TaskTierRow[] }) {
     <AdminSection id="task-tiers" title="Task tiers" description="Each task starts at its declared tier. Choose a tier here to override it; reset restores the task’s declared tier.">
       <RowCard label="Task tiers">
         {tiers.map((row, index) => {
-          const { task, tier, source } = row;
-          const words = taskWords(task);
-          const label = words[0]!.toUpperCase() + words.slice(1);
+          const { task, name: label, tier, source } = row;
           return (
             <SettingRow
               key={task}

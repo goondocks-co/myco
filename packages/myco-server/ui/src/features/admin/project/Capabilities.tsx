@@ -51,7 +51,8 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, r
       : repositoryState === 'error' ? 'Couldn’t check this project’s repository.'
         : repository === null ? missingNote
           : repository === undefined ? 'Couldn’t check this project’s repository.'
-            : `Reads ${repositoryName(repository)} @ ${repository.branch}`;
+            : allNeedRepository ? `Reads ${repositoryName(repository)} @ ${repository.branch}`
+              : `${repositoryTasks.map((task) => task.name).join(', ')} reads ${repositoryName(repository)} @ ${repository.branch}`;
   const enabledStatus = taskState === 'loading' ? 'On · Checking task requirements'
     : taskState === 'error' ? 'On · Task requirements unavailable'
       : readsRepository && repositoryState === 'loading' ? 'On · Checking repository'

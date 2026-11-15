@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Button, EmptyState, ErrorState, ListRow, LoadingState, ShowMore, TypeChip } from '../../design';
 import { SEARCH_MIN_CHARS, searchResultPath, useSearchPages, type SearchFilters, type SearchScope } from '../../hooks/use-search';
-import { ago } from '../knowledge/words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 export interface SearchMatchesProps {
   scope: SearchScope;
@@ -54,7 +54,7 @@ export function SearchMatches({ scope, filters, noun, projectName, kind, emptyAc
           return (
             <li key={`${hit.projectId}/${hit.type}/${hit.id}`} data-search-match={hit.type}>
               <ListRow
-                leading={<time className="t-meta text-muted" dateTime={new Date(hit.created_at).toISOString()}>{ago(hit.created_at, now)}</time>}
+                leading={<time className="t-meta text-muted" dateTime={new Date(hit.created_at).toISOString()}>{agoWords(hit.created_at, now)}</time>}
                 kicker={chip === null && project === null ? undefined : <>{chip !== null && <TypeChip>{chip}</TypeChip>}{project !== null && <span className="t-meta text-ink-2"> {project}</span>}</>}
                 title={hit.title}
                 meta={hit.preview === '' ? undefined : hit.preview}

@@ -4,10 +4,11 @@ import { checkFailureLabel, LOOKUP_TOKEN_WORDS, lookupToken, RATE_LIMIT_REMEDY }
 import { useReleaseProvenance, useReleaseProvenanceActions } from '../../../hooks/use-release-provenance';
 import { settingsRefusalText } from '../../../hooks/use-settings';
 import { useStatus } from '../../../hooks/use-status';
-import { formatRelative } from '../../../lib/format';
 import { PROJECT_SETTINGS_ANCHORS } from '../../../routes/nav';
 import { AdminSection } from '../AdminFrame';
 import type { ReleaseCheck, ReleaseProvenanceRow } from './wire';
+import { agoWords } from '@goondocks/myco-shared/time-words';
+import { sinceWords } from '../../today/words';
 
 /** The server reports kept-aside records exactly up to this many. */
 const UNRESOLVED_REPORT_CAP = 1000;
@@ -18,13 +19,13 @@ const MAPPING_SEPARATOR = ' = ';
 /** The latest check in one line: when, what it concluded, what stopped it, and the remedy when a missing token did. */
 export function checkSummary(check: ReleaseCheck | null): string {
   if (check === null || check.startedAt === null) return check?.requestedAt ? 'Check requested' : 'Not checked yet';
-  if (check.finishedAt === null || check.finishedAt < check.startedAt) return `Checking since ${formatRelative(check.startedAt)}`;
+  if (check.finishedAt === null || check.finishedAt < check.startedAt) return `Checking ${sinceWords(check.startedAt, Date.now())}`;
   const c = check.counts;
   const tally = c ? `${c.checked} checked · ${c.changed} changed · ${c.unknown} unknown · ${c.unavailable + c.deferred} not reached` : '';
   const remedy = check.failure === 'rate_limited_without_credential' ? ` ${RATE_LIMIT_REMEDY}` : '';
   const stopped = check.failure === null ? '' : ` · stopped: ${checkFailureLabel(check.failure)}. Earlier states are kept.${remedy}`;
   const pending = check.requestedAt !== null && check.requestedAt > check.startedAt ? ' · check requested' : '';
-  return `${formatRelative(check.finishedAt)} · ${tally}${stopped}${pending}`;
+  return `${agoWords(check.finishedAt)} · ${tally}${stopped}${pending}`;
 }
 
 /**

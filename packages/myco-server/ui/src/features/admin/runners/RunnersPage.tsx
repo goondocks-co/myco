@@ -6,7 +6,6 @@ import type { FleetQueue, FleetRun, RunnerCredentialChoice, RunnerCredentialChoi
 import { Button, ConfirmDialog, ErrorState, Input, MoreMenu, StatusChip } from '../../../design';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { fetchJson, postJson, type RunnerRow, type WorkerRow } from '../../../lib/api';
-import { formatRelative } from '../../../lib/format';
 import { harnessLabel } from '../../../lib/harness';
 import { runnerPath, runPath } from '../../../routes/nav';
 import { AdminPage, AdminSection } from '../AdminFrame';
@@ -15,6 +14,8 @@ import { LEGACY_WORKER_LABEL, REASON_WORDS, taskWords } from '../workers';
 import { LegacyWorker, refreshFleet } from './LegacyWorker';
 import { QueueWarning } from './QueueWarning';
 import { live } from '../../../lib/live';
+import { agoWords } from '@goondocks/myco-shared/time-words';
+import { sinceWords } from '../../today/words';
 
 const RUNNERS_KEY = ['runners'] as const;
 interface FleetAnswer { observedAt: number; runners: RunnerRow[]; legacyWorkers: WorkerRow[]; queue: FleetQueue; storedCredentials?: Record<string, boolean>; cursor?: string | null; totals?: { active: number } }
@@ -27,7 +28,7 @@ export function RunnersPage() {
   const [setup, setSetup] = useState(false);
   return (
     <AdminPage name="runners" scope="server" title="Runners" lede="Your machines run Myco’s work: learning from sessions, writing titles and keeping code maps current.">
-      {runners.isError && <><ErrorState error={runners.error} onRetry={() => void runners.refetch()} /><p className="t-small text-muted">Machine and queue information is unavailable. Last check failed {formatRelative(runners.errorUpdatedAt)}.{runners.data !== undefined ? ` Last successful read ${formatRelative(runners.data.observedAt)}; the rows below are stale.` : ' Last successful read unavailable.'}</p></>}
+      {runners.isError && <><ErrorState error={runners.error} onRetry={() => void runners.refetch()} /><p className="t-small text-muted">Machine and queue information is unavailable. Last check failed {agoWords(runners.errorUpdatedAt)}.{runners.data !== undefined ? ` Last successful read ${agoWords(runners.data.observedAt)}; the rows below are stale.` : ' Last successful read unavailable.'}</p></>}
       {runners.isPending && <p className="t-body text-muted">Loading machines…</p>}
       {runners.data !== undefined && !runners.isError && <QueueWarning queue={runners.data.queue} />}
       <AdminSection id="runners" title="Registered runners" description="A runner is a machine you’ve chosen to run Myco’s work. Each agent uses this machine’s sign-in by default. You can choose the server’s stored key for an agent.">
@@ -62,7 +63,7 @@ function RemovedRunners() {
         <summary className="min-h-tap content-center cursor-pointer">Show removed runners</summary>
         {removed.isError && <ErrorState error={removed.error} onRetry={() => void removed.refetch()} />}
         {removed.data?.runners.length === 0 && <p className="text-muted">No runners have been removed.</p>}
-        <ul className="mt-s2 flex flex-col gap-s1">{removed.data?.runners.map(runner => <li key={runner.id}>{runner.name}{runner.removedAt === null ? '' : ` — removed ${formatRelative(runner.removedAt)}`}</li>)}</ul>
+        <ul className="mt-s2 flex flex-col gap-s1">{removed.data?.runners.map(runner => <li key={runner.id}>{runner.name}{runner.removedAt === null ? '' : ` — removed ${agoWords(runner.removedAt)}`}</li>)}</ul>
       </details>
     </AdminSection>
   );
@@ -70,7 +71,7 @@ function RemovedRunners() {
 
 function RunFact({ label, run }: { label: string; run: FleetRun | null }) {
   if (run === null) return null;
-  return <p className="t-small text-muted"><span className="text-ink-2">{label}: </span><Link className="underline underline-offset-2" to={runPath(run.projectId, run.runId)}>{taskWords(run.task)}{run.projectName === null ? '' : ` · ${run.projectName}`}</Link> · {formatRelative(run.at)}</p>;
+  return <p className="t-small text-muted"><span className="text-ink-2">{label}: </span><Link className="underline underline-offset-2" to={runPath(run.projectId, run.runId)}>{taskWords(run.task)}{run.projectName === null ? '' : ` · ${run.projectName}`}</Link> · {agoWords(run.at)}</p>;
 }
 
 function outcome(runner: RunnerRow): string {
@@ -78,7 +79,7 @@ function outcome(runner: RunnerRow): string {
   if (runner.state === 'paused') return runner.busy ? 'Paused — finishing its current task' : 'Paused — waiting to resume';
   if (runner.busy) {
     const work = runner.busy.task === 'title-summary' ? 'Writing a title' : runner.busy.task === 'extract-curate' ? 'Learning from sessions' : runner.busy.task === 'canopy-map' ? 'Updating a code map' : `Running ${taskWords(runner.busy.task)}`;
-    return `${work}${runner.busy.projectName ? ` for ${runner.busy.projectName}` : ''} (started ${formatRelative(runner.busy.at)})`;
+    return `${work}${runner.busy.projectName ? ` for ${runner.busy.projectName}` : ''} (started ${agoWords(runner.busy.at)})`;
   }
   if (runner.display === 'Not ready') {
     switch (runner.readiness.code ?? runner.readiness.state) {
@@ -94,8 +95,8 @@ function outcome(runner: RunnerRow): string {
     return 'Status unknown';
   }
   if (runner.display === 'Never contacted') return 'Waiting for its first check';
-  if (runner.display === 'Offline') return `Not seen recently; last seen ${formatRelative(runner.lastSeenAt)}`;
-  if (runner.lastCompleted) return `Last ran ${runner.lastCompleted.task === 'title-summary' ? 'a title' : runner.lastCompleted.task === 'extract-curate' ? 'learning' : taskWords(runner.lastCompleted.task)} ${formatRelative(runner.lastCompleted.at)}`;
+  if (runner.display === 'Offline') return `Not seen recently; last seen ${agoWords(runner.lastSeenAt)}`;
+  if (runner.lastCompleted) return `Last ran ${runner.lastCompleted.task === 'title-summary' ? 'a title' : runner.lastCompleted.task === 'extract-curate' ? 'learning' : taskWords(runner.lastCompleted.task)} ${agoWords(runner.lastCompleted.at)}`;
   return 'Waiting for its next check';
 }
 
@@ -115,7 +116,7 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
   const result = runner.lastResult;
   const blocked = runner.blockedVersion;
   const state = runner.updateState;
-  const resultWords = result === null ? 'No update result reported.' : `${result.result === 'updated' ? 'Updated' : result.result === 'no_update' ? 'Already current' : result.result === 'rolled_back' ? 'Rolled back' : result.result === 'refused' ? 'Update refused' : 'Update failed'} · ${result.fromVersion} → ${result.toVersion} · ${formatRelative(result.at)}${result.reason ? ` · ${result.reason}` : ''}`;
+  const resultWords = result === null ? 'No update result reported.' : `${result.result === 'updated' ? 'Updated' : result.result === 'no_update' ? 'Already current' : result.result === 'rolled_back' ? 'Rolled back' : result.result === 'refused' ? 'Update refused' : 'Update failed'} · ${result.fromVersion} → ${result.toVersion} · ${agoWords(result.at)}${result.reason ? ` · ${result.reason}` : ''}`;
   const descriptions: Record<Control, string> = {
     rename: 'Give this machine a name you recognize. Use letters, numbers, dots, underscores or hyphens.',
     pause: 'This machine will take no new work. Its assigned run can finish.',
@@ -164,19 +165,19 @@ function RunnerCard({ runner, allowed, storedCredentials }: { runner: RunnerRow;
           </>}
           {runner.busy && <><RunFact label="Current task" run={runner.busy} /><p>Assignment valid until {new Date(runner.busy.leaseExpiresAt).toLocaleString()}.</p></>}
           {runner.offers === null ? <p>Agent sign-in status unavailable.</p> : runner.offers.length === 0 ? <p>No agents reported.</p> : <div>{runner.offers.map(offer => <p key={offer.id}>{harnessLabel(offer.id)} · {offer.installed === false ? 'Not installed' : offer.authenticated ? 'Signed in' : 'Signed out'}{offer.profile && ` · ${offer.profile.model === 'none' ? 'Default model' : 'Model selection available'} · effort choices: ${offer.profile.efforts.join(', ') || 'none reported'}`}</p>)}<span title="A listed model does not confirm provider access or quota." aria-label="Provider access information">ⓘ</span></div>}
-          {runner.models?.map(model => <p key={model.harness}>{harnessLabel(model.harness)} models: {model.available ? model.source ?? 'source unavailable' : 'listing unavailable'} · listed {formatRelative(model.fetchedAt)} · received {formatRelative(model.receivedAt)} · {model.fresh ? 'recent listing' : 'stale listing'}</p>)}
+          {runner.models?.map(model => <p key={model.harness}>{harnessLabel(model.harness)} models: {model.available ? model.source ?? 'source unavailable' : 'listing unavailable'} · listed {agoWords(model.fetchedAt)} · received {agoWords(model.receivedAt)} · {model.fresh ? 'recent listing' : 'stale listing'}</p>)}
           {(runner.capabilities?.length || runner.labels?.length || runner.preference) && <p>{runner.capabilities?.length ? `Capabilities: ${runner.capabilities.join(', ')}. ` : ''}{runner.labels?.length ? `Labels: ${runner.labels.join(', ')}. ` : ''}{runner.preference ? `Preference: ${runner.preference}.` : ''}</p>}
           {runner.lastReason !== null && runner.lastReason in REASON_WORDS && <p>Last check for work: {REASON_WORDS[runner.lastReason as keyof typeof REASON_WORDS]}.</p>}
           {runner.display === 'Not ready' && <p>Readiness: {runner.readiness.reason}</p>}
-          {runner.offers !== null && runner.offersObservedAt != null && <p>Agent status reported {formatRelative(runner.offersObservedAt)}.</p>}
+          {runner.offers !== null && runner.offersObservedAt != null && <p>Agent status reported {agoWords(runner.offersObservedAt)}.</p>}
           {runner.os && <p>Operating system: {runner.os}{runner.arch ? ` · ${runner.arch}` : ''}.</p>}
           {runner.channel && <p>Release channel: {runner.channel}.</p>}
           {runner.updateAvailable === true && <p>Available release: {runner.latestVersion}.</p>}
-          {runner.lastSeenAt !== null && <p>Last checked in {formatRelative(runner.lastSeenAt)}.</p>}
-          {runner.lastCheckAt !== null && <p>Last update check {formatRelative(runner.lastCheckAt)}.</p>}
+          {runner.lastSeenAt !== null && <p>Last checked in {agoWords(runner.lastSeenAt)}.</p>}
+          {runner.lastCheckAt !== null && <p>Last update check {agoWords(runner.lastCheckAt)}.</p>}
           {runner.updateMetadataUnavailable && <p>Update metadata unavailable.</p>}
           {result !== null && <p>{resultWords}</p>}
-          {state != null && <p>{state.phase === 'updating' ? 'Updating' : state.phase === 'probation' ? 'Checking update health' : 'Finishing update cleanup'} · since {formatRelative(state.since)}{state.reason ? ` · ${state.reason}` : ''}</p>}
+          {state != null && <p>{state.phase === 'updating' ? 'Updating' : state.phase === 'probation' ? 'Checking update health' : 'Finishing update cleanup'} · {sinceWords(state.since, Date.now())}{state.reason ? ` · ${state.reason}` : ''}</p>}
           {blocked != null && <p>Blocked release: {blocked.version} · {blocked.until > Date.now() ? 'retry after' : 'block expired'} {new Date(blocked.until).toLocaleString()} · {blocked.reason}</p>}
           {runner.channel === null && runner.state !== 'removed' && <p>Dashboard updates require a reported release channel.</p>}
           <p>Runner ID: <code>{runner.id}</code></p>

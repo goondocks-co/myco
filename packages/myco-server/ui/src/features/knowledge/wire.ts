@@ -64,6 +64,8 @@ export interface SporeArticleAnswer {
   supersededBy: string[];
   /** The spores this one replaced, newest first. */
   supersedes: string[];
+  /** The name of the task whose run wrote it, or null when no run did or the run names no task Myco still serves. */
+  authorTask: string | null;
 }
 
 /** The fields a plan list reads of a plan: its metadata, a preview of its opening and its progress, never its body. */

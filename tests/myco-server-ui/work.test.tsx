@@ -530,7 +530,7 @@ describe('Myco’s work', () => {
     const now = await screen.findByRole('region', { name: 'Myco’s work now' });
     expect((await within(now).findByText('Keep the code map')).closest('a')!.getAttribute('href')).toBe(`/p/${P}/work/runs/run_live_now`);
     expect(within(now).getByText('It refreshes every 6 hours. Only after new session material arrives.')).toBeTruthy();
-    expect(within(now).getByText('Nothing needs you.')).toBeTruthy();
+    expect(within(now).getByText('Nothing is stuck or failing.')).toBeTruthy();
     expect(document.querySelector('[data-live-mark]')).not.toBeNull();
     expect(asked.filter((url) => url.pathname === '/api/work/now').map((url) => url.searchParams.get('project'))).toEqual([P]);
   });

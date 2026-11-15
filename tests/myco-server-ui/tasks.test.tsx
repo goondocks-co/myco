@@ -56,7 +56,7 @@ function server(tasks = TASKS, options: { member?: boolean; projects?: typeof PR
 function mount(path: string, settings = false) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   if (settings) client.setQueryData(['settings'], { leaves: [{ leaf: 'agent.tasks', revision: '5' }] });
-  return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App />{settings && <TaskTiers tiers={[{ task: 'title-summary', tier: 'high', source: 'task' }]} />}</MemoryRouter></QueryClientProvider></AppearanceProvider>);
+  return render(<AppearanceProvider><QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}><App />{settings && <TaskTiers tiers={[{ task: 'title-summary', name: 'Title and summarize sessions', tier: 'high', source: 'task' }]} />}</MemoryRouter></QueryClientProvider></AppearanceProvider>);
 }
 
 describe('the Tasks view reads the registry', () => {
@@ -128,7 +128,7 @@ describe('the Tasks view reads the registry', () => {
     mount(`/p/${P}/work/tasks`, true);
     await screen.findByText(/model-from-registry-0/);
     window.HTMLElement.prototype.scrollIntoView ??= () => undefined;
-    fireEvent.click(await screen.findByLabelText(/^Titling tier(?::|$)/));
+    fireEvent.click(await screen.findByLabelText(/^Title and summarize sessions tier(?::|$)/));
     fireEvent.click(await screen.findByRole('option', { name: 'Low' }));
     await waitFor(() => expect(screen.getByText(/changed-model/).textContent).toContain('low tier'));
     expect(screen.queryByText(/model-from-registry-0/)).toBeNull();

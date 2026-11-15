@@ -27,7 +27,7 @@ import { readQuietPolicy } from '../db/learning/quiet-policy.js';
 import { EMBEDDING_SELECTION_LEAVES } from '../core/embedding/policy.js';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type EmbeddingChoices, type IdleCloseDeadlines } from '@goondocks/myco-shared/settings-contract';
 import { isReasoningTier, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
-import { OUTCOME_TASKS, TASK_TIERS } from '../core/task-catalogue.js';
+import { OUTCOME_TASKS, TASK_TIERS, TASK_WORDS, type RetainedTask } from '../core/task-catalogue.js';
 import { readModelCatalogs, type StoredModelCatalog } from '../core/model-catalogs.js';
 import { cancelEmbeddingSwitch, embeddingSwitchStatus, estimateEmbeddingSwitch, passedOverForHealth, resumeEmbeddingSwitch, startEmbeddingSwitch, type SwitchAnswer } from '../core/embedding/switch.js';
 
@@ -101,10 +101,10 @@ export function writerFor(env: ServerEnv) {
  */
 const MAX_SECRET_CHARS = 4096;
 
-/** An outcome's effective tier and whether a task override supplies it. */
+/** An outcome's effective tier and whether a task override supplies it, with the task's name as the catalogue declares it. */
 export type TaskTierRow =
-  | { task: string; tier: ReasoningTier; source: 'task' | 'task-override' }
-  | { task: string; tier: null; source: 'invalid'; error: 'invalid_task_tier'; repair: 'reset-task' | 'reset-leaf'; remedy: string };
+  | { task: string; name: string; tier: ReasoningTier; source: 'task' | 'task-override' }
+  | { task: string; name: string; tier: null; source: 'invalid'; error: 'invalid_task_tier'; repair: 'reset-task' | 'reset-leaf'; remedy: string };
 
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -113,15 +113,16 @@ const record = (value: unknown): Record<string, unknown> | null =>
 function effectiveTaskTiers(value: unknown): TaskTierRow[] {
   const overrides = value === undefined ? {} : record(value);
   return OUTCOME_TASKS.map((task) => {
+    const name = TASK_WORDS[task as RetainedTask].name;
     const entry = overrides === null ? null : overrides[task];
     const tier = record(entry)?.reasoningLevel;
     if (overrides === null) {
-      return { task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-leaf', remedy: 'Reset task overrides to restore defaults.' };
+      return { task, name, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-leaf', remedy: 'Reset task overrides to restore defaults.' };
     }
     if ((entry !== undefined && record(entry) === null) || (tier !== undefined && !isReasoningTier(tier))) {
-      return { task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task', remedy: 'Correct the tier in Settings or reset the task tier.' };
+      return { task, name, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task', remedy: 'Correct the tier in Settings or reset the task tier.' };
     }
-    return { task, tier: tier ?? TASK_TIERS[task]!, source: tier === undefined ? 'task' : 'task-override' };
+    return { task, name, tier: tier ?? TASK_TIERS[task]!, source: tier === undefined ? 'task' : 'task-override' };
   });
 }
 

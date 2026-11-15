@@ -5,10 +5,10 @@ import {
 } from '../../../design';
 import { settingsRefusalText, useRepository, useRepositoryActions } from '../../../hooks/use-settings';
 import { PROJECT_SETTINGS_ANCHORS } from '../../../routes/nav';
-import { ago } from '../../today/words';
 import { AdminSection } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import type { RepositoryRow } from './wire';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** How code tasks reach the repository, in words; never the credential. */
 function accessWords(connection: RepositoryRow): string {
@@ -67,7 +67,7 @@ export function Repository({ projectId }: { projectId: string }) {
               <FactRow term="Repository" mono>{connection.url}</FactRow>
               <FactRow term="Branch" mono>{connection.branch}</FactRow>
               <FactRow term="Access">{accessWords(connection)}</FactRow>
-              <FactRow term="Set">{`${ago(connection.updatedAt, Date.now())}${nameOf(connection.updatedBy) === null ? '' : ` by ${nameOf(connection.updatedBy)}`}`}</FactRow>
+              <FactRow term="Set">{`${agoWords(connection.updatedAt, Date.now())}${nameOf(connection.updatedBy) === null ? '' : ` by ${nameOf(connection.updatedBy)}`}`}</FactRow>
             </dl>
           </Card>
         )}

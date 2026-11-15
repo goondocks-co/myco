@@ -252,7 +252,7 @@ async function readHolds(env: ServerEnv, scope: WorkNowScope, fleet: readonly Wo
     const task = learning.turnsAwaitingCards > 0 ? CARD_TASK : EXTRACTION_TASK;
     const waits = await fleetWaits(env, [task], now, includeSignIn, fleet);
     const reason = [...waits.values()][0]?.reason;
-    const line = learningStatusLine(learning, null, now, reason === 'not_signed_in' || reason === 'credential_unavailable',
+    const line = learningStatusLine(learning, null, reason === 'not_signed_in' || reason === 'credential_unavailable',
       held.some((head) => head.task === task));
     waiting.push({ key: 'learning', projectId, what: 'Learning from sessions', count: learning.dueSessions, why: line[0]!.toUpperCase() + line.slice(1), since: null, nextAt: null });
   }

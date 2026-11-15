@@ -182,6 +182,10 @@
     "./backup-words": {
       "import": "./dist/backup-words.js",
       "types": "./dist/backup-words.d.ts"
+    },
+    "./time-words": {
+      "import": "./dist/time-words.js",
+      "types": "./dist/time-words.d.ts"
     }
   },
   "license": "Apache-2.0",

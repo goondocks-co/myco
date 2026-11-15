@@ -31,19 +31,18 @@ export function BackupsSection() {
   const [confirming, setConfirming] = useState<{ row: BackupRow; preview: RestorePreview } | null>(null);
   const [adopt, setAdopt] = useState(false);
   const [adoptAsked, setAdoptAsked] = useState(false);
-  const [startedHere, setStartedHere] = useState<RestoreJob | null>(null);
+  const [startedHere, setStartedHere] = useState<string | null>(null);
 
   const rows = backups.list.data?.pages.flatMap((page) => page.backups) ?? [];
   const retention = backups.create.data?.retention.recordingErrorClass !== undefined
     ? backups.create.data.retention : backups.list.data?.pages[0]?.retention?.outcome;
   const lastFailure = backups.list.data?.pages[0]?.retention?.lastFailure;
   const latest = backups.list.data?.pages[0]?.restore ?? null;
-  // The restore started here is followed to its end; one started elsewhere is shown while it runs or after it stopped.
-  const shown = startedHere ?? (latest !== null && latest.state !== 'complete' ? latest : null);
-  const followed = useRestoreJob(shown?.state === 'running' ? shown.id : null).data?.job;
-  const acted = backups.stopRestore.data?.job ?? backups.continueRestore.data?.job;
-  const current = followed?.id === shown?.id && followed !== undefined ? followed : shown;
-  const restore = acted !== undefined && acted.id === current?.id ? acted : current;
+  // A restore started, continued or stopped here is followed to its end; another is shown while it runs or after it stopped.
+  // Its progress has one home, the followed job, which every restore, continue and stop answer also writes.
+  const shownId = startedHere ?? (latest !== null && latest.state !== 'complete' ? latest.id : null);
+  const followed = useRestoreJob(shownId);
+  const restore: RestoreJob | null = followed.data?.job ?? (latest !== null && latest.id === shownId ? latest : null);
   const openRestore = (row: BackupRow) => {
     setStartedHere(null);
     backups.restore.reset();
@@ -127,12 +126,13 @@ export function BackupsSection() {
         <Card role="status" className="flex flex-col gap-s1" data-health-restored="" data-restore-state={restore.state}>
           <p className={cn('t-body', restore.state === 'failed' ? 'text-bad' : 'text-ink')}>{restoreSays.title}</p>
           {restoreSays.detail !== null && <p className="t-small text-muted" data-restore-detail="">{restoreSays.detail}</p>}
+          {followed.isError && <p className="t-small text-warn" data-restore-unread="">Couldn’t read this restore’s progress just now; this is the last progress read.</p>}
           {restore.state === 'running' && (
             <span className="flex flex-wrap gap-s2">
               {restore.awaitingDocuments && <Button variant="primary" disabled={!backupPermission.allowed || backups.stopRestore.isPending} pending={backups.continueRestore.isPending}
-                onClick={() => backups.continueRestore.mutate(restore.id)}>Continue restore</Button>}
+                onClick={() => { setStartedHere(restore.id); backups.continueRestore.mutate(restore.id); }}>Continue restore</Button>}
               <Button variant="ghost" disabled={!backupPermission.allowed || backups.continueRestore.isPending} pending={backups.stopRestore.isPending}
-                onClick={() => backups.stopRestore.mutate(restore.id)}>Stop restore</Button>
+                onClick={() => { setStartedHere(restore.id); backups.stopRestore.mutate(restore.id); }}>Stop restore</Button>
             </span>
           )}
           {(backups.continueRestore.error ?? backups.stopRestore.error) !== null && <p role="alert" className="t-small text-bad">{failure(backups.continueRestore.error ?? backups.stopRestore.error)}</p>}
@@ -155,7 +155,7 @@ export function BackupsSection() {
           if (confirming === null) return;
           if (confirming.preview.restore?.allowed !== true) return;
           if (confirming.preview.foreignLineage && !adopt) { setAdoptAsked(true); return; }
-          backups.restore.mutate({ id: confirming.row.id, allowForeignLineage: adopt }, { onSuccess: (result) => { setStartedHere(result.job); setConfirming(null); } });
+          backups.restore.mutate({ id: confirming.row.id, allowForeignLineage: adopt }, { onSuccess: (result) => { setStartedHere(result.job.id); setConfirming(null); } });
         }}
       >
         {confirming !== null && (

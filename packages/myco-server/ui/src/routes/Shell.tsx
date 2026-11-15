@@ -7,6 +7,8 @@ import {
 } from '../design';
 import { Search as SearchPanel } from '../features/search/Search';
 import { useAttention } from '../hooks/use-attention';
+import { useUncaptured } from '../hooks/use-uncaptured';
+import { needsYouCount } from '../features/today/NeedsYou';
 import { LiveRefresh } from '../hooks/use-live';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useProjects } from '../hooks/use-projects';
@@ -162,13 +164,13 @@ function ShellSidebar({ pages, admin, account, onSearch }: ShellSidebarProps) {
 }
 
 /**
- * How many things need an admin, beside Health in the nav: nothing while the
- * answer is unread or empty. Only an admin's nav renders it, so a member's
- * browser never asks.
+ * How many things need an admin, beside Health in the nav: the same count the Needs you list says, nothing while the
+ * answer is unread or empty. Only an admin's nav renders it, so a member's browser never asks.
  */
 function NeedsYouCount() {
   const attention = useAttention({ enabled: true });
-  const count = attention.data?.items.length ?? 0;
+  const repositories = useUncaptured({ enabled: true });
+  const count = needsYouCount(attention.data, repositories.data?.items);
   if (count === 0) return null;
   return (
     <>

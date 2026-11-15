@@ -4,10 +4,10 @@ import { SECRET_SLOTS, slotUse } from '@goondocks/myco-shared/secret-slots';
 import { Button, ConfirmDialog, Dialog, DialogContent, DialogFooter, Disclosure, ErrorState, Input, LoadingState, MoreMenu } from '../../../design';
 import { settingsRefusalText, useSecrets, useSettingsActions } from '../../../hooks/use-settings';
 import { harnessLabel } from '../../../lib/harness';
-import { ago } from '../../today/words';
 import { AdminSection, RowCard, SettingRow } from '../AdminFrame';
 import { useMemberNames } from '../members';
 import type { SecretRow } from './wire';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** The keys' anchor on Models and keys, where an older `?tab=secrets` link lands. */
 export const CREDENTIALS_ANCHOR = 'credentials';
@@ -21,7 +21,7 @@ function keyStatus(secret: SecretRow, name: string | null, now: number): string 
   if (!secret.configured) return 'Not set';
   if (!secret.readable) return 'Stored under a key this server can no longer open. Enter it again.';
   const stored = `Stored · ${secret.maskedValue ?? 'set'}`;
-  const when = secret.updatedAt === null ? '' : ` ${ago(secret.updatedAt, now)}`;
+  const when = secret.updatedAt === null ? '' : ` ${agoWords(secret.updatedAt, now)}`;
   return name === null ? `${stored} · saved${when}` : `${stored} · saved by ${name}${when}`;
 }
 

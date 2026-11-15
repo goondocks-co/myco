@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react';
 import { Card, ChipGroup, HealthDot, Link, ListRow, ReadState, ReadUnavailable, StatusChip } from '../../design';
-import { formatElapsed, formatRelative, formatUntil } from '../../lib/format';
+import { formatElapsed, formatUntil } from '../../lib/format';
 import { harnessLabel } from '../../lib/harness';
 import { PROJECTS_PATH, runPath } from '../../routes/nav';
 import { displayModel } from '../work/ModelSummary';
 import { shortTime } from '../work/words';
 import type { NowNeed, NowRunning, NowWaiting, WorkNowAnswer, WorkNowSection } from './wire';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 export interface WorkNowProps {
   answer: WorkNowAnswer | undefined;
@@ -45,7 +46,7 @@ export function WorkNow({ answer, pending, error, onRetry, now, projectName }: W
                 {sameWaits(data.waiting).map((group) => <WaitingRow key={group[0]!.key} item={group[0]!} now={now}
                   kicker={group.length === 1 ? where(group[0]!.projectId) : across ? <ChipGroup items={group.map((item) => (item.projectId === null ? null : projectName(item.projectId)) ?? 'A project')} /> : null} />)}
               </Part>
-              <Part title="Needs you" part="needsYou" data={data} onRetry={onRetry} empty="Nothing needs you." count={data.needsYou.length} tone="warn">
+              <Part title="Stuck or failing" part="needsYou" data={data} onRetry={onRetry} empty="Nothing is stuck or failing." count={data.needsYou.length} tone="warn">
                 {data.needsYou.map((item) => <NeedRow key={item.key} item={item} now={now} kicker={where(item.projectId)} />)}
               </Part>
             </div>
@@ -66,7 +67,7 @@ function sameWaits(items: readonly NowWaiting[]): NowWaiting[][] {
   return [...groups.values()];
 }
 
-const PART_LABELS: Readonly<Record<WorkNowSection, string>> = { running: 'what is running', waiting: 'what is waiting', needsYou: 'what needs you' };
+const PART_LABELS: Readonly<Record<WorkNowSection, string>> = { running: 'what is running', waiting: 'what is waiting', needsYou: 'what is stuck or failing' };
 
 function Part({ title, part, data, onRetry, empty, count, tone, children }: {
   title: string; part: WorkNowSection; data: WorkNowAnswer; onRetry: () => void; empty: string; count: number; tone?: 'warn'; children: ReactNode;
@@ -94,7 +95,7 @@ function RunningRow({ run, now, kicker }: { run: NowRunning; now: number; kicker
         leading={<HealthDot tone="ok" live label="Running" />}
         kicker={kicker}
         title={<><span>{run.what}</span>{ranBy !== '' && <span className="t-small font-normal text-muted"> · {ranBy}</span>}</>}
-        meta={`${run.step === null ? 'Starting' : `Now: ${run.step.words}`}${run.heardAt === null ? '' : ` · ${run.machine ?? 'Its runner'} checked in ${formatRelative(run.heardAt, now)}`}`}
+        meta={`${run.step === null ? 'Starting' : `Now: ${run.step.words}`}${run.heardAt === null ? '' : ` · ${run.machine ?? 'Its runner'} checked in ${agoWords(run.heardAt, now)}`}`}
         trailing={run.startedAt === null ? undefined : <span>{formatElapsed(Math.max(0, now - run.startedAt))}</span>}
         wrap
       />
@@ -124,7 +125,7 @@ function NeedRow({ item, now, kicker }: { item: NowNeed; now: number; kicker: Re
     <li data-now-need={item.key}>
       <ListRow
         to={item.runId === null || item.projectId === null ? undefined : runPath(item.projectId, item.runId)}
-        leading={<HealthDot tone="warn" label="Needs you" />}
+        leading={<HealthDot tone="warn" label="Stuck or failing" />}
         kicker={kicker}
         title={item.what}
         meta={`${item.why}${retry}`}

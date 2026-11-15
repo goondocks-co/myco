@@ -12,6 +12,7 @@ import { memberLabel } from '../../lib/member-name';
 import { HEALTH_ANCHORS, HEALTH_PATH, PROJECT_SETTINGS_ANCHORS, PROJECT_SETTINGS_SUFFIX, projectPath, projectRepositoryPath, runPath } from '../../routes/nav';
 import { hasRunOutput } from './timeline';
 import type { MachineHarnessHealth, AttentionItem, AttentionKind, CaptureRow, HeldState, OutcomeKind, TodaySession, TodaySpore, UncapturedReason, UncapturedRootItem, WorkRun } from './wire';
+import { agoWords, clockWords, dayWords } from '@goondocks/myco-shared/time-words';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -31,33 +32,18 @@ export function listed(items: readonly string[]): string {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-/** The time of day on the 24-hour clock: "09:39". */
-export function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
-}
-
 /** A day as its heading reads: "Tuesday, September 29", with the year when it is not this one. */
 export function dayHeading(at: number, now: number): string {
   const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
   return new Date(at).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
 }
 
-/** How long ago, in words a person says: "just now", "4 min ago", "4 h ago", "yesterday", "3 days ago". */
-export function ago(at: number, now: number): string {
-  const delta = Math.max(0, now - at);
-  if (delta < MINUTE) return 'just now';
-  if (delta < HOUR) return `${Math.floor(delta / MINUTE)} min ago`;
-  if (delta < DAY) return `${Math.floor(delta / HOUR)} h ago`;
-  const days = Math.floor(delta / DAY);
-  return days === 1 ? 'yesterday' : `${days} days ago`;
-}
-
 /** An instant as "at 09:39" today, "yesterday at 23:05", else "on Sep 24". */
 export function when(at: number, now: number): string {
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
-  if (at >= startOfToday.getTime()) return `at ${clockTime(at)}`;
-  if (at >= startOfToday.getTime() - DAY) return `yesterday at ${clockTime(at)}`;
+  if (at >= startOfToday.getTime()) return `at ${clockWords(at)}`;
+  if (at >= startOfToday.getTime() - DAY) return `yesterday at ${clockWords(at)}`;
   return `on ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 }
 
@@ -68,21 +54,16 @@ export function when(at: number, now: number): string {
 export function sinceWords(at: number, now: number): string {
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
-  if (at >= startOfToday.getTime()) return `since ${clockTime(at)}`;
-  if (at >= startOfToday.getTime() - DAY) return `since yesterday ${clockTime(at)}`;
-  return `since ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${clockTime(at)}`;
+  if (at >= startOfToday.getTime()) return `since ${clockWords(at)}`;
+  if (at >= startOfToday.getTime() - DAY) return `since yesterday ${clockWords(at)}`;
+  return `since ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${clockWords(at)}`;
 }
 
-/** A day as a short date: "Sep 12", with the year when it is not this one. */
-export function shortDay(at: number, now: number): string {
-  const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
-  return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
-}
 
 /** An instant with its day when that is not today: "at 09:39", "yesterday at 23:05", "on Sep 24 at 21:40". */
 export function whenWithTime(at: number, now: number): string {
   const said = when(at, now);
-  return said.startsWith('on ') ? `${said} at ${clockTime(at)}` : said;
+  return said.startsWith('on ') ? `${said} at ${clockWords(at)}` : said;
 }
 
 /** An agent as a person reads it; a session that names none reads "An agent". */
@@ -242,8 +223,8 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
 
     case 'backup_overdue':
       return {
-        title: item.lastBackupAt === null ? 'No backup has completed yet' : `Last backup was ${ago(item.lastBackupAt, now)}`,
-        detail: `Backups are set to run ${everyHours(item.intervalHours)}${item.lastBackupAt === null ? '.' : `; none has completed since ${new Date(item.lastBackupAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}.`}`,
+        title: item.lastBackupAt === null ? 'No backup has completed yet' : `Last backup was ${agoWords(item.lastBackupAt, now)}`,
+        detail: `Backups are set to run ${everyHours(item.intervalHours)}${item.lastBackupAt === null ? '.' : `; none has completed since ${dayWords(item.lastBackupAt, now)}.`}`,
         action: { label: 'Open backups', to: healthAt(HEALTH_ANCHORS.backups) },
       };
     case 'outcome_failed':
@@ -283,7 +264,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     case 'no_worker':
       return {
         title: 'No machine is running Myco’s work',
-        detail: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting${item.since === null ? '' : ` since ${clockOrDay(item.since, now)}`}. ${item.lastContactAt === null ? 'No machine has checked in yet.' : `A machine last checked in ${ago(item.lastContactAt, now)}.`}`,
+        detail: `${count(item.runs, 'task')} ${item.runs === 1 ? 'is' : 'are'} waiting${item.since === null ? '' : ` since ${clockOrDay(item.since, now)}`}. ${item.lastContactAt === null ? 'No machine has checked in yet.' : `A machine last checked in ${agoWords(item.lastContactAt, now)}.`}`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.workers) },
       };
     case 'access_key_expiring':
@@ -297,7 +278,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       const one = item.bodies.length === 1 && !item.hasMore;
       return {
         title: one ? 'Text from a past run can’t be moved to storage' : `${item.hasMore ? 'More than ' : ''}${item.bodies.length} pieces of text from past runs can’t be moved to storage`,
-        detail: `Failing since ${ago(oldest!.since, now)}, starting with run ${oldest!.runId}. The text is safe where it is, and Myco keeps trying.`,
+        detail: `Failing ${sinceWords(oldest!.since, now)}, starting with run ${oldest!.runId}. The text is safe where it is, and Myco keeps trying.`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
     }
@@ -307,8 +288,8 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
       return {
         title: one ? 'A member’s name couldn’t be saved' : `${item.hasMore ? 'More than ' : ''}${item.members.length} members’ names couldn’t be saved`,
         detail: one
-          ? `Saving it failed at sign-in ${latest!.failures === 1 ? 'once' : `${latest!.failures} times`}, most recently ${ago(latest!.lastFailedAt, now)}. Their sign-in still worked, and Myco tries again the next time they sign in.`
-          : `Most recently ${ago(latest!.lastFailedAt, now)}. Their sign-ins still worked, and Myco tries again the next time each of them signs in.`,
+          ? `Saving it failed at sign-in ${latest!.failures === 1 ? 'once' : `${latest!.failures} times`}, most recently ${agoWords(latest!.lastFailedAt, now)}. Their sign-in still worked, and Myco tries again the next time they sign in.`
+          : `Most recently ${agoWords(latest!.lastFailedAt, now)}. Their sign-ins still worked, and Myco tries again the next time each of them signs in.`,
         action: { label: 'Open Health', to: healthAt(HEALTH_ANCHORS.status) },
       };
     }
@@ -329,7 +310,7 @@ export function attentionWords(item: AttentionItem, now: number, projectName: (p
     case 'harness_capture_silent':
       return {
         title: `${harnessLabel(item.harness)} stopped appearing on ${item.machineName ?? 'a machine'}`,
-        detail: `Its last session arrived ${ago(item.lastCapturedAt, now)}, although the machine was active ${ago(item.lastMachineActivityAt, now)}. Open ${harnessLabel(item.harness)} there and check its Myco hooks.`,
+        detail: `Its last session arrived ${agoWords(item.lastCapturedAt, now)}, although the machine was active ${agoWords(item.lastMachineActivityAt, now)}. Open ${harnessLabel(item.harness)} there and check its Myco hooks.`,
         action: null,
       };
   }
@@ -382,7 +363,7 @@ export function repositoryWords(item: UncapturedRootItem, now: number, viewerId:
     title: `${item.label} isn’t being captured yet`,
     detail: REASON_WORDS[item.reason](machine),
     held: HELD_WORDS[item.held](machine),
-    seen: `${count(item.misses, 'session')} on ${machine} so far, most recently ${ago(item.lastSeenAt, now)}.`,
+    seen: `${count(item.misses, 'session')} on ${machine} so far, most recently ${agoWords(item.lastSeenAt, now)}.`,
     tone: item.held === 'held' ? 'warn' : 'bad',
   };
 }

@@ -5,6 +5,7 @@ import { useWork } from '../../../hooks/use-work';
 import { ApiError, fetchJson, postJson } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { formatBytes } from '../../../lib/format';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { UpkeepLine } from '../../today/Summary';
 import { AdminSection } from '../AdminFrame';
@@ -159,7 +160,7 @@ function CheckRow({ status }: { status: CheckStatus }) {
               {latest.measurements.map((m) => (
                 <div key={m.name} className="flex flex-wrap gap-x-s3">
                   <dt className="text-muted">{measurementName(m.name)}</dt>
-                  <dd className="text-ink-2">{m.state === 'measured' ? formatBytes(m.value) : measurementWords(m.reasonCode)}</dd>
+                  <dd className="text-ink-2">{m.state === 'measured' ? `${formatBytes(m.value)}, measured ${agoWords(latest.finishedAt ?? latest.startedAt)}` : measurementWords(m.reasonCode)}</dd>
                 </div>
               ))}
             </dl>

@@ -4,12 +4,13 @@ import { useMe } from '../../hooks/use-me';
 import { SESSION_ANSWER_KIND_PREFIX, useSessionChildren, useSessionLineage, type ContextInjectionRow, type SessionResponse, type SessionRow } from '../../hooks/use-sessions';
 import { formatElapsed } from '../../lib/format';
 import { memberLabel } from '../../lib/member-name';
-import { ago, workPlace } from '../today/words';
+import { workPlace } from '../today/words';
 import { lineageName, sessionPagePath } from './Lineage';
 import { RawData, type RawSection } from './RawData';
 import { ToolUsageLine } from './Usage';
 import { WhatCameOfIt } from './WhatCameOfIt';
-import { agentName, count, dateTime, memberName } from './words';
+import { agentName, count, memberName } from './words';
+import { agoWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 export interface SessionAboutProps {
   open: boolean;
@@ -85,10 +86,10 @@ function Facts({ answer, projectId, projectName, now, live }: { answer: SessionR
       {who !== null && <FactRow term="Member">{who}</FactRow>}
       {session.branch !== null && <FactRow term="Branch" mono>{session.branch}</FactRow>}
       {session.originPath !== null && <FactRow term="Folder" mono>{session.originPath}</FactRow>}
-      <FactRow term="Started">{dateTime(session.startedAt ?? session.firstReceivedAt, now)}</FactRow>
+      <FactRow term="Started">{dateTimeWords(session.startedAt ?? session.firstReceivedAt, now)}</FactRow>
       {session.endedAt !== null
-        ? <FactRow term="Ended">{dateTime(session.endedAt, now)}{endedBy !== null && ` by ${endedBy}`}</FactRow>
-        : <FactRow term={live ? 'Live' : 'Open'}>Last heard {ago(session.lastReceivedAt, now)}</FactRow>}
+        ? <FactRow term="Ended">{dateTimeWords(session.endedAt, now)}{endedBy !== null && ` by ${endedBy}`}</FactRow>
+        : <FactRow term={live ? 'Live' : 'Open'}>Last heard {agoWords(session.lastReceivedAt, now)}</FactRow>}
       <FactRow term={session.endedAt === null ? 'Time observed' : 'Wall time'}>{answer.metrics?.durationMs === null ? 'Not recorded' : formatElapsed(answer.metrics?.durationMs ?? Math.max(0, (session.endedAt ?? session.lastReceivedAt) - (session.startedAt ?? session.firstReceivedAt)))}</FactRow>
       <FactRow term="Tools">{answer.metrics !== undefined && answer.metrics.tools.length > 0 ? <ToolUsageLine tools={answer.metrics.tools} /> : `${count(counts.toolCalls, 'tool call')}${counts.failedTools > 0 ? ` · ${counts.failedTools} failed` : ''}`}</FactRow>
       <FactRow term="Tokens">{answer.metrics?.tokens == null ? 'Not recorded, including sub-agents' : answer.metrics.tokens.toLocaleString()}</FactRow>
@@ -161,7 +162,7 @@ function UnplacedRecords({ projectId, sessionId, now }: { projectId: string; ses
         <ul aria-label={index === 0 ? 'Conversation records' : 'Hook records'} className="flex flex-col divide-y divide-line">
           {records.rows.map(record => <li key={record.key} className="flex flex-wrap justify-between gap-s2 py-s2 t-small">
             <span className={record.failed ? 'text-bad' : undefined}>{record.label}{record.failed ? ' · failed' : ''}</span>
-            <time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTime(record.createdAt, now)}</time>
+            <time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTimeWords(record.createdAt, now)}</time>
           </li>)}
         </ul>
         {records.hasMore && <ShowMore shown={records.rows.length} noun="records" onMore={records.more} pending={records.isFetchingMore} hasMore />}

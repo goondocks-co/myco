@@ -13,9 +13,7 @@ import { PageScope } from './scope';
 import { hasRunOutput, sporesWritten, type SessionEntry, type TimelineEntry, type WorkEntry } from '../features/today/timeline';
 import { FailureNote, KickerProject, KickerSep, NestedLines, TimelineItem, TitleLink, type TimelineTone } from '../features/today/TimelineItem';
 import type { WorkAnswer } from '../features/today/wire';
-import {
-  agentName, clockTime, count, dayHeading, failureNextStep, shortDay, sinceWords, sporeLine, sporeTypeWord, workHeadline, workPlace,
-} from '../features/today/words';
+import { agentName, count, dayHeading, failureNextStep, sinceWords, sporeLine, sporeTypeWord, workHeadline, workPlace } from '../features/today/words';
 import { useNeedsYou } from '../hooks/use-needs-you';
 import { useIsAdmin, useMe } from '../hooks/use-me';
 import { useMediaQuery } from '../hooks/use-media-query';
@@ -28,6 +26,7 @@ import { cleanSessionText, sessionHeading, sessionHeadingText, UNTITLED_SESSION_
 import { readPendingLink } from '../lib/pending-link';
 import { useRouteProject } from './route-project';
 import { CODE_MAP_SUFFIX, HEALTH_ANCHORS, HEALTH_PATH, projectPath, runPath } from './nav';
+import { clockWords, dayWords } from '@goondocks/myco-shared/time-words';
 
 /** How many of a run's spores, or of the sessions it titled, an item lists before "and N more". */
 const NESTED_SHOWN = 3;
@@ -188,7 +187,7 @@ function SessionItem({ entry, scoped, projectName, now }: { entry: SessionEntry;
   const heading = sessionHeading(session);
   return (
     <TimelineItem
-      time={entry.live ? 'now' : entry.earlier ? shortDay(entry.at, now) : clockTime(entry.at)}
+      time={entry.live ? 'now' : entry.earlier ? dayWords(entry.at, now) : clockWords(entry.at)}
       at={entry.live ? session.lastReceivedAt : entry.at}
       tone={entry.live ? 'live' : 'plain'}
       kicker={(
@@ -256,7 +255,7 @@ function WorkItem({ entry, scoped, projectName, work }: { entry: WorkEntry; scop
 
   return (
     <TimelineItem
-      time={clockTime(entry.at)}
+      time={clockWords(entry.at)}
       at={entry.at}
       tone={tone}
       kicker={(

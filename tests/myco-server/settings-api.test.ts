@@ -15,7 +15,7 @@ import { sqliteEnv } from './helpers/fixtures.js';
 import { changingAtStatement } from './helpers/store-faults.js';
 import { asOwner, asOwnerPatch, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
-import { OUTCOME_TASKS, RETAINED_TASKS, TASK_TIERS } from '@myco-server-worker/core/task-catalogue.js';
+import { OUTCOME_TASKS, RETAINED_TASKS, TASK_TIERS, TASK_WORDS, type RetainedTask } from '@myco-server-worker/core/task-catalogue.js';
 
 const ANTHROPIC = 'sk-ant-api03-ZmFrZS1rZXktZm9yLXRlc3Rpbmc';
 const WRAP_KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
@@ -92,10 +92,10 @@ describe('settings API', () => {
     expect(owner.status).toBe(200);
     const ownerTiers = (await json(owner)).taskTiers as Array<Record<string, unknown>>;
     expect(ownerTiers.find((tier) => tier.task === 'title-summary')).toEqual({
-      task: 'title-summary', tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task',
+      task: 'title-summary', name: 'Title and summarize sessions', tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task',
       remedy: 'Correct the tier in Settings or reset the task tier.',
     });
-    expect(ownerTiers.find((tier) => tier.task === 'extract-curate')).toEqual({ task: 'extract-curate', tier: 'default', source: 'task' });
+    expect(ownerTiers.find((tier) => tier.task === 'extract-curate')).toEqual({ task: 'extract-curate', name: 'Learn from sessions', tier: 'default', source: 'task' });
     const token = (await issueMemberToken(e.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now())).token;
     const member = await worker.fetch(memberPost(token, {}, '/members/settings'), e.all);
     expect(member.status).toBe(200);
@@ -127,7 +127,7 @@ describe('settings API', () => {
     expect(rows.every((row) => row.source === 'invalid' && row.repair === 'reset-leaf' && String(row.remedy).includes('Reset task overrides'))).toBe(true);
     expect(await json(await worker.fetch(await remove(e.db, '/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
     expect((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers)
-      .toEqual(OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })));
+      .toEqual(OUTCOME_TASKS.map((task) => ({ task, name: TASK_WORDS[task as RetainedTask].name, tier: TASK_TIERS[task], source: 'task' })));
   });
 
   it('reports a raw stored JSON error without hiding other Settings leaves', async () => {
@@ -146,7 +146,7 @@ describe('settings API', () => {
     const repaired = await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: { 'title-summary': { reasoningLevel: 'high' } } }), e.all);
     expect(repaired.status).toBe(200);
     expect((await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers)
-      .toContainEqual({ task: 'title-summary', tier: 'high', source: 'task-override' });
+      .toContainEqual({ task: 'title-summary', name: 'Title and summarize sessions', tier: 'high', source: 'task-override' });
     expect(await json(await worker.fetch(await remove(e.db, '/api/settings/agent.tasks'), e.all))).toEqual({ applied: true });
   });
 
@@ -223,13 +223,13 @@ describe('settings API', () => {
   it('reports exactly the declared outcome tiers and where each effective tier came from', async () => {
     const e = env();
     const tiers = async () => (await json(await worker.fetch(await asOwner(e.db, '/api/settings'), e.all))).taskTiers;
-    expect(await tiers()).toEqual(OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })));
+    expect(await tiers()).toEqual(OUTCOME_TASKS.map((task) => ({ task, name: TASK_WORDS[task as RetainedTask].name, tier: TASK_TIERS[task], source: 'task' })));
     const overrides = {
       'title-summary': { reasoningLevel: 'high', schedule: { maxRunsPerDay: 4 }, harness: 'claude-code', model: 'opus' },
     };
     expect(await json(await worker.fetch(await put(e.db, '/api/settings/agent.tasks', { value: overrides }), e.all))).toEqual({ applied: true });
     expect(await tiers()).toEqual(OUTCOME_TASKS.map((task) => ({
-      task, tier: task === 'title-summary' ? 'high' : TASK_TIERS[task], source: task === 'title-summary' ? 'task-override' : 'task',
+      task, name: TASK_WORDS[task as RetainedTask].name, tier: task === 'title-summary' ? 'high' : TASK_TIERS[task], source: task === 'title-summary' ? 'task-override' : 'task',
     })));
   });
 

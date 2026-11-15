@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, fetchEveryPage, postJson } from '../../../lib/api';
 import { formatUntil } from '../../../lib/format';
-import { ago } from '../../today/words';
 import type { GrantRow, GrantsAnswer } from '../wire';
 import { live } from '../../../lib/live';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** The one value `revokedBy` carries that is not a member: the expiry sweep, which has no actor to name. */
 export const GRANT_EXPIRY_ACTOR = 'expiry';
@@ -56,13 +56,13 @@ export const keyLive = (grant: GrantRow): boolean => grant.revokedAt === null;
  */
 export function keyWords(grant: GrantRow, nameOf: (id: string | null) => string | null, now: number = Date.now()): string {
   const by = nameOf(grant.createdBy);
-  const added = `Added ${ago(grant.createdAt, now)}${by === null ? '' : ` by ${by}`}`;
+  const added = `Added ${agoWords(grant.createdAt, now)}${by === null ? '' : ` by ${by}`}`;
   if (grant.revokedAt !== null) {
-    if (grant.revokedBy === GRANT_EXPIRY_ACTOR) return `${added} · expired ${ago(grant.revokedAt, now)}`;
+    if (grant.revokedBy === GRANT_EXPIRY_ACTOR) return `${added} · expired ${agoWords(grant.revokedAt, now)}`;
     const ender = nameOf(grant.revokedBy);
-    return `${added} · ${grant.rotatedTo !== null ? 'replaced' : 'revoked'} ${ago(grant.revokedAt, now)}${ender === null ? '' : ` by ${ender}`}`;
+    return `${added} · ${grant.rotatedTo !== null ? 'replaced' : 'revoked'} ${agoWords(grant.revokedAt, now)}${ender === null ? '' : ` by ${ender}`}`;
   }
-  const used = grant.lastUsedAt === null ? 'never used' : `last used ${ago(grant.lastUsedAt, now)}`;
+  const used = grant.lastUsedAt === null ? 'never used' : `last used ${agoWords(grant.lastUsedAt, now)}`;
   const expires = grant.expiresAt === null ? '' : grant.expiresAt <= now ? ' · expired' : ` · expires in ${formatUntil(grant.expiresAt, now, true)}`;
   return `${added} · ${used}${expires}`;
 }

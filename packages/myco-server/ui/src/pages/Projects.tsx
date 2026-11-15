@@ -12,9 +12,10 @@ import { permissionOf, useMe } from '../hooks/use-me';
 import { useProjectActions, useProjects } from '../hooks/use-projects';
 import { isArchived, type ProjectSummary } from '../lib/api';
 import { cn } from '../lib/cn';
-import { formatCount, formatRelative } from '../lib/format';
+import { formatCount } from '../lib/format';
 import { rememberProject } from '../lib/project-memory';
 import { PROJECT_SETTINGS_SUFFIX, projectPath } from '../routes/nav';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** Most recent activity first; a project with none sorts last, then by name. */
 function byRecency(a: ProjectSummary, b: ProjectSummary): number {
@@ -87,7 +88,7 @@ export function Projects() {
                     key={p.projectId}
                     project={p}
                     now={now}
-                    note={`Archived ${formatRelative(p.archivedAt, now)}${by === null ? '' : ` by ${by}`}`}
+                    note={`Archived ${agoWords(p.archivedAt, now)}${by === null ? '' : ` by ${by}`}`}
                     action={admin ? (
                       <Button size="sm" pending={actions.unarchive.isPending && actions.unarchive.variables === p.projectId}
                         onClick={() => { setError(null); actions.unarchive.mutate(p.projectId, { onError: (err) => setError(refusalText(err)) }); }}>
@@ -139,7 +140,7 @@ function ProjectRow({ project, now, note, menu, action }: {
             <>
               <span className="whitespace-nowrap">{formatCount(project.sessionCount, 'session')}</span>
               <span aria-hidden>·</span>
-              <span className="whitespace-nowrap">{project.lastActivityAt === null ? 'No activity yet' : `Last activity ${formatRelative(project.lastActivityAt, now)}`}</span>
+              <span className="whitespace-nowrap">{project.lastActivityAt === null ? 'No activity yet' : `Last activity ${agoWords(project.lastActivityAt, now)}`}</span>
             </>
           )}
         </span>

@@ -6,9 +6,9 @@
  * measure is never shown without its sample.
  */
 import type { StatusResponse } from '../../../lib/api';
-import { clockTime } from '../../today/words';
-import { formatBytes, formatCount, formatRelative, formatUntil } from '../../../lib/format';
+import { formatBytes, formatCount, formatUntil } from '../../../lib/format';
 import type { BackupVerification, Cadence, MaintenanceCheck, MaintenanceOutcome, RecoveryAvailability, RecoverySchedule, RecoveryProducerStatus, TickReport, JobReport } from './wire';
+import { agoWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 // ---------- Housekeeping ----------
 
@@ -50,19 +50,19 @@ export function backlogWords(backlog: StatusResponse['transcriptBacklog']): stri
   return `${backlog.limited ? 'At least ' : ''}${formatCount(backlog.transcripts, 'transcript')} (${formatBytes(backlog.bytes)}) waiting to be read into sessions.`;
 }
 
-// ---------- Automatic recovery ----------
+/** When learning last completed, in this screen's words: "Last learning completed 2 h ago.", or nothing when it was not read. */
+export function lastLearningWords(last: { at: number; reason: string } | null | undefined, now: number): string | null {
+  if (last === undefined) return null;
+  if (last === null) return 'Nothing learned yet.';
+  return `Last ${last.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${agoWords(last.at, now)}.`;
+}
 
-/** An instant as every page writes one: "Sep 1, 12:00", with the year when it is not this one. */
-const dateLabel = (ms: number, now: number = Date.now()): string => {
-  const date = new Date(ms);
-  const sameYear = date.getFullYear() === new Date(now).getFullYear();
-  return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) })}, ${clockTime(ms)}`;
-};
+// ---------- Automatic recovery ----------
 
 /** How long until an instant, in the coarse words a cadence deserves. */
 export function whenLabel(at: number, now: number): string {
   if (at <= now) return 'now';
-  return at - now < 48 * 60 * 60 * 1000 ? `in ${formatUntil(at, now, true)}` : `on ${dateLabel(at)}`;
+  return at - now < 48 * 60 * 60 * 1000 ? `in ${formatUntil(at, now, true)}` : `on ${dateTimeWords(at)}`;
 }
 
 /** What a server that runs no automatic recovery says of it. */
@@ -104,9 +104,9 @@ export function latestWords(schedule: RecoverySchedule, form: RecoveryForm = 'st
   const latest = schedule.latest;
   if (latest === null) return 'No attempt has run yet.';
   const which = form === 'artifact' ? 'The last attempt' : `Attempt ${latest.attempt}`;
-  const when = latest.startedAt === null ? '' : ` started ${dateLabel(latest.startedAt)}`;
+  const when = latest.startedAt === null ? '' : ` started ${dateTimeWords(latest.startedAt)}`;
   // A waiting attempt is still advancing: what it waits on, and for how long, is what an owner reads.
-  const since = latest.waitingSince == null ? '' : ` (requested ${formatRelative(latest.waitingSince)})`;
+  const since = latest.waitingSince == null ? '' : ` (requested ${agoWords(latest.waitingSince)})`;
   if (latest.waiting === 'earlier_export') return `${which}${when} is waiting for an earlier export to end before it starts its own${since}.`;
   if (latest.waiting === 'own_request') return `${which}${when} is waiting to learn whether the export it asked for started${since}.`;
   // A refusal is the attempt's outcome only once it failed; an advancing attempt's is a transient it spent.
@@ -218,12 +218,12 @@ function coverageWords(progress: MaintenanceOutcome['progress'], finished: boole
 
 /** A `running` record is live only while the server reports the check running; otherwise its run ended without recording an outcome. */
 export function outcomeWords(outcome: MaintenanceOutcome, running: boolean): string {
-  const when = dateLabel(outcome.finishedAt ?? outcome.startedAt);
+  const when = dateTimeWords(outcome.finishedAt ?? outcome.startedAt);
   const by = outcome.trigger === 'owner' ? 'run by hand' : 'scheduled';
   if (outcome.state === 'running') {
     return running
-      ? `Running since ${dateLabel(outcome.startedAt)} (${by}).${coverageWords(outcome.progress, false)}`
-      : `Interrupted: started ${dateLabel(outcome.startedAt)} (${by}) and ended without recording an outcome.${coverageWords(outcome.progress, true)}`;
+      ? `Running since ${dateTimeWords(outcome.startedAt)} (${by}).${coverageWords(outcome.progress, false)}`
+      : `Interrupted: started ${dateTimeWords(outcome.startedAt)} (${by}) and ended without recording an outcome.${coverageWords(outcome.progress, true)}`;
   }
   if (outcome.state === 'healthy') return `No problems found ${when} (${by}).`;
   if (outcome.state === 'findings') return `Problems found ${when} (${by}):`;
@@ -235,7 +235,7 @@ export function outcomeWords(outcome: MaintenanceOutcome, running: boolean): str
 /** A backup's size, as a person reads it. */
 export const sizeLabel = (bytes: number): string => (bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
-export const backupDate = (ms: number): string => dateLabel(ms);
+export const backupDate = (ms: number): string => dateTimeWords(ms);
 
 /** What a restore would add, table by table, in words: "sessions 12 · spores 40". Tables adding nothing are left out. */
 export function countsWords(counts: Record<string, number>): string {

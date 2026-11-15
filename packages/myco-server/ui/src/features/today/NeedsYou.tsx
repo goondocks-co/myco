@@ -53,6 +53,14 @@ interface Row {
   render: (connect: (item: UncapturedRootItem) => void) => ReactNode;
 }
 
+/**
+ * How many things need the viewer: each attention item, and the repositories their machines are not capturing as one.
+ * The Needs you list and the count beside Health in the nav both say this number.
+ */
+export function needsYouCount(answer: AttentionAnswer | undefined, repositories: readonly UncapturedRootItem[] | undefined): number {
+  return (answer?.items.length ?? 0) + ((repositories?.length ?? 0) > 0 ? 1 : 0);
+}
+
 function rowsOf({ admin, answer, repositories, now, projectName, viewerId }: NeedsYouProps): Row[] {
   const attention = (answer?.items ?? []).map((item, index): Row => {
     const words = attentionWords(item, now, projectName);
@@ -165,7 +173,7 @@ export function NeedsYouPanel(props: NeedsYouProps) {
     <Card className="flex flex-col gap-s3" data-needs-you="">
       <div className="flex items-baseline gap-s2">
         <h2 className="t-h2 text-ink">Needs you</h2>
-        <span className="t-small text-muted">{rows.length}</span>
+        <span className="t-small text-muted">{needsYouCount(props.answer, props.repositories.items)}</span>
       </div>
       <ReadChecks props={props} />
       <Connected words={connecting.done} />

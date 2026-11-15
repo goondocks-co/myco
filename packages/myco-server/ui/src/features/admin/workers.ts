@@ -10,14 +10,12 @@ import type { HealthTone } from '../../design';
 import type { WorkerRow, WorkerStatus } from '../../lib/api';
 import { formatUntil } from '../../lib/format';
 import { harnessLabel } from '../../lib/harness';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
-/** Seconds matter for a 2-second poll, so this says them; `formatRelative` starts at "just now". */
+/** Seconds matter for a 2-second poll, so this says them under a minute; from a minute on it is `agoWords`. */
 function sinceWords(at: number, now: number): string {
   const delta = Math.max(0, now - at);
-  if (delta < 60_000) return `${Math.max(1, Math.round(delta / 1000))}s ago`;
-  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
-  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
-  return `${Math.floor(delta / 86_400_000)}d ago`;
+  return delta < 60_000 ? `${Math.max(1, Math.round(delta / 1000))}s ago` : agoWords(at, now);
 }
 
 /** Why the last check for work took nothing, in an owner's words. Each describes that one check, not the whole queue. */
@@ -45,6 +43,8 @@ const TASK_WORDS: Readonly<Record<string, string>> = {
   'embedding-reconcile': 'a search index update',
   'vault-seed': 'seeding',
   'turn-cards': 'learning turn cards',
+  'curate-spores': 'curating overlapping spores',
+  'curate-plans': 'curating stale plans',
 };
 
 /** A task in words: "learning", "titling", else "a task". */

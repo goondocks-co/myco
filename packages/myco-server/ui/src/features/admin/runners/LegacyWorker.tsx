@@ -2,8 +2,8 @@ import type { useQueryClient } from '@tanstack/react-query';
 import { StatusChip } from '../../../design';
 import { useProjects } from '../../../hooks/use-projects';
 import type { WorkerRow } from '../../../lib/api';
-import { formatRelative } from '../../../lib/format';
 import { LEGACY_WORKER_LABEL, agentsWords, lastClaimWords, taskWords } from '../workers';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 export async function refreshFleet(client: ReturnType<typeof useQueryClient>) {
   await Promise.all(['runners', 'status', 'runs', 'run', 'task-start'].map(key => client.invalidateQueries({ queryKey: [key] })));
@@ -22,7 +22,7 @@ export function LegacyWorker({ worker, name }: { worker: WorkerRow; name: string
     <details className="mt-s2 t-small text-muted"><summary className="min-h-tap content-center cursor-pointer text-ink-2">Details</summary>
       <div className="mt-s2 flex flex-col gap-s2 break-words">
         <p>{LEGACY_WORKER_LABEL}</p>
-        {worker.lastSeenAt > 0 && <p>{worker.recent ? 'Seen' : 'Not seen recently; last seen'} {formatRelative(worker.lastSeenAt)}.</p>}
+        {worker.lastSeenAt > 0 && <p>{worker.recent ? 'Seen' : 'Not seen recently; last seen'} {agoWords(worker.lastSeenAt)}.</p>}
         {worker.busy !== null && <p>Running {taskWords(worker.busy.task)}{project === null ? '' : ` in ${project}`}. Assignment valid until {new Date(worker.busy.leaseExpiresAt).toLocaleString()}.</p>}
         <p>{agentsWords(worker)}</p>
         {claim !== null && <p>{claim} This describes only the machine’s last check.</p>}

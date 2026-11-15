@@ -236,7 +236,7 @@ it('closes old work without retrying it and admits a resumed session after new c
     await advanceLearningDeadlines(db, at, { page: LEARNING_ADVANCE_PAGE, age: true });
     const status = await readLearningStatus(db, at);
     expect(status).toMatchObject({ agedOutSessions: 1, turnsAwaitingCards: 0, dueCards: 0, dueSessions: 0 });
-    expect(learningStatusLine(status, null, at)).toContain('1 session was not learned because it went quiet more than 7 days before Myco reached it');
+    expect(learningStatusLine(status, null)).toContain('1 session was not learned because it went quiet more than 7 days before Myco reached it');
     expect(await harness.poll(at)).toMatchObject({ claimed: false });
     expect(await harness.poll(at + 1)).toMatchObject({ claimed: false });
     await capture(db, 'aged', [{ id: uuid(1201), text: 'Learn this new failure after resuming', at }], 'project', at);

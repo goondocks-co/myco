@@ -8,7 +8,8 @@ import { formatBytes } from '../../lib/format';
 import { ApiError } from '../../lib/api';
 import { useMe } from '../../hooks/use-me';
 import { promptPreview } from './Turn';
-import { count, dateTime } from './words';
+import { count } from './words';
+import { dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 /** The parts of the raw data a link can open to, by the `raw` parameter. */
 export const RAW_SECTIONS = ['transcript', 'context', 'attachments'] as const;
@@ -103,7 +104,7 @@ function TranscriptFile({ projectId, sessionId, t, now }: { projectId: string; s
                   bytes {s.baseOffset.toLocaleString()}–{(s.baseOffset + s.length).toLocaleString()}
                 </ExternalLink>
                 <span className="text-muted">
-                  {formatBytes(s.length)} · {dateTime(s.createdAt, now)}
+                  {formatBytes(s.length)} · {dateTimeWords(s.createdAt, now)}
                 </span>
               </li>
             ))}
@@ -130,8 +131,8 @@ function TranscriptFile({ projectId, sessionId, t, now }: { projectId: string; s
           {t.originPath}
         </FactRow>
       )}
-      <FactRow term="First received">{dateTime(t.firstReceivedAt, now)}</FactRow>
-      <FactRow term="Last received">{dateTime(t.lastReceivedAt, now)}</FactRow>
+      <FactRow term="First received">{dateTimeWords(t.firstReceivedAt, now)}</FactRow>
+      <FactRow term="Last received">{dateTimeWords(t.lastReceivedAt, now)}</FactRow>
     </FactsPanel>
   );
 }
@@ -160,7 +161,7 @@ function ContextHistory({ projectId, sessionId, now }: { projectId: string; sess
           {context.rows.map((record) => (
             <li key={`${record.kind}/${record.createdAt}`} className="flex flex-wrap items-baseline justify-between gap-s2 px-s4 py-s2 t-small">
               <span className="text-ink-2">{contextLabel(record)}</span>
-              <time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTime(record.createdAt, now)}</time>
+              <time dateTime={new Date(record.createdAt).toISOString()} className="text-muted">{dateTimeWords(record.createdAt, now)}</time>
             </li>
           ))}
         </ul>
@@ -214,7 +215,7 @@ function Attachments({ projectId, sessionId, now, agent }: { projectId: string; 
                 ) : (
                   <ExternalLink href={processedBodyUrl(projectId, { kind: 'attachment', id: a.attachmentId })} className="t-small">Download {a.description ?? 'the attachment'}</ExternalLink>
                 )}
-                <span className="t-meta text-muted">{a.mediaType} · {formatBytes(a.byteSize)} · {dateTime(a.createdAt, now)}</span>
+                <span className="t-meta text-muted">{a.mediaType} · {formatBytes(a.byteSize)} · {dateTimeWords(a.createdAt, now)}</span>
               </li>
             ))}
           </ul>

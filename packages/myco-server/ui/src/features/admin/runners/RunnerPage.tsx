@@ -1,13 +1,13 @@
 import { useParams } from 'react-router-dom';
 import { Breadcrumbs, Card, ErrorState, HealthDot, ListRow, ShowMore, StatusChip, type HealthTone } from '../../../design';
 import { usePaged, type Page } from '../../../hooks/use-paged';
-import { formatRelative } from '../../../lib/format';
 import { RUNNERS_PATH, runPath } from '../../../routes/nav';
 import { atWords } from '../../work/words';
 import { SourceMark } from '../../work/RunStory';
 import { AdminPage, AdminSection } from '../AdminFrame';
 import { taskWords } from '../workers';
 import { agentVersionWords, modelDrift, runnerVersionWords, type DriftFacts } from './drift';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** How one claim by this runner came out, as `GET /api/runners/{id}/runs` answers it. */
 type RunnerRunOutcome = 'running' | 'worked' | 'changed_nothing' | 'failed' | 'handed_on' | 'other';
@@ -51,7 +51,7 @@ export function RunnerPage() {
       {runner !== undefined && (
         <Card className="flex flex-col gap-s2" data-runner-facts="">
           <p className="flex flex-wrap items-baseline gap-x-s2 gap-y-s1 t-body text-ink">
-            {runner.lastSeenAt === null ? 'Has not checked in yet' : `Last checked in ${formatRelative(runner.lastSeenAt, now)}`}
+            {runner.lastSeenAt === null ? 'Has not checked in yet' : `Last checked in ${agoWords(runner.lastSeenAt, now)}`}
             <SourceMark source={runner.lastSeenAt === null ? 'none' : 'saw'} />
             {runner.state !== 'enabled' && <StatusChip tone="neutral">{runner.state === 'paused' ? 'Paused' : 'Removed'}</StatusChip>}
           </p>

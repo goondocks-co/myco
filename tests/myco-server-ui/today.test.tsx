@@ -484,7 +484,7 @@ describe('Today', () => {
     const panel = (await screen.findByText('Needs you')).closest('[data-needs-you]') as HTMLElement;
     const rows = [...panel.querySelectorAll('[data-needs-you-item]')];
     expect(rows.map((row) => row.querySelector('p')!.textContent)).toEqual([
-      'Last backup was 28 days ago',
+      'Last backup was on Sep 1',
       '3 code map updates failed',
       'An access key expires in 3 days',
     ]);
@@ -687,7 +687,7 @@ describe('Today', () => {
     server(day());
     mount('/');
     const summary = await screen.findByRole('button', { name: /3 things need you/ });
-    expect(summary.textContent).toContain('Last backup was 28 days ago, and 2 more');
+    expect(summary.textContent).toContain('Last backup was on Sep 1, and 2 more');
     const page = document.querySelector('[data-today]')!;
     expect(page.firstElementChild!.contains(summary)).toBe(true);
     fireEvent.click(summary);
@@ -980,7 +980,7 @@ describe('dashboard honesty gates', () => {
     const alert = await screen.findByText('Showing the last successful what needs you read. Couldn’t refresh it.');
     expect(alert.closest('[hidden]')).toBeNull();
     expect(alert.closest('[data-state=closed]')).toBeNull();
-    expect(screen.queryByText('Last backup was 28 days ago')).toBeNull();
+    expect(screen.queryByText('Last backup was on Sep 1')).toBeNull();
   });
 
   it('finding 9: a final receipt fourteen minutes old says received, at either side of the boundary', async () => {

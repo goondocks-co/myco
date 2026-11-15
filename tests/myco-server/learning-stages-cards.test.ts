@@ -109,8 +109,8 @@ it('closes an all-mechanical session without a run and orders sessions newest fi
     expect(await learningHead(db, 'project', NOW + 3 * HOUR)).toBe('newer');
     const status = await readLearningStatus(db, NOW + 3 * HOUR);
     expect(status).toMatchObject({ dueSessions: 2, dueCards: 2, turnsAwaitingCards: 0, lastCompleted: { reason: 'no_signal', sessionId: 'quiet' } });
-    expect(learningStatusLine(status, { dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5 }, NOW + 120_000))
-      .toBe('2 sessions ready to learn (2 summaries to learn from); 0 turns waiting to be summarized; last session closed with nothing to learn 2 min ago; spent $2.00 of $20.00 in the last 24 hours.');
+    expect(learningStatusLine(status, { dailyUsd: 20, automaticUsd: 1.5, manualUsd: 0.5 }))
+      .toBe('2 sessions ready to learn (2 summaries to learn from); 0 turns waiting to be summarized; spent $2.00 of $20.00 in the last 24 hours.');
     await settingsWriter(db).setLeaf('agent.scheduled_tasks_enabled', false, 'owner', NOW + 3 * HOUR);
     expect(await dispatchTask(harness.env, 'extract-curate', 'project', { serverUrl: 'https://myco.test', actor: 'mem_worker' }, NOW + 3 * HOUR)).toMatchObject({ dispatched: true });
     const claim = await harness.poll(NOW + 3 * HOUR);

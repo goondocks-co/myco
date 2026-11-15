@@ -3,7 +3,7 @@ import {
   ANY, EmptyState, ErrorState, FilterBar, ListRow, LoadingState, ShowMore, TypeChip, useFilterParams, useQueryDraft,
   type FilterParams, type QueryDraft, type SelectOption,
 } from '../../design';
-import { clockTime, shortDay } from '../today/words';
+import { clockWords, dayWords } from '@goondocks/myco-shared/time-words';
 
 /** The URL key of the list's one filter; switching tabs drops it with `q`. */
 export const EVENT_TYPE_KEY = 'type';
@@ -146,8 +146,8 @@ function EventFilterBar({ filter }: { filter: SessionEventFilter }) {
 function When({ at, now }: { at: number; now: number }) {
   return (
     <time dateTime={new Date(at).toISOString()} className="flex w-s12 flex-col t-meta tabular-nums text-muted sm:w-time-col">
-      <span className="whitespace-nowrap">{shortDay(at, now)}</span>
-      <span className="whitespace-nowrap">{clockTime(at)}</span>
+      <span className="whitespace-nowrap">{dayWords(at, now)}</span>
+      <span className="whitespace-nowrap">{clockWords(at)}</span>
     </time>
   );
 }

@@ -4,8 +4,8 @@ import {
   useSessionArtifacts, useSessionCommits,
   type ArtifactKind, type CapturePoint, type CommitChanges, type CommitObservation, type CommitReleaseCheck, type SessionArtifact, type SessionCommits,
 } from '../../hooks/use-sessions';
-import { ago } from '../today/words';
 import { SessionEventList, type SessionEventRow } from './SessionEventList';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** A commit as people name it: its first seven characters. */
 export const shortSha = (sha: string) => sha.slice(0, 7);
@@ -50,7 +50,7 @@ export function containmentWords(release: CommitReleaseCheck, now: number): stri
     state,
     CONTAINED.has(release.state) && release.basisRef !== null ? shortRef(release.basisRef) : null,
     release.releasePrNumber === null ? null : `PR #${release.releasePrNumber}`,
-    `checked ${ago(release.checkedAt, now)}`,
+    `checked ${agoWords(release.checkedAt, now)}`,
   ].filter((part) => part !== null).join(' · ');
 }
 

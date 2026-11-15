@@ -30,7 +30,7 @@ const STUDIO_CREDENTIAL = 'mt_4Kp9Qs2Vx7Lm0Zb1';
 const BUSY_CREDENTIAL = 'mt_Ws8Yt3Nq6Rc2Hd5E';
 const STRAY_CREDENTIAL = 'mt_Pz1Ga7Ue4Oi9Kj3F';
 const STATUS = {
-  learning: { line: '2 sessions ready to learn (5 summaries to learn from); 3 turns waiting to be summarized; 1 session waiting to become readable; last learning completed 2 min ago; spent $2.00 of $20.00 in the last 24 hours.' },
+  learning: { line: '2 sessions ready to learn (5 summaries to learn from); 3 turns waiting to be summarized; 1 session waiting to become readable; spent $2.00 of $20.00 in the last 24 hours.', lastCompleted: { at: NOW - 2 * 60_000, reason: 'learned' } },
   schema: { expected: 57, found: 57, matches: true }, target: 'bun',
   capabilities: [{ capability: 'blobs', label: 'Stored attachments and transcripts', present: true, operatorNames: ['MYCO_BLOBS'] }],
   workers: {
@@ -136,7 +136,7 @@ describe('Health', () => {
 
   it('shows the budget and runner sign-in waits beneath one learning heading', async () => {
     for (const reason of ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window', 'waiting for a runner that can sign in']) {
-      const line = `1 session ready to learn (1 summary to learn from); 1 turn waiting to be summarized; 1 session waiting to become readable; ${reason}; nothing learned yet; spent $1.00 of $1.00 in the last 24 hours.`;
+      const line = `1 session ready to learn (1 summary to learn from); 1 turn waiting to be summarized; 1 session waiting to become readable; ${reason}; spent $1.00 of $1.00 in the last 24 hours.`;
       server(routes({ '/api/status': () => Response.json({ ...STATUS, learning: { line } }) }));
       mount('/status/health#status');
       const section = await screen.findByRole('region', { name: 'Status' });
@@ -152,6 +152,7 @@ describe('Health', () => {
     mount('/status/health#status');
     const section = await screen.findByRole('region', { name: 'Status' });
     expect(await within(section).findByText(STATUS.learning.line)).toBeTruthy();
+    expect(section.querySelector('[data-health-last-learning]')!.textContent).toBe('Last learning completed 2 min ago.');
     cleanup();
     server(routes({ '/api/status': () => Response.json({ ...STATUS, learning: null, unavailable: ['learning'] }) }));
     mount('/status/health#status');
@@ -268,6 +269,19 @@ describe('Health', () => {
     expect(await within(admin).findByRole('link', { name: 'Health, 1 thing needs you' })).toBeTruthy();
   });
 
+  it('says one Needs you count in the list and beside Health, counting the repositories not captured yet', async () => {
+    server(routes({
+      '/api/uncaptured': () => Response.json({ items: [{ machineId: 'mt_studio_machine', machineName: 'Ada’s studio Mac', member: { id: 'mem_ada', label: 'Ada' }, rootKey: 'a1b2c3d4e5f60718',
+        label: 'widget', remote: 'github.com/acme/widget', reason: 'outside_folders', misses: 3, held: 'held', firstSeenAt: NOW - 86_400_000, lastSeenAt: NOW - 7_200_000 }], cursor: null }),
+    }));
+    mount();
+    const needsYou = await screen.findByRole('region', { name: 'Needs you' });
+    await within(needsYou).findByText(/widget/);
+    expect(needsYou.querySelector('h2')!.parentElement!.textContent).toBe('Needs you2');
+    expect(await within(screen.getByRole('navigation', { name: 'Admin' })).findByRole('link', { name: 'Health, 2 things need you' })).toBeTruthy();
+    expect(screen.queryByText('Nothing needs you.')).toBeNull();
+  });
+
   it('says what the server holds and received, by project name, with the transcripts still waiting', async () => {
     server(routes());
     mount();
@@ -352,7 +366,7 @@ describe('Health', () => {
     mount();
     const workers = await screen.findByRole('region', { name: 'Workers' });
     expect(await screen.findByText(/No recently seen runner can currently take this work/)).toBeTruthy();
-    expect(screen.getByText(/2 runs waiting; oldest/).textContent).toContain('18m ago');
+    expect(screen.getByText(/2 runs waiting; oldest/).textContent).toContain('18 min ago');
     expect(screen.getByText(/This native server no longer runs agent work by itself/).textContent).toContain('on this machine or another');
   });
 
@@ -419,10 +433,12 @@ describe('Health', () => {
     const waiting = restoreJob({ state: 'running', rowsDone: 30, rowsTotal: 40, outcome: { tables: { sessions: { rows: 2, inserted: 2 } } } });
     const awaiting = { ...waiting, awaitingDocuments: true };
     const complete = restoreJob({ state: 'complete', rowsDone: 40, rowsTotal: 40, completedAt: NOW, outcome: { tables: { sessions: { rows: 2, inserted: 2 }, prompts: { rows: 3, inserted: 3 } } } });
+    let job: ReturnType<typeof restoreJob> = awaiting;
     const { posts } = server(routes({
-      '/api/backups': () => Response.json({ backups: [BACKUP], restore: awaiting }),
-      '/api/backups/restores/rs_1': () => Response.json({ job: awaiting }),
-      '/api/backups/restores/rs_1/continue': () => Response.json({ applied: true, job: complete, ...complete.outcome }),
+      '/api/backups': () => Response.json({ backups: [BACKUP], restore: job }),
+      '/api/backups/restores/rs_1': () => Response.json({ job }),
+      // The continue answers mid-walk; the next read finds it finished, and that read is what the page shows.
+      '/api/backups/restores/rs_1/continue': () => { job = complete; return Response.json({ applied: false, job: { ...waiting, rowsDone: 35 } }, { status: 202 }); },
     }));
     mount();
     expect((await screen.findByText(/only while this page continues the restore/)).textContent).toContain('Continue it to finish');
@@ -430,16 +446,18 @@ describe('Health', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue restore' }));
     await waitFor(() => expect(posts.map((p) => p.path)).toEqual(['/api/backups/restores/rs_1/continue']));
     expect((await screen.findByText(/^Restored: /)).textContent).toBe('Restored: 5 records added.');
+    expect(screen.queryByRole('button', { name: 'Continue restore' })).toBeNull();
   });
 
   it('stops a running restore only when an admin asks, and says the rows it restored stay', async () => {
     const running = restoreJob({ state: 'running', rowsDone: 10, rowsTotal: 40, outcome: { tables: { sessions: { rows: 40, inserted: 10 } } } });
     const stopped = restoreJob({ state: 'failed', rowsDone: 10, rowsTotal: 40, completedAt: NOW, outcome: running.outcome,
       failure: { code: 'stopped', message: 'the restore was stopped by its owner; the rows it restored stay, and restoring the same backup again continues it' } });
+    let job: ReturnType<typeof restoreJob> = running;
     const { posts } = server(routes({
-      '/api/backups': () => Response.json({ backups: [BACKUP], restore: running }),
-      '/api/backups/restores/rs_1': () => Response.json({ job: running }),
-      '/api/backups/restores/rs_1/stop': () => Response.json({ job: stopped }),
+      '/api/backups': () => Response.json({ backups: [BACKUP], restore: job }),
+      '/api/backups/restores/rs_1': () => Response.json({ job }),
+      '/api/backups/restores/rs_1/stop': () => { job = stopped; return Response.json({ job: stopped }); },
     }));
     mount();
     await screen.findByText(/^Restoring: /);

@@ -5,13 +5,13 @@ import { useIsAdmin } from '../../../hooks/use-me';
 import { settingsRefusalText, useSettings, useSettingsActions } from '../../../hooks/use-settings';
 import { harnessLabel } from '../../../lib/harness';
 import { providerLabel } from '../../../lib/providers';
-import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
 import { StoredValue } from '../StoredValue';
 import { useMemberNames } from '../members';
 import type { LeafField } from './catalogue';
 import { effectiveWords } from './LeafControl';
 import type { LeafRow, SettingsModelCatalog } from './wire';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** The provider filter's value for every provider. */
 const ALL_PROVIDERS = '__all__';
@@ -63,7 +63,7 @@ export function ModelListingNote({ harness }: { harness: string }) {
   const serverLogin = runSignIn(settings.data?.leaves, harness) === 'deployment';
   return (
     <p className="px-s4 pt-s4 t-small text-muted" data-model-listing={harness}>
-      {`Models listed by your machines ${ago(listed.listedAt, Date.now())}, each with its own sign-in to ${harnessLabel(harness)}.`}
+      {`Models listed by your machines ${agoWords(listed.listedAt, Date.now())}, each with its own sign-in to ${harnessLabel(harness)}.`}
       {serverLogin && ' Legacy workers use the server’s stored key, which may offer different models. Registered runners use their own choices on the Runners page.'}
     </p>
   );

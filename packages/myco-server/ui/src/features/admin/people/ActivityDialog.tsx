@@ -4,10 +4,10 @@ import { Dialog, DialogContent, EmptyState, ErrorState, Link, LoadingState, Read
 import { fetchJson } from '../../../lib/api';
 import { useProjects } from '../../../hooks/use-projects';
 import { projectPath } from '../../../routes/nav';
-import { ago } from '../../today/words';
 import type { ActivityPage, ActivityRow } from '../wire';
 import { kindWords } from './words';
 import { live } from '../../../lib/live';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 export interface ActivityTarget {
   /** The machine's name, for the title. */
@@ -71,7 +71,7 @@ function ActivityList({ machineId }: { machineId: string }) {
           <li key={`${row.projectId}:${row.eventId}`} className="flex flex-wrap items-baseline justify-between gap-x-s3 gap-y-s1 py-s2" data-activity-row="">
             <span className="flex min-w-0 flex-col">
               <span className="t-small text-ink">{kindWords(row.kind)}</span>
-              <span className="t-meta text-muted">{projectName(row.projectId)} · {ago(row.createdAt, now)}</span>
+              <span className="t-meta text-muted">{projectName(row.projectId)} · {agoWords(row.createdAt, now)}</span>
             </span>
             <Link className="t-small" to={`${projectPath(row.projectId, '/sessions')}/${encodeURIComponent(row.sessionId)}`}>Open session</Link>
           </li>

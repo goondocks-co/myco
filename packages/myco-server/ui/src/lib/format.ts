@@ -8,20 +8,6 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /**
- * How long ago a past instant was. A future instant reads "just now": a capturing machine's clock can run ahead of
- * this one. Say a deadline with `formatUntil`.
- */
-export function formatRelative(ts: number | null, now: number = Date.now()): string {
-  if (ts === null) return 'never';
-  const delta = Math.max(0, now - toMillis(ts));
-  if (delta < MINUTE) return 'just now';
-  if (delta < HOUR) return `${Math.floor(delta / MINUTE)}m ago`;
-  if (delta < DAY) return `${Math.floor(delta / HOUR)}h ago`;
-  if (delta < 30 * DAY) return `${Math.floor(delta / DAY)}d ago`;
-  return new Date(toMillis(ts)).toLocaleDateString();
-}
-
-/**
  * How long until a future instant, as the span that follows "in": seconds until two minutes out (a lease renews on a
  * 30s heartbeat), then minutes, hours and days. `coarse` suits a schedule: no seconds, and hours from one hour out.
  * An instant already past is "now"; a caller says what past means.

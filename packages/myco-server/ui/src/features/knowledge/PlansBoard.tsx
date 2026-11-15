@@ -7,7 +7,8 @@ import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
 import { projectPath } from '../../routes/nav';
 import type { PlanBoardRow } from './wire';
-import { ago, PLAN_COLUMNS, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
+import { PLAN_COLUMNS, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 const FILTER_DEBOUNCE_MS = 250;
 
@@ -92,7 +93,7 @@ function Column({ status, projectId, projectName, now }: ColumnProps) {
                   planKey={plan.planKey}
                   sessionId={plan.sessionId}
                   title={planTitle(plan)}
-                  meta={[projectId === null ? projectName(plan.projectId) ?? 'A project' : null, `updated ${ago(plan.updatedAt, now)}`]}
+                  meta={[projectId === null ? projectName(plan.projectId) ?? 'A project' : null, `updated ${agoWords(plan.updatedAt, now)}`]}
                   progress={plan.progress}
                   supersededBy={plan.supersededBy ?? null}
                 />

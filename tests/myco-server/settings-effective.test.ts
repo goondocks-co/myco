@@ -24,10 +24,10 @@ afterAll(() => { for (const dir of temporary) rmSync(dir, { recursive: true, for
 
 interface Target { sqlite: Database; db: RelationalStore; fetch(request: Request): Promise<Response>; env?: ServerEnv }
 
-/** The hosted Worker entry, with a Workers AI binding that answers one vector for any model. */
-function hosted(): Target {
+/** The hosted Worker entry, with a Workers AI binding that answers one vector for any model, and any other bindings given. */
+function hosted(extra: Record<string, string> = {}): Target {
   const e = sqliteEnv();
-  const bindings = { ...e.env, ...OWNER_ENV, SECRET_WRAP_KEY: { get: async () => WRAP }, AI: { run: async () => ({ data: [[1, 0]] }) } };
+  const bindings = { ...e.env, ...OWNER_ENV, ...extra, SECRET_WRAP_KEY: { get: async () => WRAP }, AI: { run: async () => ({ data: [[1, 0]] }) } };
   return { sqlite: e.sqlite, db: e.db, fetch: (request) => worker.fetch(request, bindings, e.deferred) };
 }
 
@@ -208,5 +208,16 @@ describe('reset', () => {
         .toEqual({ leaf, configured: false, effective: before.get(leaf)!.effective, source: before.get(leaf)!.source });
       expect(before.get(leaf)!.effective).not.toBeUndefined();
     }
+  });
+});
+
+describe('tasks at once in effect', () => {
+  it('says the fleet the server was deployed with when it is stricter than what is saved, and the saved value when that is', async () => {
+    const t = hosted({ MYCO_FLEET: '1' });
+    expect((await put(t, 'agent.limits.concurrent_runs', 10)).status).toBe(200);
+    expect((await rows(t)).get('agent.limits.concurrent_runs')).toMatchObject({ value: 10, effective: 1, source: 'platform' });
+    const roomy = hosted({ MYCO_FLEET: '8' });
+    expect((await put(roomy, 'agent.limits.concurrent_runs', 3)).status).toBe(200);
+    expect((await rows(roomy)).get('agent.limits.concurrent_runs')).toMatchObject({ value: 3, effective: 3, source: 'configured' });
   });
 });

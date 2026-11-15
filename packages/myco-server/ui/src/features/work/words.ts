@@ -11,10 +11,10 @@ import { WORKER_DIAGNOSTIC_LOG } from '@goondocks/myco-shared/worker-log';
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import type { RepositoryFailure } from '@goondocks/myco-shared/repository';
 import type { OutcomeKind, Range, WorkRun } from '../today/wire';
-import { causeSentence, clockTime, count, when } from '../today/words';
-import { formatRelative } from '../../lib/format';
+import { causeSentence, count, sinceWords, when } from '../today/words';
 import { memberLabel } from '../../lib/member-name';
 import type { CapabilityOffRefusal, DailyLimitRefusal, FreshNeedsAdminRefusal, RunFields, RunOutcomeCounts, RunWorker } from './wire';
+import { clockWords } from '@goondocks/myco-shared/time-words';
 
 /** The tasks whose outcomes the page groups by, and the kind of work each is. */
 export const TASK_KINDS: Readonly<Record<string, OutcomeKind>> = {
@@ -144,7 +144,7 @@ export function atWords(at: number, now: number): string {
   if (said.startsWith('at ')) return `today ${said}`;
   if (said.startsWith('yesterday')) return said;
   const days = (startOf(now) - startOf(at)) / 86_400_000;
-  if (days < 7) return `${new Date(at).toLocaleDateString(undefined, { weekday: 'long' })} at ${clockTime(at)}`;
+  if (days < 7) return `${new Date(at).toLocaleDateString(undefined, { weekday: 'long' })} at ${clockWords(at)}`;
   return said;
 }
 
@@ -156,8 +156,8 @@ function startOf(at: number): number {
 
 /** A run's time in a list: "09:39" today, else "Mon 12:53". */
 export function shortTime(at: number, now: number): string {
-  if (startOf(at) === startOf(now)) return clockTime(at);
-  return `${new Date(at).toLocaleDateString(undefined, { weekday: 'short' })} ${clockTime(at)}`;
+  if (startOf(at) === startOf(now)) return clockWords(at);
+  return `${new Date(at).toLocaleDateString(undefined, { weekday: 'short' })} ${clockWords(at)}`;
 }
 
 /** What one run came to, in a few words, for a line in a list. */
@@ -244,9 +244,9 @@ export function dailyLimitWords(refusal: Pick<DailyLimitRefusal, 'perDay' | 'res
 /** An instant still to come: "at 18:30" today, "tomorrow at 09:12", else "on Oct 2 at 09:12". */
 export function laterWords(at: number, now: number): string {
   const days = Math.round((startOf(at) - startOf(now)) / 86_400_000);
-  if (days <= 0) return `at ${clockTime(at)}`;
-  if (days === 1) return `tomorrow at ${clockTime(at)}`;
-  return `on ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${clockTime(at)}`;
+  if (days <= 0) return `at ${clockWords(at)}`;
+  if (days === 1) return `tomorrow at ${clockWords(at)}`;
+  return `on ${new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${clockWords(at)}`;
 }
 
 /** Whether a refusal body is a 409 `capability_off`. */
@@ -313,7 +313,7 @@ export function spendWords(spend: { tokens: Range; costUsd: Range; durationMs: R
 export function queuedWords(run: Pick<RunFields, 'waitReason' | 'waitingSince' | 'taskQueued'>, now: number): string {
   const queue = run.taskQueued === null ? null : run.taskQueued <= 1 ? 'Next in this task’s queue.' : `${run.taskQueued.toLocaleString()} of this task waiting.`;
   const held = holdSentence(run.waitReason) ?? 'A limit on runs is holding it.';
-  const age = run.waitingSince === null ? null : `Waiting since ${formatRelative(run.waitingSince, now)}.`;
+  const age = run.waitingSince === null ? null : `Waiting ${sinceWords(run.waitingSince, now)}.`;
   return [queue, held, age].filter((part): part is string => part !== null).join(' ');
 }
 

@@ -2,7 +2,8 @@ import { Link as RouterLink } from 'react-router-dom';
 import { focusRing, StatusChip } from '../../design';
 import { planPagePath } from '../../hooks/use-knowledge';
 import { cn } from '../../lib/cn';
-import { ago, planStatusTone, planStatusWord, planTitle, progressWords } from './words';
+import { planStatusTone, planStatusWord, planTitle, progressWords } from './words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 export interface PlanLineProps {
   projectId: string;
@@ -19,7 +20,7 @@ export function PlanLine({ projectId, plan, now }: PlanLineProps) {
         <StatusChip tone={planStatusTone(plan.status)}>{planStatusWord(plan.status)}</StatusChip>
         {progress !== null && <span>{progress}</span>}
         <span aria-hidden>·</span>
-        <span>updated {ago(plan.updatedAt, now)}</span>
+        <span>updated {agoWords(plan.updatedAt, now)}</span>
       </span>
       <RouterLink
         to={planPagePath(projectId, { planKey: plan.planKey })}
