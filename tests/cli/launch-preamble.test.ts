@@ -1,14 +1,40 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
 import { runLaunchPreamble, type LaunchPreambleDeps } from '@myco/cli/launch-preamble.js';
 import { PROJECT_DIR_ENV_VARS } from '@myco/cli/launch-preamble.generated.js';
 import { readStdin, setBufferedStdin } from '@myco/hooks/read-stdin.js';
 import { recordStartingJob, startingJobEnv, STARTING_JOB_ENV } from '@myco/runtime/spawn-detached.js';
 import { runHook } from '@myco/hooks/entry.js';
+import { readRefusedHook } from '@myco/member/refused-hooks.js';
+import { refusedHookChecks } from '@myco/cli/member-doctor.js';
 
 /** A drained fd 0: a test never reads its own process's stdin, which a caller may hold open without end. */
 const EMPTY_FD0 = (): Buffer => Buffer.alloc(0);
+
+it('routes an unknown harness hook through its runtime pin and records an unhandled invocation without output', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-unknown-hook-'));
+  process.env.MYCO_HOME = home;
+  const harness = makeHarness({ pin: '/opt/future/myco' });
+  const preamble: typeof runLaunchPreamble = (command, args) => runLaunchPreamble(command, args, withInjectedFd0(null, harness.deps));
+  const args = ['future-hook', '--symbiont', 'claude-code', '--credential', 'registry'];
+  const writes: string[] = [];
+  const output = [process.stdout, process.stderr].map(stream => spyOn(stream, 'write').mockImplementation(chunk => { writes.push(String(chunk)); return true; }));
+  const exit = spyOn(process, 'exit').mockImplementation(code => { throw new ExitSignal(Number(code ?? 0)); });
+  try {
+    await expect(runHook(args, { preamble })).rejects.toMatchObject({ code: 0 });
+    expect(harness.execCalls[0]).toMatchObject({ file: '/opt/future/myco', args: ['hook', ...args] });
+    expect(readRefusedHook('unknown-hook', home, Date.now())).toBeNull();
+    harness.pinReturns = null;
+    await runHook(args, { preamble }).catch(error => {
+      if (!(error instanceof ExitSignal && error.code === 0)) throw error;
+    });
+    expect(writes).toEqual([]);
+    expect(readRefusedHook('unknown-hook', home, Date.now())).toMatchObject({ count: 1, lastHook: 'future-hook' });
+    expect(refusedHookChecks(home, Date.now())).toEqual([expect.objectContaining({ status: 'warn', detail: expect.stringContaining('future-hook') })]);
+  } finally { exit.mockRestore(); for (const stream of output) stream.mockRestore(); fs.rmSync(home, { recursive: true, force: true }); }
+});
 
 /**
  * Sentinel thrown by the injected `exit` stub so a test can observe the exit

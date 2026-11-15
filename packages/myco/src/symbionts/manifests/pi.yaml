@@ -38,6 +38,7 @@ registration:
     fieldNames:
       additionalContext: additionalContext
       promptId: promptId
+      recallPending: recallPending
   # Pi uses an extension file, not JSON hook entries
   hooksTarget: .pi/extensions/myco/index.ts
   # Pi's user-global agent extensions live under ~/.pi/agent/extensions/
@@ -59,6 +60,7 @@ registration:
   # No instructionsFile — pi reads AGENTS.md natively via context files
 
 capabilities:
+  promptRecallToolDelivery: true
   # The transcript is the only writer of this symbiont's turn rows: the
   # Deployment's parse names each prompt by its position in Pi's session file,
   # and the prompt-submit hook injects and ships no `prompt` event.

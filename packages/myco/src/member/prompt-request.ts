@@ -13,7 +13,7 @@ import { readSessionState } from './session-state.js';
 
 export interface PromptRequestRun {
   spool: MemberSpool; mycoHome: string; client: ServerClient;
-  now: () => number; budget: HookBudget; capMs: number; sessionId: string;
+  now: () => number; budget: HookBudget; capMs: number; sessionId: string; force?: boolean;
 }
 interface Retry { id: string; at: number; backoff: number }
 export interface PromptAnswer { context: string; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord }
@@ -40,7 +40,7 @@ export function promptRequestsBackedOff(spool: MemberSpool, now: number): boolea
 export async function requestPromptContext(run: PromptRequestRun, ask: Extract<ContextAskRequest, { kind: 'prompt' }>): Promise<PromptAnswer | undefined> {
   const { spool, mycoHome, client, now } = run;
   const serverUrl = client.serverUrl;
-  if (!spool.shouldDial(now()) || run.budget.deadline <= now()) return undefined;
+  if (!spool.shouldDial(now(), run.force) || run.budget.deadline <= now()) return undefined;
   const budget = subRequestBudget(run.budget, run.capMs, now());
   const file = retryPath(spool);
   ensureMemberDir(path.dirname(file), mycoHome);

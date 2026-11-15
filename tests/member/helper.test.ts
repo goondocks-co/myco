@@ -22,6 +22,7 @@ import { memberRig, tempMycoHome } from './helpers/server.js';
 import { SWEEP_INTERVAL_MS } from '@myco/member/sweep.js';
 import { registerTestMember } from './helpers/hooks.js';
 import { withAsk } from '@myco/member/context-cache.js';
+import { queuePromptRecall } from '@myco/member/prompt-context.js';
 
 const PROJECT = 'proj_1';
 let mycoHome: string;
@@ -426,20 +427,29 @@ describe('the offline latch', () => {
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl: 'https://s' });
     const spool = new MemberSpool({ projectId: PROJECT, serverUrl: 'https://s' }, { mycoHome });
     const ctx = { agent: 'claude-code', sessionId: 'sess-latch', stage: spool.stagerFor('sess-latch'), version: 't' };
-    spool.append('sess-latch', promptEvent(ctx, { promptId: mintId(), text: 'while offline' }));
+    const promptId = mintId();
+    spool.append('sess-latch', promptEvent(ctx, { promptId, text: 'while offline' }));
+    updateSessionState(spool.dir, 'sess-latch', state => { queuePromptRecall(state, { kind: 'prompt', promptId, text: 'while offline', at: Date.now(), agent: 'claude-code' }, { late: true }); });
     spool.markOffline(Date.now());
     const noSpawn: DetachedSpawn = () => ({ started: true });
-    const helper = () => runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], { fetch: rig.fetch, lingerMs: 0, keepStderr: true });
+    let recalled = false;
+    const helper = () => runHelperVerb(['--project', PROJECT, '--server', 'https://s', '--home', mycoHome], { fetch: async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/context/prompt') recalled = true;
+      return rig.fetch(request);
+    }, lingerMs: 0, keepStderr: true });
 
     kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason: 'capture', spawn: noSpawn });
     await helper();
     expect(rig.rows('events')).toBe(0);
+    expect(recalled).toBe(false);
     for (const reason of ['turn-end', 'session-end'] as const) {
       kickHelper({ projectId: PROJECT, serverUrl: 'https://s', mycoHome, reason, spawn: noSpawn });
       expect(fs.existsSync(helperPaths(PROJECT, mycoHome, 'https://s').probe)).toBe(true);
     }
     await helper();
     expect(rig.rows('events')).toBe(1);
+    expect(recalled).toBe(true);
     expect(spool.readLatch()).toBeNull();
   });
 });

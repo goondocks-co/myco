@@ -317,7 +317,7 @@ describe('emitted plugin lifecycle recovery', () => {
           await hooks.afterTool({ name: 'read', input: {} }, ctx);
         } else {
           await hooks['experimental.text.complete']({ sessionID: 'resumed' }, { text: 'response' });
-          await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', args: {} }, {});
+          await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', args: {} }, { output: 'tool result' });
         }
         expect(routingCalls).toBe(warmRoutingCalls);
         expect(verbs).toEqual(warmHooks);
@@ -496,7 +496,7 @@ it('Cline captures native snapshot callbacks and content parts with stable messa
   const r = rig('cline');
   let prompts = 0;
   const subject = snippetModule(r.env, [], [], (_bin, args) => ({
-    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'user-prompt-submit' ? { promptId: `native-${++prompts}`, ...(prompts === 1 ? {} : { additionalContext: 'context' }) } : { additionalContext: 'start context' }),
+    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'user-prompt-submit' ? { promptId: `native-${++prompts}`, recallPending: true, ...(prompts === 1 ? {} : { additionalContext: 'context' }) } : { additionalContext: args[1] === 'prompt-recall' ? 'late Cline memory' : 'start context' }),
   }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
   subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
   const snapshot = { conversationId: 'conv_native', agentId: 'agent', iteration: 1, messages: [] };
@@ -508,7 +508,13 @@ it('Cline captures native snapshot callbacks and content parts with stable messa
     expect(result.messages.at(-1)?.content).toEqual([{ type: 'text', text: expect.stringContaining(id === 'first' ? 'start context' : 'context') }]);
     await subject.MycoClinePlugin.hooks.beforeModel(structuredClone(input));
     await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: `reply-${id}`, content: [{ type: 'text', text: `reply ${id}` }] }, finishReason: 'stop' });
-    await subject.MycoClinePlugin.hooks.afterTool({ snapshot, toolCall: { type: 'tool-call', toolCallId: `tool-${id}`, toolName: 'read' }, input: { path: '/repo/a' }, result: { output: 'ok', isError: false } });
+    const late = await subject.MycoClinePlugin.hooks.afterTool({ snapshot, toolCall: { type: 'tool-call', toolCallId: `tool-${id}`, toolName: 'read' }, input: { path: '/repo/a' }, result: { output: 'ok', isError: false } });
+    expect(late).toEqual({ appendContext: 'late Cline memory' });
+    const followup = await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [
+      ...input.request.messages,
+      { role: 'user', id: `hook-${id}`, metadata: { userRunSpan: 0, displayRole: 'system' }, content: [{ type: 'text', text: '<hook_context source="afterTool">late Cline memory</hook_context>' }] },
+    ] } });
+    expect(followup).toBeUndefined();
   }
   const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   expect(rows.filter(row => row.type === 'prompt' || row.type === 'response').map(row => [row.type, row.promptId])).toEqual([
@@ -516,6 +522,40 @@ it('Cline captures native snapshot callbacks and content parts with stable messa
   ]);
   expect(rows.filter(row => row.type === 'tool').map(row => [row.promptId, row.output])).toEqual([['native-1', 'ok'], ['native-2', 'ok']]);
   expect(prompts).toBe(2);
+});
+
+it('OpenCode tool context reaches the mutable result while capture keeps the original tool output', async () => {
+  const r = rig('opencode');
+  let recalls = 0;
+  let prompts = 0;
+  const subject = snippetModule(r.env, [], [], (_bin, args) => ({
+    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'prompt-recall'
+      ? (++recalls === 1 ? { recallPending: true } : recalls === 2 ? { additionalContext: 'late OpenCode memory' } : {})
+      : args[1] === 'user-prompt-submit' ? { promptId: `prompt-${++prompts}`, recallPending: true } : {}),
+  }), ROUTING_KEY, () => NOW, fs, () => 0, 'opencode');
+  try {
+    const hooks = await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
+    await hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'message-one' }, parts: [{ type: 'text', text: 'a prompt' }] });
+    const waiting = { output: 'waiting tool output' };
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-waiting' }, waiting);
+    expect(waiting.output).toBe('waiting tool output');
+    const result = { title: 'Read', output: 'original tool output', metadata: {} };
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-one' }, result);
+    expect(result.output).toContain('late OpenCode memory');
+    expect(result.output.startsWith('original tool output')).toBe(true);
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-warm' }, { output: 'warm tool output' });
+    expect(recalls).toBe(2);
+    const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(rows.filter(row => row.type === 'tool').map(row => row.output)).toEqual(['waiting tool output', 'original tool output', 'warm tool output']);
+    await hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'message-empty' }, parts: [{ type: 'text', text: 'empty recall' }] });
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-empty' }, { output: 'empty tool output' });
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-after-empty' }, { output: 'warm output' });
+    expect(recalls).toBe(3);
+    await hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'message-ended' }, parts: [{ type: 'text', text: 'ended turn' }] });
+    await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'resumed' } } });
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-after-end' }, { output: 'ended output' });
+    expect(recalls).toBe(3);
+  } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
 });
 
 it('damaged pending lines are reported while valid retained and new capture continue', async () => {

@@ -100,8 +100,8 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
 }
 
 /**
- * The hooks on this machine their own command refused (`member/refused-hooks.ts`): one that names no harness, or no
- * credential source. Each exits 0, so this is where the loss shows.
+ * Hook commands refused on this machine: missing harness or credential declarations, and unknown hook names.
+ * Each exits 0, so this is where the refusal shows.
  */
 export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] {
   return REFUSED_HOOK_KINDS.flatMap((kind) => {

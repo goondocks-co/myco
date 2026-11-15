@@ -78,6 +78,8 @@ export interface CredentialOptions {
    */
   claimsUnconnected?: (root: string) => boolean;
   missingMembershipMessage?: (root: string) => string;
+  /** Read the binding without upgrading it or recording a capture miss. */
+  readOnly?: boolean;
 }
 
 /**
@@ -107,10 +109,11 @@ export function resolveCredential(
   if (source === 'env' && !envCarriesJoinCode(env)) return envCredential(env);
   const root = resolveMemberProjectRoot(cwd);
   const mycoHome = opts.mycoHome ?? memberHomeFor(cwd, opts.env).home;
-  const lookup = readRegistryEntryResult(root, mycoHome, { upgrade: true });
+  const lookup = readRegistryEntryResult(root, mycoHome, { upgrade: opts.readOnly !== true });
   const entry = lookup.status === 'present' ? lookup.entry : null;
   if (source === 'env') return joinCodeCredential(env, entry, root, mycoHome);
   if (!entry) {
+    if (lookup.status === 'missing' && opts.readOnly === true) return null;
     if (lookup.status === 'missing' && opts.claimsUnconnected?.(root) === true) return null;
     if (lookup.status === 'unavailable' && lookup.conflict) {
       stderr(registryConflictWords(lookup.conflict));

@@ -31,6 +31,8 @@ export interface HookResponse {
    * existing single-block format changes shape.
    */
   promptId?: string;
+  /** A same-turn recall is still in flight and may be checked by a tool callback. */
+  recallPending?: boolean;
 }
 
 /**
@@ -40,7 +42,7 @@ export interface HookResponse {
  */
 export const SEMANTIC_FIELDS = [
   'additionalContext', 'additionalSteps', 'continue', 'stopReason',
-  'userMessage', 'followupMessage', 'systemMessage', 'promptId',
+  'userMessage', 'followupMessage', 'systemMessage', 'promptId', 'recallPending',
 ] as const satisfies readonly (keyof HookResponse)[];
 
 type SemanticField = keyof HookResponse;
@@ -75,12 +77,13 @@ export function writeHookResponse(
   }
 
   const config = resolveHookResponseConfig(symbiont);
-  if (hookEvent === 'post-tool-use' && symbiontHasCapability(symbiont, 'promptRecallToolDelivery') && config.shapes?.PostToolUse !== undefined) {
+  const toolEvent = hookEvent === 'post-tool-use' ? 'PostToolUse' : hookEvent === 'post-tool-use-failure' ? 'PostToolUseFailure' : undefined;
+  if (toolEvent !== undefined && symbiontHasCapability(symbiont, 'promptRecallToolDelivery') && config.shapes?.[toolEvent] !== undefined) {
     const context = response.additionalContext;
-    const nested = { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } };
-    process.stdout.write(JSON.stringify(context === undefined ? {} : config.shapes.PostToolUse === 'both'
+    const nested = { hookSpecificOutput: { hookEventName: toolEvent, additionalContext: context } };
+    process.stdout.write(JSON.stringify(context === undefined ? {} : config.shapes[toolEvent] === 'both'
       ? { additionalContext: context, ...nested }
-      : config.shapes.PostToolUse === 'flat' ? { additionalContext: context } : nested));
+      : config.shapes[toolEvent] === 'flat' ? { additionalContext: context } : nested));
     return;
   }
 

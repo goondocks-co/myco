@@ -44,6 +44,7 @@ registration:
     fieldNames:
       additionalContext: additionalContext
       promptId: promptId
+      recallPending: recallPending
   # Hooks are delivered as a verbatim TS plugin file, not a JSON merge
   hooksTarget: .opencode/plugins/myco.ts
   # User-global opencode plugin lives under ~/.config/opencode/plugins/
@@ -69,6 +70,7 @@ registration:
   # No instructionsFile — opencode reads AGENTS.md natively
 
 capabilities:
+  promptRecallToolDelivery: true
   sessionStartInjection: true
   # The transcript is the only writer of this symbiont's turn rows: the
   # prompt-submit hook mints the prompt id, returns it for the plugin to stamp

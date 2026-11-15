@@ -145,6 +145,14 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       ]
     },
     "hookEvents": {
+      "PostToolUse": {
+        "hook": "prompt-recall",
+        "timeout": 5
+      },
+      "PostToolUseFailure": {
+        "hook": "prompt-recall",
+        "timeout": 5
+      },
       "SessionEnd": {
         "hook": "session-end",
         "timeout": 10
@@ -178,7 +186,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -200,6 +208,13 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "retention": "harness"
     },
     "subagentTranscripts": "{sessionId}/subagents/*.jsonl",
+    "hookResponse": {
+      "format": "plain-text",
+      "shapes": {
+        "PostToolUse": "hookSpecificOutput",
+        "PostToolUseFailure": "hookSpecificOutput"
+      }
+    },
     "mcpReconnectNotice": "Myco connected this repository. Reconnect Myco tools with /mcp.",
     "capturePrompts": {
       "shapes": [
@@ -443,7 +458,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -465,7 +480,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "format": "json",
       "fieldNames": {
         "additionalContext": "additionalContext",
-        "promptId": "promptId"
+        "promptId": "promptId",
+        "recallPending": "recallPending"
       }
     },
     "captureRules": [
@@ -967,7 +983,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -989,7 +1005,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "format": "json",
       "fieldNames": {
         "additionalContext": "additionalContext",
-        "promptId": "promptId"
+        "promptId": "promptId",
+        "recallPending": "recallPending"
       }
     }
   },
@@ -1018,7 +1035,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -1041,7 +1058,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "format": "json",
       "fieldNames": {
         "additionalContext": "additionalContext",
-        "promptId": "promptId"
+        "promptId": "promptId",
+        "recallPending": "recallPending"
       }
     }
   },

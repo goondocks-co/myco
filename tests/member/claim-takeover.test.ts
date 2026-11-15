@@ -87,8 +87,10 @@ function assertTakenOver() {
     expect(raw).not.toContain(binary(oldHome));
     if (!file.endsWith('.ts')) expect(raw).toContain(binary(newHome));
     if (file.endsWith('.json') && raw.includes('"hooks"')) {
-      const commands = hookCommands(JSON.parse(raw).hooks);
-      expect(new Set(commands).size).toBe(commands.length);
+      for (const event of Object.values(JSON.parse(raw).hooks)) {
+        const commands = hookCommands(event);
+        expect(new Set(commands).size).toBe(commands.length);
+      }
     }
   }
   for (const agent of AGENTS) {
@@ -318,7 +320,7 @@ it('groups replacement reports by agent and file and preserves Codex section com
   const before = fs.readFileSync(file, 'utf8').replace('[mcp_servers.myco]', '[mcp_servers.myco]\n# keep this section comment');
   put(file, before + '\n[mcp_servers.other]\ncommand = "unrelated" # keep other\n');
   const said = await claim();
-  expect(said).toContain('Claude Code: replaced 5 Myco hooks in ~/.claude/settings.json (were ~/old-home/bin/myco).');
+  expect(said).toContain('Claude Code: replaced 7 Myco hooks in ~/.claude/settings.json (were ~/old-home/bin/myco).');
   expect(said).not.toContain('hooks.SessionStart.');
   const after = fs.readFileSync(file, 'utf8');
   expect(after).toContain('# keep this section comment');

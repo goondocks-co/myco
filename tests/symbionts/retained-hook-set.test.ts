@@ -27,15 +27,17 @@ const RETAINED: Readonly<Record<string, string>> = {
   'stop': 'ship the transcript delta and the plan files the turn wrote',
   'session-end': 'ship the final delta and end the session',
   'subagent-start': 'inject into the delegated agent',
+  'prompt-recall': 'deliver late memory selected for the current prompt; no capture row or network request',
 };
 /** The hooks a transcript-first symbiont wires only when its transcript carries no tool calls; the failure hook where the harness has the event. */
 const TOOL_CALL_HOOKS: readonly string[] = ['post-tool-use', 'post-tool-use-failure'];
 /** The hook each injection capability needs wired, or the declaration promises an injection nothing delivers. */
-const INJECTION_HOOKS: Readonly<Record<string, string>> = {
-  sessionStartInjection: 'session-start',
-  subagentStartInjection: 'subagent-start',
-  preToolUseInjection: 'pre-tool-use',
-  postToolUseInjection: 'post-tool-use',
+const INJECTION_HOOKS: Readonly<Record<string, readonly string[]>> = {
+  sessionStartInjection: ['session-start'],
+  subagentStartInjection: ['subagent-start'],
+  preToolUseInjection: ['pre-tool-use'],
+  postToolUseInjection: ['post-tool-use'],
+  promptRecallToolDelivery: ['prompt-recall', 'post-tool-use'],
 };
 
 describe('the retained hook set', () => {
@@ -49,9 +51,9 @@ describe('the retained hook set', () => {
   for (const manifest of manifests) {
     const wired = [...new Set(hookCommands(JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, manifest.name, 'hooks.json'), 'utf-8'))).map((c) => hookNameInCommand(c)))].sort();
     it(`${manifest.name}: every injection capability it declares has its hook wired`, () => {
-      for (const [capability, hook] of Object.entries(INJECTION_HOOKS)) {
+      for (const [capability, hooks] of Object.entries(INJECTION_HOOKS)) {
         const declared = (manifest.capabilities as Record<string, unknown> | undefined)?.[capability] === true;
-        if (declared) expect({ capability, wired: wired.includes(hook) }).toEqual({ capability, wired: true });
+        if (declared) expect({ capability, wired: hooks.some(hook => wired.includes(hook)) }).toEqual({ capability, wired: true });
       }
     });
     if (manifest.capabilities?.turnRowSource !== 'transcript') {
@@ -63,6 +65,7 @@ describe('the retained hook set', () => {
     const allowed = [...Object.keys(RETAINED), ...(manifest.capabilities.transcriptFidelity === 'no_tool_results' ? TOOL_CALL_HOOKS : [])];
     it(`${manifest.name}: wires only hooks from the retained set`, () => {
       for (const hook of wired) expect({ hook, retained: allowed.includes(hook as string) }).toEqual({ hook, retained: true });
+      if (wired.includes('prompt-recall')) expect(manifest.capabilities?.promptRecallToolDelivery).toBe(true);
     });
     it(`${manifest.name}: registers the session and ships the delta at turn end`, () => {
       expect(wired).toContain('session-start');

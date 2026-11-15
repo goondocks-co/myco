@@ -58,5 +58,29 @@
         }
       ]
     }
+  ],
+  "PostToolUse": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook prompt-recall --symbiont claude-code",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "PostToolUseFailure": [
+    {
+      "matcher": "",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "{{mycoLauncher}} hook prompt-recall --symbiont claude-code",
+          "timeout": 5
+        }
+      ]
+    }
   ]
 }
