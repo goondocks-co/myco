@@ -4,6 +4,7 @@ import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
 import { isRunTool, isWriteOp, PROJECT_PIVOT, RUN_TOOLS, SERVED_TOOLS, WRITE_OPS, type AnyTool, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { MAX_PAGE } from '@myco-server-worker/read/scope.js';
 import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
