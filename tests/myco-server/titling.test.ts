@@ -463,6 +463,30 @@ describe('direct session titles', () => {
     h.sqlite.close();
   });
 
+  it('gives back an attempt the provider failed, waits longer after each fault, and titles the session once the provider answers', async () => {
+    let down = true, calls = 0;
+    const h = direct(async () => {
+      calls++;
+      if (down) throw new CompletionUnavailable('timeout');
+      return { text: JSON.stringify(answer), usage: { input: 40, output: 10 } };
+    });
+    await h.convert();
+    const attempts = () => (h.sqlite.query('SELECT titling_attempts FROM sessions WHERE session_id=?').get('direct') as { titling_attempts: number }).titling_attempts;
+    const MINUTE = 60_000;
+    for (let tick = 0; tick < 40; tick++) { await backfillTitles(h.env, NOW + 10 + MINUTE * tick, 'active'); await h.settle(); }
+    // Forty minutes of outage: far more than three tries, each later than the last, and none of them spent.
+    expect(calls).toBeGreaterThan(TITLING_MAX_ATTEMPTS);
+    expect(calls).toBeLessThan(40 * MINUTE / OWNER_TITLING_WINDOW_MS);
+    expect(h.runRows().every(run => run.status === 'failed' && run.error === 'completion_timeout')).toBe(true);
+    expect(attempts()).toBe(0);
+    expect(h.row('direct')).toEqual(untouched);
+    down = false;
+    for (let tick = 40; tick < 130; tick++) { await backfillTitles(h.env, NOW + 10 + MINUTE * tick, 'active'); await h.settle(); }
+    expect(h.row('direct')).toMatchObject(answer);
+    expect(attempts()).toBe(1);
+    h.sqlite.close();
+  });
+
   it('bounds unreadable material attempts and titles an older healthy session behind them', async () => {
     let calls = 0;
     const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });

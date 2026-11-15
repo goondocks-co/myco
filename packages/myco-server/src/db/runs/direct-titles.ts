@@ -1,9 +1,9 @@
 
 import type { RelationalStore } from '../../core/adapters.js';
 import type { TitleSnapshot } from '../documents/titling-material.js';
-import { DIRECT_TITLE_BUDGET_MS, DIRECT_TITLE_SETTLEMENT_MS, completionAccounting, DIRECT_CALL_WINDOW_MS, DIRECT_CALLS_PER_MINUTE, COMPLETION_TIMEOUT_MS, COMPLETION_ATTEMPTS } from '../../core/completion/provider.js';
+import { DIRECT_TITLE_BUDGET_MS, DIRECT_TITLE_SETTLEMENT_MS, completionAccounting, DIRECT_CALL_WINDOW_MS, DIRECT_CALLS_PER_MINUTE, COMPLETION_TIMEOUT_MS, COMPLETION_ATTEMPTS, PROVIDER_FAULTS } from '../../core/completion/provider.js';
 import { commit, rows, write } from '../index.js';
-import { storeSessionTitle, uncalledTitleRelease } from '../session-titles.js';
+import { storeSessionTitle, faultedTitleRelease, uncalledTitleRelease } from '../session-titles.js';
 import { ensureAgentWrite } from './claim.js';
 
 
@@ -48,12 +48,15 @@ export async function completeDirectTitle(db: RelationalStore, s: DirectTitleSet
   });
 }
 
-/** A named failure leaves the session's prior title and coverage intact. */
+/**
+ * A named failure leaves the session's prior title and coverage intact. A provider fault, and a rate limit met before
+ * any call, also give the attempt back; any other failure spends it.
+ */
 export async function failDirectTitle(db: RelationalStore, s: DirectTitleSettlement, failure: {
   code: string; session: string; stamp: number; previous: number | null; mode: string;
 }): Promise<void> {
-  const release = failure.code === 'completion_rate_limited' ? uncalledTitleRelease({ project: s.project, run: s.run, session: failure.session, stamp: failure.stamp,
-    previous: failure.previous, mode: failure.mode, now: s.now }) : [];
+  const ask = { project: s.project, run: s.run, session: failure.session, stamp: failure.stamp, previous: failure.previous, mode: failure.mode, now: s.now };
+  const release = failure.code === 'completion_rate_limited' ? uncalledTitleRelease(ask) : PROVIDER_FAULTS.some(code => failure.code === `completion_${code}`) ? faultedTitleRelease(ask) : [];
   await commit(db, ...release, settlement(s, failure.code));
 }
 
