@@ -38,6 +38,8 @@ beforeEach(() => {
       const params = body.params as { name: string; arguments: unknown };
       result = params.name === 'refused'
         ? { content: [{ type: 'text', text: 'session_id not found' }], structuredContent: { result: { ok: false, code: 'not_found', error: 'session_id not found' } } }
+        : params.name === 'retryable'
+        ? { content: [{ type: 'text', text: 'Body is pending; try again shortly.' }], structuredContent: { result: { ok: false, error: 'run_body_unavailable', message: 'Body is pending; try again shortly.', retryable: true } } }
         : params.name === 'unknown'
         ? { isError: true, content: [{ type: 'text', text: 'Unknown tool' }] }
         : { content: [{ type: 'text', text: 'Display text' }], structuredContent: { result: params.arguments } };
@@ -105,5 +107,10 @@ it('reports a refused operation with its code, message and failing exit status',
 });
 it('reports an MCP error result as a failing exit status', async () => {
   expect(await invoke(['call', 'unknown'])).toEqual({ ok: false, tool: 'unknown', error: { code: 'tool_call_failed', message: 'Unknown tool' } });
+  expect(process.exitCode).toBe(1);
+});
+
+it('preserves a refusal code and retryability from the server', async () => {
+  expect(await invoke(['call', 'retryable'])).toEqual({ ok: false, tool: 'retryable', error: { code: 'run_body_unavailable', message: 'Body is pending; try again shortly.', retryable: true } });
   expect(process.exitCode).toBe(1);
 });

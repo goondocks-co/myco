@@ -254,6 +254,7 @@ it('admits the shipped tool examples with their placeholders bound to live recor
     for (const relative of fs.readdirSync(SKILLS_ROOT, { recursive: true }).map(String).filter(file => file.endsWith('.md'))) {
       const markdown = fs.readFileSync(path.join(SKILLS_ROOT, relative), 'utf8');
       const calls: { name: string; json: string }[] = [];
+      const consumed: { start: number; end: number }[] = [];
       for (const m of markdown.matchAll(/(myco_[a-z_]+)\s*(?:\(\s*)?(?=\{)/g)) {
         const start = m.index! + m[0].length;
         let json: string | undefined;
@@ -262,6 +263,8 @@ it('admits the shipped tool examples with their placeholders bound to live recor
         }
         expect(json, `${relative}: ${m[1]} example must be JSON`).toBeDefined();
         calls.push({ name: m[1], json: json! });
+        const closing = /^\s*\)/.exec(markdown.slice(start + json!.length))?.[0].length ?? 0;
+        consumed.push({ start: m.index!, end: start + json!.length + closing });
       }
       for (const m of markdown.matchAll(/myco tool call (myco_[a-z_]+)[^\n]*--input '([^']+)'/g)) {
         expect(m[0]).toContain('--credential registry');
@@ -270,6 +273,16 @@ it('admits the shipped tool examples with their placeholders bound to live recor
       for (const m of markdown.matchAll(/<<'EOF'\n([\s\S]*?)\nEOF\n(myco tool call (myco_[a-z_]+)[^\n]+)/g)) {
         expect(m[2]).toContain('--credential registry');
         calls.push({ name: m[3], json: m[1] });
+      }
+      for (const fence of markdown.matchAll(/^[ \t]*(`{3,}|~{3,})json[ \t]*\r?\n([\s\S]*?)^[ \t]*\1[ \t]*$/gm)) {
+        const start = fence.index! + fence[0].indexOf('\n') + 1;
+        let remaining = fence[2];
+        const ranges = consumed.filter(range => range.start >= start && range.end <= start + fence[2].length);
+        expect(ranges.length, `${relative}: fenced json must contain a consumed tool example`).toBeGreaterThan(0);
+        for (const range of ranges.reverse()) {
+          remaining = remaining.slice(0, range.start - start) + remaining.slice(range.end - start);
+        }
+        expect(remaining.trim(), `${relative}: fenced json must be consumed as a tool example`).toBe('');
       }
       for (const example of calls) {
         const old = await seed(), next = await seed();

@@ -23,7 +23,7 @@ import { CURATION_STAGE, curationAssignment, discoverSporeClusters, CURATION_SEE
 import { resolveExecutionProfile } from '@myco-server-worker/core/execution-profile.js';
 import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
 import { type ToolDefinition } from '@myco-server-worker/mcp/definitions.js';
-import { CURATION_COMPLETE_EXAMPLE, CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_SEARCH_LIMIT, CURATION_MATERIAL_BYTES } from '@myco-server-worker/core/spore-curation-contract.js';
+import { CURATION_COMPLETE_EXAMPLE, CURATION_CONSOLIDATE_EXAMPLE, CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_SEARCH_LIMIT, CURATION_MATERIAL_BYTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { LEARNING_BACKOFF_MS } from '@myco-server-worker/core/learning-sessions.js';
 import { seedForStage } from '@myco-server-worker/core/budget-policy.js';
 import { schemaD1Root } from './helpers/schema-template.js';
@@ -203,6 +203,7 @@ test('a curation run retries a refused consolidation or keeps the knowledge apar
       const sporesTool = definitions.find(tool=>tool.name==='myco_spores')!;
       const curationTool = definitions.find(tool=>tool.name==='myco_run_curation')!;
       expect(sporesTool.description).toContain(`${AGENT_LINE_MAX_CHARS} characters`);
+      expect(sporesTool.description).toContain(CURATION_CONSOLIDATE_EXAMPLE);
       expect(sporesTool.inputSchema.properties.agent_line.maxLength).toBe(AGENT_LINE_MAX_CHARS);
       expect(curationTool.description).toContain(CURATION_COMPLETE_EXAMPLE);
       expect(curationTool.inputSchema.properties.members.maxItems).toBe(CURATION_CLUSTER_CAP);

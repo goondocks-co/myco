@@ -1,5 +1,6 @@
-import { CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from '../core/spore-curation-contract.js';
-import { CURATION_TASK } from '../core/task-catalogue.js';
+import { CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS, CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '../core/spore-curation-contract.js';
+import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from '../core/injection.js';
+import { CURATION_TASK, EXTRACTION_TASK, SEEDING_TASK } from '../core/task-catalogue.js';
 import { acceptedActions } from '../core/run-postconditions.js';
 /**
  * The run-scoped surface: what a run's credential may call over MCP.
@@ -91,11 +92,41 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
 
 export { ALWAYS_ALLOWED, isRunCall, RUN_TOOL_MAP, runAllowlist, type RunAllowlist };
 
+/** The write guidance and session provenance admitted for the run's task. */
+function runSporeDefinition(definition: ToolDefinition, task: string | null): ToolDefinition {
+  const curation = task === CURATION_TASK;
+  const extraction = task === EXTRACTION_TASK;
+  const session = extraction
+    ? 'For save and consolidate, supply the supporting whole session served in learning material. For supersede and obsolete, omit session_id or name only the session bound to this run.'
+    : 'Omit session_id: this run names no session. Sources retain their own provenance.';
+  const example = JSON.stringify({ op: 'save', ...(extraction ? { session_id: '<supporting session id>' } : {}),
+    type: 'gotcha', content: 'Delivery requires the outbox lease.', agent_line: 'When delivery stalls, check the outbox lease before retrying.' });
+  const guidance = curation
+    ? `For curation runs, consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom; correct and retry invalid input once before reporting, or complete keep with the read members. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`
+    : extraction || task === SEEDING_TASK ? `Record durable knowledge from this run's admitted material. Save example: ${example}`
+    : "Use the operations and source material admitted for this run's task.";
+  const lifecycle = curation || extraction ? ' Lifecycle writes require active sources at the exact revisions read; obsolete requires reason.' : '';
+  const properties = definition.inputSchema.properties;
+  const { cortex: _memberGuidance, ...run } = definition;
+  return {
+    ...run,
+    description: `Operations: ${properties.op.enum!.join(', ')}. ${guidance} ${session} ${extraction ? 'Save and consolidate require' : curation ? 'Consolidate requires' : 'Save requires'} agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE}${lifecycle}`,
+    inputSchema: { ...definition.inputSchema, properties: { ...properties,
+      session_id: { ...properties.session_id, description: session },
+      prompt_id: { ...properties.prompt_id, description: extraction ? 'Compatibility for extraction runs dispatched before the served-material ledger: the captured prompt resolves the supporting session. Use session_id from learning material for current runs.' : 'Omit prompt_id for this run.' },
+      expect_status: { ...properties.expect_status, description: 'Run lifecycle writes require active sources.' },
+      expect_revision: { ...properties.expect_revision, description: 'Required for supersede and obsolete: the exact source revision read.' },
+      provenance_kind: { ...properties.provenance_kind, description: 'Optional PR or commit provenance; give with provenance_ref.' },
+    } },
+  };
+}
+
 /** The definitions a run is listed: its allowlisted names across both sets, each op enum narrowed to what it may call. */
 export function runDefinitions(allow: RunAllowlist, task: string | null = null): ToolDefinition[] {
   const actions = acceptedActions(task);
   const definitions = narrowDefinitions([...TOOL_DEFINITIONS, ...RUN_DEFINITIONS], Object.fromEntries(allow), RUN_PROJECT_DESCRIPTION);
   return definitions.map((definition) => {
+    if (definition.name === 'myco_spores') return runSporeDefinition(definition, task);
     if (definition.name === 'myco_search' && task === CURATION_TASK) {
       const bounds = `This curation run may search at most ${CURATION_SEARCH_LIMIT} times; each call returns up to ${CURATION_SEARCH_RESULTS} active spore matches, using semantic search.`;
       return {

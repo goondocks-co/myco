@@ -31,9 +31,8 @@ Before mutating any plan status:
    HEAD, and `git status --short`. Warn the user if the branch/HEAD clearly
    differs or if the handoff is stale for the work at hand.
 2. Fetch source-session metadata when available:
-   `myco_sessions({"op":"get","id":"<source-session-id>"})`. Use only metadata
-   such as title, branch, agent, timestamps, and transcript path; do not imply
-   this reconstructs the conversation.
+   `myco_sessions({"op":"get","id":"<source-session-id>"})`. Read its metadata to orient; members can also open one conversation turn
+   by supplying its `prompt_id`.
 3. Read every referenced plan with
    `myco_plans({"op":"get","id":"<plan-id>"})`. Skim title, status, tags, and
    current next steps. The digest carries intention; the plans carry state.

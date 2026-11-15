@@ -433,7 +433,7 @@ const definitions: readonly ServedToolDefinition[] = [
     },
     "name": "myco_spores",
     inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
-    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE} Member writes require project and the current session_id, or provenance_kind and provenance_ref when there is no session. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE} Member writes require project. Pass the current session_id when there is one; writes are accepted without it. Optional PR/commit provenance uses provenance_kind and provenance_ref. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -537,7 +537,7 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "session_id": {
           "type": "string",
-          "description": "Members supply the current calling session from Session::, or provenance_kind and provenance_ref when there is no session. Extraction runs supply the supporting whole session served to the run. Curation and seeding runs omit session_id."
+          "description": "Pass the current session id from Session:: when there is one. Optional on member spore writes: a write is accepted without it."
         },
         "prompt_id": {
           "type": "string",
