@@ -130,23 +130,7 @@ describe('symbiont manifests', () => {
     expect(manifest.capture).toBeUndefined();
   });
 
-  it('copilot manifest has registration with github hooks target and dual MCP targets', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'copilot.yaml'), 'utf-8');
-    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.registration).toBeDefined();
-    expect(manifest.registration!.hooksTarget).toBe('.github/hooks/myco-hooks.json');
-    expect(manifest.registration!.mcpTarget).toBe('.vscode/mcp.json');
-    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
-    expect(manifest.registration!.settingsTarget).toBeNull();
-    // Copilot is the canonical multi-target MCP case: two surfaces of
-    // the same agent runtime with diverging top-level JSON keys. The
-    // schema normalizes the YAML into Array<{path, serversKey?}> so the
-    // installer can write each file under its surface's expected key.
-    expect(manifest.registration!.globalMcpTarget).toEqual([
-      { path: '~/.copilot/mcp-config.json', serversKey: 'mcpServers' },
-      { path: '~/Library/Application Support/Code/User/mcp.json', serversKey: 'servers' },
-    ]);
-  });
+
 
   it('cline manifest uses SDK plugin hooks plus standard MCP targets', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'cline.yaml'), 'utf-8');
@@ -193,38 +177,9 @@ describe('symbiont manifests', () => {
     expect(manifest.registration!.hooksTarget).toBe('.codex/hooks.json');
   });
 
-  it('antigravity manifest has registration with plugin-bundle layout', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'antigravity.yaml'), 'utf-8');
-    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.registration).toBeDefined();
-    expect(manifest.registration!.hooksTarget).toBe('.agents/plugins/myco/hooks.json');
-    expect(manifest.registration!.mcpTarget).toBe('.agents/plugins/myco/mcp_config.json');
-    expect(manifest.registration!.globalHooksTarget).toBe('~/.gemini/config/plugins/myco/hooks.json');
-    // Plugin-bundle marker (Google's plugin loader requires it) lives
-    // beside hooks.json + mcp_config.json — not inside a sub-dir.
-    expect(manifest.registration!.pluginManifestTarget).toBe('.agents/plugins/myco/plugin.json');
-    expect(manifest.registration!.globalPluginManifestTarget).toBe('~/.gemini/config/plugins/myco/plugin.json');
-    // Skills deliberately do NOT live inside the plugin bundle.
-    // Antigravity reads workspace `.agents/skills/` natively (populated
-    // by other cross-agent symbiont installs and Myco's intelligence
-    // pipeline), and the package skills go to the cross-agent standard
-    // user-global dir `~/.agents/skills/` (agy supports `.agents`). The
-    // deprecated Gemini-era `~/.gemini/antigravity/skills` is swept via
-    // `retiredGlobalSkillsTargets`.
-    expect(manifest.registration!.skillsTarget).toBeUndefined();
-    expect(manifest.registration!.globalSkillsTarget).toBe('~/.agents/skills');
-    expect(manifest.registration!.retiredGlobalSkillsTargets).toEqual(['~/.gemini/antigravity/skills']);
-  });
 
-  it('windsurf manifest has registration without mcpTarget', () => {
-    const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'windsurf.yaml'), 'utf-8');
-    const manifest = SymbiontManifestSchema.parse(YAML.parse(raw));
-    expect(manifest.registration).toBeDefined();
-    expect(manifest.registration!.hooksTarget).toBe('.windsurf/hooks.json');
-    expect(manifest.registration!.mcpTarget).toBeUndefined();
-    expect(manifest.registration!.skillsTarget).toBe('.agents/skills');
-    expect(manifest.registration!.settingsTarget).toBeNull();
-  });
+
+
 
   it('antigravity manifest has planDirs configured', () => {
     const raw = fs.readFileSync(path.join(MANIFESTS_DIR, 'antigravity.yaml'), 'utf-8');

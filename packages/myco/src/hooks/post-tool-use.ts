@@ -1,6 +1,6 @@
 import { toolPromptContext } from '../member/prompt-context.js';
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun } from '../member/capture.js';
-import { toolUseEvent, type OutboundEvent } from '../member/envelope.js';
+import { toolCompletionEvent, type OutboundEvent } from '../member/envelope.js';
 import { planFilesWritten, planRootFor, planWritePaths } from '../member/plan-files.js';
 import { projectLineOnly, renderedBlock } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
@@ -43,7 +43,7 @@ export async function main(opts: HookMainOptions = {}) {
     const promptId = !transcriptWritesTurnRows(agent) ? state.promptId
       : state.turn !== undefined && state.turn.id === input.promptKey ? state.turn.promptId : undefined;
     // The transcript already holds this call for a symbiont whose transcript carries tool calls.
-    const events: OutboundEvent[] = hookShipsToolCalls(agent) ? [toolUseEvent(ctx, input, { promptId })] : [];
+    const events: OutboundEvent[] = hookShipsToolCalls(agent) ? [toolCompletionEvent(ctx, input, { promptId })] : [];
     const served = HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true ? sessionBlock(run, state) : {};
     const respond: HookOutcome['respond'] = HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true && state.promptRecall !== undefined
       ? async () => ({ events: [], claim: next => toolPromptContext(run, next, served.response) }) : undefined;

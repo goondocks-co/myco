@@ -289,9 +289,15 @@ export function toolUseEvent(ctx: EnvelopeContext, input: NormalizedHookInput, o
 
 export function toolFailureEvent(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { promptId?: string; toolCallId?: string } = {}): OutboundEvent {
   const { payload, blobSource } = toolCallPayload(ctx, input, { ...opts, success: false });
-  const error = input.raw.error;
+  const error = input.toolError ?? input.raw.error;
   const errorMessage = typeof error === 'string' ? error : error === undefined ? 'tool failed' : JSON.stringify(error);
   return envelope(ctx, 'tool.failure', { ...payload, errorMessage: errorMessage.slice(0, BOUNDS.errorMessage) || 'tool failed', resultReason: 'reported' }, blobSource);
+}
+
+/** A completion hook may carry either a successful call or its declared error. */
+export function toolCompletionEvent(ctx: EnvelopeContext, input: NormalizedHookInput, opts: { promptId?: string; toolCallId?: string } = {}): OutboundEvent {
+  return typeof input.toolError === 'string' && input.toolError.length > 0
+    ? toolFailureEvent(ctx, input, opts) : toolUseEvent(ctx, input, opts);
 }
 
 export function responseEvent(ctx: EnvelopeContext, facts: { text: string; promptId?: string; responseId?: string }): OutboundEvent {

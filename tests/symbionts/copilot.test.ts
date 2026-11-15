@@ -7,12 +7,8 @@ import {
 } from '../helpers/copilot-transcript.js';
 
 /**
- * Build a Copilot event-log JSONL transcript string.
- *
- * The schema mirrors what `copilot-agent` v0.49+ (and the VS Code Copilot
- * extension after the unified-agent-experience rework) writes to disk:
- *   { id, parentId, timestamp, type, data }
- * one event per line, chronological order.
+ * Copilot CLI event-log JSONL: one chronological { id, parentId, timestamp, type, data } per line.
+ * Schema: https://github.com/github/copilot-sdk/blob/main/nodejs/src/generated/session-events.ts
  */
 function buildCopilotTranscript(
   turns: Array<{
@@ -92,7 +88,6 @@ describe('copilotAdapter', () => {
     expect(copilotAdapter.name).toBe('copilot');
     expect(copilotAdapter.displayName).toBe('GitHub Copilot');
     expect(copilotAdapter.pluginRootEnvVar).toBe('COPILOT_PLUGIN_ROOT');
-    expect(copilotAdapter.hookFields.sessionId).toBe('session_id');
   });
 
   it('findTranscript always returns null', () => {

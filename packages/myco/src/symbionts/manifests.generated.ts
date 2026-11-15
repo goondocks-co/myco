@@ -12,7 +12,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
   {
     "name": "antigravity",
     "displayName": "Google Antigravity",
-    "binary": "antigravity",
+    "binary": "agy",
     "configDir": ".agents/plugins/myco",
     "detectionDir": "~/.gemini",
     "health": {
@@ -39,7 +39,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "toolOutput": [
         "tool_output",
         "tool_response"
-      ]
+      ],
+      "toolError": "error"
     },
     "hookInput": {
       "workspaceFromStdin": "workspacePaths"
@@ -59,33 +60,34 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "~/.gemini/antigravity-ide"
         ],
         "patterns": [
-          "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
+          "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl",
+          "brain/{sessionId}/.system_generated/logs/transcript.jsonl"
         ],
         "retention": "harness"
       },
       "promptsFromTranscript": true
     },
     "registration": {
-      "hooksTarget": ".agents/plugins/myco/hooks.json",
-      "globalHooksTarget": "~/.gemini/config/plugins/myco/hooks.json",
+      "hooksTarget": ".agents/hooks.json",
+      "memberHooksTarget": ".agents/hooks.json",
+      "hooksRootKey": "myco",
+      "memberCaptureLimits": "Prompts and replies come from the transcript; no prompt-time or tool-time memory hook. Earlier transcripts need project attribution.",
+      "globalHooksTarget": "~/.gemini/config/hooks.json",
       "globalMcpTarget": [
         {
-          "path": "~/.gemini/config/plugins/myco/mcp_config.json"
+          "path": "~/.gemini/config/mcp_config.json"
         }
       ],
-      "globalSkillsTarget": "~/.agents/skills",
+      "globalSkillsTarget": "~/.gemini/config/skills",
       "retiredGlobalSkillsTargets": [
         "~/.gemini/antigravity/skills"
       ],
       "globalSettingsTarget": null,
-      "pluginManifestTarget": ".agents/plugins/myco/plugin.json",
-      "globalPluginManifestTarget": "~/.gemini/config/plugins/myco/plugin.json",
-      "hooksFormat": "plugin-file",
-      "hooksTemplateFile": "hooks.json",
+      "hooksFormat": "json",
       "hookResponse": {
         "format": "antigravity-inject-steps"
       },
-      "mcpTarget": ".agents/plugins/myco/mcp_config.json",
+      "mcpTarget": ".agents/mcp_config.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
       "settingsTarget": null,
@@ -97,6 +99,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
+      "promptSubmitInjection": true,
       "turnRowSource": "hook",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
@@ -669,6 +672,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [
@@ -1213,6 +1217,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
@@ -1581,6 +1586,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results",
       "canopyReadTools": [
@@ -1895,7 +1901,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "name": "copilot",
     "displayName": "GitHub Copilot",
     "binary": "copilot",
-    "configDir": ".vscode",
+    "configDir": ".copilot",
     "detectionDir": "~/.copilot",
     "health": {
       "installLocations": [
@@ -1910,13 +1916,31 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
     "hookFields": {
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
+      "sessionId": [
+        "session_id",
+        "sessionId"
+      ],
+      "transcriptPath": [
+        "transcript_path",
+        "transcriptPath"
+      ],
+      "lastResponse": [
+        "last_assistant_message",
+        "response"
+      ],
       "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
-      "toolOutput": "tool_response"
+      "toolName": [
+        "tool_name",
+        "toolName"
+      ],
+      "toolInput": [
+        "tool_input",
+        "toolArgs"
+      ],
+      "toolOutput": [
+        "tool_response",
+        "toolResult"
+      ]
     },
     "capture": {
       "planDirs": [],
@@ -1936,15 +1960,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".github/hooks/myco-hooks.json",
+      "memberHooksTarget": ".github/hooks/myco-hooks.json",
+      "memberCaptureLimits": "Prompt hooks cannot inject; memory arrives after a tool. Earlier transcripts need project attribution.",
       "globalHooksTarget": "~/.copilot/hooks/myco-hooks.json",
       "globalMcpTarget": [
         {
-          "path": "~/.copilot/mcp-config.json",
-          "serversKey": "mcpServers"
-        },
-        {
-          "path": "~/Library/Application Support/Code/User/mcp.json",
-          "serversKey": "servers"
+          "path": "~/.copilot/mcp-config.json"
         }
       ],
       "globalSkillsTarget": "~/.agents/skills",
@@ -1959,14 +1980,19 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         }
       },
       "hooksFormat": "json",
+      "hooksConfigVersion": 1,
       "hookResponse": {
-        "format": "plain-text",
+        "format": "json",
+        "fieldNames": {
+          "additionalContext": "additionalContext"
+        },
         "shapes": {
           "SubagentStart": "flat",
-          "PostToolUse": "both"
+          "PostToolUse": "flat",
+          "PostToolUseFailure": "flat"
         }
       },
-      "mcpTarget": ".vscode/mcp.json",
+      "mcpTarget": ".mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
       "skillsTarget": ".agents/skills",
@@ -1975,11 +2001,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "instructionsFile": ".github/copilot-instructions.md"
     },
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full",
       "canopyReadTools": [
@@ -2334,6 +2361,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "postToolUseInjection": true,
       "promptRecallToolDelivery": false,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results",
       "canopyReadTools": [],
@@ -2706,6 +2734,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
@@ -3111,6 +3140,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
@@ -3246,10 +3276,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "prompt": "tool_info.user_prompt",
       "toolName": "agent_action_name",
       "toolInput": "tool_info",
-      "toolOutput": [
-        "tool_output",
-        "tool_response"
-      ]
+      "toolOutput": "tool_info.mcp_result"
     },
     "projectDirEnvVar": "WINDSURF_PROJECT_DIR",
     "capture": {
@@ -3272,21 +3299,20 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     },
     "registration": {
       "hooksTarget": ".windsurf/hooks.json",
+      "memberHooksTarget": ".windsurf/hooks.json",
+      "memberCaptureLimits": "Hooks capture only: no session-start, prompt-time or tool-time memory injection; no session-end hook. Earlier transcripts need project attribution.",
       "globalHooksTarget": "~/.codeium/windsurf/hooks.json",
       "globalMcpTarget": [
         {
           "path": "~/.codeium/windsurf/mcp_config.json"
         }
       ],
-      "globalSkillsTarget": "~/.agents/skills",
-      "retiredGlobalSkillsTargets": [
-        "~/.codeium/windsurf/skills"
-      ],
+      "globalSkillsTarget": "~/.codeium/windsurf/skills",
       "globalSettingsTarget": null,
       "hooksFormat": "json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
-      "skillsTarget": ".agents/skills",
+      "skillsTarget": ".windsurf/skills",
       "settingsTarget": null,
       "settingsFormat": "json"
     },
@@ -3296,10 +3322,17 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
+      "promptSubmitInjection": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
       "pathBearingTools": [
+        {
+          "tool": "post_read_code",
+          "pathField": "file_path",
+          "pathKind": "file",
+          "mutates": false
+        },
         {
           "tool": "post_write_code",
           "pathField": "file_path",
@@ -3308,7 +3341,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         },
         {
           "tool": "post_run_command",
-          "pathField": "command",
+          "pathField": "command_line",
           "extract": "shell-arg",
           "readCommands": [
             "cat",

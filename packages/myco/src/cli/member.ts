@@ -58,7 +58,7 @@ import { REJOIN_HINT } from '../member/delivery-notice.js';
 import { ServerClient, type FetchLike } from '../member/transport.js';
 import { openBrowser } from './open-browser.js';
 import { CutoverBackup } from '../member/cutover-backup.js';
-import { linkMemberSkills, missingMemberSkills, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
+import { linkMemberSkills, missingMemberSkills, prepareMemberSkillRemoval, skillsFolder, type SkillLinks } from '../symbionts/member-skill-links.js';
 import { readProvisionRecord, readProvisionRecordStrict, recordProvision, reconcileProvisionAgents, forgetProvision, holdHookTrust, type ProvisionRecord } from '../symbionts/member-provision-record.js';
 import { keepCurrent, reportHarnesses, HARNESS_REPORT_WINDOW_MS, type KeepCurrentResult } from '@myco/cli/member-keep-current.js';
 import { getPluginVersion } from '../version.js';
@@ -864,7 +864,15 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     if (recordedServer !== undefined) installer.forDeployment(recordedServer);
     try {
       withMemberRepair(mycoHome, 'myco member provision --remove', () => {
+        const target = manifest.registration?.globalSkillsTarget;
+        const others = new Set([...(readProvisionRecord(mycoHome)?.agents ?? []),
+          ...(recordedServer === undefined ? [] : registeredMemberHarnesses(mycoHome, recordedServer, deps))].filter(id => id !== agent));
+        const shared = target !== undefined && target !== null && loadManifests().some(other =>
+          others.has(other.name) && other.registration?.globalSkillsTarget != null
+          && skillsFolder(other.registration.globalSkillsTarget) === skillsFolder(target));
+        const removeSkills = target && !shared ? prepareMemberSkillRemoval(mycoHome, skillsFolder(target)) : () => {};
         installer.uninstallMemberRegistration();
+        removeSkills();
         forgetProvision(mycoHome, agent);
       }, { wait: true });
     } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }

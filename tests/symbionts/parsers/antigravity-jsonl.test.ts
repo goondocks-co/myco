@@ -5,6 +5,7 @@ import {
   extractAntigravityFilePath,
 } from '@myco/symbionts/parsers/antigravity-jsonl.js';
 
+// Retained USER_INPUT / PLANNER_RESPONSE transcript steps; hook transcript contract: https://antigravity.google/docs/hooks#common-input-fields
 /** Build a JSONL string from an array of step objects. */
 function toJsonl(rows: Record<string, unknown>[]): string {
   return rows.map((r) => JSON.stringify(r)).join('\n') + '\n';

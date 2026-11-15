@@ -308,6 +308,10 @@ const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
   /** Repository-relative member hook path recognized by read-only leftover-entry diagnostics. */
   memberHooksTarget: z.string().optional(),
+  /** Root key holding the event map in the harness's JSON hooks file. */
+  hooksRootKey: z.string().min(1).optional(),
+  /** Capture limits shown alongside a connected harness in doctor. */
+  memberCaptureLimits: z.string().max(300).optional(),
   /**
    * A line `myco member provision` prints after writing this symbiont's member
    * surface, for a step only the user can take in the agent (e.g. trusting
@@ -597,6 +601,8 @@ const CapabilitiesSchema = z.object({
   postToolUseInjection: z.boolean().default(false),
   /** Whether a tool hook can render recall held by the prompt hook. */
   promptRecallToolDelivery: z.boolean().default(false),
+  /** Whether prompt-hook stdout reaches the model. False retains recall for a tool hook, if available. */
+  promptSubmitInjection: z.boolean().default(true),
   /**
    * Which side writes this symbiont's turn rows.
    *
@@ -649,6 +655,7 @@ const CapabilitiesSchema = z.object({
   subagentStartInjection: false,
   postToolUseInjection: false,
   promptRecallToolDelivery: false,
+  promptSubmitInjection: true,
   turnRowSource: 'hook' as const,
   transcriptFidelity: 'full' as const,
   canopyReadTools: [],
@@ -1056,6 +1063,8 @@ export const SymbiontManifestSchema = z.object({
      * then `tool_response` — the two keys runtimes deliver a tool's result under.
      * Same transcript-only caveat applies as `lastResponse`. */
     toolOutput: HookFieldPathSchema.default(['tool_output', 'tool_response']),
+    /** Error carried by a completion hook that also reports successful calls. */
+    toolError: HookFieldPathSchema.optional(),
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),
     /**

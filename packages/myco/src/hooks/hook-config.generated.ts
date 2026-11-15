@@ -30,6 +30,7 @@ export interface HookCapabilities {
   subagentStartInjection: boolean;
   postToolUseInjection: boolean;
   promptRecallToolDelivery: boolean;
+  promptSubmitInjection: boolean;
   /** Which side writes this symbiont's turn rows; see the manifest schema. */
   turnRowSource: 'hook' | 'transcript';
   /** What the transcript carries, as the Deployment's parser declares it; see the manifest schema. */
@@ -80,7 +81,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "toolOutput": [
         "tool_output",
         "tool_response"
-      ]
+      ],
+      "toolError": "error"
     },
     "hookEvents": {
       "PostToolUse": {
@@ -88,6 +90,10 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "timeout": 5
       },
       "PreInvocation": {
+        "hook": "session-start",
+        "timeout": 10
+      },
+      "SessionStart": {
         "hook": "session-start",
         "timeout": 10
       },
@@ -106,6 +112,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
+      "promptSubmitInjection": true,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
@@ -120,7 +127,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "~/.gemini/antigravity-ide"
       ],
       "patterns": [
-        "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
+        "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl",
+        "brain/{sessionId}/.system_generated/logs/transcript.jsonl"
       ],
       "retention": "harness"
     },
@@ -187,6 +195,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -459,6 +468,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -566,6 +576,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
@@ -766,15 +777,33 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
   },
   "copilot": {
     "pluginRootEnvVar": "COPILOT_PLUGIN_ROOT",
-    "configDir": ".vscode",
+    "configDir": ".copilot",
     "hookFields": {
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
+      "sessionId": [
+        "session_id",
+        "sessionId"
+      ],
+      "transcriptPath": [
+        "transcript_path",
+        "transcriptPath"
+      ],
+      "lastResponse": [
+        "last_assistant_message",
+        "response"
+      ],
       "prompt": "prompt",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
-      "toolOutput": "tool_response"
+      "toolName": [
+        "tool_name",
+        "toolName"
+      ],
+      "toolInput": [
+        "tool_input",
+        "toolArgs"
+      ],
+      "toolOutput": [
+        "tool_response",
+        "toolResult"
+      ]
     },
     "hookEvents": {
       "ErrorOccurred": {
@@ -795,10 +824,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       },
       "PreCompact": {
         "hook": "pre-compact",
-        "timeout": 5
-      },
-      "PreToolUse": {
-        "hook": "pre-tool-use",
         "timeout": 5
       },
       "SessionEnd": {
@@ -829,11 +854,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "planDirs": [],
     "planTags": [],
     "capabilities": {
-      "preToolUseInjection": true,
+      "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
@@ -851,10 +877,14 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "retention": "harness"
     },
     "hookResponse": {
-      "format": "plain-text",
+      "format": "json",
+      "fieldNames": {
+        "additionalContext": "additionalContext"
+      },
       "shapes": {
         "SubagentStart": "flat",
-        "PostToolUse": "both"
+        "PostToolUse": "flat",
+        "PostToolUseFailure": "flat"
       }
     }
   },
@@ -913,6 +943,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": false,
       "postToolUseInjection": true,
       "promptRecallToolDelivery": false,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
@@ -984,6 +1015,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -1036,6 +1068,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
+      "promptSubmitInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -1073,10 +1106,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "prompt": "tool_info.user_prompt",
       "toolName": "agent_action_name",
       "toolInput": "tool_info",
-      "toolOutput": [
-        "tool_output",
-        "tool_response"
-      ]
+      "toolOutput": "tool_info.mcp_result"
     },
     "hookEvents": {
       "post_cascade_response": {
@@ -1084,6 +1114,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       },
       "post_cascade_response_with_transcript": {
         "hook": "stop"
+      },
+      "post_mcp_tool_use": {
+        "hook": "post-tool-use"
+      },
+      "post_read_code": {
+        "hook": "post-tool-use"
       },
       "post_run_command": {
         "hook": "post-tool-use"
@@ -1105,6 +1141,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "subagentStartInjection": false,
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
+      "promptSubmitInjection": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },

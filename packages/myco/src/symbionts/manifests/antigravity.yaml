@@ -1,6 +1,6 @@
 name: antigravity
 displayName: Google Antigravity
-binary: antigravity
+binary: agy
 health:
   installLocations: ["~/.gemini", "/Applications/Antigravity.app", "~/Applications/Antigravity.app"]
   activityLocations: [{ kind: file, path: "@transcripts" }]
@@ -33,6 +33,7 @@ hookFields:
   transcriptPath: transcriptPath
   toolName: toolCall.name
   toolInput: toolCall.args
+  toolError: error
 # Antigravity names the workspace only in the hook payload: the launch preamble reads it from stdin and starts there.
 hookInput:
   workspaceFromStdin: workspacePaths
@@ -47,6 +48,7 @@ capture:
       - "~/.gemini/antigravity-ide"
     patterns:
       - "brain/{sessionId}/.system_generated/logs/transcript_full.jsonl"
+      - "brain/{sessionId}/.system_generated/logs/transcript.jsonl"
   planDirs:
     # Antigravity workspace plans land here; user-global plan dir TBD during
     # dogfood. Mirrors the pattern other symbionts use until verified.
@@ -54,64 +56,20 @@ capture:
 registration:
   settingsTarget: null
   globalSettingsTarget: null
-  # Antigravity discovers workspace plugins under .agents/plugins/<name>/.
-  # The hooks file inside that bundle is hooks.json.
-  hooksTarget: .agents/plugins/myco/hooks.json
-  globalHooksTarget: ~/.gemini/config/plugins/myco/hooks.json
-  # Plugin-bundle layout: the hooks file is Myco-owned inside its own bundle
-  # dir, so the installer copies templates/antigravity/hooks.json verbatim
-  # rather than merging into an external user-managed file.
-  hooksFormat: plugin-file
-  hooksTemplateFile: hooks.json
-  # Antigravity hooks emit JSON on stdout; field mapping rebases Myco's
-  # internal HookResponse semantics to Antigravity's response shape.
-  # Antigravity's response shape varies per event:
-  #   - PreInvocation/PostInvocation: { injectSteps: [{ ephemeralMessage: "<text>" }] }
-  #   - PostToolUse:                   {}            (empty)
-  #   - Stop:                          { decision: "<continue|allow>", reason?: "<text>" }
-  #     'continue' forces the agent to keep running; any other value
-  #     allows the stop. Myco never force-continues — Stop is a pure
-  #     terminate signal for capture purposes.
-  #
-  # `format: antigravity-inject-steps` selects the dedicated serializer
-  # in src/hooks/response.ts that knows the per-event shapes. The flat
-  # `fieldNames` mapping we used before was wrong — it emitted
-  # `{ ephemeralMessage: "<text>" }` (no injectSteps wrapper), which
-  # Antigravity silently dropped. Caught during the R4 verification
-  # pass by reading the live docs (the prior wisdom spore had the
-  # shape wrong).
+  hooksTarget: .agents/hooks.json
+  memberHooksTarget: .agents/hooks.json
+  globalHooksTarget: ~/.gemini/config/hooks.json
+  hooksRootKey: myco
+  memberCaptureLimits: "Prompts and replies come from the transcript; no prompt-time or tool-time memory hook. Earlier transcripts need project attribution."
+  # https://antigravity.google/docs/hooks
+  # Context is carried in injectSteps; tool completion returns {}, Stop returns an allow decision.
   hookResponse:
     format: antigravity-inject-steps
-  mcpTarget: .agents/plugins/myco/mcp_config.json
-  globalMcpTarget: ~/.gemini/config/plugins/myco/mcp_config.json
-  # Antigravity's bundle marker. Without `plugin.json` at the root of
-  # the plugin dir, Antigravity's plugin loader doesn't recognize the
-  # bundle and our hooks/MCP/skills never activate. Google's reference
-  # plugins (google-antigravity-sdk, modern-web-guidance-plugin) both
-  # ship a `plugin.json` with metadata-only fields (name, version,
-  # description, author, license, keywords) — hooks.json and
-  # mcp_config.json are sibling files discovered by convention.
-  pluginManifestTarget: .agents/plugins/myco/plugin.json
-  globalPluginManifestTarget: ~/.gemini/config/plugins/myco/plugin.json
-  # Antigravity CLI (`agy`, successor to the deprecated Gemini CLI) reads the
-  # cross-agent `.agents/skills` standard (https://antigravity.google/docs/skills):
-  #   1. workspace `.agents/skills/`  — read natively; Myco's intelligence
-  #                                     pipeline writes the project's generated
-  #                                     skills here, and other `.agents`-standard
-  #                                     symbionts already symlink the package
-  #                                     skills into the same dir, so `skillsTarget`
-  #                                     is deliberately omitted (lean install, no
-  #                                     duplicate symlinks).
-  #   2. global `~/.agents/skills/`   — the user-level cross-agent standard dir;
-  #                                     package skills land here so an
-  #                                     Antigravity-only workspace still sees
-  #                                     them. Replaces the deprecated Gemini-era
-  #                                     `~/.gemini/antigravity/skills`.
-  globalSkillsTarget: ~/.agents/skills
+  mcpTarget: .agents/mcp_config.json
+  globalMcpTarget: ~/.gemini/config/mcp_config.json
+  globalSkillsTarget: ~/.gemini/config/skills
   retiredGlobalSkillsTargets:
     - ~/.gemini/antigravity/skills
-  # No standalone settings file — Antigravity wires settings through the
-  # plugin bundle's plugin.json.
 capabilities:
   sessionStartInjection: true
   subagentStartInjection: false

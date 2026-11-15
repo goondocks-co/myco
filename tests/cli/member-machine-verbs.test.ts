@@ -256,7 +256,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     const ran = await verb('doctor', [], rig.fetch);
 
-    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are installed/);
+    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are connected/);
     expect(ran.stdout).toMatch(/Member MCP resolution\s*.*ok.*Claude Code's global tools are configured for https:\/\/member-test.invalid, Project proj_1, over http; runtime reach was not checked/);
     expect(ran.stdout).not.toMatch(/Capture\s+.*FAIL/);
   });
@@ -415,7 +415,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     fs.writeFileSync(plugin, '// myco:plugin-marker\n// myco:member-plugin\nexport const MycoPlugin = async () => ({});\n');
     const member = await verb('doctor', [], rig.fetch);
-    expect(member.stdout).toMatch(/Capture\s+.*not checked.*OpenCode's global hooks .* are installed/);
+    expect(member.stdout).toMatch(/Capture\s+.*not checked.*OpenCode's global hooks .* are connected/);
   });
 
   it('doctor reads Codex member hooks from a hooks.json that carries a TOML footer', async () => {
@@ -430,7 +430,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     const ran = await verb('doctor', [], rig.fetch);
 
-    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Codex's global hooks .* are installed/);
+    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Codex's global hooks .* are connected/);
   });
 
   it('doctor names a member hook whose program is missing or not executable, and counts it as no capture', async () => {
@@ -451,7 +451,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     fs.chmodSync(program, 0o755);
     const runnable = await verb('doctor', [], rig.fetch);
-    expect(runnable.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are installed/);
+    expect(runnable.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are connected/);
     for (const report of [missing, inert, runnable]) {
       expect(report.stdout).not.toMatch(/run `?myco doctor/i);
       expect(report.stdout).not.toContain('..');

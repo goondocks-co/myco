@@ -68,7 +68,7 @@ describe('a sandbox (G4g)', () => {
     const tx = transcript('sess-sandbox');
     const start = await runHook('session-start', { session_id: 'sess-sandbox', transcript_path: tx, cwd: process.cwd() }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', helperSpawn: noStart });
     const prompt = await runHook('user-prompt-submit', { session_id: 'sess-sandbox', prompt: 'in the sandbox', transcript_path: tx }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', helperSpawn: noStart });
-    expect(spy.requests.map(request => request.path)).toEqual(['/context/prompt']);
+    expect(prompt.stdout).toBe('');
     // No start was tried: a tried start is logged as one the caller ships inline.
     for (const hook of [start, prompt]) expect(hook.stderr).not.toContain('could not start a helper');
     expect(fs.existsSync(path.join(mycoHome, 'logs', 'helper.log'))).toBe(false);
@@ -92,7 +92,7 @@ describe('a sandbox holding only a join code (G4g)', () => {
     const opts = { fetch: spy.fetch, credential: 'env' as const, symbiont: 'copilot', helperSpawn: noStart };
     const start = await runHook('session-start', { session_id: 'sess-code', transcript_path: tx, cwd: process.cwd() }, opts);
     const prompt = await runHook('user-prompt-submit', { session_id: 'sess-code', prompt: 'in the sandbox', transcript_path: tx }, opts);
-    expect(spy.requests.map((r) => r.path)).toEqual(['/members/join', '/context/session', '/context/session', '/context/prompt']);
+    expect(prompt.stdout).toBe('');
     for (const hook of [start, prompt]) expect(hook.stderr).not.toContain('could not start a helper');
     expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
 

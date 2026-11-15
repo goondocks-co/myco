@@ -150,7 +150,8 @@ export async function main(opts: HookMainOptions = {}) {
         ? []
         : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
       const outgoing = { ...response, ...(promptId === undefined ? {} : { promptId }) };
-      if (!isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)) {
+      if ((HOOK_CONFIG[agent]?.capabilities.promptSubmitInjection !== false || HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true)
+        && !isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)) {
         asking = { naming, request: promptAsk(naming, text, run.now(), agent), response: outgoing };
       }
       return {

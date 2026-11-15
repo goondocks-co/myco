@@ -1,6 +1,5 @@
 import type { TranscriptParser } from '../adapter.js';
 import type { TranscriptTurn } from '../adapter.js';
-import { PROMPT_PREVIEW_CHARS } from '../../constants.js';
 
 /**
  * Parser for Antigravity `transcript_full.jsonl`. Each line is one step:
@@ -36,7 +35,7 @@ export class AntigravityJsonlParser implements TranscriptParser {
 
       if (type === 'USER_INPUT') {
         const rawContent = typeof entry.content === 'string' ? entry.content : '';
-        const promptText = cleanAntigravityUserPrompt(rawContent).slice(0, PROMPT_PREVIEW_CHARS);
+        const promptText = cleanAntigravityUserPrompt(rawContent);
         const submissionId = typeof entry.step_index === 'number' && Number.isSafeInteger(entry.step_index) && entry.step_index >= 0 ? entry.step_index : undefined;
         if (submissionId !== undefined) {
           if (submissions.has(submissionId)) continue;

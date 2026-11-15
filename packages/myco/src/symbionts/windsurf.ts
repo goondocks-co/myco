@@ -13,12 +13,12 @@ export const windsurfAdapter: SymbiontAdapter = {
   pluginRootEnvVar: 'WINDSURF_PLUGIN_ROOT',
   hookFields: {
     sessionId: 'trajectory_id',
-    transcriptPath: 'transcript_path',
-    lastResponse: 'last_assistant_message',
-    prompt: 'prompt',
-    toolName: 'tool_name',
-    toolInput: 'tool_input',
-    toolOutput: 'tool_output',
+    transcriptPath: 'tool_info.transcript_path',
+    lastResponse: 'tool_info.response',
+    prompt: 'tool_info.user_prompt',
+    toolName: 'agent_action_name',
+    toolInput: 'tool_info',
+    toolOutput: 'tool_info.mcp_result',
   },
 
   findTranscript: (sessionId) => findTranscriptFor('windsurf', sessionId),

@@ -65,6 +65,7 @@ export function writeHookResponse(
   hookEvent: string,
   response: HookResponse = {},
 ): void {
+  if (hookEvent === 'user-prompt-submit' && symbiont !== undefined && HOOK_CONFIG[symbiont]?.capabilities.promptSubmitInjection === false) return;
   if (hookEvent === 'pre-tool-use' && symbiontHasCapability(symbiont, 'preToolUseInjection')) {
     process.stdout.write(serializePreToolUseEnvelope(response));
     return;

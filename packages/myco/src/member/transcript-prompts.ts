@@ -1,3 +1,4 @@
+import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 import { assertMemberTranscriptDestination } from './transcript-routing.js';
 /**
  * Prompts a harness writes only to its transcript, captured by the member helper (#1561): a harness whose manifest
@@ -11,8 +12,13 @@ import { canonicalPromptId } from '@goondocks/myco-shared/prompt-identity';
 import fs from 'node:fs';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import { deriveId, promptEvent } from './envelope.js';
-import { readSessionState } from './session-state.js';
+import { readSessionState, type SessionState } from './session-state.js';
 import type { MemberSpool } from './spool.js';
+
+/** Request the transcript-only prompt reader at an invocation or a finalized transcript boundary. */
+export function transcriptPromptBackfill(agent: string, transcriptPath: string | undefined, at: number): SessionState['promptBackfill'] {
+  return HOOK_CONFIG[agent]?.promptsFromTranscript === true && transcriptPath ? { transcriptPath, at } : undefined;
+}
 
 /**
  * The user prompts in a harness's transcript, in order, read by its own parser. Empty on a missing or unreadable
@@ -34,37 +40,40 @@ export function readPromptsFromTranscript(agent: string, transcriptPath: string)
   return readPromptTurns(agent, transcriptPath).map(turn => turn.prompt);
 }
 
-/** Append every prompt of each session's requested transcript not captured yet; answers how many were appended. */
-export function backfillTranscriptPrompts(spool: MemberSpool, now: () => number): number {
-  let appended = 0;
-  for (const sessionId of spool.stateSessionIds()) {
-    const state = readSessionState(spool.dir, sessionId);
-    const request = state.promptBackfill;
-    // Only a hook of a harness that names itself asks (`hooks/session-start.ts`): its agent is in the state.
-    if (request === undefined || state.agent === undefined) continue;
-    assertMemberTranscriptDestination(request.transcriptPath, spool.routing!, spool.mycoHome);
-    const agent = state.agent;
-    const prompts = readPromptTurns(agent, request.transcriptPath);
-    if (prompts.length === 0) continue;
-    const captured: string[] = [];
-    const known = new Set(Object.values(state.prompts));
-    const ctx = { agent, sessionId, stage: spool.stagerFor(sessionId), now: () => request.at };
-    const events = prompts.flatMap((turn, position) => {
+/** Capture each transcript prompt once before records refer to it. */
+export function captureTranscriptPrompts(spool: MemberSpool, sessionId: string, request: NonNullable<SessionState['promptBackfill']>, now: () => number): number {
+  const state = readSessionState(spool.dir, sessionId);
+  if (state.agent === undefined) return 0;
+  assertMemberTranscriptDestination(request.transcriptPath, spool.routing!, spool.mycoHome);
+  const prompts = readPromptTurns(state.agent, request.transcriptPath);
+  if (prompts.length === 0) return 0;
+  const captured: string[] = [];
+  const ctx = { agent: state.agent, sessionId, stage: spool.stagerFor(sessionId), now: () => request.at };
+  spool.appendAndRecord(sessionId, next => {
+    const known = new Set(Object.values(next.prompts));
+    return prompts.flatMap((turn, position) => {
       const promptId = canonicalPromptId(deriveId, { scheme: 'member-transcript-v1', sessionId, dedupeKey: turn.submissionKey, position });
       if (known.has(promptId)) return [];
       known.add(promptId);
       captured.push(promptId);
       return [promptEvent(ctx, { promptId, text: turn.prompt })];
     });
-    spool.appendAndRecord(sessionId, events, (next) => {
-      for (const promptId of captured) {
-        next.prompts[promptId] = promptId;
-        next.promptId = promptId;
-      }
-      // Read whole: the request is done unless a newer invocation asked again meanwhile.
-      if (next.promptBackfill?.at === request.at) delete next.promptBackfill;
-    }, now());
-    appended += events.length;
+  }, next => {
+    for (const promptId of captured) {
+      next.prompts[promptId] = promptId;
+      next.promptId = promptId;
+    }
+    if (next.promptBackfill?.at === request.at) delete next.promptBackfill;
+  }, now());
+  return captured.length;
+}
+
+/** Append every requested session's transcript prompts not captured yet. */
+export function backfillTranscriptPrompts(spool: MemberSpool, now: () => number): number {
+  let appended = 0;
+  for (const sessionId of spool.stateSessionIds()) {
+    const request = readSessionState(spool.dir, sessionId).promptBackfill;
+    if (request !== undefined) appended += captureTranscriptPrompts(spool, sessionId, request, now);
   }
   return appended;
 }

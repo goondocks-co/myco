@@ -79,6 +79,9 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
   const started = Date.now();
   const original = readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id];
   if (original === undefined) return { events: [], claim: () => ({ events: [] }) };
+  if (HOOK_CONFIG[run.agent]?.capabilities.promptSubmitInjection === false) {
+    return { events: [], claim: () => ({ events: [], response: {} }) };
+  }
   const capMs = promptContextCapMs(original);
   if (run.credentialSource === 'env') {
     const held = readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id];

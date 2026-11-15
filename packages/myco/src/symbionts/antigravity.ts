@@ -2,18 +2,7 @@ import type { SymbiontAdapter } from './adapter.js';
 import { AntigravityJsonlParser } from './parsers/antigravity-jsonl.js';
 import { findTranscriptFor } from './transcript-discovery.js';
 
-/**
- * Google Antigravity symbiont adapter.
- *
- * Plugin bundle root (shared across surfaces): `~/.gemini/config/plugins/<name>/`.
- * Hook contract: JSON stdin/stdout, camelCase fields (`conversationId`,
- * `transcriptPath`, `artifactDirectoryPath`).
- *
- * Conversations live under `~/.gemini/<surface>/brain/<conversationId>/`, with
- * the surface precedence and transcript leaf declared in the manifest's
- * `capture.transcriptDiscovery`.
- */
-
+/** Antigravity hooks carry conversationId and transcriptPath; prompts and replies are read from the transcript. */
 const antigravityParser = new AntigravityJsonlParser();
 
 export const antigravityAdapter: SymbiontAdapter = {
@@ -23,11 +12,9 @@ export const antigravityAdapter: SymbiontAdapter = {
   hookFields: {
     sessionId: 'conversationId',
     transcriptPath: 'transcriptPath',
-    lastResponse: 'last_assistant_message',
-    prompt: 'prompt',
     toolName: 'toolCall.name',
     toolInput: 'toolCall.args',
-    toolOutput: 'tool_output',
+    toolError: 'error',
   },
 
   findTranscript: (conversationId) => findTranscriptFor('antigravity', conversationId),

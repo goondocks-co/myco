@@ -1,3 +1,4 @@
+import { transcriptPromptBackfill } from '../member/transcript-prompts.js';
 import { evaluateSessionCaptureRules } from './capture-rules.js';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { gitHead, sessionRepositoryName } from '../member/git-facts.js';
@@ -68,7 +69,7 @@ export async function main(opts: HookMainOptions = {}) {
     const served = due ? sessionStartBlock(run, ask.kind === 'compact' ? 'compact' : 'start', git.branch) : undefined;
     const response = served?.response;
     // A harness with no prompt hook (`capture.promptsFromTranscript`) has its prompts read from the transcript by the helper.
-    const backfill = HOOK_CONFIG[agent]?.promptsFromTranscript === true && transcriptPath ? { transcriptPath, at: run.now() } : undefined;
+    const backfill = transcriptPromptBackfill(agent, transcriptPath, run.now());
     return {
       events,
       response,

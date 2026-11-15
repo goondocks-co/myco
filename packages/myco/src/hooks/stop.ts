@@ -1,3 +1,4 @@
+import { captureTranscriptPrompts, transcriptPromptBackfill } from '../member/transcript-prompts.js';
 import fs from 'node:fs';
 import { getMachineId } from '../machine-id.js';
 import { runMemberHook, type HookMainOptions, type HookRun } from '../member/capture.js';
@@ -92,6 +93,8 @@ export function transcriptPhase(run: HookRun): TranscriptPhase {
   const transcriptPath = input.transcriptPath;
   const noop: TranscriptPhase = { events: [], record: () => {} };
   if (!transcriptPath) return noop;
+  const backfill = transcriptPromptBackfill(agent, transcriptPath, run.now());
+  if (backfill !== undefined) captureTranscriptPrompts(spool, sessionId, backfill, run.now);
   const machineId = getMachineId();
   const state = readSessionState(spool.dir, sessionId);
   const pointer = transcriptPointerFor(transcriptPath, machineId, state.transcript);

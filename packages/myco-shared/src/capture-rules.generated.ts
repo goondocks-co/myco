@@ -935,6 +935,11 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "planTags": [],
     "fileTools": [
       {
+        "tool": "post_read_code",
+        "pathField": "file_path",
+        "mutates": false
+      },
+      {
         "tool": "post_write_code",
         "pathField": "file_path",
         "mutates": true
