@@ -66,7 +66,7 @@ const iso = (ms: number | null | undefined): string => (typeof ms === 'number' &
 const sourceLine = (reader: DeploymentHandle): string => `Deployment: ${reader.serverUrl}  project: ${reader.projectId}`;
 
 interface SearchHit { id: string; type: string; title?: string; preview?: string; score: number }
-interface SearchAnswer { hits: SearchHit[]; mode: string; provider_unavailable: boolean }
+interface SearchAnswer { hits: SearchHit[]; mode: string; provider_unavailable: boolean; fallback_reason?: string }
 
 async function runSearch(reader: DeploymentHandle, query: string, out: Out, err: Out): Promise<boolean> {
   const answer = await ask(reader, 'search', err, 'myco_search', { query, limit: SEARCH_LIMIT }) as SearchAnswer | null;
@@ -84,6 +84,10 @@ async function runVectors(reader: DeploymentHandle, query: string, out: Out, err
   if (answer === null) return false;
   if (answer.provider_unavailable) {
     err(`myco vectors: semantic search is unavailable on ${reader.serverUrl} — the Deployment has no embedding provider configured`);
+    return false;
+  }
+  if (answer.mode !== 'semantic') {
+    err(`myco vectors: ${reader.serverUrl} used word search (${answer.fallback_reason ?? answer.mode}); use myco search "${query}" for those results`);
     return false;
   }
   out(`Query: "${query}"`);
@@ -111,25 +115,27 @@ interface SessionSummary {
   started_at: number | null; ended_at: number | null; prompt_count: number; tool_count: number; summary: string;
 }
 
+interface SessionPage { sessions: SessionSummary[]; cursor: string | null }
+
 async function runSession(reader: DeploymentHandle, idOrLatest: string | undefined, out: Out, err: Out): Promise<boolean> {
   let id = idOrLatest;
   if (id === undefined || id === 'latest') {
-    const latest = await ask(reader, 'session', err, 'myco_sessions', { op: 'list', limit: 1 }) as SessionSummary[] | null;
+    const latest = await ask(reader, 'session', err, 'myco_sessions', { op: 'list', limit: 1 }) as SessionPage | null;
     if (latest === null) return false;
-    if (latest.length === 0) {
+    if (latest.sessions.length === 0) {
       out(sourceLine(reader));
       out('No sessions found');
       return true;
     }
-    id = latest[0].id;
+    id = latest.sessions[0].id;
   }
   let outcome = await reader.call('myco_sessions', { op: 'get', id });
   if (outcome.ok && answeredFailure(outcome.value) !== null) {
     // A short id is matched against the recent sessions, and must name exactly one.
-    const recent = await ask(reader, 'session', err, 'myco_sessions', { op: 'list', limit: SESSION_PREFIX_WINDOW }) as SessionSummary[] | null;
+    const recent = await ask(reader, 'session', err, 'myco_sessions', { op: 'list', limit: SESSION_PREFIX_WINDOW }) as SessionPage | null;
     if (recent === null) return false;
     const prefix = id;
-    const matches = recent.filter((s) => s.id.startsWith(prefix));
+    const matches = recent.sessions.filter((s) => s.id.startsWith(prefix));
     if (matches.length !== 1) {
       err(matches.length === 0
         ? `myco session: no session ${prefix} on ${reader.serverUrl} for project ${reader.projectId}`

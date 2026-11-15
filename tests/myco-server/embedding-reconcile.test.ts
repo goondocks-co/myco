@@ -1,3 +1,4 @@
+import { VECTOR_QUERY_LIMIT } from '@myco-server-worker/core/embedding/vectors.js';
 import { DIAGNOSTIC_PAYLOADS } from '../helpers/secret-corpus.ts';
 import { afterEach, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -30,9 +31,10 @@ function fixture() {
   const provider: EmbeddingProvider = { modelKey: 'test-model', embed: async (text) => { calls.push(text); return text.includes('unrelated') ? [0, 1] : [1, 0]; } };
   const vectors = sqliteVectorStore(f.sqlite);
   const context = { db: f.db, blobs: f.bucket, vectors, provider };
-  const search = (query: string, mode = 'semantic') => searchDeployment({ db: f.db, vectors, embeddingProvider: async () => context.provider } as unknown as ServerEnv, { projectId: 'p' }, { query, mode }, 'member:test');
+  const search = (query: string, mode = 'semantic', options: import('@goondocks/myco-shared/search-types').SearchOptions = { query }) => searchDeployment({ db: f.db, vectors, embeddingProvider: async () => context.provider } as unknown as ServerEnv, { projectId: 'p' }, { ...options, query, mode }, 'member:test');
   const step = (now = 1000) => reconcileEmbedding(context, 'p', now);
-  return { ...f, spore, calls, provider, context, search, step, insert };
+  const index = async () => { while (await hasEmbeddingWork(f.db, 'p', context.provider.modelKey, 10000)) await step(10000); };
+  return { ...f, spore, calls, provider, context, search, step, insert, index };
 }
 
 test('deleted sessions are hidden by both searches while saved knowledge remains, then their vectors are reclaimed', async () => {
@@ -69,7 +71,7 @@ test('rebuilds a recovered empty index without changing source knowledge or anot
   const versions = f.sqlite.query('SELECT project_id, type, record_id, revision FROM embedding_versions ORDER BY record_id').all();
   f.sqlite.run("INSERT INTO embedding_cursors(project_id,hubness_model,hubness_count) VALUES ('proj_1','other-model',4)");
   f.sqlite.run("DELETE FROM local_vectors WHERE project_id = 'p'");
-  expect((await f.search('architecture')).hits).toEqual([]);
+  expect((await f.search('architecture')).hits.map(r => r.id)).toEqual(['one']);
   expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
   const retire = async () => { while ((await catchUpProjections(f.db, { budget: { calls: 200, wallMs: 10_000 } })).more); };
   await resetEmbeddingIndex(f.db, 'p');
@@ -97,7 +99,7 @@ test('a plan status edit stamps the plan once and invalidates indexed metadata',
   expect((await f.search('architecture')).hits).toEqual([]);
   expect(await changePlanStatus({ db: f.db, blobs: f.bucket }, { projectId: 'p' }, 'plan', 'completed', 'operator', 3)).toMatchObject({ status: 'completed', updatedAt: 2 });
   expect((await f.step()).phase).toBe('stale');
-  expect((await f.search('architecture')).hits).toHaveLength(1);
+  expect((await f.search('architecture')).hits).toEqual([]);
 });
 
 test('indexes summaries only, invalidates source edits immediately and reconciles a changed model', async () => {
@@ -111,7 +113,7 @@ test('indexes summaries only, invalidates source edits immediately and reconcile
   expect(await f.step()).toEqual({ phase: 'stale', processed: 1 });
   expect((await f.search('architecture')).hits).toEqual([]);
   f.context.provider = { ...f.provider, modelKey: 'model-two' };
-  expect((await f.search('unrelated')).hits).toEqual([]);
+  expect((await f.search('unrelated')).hits.map(r => r.id)).toEqual(['one']);
   expect(await f.step()).toEqual({ phase: 'stale', processed: 1 });
   expect((await f.search('unrelated')).hits.map((r) => r.id)).toEqual(['one']);
   expect((await f.step()).phase).toBe('orphans');
@@ -119,15 +121,18 @@ test('indexes summaries only, invalidates source edits immediately and reconcile
   expect((await f.step()).phase).toBe('settled');
 });
 
-test('does not fall back after zero semantic matches; reports only provider unavailability as fallback', async () => {
+test('falls back explicitly for empty vectors, cards and unavailable providers, while propagating other errors', async () => {
   const f = fixture();
   f.spore('one', 'unrelated architecture');
   await f.step();
   const zero = await f.search('architecture', 'auto');
-  expect(zero).toMatchObject({ mode: 'semantic', provider_unavailable: false, hits: [] });
+  expect(zero).toMatchObject({ mode: 'fts', fallback_reason: 'empty_semantic', provider_unavailable: false, hits: [{ id: 'one' }] });
   f.context.provider = { modelKey: f.provider.modelKey, embed: async () => { throw new EmbeddingUnavailable('offline'); } };
   expect(await f.search('architecture', 'auto')).toMatchObject({ mode: 'fts', provider_unavailable: true, hits: [{ id: 'one' }] });
-  expect(await f.search('architecture', 'semantic')).toMatchObject({ mode: 'semantic', provider_unavailable: true, hits: [] });
+  expect(await f.search('architecture', 'semantic')).toMatchObject({ mode: 'fts', fallback_reason: 'provider_unavailable', provider_unavailable: true, hits: [{ id: 'one' }] });
+  f.insert('turn_cards', { project_id: 'p', session_id: 's', turn_key: 'prompt', state: 'carded', card: 'architecture conversation', created_at: 1 });
+  expect(await f.search('architecture', 'semantic', { query: 'architecture', type: 'card' }))
+    .toMatchObject({ mode: 'fts', fallback_reason: 'no_vectors', provider_unavailable: false, hits: [{ id: 'prompt' }] });
   f.context.provider = { modelKey: f.provider.modelKey, embed: async () => { throw new Error('invalid vector'); } };
   await expect(f.search('architecture', 'auto')).rejects.toThrow('invalid vector');
 });
@@ -216,3 +221,57 @@ for (const leak of DIAGNOSTIC_PAYLOADS) {
     expect(await f.step()).toEqual({ phase: 'settled', processed: 0 });
   });
 }
+
+test('semantic hits honor agent and branch, lead with the spore line and retain its earliest consolidated source date', async () => {
+  const f = fixture();
+  f.sqlite.run("UPDATE sessions SET agent='codex',branch='wanted',started_at=1000 WHERE project_id='p' AND session_id='s'");
+  f.insert('sessions', { project_id: 'p', session_id: 'other', machine_id: 'm', created_by_token_id: 't', first_received_at: 1, last_received_at: 1, agent: 'claude-code', branch: 'elsewhere' });
+  f.spore('wanted', 'architecture decision');
+  f.spore('other', 'architecture elsewhere');
+  f.sqlite.run("UPDATE spores SET session_id='other',agent_line='Keep architecture bounded.' WHERE project_id='p'");
+  f.sqlite.run("UPDATE spores SET session_id='s',created_at=5000,updated_at=9000 WHERE project_id='p' AND id='wanted'");
+  f.spore('source', 'architecture source');
+  f.sqlite.run("UPDATE spores SET status='consolidated',created_at=500 WHERE id='source'");
+  f.insert('resolution_events', {project_id:'p',id:'merged',agent_id:'a',spore_id:'source',action:'consolidate',new_spore_id:'wanted',created_at:9000});
+  await f.step(10000);
+  await f.step(10000);
+  for (const filters of [{ agent: 'codex' }, { branch: 'wanted' }]) {
+    const options = { query: 'architecture', type: 'spore', ...filters };
+    const semantic = await f.search('architecture', 'semantic', options);
+    expect(semantic).toMatchObject({ mode: 'semantic', hits: [{ id: 'wanted', title: 'Keep architecture bounded.', observation_type: 'decision', status: 'active', learned_at: new Date(500).toISOString() }] });
+    const words = await f.search('architecture', 'fts', options);
+    expect(words.hits[0]!.learned_at).toBe(new Date(500).toISOString());
+    expect(semantic.hits.map(r => r.id)).toEqual(words.hits.map(r => r.id));
+  }
+});
+
+test('current plan states narrow vector selection while all admits completed plans', async () => {
+  const f = fixture();
+  f.context.provider = { ...f.provider, embed: async text => text.includes('current') ? [0.8,0.6] : [1,0] };
+  for (const [id,status] of [...Array.from({length:VECTOR_QUERY_LIMIT},(_,i)=>[`past-${i}`,'completed']), ['open','active'], ['working','in_progress']]) {
+    f.insert('plans', { project_id:'p',plan_key:id,session_id:'s',event_id:'e',machine_id:'m',token_id:'t',title:'architecture',
+      content:status==='completed'?'architecture past':'architecture current',content_hash:id,status,created_at:1,updated_at:1,received_at:1 });
+  }
+  await f.index();
+  const current = await f.search('architecture','semantic',{query:'architecture',type:'plan',limit:2});
+  expect(current.mode).toBe('semantic');
+  expect(current.hits.map(hit=>hit.id).sort()).toEqual(['open','working']);
+  const all = await f.search('architecture','semantic',{query:'architecture',type:'plan',status:'all',limit:2});
+  expect(all.mode).toBe('semantic');
+  expect(all.hits.every(hit=>hit.status==='completed')).toBe(true);
+});
+
+test('a saturated vector query shortened by a branch filter falls through to all matching words', async () => {
+  const f = fixture();
+  f.sqlite.run("UPDATE sessions SET branch='wanted' WHERE project_id='p' AND session_id='s'");
+  f.insert('sessions',{project_id:'p',session_id:'other',machine_id:'m',created_by_token_id:'t',first_received_at:1,last_received_at:1,branch:'elsewhere'});
+  f.context.provider={...f.provider,embed:async text=>text.includes('other')?[0.99,0.14]:text.includes('far')?[0.8,0.6]:[1,0]};
+  for (const id of [...Array.from({length:VECTOR_QUERY_LIMIT},(_,i)=>`other-${i}`),'near','far']) {
+    f.spore(id,`architecture ${id}`);
+    f.sqlite.run("UPDATE spores SET session_id=? WHERE project_id='p' AND id=?",[id.startsWith('other')?'other':'s',id]);
+  }
+  await f.index();
+  const result=await f.search('architecture','semantic',{query:'architecture',type:'spore',branch:'wanted',limit:2});
+  expect(result).toMatchObject({mode:'fts',fallback_reason:'filtered',provider_unavailable:false});
+  expect(result.hits.map(hit=>hit.id).sort()).toEqual(['far','near']);
+});

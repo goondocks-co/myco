@@ -57,7 +57,7 @@ export const search: ParityScenario = {
     expect((await searchFor(word, { type: 'card' })).hits.map((r) => [r.type, r.id])).toEqual([['card', prompt]]);
     expect((await searchFor('titleword distantneedle')).hits.map((r) => r.id)).toEqual([plan]);
     expect((await searchFor(word, { observation_type: 'decision' })).hits.map((r) => r.id)).toEqual([spore.id]);
-    expect(await searchFor(word, { mode: 'semantic' })).toMatchObject({ hits: [], mode: 'semantic', provider_unavailable: true });
+    expect(await searchFor(word, { mode: 'semantic' })).toMatchObject({ hits: indexed.hits, mode: 'fts', provider_unavailable: true, fallback_reason: 'provider_unavailable' });
     // Ranked matches page by cursor through every match once, on every store. Ids and times are the server's.
     const paged = `pagedword${stamp}`;
     for (let i = 0; i < 7; i += 1) await saveSpore(target, `${`${paged} `.repeat(1 + (i % 3))}body ${i}`);

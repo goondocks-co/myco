@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Button, EmptyState, ErrorState, ListRow, LoadingState, ShowMore, TypeChip } from '../../design';
 import { SEARCH_MIN_CHARS, searchResultPath, useSearchPages, type SearchFilters, type SearchScope } from '../../hooks/use-search';
 import { agoWords } from '@goondocks/myco-shared/time-words';
+import { sporeTypeWord } from '../knowledge/words';
 
 export interface SearchMatchesProps {
   scope: SearchScope;
@@ -49,7 +50,7 @@ export function SearchMatches({ scope, filters, noun, projectName, kind, emptyAc
       </div>
       <ul aria-label={`Matching ${noun}`} className="overflow-hidden rounded-card border border-line bg-surface-1">
         {search.hits.map((hit) => {
-          const chip = kind?.(hit) ?? null;
+          const chip = kind?.(hit) ?? (hit.type === 'spore' && hit.observation_type ? sporeTypeWord(hit.observation_type) : null);
           const project = scope === 'all' ? projectName?.(hit.projectId) ?? null : null;
           return (
             <li key={`${hit.projectId}/${hit.type}/${hit.id}`} data-search-match={hit.type}>
@@ -57,7 +58,7 @@ export function SearchMatches({ scope, filters, noun, projectName, kind, emptyAc
                 leading={<time className="t-meta text-muted" dateTime={new Date(hit.created_at).toISOString()}>{agoWords(hit.created_at, now)}</time>}
                 kicker={chip === null && project === null ? undefined : <>{chip !== null && <TypeChip>{chip}</TypeChip>}{project !== null && <span className="t-meta text-ink-2"> {project}</span>}</>}
                 title={hit.title}
-                meta={hit.preview === '' ? undefined : hit.preview}
+                meta={hit.preview === '' || hit.preview === hit.title ? undefined : hit.preview}
                 to={searchResultPath(hit.projectId, hit) ?? undefined}
               />
             </li>

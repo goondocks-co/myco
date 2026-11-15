@@ -1,3 +1,4 @@
+import { searchPresentation } from './search-presentation.js';
 import { displayPrompt } from '@goondocks/myco-shared/prompt-text';
 import { SEARCH_PREVIEW_CHARS, SEARCH_WINDOW, type ReleaseAnnotation, type SearchAcrossResult, type SearchType } from '@goondocks/myco-shared/search-types';
 import type { RelationalStore } from './adapters.js';
@@ -24,7 +25,6 @@ export interface PageInput {
 export const SEARCH_PAGE_BATCH = 100;
 /** How much of a record's text a snippet is cut from, starting a little before the first word matched. */
 const SNIPPET_SOURCE_CHARS = 2_000;
-const TOOLS: Partial<Record<SearchType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
 
 /** A hit's identity: a card's turn key names a turn only within its session. */
 const hitKey = (doc: HydratedDocument) => JSON.stringify([typeOf(doc), doc.project_id, doc.kind === 'card' ? doc.session_id : null, doc.id]);
@@ -127,7 +127,6 @@ function hitOf(doc: HydratedDocument, input: PageInput, release: ReleaseAnnotati
     : type === 'plan' ? (doc.title || 'Plan') : type === 'card' ? (doc.title || 'Turn') : (doc.title ?? '');
   const text = doc.text ?? (type === 'session' ? doc.title : null);
   const preview = doc.line !== null && doc.line !== '' ? doc.line : snippet(text ?? '', input.request.words, (doc.text_start ?? 1) > 1);
-  const tool = TOOLS[type];
   return {
     projectId: doc.project_id,
     id: doc.id,
@@ -136,10 +135,12 @@ function hitOf(doc: HydratedDocument, input: PageInput, release: ReleaseAnnotati
     preview: (conversational ? displayPrompt(preview, doc.agent) : preview).slice(0, SEARCH_PREVIEW_CHARS),
     score: input.scores?.get(doc.doc_id) ?? 0,
     created_at: doc.created_at,
+    ...(doc.observation_type === null ? {} : { observation_type: doc.observation_type }),
     ...(doc.session_id === null ? {} : { session_id: doc.session_id }),
     ...(doc.prompt_id === null ? {} : { prompt_id: doc.prompt_id }),
     ...(type === 'card' ? { turn: doc.turn_id === null ? null : { prompt_id: doc.turn_id, preview: doc.turn_preview, text_chars: doc.turn_chars, stored: false } } : {}),
-    ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: doc.id } } }),
+    ...searchPresentation({ type, id: doc.id, status: doc.status!, learnedAt: Number(doc.learned_at),
+      successorId: doc.successor_id, sessionId: doc.session_id, promptId: type === 'card' ? doc.turn_id : doc.prompt_id }),
     ...(release === undefined ? {} : { release }),
   };
 }

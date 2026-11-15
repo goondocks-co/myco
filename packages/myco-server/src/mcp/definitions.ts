@@ -1,3 +1,5 @@
+import { TURN_PAGES } from '../content/session-pages.js';
+import { TURN_COLLECTIONS } from '../content/session-turns.js';
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from '../core/spore-input-contract.js';
 import { DEFAULT_SPORE_LIMIT, MAX_SPORE_CONTENT_BYTES, MAX_SPORE_LIMIT } from '../core/spores.js';
 import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core/search-repair.js';
@@ -97,7 +99,7 @@ const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEnt
 const definitions: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
-    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include stable IDs and entity retrieval hints where available. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) are ignored; at most ${SEARCH_MAX_TERMS} words and ${SEARCH_QUERY_MAX_CHARS} characters are searched. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
+    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) are ignored; at most ${SEARCH_MAX_TERMS} words and ${SEARCH_QUERY_MAX_CHARS} characters are searched. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -114,7 +116,7 @@ const definitions: readonly ServedToolDefinition[] = [
         "mode": {
           "type": "string",
           "enum": ["auto", "semantic", "fts"],
-          "description": "Auto uses semantic search and falls back to words only when the provider is unavailable. Use fts to search the words of conversation cards and plan bodies."
+          "description": "Auto and semantic try vectors; card-only searches, spore history, empty semantic answers, capped results shortened by agent/branch filters (fallback_reason filtered), and provider unavailability fall back to words with fallback_reason. Semantic results cover embedded sessions, spores and plans only; use fts for all words, cards and plan bodies. coverage describes the word index, not vector completeness."
         },
         "session_id": { "type": "string", "description": "Filter by session ID." },
         "query": {
@@ -144,7 +146,7 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "status": {
           "type": "string",
-          "description": "Optional filter for record status (for example active)"
+          "description": "Use all for every status; otherwise an exact status filter. Omit for active spores and active/in_progress plans. Use superseded, consolidated or obsolete for spore history, completed or abandoned for past plans."
         },
         "release_state": {
           "type": "string",
@@ -330,7 +332,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_sessions",
-    "description": "Browse and retrieve past coding sessions with summaries, tools used, and linked spores. op: \"list\" (default) returns summaries; op: \"get\" returns one session by id.",
+    "description": `Read sessions and their conversations. list (default) returns {sessions,cursor}; pass cursor with the same filters for older pages. get requires id and returns metadata plus a paged turns list; get with id and prompt_id opens that turn's prompt, replies and tool summary through the shared conversation reader (at most ${TURN_PAGES} document pages). Grant keys read summaries only; prompt_id and collection require member authority. Turn locator repair answers turn_locator_building with retryable true. Continue a turn with collection and its matching cursors value; a collection answers {rows,cursor}. Lists take limit 1–${MAX_PAGE} (default 20). Example: {"op":"get","id":"session-id","prompt_id":"prompt-id"}.`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -338,7 +340,7 @@ const definitions: readonly ServedToolDefinition[] = [
       "openWorldHint": false
     },
     "cortex": {
-      "guidance": "Use when continuing related work or recovering recent implementation context. Use op: \"get\" for full session content by id.",
+      "guidance": "Use when continuing related work or recovering recent implementation context. Use get with id to list turns, then get with id and prompt_id to read one bounded turn. Continue with collection and cursor.",
       "priority": 40
     },
     "inputSchema": {
@@ -354,15 +356,18 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "id": {
           "type": "string",
-          "description": "Session id for op: \"get\""
+          "description": "Session id required for op: \"get\"."
         },
+        "prompt_id": { "type": "string", "description": "For get: open this prompt in session id. Omit to list turns." },
+        "collection": { "type": "string", "enum": [...TURN_COLLECTIONS], "description": "For get with prompt_id: read a collection, passing its matching cursor from the turn or preceding collection page." },
+        "cursor": { "type": "string", "minLength": 1, "description": "For list: returned cursor, same filters. For get without prompt_id: turns.cursor. For get with prompt_id: requires collection and its matching cursor. Omit for the first page." },
         "plan": {
           "type": "string",
           "description": "Filter to the session linked to this plan id"
         },
         "branch": {
           "type": "string",
-          "description": "Git branch name to find related sessions and plans"
+          "description": "Exact git branch name for the session list"
         },
         "user": {
           "type": "string",
@@ -377,8 +382,10 @@ const definitions: readonly ServedToolDefinition[] = [
           "description": "Filter by session status (e.g., active, completed)"
         },
         "limit": {
-          "type": "number",
-          "description": "Max results (default: 20)"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": MAX_PAGE,
+          "description": `Max list results or turns, 1–${MAX_PAGE} (default: 20).`
         },
         [PROJECT_PIVOT]: {
           "type": "string",
@@ -632,7 +639,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_agent",
-    "description": "Read agent run history. op: \"runs\" (default) returns recent runs with harness/provider/model/token/cost/reasoning fields — filter by task, agent_id, limit. op: \"run\" with id returns a single run including write_intents totals and duration_ms.",
+    "description": `Read agent run history. runs (default) returns {ok,op,data:{runs,cursor}}, filtered by task and agent_id; pass cursor with the same filters for older pages. limit is 1–${MAX_PAGE} (default 50). run requires id and returns the run, phases, bounded reports, reports_has_more and outcome_evidence. Example: {"op":"runs","task":"extract-curate","limit":20}.`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -666,9 +673,12 @@ const definitions: readonly ServedToolDefinition[] = [
           "type": "string",
           "description": "Filter op: \"runs\" by agent id"
         },
+        "cursor": { "type": "string", "minLength": 1, "description": "For runs: the cursor of the preceding answer, with the same task and agent_id filters. Omit for the first page." },
         "limit": {
-          "type": "number",
-          "description": "Max results for op: \"runs\" (default: 50)"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": MAX_PAGE,
+          "description": `Max results for runs, 1–${MAX_PAGE} (default: 50).`
         },
         [PROJECT_PIVOT]: {
           "type": "string",

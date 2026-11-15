@@ -104,7 +104,7 @@ function dashboard() {
     const inputs = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--',
       'package.json', 'package-lock.json', 'tsconfig.json', 'scripts/ensure-deps.mjs',
       'packages/myco-server', 'packages/myco-shared', 'packages/myco/package.json',
-      'packages/myco/scripts/gen-ui-assets.ts']).split('\0').filter(Boolean);
+      'packages/myco/scripts/gen-ui-assets.ts', 'packages/myco/scripts/release-targets.mjs']).split('\0').filter(Boolean);
     for (const file of new Set(inputs)) {
       if (!fs.existsSync(file)) continue;
       const destination = path.join(scratch, file);

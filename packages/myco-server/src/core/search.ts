@@ -1,5 +1,5 @@
 import {
-  SEARCH_STOPWORDS, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS, type SearchAcrossAnswer, type SearchAcrossResult, type SearchAnswer, type SearchCoverage, type SearchOptions,
+  isCurrentSearchStatus, SEARCH_STOPWORDS, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS, type SearchAcrossAnswer, type SearchAcrossResult, type SearchAnswer, type SearchCoverage, type SearchOptions,
 } from '@goondocks/myco-shared/search-types';
 import type { ServerEnv } from './adapters.js';
 import type { ProjectSet, ReadScope } from '../read/scope.js';
@@ -36,20 +36,28 @@ type SearchReader = string;
 export async function searchDeployment(env: ServerEnv, scope: ReadScope, options: SearchOptions, reader: SearchReader, now = Date.now()): Promise<SearchAnswer> {
   const request = searchRequest(options);
   const coverage = await coverageOf(env, scope.projectId);
+  let fallback: SearchAnswer['fallback_reason'];
   if (request.mode !== 'fts' && request.order === 'relevance' && request.cursor === null && request.match === 'all') {
-    const semantic = await resolveSemanticSearch(env);
-    if (semantic !== null) {
-      try {
-        const hits = await semanticSearch(env.db, scope, semantic, request.types, { ...options, query: options.query.trim() }, request.limit);
-        return { hits, mode: 'semantic', provider_unavailable: false, coverage, partial: false, asOf: now, nextCursor: null };
-      } catch (error) { if (!(error instanceof EmbeddingUnavailable)) throw error; }
+    if (request.types.every(type => type === 'card')) fallback = 'no_vectors';
+    else if (request.filters.status !== undefined && !isCurrentSearchStatus('plan', request.filters.status)
+      && request.types.some(type => type === 'spore')) fallback = 'history';
+    else {
+      const semantic = await resolveSemanticSearch(env);
+      if (semantic !== null) {
+        try {
+          const semanticAnswer = await semanticSearch(env.db, scope, semantic, documentKinds(request).filter(kind => kind !== 'chunk'),
+            { ...request.filters, query: options.query.trim() }, request.limit);
+          const { hits } = semanticAnswer;
+          if (!semanticAnswer.filtered && hits.length > 0) return { hits, mode: 'semantic', provider_unavailable: false, coverage, partial: false, asOf: now, nextCursor: null };
+          fallback = semanticAnswer.filtered ? 'filtered' : 'empty_semantic';
+        } catch (error) { if (!(error instanceof EmbeddingUnavailable)) throw error; fallback = 'provider_unavailable'; }
+      } else fallback = 'provider_unavailable';
     }
-    if (request.mode === 'semantic') return { hits: [], mode: 'semantic', provider_unavailable: true, coverage, partial: false, asOf: now, nextCursor: null };
   }
   const answer = await wordSearch({ env, projects: [scope.projectId], reach: `project:${scope.projectId}`, request, reader, now, coverage });
   return {
     ...answer, hits: answer.hits.map(({ projectId: _projectId, ...hit }) => hit), mode: 'fts',
-    provider_unavailable: request.mode === 'auto' && request.order === 'relevance' && request.cursor === null && request.match === 'all',
+    provider_unavailable: fallback === 'provider_unavailable', ...(fallback === undefined ? {} : { fallback_reason: fallback }),
   };
 }
 

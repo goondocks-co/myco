@@ -368,14 +368,42 @@ describe('POST /mcp', () => {
     insert.run('s_done', t1.tokenId, 2_000, 2_000, 'feature', 2_000, 3_000);
     sqlite.query(`UPDATE sessions SET title = 'Fixed the parser', summary = 'What happened.', titled_at = 4000 WHERE session_id = 's_done'`).run();
     const all = (await call(t1.token, 'myco_sessions')).result;
-    expect(all.map((s: any) => [s.id, s.status, s.user, s.title, s.summary])).toEqual([['s_done', 'completed', 'machine_1', 'Fixed the parser', 'What happened.'], ['s_open', 'active', 'machine_1', null, '']]);
+    expect(all.sessions.map((s: any) => [s.id, s.status, s.user, s.title, s.summary])).toEqual([['s_done', 'completed', 'machine_1', 'Fixed the parser', 'What happened.'], ['s_open', 'active', 'machine_1', null, '']]);
     expect((await call(t1.token, 'myco_sessions', { status: 'abandoned' })).result).toEqual({ ok: false, error: 'status must be active or completed' });
-    expect((await call(t1.token, 'myco_sessions', { branch: 'main' })).result.map((s: any) => s.id)).toEqual(['s_open']);
-    expect((await call(t1.token, 'myco_sessions', { status: 'completed' })).result.map((s: any) => s.id)).toEqual(['s_done']);
-    expect((await call(t1.token, 'myco_sessions', { since: new Date(1_500).toISOString() })).result.map((s: any) => s.id)).toEqual(['s_done']);
+    expect((await call(t1.token, 'myco_sessions', { branch: 'main' })).result.sessions.map((s: any) => s.id)).toEqual(['s_open']);
+    expect((await call(t1.token, 'myco_sessions', { status: 'completed' })).result.sessions.map((s: any) => s.id)).toEqual(['s_done']);
+    expect((await call(t1.token, 'myco_sessions', { since: new Date(1_500).toISOString() })).result.sessions.map((s: any) => s.id)).toEqual(['s_done']);
+    const first = (await call(t1.token, 'myco_sessions', { limit: 1 })).result;
+    const next = (await call(t1.token, 'myco_sessions', { limit: 1, cursor: first.cursor })).result;
+    expect([first.sessions[0].id, next.sessions[0].id, next.cursor]).toEqual(['s_done', 's_open', null]);
     const got = (await call(t1.token, 'myco_sessions', { op: 'get', id: 's_done' })).result;
     expect({ id: got.id, ended_at: got.ended_at, prompts: got.prompt_count, counts: got.counts }).toEqual({ id: 's_done', ended_at: 3_000, prompts: 0, counts: { prompts: 0, toolCalls: 0, responses: 0, plans: 0, attachments: 0 } });
     expect((await call(t1.token, 'myco_sessions', { op: 'get', id: 'nope' })).result).toEqual({ ok: false, error: 'Session not found' });
+  });
+
+  it('opens a found conversation through session and card pointers, with paged turn and reply reads', async () => {
+    const f = await setup();
+    const { call, t1 } = f;
+    const promptId = crypto.randomUUID();
+    for (const [eventId, kind, payload] of [
+      [crypto.randomUUID(), 'prompt', { promptId, text: 'cobalt question', origin: 'user' }],
+      [crypto.randomUUID(), 'response', { responseId: crypto.randomUUID(), promptId, text: 'cobalt answer' }],
+      [crypto.randomUUID(), 'tool.use', { toolCallId: crypto.randomUUID(), promptId, toolName: 'Bash', input: { command: 'pwd' }, success: true }],
+    ] as const) {
+      const res = await worker.fetch(new Request('https://s/events', { method: 'POST', headers: memberHeaders(t1.token), body: JSON.stringify(envelope({ eventId, kind, payload })) }), f.env);
+      expect(res.status).toBe(200);
+    }
+    await publishFixture(f);
+    const session = (await call(t1.token, 'myco_sessions', { op: 'get', id: 'sess_1' })).result;
+    expect(session.turns.rows[0].promptId).toBe(promptId);
+    const turn = (await call(t1.token, 'myco_sessions', { op: 'get', id: 'sess_1', prompt_id: promptId })).result;
+    expect(turn.prompt.text).toBe('cobalt question');
+    expect(turn.responses[0].text).toBe('cobalt answer');
+    expect(turn.tools).toMatchObject({ total: 1, complete: true, byTool: [{ toolName: 'Bash', count: 1 }] });
+    const replies = (await call(t1.token, 'myco_sessions', { op: 'get', id: 'sess_1', prompt_id: promptId, collection: 'responses' })).result;
+    expect(replies.rows.map((r: any) => r.text)).toEqual(['cobalt answer']);
+    expect(replies.cursor).toBeNull();
+    expect((await call(t1.token, 'myco_sessions', { op: 'get', id: 'sess_1', prompt_id: promptId, project: 'proj_2' })).result.ok).toBe(false);
   });
 
   it('answers the instructions template beside the Project id, and says so when none is written', async () => {
@@ -429,6 +457,9 @@ describe('POST /mcp', () => {
     const seedRun = sqlite.query(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at) VALUES ('proj_1', ?, ?, 'digest', 'completed', ?)`);
     seedRun.run('r_user', 'user', 1_000);
     seedRun.run('r_evolver', 'evolver', 2_000);
+    const page = (await call(t1.token, 'myco_agent', { limit: 1 })).result.data;
+    const next = (await call(t1.token, 'myco_agent', { limit: 1, cursor: page.cursor })).result.data;
+    expect([page.runs[0].id, next.runs[0].id, next.cursor]).toEqual(['r_evolver', 'r_user', null]);
     const filtered = (await call(t1.token, 'myco_agent', { agent_id: 'user', limit: 1 })).result;
     expect(filtered.data.runs.map((r: any) => r.id)).toEqual(['r_user']);
   });
@@ -517,7 +548,7 @@ describe('POST /mcp over an External Agent grant', () => {
     expect('author' in (await callAs(grant.key, 'myco_spores', { op: 'get', id: spores.result.spores[0].id })).result).toBe(false);
     expect('author' in (await memberCall('myco_spores', { op: 'get', id: spores.result.spores[0].id })).result).toBe(true);
     expect((await callAs(grant.key, 'myco_plans', { op: 'list' })).result).toEqual(NO_PLANS);
-    expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual([]);
+    expect((await callAs(grant.key, 'myco_sessions', {})).result).toEqual({ sessions: [], cursor: null });
     expect((await callAs(grant.key, 'myco_skills', { op: 'list' })).result.map((s: any) => s.name)).toEqual(SHIPPED_SKILLS.map((s) => s.name));
     // An access key holds no copy of any body, so it is told that rather than
     // handed a path to a file it does not have.
@@ -526,6 +557,13 @@ describe('POST /mcp over an External Agent grant', () => {
     expect((await callAs(grant.key, 'myco_cortex', { op: 'instructions' })).result.content).toBe('the standing guidance');
     const search = await callAs(grant.key, 'myco_search', { query: 'seen' });
     expect(search.result.hits).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);
+  });
+
+  it('refuses conversation content to a grant and names the summary call it can make', async () => {
+    const { grant, callAs } = await grantSetup();
+    const answer = (await callAs(grant.key, 'myco_sessions', { op: 'get', id: 'session', prompt_id: 'prompt', collection: 'responses' })).result;
+    expect(answer.ok).toBe(false);
+    expect(answer.error).toContain('Next call: myco_sessions {"op":"get","id":"session"} without prompt_id or collection');
   });
 
   it('refuses every write, every admin read, myco_agent, an op outside the enum and an empty op exactly as a tool that does not exist', async () => {
@@ -740,7 +778,7 @@ describe('POST /mcp addressed by git remote', () => {
     expect(sqlite.query(`SELECT remote, project_id AS p FROM project_remotes`).all()).toEqual([{ remote: NAME, p: 'proj_1' }]);
 
     // The same Project, named the way a checkout knows it.
-    expect((await call(t1.token, 'myco_sessions', { project: REMOTE })).result).toEqual([]);
+    expect((await call(t1.token, 'myco_sessions', { project: REMOTE })).result).toEqual({ sessions: [], cursor: null });
     // A remote no Project has claimed is absent, never someone else's Project.
     expect((await call(t1.token, 'myco_sessions', { project: 'git@github.com:someone/else.git' })).result)
       .toEqual({ ok: false, error: 'Project not found' });

@@ -1,5 +1,5 @@
 import {
-  SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS, SEARCH_STOPWORDS, SEARCH_TYPES, SEARCH_WINDOW,
+  SEARCH_CURRENT_STATUSES, SEARCH_API_LIMIT, SEARCH_MAX_LIMIT, SEARCH_MAX_TERMS, SEARCH_QUERY_MAX_CHARS, SEARCH_STOPWORDS, SEARCH_TYPES, SEARCH_WINDOW,
   type SearchOptions, type SearchType,
 } from '@goondocks/myco-shared/search-types';
 import { DOC_IDS_PER_SECOND } from '../db/search/documents-schema.js';
@@ -100,7 +100,7 @@ export function documentKinds(request: SearchRequest): DocumentKind[] {
   const { filters } = request;
   return request.types.flatMap((type): DocumentKind[] => {
     if (filters.observation_type !== undefined && type !== 'spore') return [];
-    if (filters.status !== undefined && type === 'card') return [];
+    if (filters.status !== undefined && filters.status !== 'all' && type === 'card') return [];
     return type === 'plan' ? ['plan', 'chunk'] : [type];
   });
 }
@@ -115,7 +115,10 @@ export function windowExpression(kind: DocumentKind, projects: readonly string[]
   const { filters } = request;
   const parts = [`facets:(${projects.map((project) => `p${hex(project)}`).join(' OR ')})`, `facets:k${kind}`];
   if (filters.session_id !== undefined && kind !== 'chunk') parts.push(`facets:s${hex(filters.session_id)}`);
-  if (filters.status !== undefined && (kind === 'plan' || kind === 'spore')) parts.push(`facets:st${hex(filters.status)}`);
+  if (filters.status !== 'all' && (kind === 'spore' || kind === 'plan')) {
+    const statuses = filters.status === undefined ? SEARCH_CURRENT_STATUSES[kind] : [filters.status];
+    parts.push(`facets:(${statuses.map((status) => `st${hex(status)}`).join(' OR ')})`);
+  }
   if (filters.observation_type !== undefined && kind === 'spore') parts.push(`facets:ty${hex(filters.observation_type)}`);
   parts.push(`{headline body}:(${terms.join(request.match === 'all' ? ' AND ' : ' OR ')})`);
   return parts.join(' AND ');

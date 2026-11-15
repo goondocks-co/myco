@@ -224,7 +224,7 @@ function SearchBody({ scope, projectLabel, onScope, inputRef, onPicked, projectN
 function hitWords(hit: SearchAcrossResult): { headline: string; detail: string | null; chip: string | null } {
   const preview = hit.preview.trim();
   const title = hit.title.trim();
-  if (hit.type === 'spore') return { headline: preview === '' ? `${sporeTypeWord(title)} spore` : preview, detail: null, chip: sporeTypeWord(title) };
+  if (hit.type === 'spore') return { headline: preview === '' ? `${sporeTypeWord(hit.observation_type ?? 'spore')} spore` : preview, detail: null, chip: sporeTypeWord(hit.observation_type ?? 'spore') };
   if (hit.type === 'session' && (title === '' || ID_TITLE.test(title))) return { headline: preview === '' ? 'Untitled session' : preview, detail: null, chip: null };
   if (hit.type === 'plan' || hit.type === 'session') return { headline: title, detail: preview === '' || preview === title ? null : preview, chip: null };
   return { headline: preview === '' ? title : preview, detail: null, chip: null };

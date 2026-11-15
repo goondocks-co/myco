@@ -4,6 +4,7 @@ import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
 import { isRunTool, isWriteOp, PROJECT_PIVOT, RUN_TOOLS, SERVED_TOOLS, WRITE_OPS, type AnyTool, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
 import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { MAX_PAGE } from '@myco-server-worker/read/scope.js';
 import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
@@ -127,9 +128,24 @@ describe('tool parity', () => {
         // The query and limit carry the limits the description states.
         expect(current.inputSchema.properties.query).toMatchObject({ maxLength: SEARCH_QUERY_MAX_CHARS });
         expect(current.inputSchema.properties.limit).toMatchObject({ type: 'integer', minimum: 1, maximum: SEARCH_MAX_LIMIT });
-        for (const changed of ['type', 'mode', 'limit', 'query']) (current.inputSchema.properties as Record<string, unknown>)[changed] = (frozen.inputSchema.properties as Record<string, unknown>)[changed];
+        for (const changed of ['type', 'mode', 'limit', 'query', 'status']) (current.inputSchema.properties as Record<string, unknown>)[changed] = (frozen.inputSchema.properties as Record<string, unknown>)[changed];
         // The search's order, cursor and match, and its session agent and branch filters, are the properties the frozen contract does not carry.
         for (const added of ['order', 'cursor', 'agent', 'branch', 'match']) {
+          expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
+          delete (current.inputSchema.properties as Record<string, unknown>)[added];
+        }
+      }
+      if (server.name === 'myco_sessions' || server.name === 'myco_agent') {
+        current.description = frozen.description;
+        expect(current.inputSchema.properties.limit).toMatchObject({ type: 'integer', minimum: 1, maximum: MAX_PAGE });
+        expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string', minLength: 1 });
+        (current.inputSchema.properties as Record<string, unknown>).limit = frozen.inputSchema.properties.limit;
+        delete (current.inputSchema.properties as Record<string, unknown>).cursor;
+      }
+      if (server.name === 'myco_sessions') {
+        if (current.cortex !== undefined && frozen.cortex !== undefined) current.cortex.guidance = frozen.cortex.guidance;
+        for (const changed of ['id', 'branch']) (current.inputSchema.properties as Record<string, unknown>)[changed] = (frozen.inputSchema.properties as Record<string, unknown>)[changed];
+        for (const added of ['prompt_id', 'collection']) {
           expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }

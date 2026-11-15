@@ -20,7 +20,7 @@ afterEach(() => { cleanup(); globalThis.fetch = originalFetch; });
 (window.Element.prototype as unknown as { scrollIntoView?: () => void }).scrollIntoView ??= () => undefined;
 
 const NAMES: Record<string, string> = { one: 'Project one', two: 'Project two', proj_6d79636f3a3e1c0b: 'Myco' };
-const hit = (overrides: Partial<SearchAcrossResult> = {}): SearchAcrossResult => ({ projectId: 'one', id: 'sp', type: 'spore', title: 'decision', preview: 'Use a bounded cache.', score: 1, ...overrides });
+const hit = (overrides: Partial<SearchAcrossResult> = {}): SearchAcrossResult => ({ projectId: 'one', id: 'sp', type: 'spore', title: 'Use a bounded cache.', observation_type: 'decision', preview: 'Use a bounded cache.', score: 1, ...overrides });
 const answer = (results: unknown[], pending = 0, unavailable = false) => Response.json({ hits: results, mode: 'fts', provider_unavailable: unavailable, coverage: { state: 'ready', pendingBlobs: pending, horizon: null }, partial: false, asOf: 0, nextCursor: null });
 function Location() { return <output data-testid="location">{useLocation().pathname}{useLocation().search}</output>; }
 
@@ -88,7 +88,7 @@ it('searches every project on request: grouped by kind, each result naming its p
     if (url.pathname !== '/api/search') return answer([hit()]);
     return answer([
       hit({ projectId: 'two', type: 'session', id: 's1', title: 'Checkout form validation messages rewritten', preview: 'Replaced the generic errors.' }),
-      hit({ projectId: 'proj_6d79636f3a3e1c0b', type: 'spore', id: 'sp2', title: 'gotcha', preview: 'A test that reserves a fixed port races the fallback.' }),
+      hit({ projectId: 'proj_6d79636f3a3e1c0b', type: 'spore', id: 'sp2', title: 'A test that reserves a fixed port races the fallback.', observation_type: 'gotcha', preview: 'A test that reserves a fixed port races the fallback.' }),
       hit({ projectId: 'two', type: 'plan', id: 'k1', session_id: 's1', title: 'One filter bar', preview: 'Sessions, Knowledge' }),
       hit({ projectId: 'one', type: 'session', id: 's2', title: 'Session 7f3e2a', preview: 'Run the parity scenarios' }),
       hit({ projectId: 'one', type: 'skill', id: 'sk', title: 'A skill', preview: 'Never shown' }),
