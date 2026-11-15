@@ -38,16 +38,23 @@ for (const target of ['darwin', 'linux', 'win32'] as const) for (const legacy of
   const other = defaultSpec(owner.binaryPath, root, target, path.join(root, 'other'));
   const name = target === 'darwin' ? owner.unit.label : owner.unit.unitName;
   let registered = '';
+  let readFailure: Error | undefined;
   const options = { platform: target, runner: (command: string, args: readonly string[]) => {
-    const read = (command === 'launchctl' && args[0] === 'print') || args.includes('--property=Environment') || args.includes('/XML') && args[0] === '/Query';
-    if (read && platform.loaded.has(name)) return { status: 0, stdout: registered };
+    const read = (command === 'launchctl' && args[0] === 'print') || args.includes('--property=LoadState,Environment') || args.includes('/XML') && args[0] === '/Query';
+    if (read && platform.loaded.has(name) && readFailure !== undefined) return { status: null, error: readFailure };
+    if (read && platform.loaded.has(name)) return target === 'win32'
+      ? { status: 0, stdoutBytes: Buffer.from(registered, 'utf16le') } : { status: 0, stdout: registered };
     return platform.runner(command, args);
   } };
   try {
     installService(owner, options);
-    const xml = fs.readFileSync(servicePaths(owner, target).unitFile, 'utf8');
     registered = target === 'darwin' ? `gui/501/${name} = {\n environment = {\n${legacy ? '' : `MYCO_HOME => ${owningHome}\n`}}\n}`
-      : target === 'linux' ? legacy ? '' : `MYCO_HOME=${owningHome}` : xml;
+      : target === 'linux' ? `LoadState=loaded\nEnvironment=${legacy ? '' : `MYCO_HOME=${owningHome}`}`
+      : `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+<Actions Context="Author"><Exec><Command>cmd.exe</Command>
+<Arguments>/c ${legacy ? '' : `set "MYCO_HOME=${owningHome}" &amp;&amp; `}"C:\\Program Files\\Myco\\myco.exe" server run --target local</Arguments>
+</Exec></Actions></Task>`;
     for (const mutate of [installService, startService, stopService, uninstallService]) {
       expect(() => mutate(other, options)).toThrow(`owning home: ${owningHome}`);
     }
@@ -60,5 +67,11 @@ for (const target of ['darwin', 'linux', 'win32'] as const) for (const legacy of
     fs.rmSync(servicePaths(owner, target).unitFile);
     expect(installService(owner, options).running).toBe(true);
     expect(platform.running.has(name)).toBe(true);
+    fs.rmSync(servicePaths(owner, target).unitFile);
+    readFailure = new Error('registration query timed out');
+    expect(() => installService(owner, options)).toThrow('ownership could not be read (registration query timed out)');
+    try { installService(owner, options); } catch (error) {
+      expect(String(error)).not.toContain('repair access');
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

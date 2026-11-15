@@ -132,7 +132,7 @@ describe('new owner journeys (a) and (b)', () => {
       return args[1].includes('deploy') ? { ...result, stdout: result.stdout.replace(HOSTED_URL, '') } : result;
     } };
     expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes'], { ...base(), ...server.deps, cloudflare: { ...server.deps.cloudflare, runner } })).toBe(2);
-    expect(errors.at(-1)).toBe('myco setup: Cloudflare has not reported your Myco’s address; run myco server status --target cloudflare, then myco setup again.');
+    expect(errors.at(-1)).toBe('myco setup: Cloudflare create incomplete: the Worker did not report its origin. Run myco server create --target cloudflare --url <https://worker.account.workers.dev> to finish origin activation.');
     expect(peekDeploymentRecord(home)?.databaseId).toBeTruthy();
     expect(server.github.calls).toHaveLength(0);
   });
@@ -153,13 +153,15 @@ describe('new owner journeys (a) and (b)', () => {
     const deps: SetupDeps = { ...base(), ...server.deps, createCloudflare: async options => { await createCloudflareDeployment(options); throw new Error('interrupted before sign-in'); } };
     expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes'], deps)).toBe(2);
     const record = peekDeploymentRecord(home);
+    const deployed = server.deployments.slice();
     expect(await run(['--yes'], { ...deps, fetch: fakeFetch(async (input, init) => {
       if (new globalThis.URL(new Request(input, init).url).pathname === '/auth/login') throw new Error('fixture sign-in unavailable');
       return server.fetchImpl(input, init);
     }) })).toBe(2);
     expect(errors.at(-1)).toBe(`myco setup: deployment.signin (${HOSTED_URL}) unavailable: ${HOSTED_URL} did not answer: fixture sign-in unavailable. Restore access, then run myco setup again.`);
     expect(peekDeploymentRecord(home)).toEqual(record);
-    expect(server.commands.filter(command => command.startsWith('deploy '))).toHaveLength(1);
+    expect(server.deployments).toEqual(deployed);
+    expect(server.deployments.at(-1)?.origin).toBe(HOSTED_URL);
     expect(server.github.calls).toHaveLength(0);
   });
 
@@ -184,7 +186,7 @@ describe('new owner journeys (a) and (b)', () => {
     expect(await run(['--create', 'local', '--port', '8788', '--serve', 'terminal', '--yes'], { ...base(), ...server.deps })).toBe(2);
     expect(errors.at(-1)).toBe('myco setup: This Deployment uses port 8787; run myco setup --port 8787.');
     expect(readLocalSecrets(peekLocalPaths(home))).toEqual(keys);
-    expect(server.platform.commands).toEqual([]);
+    expect(server.platform.starts).toEqual([]);
   });
 
   it('pins missing Wrangler guidance and keeps the selected target', async () => {
@@ -203,7 +205,7 @@ describe('new owner journeys (a) and (b)', () => {
     expect(await run(['--create', 'local', '--serve', 'service', '--yes'], { ...base(), ...server.deps })).toBe(2);
     expect(errors.at(-1)).toBe('myco setup: Guided local setup is loopback only. Keep this Myco’s configuration and use myco server status --target local.');
     expect(fs.readFileSync(peekLocalPaths(home).databasePath)).toEqual(data);
-    expect(server.platform.commands).toEqual([]);
+    expect(server.platform.starts).toEqual([]);
   });
 
   for (const refusal of ['pending', 'missing'] as const) it(`pins the ${refusal} native owner link refusal`, async () => {
@@ -290,7 +292,7 @@ describe('new owner journeys (a) and (b)', () => {
     }
     expect(errors).toEqual([]);
     expect(serves).toBe(expire ? 2 : 1);
-    expect(server.platform.commands).toEqual([]);
+    expect(server.platform.starts).toEqual([]);
     expect(lines).toContain('In another terminal, run: myco server run --target local');
     expect(lines.at(-1)).toContain('from a git repository');
   });

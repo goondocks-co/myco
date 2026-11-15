@@ -158,6 +158,7 @@ describe('new owner journeys (a) and (b)', () => {
     const server = ownerDeployment(root, home, 'cloudflare');
     closers.push(server.close);
     await createCloudflareDeployment({ ...server.deps.cloudflare, mycoHome: home, accountId: ACCOUNT });
+    const deployments = [...server.deployments];
     const before = peekDeploymentRecord(home);
     const deps = { ...base(), ...server.deps, sleep: async () => {} };
     expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--url', 'https://new.invalid', '--yes', '--new', 'Kept address', '--no-agents', '--no-runner'], deps)).toBe(2);
@@ -167,7 +168,7 @@ describe('new owner journeys (a) and (b)', () => {
     expect(readSetupFile(home).answers.customUrl).toBeUndefined();
     expect(await run(['--yes'], deps)).toBe(0);
     expect(peekDeploymentRecord(home)?.url).toBe(HOSTED_URL);
-    expect(server.commands.filter(command => command.startsWith('deploy '))).toHaveLength(1);
+    expect(server.deployments).toEqual(deployments);
   });
 
   it('refuses a behind native schema before creation consent', async () => {
@@ -285,9 +286,13 @@ describe('new owner journeys (a) and (b)', () => {
     expect(await run(['--create', 'cloudflare', '--account-id', ACCOUNT, '--yes', '--new', 'Partial', '--no-agents', '--no-runner'], deps)).toBe(2);
     expect(peekDeploymentRecord(home)?.databaseId).toBeTruthy();
     expect(peekDeploymentRecord(home)?.versionId).toBeNull();
+    const databaseCreates = server.commands.filter(command => command.startsWith('d1 create '));
+    const vectorCreates = server.commands.filter(command => command.startsWith('vectorize create '));
     const resumed = await run(['--yes'], deps);
     expect({ code: resumed, errors }).toMatchObject({ code: 0 });
-    expect(server.commands.filter(command => command.startsWith('deploy '))).toHaveLength(1);
+    expect(server.deployments.at(-1)?.origin).toBe(HOSTED_URL);
+    expect(server.commands.filter(command => command.startsWith('d1 create '))).toEqual(databaseCreates);
+    if (vectorCreates.length > 0) expect(server.commands.filter(command => command.startsWith('vectorize create '))).toEqual(vectorCreates);
     expect(peekDeploymentRecord(home)).toMatchObject({ url: HOSTED_URL, versionId: expect.any(String) });
     expect(questions.some(question => question.startsWith('Approve this plan?'))).toBe(false);
     expect(lines.join('\n')).not.toContain('This plan changed');

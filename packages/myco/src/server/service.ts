@@ -167,14 +167,14 @@ export function servicePaths(spec: ServiceSpec, platform = process.platform): Se
 /** The home recorded by a native unit; ambiguous records authorize no mutation. */
 function installedServiceHome(spec: ServiceSpec, options: ServiceOptions): string | null {
   const platform = options.platform ?? process.platform;
-  const source = readFileSync(servicePaths(spec, platform).unitFile, 'utf8');
+  const source = serviceOutput({ stdoutBytes: readFileSync(servicePaths(spec, platform).unitFile) });
   if (platform === 'linux') {
     const environment = systemdEnvironment(source);
     if (environment === null) return null;
     return environment.MYCO_HOME ?? (!source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null);
   }
-  const pattern = platform === 'darwin' ? /<key>MYCO_HOME<\/key>\s*<string>([^<]*)<\/string>/g
-    : /set &quot;MYCO_HOME=(.*?)&quot;/g;
+  if (platform === 'win32') return windowsTaskHome(spec, source);
+  const pattern = /<key>MYCO_HOME<\/key>\s*<string>([^<]*)<\/string>/g;
   const homes = [...source.matchAll(pattern)].map(match => xmlUnescape(match[1]!));
   return homes.length === 1 ? homes[0]! : homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
 }
@@ -188,11 +188,11 @@ export function serviceHomeOwnership(spec: ServiceSpec, options: ServiceOptions 
 
 function ownershipProbe(spec: ServiceSpec, platform: NodeJS.Platform): string[] {
   if (platform === 'darwin') return ['launchctl', 'print', `gui/${process.getuid?.() ?? 501}/${spec.unit.label}`];
-  if (platform === 'linux') return ['systemctl', '--user', 'show', `${spec.unit.unitName}.service`, '--property=Environment', '--value'];
+  if (platform === 'linux') return ['systemctl', '--user', 'show', `${spec.unit.unitName}.service`, '--property=LoadState,Environment'];
   return ['schtasks', '/Query', '/TN', spec.unit.unitName, '/XML'];
 }
 
-function registeredServiceHome(spec: ServiceSpec, platform: NodeJS.Platform, source: string): string | null {
+function registeredServiceHome(spec: ServiceSpec, platform: NodeJS.Platform, source: string): string | null | undefined {
   if (platform === 'darwin') {
     if (!/=\s*\{/.test(source)) return null;
     const homes = [...source.matchAll(/^\s*"?MYCO_HOME"?\s*=>\s*(.*?)\s*$/gm)].map(match => match[1]!);
@@ -204,15 +204,31 @@ function registeredServiceHome(spec: ServiceSpec, platform: NodeJS.Platform, sou
     return homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
   }
   if (platform === 'linux') {
-    const words = systemdWords(source.trim(), 'systemd-environment');
+    const properties = new Map(source.trim().split(/\r?\n/).map(line => {
+      const split = line.indexOf('=');
+      return [line.slice(0, split), line.slice(split + 1)] as const;
+    }));
+    if (properties.get('LoadState') === 'not-found') return undefined;
+    const environment = properties.get('Environment');
+    if (properties.get('LoadState') !== 'loaded' || environment === undefined) return null;
+    const words = systemdWords(environment.replaceAll('%', '%%'), 'systemd-environment');
     if (words === null) return null;
     const homes = words.filter(word => word.startsWith('MYCO_HOME=')).map(word => word.slice('MYCO_HOME='.length));
-    return homes.length === 1 ? homes[0]! : homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
+    return homes.length === 1 ? homes[0]! : homes.length === 0 && !environment.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
   }
-  if (!/<Task(?:\s|>)/.test(source)) return null;
-  const homes = [...source.matchAll(/set &quot;MYCO_HOME=(.*?)&quot;/g)].map(match => xmlUnescape(match[1]!));
-  return homes.length === 1 ? homes[0]! : homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
+  return windowsTaskHome(spec, source);
 }
+
+function windowsTaskHome(spec: ServiceSpec, source: string): string | null {
+  if (!/<Task(?:\s|>)/.test(source)) return null;
+  const argumentsText = [...source.matchAll(/<Arguments(?:\s[^>]*)?>([\s\S]*?)<\/Arguments>/g)];
+  if (argumentsText.length !== 1) return null;
+  const command = xmlUnescape(argumentsText[0]![1]!);
+  const homes = [...command.matchAll(/(?:^|[\s"])set\s+"MYCO_HOME=([^"]*)"/gi)].map(match => match[1]!);
+  return homes.length === 1 ? homes[0]! : homes.length === 0 && !/MYCO_HOME/i.test(command) ? path.join(spec.home, '.myco') : null;
+}
+
+const SERVICE_OWNERSHIP_READ_TIMEOUT_MS = 2_000;
 
 function homeCommand(home: string, platform: NodeJS.Platform): string {
   return platform === 'win32' ? `set "MYCO_HOME=${home}" &&` : `MYCO_HOME=${commandArgument(home)}`;
@@ -225,21 +241,28 @@ export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptio
   const file = servicePaths(spec, platform).unitFile;
   const probe = ownershipProbe(spec, platform);
   const inspect = commandLine(probe, platform === 'win32' ? 'cmd' : 'posix');
+  const runner: ServiceRunner = (command, args) => {
+    const result = (options.runner ?? platformRunner)(command, args, { timeoutMs: SERVICE_OWNERSHIP_READ_TIMEOUT_MS });
+    if (result.error !== undefined) throw result.error;
+    return result;
+  };
   let home: string | null;
   try {
     if (existsSync(file)) home = installedServiceHome(spec, options);
     else {
       const [command, ...args] = probe;
-      const result = (options.runner ?? platformRunner)(command!, args);
-      if (result.error === undefined && result.status === 0) home = registeredServiceHome(spec, platform, result.stdout ?? '');
+      const result = runner(command!, args);
+      const registered = result.error === undefined && result.status === 0
+        ? registeredServiceHome(spec, platform, serviceOutput(result)) : undefined;
+      if (registered !== undefined) home = registered;
       else {
-        const status = statusOfService(spec, { ...options, inspectMissing: true });
+        const status = statusOfService(spec, { ...options, runner, inspectMissing: true });
         if (!status.loaded && !status.running && status.detail === UNIT_NOT_HELD) return;
-        throw new Error(result.error?.message ?? `registration query exited ${result.status}`);
+        throw new Error(result.error?.message ?? (result.status === 0 ? 'the platform reports no readable registration for a service it still holds' : `registration query exited ${result.status}`));
       }
     }
   } catch (cause) {
-    throw new Error(`native service mutation refused: ownership could not be read (${cause instanceof Error ? cause.message : String(cause)}). Nothing changed; run ${inspect} to inspect its owning home, repair access to ${file}, then rerun myco server install --target local from that home.`, { cause });
+    throw new Error(`native service mutation refused: ownership could not be read (${cause instanceof Error ? cause.message : String(cause)}). Nothing changed; run ${inspect} to inspect the registration and resolve the read failure, then rerun myco server install --target local from that home.`, { cause });
   }
   const expected = spec.env.MYCO_HOME ?? path.join(spec.home, '.myco');
   if (home !== null && path.isAbsolute(home) && canonicalHomePath(home) === canonicalHomePath(expected)) return;
@@ -386,15 +409,31 @@ export function renderUnit(spec: ServiceSpec, paths: ServicePaths, platform = pr
 export interface CommandResult {
   status: number | null;
   stdout?: string;
+  stdoutBytes?: Uint8Array;
   error?: Error;
 }
 
 /** Runs one platform command. The default is the real platform; a test passes its own. */
-export type ServiceRunner = (command: string, args: readonly string[]) => CommandResult;
+export interface ServiceRunOptions {
+  timeoutMs?: number;
+}
 
-export const platformRunner: ServiceRunner = (command, args) => {
-  const result = spawnSync(command, [...args], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8' });
-  return { status: result.status, stdout: result.stdout ?? '', ...(result.error === undefined ? {} : { error: result.error }) };
+export type ServiceRunner = (command: string, args: readonly string[], options?: ServiceRunOptions) => CommandResult;
+
+function serviceOutput(result: Pick<CommandResult, 'stdout' | 'stdoutBytes'>): string {
+  if (result.stdoutBytes === undefined) return result.stdout ?? '';
+  const bytes = Buffer.from(result.stdoutBytes);
+  const littleEndian = bytes[0] === 0xff && bytes[1] === 0xfe || bytes[1] === 0 && bytes[3] === 0;
+  const bigEndian = bytes[0] === 0xfe && bytes[1] === 0xff || bytes[0] === 0 && bytes[2] === 0;
+  const text = bigEndian && bytes.length % 2 === 0 ? bytes.swap16().toString('utf16le')
+    : bytes.toString(littleEndian ? 'utf16le' : 'utf8');
+  return text.replace(/^\uFEFF/, '');
+}
+
+export const platformRunner: ServiceRunner = (command, args, options = {}) => {
+  const result = spawnSync(command, [...args], { stdio: ['ignore', 'pipe', 'ignore'], timeout: options.timeoutMs });
+  const stdoutBytes = result.stdout ?? new Uint8Array();
+  return { status: result.status, stdout: serviceOutput({ stdoutBytes }), stdoutBytes, ...(result.error === undefined ? {} : { error: result.error }) };
 };
 
 /**

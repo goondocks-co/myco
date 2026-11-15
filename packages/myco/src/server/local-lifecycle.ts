@@ -121,7 +121,9 @@ export async function inspectLocal(home: string, deps: LocalLifecycleDeps = {}):
     result.owner = unavailable;
   }
   const spec = localServiceSpec(home, deps);
-  try { assertServiceTargetHome(spec, deps.service); }
+  try {
+    if (fs.existsSync(servicePaths(spec, deps.service?.platform).unitFile)) assertServiceTargetHome(spec, deps.service);
+  }
   catch (error) { result.creation = { unavailable: cause(error) }; return result; }
   const service = statusOfService(spec, { ...deps.service, includePid: true });
   if (service.detail !== undefined && service.detail !== UNIT_NOT_HELD && service.installed && !service.loaded) {
