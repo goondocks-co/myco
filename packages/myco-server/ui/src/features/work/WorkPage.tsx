@@ -29,7 +29,7 @@ import { PageScope } from '../../routes/scope';
 import { LiveMark, WorkNow } from '../now/WorkNow';
 import { useWorkNow } from '../../hooks/use-live';
 import {
-  atWords, failureDetail, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, queuedWords, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
+  atWords, isCarriedMap, failureDetail, failureWords, dollars, KIND_ORDER, KIND_TASKS, KIND_WORDS, ledeClause, outcomeHeadline, queuedWords, ranOn, runLineWords, runNoun, shortTime, startedByChip, times, tokenWords,
   WINDOW_WORDS, type WorkWindow,
 } from './words';
 
@@ -327,11 +327,12 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
 function metaOf(summary: KindSummary, across: boolean, now: number): string {
   const where = across && summary.projects.length > 1 ? ` in ${count(summary.projects.length, 'project')}` : '';
   const latest = summary.latestAt === null ? '' : ` · the latest ${atWords(summary.latestAt, now)}`;
-  const skipped = summary.runs.skipped ?? 0;
+  // Map skip totals combine carry decisions and held work.
+  const skipped = summary.kind === 'map' ? 0 : summary.runs.skipped ?? 0;
   const held = skipped > 0 ? ` · held off ${times(skipped)}` : '';
   if (summary.kind === 'map' && !across && summary.currentMaps.length === 1) {
     const map = summary.currentMaps[0]!;
-    return `Now at ${map.branch} @ ${map.commit.slice(0, 7)}, ${atWords(map.generatedAt, now)}${held}`;
+    return `${map.carriedForward ? 'The code map was already current. ' : ''}Now at ${map.branch} @ ${map.commit.slice(0, 7)}, ${atWords(map.generatedAt, now)}${held}`;
   }
   if (summary.kind === 'title' && summary.sessions > 0) return `Each session as it ended${where}${latest}${held}`;
   if (summary.finished === 0) {
@@ -372,7 +373,7 @@ function pageRowLine(row: RunPageRow, kind: OutcomeKind, projectId: string, now:
     model: <ModelSummary run={row} variant="list" />,
     where: ranOn(row.worker, name)?.list ?? null,
     by: startedByChip(row.startedBy, name),
-    tone: row.result === 'failed' ? 'bad' : row.status === 'skipped' ? 'held' : live ? 'live' : 'plain',
+    tone: row.result === 'failed' ? 'bad' : row.status === 'skipped' && !isCarriedMap(kind, row) ? 'held' : live ? 'live' : 'plain',
     to: runPath(projectId, row.id),
   };
 }
@@ -476,7 +477,7 @@ function MapEvidence({ summary, projectId, now }: EvidenceProps) {
       lines={summary.currentMaps.slice(0, SHOWN).map((map) => ({
         key: map.projectId,
         text: `${map.branch} @ ${map.commit.slice(0, 7)}`,
-        detail: atWords(map.generatedAt, now),
+        detail: map.carriedForward ? 'The code map was already current' : atWords(map.generatedAt, now),
         to: projectPath(map.projectId, CODE_MAP_SUFFIX),
       }))}
     />

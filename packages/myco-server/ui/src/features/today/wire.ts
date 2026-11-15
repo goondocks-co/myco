@@ -89,7 +89,7 @@ export interface Upkeep {
 }
 
 /** `GET /api/work`. */
-export interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string }
+export interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string; carriedForward?: boolean }
 
 export interface WorkAnswer {
   window: { since: number; until: number };

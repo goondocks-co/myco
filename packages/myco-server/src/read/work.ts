@@ -75,7 +75,7 @@ export interface WorkOutcome {
 }
 
 /** A Project's current code map. */
-interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string }
+interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string; carriedForward?: boolean }
 
 /** A run that published output or failed, listed in the timeline. */
 export interface WorkRun {
@@ -275,7 +275,7 @@ export async function readWork(db: RelationalStore, set: ProjectSet, since: numb
     timeline: state === 'building' ? [] : runs,
     hasMore: state !== 'building' && timeline.hasMore,
     cursor: state !== 'building' && timeline.hasMore && last !== undefined && last.at !== null ? JSON.stringify([last.at, last.projectId, last.id]) : null,
-    maps: maps.map(row => ({ projectId: String(row.project_id), branch: String(row.repository_branch), commit: String(row.repository_commit), generatedAt: num(row.generated_at), sourceRunId: String(row.source_run_id) })),
+    maps: maps.map(row => ({ projectId: String(row.project_id), branch: String(row.repository_branch), commit: String(row.repository_commit), generatedAt: num(row.generated_at), sourceRunId: String(row.source_run_id), ...(num(row.carried_forward) === 1 ? { carriedForward: true } : {}) })),
     upkeep,
   };
 }

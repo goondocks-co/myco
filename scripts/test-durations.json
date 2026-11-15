@@ -395,6 +395,7 @@
     "tests/myco-server/budget-read-bound.test.ts": 120000,
     "tests/myco-server/bun-oauth-seam.test.ts": 596,
     "tests/myco-server/bytes.test.ts": 33,
+    "tests/myco-server/canopy-carry-forward.test.ts": 1200,
     "tests/myco-server/canopy-capture-cost.test.ts": 8000,
     "tests/myco-server/canopy-map-outcome.test.ts": 7071,
     "tests/myco-server/canopy.test.ts": 111,

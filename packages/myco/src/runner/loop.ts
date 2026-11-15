@@ -47,7 +47,7 @@ import type { RefreshStatus } from '../member/refresh.js';
 import { classifyEventAnswer, rawAnswerOf, type RawAnswer } from '../member/transport.js';
 import { callOutcome, failedCallsNote, type RunEvent } from './events.js';
 import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, REPOSITORY_PREPARATION_TIMEOUT_MS, knowledgeOnlyInstruction, parseRepositoryCheckoutSpec, REPOSITORY_FAILURE_FEATURE, REPOSITORY_DIGEST_TASKS, type RepositoryFailure, WORKER_CAPABILITIES, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
-import { prepareWorkerCheckout } from './repository.js';
+import { prepareWorkerCheckout, RepositoryAlreadyCurrent } from './repository.js';
 import { holdWorkerInstance } from './instance.js';
 import { RepositoryCheckoutError, type RepositoryCheckout } from './repository-checkout.js';
 import { watchWake, type WakeSettle, type WakeWatch } from './wake.js';
@@ -489,7 +489,7 @@ function holdAttemptLease(options: WorkerOptions, run: ClaimedRun, heartbeatMs: 
  */
 async function drive(
   options: WorkerOptions, run: ClaimedRun, lease: AttemptLease, wake: WakeWatch, keepsSteps: boolean, recheckLogin?: () => Promise<boolean>,
-): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | { status: 'lost'; error: null }> {
+): Promise<{ status: 'completed' | 'failed'; error: string | null; usage?: WorkerUsage | null; identity: ExecutionIdentity; refusal?: ProfileRefusal; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | { status: 'lost'; error: null } | { status: 'settled'; error: null }> {
   const clock = options.clock ?? Date.now;
   // A claim answered after its own lease ran out — its answer held up by a
   // machine that slept, or a network that stalled — is another worker's run
@@ -568,6 +568,7 @@ async function drive(
   let failure: { code: WorkerFailureCode; words: string; repositoryFailure?: RepositoryFailure; harnessStop?: HarnessStop } | null = null;
   let preparing = false;
   let repositoryUnavailable = false;
+  let alreadyCurrent = false;
   const originalInstruction=run.instruction;
   let prompt = originalInstruction;
   const prepare = async (): Promise<void> => {
@@ -661,7 +662,8 @@ async function drive(
       }
     }
   } catch (error) {
-    failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error),
+    if (error instanceof RepositoryAlreadyCurrent) alreadyCurrent = true;
+    else failure = { code: preparing ? 'repository_unprepared' : 'worker_error', words: error instanceof Error ? error.message : String(error),
       ...(preparing ? { repositoryFailure: error instanceof RepositoryCheckoutError ? error.failure : { code: 'checkout_failed' } } : {}),
     };
   } finally {
@@ -725,6 +727,7 @@ async function drive(
   // that no longer holds the run writes NOTHING about it, and a run that both
   // overran and changed hands belongs to whoever holds it now. Reporting the
   // overrun instead would have this worker account for a run it does not own.
+  if (alreadyCurrent) return { status: 'settled', error: null };
   if (lost || lease.lost) return { status: 'lost', error: null };
   // A harness driven to its end with the lease held: the machine stayed up for
   // a whole run, and the settle returns to its base. A run that ended before
@@ -1151,7 +1154,11 @@ async function claimUntilStopped(options: WorkerOptions, wake: WakeWatch, admitI
           else detection.invalidate();
         }
         // Only the current lease owner reports the attempt's outcome.
-        if (outcome.status !== 'lost' && !lease.lost) {
+        if (outcome.status === 'settled') {
+          options.log(`run ${run.id}: the code map was already current`);
+          options.onClaimCompleted?.();
+        }
+        if (outcome.status !== 'lost' && outcome.status !== 'settled' && !lease.lost) {
           const { cacheCreation5mTokens: _five, cacheCreation1hTokens: _hour, ...legacyUsage } = outcome.usage ?? {};
           const accounting: WorkerExecutionAccounting | { attemptId?: string; usage?: WorkerUsage | null } = run.attemptId === undefined ? {} : answer.accounting ? {
             attemptId: run.attemptId, usage: outcome.usage ?? null, accountingVersion: WORKER_ACCOUNTING_VERSION, identity: answer.profileOutcome ? outcome.identity : withoutProfileOutcome(outcome.identity),

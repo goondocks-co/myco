@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { mkdtemp, mkdir, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_PREPARATION_TIMEOUT_MS, type RepositoryFailure, type RepositoryFailureCode } from '@goondocks/myco-shared/repository';
+import { repositoryUrl, repositoryBranch, REPOSITORY_COMMIT_PATTERN as SHA_PATTERN, MAX_REPOSITORY_HISTORY_DEPTH, REPOSITORY_PREPARATION_TIMEOUT_MS, MAX_REPOSITORY_COMPARISON_BYTES, MAX_REPOSITORY_CHANGED_PATHS, parseRepositoryChanges, type RepositoryChange, type RepositoryFailure, type RepositoryFailureCode } from '@goondocks/myco-shared/repository';
 
 export { repositoryUrl } from '@goondocks/myco-shared/repository';
 
@@ -57,6 +57,7 @@ export interface RepositoryCheckout {
   commit: string;
   files: string[];
   changedPaths?: string[];
+  changes?: { complete: boolean; changes: RepositoryChange[] };
   /** Every committed regular file whose path fits one listing line, sorted by path; present when the request asked for digests. */
   digests?: CheckoutFileDigest[];
   dispose: () => Promise<void>;
@@ -207,10 +208,26 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
         }
       };
       if (pinned !== resolved) await fetchCommit(pinned,depth);
-      let changedPaths: string[] | undefined;
+      let changes: RepositoryCheckout['changes'];
       if (request.compareCommit !== undefined) {
-        if (request.compareCommit !== pinned) await fetchCommit(request.compareCommit,1);
-        changedPaths = (await run('diff-tree', '--no-commit-id', '--name-only', '-r', '-z', request.compareCommit, pinned)).split('\0').filter(Boolean);
+        changes = { complete: false, changes: [] };
+        try {
+          if (request.compareCommit !== pinned) await fetchCommit(request.compareCommit, 1);
+          // Renames expose both their deleted source and added destination.
+          const output = await run('diff-tree', '--no-commit-id', '--no-renames', '--name-status', '-r', '-z', request.compareCommit, pinned);
+          const fields = output.split('\0');
+          if (fields.at(-1) === '') fields.pop();
+          const evidence: RepositoryChange[] = [];
+          for (let index = 0; index < fields.length; index += 2) {
+            evidence.push({ status: fields[index] as RepositoryChange['status'], path: fields[index + 1]! });
+          }
+          const candidate = { commit: request.compareCommit, revision: 'comparison', repositoryRevision: 'comparison', settingsRevision: 0, complete: true, changes: evidence };
+          if (evidence.length <= MAX_REPOSITORY_CHANGED_PATHS && Buffer.byteLength(JSON.stringify(candidate)) <= MAX_REPOSITORY_COMPARISON_BYTES
+            && parseRepositoryChanges(candidate) !== null) changes = { complete: true, changes: evidence };
+        } catch (error) {
+          signal.throwIfAborted();
+          if (!(error instanceof RepositoryCheckoutError)) throw error;
+        }
       }
       const files = (await run('ls-tree', '-r', '-l', '-z', pinned)).split('\0').filter(Boolean).map((entry) => {
         const tab = entry.indexOf('\t');
@@ -237,7 +254,7 @@ export async function prepareRepositoryCheckout(request: RepositoryCheckoutReque
       await rm(askpass);
       delete env.MYCO_GIT_USERNAME;
       delete env.MYCO_GIT_TOKEN;
-      return { root, commit: pinned, files: files.map(file => file.path), changedPaths, ...(digests === undefined ? {} : { digests }), dispose };
+      return { root, commit: pinned, files: files.map(file => file.path), changedPaths: changes?.complete ? changes.changes.map(change => change.path) : undefined, changes, ...(digests === undefined ? {} : { digests }), dispose };
     };
     return await (request.cacheRoot === undefined ? prepare() : withRepositoryMirror(request.cacheRoot,{url,branch:request.branch},signal,runAt,prepare));
   } catch (error) {

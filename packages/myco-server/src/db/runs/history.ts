@@ -109,7 +109,10 @@ export async function workTimeline(db: RelationalStore, set: ProjectSet, since: 
   return { rows: rows.slice(0, WORK_TIMELINE_PAGE), hasMore: rows.length > WORK_TIMELINE_PAGE };
 }
 
-const maps = bySet((all, tag) => read<[string], Row>({ name: `runs.workMaps${tag}`, sql: `SELECT m.project_id,m.repository_branch,m.repository_commit,m.generated_at,m.source_run_id
+const maps = bySet((all, tag) => read<[string], Row>({ name: `runs.workMaps${tag}`, sql: `SELECT m.project_id,m.repository_branch,m.repository_commit,m.generated_at,m.source_run_id,
+    EXISTS(SELECT 1 FROM agent_runs source WHERE source.project_id=m.project_id AND source.id=m.source_run_id
+      AND json_extract(source.run_context,'$.repository.commit') IS NOT NULL
+      AND json_extract(source.run_context,'$.repository.commit')<>m.repository_commit) AS carried_forward
   FROM canopy_maps m WHERE ${setIn(all, 'm.project_id')}` }));
 export async function currentMaps(db: RelationalStore, set: ProjectSet): Promise<Row[]> {
   const [rows] = await readSet(db, forSet(maps, set).bind(setValue(set)));
