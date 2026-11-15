@@ -238,7 +238,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     accountId: options.accountId, workerName: resources.workerName, databaseName: resources.databaseName,
     bucketName: resources.bucketName, vectorIndexName: resources.vectorIndexName,
     wrapKeySecretName: resources.wrapKeySecretName, recoveryBucketName: resources.recoveryBucketName,
-    previousVersionId: existing?.previousVersionId,
+    previousVersionId: null,
     versionId: existing?.versionId ?? null, deployedAt: existing?.deployedAt ?? new Date().toISOString(),
     ...(existing?.release === undefined ? {} : { release: existing.release }),
     ...(existing?.fleet === undefined ? {} : { fleet: existing.fleet }),
@@ -294,7 +294,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
     deployed = await deployWorker(staged(record, options));
   }
 
-  record = { ...record, release: getPluginVersion(), versionId: deployed.versionId, deployedAt: new Date().toISOString(), ...(record.url === undefined && deployed.url !== null ? { url: deployed.url } : {}) };
+  record = { ...record, release: getPluginVersion(), versionId: deployed.versionId, deployedAt: new Date().toISOString() };
   writeDeploymentRecord(record, options.mycoHome);
   return { record, createdResources, versionId: deployed.versionId };
 });
@@ -431,17 +431,19 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
         summary.servingBefore = { versionId: null };
         try {
           const serving = await cloudflareStatus({ ...bareCommand(options), workerName: resources.workerName, readRetry: options.readRetry });
-          if (serving.deployed && !/\((?!100%\))\d+%\)/.test(serving.raw)) previousVersionId = serving.versionId;
+          if (serving.deployed) previousVersionId = serving.versionId;
           summary.servingBefore.versionId = previousVersionId;
         } catch (error) {
           summary.servingBefore.error = error instanceof Error ? error.message : String(error);
         }
+        const prepared = { ...admitted, previousVersionId };
+        writeDeploymentRecord(prepared, options.mycoHome);
         await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
         await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
         summary.upload = 'attempted; outcome unknown';
         uploadedVersion = await uploader.upload();
         summary.upload = { versionId: uploadedVersion };
-        return admitted;
+        return prepared;
       },
     });
     summary.worker = 'attempted; outcome unknown';
@@ -479,12 +481,21 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
   }
 });
 
-/** Return to the provider-observed version from before the last successful update. */
+/** Return to the provider-observed version from before the latest admitted update attempt. */
 export const rollbackCloudflareDeployment = lifecycleOperation('rollback', async (options: LifecycleOptions & { versionId?: string; message?: string }, record): Promise<{ versionId: string }> => {
   await preflight(options);
   if (record === null) throw new Error(`${missingDeploymentRecordMessage(options.mycoHome)} Nothing to roll back.`);
   const target = options.versionId ?? record.previousVersionId ?? '';
-  if (target === '' || (options.versionId === undefined && target === record.versionId)) throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (wrangler deployments list names the versions).');
+  if (target === '') throw new Error('Cloudflare rollback refused: no earlier serving version can be proved; run myco server rollback --target cloudflare --version <id> (wrangler deployments list names the versions).');
+  if (options.versionId === undefined) {
+    let live;
+    try { live = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry }); }
+    catch (cause) {
+      throw new Error(`Cloudflare rollback refused: the current serving version could not be read (${cause instanceof Error ? cause.message : String(cause)}); run myco server status --target cloudflare, then myco server rollback --target cloudflare --version <id>.`, { cause });
+    }
+    if (!live.deployed || live.versionId === null) throw new Error('Cloudflare rollback refused: the current serving version could not be proved; run myco server status --target cloudflare, then myco server rollback --target cloudflare --version <id>.');
+    if (live.versionId === target) throw new Error('Cloudflare rollback refused: nothing new is serving since the update attempt; run myco server status --target cloudflare, or myco server rollback --target cloudflare --version <id> to choose another version.');
+  }
   await rollbackWorker({ ...bareCommand(options), workerName: record.workerName, versionId: target, message: options.message ?? 'myco server rollback' });
   writeDeploymentRecord({ ...record, release: undefined, previousVersionId: null, versionId: target, deployedAt: new Date().toISOString() }, options.mycoHome);
   return { versionId: target };

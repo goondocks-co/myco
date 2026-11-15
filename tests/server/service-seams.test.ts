@@ -30,24 +30,35 @@ describe('native service specification seam', () => {
   }
 });
 
-it('refuses every manual native service mutation from another home and preserves its owner', () => {
+for (const target of ['darwin', 'linux', 'win32'] as const) for (const legacy of [false, true]) it(`enforces ${target} ownership and recovers its missing ${legacy ? 'legacy' : 'explicit-home'} unit`, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-service-owner-'));
   const platform = recordingPlatform();
-  const options = { platform: 'darwin' as const, runner: platform.runner };
-  const owner = defaultSpec(path.join(root, 'myco'), root, 'darwin', path.join(root, 'owner'));
-  const other = defaultSpec(owner.binaryPath, root, 'darwin', path.join(root, 'other'));
+  const owningHome = legacy ? path.join(root, '.myco') : path.join(root, 'owner');
+  const owner = defaultSpec(path.join(root, 'myco'), root, target, legacy ? undefined : owningHome);
+  const other = defaultSpec(owner.binaryPath, root, target, path.join(root, 'other'));
+  const name = target === 'darwin' ? owner.unit.label : owner.unit.unitName;
+  let registered = '';
+  const options = { platform: target, runner: (command: string, args: readonly string[]) => {
+    const read = (command === 'launchctl' && args[0] === 'print') || args.includes('--property=Environment') || args.includes('/XML') && args[0] === '/Query';
+    if (read && platform.loaded.has(name)) return { status: 0, stdout: registered };
+    return platform.runner(command, args);
+  } };
   try {
     installService(owner, options);
+    const xml = fs.readFileSync(servicePaths(owner, target).unitFile, 'utf8');
+    registered = target === 'darwin' ? `gui/501/${name} = {\n environment = {\n${legacy ? '' : `MYCO_HOME => ${owningHome}\n`}}\n}`
+      : target === 'linux' ? legacy ? '' : `MYCO_HOME=${owningHome}` : xml;
     for (const mutate of [installService, startService, stopService, uninstallService]) {
-      expect(() => mutate(other, options)).toThrow(`owning home: ${owner.env.MYCO_HOME}`);
-      expect(() => mutate(other, options)).toThrow('myco server uninstall --target local');
+      expect(() => mutate(other, options)).toThrow(`owning home: ${owningHome}`);
     }
-    expect(platform.running.has(owner.unit.label)).toBe(true);
-    uninstallService(owner, options);
-    expect(platform.loaded.has(owner.unit.label)).toBe(false);
+    fs.rmSync(servicePaths(owner, target).unitFile);
+    expect(() => installService(other, options)).toThrow(`owning home: ${owningHome}`);
+    expect(() => uninstallService(other, options)).toThrow(target === 'win32' ? `set "MYCO_HOME=${owningHome}" &&` : `MYCO_HOME=${owningHome}`);
+    expect(uninstallService(owner, options).removed).toBe(true);
+    expect(platform.loaded.has(name)).toBe(false);
     installService(owner, options);
-    fs.rmSync(servicePaths(owner, 'darwin').unitFile);
-    expect(() => installService(other, options)).toThrow('owning home is unknown');
-    expect(platform.running.has(owner.unit.label)).toBe(true);
+    fs.rmSync(servicePaths(owner, target).unitFile);
+    expect(installService(owner, options).running).toBe(true);
+    expect(platform.running.has(name)).toBe(true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

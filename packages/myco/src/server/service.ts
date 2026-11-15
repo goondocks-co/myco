@@ -186,18 +186,67 @@ export function serviceHomeOwnership(spec: ServiceSpec, options: ServiceOptions 
     : canonicalHomePath(home) === canonicalHomePath(spec.env.MYCO_HOME ?? path.join(spec.home, '.myco')) ? 'same' : 'foreign';
 }
 
-/** Refuse a native unit that points at another Deployment's home. */
+function ownershipProbe(spec: ServiceSpec, platform: NodeJS.Platform): string[] {
+  if (platform === 'darwin') return ['launchctl', 'print', `gui/${process.getuid?.() ?? 501}/${spec.unit.label}`];
+  if (platform === 'linux') return ['systemctl', '--user', 'show', `${spec.unit.unitName}.service`, '--property=Environment', '--value'];
+  return ['schtasks', '/Query', '/TN', spec.unit.unitName, '/XML'];
+}
+
+function registeredServiceHome(spec: ServiceSpec, platform: NodeJS.Platform, source: string): string | null {
+  if (platform === 'darwin') {
+    if (!/=\s*\{/.test(source)) return null;
+    const homes = [...source.matchAll(/^\s*"?MYCO_HOME"?\s*=>\s*(.*?)\s*$/gm)].map(match => match[1]!);
+    if (homes.length === 1) {
+      const value = homes[0]!;
+      if (!value.startsWith('"')) return value;
+      try { return JSON.parse(value) as string; } catch { return null; }
+    }
+    return homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
+  }
+  if (platform === 'linux') {
+    const words = systemdWords(source.trim(), 'systemd-environment');
+    if (words === null) return null;
+    const homes = words.filter(word => word.startsWith('MYCO_HOME=')).map(word => word.slice('MYCO_HOME='.length));
+    return homes.length === 1 ? homes[0]! : homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
+  }
+  if (!/<Task(?:\s|>)/.test(source)) return null;
+  const homes = [...source.matchAll(/set &quot;MYCO_HOME=(.*?)&quot;/g)].map(match => xmlUnescape(match[1]!));
+  return homes.length === 1 ? homes[0]! : homes.length === 0 && !source.includes('MYCO_HOME') ? path.join(spec.home, '.myco') : null;
+}
+
+function homeCommand(home: string, platform: NodeJS.Platform): string {
+  return platform === 'win32' ? `set "MYCO_HOME=${home}" &&` : `MYCO_HOME=${commandArgument(home)}`;
+}
+
+/** Refuse a native unit or registration that belongs to another Deployment's home. */
 export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptions = {}): void {
   if (spec.unit.label !== SERVER_UNIT.label) return;
-  const ownership = serviceHomeOwnership(spec, options);
-  if (ownership === 'same' || ownership === 'absent') return;
-  const file = servicePaths(spec, options.platform).unitFile;
-  const owner = installedServiceHome(spec, options);
   const platform = options.platform ?? process.platform;
-  const remedy = owner !== null && path.isAbsolute(owner)
-    ? `run ${platform === 'win32' ? `set "MYCO_HOME=${owner}" &&` : `MYCO_HOME=${commandArgument(owner)}`} myco server uninstall --target local from its owning home before installing another Deployment`
-    : `inspect ${file} and restore its owning MYCO_HOME before running myco server uninstall --target local`;
-  throw new Error(`native service mutation refused: the installed native service does not belong to ${spec.env.MYCO_HOME ?? path.join(spec.home, '.myco')}; owning home: ${owner ?? 'unknown'}. Nothing changed; ${remedy}.`);
+  const file = servicePaths(spec, platform).unitFile;
+  const probe = ownershipProbe(spec, platform);
+  const inspect = commandLine(probe, platform === 'win32' ? 'cmd' : 'posix');
+  let home: string | null;
+  try {
+    if (existsSync(file)) home = installedServiceHome(spec, options);
+    else {
+      const [command, ...args] = probe;
+      const result = (options.runner ?? platformRunner)(command!, args);
+      if (result.error === undefined && result.status === 0) home = registeredServiceHome(spec, platform, result.stdout ?? '');
+      else {
+        const status = statusOfService(spec, { ...options, inspectMissing: true });
+        if (!status.loaded && !status.running && status.detail === UNIT_NOT_HELD) return;
+        throw new Error(result.error?.message ?? `registration query exited ${result.status}`);
+      }
+    }
+  } catch (cause) {
+    throw new Error(`native service mutation refused: ownership could not be read (${cause instanceof Error ? cause.message : String(cause)}). Nothing changed; run ${inspect} to inspect its owning home, repair access to ${file}, then rerun myco server install --target local from that home.`, { cause });
+  }
+  const expected = spec.env.MYCO_HOME ?? path.join(spec.home, '.myco');
+  if (home !== null && path.isAbsolute(home) && canonicalHomePath(home) === canonicalHomePath(expected)) return;
+  if (home === null || !path.isAbsolute(home)) {
+    throw new Error(`native service mutation refused: owning home is unknown. Nothing changed; run ${inspect} to inspect the registration and identify its MYCO_HOME before running myco server uninstall --target local from that home.`);
+  }
+  throw new Error(`native service mutation refused: the installed native service does not belong to ${expected}; owning home: ${home}. Nothing changed; run ${homeCommand(home, platform)} myco server uninstall --target local from its owning home before installing another Deployment.`);
 }
 
 /** Every native service mutation admits the installed home's ownership first. */
@@ -206,13 +255,6 @@ function serviceMutation<O extends ServiceOptions, T>(operation: (spec: ServiceS
     if (spec.unit.label !== SERVER_UNIT.label) return operation(spec, options);
     const mutate = () => {
       assertServiceTargetHome(spec, options);
-      const file = servicePaths(spec, options.platform).unitFile;
-      if (!existsSync(file)) {
-        const held = statusOfService(spec, { ...options, inspectMissing: true });
-        if (held.loaded || held.running || (held.detail !== undefined && held.detail !== UNIT_NOT_HELD)) {
-          throw new Error(`native service mutation refused: owning home is unknown because ${file} is missing (${held.detail ?? 'the platform still holds the service'}). Restore its original unit, then run MYCO_HOME=<owning-home> myco server uninstall --target local before replacing it.`);
-        }
-      }
       return operation(spec, options);
     };
     return withFileLockSync(`${servicePaths(spec, options.platform).unitFile}.lock`, mutate);
@@ -372,7 +414,7 @@ function lifecycleCommands(unit: ServiceUnit, paths: ServicePaths, platform: Nod
     const name = `${unit.unitName}.service`;
     return {
       load: [['systemctl', '--user', 'daemon-reload'], ['systemctl', '--user', 'enable', name], ['systemctl', '--user', 'restart', name]],
-      unload: [['systemctl', '--user', 'disable', '--now', name]],
+      unload: [['systemctl', '--user', 'disable', '--now', name], ['systemctl', '--user', 'stop', name]],
     };
   }
   return {
@@ -544,7 +586,6 @@ export const stopService = serviceMutation((spec: ServiceSpec, options: ServiceO
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
-  if (!existsSync(paths.unitFile)) return;
   for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).unload) runner(command!, args);
 });
 
@@ -572,12 +613,13 @@ export const uninstallService = serviceMutation((spec: ServiceSpec, options: Ser
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? platformRunner;
   const paths = servicePaths(spec, platform);
+  const before = statusOfService(spec, { ...options, inspectMissing: true });
   for (const [command, ...args] of lifecycleCommands(spec.unit, paths, platform).unload) runner(command!, args);
   const state = statusOfService(spec, { ...options, inspectMissing: true });
   if (state.loaded || state.running || (state.detail !== undefined && state.detail !== UNIT_NOT_HELD)) {
     throw new ServiceStopFailed(`service ${spec.unit.unitName} could not be stopped; its unit was retained (${state.detail ?? 'still held by the service manager'})`);
   }
-  const removed = existsSync(paths.unitFile);
+  const removed = existsSync(paths.unitFile) || before.loaded || before.running;
   rmSync(paths.unitFile, { force: true });
   return { unitFile: paths.unitFile, removed };
 });

@@ -82,7 +82,7 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           persisted progress to recover from interruption.
   rollback --target cloudflare [--version <id>] [--message <text>]
                                           Return the Worker to an earlier version. Defaults to the
-                                          version observed serving before the last successful update.
+                                          version observed serving before the latest admitted update attempt.
                                           Requires --version when no earlier version is proved.
   materialize --from <staging> --to <dir>
                                           Materialize a myco-recovery/3 staging into a verified

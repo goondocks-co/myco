@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import { run } from '@myco/cli/server.js';
 import { Database } from 'bun:sqlite';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { installService } from '@myco/server/service.js';
+import { installService, servicePaths } from '@myco/server/service.js';
 import { updateLocalService } from '@myco/server/local-update.js';
 import { LocalVolume } from '@myco/server/local-volume.js';
 import { startLocalService } from '@myco/server/local-lifecycle.js';
@@ -84,4 +84,22 @@ it('names forward recovery when a stopped update has advanced the schema', async
     return result;
   } } })).rejects.toThrow('schema advanced');
   expect(f.platform.running.has(f.spec.unit.label)).toBe(false);
+});
+
+it('reports a completed schema update and an unanswered service without suggesting data recovery', async () => {
+  const f = fixture();
+  const sqlite = new Database(f.paths.databasePath);
+  try { sqlite.query("UPDATE schema_meta SET value = ? WHERE key = 'version'").run(String(SERVER_SCHEMA_VERSION - 1)); }
+  finally { sqlite.close(); }
+  installService(f.spec, f.deps.service);
+  let clock = 0;
+  const failure = await updateLocalService(f.home, { ...f.deps,
+    now: () => clock, sleep: async ms => { clock += ms; },
+    fetchImpl: Object.assign(async () => new Response('', { status: 503 }), { preconnect() {} }),
+  }).catch(error => error);
+  expect(failure.message).toContain(`schema updated to ${SERVER_SCHEMA_VERSION}; the service did not answer`);
+  expect(failure.message).toContain(servicePaths(f.spec, 'darwin').errLog);
+  expect(failure.message).toContain('myco server status --target local, then myco server install --target local');
+  expect(failure.message).not.toContain('restore');
+  expect(failure.message).not.toContain('artifact');
 });

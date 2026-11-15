@@ -23,16 +23,20 @@ export function recordingPlatform(): RecordingPlatform {
     const name = nameOf(args.at(-1) ?? '');
     if (line.startsWith('launchctl load')) { loaded.add(name); start(name); }
     else if (line.startsWith('launchctl unload') || line.startsWith('launchctl remove')) drop(name);
+    else if (line.startsWith('launchctl print')) return { status: loaded.has(name) ? 0 : 113 };
     else if (line.startsWith('launchctl list')) {
       return loaded.has(name) ? { status: 0, stdout: running.has(name) ? `{\n\t"PID" = 4242;\n\t"Label" = "${name}";\n};` : `{\n\t"Label" = "${name}";\n};` } : { status: 113 };
     } else if (line.startsWith('systemctl --user enable')) loaded.add(name);
     else if (line.startsWith('systemctl --user restart')) start(name);
     else if (line.startsWith('systemctl --user disable')) drop(name);
+    else if (line.startsWith('systemctl --user stop')) running.delete(name);
+    else if (line.startsWith('systemctl --user show') && args.includes('--property=Environment')) return { status: loaded.has(args[2]!.replace(/\.service$/, '')) ? 0 : 1 };
     else if (line.startsWith('systemctl --user is-enabled')) return { status: loaded.has(name) ? 0 : 1 };
     else if (line.startsWith('systemctl --user is-active')) return { status: running.has(name) ? 0 : 3 };
     else if (line.startsWith('schtasks /Create')) loaded.add(args[args.indexOf('/TN') + 1]!);
     else if (line.startsWith('schtasks /Run')) start(args[args.indexOf('/TN') + 1]!);
     else if (line.startsWith('schtasks /Delete')) drop(args[args.indexOf('/TN') + 1]!);
+    else if (line.startsWith('schtasks /Query') && args.includes('/XML')) return { status: loaded.has(args[args.indexOf('/TN') + 1]!) ? 0 : 1 };
     else if (line.startsWith('schtasks /Query')) return { status: loaded.has(args[args.indexOf('/TN') + 1]!) ? 0 : 1 };
     else if (line.startsWith('powershell.exe')) {
       const task = /-TaskName '([^']+)'/.exec(line)?.[1] ?? '';

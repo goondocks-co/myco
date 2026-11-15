@@ -5,7 +5,7 @@ import { thinLearningUpgradeAdmission } from '@myco-server-worker/db/thin-learni
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { assertRecordServable, peekLocalPaths, readLocalRecord, updateLocalDeployment } from './local.js';
 import { localServiceSpec, startLocalService, waitForLocalStop, type LocalPrepareDeps } from './local-lifecycle.js';
-import { assertServiceTargetHome, statusOfService, stopService, UNIT_NOT_HELD } from './service.js';
+import { assertServiceTargetHome, statusOfService, stopService, servicePaths, UNIT_NOT_HELD } from './service.js';
 import { LocalVolume } from './local-volume.js';
 
 function admitUpdate(databasePath: string, deps: LocalPrepareDeps): number {
@@ -34,11 +34,12 @@ export async function updateLocalService(home: string, deps: LocalPrepareDeps): 
   let before: number | undefined;
   let restore = false;
   let stopped = false;
+  let applied: number;
   try {
-    const applied = await new LocalVolume(paths).updating(
+    applied = await new LocalVolume(paths).updating(
       () => admitUpdate(paths.databasePath, deps), async (accepted) => {
         before = accepted;
-        const service = statusOfService(spec, deps.service);
+        const service = statusOfService(spec, { ...deps.service, inspectMissing: true });
         if (service.installed && service.detail && !service.loaded && !service.running && service.detail !== UNIT_NOT_HELD) {
           throw new Error(service.detail);
         }
@@ -50,11 +51,6 @@ export async function updateLocalService(home: string, deps: LocalPrepareDeps): 
         }
         return updateLocalDeployment(deps.native, paths);
     });
-    if (restore) {
-      await startLocalService(spec, url, deps);
-      deps.log?.('Deployment running again.');
-    }
-    return applied;
   } catch (cause) {
     if (!stopped) throw cause;
     const reason = cause instanceof Error ? cause.message : String(cause);
@@ -67,4 +63,12 @@ export async function updateLocalService(home: string, deps: LocalPrepareDeps): 
     }
     throw new Error(`native update failed (${reason}); the previous service is answering again. Run myco server update --target local after resolving the failure`, { cause });
   }
+  if (restore) {
+    try { await startLocalService(spec, url, deps); }
+    catch (cause) {
+      throw new Error(`native schema updated to ${SERVER_SCHEMA_VERSION}; the service did not answer: ${cause instanceof Error ? cause.message : String(cause)}. Check ${servicePaths(spec, deps.service?.platform).errLog}; run myco server status --target local, then myco server install --target local`, { cause });
+    }
+    deps.log?.('Deployment running again.');
+  }
+  return applied;
 }

@@ -845,7 +845,7 @@
     "tests/server/local-lifecycle-preserve.test.ts": 120434,
     "tests/server/local-owner.test.ts": 30345,
     "tests/server/local-recovery.test.ts": 132449,
-    "tests/server/local-update.test.ts": 16000,
+    "tests/server/local-update.test.ts": 20000,
     "tests/server/local-service.test.ts": 705,
     "tests/server/local-signin.test.ts": 55142,
     "tests/server/local-volume.test.ts": 492,
