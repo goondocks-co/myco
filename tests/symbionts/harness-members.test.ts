@@ -145,3 +145,16 @@ it('keeps shared skills when the provision record and destination cannot be read
   expect(fs.existsSync(path.join(home, '.agents/skills/myco/SKILL.md'))).toBe(true);
   expect(fs.readFileSync(provisionRecordPath(mycoHome), 'utf8')).toBe('{torn');
 });
+
+
+it('keeps shared skills when a peer configuration cannot be inspected', async () => {
+  const deps = { cwd: scratch, mycoHome, env: {}, stdout: () => {}, stderr: () => {} };
+  for (const agent of ['codex', 'copilot']) await memberCli(['provision', agent, '--server', 'https://myco.example'], deps);
+  const { recordDefaultDeployment } = await import('@myco/member/default-deployment.js');
+  const { provisionRecordPath } = await import('@myco/symbionts/member-provision-record.js');
+  recordDefaultDeployment('https://myco.example', { mycoHome });
+  fs.writeFileSync(provisionRecordPath(mycoHome), '{torn');
+  fs.writeFileSync(path.join(home, '.codex/hooks.json'), '{unreadable');
+  await memberCli(['provision', '--remove', 'copilot'], deps);
+  expect(fs.existsSync(path.join(home, '.agents/skills/myco/SKILL.md'))).toBe(true);
+});

@@ -86,7 +86,7 @@ function installedDirectory(location: string): boolean {
 
 /** Configuration managed by Myco is not installation evidence unless the manifest declares it. */
 export function hasSymbiontInstallation(manifest: SymbiontManifest, binaryFound = isBinaryOnPath): boolean {
-  return binaryFound(manifest.binary) || (manifest.health?.installLocations ?? []).some(installedDirectory);
+  return binaryFound(manifest.binary) || (manifest.health?.installLocations ?? []).some(location => fs.existsSync(expandHome(location)));
 }
 
 /**

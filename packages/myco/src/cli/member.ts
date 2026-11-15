@@ -860,17 +860,20 @@ export function runProvision(args: readonly string[], deps: MemberCliDeps = {}, 
     const manifest = loadManifests().find((candidate) => candidate.name === agent);
     if (manifest === undefined) return fail(`unknown agent "${agent}"`);
     const installer = globalInstaller(manifest, null, mycoHome, deps);
-    const recordedServer = readProvisionRecord(mycoHome)?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
-    if (recordedServer !== undefined) installer.forDeployment(recordedServer);
     try {
       withMemberRepair(mycoHome, 'myco member provision --remove', () => {
+        const provision = readProvisionRecord(mycoHome);
+        const recordedServer = provision?.serverUrl ?? selectedDeploymentMembership(mycoHome)?.serverUrl;
+        if (recordedServer !== undefined) installer.forDeployment(recordedServer);
+        let skillOwnersKnown = recordedServer !== undefined;
         const target = manifest.registration?.globalSkillsTarget;
-        const others = new Set([...(readProvisionRecord(mycoHome)?.agents ?? []),
-          ...(recordedServer === undefined ? [] : registeredMemberHarnesses(mycoHome, recordedServer, deps))].filter(id => id !== agent));
+        const others = new Set([...(provision?.agents ?? []),
+          ...(recordedServer === undefined ? [] : registeredMemberHarnesses(mycoHome, recordedServer,
+            { ...deps, onInspectionError: () => { skillOwnersKnown = false; } }))].filter(id => id !== agent));
         const shared = target !== undefined && target !== null && loadManifests().some(other =>
           others.has(other.name) && other.registration?.globalSkillsTarget != null
           && skillsFolder(other.registration.globalSkillsTarget) === skillsFolder(target));
-        const removeSkills = target && recordedServer !== undefined && !shared ? prepareMemberSkillRemoval(mycoHome, skillsFolder(target)) : () => {};
+        const removeSkills = target && skillOwnersKnown && !shared ? prepareMemberSkillRemoval(mycoHome, skillsFolder(target)) : () => {};
         installer.uninstallMemberRegistration();
         removeSkills();
         forgetProvision(mycoHome, agent);
