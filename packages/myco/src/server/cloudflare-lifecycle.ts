@@ -10,6 +10,7 @@
  * files are all artifacts the binary carries. Node and wrangler are the only
  * prerequisites, and only on the operator's own machine.
  */
+import { holdCloudflareWrappingKey, cloudflareWrappingKeyLine } from './cloudflare-wrapping-key.js';
 import { randomBytes } from 'node:crypto';
 import { backupCredentialNotice, backupCredentialObservation } from '@myco/server/backup-credential.js';
 import nodeFs from 'node:fs';
@@ -267,7 +268,8 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
       // The wrapping key is put wherever the store lacks it, a store the account already held included. One the store holds
       // stays: every sealed credential is wrapped with it.
       if (store.created || !(await storeSecretNames({ ...bare, storeId: store.storeId })).includes(resources.wrapKeySecretName)) {
-        await putStoreSecret({ ...bare, storeId: store.storeId, name: resources.wrapKeySecretName, value: randomBytes(32).toString('base64') });
+        const value = await holdCloudflareWrappingKey({ mycoHome: options.mycoHome });
+        await putStoreSecret({ ...bare, storeId: store.storeId, name: resources.wrapKeySecretName, value });
         createdResources.push(`store secret ${resources.wrapKeySecretName}`);
       }
 
@@ -296,6 +298,7 @@ export const createCloudflareDeployment = lifecycleOperation('create', async (op
 
   record = { ...record, release: getPluginVersion(), versionId: deployed.versionId, deployedAt: new Date().toISOString() };
   writeDeploymentRecord(record, options.mycoHome);
+  options.report?.(cloudflareWrappingKeyLine(options.mycoHome));
   return { record, createdResources, versionId: deployed.versionId };
 });
 

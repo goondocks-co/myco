@@ -1,3 +1,5 @@
+import { cloudflareWrappingKeyPath } from '@myco/server/cloudflare-wrapping-key.js';
+import { readLocalSecrets } from '@myco/server/local.js';
 /**
  * The Cloudflare lifecycle, asserted by the argv it produces and the record it
  * writes. A fake runner scripts wrangler's answers; nothing here provisions
@@ -6,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 import { budgetD1Database, budgetD1Reply } from './helpers/budget-d1.js';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "../support/fenced-fs.mjs";
+import { statSync, rmSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -307,7 +309,22 @@ describe('create', () => {
 
   it('provisions the resources and records their ids and the serving version', async () => {
     const { home, options } = setup();
-    const result = await createCloudflareDeployment({ ...options, runner: runner() });
+    const reports: string[] = [];
+    const provider = runner();
+    let uploadMatched = false;
+    const result = await createCloudflareDeployment({ ...options, report: line => reports.push(line), runner: { async run(command, args, runOptions) {
+      if (args.includes('secrets-store') && args.includes('create') && args.includes('secret')) {
+        const file = cloudflareWrappingKeyPath(home);
+        uploadMatched = readLocalSecrets({ secretsFile: file }).SECRET_WRAP_KEY === runOptions?.input?.trim();
+        expect(statSync(file).mode & 0o777).toBe(0o600);
+      }
+      return provider.run(command, args, runOptions);
+    } } });
+    expect(uploadMatched).toBe(true);
+    const held = readLocalSecrets({ secretsFile: cloudflareWrappingKeyPath(home) }).SECRET_WRAP_KEY!;
+    expect(reports.join('\n')).toContain(cloudflareWrappingKeyPath(home));
+    expect(reports.join('\n').includes(held)).toBe(false);
+    expect(JSON.stringify(result).includes(held)).toBe(false);
 
     expect(result.createdResources).toEqual(['d1 myco-server', 'r2 myco-server-blobs', 'r2 myco-server-recovery', 'secrets store', 'store secret myco-secret-wrap-key', 'worker secret SESSION_SECRET']);
     const record = readDeploymentRecord(home)!;
@@ -456,7 +473,10 @@ describe('create', () => {
     const { home, options } = setup();
     await createCloudflareDeployment({ ...options, runner: runner() });
     calls = [];
-    const again = await createCloudflareDeployment({ ...options, runner: runner() });
+    rmSync(cloudflareWrappingKeyPath(home));
+    const reports: string[] = [];
+    const again = await createCloudflareDeployment({ ...options, runner: runner(), report: line => reports.push(line) });
+    expect(reports.join('\n')).toMatch(/Wrapping key file absent.*--new-credentials/);
     expect(again.createdResources).toEqual([]);
     expect(readDeploymentRecord(home)!.databaseId).toBe(DB_ID);
     expect(calls.some((c) => c.args.join(' ').includes('d1 create'))).toBe(false);

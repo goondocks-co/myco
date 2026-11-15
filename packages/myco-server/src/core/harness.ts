@@ -29,7 +29,7 @@ import {
 import type { ClaimCandidate } from './runs.js';
 import { settleAttemptCostStatement } from './attempt-accounting.js';
 import { NOTHING_DUE } from './learning-sessions.js';
-import { harnessCredentialAvailability } from './secrets.js';
+import { harnessCredentialAvailability, secretReadable } from './secrets.js';
 import { runnerCredentialChoices } from '../auth/runners.js';
 import { emitLateHarnessError } from './run-postconditions.js';
 import type { HarnessStop } from '@goondocks/myco-shared/run-text';
@@ -546,7 +546,7 @@ export async function prepareDispatch(env: ServerEnv, task: string, projectId: s
 
   // Unavailable tasks are refused before repository and provider requirements.
   if (UNLANDED_TASKS.includes(task)) return { ok: false, refusal: 'not_landed' };
-  if (REQUIRED_REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }) === null) {
+  if (REQUIRED_REPOSITORY_TASKS.includes(task) && await repositoryIdentity(env.db, { projectId }, slot => secretReadable(env.db, env.wrappingKey, slot)) === null) {
     return { ok: false, refusal: 'repository_missing' };
   }
 

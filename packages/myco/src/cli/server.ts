@@ -1,3 +1,5 @@
+import { recoveryCredentialLines } from '../server/recovery-secret-report.js';
+import { cloudflareWrappingKeyLine } from '../server/cloudflare-wrapping-key.js';
 import { localBudgetStatus, cloudflareBudgetStatus, operatorBudgetLine } from '../server/budget-status.js';
 import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import nodeFs from 'node:fs';
@@ -104,16 +106,19 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Give up a hold whose destination directory is gone. It
                                           releases only that operator hold, never an automatic
                                           export's.
-  restore --target local --from <dir> --secrets-from <file> --yes [--port <n>]
+  restore --target local --from <dir> [--secrets-from <file>] --yes [--port <n>]
                                           Recover into a fresh native Deployment directory. Verify
                                           data and independent credentials before publishing it.
                                           Keeps the source; refuses an existing destination.
-  restore --target cloudflare --from <dir> --secrets-from <file> --account-id <id> --yes
+  restore --target cloudflare --from <dir> [--secrets-from <file>] --account-id <id> --yes
                                           Recover into fresh hosted resources under a fresh MYCO_HOME.
                                           Keeps the source and requires independent credentials.
                                           Verify sign-in and search readiness before cutover.
+  restore --target local|cloudflare ... --new-credentials
+                                          Generate a new wrapping key; enter stored credentials again.
+                                          Omit SECRET_WRAP_KEY from --secrets-from.
   restore --target local|cloudflare ... --new-signin
-                                          Require only the original wrapping key in --secrets-from.
+                                          Replace sign-in; combine with --new-credentials to omit --secrets-from.
                                           Create a fresh session secret and configure GitHub sign-in
                                           afterward with server github-app. Keeps source sign-in intact.
   restore --target local|cloudflare ... --source-retired
@@ -425,6 +430,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       console.log('\nCloudflare Deployment');
       console.log(`  Worker:     ${status.record.workerName} (account ${status.record.accountId})`);
       console.log(`  Worker (live): ${status.workerPropagation ?? (status.workerError === null ? status.deployed ? status.versionId ?? 'version unavailable' : 'not deployed' : `unavailable — ${status.workerError}`)}`);
+      console.log(`  ${cloudflareWrappingKeyLine()}`);
       if (status.backupCredentialCheck !== null) console.log(status.backupCredentialCheck);
       console.log(`  Worker (recorded): ${status.record.versionId ?? 'never'} at ${status.record.deployedAt}`);
       console.log(`  Release (recorded at last deploy): ${status.record.release ?? 'unknown (not recorded)'}`);
@@ -542,27 +548,25 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       if (flags.has('fork') && selected !== 'cloudflare' && selected !== 'local') fail('--fork requires --target cloudflare or --target local.');
       if (flags.has('new-signin') && selected !== 'cloudflare' && selected !== 'local') fail('--new-signin requires --target cloudflare or --target local.');
       const from = flags.get('from');
-      if (from === undefined || from === '') fail('restore needs --from <dir>.');
+      if (from === undefined || from === '' || from === 'true') fail('restore needs --from <dir>.');
+      const secretsFile = flags.get('secrets-from');
+      if (secretsFile === '' || secretsFile === 'true') fail('--secrets-from needs a credentials file.');
+      if (secretsFile === undefined && !flags.has('new-credentials')) fail(`${selected === 'local' ? 'native' : 'hosted'} recovery needs --secrets-from <file> with independently held recovery credentials, or --new-credentials to enter stored credentials again.`);
       if (selected === 'cloudflare') {
-        if (from === 'true') fail('restore needs --from <dir>.');
-        const secretsFile = flags.get('secrets-from');
-        if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('hosted recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('hosted recovery provisions a new Deployment; re-run with --yes to confirm.');
-        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile: secretsFile!, newSignIn: flags.has('new-signin'), tenantMode: flags.has('fork') ? 'fork' : 'replacement', sourceRetired: flags.has('source-retired'), native: carriedNativeIfAny() });
+        const restored = await restoreCloudflareDeployment({ ...cloudflareOptions(), source: from!, secretsFile, newCredentials: flags.has('new-credentials'), newSignIn: flags.has('new-signin'), tenantMode: flags.has('fork') ? 'fork' : 'replacement', sourceRetired: flags.has('source-retired'), native: carriedNativeIfAny() });
         console.log(`${flags.has('fork') ? 'Fork' : 'Replacement'} deployed at ${restored.record.url}, schema ${restored.schemaVersion}, Worker ${restored.record.versionId}.`);
         console.log(flags.has('fork') ? `A new tenant was created. Copied credentials, invitations and agent access keys are inactive. ${REJOIN_HINT}` : 'The Deployment identity and carried live authority were retained. This is the same tenant.');
         console.log('Source data was preserved. Sign-in, attached workers and embedding readiness still require verification before cutover.');
         console.log(`Automatic backups need a backup access key validated for the restored database. Reuse the kept account-wide key in the same account, or create a key for a different account. Run \`${BACKUP_CREDENTIAL_COMMAND}\` using the same MYCO_HOME.`);
         if (flags.has('new-signin')) console.log(`Using the same MYCO_HOME (${resolveMycoHome()}), configure destination sign-in with: myco server github-app --target cloudflare --url ${restored.record.url} --name "Myco Recovery"`);
+        if (restored.credentialsToReenter !== undefined) for (const line of recoveryCredentialLines(restored.credentialsToReenter)) console.log(line);
         return;
       }
       if (selected === 'local') {
-        if (from === 'true') fail('restore needs --from <dir>.');
-        const secretsFile = flags.get('secrets-from');
-        if (secretsFile === undefined || secretsFile === '' || secretsFile === 'true') fail('native recovery needs --secrets-from <file> with independently held recovery credentials.');
         if (!flags.has('yes')) fail('native recovery publishes a new Deployment from the artifact; re-run with --yes to confirm.');
         const port = flags.get('port');
-        const restored = await restoreLocalDeployment({ source: from!, secretsFile: secretsFile!, native: carriedNative(),
+        const restored = await restoreLocalDeployment({ source: from!, secretsFile, newCredentials: flags.has('new-credentials'), native: carriedNative(),
           newSignIn: flags.has('new-signin'),
           tenantMode: flags.has('fork') ? 'fork' : 'replacement', sourceRetired: flags.has('source-retired'),
           ...(port === undefined ? {} : { port: Number(port) }), report: (line) => console.log(line) });
@@ -570,6 +574,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
         console.log(flags.has('fork') ? `A new tenant was created. Copied credentials, invitations and agent access keys are inactive. ${REJOIN_HINT}` : 'The Deployment identity and carried live authority were retained. This is the same tenant.');
         console.log(`Keep MYCO_HOME set to ${resolveMycoHome()} for this recovered Deployment.`);
         console.log(`Start it with this binary (${process.execPath}) and arguments: server run --target local`);
+        if (restored.credentialsToReenter !== undefined) for (const line of recoveryCredentialLines(restored.credentialsToReenter)) console.log(line);
         return;
       }
     }

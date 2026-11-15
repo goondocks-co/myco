@@ -363,6 +363,21 @@ describe('a project\'s settings', () => {
 });
 
 describe('the repository', () => {
+  it('asks for a missing repository token and does not offer to keep it', async () => {
+    server(base({ [`${api}/capabilities`]: () => Response.json({ revisions: {}, capabilityRevisions: {}, settings: {}, capabilities: { canopy: true } }), [`${api}/repository`]: () => Response.json({ repository: { ...REPOSITORY,
+      credential: { configured: false, readable: true, maskedValue: null, updatedAt: null, updatedBy: null } } }) }));
+    mount(`/p/${P}/settings`);
+    expect(await screen.findByText('Its token is missing; enter it again')).toBeTruthy();
+    const row = (await screen.findByRole('switch', { name: 'Code map' })).closest('[data-setting="capability.canopy"]') as HTMLElement;
+    await waitFor(() => expect(row.textContent).toContain('Needs this project’s repository token'));
+    expect(row.textContent).not.toContain('Reads goondocks-co/myco');
+    expect(within(row).getByRole('link', { name: 'Enter repository token' }).getAttribute('href')).toBe(`/p/${P}/settings#repository`);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit repository' }));
+    const dialog = await screen.findByRole('dialog');
+    expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).placeholder).toBe('');
+    expect((within(dialog).getByLabelText('Read token') as HTMLInputElement).required).toBe(true);
+  });
+
   it('shows what is connected and how, never the credential, and edits it with the credential kept', async () => {
     const { sent } = server(base({ [`PUT ${api}/repository`]: () => Response.json({ repository: REPOSITORY }) }));
     mount(`/p/${P}/settings`);

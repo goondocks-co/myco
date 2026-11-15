@@ -1,6 +1,8 @@
+import { allocateOwnedFixture } from '../support/owned-fixtures.js';
+import { setFixturePermissions } from '../helpers/permission-fixture.js';
+import { holdCloudflareWrappingKey, cloudflareWrappingKeyPath } from '@myco/server/cloudflare-wrapping-key.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { run } from '@myco/cli/server.js';
 import { cloudflareCredentialSource, deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
@@ -104,7 +106,7 @@ const fetchD1:typeof fetch=async(_input,init)=>{
 
 beforeEach(() => {
   budgetDb=budgetD1Database();
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-server-status-'));
+  root = allocateOwnedFixture('myco-server-status-');
   const env: Record<string, string | undefined> = {
     HOME: path.join(root, 'home'), CODEX_HOME: path.join(root, 'codex'),
     CLAUDE_CONFIG_DIR: path.join(root, 'claude'), XDG_CONFIG_HOME: path.join(root, 'config'),
@@ -167,6 +169,18 @@ function expectNoTokenFragments(text: string): void {
 const count = (command: string): number => calls.filter((call) => call.args.slice(2).join(' ').startsWith(command)).length;
 
 describe('Cloudflare status records and live observations', () => {
+  it('reports a present but unreadable wrapping key file without failing status', async () => {
+    await holdCloudflareWrappingKey({});
+    const file = cloudflareWrappingKeyPath();
+    setFixturePermissions(file, 0o000);
+    try {
+      const text = await drive('status');
+      expect(text).toContain('present but unreadable');
+      expect(text).toContain(file);
+      expect(exitCode).toBeUndefined();
+    } finally { setFixturePermissions(file, 0o600); }
+  });
+
   it('prints a propagation notice for the recorded version without a Worker failure', async () => {
     writeDeploymentRecord({ ...readDeploymentRecord()!, deployedAt: new Date().toISOString() });
     failure = 'deployments list';

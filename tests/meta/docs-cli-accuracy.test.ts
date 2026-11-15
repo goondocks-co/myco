@@ -113,7 +113,7 @@ function currentInvocations(file: string, text: string): Invocation[] {
 const SPELLED_OUT: Record<string, string[]> = {
   'server create': ['--target'], // where a new Myco runs is the reader's choice, never a default
   'server setup-owner': ['--target'], // the computer that created Myco may hold either Deployment
-  'server restore': ['--target', '--from', '--secrets-from', '--yes'], // restore stops without each of these
+  'server restore': ['--target', '--from', '--yes'], // restore stops without each of these
 };
 
 function problemsFor(surfaces: Map<string, CommandSurface>, invocation: Invocation): string[] {
@@ -133,7 +133,10 @@ function problemsFor(surfaces: Map<string, CommandSurface>, invocation: Invocati
   for (const flag of flagsIn(rest.join(' '))) {
     if (!flags.has(flag) && flag !== '--help') problems.push(`${where}: ${command} ${sub ?? ''} has no flag ${flag}`);
   }
-  for (const flag of SPELLED_OUT[`${command} ${sub}`] ?? []) if (!flagsIn(rest.join(' ')).has(flag)) problems.push(`${where}: copy policy: ${command} ${sub} is always shown with ${flag}`);
+  const specified = flagsIn(rest.join(' '));
+  const required = [...(SPELLED_OUT[`${command} ${sub}`] ?? [])];
+  if (command === 'server' && sub === 'restore' && !(specified.has('--new-credentials') && specified.has('--new-signin'))) required.push('--secrets-from');
+  for (const flag of required) if (!specified.has(flag)) problems.push(`${where}: copy policy: ${command} ${sub} is always shown with ${flag}`);
   return problems;
 }
 
@@ -178,7 +181,8 @@ describe('the user docs and the dashboard name only what the CLI has', () => {
     expect(problemsFor(surfaces, invocations('probe.md', `\`myco ${command}\``)[0]).length).toBeGreaterThan(0);
   });
 
-  it.each(['member leave --purge', 'member join --project <id>', 'member join --new [name]', 'runner register <address> --replace'])('accepts flags on their own subcommand: myco %s', (command) => {
+  it.each(['member leave --purge', 'member join --project <id>', 'member join --new [name]', 'runner register <address> --replace',
+    'server restore --target local --from <dir> --new-credentials --new-signin --source-retired --yes'])('accepts flags on their own subcommand: myco %s', (command) => {
     expect(problemsFor(surfaces, invocations('probe.md', `\`myco ${command}\``)[0])).toEqual([]);
   });
 
