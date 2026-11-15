@@ -1,9 +1,9 @@
 // Gate G1, timed (#1561): how long a compiled binary takes to answer each hook doing its real work.
 //
-// Usage: bun scripts/measure-hook-work.ts <binary> [--runs N (30)] [--scale S] [--prefix "arch -x86_64"] [--repo DIR]
+// Usage: bun scripts/measure-hook-work.ts <binary> [--runs N (30)] [--scale S] [--prefix "arch -x86_64"] [--repo DIR] [--scratch-root DIR]
 //
-// Each run is one session of the harness that wires every hook (session start, a prompt, a tool call's pre and post,
-// a delegated agent's start and stop, the turn's end and the session's end), in a git repository joined to a loopback
+// Each run exercises session start, a prompt, a tool call's pre and post, a delegated agent's start and stop, the
+// turn's end and the session's end, plus Claude Code's recall hook with nothing held, in a git repository joined to a loopback
 // port nothing listens on, which refuses every connection at once: once with the credential read from the registry
 // and once from the environment, whose turn and session ends deliver in the hook by design. Over `--runs` sessions,
 // each hook's median must stay inside its budget times `--scale`, and its slowest run inside a ceiling no stall of a
@@ -49,6 +49,7 @@ const BUDGET_MS: Record<string, number> = {
   'session-start': 100,
   'user-prompt-submit': 100,
   'pre-tool-use': 70,
+  'prompt-recall': 70,
   'post-tool-use': 100,
   'subagent-start': 100,
   'subagent-stop': 100,
@@ -62,7 +63,7 @@ const PROJECT = 'proj_hookwork';
 /** A loopback port nothing listens on: every dial is refused at once. */
 const DEPLOYMENT = 'http://127.0.0.1:9';
 
-const scratch = fs.realpathSync(fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'myco-hook-work-')));
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(flag('--scratch-root', process.platform === 'win32' ? os.tmpdir() : '/tmp'), 'myco-hook-work-')));
 // `--repo`: measure in a repository of the caller's (a throwaway clone of a large one, say). One carrying a runtime pin
 // is refused: a hook run there re-executes into the pinned binary, under its home, and would capture into it.
 const given = flag('--repo', '');
@@ -98,9 +99,9 @@ function homeFor(source: 'registry' | 'env'): { home: string; env: NodeJS.Proces
 }
 
 const times: Record<string, number[]> = {};
-function hook(source: string, env: NodeJS.ProcessEnv, name: string, input: Record<string, unknown>): void {
+function hook(source: string, env: NodeJS.ProcessEnv, name: string, input: Record<string, unknown>, symbiont: string = SYMBIONT): void {
   const started = process.hrtime.bigint();
-  const run = spawnSync(command[0], [...command.slice(1), 'hook', name, '--symbiont', SYMBIONT, '--credential', source], {
+  const run = spawnSync(command[0], [...command.slice(1), 'hook', name, '--symbiont', symbiont, '--credential', source], {
     cwd: repo, env, input: JSON.stringify(input), encoding: 'utf-8', timeout: 30_000,
   });
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
@@ -117,6 +118,7 @@ function session(source: 'registry' | 'env', env: NodeJS.ProcessEnv, i: number):
   fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } })}\n`);
   const base = { session_id: sessionId, sessionId, transcript_path: transcript, cwd: repo };
   hook(source, env, 'session-start', { ...base, hook_event_name: 'SessionStart' });
+  hook(source, env, 'prompt-recall', { ...base, hook_event_name: 'PostToolUse' }, 'claude-code');
   hook(source, env, 'user-prompt-submit', { ...base, hook_event_name: 'UserPromptSubmit', prompt: `prompt ${i}` });
   hook(source, env, 'pre-tool-use', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: { file_path: '/a' } });
   hook(source, env, 'post-tool-use', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: '/a' }, tool_response: 'ok' });

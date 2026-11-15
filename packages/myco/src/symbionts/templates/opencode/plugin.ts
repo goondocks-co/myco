@@ -264,7 +264,7 @@ function noteOnce(key: string, message: string): void {
 }
 
 type CaptureStatus = "committed" | "refused" | "failed";
-type HookAnswer = { additionalContext?: string; promptId?: string };
+type HookAnswer = { additionalContext?: string; promptId?: string; recallPending?: boolean };
 type CaptureResult = { status: CaptureStatus; answer?: HookAnswer };
 
 // <myco:capture-store>
@@ -739,14 +739,21 @@ const { withClaimGate, claimPathFor, holdsSessionClaim, releaseSessionClaim, kee
  * never rejects: a capture path that breaks the host is worse than one that
  * captures nothing, and a plugin-only install legitimately has no binary.
  */
+const pendingToolRecalls = new Set<string>();
+
 function runMycoHook(
   directory: string,
   agent: string,
   sessionId: string,
   verb: string,
-  payload: Record<string, unknown>,
-  routingKey = routingKeyFor(directory),
+  payload: Record<string, unknown> | ((routingKey: string) => Record<string, unknown>),
+  routingKey?: string | null,
 ): HookAnswer | null {
+  const recall = verb === "prompt-recall";
+  const prompt = verb === "user-prompt-submit";
+  if (recall && !pendingToolRecalls.has(sessionId)) return null;
+  if (recall || prompt || verb === "stop" || verb === "session-end") pendingToolRecalls.delete(sessionId);
+  const key = routingKey === undefined ? routingKeyFor(directory) : routingKey;
   // The instance that does not speak for this session runs nothing: a second
   // participant would spawn a second hook per turn, mint an id nothing uses
   // and place a second context block in front of the model.
@@ -756,21 +763,24 @@ function runMycoHook(
   // taken before it lost the session — and an agent whose transcript it never
   // writes, like Pi, would reach that state on every session, since a claim
   // taken once and never touched goes stale on its own.
-  const claimPath = claimPathFor(directory, agent, sessionId, routingKey);
-  if (routingKey === null || claimPath === null || !holdsSessionClaim(directory, agent, sessionId, routingKey)) return null;
+  const claimPath = claimPathFor(directory, agent, sessionId, key);
+  if (key === null || claimPath === null || !holdsSessionClaim(directory, agent, sessionId, key)) return null;
   try {
-    return withClaimGate(claimPath, null, () => {
-      if (!keepsSessionClaim(directory, agent, sessionId, routingKey)) return null;
+    const answer = withClaimGate<HookAnswer | null>(claimPath, null, () => {
+      if (!keepsSessionClaim(directory, agent, sessionId, key)) return null;
+      const input = typeof payload === "function" ? payload(key) : payload;
       const pluginRoot = join(resolveMycoHome(directory), "member", "transcripts");
-      const transcriptPath = payload.transcript_path;
+      const transcriptPath = input.transcript_path;
       const withinPluginRoot = typeof transcriptPath === "string"
         && (transcriptPath.startsWith(`${pluginRoot}/`) || transcriptPath.startsWith(`${pluginRoot}\\`));
-      if (withinPluginRoot && transcriptPath !== transcriptPathFor(directory, agent, sessionId, routingKey)) {
+      if (withinPluginRoot && transcriptPath !== transcriptPathFor(directory, agent, sessionId, key)) {
         noteOnce(`route-changed-${agent}-${sessionId}`, `${agent} session ${sessionId}: routing changed during capture — this hook waits for the next action`);
         return null;
       }
-      return callMycoHook(directory, agent, sessionId, verb, payload);
+      return callMycoHook(directory, agent, sessionId, verb, input);
     });
+    if (answer?.recallPending === true && (prompt || (recall && !answer.additionalContext))) pendingToolRecalls.add(sessionId);
+    return answer;
   } catch (error) {
     noteOnce(`claim-error-${claimPath}`, `${agent} session ${sessionId}: cannot verify its claim (${(error as Error)?.message ?? "unknown"})`);
     return null;
@@ -802,7 +812,7 @@ function callMycoHook(directory: string, agent: string, sessionId: string, verb:
         const trimmed = typeof stdout === "string" ? stdout.trim() : "";
         if (!trimmed) return {};
         if (!trimmed.startsWith("{")) return { additionalContext: trimmed };
-        return JSON.parse(trimmed) as { additionalContext?: string; promptId?: string };
+        return JSON.parse(trimmed) as HookAnswer;
       } catch (error) {
         noteOnce(`hook-${agent}-${sessionId}`, `${agent} session ${sessionId}: could not run \`myco hook ${verb}\`: ${(error as Error)?.message ?? "unknown"} — this session is not captured`);
         return null;
@@ -1381,11 +1391,11 @@ export const MycoPlugin = async ({
         at: nowIso(),
       });
       if (typeof output?.output !== "string") return;
-      const answer = runMycoHook(root, AGENT, sessionId, "prompt-recall", {
+      const answer = runMycoHook(root, AGENT, sessionId, "prompt-recall", (routingKey) => ({
         session_id: sessionId,
-        transcript_path: transcriptPathFor(root, AGENT, sessionId),
+        transcript_path: transcriptPathFor(root, AGENT, sessionId, routingKey),
         cwd: root,
-      });
+      }));
       if (answer?.additionalContext) output.output += `\n\n${CONTEXT_HEADING}${answer.additionalContext}`;
     },
 

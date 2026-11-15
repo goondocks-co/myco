@@ -44,6 +44,7 @@ registration:
     fieldNames:
       additionalContext: additionalContext
       promptId: promptId
+      recallPending: recallPending
   # Hooks are delivered as a verbatim TS plugin file, not a JSON merge
   hooksTarget: .opencode/plugins/myco.ts
   # User-global opencode plugin lives under ~/.config/opencode/plugins/

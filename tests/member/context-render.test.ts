@@ -185,6 +185,15 @@ describe('a prompt', () => {
     expect(delivery?.payload).toMatchObject({ renderedIn: held.asking()?.promptId });
   });
 
+  it('keeps native tool callbacks eligible while recall is still in flight', async () => {
+    const held = await latePrompt('opencode', 'sess-native-pending', PROMPT_CONTEXT_TOOL_CAP_MS);
+    try {
+      expect(JSON.parse(held.first.stdout).recallPending).toBe(true);
+      const check = await runHook('prompt-recall', { session_id: 'sess-native-pending' }, { fetch: held.fetch, symbiont: 'opencode' });
+      expect(JSON.parse(check.stdout)).toEqual({ recallPending: true });
+    } finally { await held.finish(); }
+  });
+
   it('starts Claude recall beside delivery and renders it once without capturing the tool again', async () => {
     const sessionId = 'sess-claude-late';
     const tx = transcript(sessionId);
@@ -221,6 +230,8 @@ describe('a prompt', () => {
       expect(drainedBeforeAnswer).toBe(true);
       expect(prompt.stderr).toContain(`cap_ms=${PROMPT_CONTEXT_TOOL_CAP_MS} delivery=pending`);
       const input = { session_id: sessionId, prompt_id: 'claude-turn', tool_name: 'Write', tool_input: {}, transcript_path: tx };
+      expect((await runHook('prompt-recall', { ...input, agent_id: 'child-explore', agent_type: 'Explore' }, { fetch })).stdout).toBe('');
+      expect(Object.values(readSessionState(spool().dir, sessionId).promptRecall!.asks).map(ask => ask.stage)).toEqual(['ready']);
       const tool = await runHook('prompt-recall', input, { fetch });
       expect(JSON.parse(tool.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'late Claude context' } });
       expect((await runHook('prompt-recall', input, { fetch })).stdout).toBe('');

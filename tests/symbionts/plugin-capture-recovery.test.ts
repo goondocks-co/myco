@@ -274,7 +274,7 @@ describe('emitted plugin lifecycle recovery', () => {
     });
 
     for (const fault of ['descriptor close', 'gate cleanup'] as const) {
-      it(`${agent}: postcommit ${fault} failure preserves prompt identity through warm capture callbacks`, async () => {
+      it(`${agent}: postcommit ${fault} failure preserves prompt identity and warm callbacks spawn nothing`, async () => {
         const r = rig(agent);
         let failCleanup = false;
         let routingCalls = 0;
@@ -310,13 +310,17 @@ describe('emitted plugin lifecycle recovery', () => {
           : hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'submission-1' }, parts: [{ type: 'text', text: 'same prompt' }] });
         await prompt();
         if (agent === 'cline') await prompt();
+        const warmRoutingCalls = routingCalls;
+        const warmHooks = [...verbs];
         if (agent === 'cline') {
           await hooks.afterModel({ content: 'response' }, ctx);
           await hooks.afterTool({ name: 'read', input: {} }, ctx);
         } else {
           await hooks['experimental.text.complete']({ sessionID: 'resumed' }, { text: 'response' });
-          await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', args: {} }, {});
+          await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', args: {} }, { output: 'tool result' });
         }
+        expect(routingCalls).toBe(warmRoutingCalls);
+        expect(verbs).toEqual(warmHooks);
         expect(verbs.filter((verb) => verb === 'user-prompt-submit')).toHaveLength(1);
         const records = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
         expect(records.filter((line) => line.type === 'prompt')).toHaveLength(1);
@@ -492,7 +496,7 @@ it('Cline captures native snapshot callbacks and content parts with stable messa
   const r = rig('cline');
   let prompts = 0;
   const subject = snippetModule(r.env, [], [], (_bin, args) => ({
-    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'user-prompt-submit' ? { promptId: `native-${++prompts}`, ...(prompts === 1 ? {} : { additionalContext: 'context' }) } : { additionalContext: args[1] === 'prompt-recall' ? 'late Cline memory' : 'start context' }),
+    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'user-prompt-submit' ? { promptId: `native-${++prompts}`, recallPending: true, ...(prompts === 1 ? {} : { additionalContext: 'context' }) } : { additionalContext: args[1] === 'prompt-recall' ? 'late Cline memory' : 'start context' }),
   }), ROUTING_KEY, () => NOW, fs, () => 0, 'cline');
   subject.MycoClinePlugin.setup({}, { session: { sessionId: 'resumed' }, workspaceInfo: { rootPath: '/repo' } });
   const snapshot = { conversationId: 'conv_native', agentId: 'agent', iteration: 1, messages: [] };
@@ -522,18 +526,35 @@ it('Cline captures native snapshot callbacks and content parts with stable messa
 
 it('OpenCode tool context reaches the mutable result while capture keeps the original tool output', async () => {
   const r = rig('opencode');
+  let recalls = 0;
+  let prompts = 0;
   const subject = snippetModule(r.env, [], [], (_bin, args) => ({
-    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'prompt-recall' ? { additionalContext: 'late OpenCode memory' } : { promptId: 'prompt-one' }),
+    status: 0, stderr: '', stdout: JSON.stringify(args[1] === 'prompt-recall'
+      ? (++recalls === 1 ? { recallPending: true } : recalls === 2 ? { additionalContext: 'late OpenCode memory' } : {})
+      : args[1] === 'user-prompt-submit' ? { promptId: `prompt-${++prompts}`, recallPending: true } : {}),
   }), ROUTING_KEY, () => NOW, fs, () => 0, 'opencode');
   try {
     const hooks = await subject.MycoPlugin({ directory: '/repo', client: { session: { prompt: async () => {} } } });
     await hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'message-one' }, parts: [{ type: 'text', text: 'a prompt' }] });
+    const waiting = { output: 'waiting tool output' };
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-waiting' }, waiting);
+    expect(waiting.output).toBe('waiting tool output');
     const result = { title: 'Read', output: 'original tool output', metadata: {} };
     await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-one' }, result);
     expect(result.output).toContain('late OpenCode memory');
     expect(result.output.startsWith('original tool output')).toBe(true);
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-warm' }, { output: 'warm tool output' });
+    expect(recalls).toBe(2);
     const rows = fs.readFileSync(r.transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    expect(rows.filter(row => row.type === 'tool').map(row => row.output)).toEqual(['original tool output']);
+    expect(rows.filter(row => row.type === 'tool').map(row => row.output)).toEqual(['waiting tool output', 'original tool output', 'warm tool output']);
+    await hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'message-empty' }, parts: [{ type: 'text', text: 'empty recall' }] });
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-empty' }, { output: 'empty tool output' });
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-after-empty' }, { output: 'warm output' });
+    expect(recalls).toBe(3);
+    await hooks['chat.message']({}, { message: { sessionID: 'resumed', id: 'message-ended' }, parts: [{ type: 'text', text: 'ended turn' }] });
+    await hooks.event({ event: { type: 'session.idle', properties: { sessionID: 'resumed' } } });
+    await hooks['tool.execute.after']({ sessionID: 'resumed', tool: 'read', callID: 'tool-after-end' }, { output: 'ended output' });
+    expect(recalls).toBe(3);
   } finally { fs.rmSync(r.home, { recursive: true, force: true }); }
 });
 

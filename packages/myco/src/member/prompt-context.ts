@@ -100,7 +100,7 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
     held.waitedMs = waitedMs;
     if (held.stage === 'pending' && held.late && run.credentialSource === 'registry') {
       log(run, id, held, 'pending');
-      return { events: [] };
+      return { events: [], response: { ...response, recallPending: true } };
     }
     if (held.stage === 'pending') held.stage = 'discarded';
     return consumePromptRecall(run, state, { id, response, delivery: 'inline' });

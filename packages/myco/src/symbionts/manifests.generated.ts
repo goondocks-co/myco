@@ -1194,7 +1194,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "format": "json",
         "fieldNames": {
           "additionalContext": "additionalContext",
-          "promptId": "promptId"
+          "promptId": "promptId",
+          "recallPending": "recallPending"
         }
       },
       "mcpTarget": ".cline/mcp.json",
@@ -2685,7 +2686,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "format": "json",
         "fieldNames": {
           "additionalContext": "additionalContext",
-          "promptId": "promptId"
+          "promptId": "promptId",
+          "recallPending": "recallPending"
         }
       },
       "pluginPackageTarget": ".opencode/package.json",
@@ -3092,7 +3094,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
         "format": "json",
         "fieldNames": {
           "additionalContext": "additionalContext",
-          "promptId": "promptId"
+          "promptId": "promptId",
+          "recallPending": "recallPending"
         }
       },
       "pluginPackageTarget": ".pi/extensions/myco/package.json",

@@ -1,10 +1,9 @@
 /**
- * Every hook a harness is wired to run has a module to run (#1561 PR 1).
+ * Every hook emitted by the installer has a dispatch module.
  *
  * A hook command names its hook (`myco hook <name>`), and a plugin template names it in the call that runs the binary.
- * A name missing from `HOOK_DISPATCH` exits 1 with "Unknown hook" on every event of that kind, silently to the person
- * using the harness. The names come from the templates the installer writes and from the generated hook config, and
- * every one must be in the table, with the module it loads on disk.
+ * Unknown hooks carrying a harness flag are ignored. The current names come from the templates the installer writes
+ * and from the generated hook config, and every one must be in the table, with the module it loads on disk.
  */
 import { describe, expect, it } from 'bun:test';
 import fs from 'node:fs';

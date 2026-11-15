@@ -40,7 +40,7 @@ beforeEach(() => {
     '#!/bin/sh',
     `if [ "$1 $2" = "member routing-key" ]; then printf '%s\\n' '${ROUTING_KEY}'; exit 0; fi`,
     `printf '%s' "$*" >> '${log}'`,
-    `if [ "$1" = hook ]; then printf ' stdin=' >> '${log}'; cat >> '${log}'; if [ \"$2\" = prompt-recall ]; then printf '{\"additionalContext\":\"late Pi memory\"}'; else printf '{}'; fi; fi`,
+    `if [ "$1" = hook ]; then printf ' stdin=' >> '${log}'; cat >> '${log}'; if [ \"$2\" = prompt-recall ]; then printf '{\"additionalContext\":\"late Pi memory\"}'; elif [ \"$2\" = user-prompt-submit ]; then printf '{\"recallPending\":true}'; else printf '{}'; fi; fi`,
     `if [ "$1 $2" = "tool list" ]; then printf '%s' '${TOOLS}'; fi`,
     `if [ "$1 $2 $3" = "tool call myco_search" ]; then printf '{"ok":true,"result":{"hits":1}}'; fi`,
     `if [ "$1 $2 $3" = "tool call myco_fail" ]; then printf '{"ok":false,"error":{"message":"refused"}}'; fi`,
@@ -98,9 +98,13 @@ describe('the Pi member extension under Pi\'s callback contract', () => {
     const ctx = { cwd: root, sessionManager: { getSessionFile: () => transcript } };
 
     await handlers.get('session_start')!({ type: 'session_start', reason: 'startup' }, ctx);
+    const warm = calls();
+    await handlers.get('tool_result')!({ toolName: 'read', toolCallId: 'tool-warm' }, ctx);
+    expect(calls()).toEqual(warm);
     await handlers.get('before_agent_start')!({ type: 'before_agent_start', prompt: 'hello pi', systemPrompt: '' }, ctx);
     await handlers.get('tool_result')!({ toolName: 'read', toolCallId: 'tool-one' }, ctx);
     expect(messages).toEqual([[{ customType: 'myco-prompt-context', content: 'late Pi memory', display: false }, { deliverAs: 'steer' }]]);
+    await handlers.get('tool_result')!({ toolName: 'read', toolCallId: 'tool-after-context' }, ctx);
     await handlers.get('agent_end')!({ type: 'agent_end', messages: [] }, ctx);
     await handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, ctx);
 

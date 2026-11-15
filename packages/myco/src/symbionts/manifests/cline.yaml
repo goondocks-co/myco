@@ -60,6 +60,7 @@ registration:
     fieldNames:
       additionalContext: additionalContext
       promptId: promptId
+      recallPending: recallPending
   # Cline SDK plugins are TypeScript modules discovered from .cline/plugins/
   hooksTarget: .cline/plugins/myco.ts
   globalHooksTarget: ~/.cline/plugins/myco.ts

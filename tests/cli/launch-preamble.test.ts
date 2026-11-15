@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import path from 'node:path';
 import os from 'node:os';
 import { runLaunchPreamble, type LaunchPreambleDeps } from '@myco/cli/launch-preamble.js';
@@ -9,6 +9,18 @@ import { runHook } from '@myco/hooks/entry.js';
 
 /** A drained fd 0: a test never reads its own process's stdin, which a caller may hold open without end. */
 const EMPTY_FD0 = (): Buffer => Buffer.alloc(0);
+
+it('ignores an unknown hook from harness settings with a clean exit and no output', async () => {
+  const writes: string[] = [];
+  const output = [process.stdout, process.stderr].map(stream => spyOn(stream, 'write').mockImplementation(chunk => { writes.push(String(chunk)); return true; }));
+  const exit = spyOn(process, 'exit').mockImplementation(code => { throw new ExitSignal(Number(code ?? 0)); });
+  try {
+    await runHook(['future-hook', '--symbiont', 'claude-code'], { preamble: () => {} }).catch(error => {
+      if (!(error instanceof ExitSignal && error.code === 0)) throw error;
+    });
+    expect(writes).toEqual([]);
+  } finally { exit.mockRestore(); for (const stream of output) stream.mockRestore(); }
+});
 
 /**
  * Sentinel thrown by the injected `exit` stub so a test can observe the exit

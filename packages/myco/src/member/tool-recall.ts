@@ -14,6 +14,7 @@ import { toolPromptContext } from './prompt-context.js';
 export async function renderToolRecall(opts: HookMainOptions): Promise<void> {
   try {
     const input = await readHookInput();
+    if (typeof input.raw.agent_id === 'string' && input.raw.agent_id.trim().length > 0) return;
     if (!input.sessionId || HOOK_CONFIG[input.agent]?.capabilities.promptRecallToolDelivery !== true) return;
     const source = opts.credential === undefined ? parseCredentialFlag(opts.argv ?? process.argv) : opts.credential;
     if (source !== 'registry') return;
@@ -29,7 +30,12 @@ export async function renderToolRecall(opts: HookMainOptions): Promise<void> {
     if (!snapshot.ok) throw new Error(`Prompt recall state is ${snapshot.reason}`);
     const recall = snapshot.state.promptRecall;
     const held = recall?.asks[recall.current];
-    if (held?.stage !== 'ready' || !held.late) return;
+    if (!held?.late) return;
+    if (held.stage === 'pending') {
+      writeHookResponse(input.agent, 'prompt-recall', { recallPending: true });
+      return;
+    }
+    if (held.stage !== 'ready') return;
     const sessionId = input.sessionId;
     const now = opts.now ?? Date.now;
     const run = { input, sessionId, agent: input.agent, credential, spool, ctx: { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now } };

@@ -38,6 +38,7 @@ registration:
     fieldNames:
       additionalContext: additionalContext
       promptId: promptId
+      recallPending: recallPending
   # Pi uses an extension file, not JSON hook entries
   hooksTarget: .pi/extensions/myco/index.ts
   # Pi's user-global agent extensions live under ~/.pi/agent/extensions/

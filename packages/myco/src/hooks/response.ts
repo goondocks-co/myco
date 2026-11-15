@@ -31,6 +31,8 @@ export interface HookResponse {
    * existing single-block format changes shape.
    */
   promptId?: string;
+  /** A same-turn recall is still in flight and may be checked by a tool callback. */
+  recallPending?: boolean;
 }
 
 /**
@@ -40,7 +42,7 @@ export interface HookResponse {
  */
 export const SEMANTIC_FIELDS = [
   'additionalContext', 'additionalSteps', 'continue', 'stopReason',
-  'userMessage', 'followupMessage', 'systemMessage', 'promptId',
+  'userMessage', 'followupMessage', 'systemMessage', 'promptId', 'recallPending',
 ] as const satisfies readonly (keyof HookResponse)[];
 
 type SemanticField = keyof HookResponse;

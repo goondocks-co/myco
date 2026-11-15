@@ -480,7 +480,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "format": "json",
       "fieldNames": {
         "additionalContext": "additionalContext",
-        "promptId": "promptId"
+        "promptId": "promptId",
+        "recallPending": "recallPending"
       }
     },
     "captureRules": [
@@ -1004,7 +1005,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "format": "json",
       "fieldNames": {
         "additionalContext": "additionalContext",
-        "promptId": "promptId"
+        "promptId": "promptId",
+        "recallPending": "recallPending"
       }
     }
   },
@@ -1056,7 +1058,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "format": "json",
       "fieldNames": {
         "additionalContext": "additionalContext",
-        "promptId": "promptId"
+        "promptId": "promptId",
+        "recallPending": "recallPending"
       }
     }
   },
