@@ -72,6 +72,39 @@ export const machineSettings: ParityScenario = {
       expect((await put(owner, MACHINE_ID, 'not a list')).status).toBe(400);
       expect((await put(owner, 'm_nobody_claims', ['plans'])).status).toBe(404);
 
+      const updates = `/api/machines/${MACHINE_ID}/settings`;
+      const channelWrite = (value: unknown) => fetch(`${target.url}${updates}/update.channel`, { method: 'PUT', headers: owner, body: JSON.stringify({ value }) });
+      const readUpdates = async () => (await browser(target, updates, target.ownerHeaders())).body.leaves as Array<{ leaf: string; application: string; effective: unknown }>;
+      expect((await readUpdates()).find(row => row.leaf === 'update.channel')).toMatchObject({ application: 'unreported', effective: null });
+      const invalidChannel = await channelWrite('nightly');
+      expect(invalidChannel.status).toBe(400);
+      expect(await invalidChannel.json()).toMatchObject({ reason: 'invalid_value', detail: expect.stringContaining('stable, beta, alpha') });
+      expect((await channelWrite('beta')).status).toBe(200);
+      expect((await fetch(`${target.url}${updates}/update.automatic`, { method: 'PUT', headers: owner, body: JSON.stringify({ value: false }) })).status).toBe(200);
+      expect((await fetch(`${target.url}${updates}/update.channel`, { method: 'PUT', headers: asOther, body: JSON.stringify({ value: 'alpha' }) })).status).toBe(403);
+      expect((await readUpdates()).find(row => row.leaf === 'update.channel')).toMatchObject({ application: 'pending', effective: null });
+      // A cache acknowledgement from an older machine confirms no update preference.
+      await settingsOf({ ...mineHeaders, 'x-myco-machine-settings': 'machine-settings-contract' });
+      expect((await readUpdates()).find(row => row.leaf === 'update.channel')).toMatchObject({ application: 'pending', effective: null });
+      const report = async (order: number, values: Record<string, unknown>, requests: Record<string, unknown>) => {
+        const response = await fetch(`${target.url}/members/settings`, { method: 'POST', headers: {
+          ...mineHeaders, 'content-type': 'application/json', 'x-myco-machine-settings': 'machine-settings-contract',
+          'x-myco-machine-update-settings': JSON.stringify({ order, values, requests }),
+        }, body: '{}' });
+        expect(response.status).toBe(200);
+        return (await response.json() as { machine: { updateRequests: Record<string, { id: string; value: unknown }> } }).machine;
+      };
+      const requested = await report(1, { 'update.channel': 'alpha', 'update.automatic': true }, {});
+      expect(requested.updateRequests['update.channel']).toMatchObject({ value: 'beta' });
+      expect(requested.updateRequests['update.automatic']).toMatchObject({ value: false });
+      expect((await readUpdates()).find(row => row.leaf === 'update.channel')).toMatchObject({ application: 'pending', effective: 'alpha' });
+      await report(2, { 'update.channel': 'beta', 'update.automatic': false }, requested.updateRequests);
+      expect((await readUpdates()).find(row => row.leaf === 'update.channel')).toMatchObject({ application: 'applied', effective: 'beta' });
+      await report(3, { 'update.channel': 'stable', 'update.automatic': true }, requested.updateRequests);
+      expect((await readUpdates()).find(row => row.leaf === 'update.channel')).toMatchObject({ application: 'applied', effective: 'stable' });
+      await report(2, { 'update.channel': 'beta' }, requested.updateRequests);
+      expect((await readUpdates()).find(row => row.leaf === 'update.channel')).toMatchObject({ effective: 'stable' });
+
       // The machine caches the answer one file per Deployment: another Deployment's cache is left as it was.
       const elsewhere = 'https://elsewhere.parity.example';
       cacheMachineSettings(elsewhere, { leaves: { [LEAF]: ['~/other-deployment'] } }, home);

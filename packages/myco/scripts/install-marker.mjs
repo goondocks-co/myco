@@ -27,5 +27,19 @@ export function writeInstallMarker(home, marker, publish = atomicText) {
 
 /** Installation update preferences survive replacement of the release marker. */
 export function writeAutomaticUpdatePreference(home, enabled, publish = atomicText) {
-  publishInstallFile(home, AUTOMATIC_UPDATE_PREFERENCE_FILE, { automaticUpdates: enabled }, publish);
+  writeUpdatePreferences(home, { automaticUpdates: enabled }, publish);
+}
+
+/** Merge installation preferences without replacing a sibling preference. */
+export function writeUpdatePreferences(home, patch, publish = atomicText) {
+  let previous = {};
+  try { previous = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) throw new Error('Invalid installation update preferences');
+  const { machineUpdate, ...preferences } = patch;
+  const machineRequests = machineUpdate === undefined ? previous.machineRequests : {
+    ...previous.machineRequests,
+    [machineUpdate.deployment]: { ...previous.machineRequests?.[machineUpdate.deployment], ...machineUpdate.requests },
+  };
+  publishInstallFile(home, AUTOMATIC_UPDATE_PREFERENCE_FILE, { ...previous, ...preferences, ...(machineRequests === undefined ? {} : { machineRequests }) }, publish);
 }

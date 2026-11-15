@@ -3,7 +3,9 @@ import path from 'node:path';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import type { BinaryUpdateOutcome } from '@myco/upgrade/guarded-binary.js';
-import { writeAutomaticUpdatePreference } from '@myco/install/managed-binary.js';
+import { writeUpdatePreferences } from '../../scripts/install-marker.mjs';
+import { readAppliedUpdateRequests } from '@myco/install/marker-reader.js';
+import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, validMachineUpdateValue, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
 
 export const AUTOMATIC_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 export const AUTOMATIC_UPDATE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
@@ -16,13 +18,52 @@ const PREFERENCE_WAIT_MS = 15_000;
 
 /** Save the installation preference and make an enabled check due under the helper's lease. */
 export function setAutomaticUpdates(home: string, enabled: boolean, waitMs = PREFERENCE_WAIT_MS): void {
+  setUpdatePreferences(home, { automaticUpdates: enabled }, waitMs);
+}
+
+/** Apply update preferences under the automatic check's lease and make its next check due. */
+export function setUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string }, waitMs = PREFERENCE_WAIT_MS): void {
+  changeUpdatePreferences(home, preferences, waitMs);
+}
+
+type RemotePreferences = { deployment: string; requests: MachineUpdateRequests };
+
+/** Apply pending preferences together, publishing their receipts atomically with their local values. */
+export function applyMachineUpdateRequests(home: string, remote: RemotePreferences): void {
+  for (const leaf of MACHINE_UPDATE_LEAVES) {
+    const request = remote.requests[leaf];
+    if (request !== undefined && !validMachineUpdateValue(leaf, request.value)) throw new Error(`Invalid ${leaf} request`);
+  }
+  if (Object.keys(remote.requests).length === 0) return;
+  changeUpdatePreferences(home, { machineUpdate: remote }, 0);
+}
+
+function pendingUpdatePreferences(home: string, remote: RemotePreferences): { automaticUpdates?: boolean; channel?: string; machineUpdate: RemotePreferences } | null {
+  const applied = readAppliedUpdateRequests(home, remote.deployment);
+  const pending = Object.fromEntries(MACHINE_UPDATE_LEAVES.flatMap(leaf => {
+    const request = remote.requests[leaf];
+    return request === undefined || applied[leaf]?.id === request.id ? [] : [[leaf, request]];
+  })) as MachineUpdateRequests;
+  if (Object.keys(pending).length === 0) return null;
+  return {
+    ...(pending['update.automatic'] === undefined ? {} : { automaticUpdates: pending['update.automatic'].value as boolean }),
+    ...(pending['update.channel'] === undefined ? {} : { channel: pending['update.channel'].value as string }),
+    machineUpdate: { deployment: remote.deployment, requests: pending },
+  };
+}
+
+function changeUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string; machineUpdate?: RemotePreferences }, waitMs: number): void {
+  if (preferences.channel !== undefined && !RELEASE_CHANNELS.includes(preferences.channel as typeof RELEASE_CHANNELS[number])) throw new Error(`Invalid release channel; use ${RELEASE_CHANNELS.join(', ')}`);
+  if (preferences.machineUpdate !== undefined && pendingUpdatePreferences(home, preferences.machineUpdate) === null) return;
   const acquired = LifecycleLock.acquire(`${statePath(home)}.lock`, {
-    command: 'myco update --automatic', wait: true, timeoutMs: waitMs,
+    command: 'myco update preferences', wait: true, timeoutMs: waitMs,
   });
   if (!acquired.acquired) throw new Error('An automatic update is running; try again when it finishes.');
   try {
-    if (enabled) fs.rmSync(statePath(home), { force: true });
-    writeAutomaticUpdatePreference(home, enabled);
+    const selected = preferences.machineUpdate === undefined ? preferences : pendingUpdatePreferences(home, preferences.machineUpdate);
+    if (selected === null) return;
+    fs.rmSync(statePath(home), { force: true });
+    writeUpdatePreferences(home, selected, (file, text) => atomicWriteFileSync(file, text, { durable: true, mode: 0o600 }));
   } finally { acquired.lock.release(); }
 }
 

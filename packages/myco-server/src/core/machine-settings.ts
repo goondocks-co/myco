@@ -1,10 +1,11 @@
+import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, machineUpdateReport, machineUpdateRequests, validMachineUpdateValue, type MachineUpdateReport, type MachineUpdateLeaf, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
 /**
  * Settings one machine holds: one set per machine identity, edited on the dashboard and read by that machine (#1393).
  *
  * The one member who may read or change a machine's settings is the member the machine joined as
  * (`machine_claims.member_id`). An admin is not: the settings name folders on that member's own machine, which no
  * other member reaches. A machine receives its own set on its session start (`machineBlockFor`), and on nothing it
- * does not claim. A leaf at its default holds no row, so setting the default is how a leaf is reset.
+ * does not claim. A capture leaf at its default holds no row. An update request holds a value and its canonical id.
  */
 import { MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, isMachineSettingsRevision, parseMachineSettingsRevision, resolveMachineSetting, type MachineSettingLeaf } from '@goondocks/myco-shared/member-protocol';
 import { DEPLOYMENT_TARGETS, type EffectiveSetting, type SettingSource } from '@goondocks/myco-shared/settings-contract';
@@ -13,7 +14,7 @@ import type { RelationalStore } from './adapters.js';
 import { leafRuleViolation, type LeafSpec } from './settings.js';
 import {
   acknowledgeMachineRevision, clearMachineLeaf, invalidateMachineCache, noteMachineContract, publishMachineSnapshot, putMachineLeaf,
-  readClaimant, readMachineClaimed, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots,
+  reportMachineUpdates, readClaimant, readMachineClaimed, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots,
 } from '../db/settings/machines.js';
 
 /**
@@ -43,6 +44,7 @@ export interface MachineLeaf extends EffectiveSetting {
   updatedBy: string | null;
   application: 'applied' | 'pending' | 'unreported';
   appliedRevision: string | null;
+  requestId?: string;
   appliedValue: unknown;
   nextEffective: unknown;
   nextSource: SettingSource;
@@ -83,7 +85,7 @@ export async function readMachineSettings(db: RelationalStore, machineId: string
   const appliedValues = !supported || claim?.settings_cached_values === null || claim?.settings_cached_values === undefined ? null : JSON.parse(claim.settings_cached_values) as Record<string, unknown>;
   const application = appliedRevision === null ? 'unreported' : appliedRevision === revision ? 'applied' : 'pending';
   const applicationReason = application === 'applied' ? 'Applied by this machine.' : application === 'pending' ? 'Saved. Applies at the next session start.' : supported ? 'Applies at the next session start. This machine’s current cached settings are not confirmed.' : 'Applies at the next session start. This machine’s Myco doesn’t report when it applied.';
-  return resolvedSettings.map(({ leaf, row, value, resolved, violation, invalid, nextSource, clearReason }) => {
+  const captureSettings = resolvedSettings.map(({ leaf, row, value, resolved, violation, invalid, nextSource, clearReason }): MachineLeaf => {
     return {
       leaf, configured: row !== undefined, value, updatedAt: row?.updated_at === undefined ? null : Number(row.updated_at), updatedBy: row?.updated_by ?? null,
       stored: row === undefined ? null : value, effective: appliedValues?.[leaf] ?? null, nextEffective: resolved.effective, nextSource,
@@ -94,6 +96,33 @@ export async function readMachineSettings(db: RelationalStore, machineId: string
       appliedValue: appliedValues?.[leaf] ?? null,
     };
   });
+  const reports = appliedValues?.['$updates'];
+  const reported = machineUpdateReport(reports);
+  const updates = MACHINE_UPDATE_LEAVES.map((leaf): MachineLeaf => {
+    const row = stored.get(leaf);
+    let storedValue: unknown = null;
+    if (row?.value != null) {
+      try { storedValue = JSON.parse(row.value); }
+      catch (error) { if (!(error instanceof SyntaxError)) throw error; storedValue = row.value; }
+    }
+    const request = machineUpdateRequests({ [leaf]: storedValue })[leaf];
+    const invalid = row !== undefined && request === undefined;
+    const actual = reported?.values[leaf] ?? null;
+    const waiting = request !== undefined && reported?.requests[leaf]?.id !== request.id;
+    const application = waiting ? 'pending' : actual === null ? 'unreported' : 'applied';
+    return {
+      leaf, configured: row !== undefined, value: request?.value ?? actual, stored: request?.value ?? storedValue,
+      ...(request === undefined ? {} : { requestId: request.id }),
+      updatedAt: row?.updated_at ?? null, updatedBy: row?.updated_by ?? null,
+      effective: actual, appliedValue: actual, application, appliedRevision: null,
+      nextEffective: waiting ? request!.value : actual, nextSource: waiting ? 'configured' : 'member-cache',
+      source: actual === null ? 'unset' : 'member-cache', state: invalid ? 'invalid' : application === 'applied' ? 'active' : 'inactive',
+      storedApplies: request === undefined ? null : !waiting && actual === request.value,
+      reason: invalid ? 'The saved update setting cannot be used. Choose a valid value to replace it.' : waiting ? 'Waiting for this machine to read its settings and report back.' : actual === null ? 'This machine has not reported this setting.' : 'Last reported by this machine.',
+      appliesTo: DEPLOYMENT_TARGETS, revision,
+    };
+  });
+  return [...captureSettings, ...updates];
 }
 
 type MachineWrite = { applied: true } | { applied: false; reason: 'unknown_leaf' | 'invalid_value' | 'absent' | 'conflict'; detail?: string };
@@ -103,6 +132,15 @@ type MachineWrite = { applied: true } | { applied: false; reason: 'unknown_leaf'
  * in the same statement, so a machine the actor does not claim, or no longer claims, is left as it is.
  */
 export async function setMachineLeaf(db: RelationalStore, machineId: string, leaf: string, value: unknown, actor: string, now: number): Promise<MachineWrite> {
+  if (MACHINE_UPDATE_LEAVES.includes(leaf as MachineUpdateLeaf)) {
+    if (!validMachineUpdateValue(leaf as MachineUpdateLeaf, value)) return {
+      applied: false, reason: 'invalid_value', detail: leaf === 'update.channel'
+        ? `Release channel ${JSON.stringify(value)} was not saved; use ${RELEASE_CHANNELS.join(', ')}. Next call: PUT /api/machines/${machineId}/settings/update.channel with {"value":"stable"}.`
+        : `Automatic updates ${JSON.stringify(value)} was not saved; use true or false. Next call: PUT /api/machines/${machineId}/settings/update.automatic with {"value":true}.`,
+    };
+    const request = { id: crypto.randomUUID(), value };
+    return await putMachineLeaf(db, { machine: machineId, leaf, value: JSON.stringify(request), actor, now }) ? { applied: true } : { applied: false, reason: 'absent' };
+  }
   const declared = MACHINE_LEAF_SPECS[leaf];
   // A leaf the Deployment writes is not set from the dashboard: connecting a repository goes through its own route.
   if (declared === undefined || declared.serverWritten === true) return { applied: false, reason: 'unknown_leaf' };
@@ -115,6 +153,7 @@ export async function setMachineLeaf(db: RelationalStore, machineId: string, lea
 
 /** Clear a claimant's stored value; a connection repair retains every usable assignment and refuses a valid document. */
 export async function resetMachineLeaf(db: RelationalStore, machineId: string, leaf: string, actor: string, now: number): Promise<MachineWrite> {
+  if (MACHINE_UPDATE_LEAVES.includes(leaf as MachineUpdateLeaf)) return await clearMachineLeaf(db, { machine: machineId, leaf, actor }) ? { applied: true } : { applied: false, reason: 'absent' };
   const declaration = MACHINE_LEAF_SPECS[leaf];
   if (declaration === undefined) return { applied: false, reason: 'unknown_leaf' };
   let invalidDocument: string | null = null;
@@ -144,8 +183,8 @@ export async function resetMachineLeaf(db: RelationalStore, machineId: string, l
  * and null for any other: a credential that joined no machine (a run's) is told nothing about any.
  */
 export async function machineBlockFor(
-  db: RelationalStore, memberId: string, machineId: string, support: { machineSettingsFeature?: boolean; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: boolean } = {},
-): Promise<{ leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string } | null> {
+  db: RelationalStore, memberId: string, machineId: string, support: { machineSettingsFeature?: boolean; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: boolean; machineUpdateReport?: MachineUpdateReport } = {},
+): Promise<{ leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string; updateRequests?: MachineUpdateRequests } | null> {
   if (!await readMachineClaimed(db, machineId, memberId)) return null;
   if (support.machineSettingsFeature === true) await noteMachineContract(db, machineId, memberId);
   const reportOrder = support.machineSettingsOrder;
@@ -155,14 +194,18 @@ export async function machineBlockFor(
   } else if (ordered && isMachineSettingsRevision(support.machineSettingsRevision)) {
     await acknowledgeMachineRevision(db, { machine: machineId, member: memberId, revision: support.machineSettingsRevision, order: reportOrder });
   }
+  if (support.machineUpdateReport !== undefined) await reportMachineUpdates(db, { machine: machineId, member: memberId, report: JSON.stringify(support.machineUpdateReport), order: support.machineUpdateReport.order });
   for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt += 1) {
     const settings = await readMachineSettings(db, machineId);
-    const leaves = Object.fromEntries(settings.map((leaf) => [leaf.leaf, leaf.nextEffective]));
+    const leaves = Object.fromEntries(settings.filter(leaf => MACHINE_LEAVES.includes(leaf.leaf)).map((leaf) => [leaf.leaf, leaf.nextEffective]));
     if (support.machineSettingsFeature !== true) return { leaves };
     const revision = settings[0]!.revision;
     const counter = parseMachineSettingsRevision(revision)!.counter;
     if (await publishMachineSnapshot(db, { machine: machineId, member: memberId, revision, leaves: JSON.stringify(leaves), counter, keep: MACHINE_SETTINGS_SNAPSHOT_LIMIT })) {
-      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision };
+      const updates = support.machineUpdateReport === undefined ? {} : machineUpdateRequests(Object.fromEntries(
+        settings.filter(row => row.requestId !== undefined).map(row => [row.leaf, { id: row.requestId, value: row.value }]),
+      ));
+      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates }) };
     }
   }
   throw new Error('Machine settings changed while preparing their revision.');

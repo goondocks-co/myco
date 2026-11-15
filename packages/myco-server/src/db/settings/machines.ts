@@ -65,7 +65,7 @@ export const noteMachineContract = (db: RelationalStore, machine: string, member
 
 const dropSnapshots = write<[machine: string, member: string, order: number]>({ name: 'machineSettings.dropSnapshots', sql: `DELETE FROM machine_settings_snapshots WHERE machine_id=?1
   AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id=?1 AND member_id=?2 AND settings_report_order<?3)` });
-const clearCache = write<[machine: string, member: string, order: number]>({ name: 'machineSettings.clearCache', sql: `UPDATE machine_claims SET settings_cached_revision=NULL,settings_cached_values=NULL,settings_report_order=?3
+const clearCache = write<[machine: string, member: string, order: number]>({ name: 'machineSettings.clearCache', sql: `UPDATE machine_claims SET settings_cached_revision=NULL,settings_cached_values=json_object('$updates',json_extract(settings_cached_values,'$.\"$updates\"')),settings_report_order=?3
   WHERE machine_id=?1 AND member_id=?2 AND settings_report_order<?3` });
 
 /** A machine reported its cache gone: forget what it holds and what it applied, in report order. */
@@ -77,7 +77,7 @@ const acknowledge = write<[machine: string, member: string, revision: string, or
       CASE WHEN settings_cached_revision=?3 THEN settings_cached_values ELSE NULL END) AS leaves
     FROM machine_claims WHERE machine_id=?1 AND member_id=?2)
   UPDATE machine_claims SET settings_cached_revision=CASE WHEN (SELECT leaves FROM reported) IS NULL THEN NULL ELSE ?3 END,
-    settings_cached_values=(SELECT leaves FROM reported),settings_report_order=?4
+    settings_cached_values=json_set(COALESCE((SELECT leaves FROM reported),'{}'),'$.\"$updates\"',json_extract(settings_cached_values,'$.\"$updates\"')),settings_report_order=?4
   WHERE machine_id=?1 AND member_id=?2 AND (settings_report_order<?4 OR (settings_report_order=?4 AND settings_cached_revision=?3))` });
 export const acknowledgeMachineRevision = (db: RelationalStore, input: { machine: string; member: string; revision: string; order: number }) =>
   commit(db, acknowledge.bind(input.machine, input.member, input.revision, input.order));
@@ -108,3 +108,12 @@ export async function writeMachineRoots(db: RelationalStore, input: { machine: s
   const written = previous === null ? insertRoots.bind(machine, leaf, value, now, actor) : updateRoots.bind(machine, leaf, value, now, actor, previous);
   return (await first(db, written)) !== null;
 }
+
+const reportUpdates = write<[machine: string, member: string, report: string, order: number]>({ name: 'machineSettings.reportUpdates', sql: `UPDATE machine_claims
+  SET settings_cached_values=json_set(COALESCE(settings_cached_values,'{}'),'$."$updates"',json(?3))
+  WHERE machine_id=?1 AND ${claimedBy('?1', '?2')}
+    AND COALESCE(json_extract(settings_cached_values,'$."$updates".order'),-1)<?4` });
+
+/** Keep the machine's actual update preferences beside its cached capture settings, in report order. */
+export const reportMachineUpdates = (db: RelationalStore, input: { machine: string; member: string; report: string; order: number }) =>
+  commit(db, reportUpdates.bind(input.machine, input.member, input.report, input.order));

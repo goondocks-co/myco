@@ -666,3 +666,32 @@ describe('future instants', () => {
     expect([agoWords(0, now), agoWords(null, now), dayWords(0, now), dateTimeWords(undefined, now)]).toEqual(['never', 'never', 'never', 'never']);
   });
 });
+
+it('shows reported update preferences separately from waiting changes and confirms them on the next page read', async () => {
+  let waiting = false;
+  let reported = false;
+  accessServer({ member: [credential()] }, {
+    '/api/machines/ada_5a2d54af/settings': () => Response.json({ leaves: [
+      { leaf: 'update.channel', effective: reported ? 'beta' : 'alpha', nextEffective: waiting ? 'beta' : 'alpha', application: waiting && !reported ? 'pending' : 'applied' },
+      { leaf: 'update.automatic', effective: null, nextEffective: null, application: 'unreported' },
+    ] }),
+    '/api/machines/ada_5a2d54af/settings/update.channel': init => {
+      expect(JSON.parse(String(init?.body))).toEqual({ value: 'beta' });
+      waiting = true;
+      return Response.json({ applied: true });
+    },
+  });
+  mount('/me/machines');
+  let updates = await screen.findByRole('region', { name: 'Updates for Ada’s MacBook' });
+  expect(await within(updates).findByText('Automatic updates: Not reported')).toBeTruthy();
+  fireEvent.click(within(updates).getByRole('combobox', { name: /^Release channel for Ada/ }));
+  fireEvent.click(await screen.findByRole('option', { name: 'beta' }));
+  expect(await within(updates).findByText(/Waiting for this machine: release channel/)).toBeTruthy();
+  expect(within(updates).getByText('Release channel: alpha · last reported by this machine')).toBeTruthy();
+  reported = true;
+  cleanup();
+  mount('/me/machines');
+  updates = await screen.findByRole('region', { name: 'Updates for Ada’s MacBook' });
+  expect(await within(updates).findByText('Release channel: beta · last reported by this machine')).toBeTruthy();
+  expect(within(updates).queryByText(/Waiting for this machine/)).toBeNull();
+});

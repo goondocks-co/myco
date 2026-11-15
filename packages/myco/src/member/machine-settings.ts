@@ -7,9 +7,12 @@
  * and that is not an instruction to forget what this machine was told before.
  */
 import fs from 'node:fs';
+import { MACHINE_UPDATE_HEADER, machineUpdateRequests, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
+import { readAppliedUpdateRequests, readAutomaticUpdatePreference, readInstallMarker, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
+import { applyMachineUpdateRequests } from './automatic-update-state.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision, resolveMachineSetting } from '@goondocks/myco-shared/member-protocol';
-import { deploymentsDir, machineSettingsPath } from './registry.js';
+import { deploymentKeyFor, deploymentsDir, machineSettingsPath } from './registry.js';
 import { ensureMemberDir, ensurePrivateFile, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
 import { ServerClient, type FetchLike } from './transport.js';
@@ -19,12 +22,12 @@ import { assertDeploymentTokenPair } from './token-pairing.js';
 export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
 
 /** The settings block a Deployment answers, or null when the value is not one. */
-export function machineBlockOf(value: unknown): { leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string; invalidated?: true; cachedOrder?: number } | null {
+export function machineBlockOf(value: unknown): { leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string; invalidated?: true; cachedOrder?: number; updateRequests?: MachineUpdateRequests } | null {
   if (typeof value !== 'object' || value === null) return null;
   const leaves = (value as { leaves?: unknown }).leaves;
   if (typeof leaves !== 'object' || leaves === null || Array.isArray(leaves)) return null;
-  const block = value as { feature?: unknown; revision?: unknown; invalidated?: unknown; cachedOrder?: unknown };
-  return { leaves: leaves as Record<string, unknown>, ...(block.feature === MACHINE_SETTINGS_FEATURE && isMachineSettingsRevision(block.revision) ? { feature: MACHINE_SETTINGS_FEATURE, revision: block.revision } : {}), ...(block.feature === MACHINE_SETTINGS_FEATURE && block.invalidated === true ? { feature: MACHINE_SETTINGS_FEATURE, invalidated: true as const } : {}), ...(typeof block.cachedOrder === 'number' && Number.isSafeInteger(block.cachedOrder) && block.cachedOrder >= 0 ? { cachedOrder: block.cachedOrder } : {}) };
+  const block = value as { feature?: unknown; revision?: unknown; invalidated?: unknown; cachedOrder?: unknown; updateRequests?: unknown };
+  return { leaves: leaves as Record<string, unknown>, updateRequests: machineUpdateRequests(block.updateRequests), ...(block.feature === MACHINE_SETTINGS_FEATURE && isMachineSettingsRevision(block.revision) ? { feature: MACHINE_SETTINGS_FEATURE, revision: block.revision } : {}), ...(block.feature === MACHINE_SETTINGS_FEATURE && block.invalidated === true ? { feature: MACHINE_SETTINGS_FEATURE, invalidated: true as const } : {}), ...(typeof block.cachedOrder === 'number' && Number.isSafeInteger(block.cachedOrder) && block.cachedOrder >= 0 ? { cachedOrder: block.cachedOrder } : {}) };
 }
 
 interface MachineAnswerOrder { issued: number; received: number }
@@ -133,6 +136,7 @@ export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoH
   return withMachineSettings(serverUrl, mycoHome, (file, order) => {
     const stamp = requestOrder ?? nextMachineAnswerOrder(order);
     if (stamp < order.received) return false;
+    applyMachineUpdateRequests(mycoHome, { deployment: deploymentKeyFor(serverUrl), requests: block.updateRequests ?? {} });
     order.received = stamp;
     writePrivateFileAtomic(file, `${JSON.stringify({ ...block, cachedOrder: stamp })}\n`);
     return true;
@@ -187,12 +191,32 @@ export function machineSettingsHeaders(serverUrl: string, mycoHome: string): Rec
   return withMachineSettings(serverUrl, mycoHome, (file, order) => {
     const read = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
     const block = read?.ok ? machineBlockOf(read.value) : null;
+    let updateReport: Record<string, string> = {};
+    try {
+      updateReport = { [MACHINE_UPDATE_HEADER]: JSON.stringify({
+        order: nextMachineAnswerOrder(order), requests: readAppliedUpdateRequests(mycoHome, deploymentKeyFor(serverUrl)),
+        values: reportedUpdateValues(mycoHome),
+      }) };
+    } catch (error) {
+      process.stderr.write(`[myco] member: update settings could not be reported: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
     return {
       [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE,
+      ...updateReport,
       ...(block?.revision !== undefined ? { [MACHINE_SETTINGS_REVISION_HEADER]: block.revision, [MACHINE_SETTINGS_ORDER_HEADER]: String(block.cachedOrder ?? order.received) } : {}),
       ...(block?.invalidated === true ? { [MACHINE_SETTINGS_INVALIDATED_HEADER]: '1', [MACHINE_SETTINGS_ORDER_HEADER]: String(block.cachedOrder ?? order.received) } : {}),
     };
   });
+}
+
+/** Report only values whose local authority is readable. */
+function reportedUpdateValues(home: string): Record<string, boolean | string> {
+  const values: Record<string, boolean | string> = {};
+  const automatic = readAutomaticUpdatePreference(home);
+  if (automatic.error === undefined) values['update.automatic'] = automatic.enabled;
+  const channel = readUpdateChannelPreference(home) ?? readInstallMarker(home, true)?.channel;
+  if (channel !== undefined && channel !== null) values['update.channel'] = channel;
+  return values;
 }
 
 /** Where a Deployment answers its settings, with this machine's own among them. */

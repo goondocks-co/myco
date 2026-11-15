@@ -34,7 +34,7 @@ async function rig(target: DeploymentTarget) {
   const rows = async () => {
     const response = await request(await asOwner(fixture.db, '/api/machines/machine_1/settings'));
     expect(response.status).toBe(200);
-    return ((await response.json()) as { leaves: MachineLeaf[] }).leaves;
+    return ((await response.json()) as { leaves: MachineLeaf[] }).leaves.filter(row => row.leaf.startsWith('capture.'));
   };
   const sync = async () => {
     const response = await request(memberPost(token, {}, '/members/settings', machineSettingsHeaders('https://s', home)));
@@ -182,7 +182,8 @@ describe('machine settings effective contract', () => {
       const legacyMachine = (await legacy.json() as { machine: unknown }).machine;
       expect(legacyMachine).toEqual({ leaves: { 'capture.plan_dirs': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} } });
       cacheMachineSettings('https://old', legacyMachine, r.home);
-      expect(machineSettingsHeaders('https://old', r.home)).toEqual({ [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE });
+      expect(machineSettingsHeaders('https://old', r.home)).toMatchObject({ [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE });
+      expect(machineSettingsHeaders('https://old', r.home)[MACHINE_SETTINGS_REVISION_HEADER]).toBeUndefined();
       await r.sync();
       const revision = (await r.rows())[0]!.revision;
       await r.request(memberPost(r.token, {}, '/members/settings', { [MACHINE_SETTINGS_REVISION_HEADER]: revision }));
