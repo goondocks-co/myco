@@ -427,23 +427,24 @@ export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
 
 /** Where the backfill stands: its policy, what is left, how the trailing day's runs went, and what the next dispatch waits for. */
 export async function titlingBackfillProgress(env: ServerEnv, now: number): Promise<TitlingBackfillProgress> {
+  const direct = await env.completionProvider?.() ?? null;
+  const actor = direct === null ? TITLING_BACKFILL_ACTOR : DEPLOYMENT_ACTOR;
   const policy = await titlingBackfillPolicy(env);
   const since = now - DAY_MS;
   const share = backlogShare(policy.runsPerDay);
   const [left, usedToday, tally, window, last, backlogWindow, freshOwed] = await Promise.all([
     titleWorkOwed(env.db),
-    deploymentTaskEntriesSince(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
-    deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
-    policy.runsPerDay === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, policy.runsPerDay),
-    deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR),
-    share === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, share),
+    deploymentTaskEntriesSince(env.db, TITLING_TASK, since, actor),
+    deploymentTaskRunTally(env.db, TITLING_TASK, since, actor),
+    policy.runsPerDay === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, actor, policy.runsPerDay),
+    deploymentLastTaskEntryAt(env.db, TITLING_TASK, actor),
+    share === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, actor, share),
     freshTitleOwed(env.db, now - TITLING_FRESH_WINDOW_MS, policy.enabled),
   ]);
   const waits = (left.live ?? 0) > 0 || (policy.enabled && (left.imported ?? 0) > 0);
   const overlap: BackfillWait | null = policy.overlap === 'skip' && tally.inFlight > 0 ? { reason: 'overlap', until: null } : null;
   const reserved = backlogWindow === null || share === null || freshOwed ? null : ceilingWait({ runsPerDay: share }, backlogWindow, 'reserved');
   const waiting = !waits ? null : ((window === null ? null : ceilingWait(policy, window)) ?? reserved ?? overlap ?? intervalWait(policy, last, now)) as TitlingBackfillWait | null;
-  const direct = await env.completionProvider?.() ?? null;
   return { ...policy, ...(direct === null ? {} : { runsPerDay: null }), directCallsPerMinute: direct === null ? null : DIRECT_CALLS_PER_MINUTE, building: left.building, remaining: left.imported, owed: left.live, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed, waiting };
 }
 

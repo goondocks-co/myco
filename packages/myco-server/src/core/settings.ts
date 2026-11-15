@@ -400,7 +400,7 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unk
     if (!spec.endpoint) return null;
     try {
       const url = new URL(value);
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return 'expected an HTTP base URL without credentials, query or fragment';
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return 'expected an HTTP base URL without a user name, password, ? parameters or # suffix';
       return null;
     } catch { return 'expected an HTTP base URL'; }
   }

@@ -1,12 +1,12 @@
 /**
- * Meta gate: no clock and no claim reads a session document.
+ * Meta gate: document reads stay behind publication and admitted work execution.
  *
  * Document content is read by request handlers, admitted run material endpoints and the publisher. The worker claim
  * (`api/worker.ts` short of the run tool surface it also serves, and `core/harness.ts`), every pulled stage's due, head, build and claim statements (the registry
  * `core/pulled-stages.ts` and each module whose source declares a `PulledStage`), card and learning state
  * (`core/turn-cards.ts`, `core/learning-sessions.ts`) and titling's eligibility and dispatch (`core/titling.ts`) must
- * reach neither `content/` nor the publisher. The wake tick may reach `content/` through the publisher
- * or the bounded metadata catch-up page. Only the job table imports the publisher; only projection catch-up imports
+ * stop at the admitted direct-titling executor and reach neither `content/` nor the publisher. The wake tick may reach `content/` through the publisher
+ * or the bounded metadata catch-up page, and through the admitted direct-titling executor. Only the job table imports the publisher; only projection catch-up imports
  * the metadata page. Edges come from the runtime's own import scanner. A dynamic `import()` or `require()` in a
  * walked module must take one plain string literal; any other argument, an interpolated template included, names no
  * module the gate can follow and fails it.
@@ -22,6 +22,7 @@ const PUBLISHER_IMPORTERS = ['core/jobs-run.ts'];
 const METADATA_PAGE = 'db/documents/metadata-catchup.ts';
 /** The admitted run's tool surface, which `api/worker.ts` serves beside the claim: run material endpoints may read pages. */
 const RUN_SURFACE = 'mcp/run-surface.ts';
+const DIRECT_TITLING = 'core/direct-titling.ts';
 const CATALOG_ONLY = ['api/worker.ts', 'core/harness.ts', 'core/pulled-stages.ts', 'core/turn-cards.ts', 'core/learning-sessions.ts', 'core/titling.ts'];
 const transpiler = new Bun.Transpiler({ loader: 'ts', deadCodeElimination: false });
 const UNKNOWN_DYNAMIC = /(?<![\w$.])(?:import|require)\s*\(\s*(?!(?:"[^"\\\n]*"|'[^'\\\n]*'|`[^`\\$]*`)\s*[,)])/;
@@ -66,16 +67,16 @@ const sources = (): string[] => fs.readdirSync(SRC, { recursive: true, encoding:
 const offending = (seen: Map<string, string | null>, bad: (file: string) => boolean): string[] =>
   [...seen.keys()].filter(bad).map((file) => chain(seen, file));
 
-describe('session documents are read by no clock and no claim', () => {
+describe('session documents are read behind admitted execution', () => {
   it('the worker claim, every pulled stage, card and learning state and titling reach no document reader and not the publisher', () => {
     const stages = sources().filter((file) => /\bPulledStage\b/.test(fs.readFileSync(path.join(SRC, file), 'utf8')));
     expect(stages).toContain('core/learning-stages.ts');
     for (const entry of [...CATALOG_ONLY, ...stages])
-      expect(offending(closure(entry, entry === 'api/worker.ts' ? [RUN_SURFACE] : []), (file) => isContent(file) || file === PUBLISHER)).toEqual([]);
+      expect(offending(closure(entry, [DIRECT_TITLING, ...(entry === 'api/worker.ts' ? [RUN_SURFACE] : [])]), (file) => isContent(file) || file === PUBLISHER)).toEqual([]);
   });
 
-  it('the tick reaches document code only through publication or its bounded metadata catch-up page', () => {
-    expect(offending(closure('core/tick.ts', [PUBLISHER, METADATA_PAGE]), isContent)).toEqual([]);
+  it('the tick reaches document code only through publication, metadata catch-up or direct titling', () => {
+    expect(offending(closure('core/tick.ts', [PUBLISHER, METADATA_PAGE, DIRECT_TITLING]), isContent)).toEqual([]);
     expect(closure('core/tick.ts').has(PUBLISHER)).toBe(true);
   });
 

@@ -8,9 +8,9 @@ import { ensureAgentWrite } from './claim.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
 const AGENT = 'myco-agent';
-const insert = write<[project: string, run: string, model: string, now: number, context: string, origin: string, accounting: string], { id: string }>({
-  name: 'directTitle.begin', sql: `INSERT INTO agent_runs(project_id,id,agent_id,task,provider,model,status,started_at,run_context,origin,usage_data)
-    SELECT ?1,?2,'${AGENT}','title-summary','direct',?3,'running',?4,?5,?6,?7
+const insert = write<[project: string, run: string, model: string, now: number, context: string, origin: string, accounting: string, dispatch: string], { id: string }>({
+  name: 'directTitle.begin', sql: `INSERT INTO agent_runs(project_id,id,agent_id,task,provider,model,status,started_at,run_context,origin,usage_data,dispatch_spec)
+    SELECT ?1,?2,'${AGENT}','title-summary','direct',?3,'running',?4,?5,?6,?7,?8
     RETURNING id`,
 });
 
@@ -18,7 +18,7 @@ const insert = write<[project: string, run: string, model: string, now: number, 
 export async function beginDirectTitle(db: RelationalStore, ask: { project: string; run: string; model: string; now: number; session: string; mode: string; by?: string }) {
   const { project, run, model, now, session, mode, by } = ask;
   const result = await commit(db, ensureAgentWrite(db, { id: AGENT, name: AGENT, provider: null, model: null, enabled: true }, now),
-    insert.bind(project, run, model, now, JSON.stringify({ session_id: session, mode, execution: 'direct', actor: by ?? 'deployment' }), mode === 'owner' ? 'manual' : 'automatic', completionAccounting(model, null)));
+    insert.bind(project, run, model, now, JSON.stringify({ session_id: session, mode, execution: 'direct', actor: by ?? 'deployment' }), mode === 'owner' ? 'manual' : 'automatic', completionAccounting(model, null), JSON.stringify({ actor: by ?? 'deployment', execution: 'direct' })));
   return result.at(-1)!.results.length > 0;
 }
 

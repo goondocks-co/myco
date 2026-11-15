@@ -88,6 +88,16 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     ],
   },
   {
+    id: 'single-turn',
+    section: 'work',
+    label: 'Single-turn model',
+    note: 'Myco calls this model directly for session titles and summaries. Work that needs tools continues on runners. Without a configured model, self-hosted Deployments use the runner title task.',
+    leaves: [
+      { leaf: 'single_turn.model', label: 'Model', kind: 'text', resettable: true, note: 'Cloudflare defaults to @cf/openai/gpt-oss-20b. Self-hosted Deployments need a model and an API base URL.' },
+      { leaf: 'single_turn.base_url', label: 'API base URL', kind: 'text', resettable: true, note: 'For example, http://localhost:1234/v1 for LM Studio. Store an optional key under Provider keys → Single-turn endpoint. Reset this address to use the Cloudflare binding.' },
+    ],
+  },
+  {
     id: 'limits',
     section: 'work',
     label: 'How much at once',
