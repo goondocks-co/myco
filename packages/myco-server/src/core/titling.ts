@@ -324,11 +324,11 @@ function reportWait(db: RelationalStore, wait: BackfillWait | null, detail: Reco
 export async function backfillTitles(env: ServerEnv, now: number, state: PowerState): Promise<number> {
   const policy = await titlingBackfillPolicy(env);
   const direct = await env.completionProvider?.() ?? null;
-  if (direct !== null) return backfillDirectTitles(env, now, policy);
   if (!(policy.runIn as readonly string[]).includes(state)) {
     reportWait(env.db, { reason: 'state', until: null }, { state });
     return 0;
   }
+  if (direct !== null) return backfillDirectTitles(env, now, policy);
   const interval = intervalWait(policy, await deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR), now);
   if (interval !== null) {
     reportWait(env.db, interval);

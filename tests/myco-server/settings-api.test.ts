@@ -360,7 +360,7 @@ describe('provider credentials through the surface', () => {
     const text = await listed.text();
     expect(text).not.toContain(ANTHROPIC);
     const secrets = (JSON.parse(text) as { secrets: Array<Record<string, unknown>> }).secrets;
-    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'github']);
+    expect(secrets.map((s) => s.name)).toEqual(['single-turn', 'anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'github']);
     expect(secrets.find((s) => s.name === 'openai')).toMatchObject({ configured: false, maskedValue: null });
   });
 
@@ -421,6 +421,7 @@ function sampleFor(leaf: string): unknown {
   // the moment the rule tightens, and the guess is what would need finding.
   const spec = DEPLOYMENT_LEAF_SPECS[leaf];
   if (spec !== undefined && 'type' in spec) {
+    if (spec.type === 'completion') return spec.endpoint ? 'https://provider.example/v1' : 'title-model';
     if (spec.type === 'integer') return spec.min;
     if (spec.type === 'number') return spec.min;
     if (spec.type === 'task-overrides') return { 'title-summary': { harness: 'claude-code', model: 'sonnet', schedule: { maxRunsPerDay: 0 } } };

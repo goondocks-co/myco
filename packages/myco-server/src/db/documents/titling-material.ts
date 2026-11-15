@@ -1,6 +1,10 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { first, read, rows } from '../index.js';
 
+const HEAD_PROMPTS = 3;
+const TAIL_PROMPTS = 4;
+const MIDDLE_SAMPLES = 12;
+
 export interface TitleSnapshot { generation: number; userPrompts: number; materialAt: number; first: number; last: number }
 const snapshot = read<[project: string, session: string], TitleSnapshot>({ name: 'titleMaterial.snapshot', sql: `
   SELECT d.generation,d.user_prompts AS userPrompts,s.last_received_at AS materialAt,
@@ -18,14 +22,14 @@ export const titleMaterialSnapshot = (db: RelationalStore, project: string, sess
 
 /** Head, tail and evenly spaced middle seeks are bounded independently of session length. */
 export async function titleMaterialTurns(db: RelationalStore, project: string, session: string, held: TitleSnapshot) {
-  const head = await rows(db, ascending.bind(project, session, held.generation, held.first, held.last, 3));
-  const tail = await rows(db, descending.bind(project, session, held.generation, held.first, held.last, 4));
+  const head = await rows(db, ascending.bind(project, session, held.generation, held.first, held.last, HEAD_PROMPTS));
+  const tail = await rows(db, descending.bind(project, session, held.generation, held.first, held.last, TAIL_PROMPTS));
   const full = new Set([...head, ...tail].map(r => r.promptId));
   const selected = new Map([...head, ...tail].map(r => [r.promptId, r]));
   const from = head.at(-1)?.ord, to = tail.at(-1)?.ord;
   if (from !== undefined && to !== undefined && to > from) {
-    for (let i = 1; i <= 12; i++) {
-      const row = (await rows(db, ascending.bind(project, session, held.generation, from + (to - from) * i / 13, to - 1, 1)))[0];
+    for (let i = 1; i <= MIDDLE_SAMPLES; i++) {
+      const row = (await rows(db, ascending.bind(project, session, held.generation, from + (to - from) * i / (MIDDLE_SAMPLES + 1), to - 1, 1)))[0];
       if (row !== undefined) selected.set(row.promptId, row);
     }
   }

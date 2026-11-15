@@ -3,6 +3,7 @@ export const COMPLETION_MODEL_CHARS = 256;
 export const COMPLETION_BASE_URL_CHARS = 2048;
 export const COMPLETION_TIMEOUT_MS = 30_000;
 export const COMPLETION_OUTPUT_TOKENS = 3_000;
+export const DIRECT_CALL_WINDOW_MS = 60_000;
 export const DIRECT_CALLS_PER_MINUTE = 10;
 export const COMPLETION_ATTEMPTS = 2;
 export const DEFAULT_COMPLETION_MODEL = '@cf/openai/gpt-oss-20b';
@@ -30,7 +31,7 @@ export class CompletionUnavailable extends Error {
 /** The schema format served by OpenAI-compatible endpoints. */
 export const completionInput = (request: CompletionRequest) => ({
   messages: request.messages, max_tokens: COMPLETION_OUTPUT_TOKENS, stream: false,
-  ...(request.schema === undefined ? {} : { response_format: { type: 'json_schema', json_schema: { name: 'session_title', strict: true, schema: request.schema } } }),
+  ...(request.schema === undefined ? {} : { response_format: { type: 'json_schema', json_schema: { name: 'response', strict: true, schema: request.schema } } }),
 });
 
 /** Provider words and reasoning never become the answer or an error message. */

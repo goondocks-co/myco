@@ -1,4 +1,4 @@
-import { commit, readSet, read, write } from './index.js';
+import { commit, readSet, read, write, type Bound } from './index.js';
 import { attributedUpdate } from './runs/attribution.js';
 import type { RelationalStore } from '../core/adapters.js';
 import { commitAttributedWrite } from './runs/attribution.js';
@@ -13,10 +13,42 @@ const claimRefresh = write<[number, string, string, number, number], { session_i
       AND NOT ${titleRunInFlightSql('sessions')} AND ${sessionMaterialReadySql('sessions')} RETURNING session_id` });
 const claimOwner = write<[number, string, string, number], { session_id: string }>({ name: 'sessionTitle.claimOwner', sql: `UPDATE sessions SET titled_at = ?, title_material_at = CASE WHEN title IS NULL THEN title_material_at ELSE COALESCE(title_material_at, titled_at) END WHERE project_id = ? AND session_id = ? AND (titled_at IS NULL OR titled_at < ?) AND ${sessionMaterialReadySql('sessions')} RETURNING session_id` });
 const restore = write<[number | null, string, string, number], never>({ name: 'sessionTitle.restore', sql: `UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at = ?` });
-const titledPrompts = write<[string, string], never>({ name: 'sessionTitle.titledPrompts', sql: `UPDATE session_documents SET titled_user_prompts = user_prompts
-    WHERE project_id = ? AND session_id = ? AND state = 'live'` });
-const overwrite = attributedUpdate<[string, string, string | null, string, string]>('sessionTitle.overwrite', 'sessions', `title = ?1, summary = ?2, titled_by = ?3, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS})`, `project_id = ?4 AND session_id = ?5 AND ${notTombstonedSql('sessions')} AND ${transcriptsPublishedSql('sessions')}`, 'session_id', 'project_id=?4 AND session_id=?5 AND title IS ?1 AND summary IS ?2 AND titled_by IS ?3');
-const writeFirst = attributedUpdate<[string, string, string, string]>('sessionTitle.writeFirst', 'sessions', `title = ?1, summary = ?2, title_material_at = COALESCE(titled_at, ${SQL_NOW_MS})`, `project_id = ?3 AND session_id = ?4 AND title IS NULL AND ${notTombstonedSql('sessions')} AND ${transcriptsPublishedSql('sessions')}`, 'session_id', 'project_id=?3 AND session_id=?4 AND title IS ?1 AND summary IS ?2');
+
+const storeTitle = attributedUpdate<[project: string, session: string, title: string, summary: string, mode: string, by: string | null,
+  material: number | null, run: string | null, stamp: number | null, generation: number | null]>(
+  'sessionTitle.store', 'sessions',
+  `title=?3,summary=?4,titled_by=CASE WHEN ?5='first' THEN titled_by ELSE ?6 END,title_material_at=COALESCE(?7,titled_at,${SQL_NOW_MS})`,
+  `project_id=?1 AND session_id=?2 AND (?5='overwrite' OR title IS NULL) AND ${notTombstonedSql('sessions')}
+    AND ((?8 IS NULL AND ${transcriptsPublishedSql('sessions')}) OR (?8 IS NOT NULL AND titled_at=?9
+      AND EXISTS(SELECT 1 FROM session_documents d WHERE d.project_id=?1 AND d.session_id=?2 AND d.generation=?10 AND d.state='live')
+      AND EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=?1 AND r.id=?8 AND r.provider='direct' AND r.status='running')))`,
+  'session_id', `project_id=?1 AND session_id=?2 AND title IS ?3 AND summary IS ?4 AND (?5='first' OR titled_by IS ?6)`);
+const titledPrompts = write<[project: string, session: string, generation: number | null, prompts: number | null], never>({
+  name: 'sessionTitle.titledPrompts', sql: `UPDATE session_documents SET titled_user_prompts=CASE WHEN ?4 IS NULL THEN user_prompts
+    ELSE MAX(COALESCE(titled_user_prompts,0),MIN(user_prompts,?4)) END
+    WHERE project_id=?1 AND session_id=?2 AND state='live' AND (?3 IS NULL OR generation=?3)`,
+});
+
+export interface SessionTitleWrite {
+  projectId: string;
+  sessionId: string;
+  title: string;
+  summary: string;
+  mode: 'first' | 'overwrite';
+  by: string | null;
+  attribution?: RunWrite;
+  observed?: { runId: string; stamp: number; generation: number; userPrompts: number; materialAt: number };
+  after?: readonly Bound[];
+}
+
+/** One writer owns title guards, attribution and the prompts covered by the material used. */
+export async function storeSessionTitle(db: RelationalStore, request: SessionTitleWrite): Promise<boolean> {
+  const { projectId, sessionId, title, summary, mode, by, observed } = request;
+  const result = await commitAttributedWrite(db, { projectId },
+    storeTitle.bind(projectId, sessionId, title, summary, mode, by, observed?.materialAt ?? null, observed?.runId ?? null, observed?.stamp ?? null, observed?.generation ?? null),
+    request.attribution, [titledPrompts.bind(projectId, sessionId, observed?.generation ?? null, observed?.userPrompts ?? null), ...(request.after ?? [])]);
+  return result.results.length > 0;
+}
 
 /** The session's titling stamp as it stands, or null when the project holds no such session. */
 const titlingStamp = (db: RelationalStore, projectId: string, sessionId: string) =>
@@ -62,25 +94,13 @@ export async function restoreTitlingStamp(db: RelationalStore, projectId: string
   await commit(db, restore.bind(previous, projectId, sessionId, stamp));
 }
 
-/**
- * Records on the session's live document the user prompts the title just written covers. It runs right after the title
- * write in one batch and lands only when that write changed a row: the attribution between them is gated the same way.
- */
-function titledUserPrompts(projectId: string, sessionId: string) {
-  return titledPrompts.bind(projectId, sessionId);
-}
 
-/** Stores a session's title and summary over whatever is there, naming the member whose ask produced them; false when no such session sits in the project. */
+/** Stores a session's title and summary over the standing values, naming the member whose ask produced them. */
 export async function overwriteTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, titledBy: string | null, attribution?: RunWrite): Promise<boolean> {
-  const statement = overwrite.bind(title, summary, titledBy, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(projectId, sessionId)]);
-  return result.results.length > 0;
+  return storeSessionTitle(db, { projectId, sessionId, title, summary, mode: 'overwrite', by: titledBy, ...(attribution === undefined ? {} : { attribution }) });
 }
 
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, attribution?: RunWrite): Promise<boolean> {
-  const statement = writeFirst.bind(title, summary, projectId, sessionId);
-  const result = await commitAttributedWrite(db, { projectId }, statement, attribution, [titledUserPrompts(projectId, sessionId)]);
-  return result.results.length > 0;
+  return storeSessionTitle(db, { projectId, sessionId, title, summary, mode: 'first', by: null, ...(attribution === undefined ? {} : { attribution }) });
 }
-
