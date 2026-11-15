@@ -1,3 +1,4 @@
+import { promptContextLogPrefix } from './context-diagnostics.js';
 import { fetchPromptRecalls } from './prompt-context.js';
 /**
  * The member helper's context step (#1561): ask the Deployment what the hooks asked for, and cache the answers they
@@ -86,8 +87,12 @@ export async function prefetchContext(opts: {
 }): Promise<PrefetchReport> {
   const { spool, client, now } = opts;
   spool.assertClientDestination(client);
-  if (await fetchPromptRecalls({ ...opts, capMs: CONTEXT_CAP_MS })) return { asked: 0, answered: 0, stoppedBy: 'budget' };
   const report: PrefetchReport = { asked: 0, answered: 0 };
+  try {
+    if (await fetchPromptRecalls({ ...opts, capMs: CONTEXT_CAP_MS })) report.stoppedBy = 'budget';
+  } catch (error) {
+    process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}prompt recall failed: ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
+  }
   for (const { sessionId, asks } of sessionsWithAsks(spool)) {
     for (const ask of asks) {
       if (ask.kind === 'prompt') { settleAsk(spool, sessionId, ask, now()); continue; }

@@ -138,9 +138,10 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
-  it('Copilot emits tool context at the top level', () => {
+  it('Copilot emits both tool context shapes', () => {
     writeHookResponse('copilot', 'post-tool-use', { additionalContext: 'prompt memory' });
-    expect(JSON.parse(captured)).toEqual({ additionalContext: 'prompt memory' });
+    expect(JSON.parse(captured)).toEqual({ additionalContext: 'prompt memory',
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'prompt memory' } });
   });
 
   describe('unknown symbiont', () => {

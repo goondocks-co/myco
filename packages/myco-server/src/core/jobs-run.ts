@@ -1,3 +1,4 @@
+import { pruneExpiredReservations } from '../db/context/reservations.js';
 import { CARDS_PENDING_HOLD } from '@goondocks/myco-shared/run-holds';
 import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
 import { catchUpProjections } from '../db/projections/catchup.js';
@@ -161,7 +162,8 @@ export async function agentRunRetention(env: ServerEnv, now: number): Promise<nu
   const runs = await pruneTerminalRuns(env.db, cutoff, JOB_BATCH);
   const credentials = await pruneRevokedCredentials(env.db, HARNESS_MEMBER_ID, cutoff, JOB_BATCH);
   const answers = await prunePromptAnswers(env.db, now - PROMPT_ANSWER_RETENTION_DAYS * DAY_MS, JOB_BATCH);
-  return runs + credentials + answers;
+  const reservations = await pruneExpiredReservations(env.db, now, JOB_BATCH);
+  return runs + credentials + answers + reservations;
 }
 
 /**

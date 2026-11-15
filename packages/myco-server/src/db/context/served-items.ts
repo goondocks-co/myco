@@ -31,9 +31,9 @@ export const SERVED_ITEMS_TRIGGER = trigger('session_served_items_receipt', 'spo
 export const CONTEXT_RESERVATION_MS = 60_000;
 
 /** Candidate membership is permanent only for delivered receipts; pending selections expire. */
-export const receiptExclusions = (receipts: string): string => `INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at,reservation_receipt_id)
+export const receiptExclusions = (receipts: string, options: { delivered?: true } = {}): string => `INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at,reservation_receipt_id)
   ${(['spore', 'plan'] as const).map(kind => `SELECT r.project_id,r.session_id,'${kind}',j.value,
-    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+${CONTEXT_RESERVATION_MS} END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END
+    ${options.delivered ? '0,NULL' : `CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+${CONTEXT_RESERVATION_MS} END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END`}
     FROM (${receipts}) k CROSS JOIN spore_injections r
     ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(${jsonArray(`r.${kind}_ids`)}) j
     WHERE j.type='text' AND r.discarded_at IS NULL AND ${notTombstonedSql('r')}`).join(' UNION ALL ')}

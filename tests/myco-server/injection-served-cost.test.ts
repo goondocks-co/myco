@@ -1,3 +1,5 @@
+import { retainRenderedReceipts } from '@myco-server-worker/db/context/rendered.js';
+import { pruneExpiredReservations } from '@myco-server-worker/db/context/reservations.js';
 import { discardContextReceipt } from '@myco-server-worker/db/context/discard.js';
 /**
  * What a session has been served costs the same however long the session, on D1:
@@ -18,7 +20,7 @@ it('a prompt\'s served check and its receipt cost the same at 300 and 3,000 rece
     sizes: [300, 3_000],
     setup: async (db) => {
       await db.prepare("INSERT INTO projects(project_id,name,created_at) VALUES(?,'Served',1)").bind(PROJECT).run();
-      for (const id of [RECEIVER, 'other']) {
+      for (const id of [RECEIVER, 'other', 'discard-receiver', 'rendered-receiver', 'expired-receiver']) {
         await db.prepare(`INSERT INTO sessions(project_id,session_id,machine_id,created_by_token_id,first_received_at,last_received_at)
           VALUES(?,?,'machine','fixture',1,1)`).bind(PROJECT, id).run();
       }
@@ -42,13 +44,26 @@ it('a prompt\'s served check and its receipt cost the same at 300 and 3,000 rece
         const served = await servedAmong(db, { project: PROJECT, session: RECEIVER, now: 10, candidates: [['spore', `fresh-${scale}`], ['plan', `plan-fresh-${scale}`]] });
         expect([[...served.spores], [...served.plans]]).toEqual([[`fresh-${scale}`], [`plan-fresh-${scale}`]]);
       } },
+      { name: 'rendered receipt', run: async (db, { scale }) => {
+        const id = crypto.randomUUID(), item = `rendered-${scale}`, session = 'rendered-receiver';
+        await commitServedReceipt(db, { project: PROJECT, session, id, promptId: item, scopeReason: null, protocol: 'legacy',
+          askedAt: null, promptHash: item, spores: [item], now: 10, plans: [] }, contextAdmission(PROJECT, session, 'machine'));
+        await retainRenderedReceipts(db, { project: PROJECT, session, receipts: [id], machine: 'machine' });
+        expect((await servedAmong(db, { project: PROJECT, session, now: 100_000, candidates: [['spore', item]] })).spores.has(item)).toBe(true);
+      } },
       { name: 'discard', run: async (db, { scale }) => {
         const id = crypto.randomUUID();
         const item = `discard-${scale}`;
-        await commitServedReceipt(db, { project: PROJECT, session: RECEIVER, id, promptId: item, scopeReason: null, protocol: 'legacy',
-          askedAt: null, promptHash: item, spores: [item], now: 10, plans: [] }, contextAdmission(PROJECT, RECEIVER, 'machine'));
-        await discardContextReceipt(db, { project: PROJECT, session: RECEIVER, receipt: id, now: 11, machine: 'machine' });
-        expect((await servedAmong(db, { project: PROJECT, session: RECEIVER, now: 12, candidates: [['spore', item]] })).spores.has(item)).toBe(false);
+        await commitServedReceipt(db, { project: PROJECT, session: 'discard-receiver', id, promptId: item, scopeReason: null, protocol: 'legacy',
+          askedAt: null, promptHash: item, spores: [item], now: 10, plans: [] }, contextAdmission(PROJECT, 'discard-receiver', 'machine'));
+        await discardContextReceipt(db, { project: PROJECT, session: 'discard-receiver', receipt: id, now: 11, machine: 'machine' });
+        expect((await servedAmong(db, { project: PROJECT, session: 'discard-receiver', now: 12, candidates: [['spore', item]] })).spores.has(item)).toBe(false);
+      } },
+      { name: 'expired reservations', run: async (db, { scale }) => {
+        const item = `expired-${scale}`, session = 'expired-receiver';
+        await commitServedReceipt(db, { project: PROJECT, session, id: crypto.randomUUID(), promptId: item, scopeReason: null, protocol: 'legacy',
+          askedAt: null, promptHash: item, spores: [item], now: 10, plans: [] }, contextAdmission(PROJECT, session, 'machine'));
+        expect(await pruneExpiredReservations(db, 100_000, 100)).toBeGreaterThan(0);
       } },
     ],
   });

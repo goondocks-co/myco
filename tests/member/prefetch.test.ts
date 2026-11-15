@@ -7,9 +7,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { deadlineBudget } from '@myco/member/budget.js';
-import { withAsk } from '@myco/member/context-cache.js';
+import { contextDir, readProjectContext, withAsk } from '@myco/member/context-cache.js';
 import { prefetchContext } from '@myco/member/prefetch.js';
 import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
+import { queuePromptRecall } from '@myco/member/prompt-context.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient } from '@myco/member/transport.js';
 
@@ -25,6 +26,19 @@ function spool(): MemberSpool {
 }
 
 describe('context ask identity', () => {
+  it('continues cached block asks when prompt recall storage is unreadable', async () => {
+    const live = spool();
+    updateSessionState(live.dir, 'isolated', state => {
+      queuePromptRecall(state, { kind: 'prompt', text: 'recall', promptId: 'p', at: 1 }, { late: false });
+      state.contextAsks = withAsk(undefined, { kind: 'start', at: 1 });
+    });
+    fs.mkdirSync(contextDir(live.dir), { recursive: true });
+    fs.writeFileSync(path.join(contextDir(live.dir), 'prompt-retry.json'), 'invalid');
+    const client = new ServerClient({ serverUrl: SERVER_URL, projectId: PROJECT_ID, token: 'fixture' }, async () => Response.json({ persisted: true, context: 'start survives' }), { credentialSource: 'env' });
+    expect(await prefetchContext({ spool: live, client, serverUrl: SERVER_URL, mycoHome: path.join(scratches.at(-1)!, 'myco'), budget: deadlineBudget(Date.now() + 10_000), now: Date.now })).toMatchObject({ asked: 1, answered: 1 });
+    expect(readProjectContext(live.dir).blocks.start?.context).toBe('start survives');
+  });
+
   it('mints a distinct id for each ask, even in the same millisecond', () => {
     const first = withAsk(undefined, { kind: 'prompt', promptId: 'a', text: 'a', at: 789 });
     const second = withAsk(first, { kind: 'prompt', promptId: 'b', text: 'b', at: 789 });

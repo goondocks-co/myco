@@ -75,11 +75,12 @@ export function writeHookResponse(
   }
 
   const config = resolveHookResponseConfig(symbiont);
-  if (hookEvent === 'post-tool-use' && symbiontHasCapability(symbiont, 'postToolUseInjection') && config.shapes?.PostToolUse !== undefined) {
+  if (hookEvent === 'post-tool-use' && symbiontHasCapability(symbiont, 'promptRecallToolDelivery') && config.shapes?.PostToolUse !== undefined) {
     const context = response.additionalContext;
-    process.stdout.write(JSON.stringify(context === undefined ? {} : config.shapes.PostToolUse === 'flat'
-      ? { additionalContext: context }
-      : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } }));
+    const nested = { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } };
+    process.stdout.write(JSON.stringify(context === undefined ? {} : config.shapes.PostToolUse === 'both'
+      ? { additionalContext: context, ...nested }
+      : config.shapes.PostToolUse === 'flat' ? { additionalContext: context } : nested));
     return;
   }
 

@@ -448,7 +448,7 @@ const RegistrationSchema = z.object({
      * How an event's answer is shaped where the harness departs from the `hookSpecificOutput` envelope: `flat` writes
      * `{ additionalContext }` at the top level.
      */
-    shapes: z.object({ SubagentStart: z.enum(['hookSpecificOutput', 'flat']), PostToolUse: z.enum(['hookSpecificOutput', 'flat']) }).partial().strict().optional(),
+    shapes: z.object({ SubagentStart: z.enum(['hookSpecificOutput', 'flat']), PostToolUse: z.enum(['hookSpecificOutput', 'flat', 'both']) }).partial().strict().optional(),
   }).optional(),
   /**
    * Optional file path for a plugin deps package.json. When set, the installer writes
@@ -595,6 +595,8 @@ const CapabilitiesSchema = z.object({
    * land after a session start the Deployment could not answer.
    */
   postToolUseInjection: z.boolean().default(false),
+  /** Whether a tool hook can render recall held by the prompt hook. */
+  promptRecallToolDelivery: z.boolean().default(false),
   /**
    * Which side writes this symbiont's turn rows.
    *
@@ -646,6 +648,7 @@ const CapabilitiesSchema = z.object({
   sessionStartInjection: false,
   subagentStartInjection: false,
   postToolUseInjection: false,
+  promptRecallToolDelivery: false,
   turnRowSource: 'hook' as const,
   transcriptFidelity: 'full' as const,
   canopyReadTools: [],

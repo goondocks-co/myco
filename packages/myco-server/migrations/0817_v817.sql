@@ -186,6 +186,8 @@ ALTER TABLE session_served_items ADD COLUMN reservation_receipt_id TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_session_served_reservation ON session_served_items(project_id,session_id,reservation_receipt_id);
 
+CREATE INDEX IF NOT EXISTS idx_session_served_expiry ON session_served_items(project_id,reservation_expires_at) WHERE reservation_expires_at>0;
+
 DELETE FROM session_served_items;
 
 CREATE TRIGGER IF NOT EXISTS session_served_items_receipt AFTER INSERT ON spore_injections BEGIN INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at,reservation_receipt_id)

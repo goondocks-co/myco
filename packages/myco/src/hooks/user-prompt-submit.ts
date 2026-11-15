@@ -161,7 +161,7 @@ export async function main(opts: HookMainOptions = {}) {
         // row is the parse's.
         record: (next) => {
           if (asking !== undefined) asking.id = queuePromptRecall(next, asking.request, {
-            late: HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true,
+            late: run.credentialSource === 'registry' && HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true,
             ...(input.promptKey === undefined ? {} : { promptKey: input.promptKey }),
           });
           if (!transcriptWritesRows && promptId !== undefined) {

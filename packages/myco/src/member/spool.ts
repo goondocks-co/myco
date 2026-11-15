@@ -1,3 +1,4 @@
+import { acknowledgePromptRecall } from './prompt-context.js';
 /**
  * The member spool: a write-ahead `EventBuffer` per session under
  * `<MYCO_HOME>/member/spool/<deploymentKey>/<projectId>/`, one drain implementation with a
@@ -1059,6 +1060,7 @@ export class MemberSpool {
         if (acked) {
           s.lastAckAt = now();
           s.lastDeliveryAt = now();
+          if (passed?.kind === 'context.delivered') acknowledgePromptRecall(s, passed.eventId);
         }
         if (passed?.kind === 'session.start') s.startSettled = true;
         delete s.eventRetry;

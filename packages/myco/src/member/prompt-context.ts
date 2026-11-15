@@ -11,6 +11,7 @@ import { ServerClient, withinRequestDeadline } from './transport.js';
 import { requestPromptContext, promptRequestsBackedOff, type PromptAnswer } from './prompt-request.js';
 import { watchingFeatures } from './prefetch.js';
 import { promptContextLogPrefix } from './context-diagnostics.js';
+import { refusalPermanent } from './constants.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 
 /** Maximum inline wait when a tool hook can deliver the answer later in the turn. */
@@ -22,7 +23,7 @@ export interface PromptRecall {
   current: string;
   asks: Record<string, {
     request: PromptAsk; stage: 'pending' | 'ready' | 'delivered' | 'discarded';
-    answer?: PromptAnswer; waitedMs?: number; late: boolean; promptKey?: string;
+    answer?: PromptAnswer; deliveryEventId?: string; waitedMs?: number; late: boolean; promptKey?: string;
   }>;
 }
 
@@ -118,6 +119,8 @@ function consumePromptRecall(run: HookRun, state: SessionState, options: { id: s
       && (answer.receiptId !== undefined || answer.answerId !== undefined || answer.sessionRecord !== undefined)
       ? [contextDeliveredEvent(run.ctx, { receiptId: answer.receiptId, answerId: answer.answerId, sessionRecord: answer.sessionRecord,
         ...(ask.promptId !== undefined ? { renderedIn: ask.promptId, renderedScheme: ask.promptScheme } : { renderedScopeReason: ask.scopeReason }) })] : [];
+    held.deliveryEventId = events[0]?.envelope.eventId;
+    held.answer = { ...answer, context: '' };
     log(run, options.id, held, options.delivery);
     return { events, response: answer.context.length === 0 ? options.response : { ...options.response,
       additionalContext: [options.response.additionalContext, answer.context].filter(Boolean).join('\n\n') } };
@@ -132,7 +135,7 @@ export function toolPromptContext(run: HookRun, state: SessionState, response: H
   const held = recall?.asks[recall.current];
   if (recall === undefined || held === undefined || !held.late || held.stage !== 'ready') return { events: [], response };
   if (held.promptKey !== undefined && run.input.promptKey !== held.promptKey) return { events: [], response };
-  if (HOOK_CONFIG[run.agent]?.capabilities.postToolUseInjection !== true) return { events: [], response };
+  if (HOOK_CONFIG[run.agent]?.capabilities.promptRecallToolDelivery !== true) return { events: [], response };
   return consumePromptRecall(run, state, { id: recall.current, response, delivery: 'tool' });
 }
 
@@ -154,14 +157,21 @@ export async function fetchPromptRecalls(opts: {
         const receiptId = live.answer?.receiptId;
         if (receiptId !== undefined) {
           const outcome = await opts.client.postPersisted('/context/discard', { sessionId, receiptId }, subRequestBudget(opts.budget, opts.capMs, opts.now()));
-          if (outcome.class !== 'acked' && outcome.class !== 'route_missing') continue;
+          if (outcome.class !== 'acked' && outcome.class !== 'route_missing' && !(outcome.class === 'refused' && refusalPermanent(outcome.code))) continue;
         }
         process.stderr.write(`${promptContextLogPrefix(opts.client.serverUrl, opts.spool.projectId)}session ${terminalText(sessionId)} ask ${id} wait_ms=${live.waitedMs ?? 0} cap_ms=${promptContextCapMs(live)} delivery=discarded\n`);
         updateSessionState(opts.spool.dir, sessionId, state => { if (state.promptRecall?.asks[id]?.stage === 'discarded') delete state.promptRecall.asks[id]; }, opts.now());
-      } else if (live?.stage === 'delivered') {
+      } else if (live?.stage === 'delivered' && live.answer?.receiptId === undefined && live.deliveryEventId === undefined) {
         updateSessionState(opts.spool.dir, sessionId, state => { if (state.promptRecall?.asks[id]?.stage === 'delivered') delete state.promptRecall.asks[id]; }, opts.now());
       }
     }
   }
   return false;
+}
+
+/** Release only the recall whose canonical delivery event the Deployment acknowledged. */
+export function acknowledgePromptRecall(state: SessionState, eventId: string): void {
+  for (const [id, held] of Object.entries(state.promptRecall?.asks ?? {})) {
+    if (held.stage === 'delivered' && held.deliveryEventId === eventId) delete state.promptRecall!.asks[id];
+  }
 }

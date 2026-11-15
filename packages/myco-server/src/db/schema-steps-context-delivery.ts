@@ -22,6 +22,7 @@ export function contextDeliverySteps(receiptBody: string, indexes: readonly stri
       'ALTER TABLE session_served_items ADD COLUMN reservation_expires_at INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE session_served_items ADD COLUMN reservation_receipt_id TEXT',
       'CREATE INDEX IF NOT EXISTS idx_session_served_reservation ON session_served_items(project_id,session_id,reservation_receipt_id)',
+      'CREATE INDEX IF NOT EXISTS idx_session_served_expiry ON session_served_items(project_id,reservation_expires_at) WHERE reservation_expires_at>0',
       'DELETE FROM session_served_items',
       ...RECEIPT_EXCLUSION_TRIGGERS.map(trigger => trigger.sql),
       `UPDATE projection_catchup SET done=NOT EXISTS(SELECT 1 FROM spore_injections),after_key='[]',frontier=NULL WHERE projection='${SERVED_ITEMS_PROJECTION}'`,
@@ -32,6 +33,7 @@ export function contextDeliverySteps(receiptBody: string, indexes: readonly stri
     ],
     deploymentIndexes: [
       { index: 'idx_spore_injections_hash', read: 'Receipt admission seeks prior selections for the prompt text.' },
+      { index: 'idx_session_served_expiry', read: 'Retention reads a bounded page of expired reservations in each Project.' },
       { index: 'idx_session_served_reservation', read: 'Discard releases only the memberships owned by its receipt.' },
     ],
   }];

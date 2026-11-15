@@ -1,3 +1,4 @@
+import { pruneExpiredReservations } from '@myco-server-worker/db/context/reservations.js';
 import { discardContextReceipt } from '@myco-server-worker/db/context/discard.js';
 import { CONTEXT_RESERVATION_MS } from '@myco-server-worker/db/context/served-items.js';
 /**
@@ -177,8 +178,11 @@ describe('what a session was served', () => {
     await discardContextReceipt(db, { project: SCOPE.projectId, session: SESSION, receipt: first.receiptId!, now: NOW + CONTEXT_RESERVATION_MS + 2, machine: 'machine_1' });
     expect((await select(db, { promptId: 'contender', promptHash: 'contender', now: NOW + CONTEXT_RESERVATION_MS + 3 })).items).toEqual([]);
     sqlite.query(`UPDATE spore_injections SET delivered_at=?,delivered_prompt_id=prompt_id WHERE id=?`).run(NOW + CONTEXT_RESERVATION_MS + 2, retry.receiptId!);
-    const afterDelivery = await select(db, { promptId: 'delivered', promptHash: 'delivered', now: NOW + 2 * CONTEXT_RESERVATION_MS });
-    expect(afterDelivery.items).toEqual([]);
+    await insertSpore(db, SCOPE, spore('expired-only'));
+    await select(db, { promptId: 'pending-prune', promptHash: 'pending-prune', now: NOW + CONTEXT_RESERVATION_MS + 3 });
+    expect(await pruneExpiredReservations(db, NOW + 3 * CONTEXT_RESERVATION_MS, 100)).toBeGreaterThan(0);
+    const afterDelivery = await select(db, { promptId: 'delivered', promptHash: 'delivered', now: NOW + 3 * CONTEXT_RESERVATION_MS });
+    expect(afterDelivery.items.map(item => item.id)).toEqual(['expired-only']);
   });
 
   it('reoffers a discarded selection immediately and leaves its replacement reserved', async () => {

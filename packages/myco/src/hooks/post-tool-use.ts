@@ -45,7 +45,7 @@ export async function main(opts: HookMainOptions = {}) {
     // The transcript already holds this call for a symbiont whose transcript carries tool calls.
     const events: OutboundEvent[] = hookShipsToolCalls(agent) ? [toolUseEvent(ctx, input, { promptId })] : [];
     const served = HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true ? sessionBlock(run, state) : {};
-    const respond: HookOutcome['respond'] = HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true && state.promptRecall !== undefined
+    const respond: HookOutcome['respond'] = HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true && state.promptRecall !== undefined
       ? async () => ({ events: [], claim: next => toolPromptContext(run, next, served.response) }) : undefined;
     // A write into a plan directory is the plan itself: read now, keyed by its path, named after the prompt that wrote it.
     const root = planRootFor(credential.root, typeof input.raw.cwd === 'string' ? input.raw.cwd : undefined);

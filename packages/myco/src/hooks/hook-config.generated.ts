@@ -29,6 +29,7 @@ export interface HookCapabilities {
   sessionStartInjection: boolean;
   subagentStartInjection: boolean;
   postToolUseInjection: boolean;
+  promptRecallToolDelivery: boolean;
   /** Which side writes this symbiont's turn rows; see the manifest schema. */
   turnRowSource: 'hook' | 'transcript';
   /** What the transcript carries, as the Deployment's parser declares it; see the manifest schema. */
@@ -104,6 +105,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
@@ -176,6 +178,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -440,6 +443,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -544,7 +548,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "postToolUseInjection": true,
+      "postToolUseInjection": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
@@ -811,7 +816,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "postToolUseInjection": true,
+      "postToolUseInjection": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
@@ -832,7 +838,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "format": "plain-text",
       "shapes": {
         "SubagentStart": "flat",
-        "PostToolUse": "flat"
+        "PostToolUse": "both"
       }
     }
   },
@@ -890,6 +896,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": true,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
@@ -960,6 +967,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -1010,6 +1018,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -1077,6 +1086,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },

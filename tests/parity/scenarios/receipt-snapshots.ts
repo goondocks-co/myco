@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
-import { lit, type ParityScenario } from '../harness.ts';
-import { deliver, promptContext, publishedTurns, turn, withRecall } from '../clients/capture.ts';
+import { ageRows, lit, type ParityScenario } from '../harness.ts';
+import { context, deliver, promptContext, publishedTurns, turn, withRecall } from '../clients/capture.ts';
 import { saveSpore } from '../clients/knowledge.ts';
 import { event, mcp, owner, untilPublished } from '../clients/requests.ts';
 
@@ -41,6 +41,10 @@ export const receiptSnapshots: ParityScenario = {
       const retry = await promptContext(target, receiver, promptId, text);
       expect(recallIds(retry)).toEqual(recallIds(answer));
       answer = retry;
+      await ageRows(target, { table: 'spore_injections', column: 'created_at', byMs: 120_000, match: { project_id: target.projectId, session_id: receiver, id: answer.receiptId } });
+      await ageRows(target, { table: 'session_served_items', column: 'reservation_expires_at', byMs: 120_000, match: { project_id: target.projectId, session_id: receiver, reservation_receipt_id: answer.receiptId } });
+      const reported = await context(target, 'prompt', { sessionId: receiver, promptId: crypto.randomUUID(), text: `${text} and delivered exclusions`, identity: 1, at: Date.now(), rendered: [answer.receiptId] });
+      expect(recallIds(reported).filter(id => recallIds(answer).includes(id))).toEqual([]);
       // Receiving-session deletion must physically remove its retained receipt snapshots on both stores.
       const storedSnapshots = () => target.sql(`SELECT item_id FROM injection_served_items WHERE project_id=${lit(target.projectId)} AND receipt_id=${lit(answer.receiptId)}`);
       expect((await storedSnapshots()).length).toBeGreaterThan(0);

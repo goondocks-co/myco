@@ -81,14 +81,14 @@ const contextOf = (stdout: string): string => {
 };
 
 /** The rig, with the prompt route answered by `serve`: what the Deployment would compose for a prompt. */
-function servingPrompts(serve: (body: { promptId: string; text: string }) => string): { fetch: FetchLike; asked: Array<{ promptId: string; text: string }> } {
-  const asked: Array<{ promptId: string; text: string }> = [];
+function servingPrompts(serve: (body: { promptId: string; text: string }) => string): { fetch: FetchLike; asked: Array<{ promptId: string; text: string; rendered?: string[] }> } {
+  const asked: Array<{ promptId: string; text: string; rendered?: string[] }> = [];
   const fetch: FetchLike = async (input, init) => {
     const req = new Request(input, init);
     if (new URL(req.url).pathname === '/context/prompt') {
       const body = JSON.parse(await req.clone().text()) as { promptId: string; text: string };
       asked.push(body);
-      return Response.json({ persisted: true, context: serve(body), skipped: [] }, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn' } });
+      return Response.json({ persisted: true, context: serve(body), receiptId: crypto.randomUUID(), skipped: [] }, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'turn,prompt-identity,prompt-scheme' } });
     }
     return rig.fetch(req);
   };
@@ -99,12 +99,24 @@ describe('a prompt', () => {
   it('renders the answer selected for this submission, including a single-prompt session', async () => {
     const served = servingPrompts(body => `Recalled for: ${body.text}`);
     const tx = transcript('sess-p');
+    cacheDeploymentFeatures('https://member-test.invalid', ['prompt-identity', 'prompt-scheme'], mycoHome);
+    const fetch: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/events' && (await request.clone().json() as { kind: string }).kind === 'context.delivered') {
+        return Response.json({ persisted: false, code: 'refused' }, { headers: { [PROTOCOL_HEADER]: '1', [FEATURES_HEADER]: 'prompt-identity,prompt-scheme,turn' } });
+      }
+      return served.fetch(request);
+    };
     for (const prompt of ['how do we rotate tokens?', 'and the window?']) {
-      const ran = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt, transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+      const ran = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt, transcript_path: tx }, { helpers: 'run', fetch, symbiont: 'copilot' });
       expect(contextOf(ran.stdout)).toBe(`Session:: \`sess-p\`\n\nRecalled for: ${prompt}`);
       expect(served.asked.at(-1)?.promptId).toBe(readSessionState(spool().dir, 'sess-p').promptId!);
       expect(ran.stderr).toContain('wait_ms=');
     }
+    expect(served.asked[1]?.rendered).toHaveLength(1);
+    await spool().drainSession('sess-p', new ServerClient({ serverUrl: 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, async () => Response.json({ persisted: true })), deadlineBudget(Date.now() + 10_000));
+    await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'after acknowledgment', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+    expect(served.asked.at(-1)?.rendered).toEqual([]);
     expect(readSessionState(spool().dir, 'sess-p').contextAsks).toBeUndefined();
   });
 
@@ -116,7 +128,7 @@ describe('a prompt', () => {
     expect(served.asked).toEqual([]);
   });
 
-  async function latePrompt(agent: string, sessionId: string, capMs: number) {
+  async function latePrompt(agent: string, sessionId: string, capMs: number, discardReply: Record<string, unknown> = { persisted: true }) {
     cacheDeploymentFeatures('https://member-test.invalid', ['prompt-identity', 'prompt-scheme'], mycoHome);
     let resolve: ((answer: Response) => void) | undefined;
     let background: Promise<unknown> | undefined;
@@ -127,7 +139,7 @@ describe('a prompt', () => {
       const request = new Request(input, init);
       if (new URL(request.url).pathname === '/context/discard') {
         discarded.push((await request.json() as { receiptId: string }).receiptId);
-        return Response.json({ persisted: true });
+        return Response.json(discardReply);
       }
       asking = await request.json() as { promptId?: string; text: string };
       return new Promise<Response>(done => { resolve = done; });
@@ -150,9 +162,11 @@ describe('a prompt', () => {
 
   it('delivers a missed answer on the first tool hook once, naming the asking prompt', async () => {
     const held = await latePrompt('codex', 'sess-tool', PROMPT_CONTEXT_TOOL_CAP_MS);
+    updateProjectContext(spool().dir, mycoHome, cache => { cache.blocks.start = { context: 'session-start block', at: Date.now() }; });
     await held.finish();
     const tool = await held.tool();
     expect(contextOf(tool.stdout)).toContain('held memory');
+    expect(contextOf(tool.stdout)).not.toContain('session-start block');
     expect(tool.stderr).toContain('delivery=tool');
     expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
     const delivery = spool().readRecords('sess-tool').find(record => record?.kind === 'context.delivered');
@@ -168,11 +182,29 @@ describe('a prompt', () => {
   });
 
   it('discards a late answer when the harness tool hook cannot add context', async () => {
-    const held = await latePrompt('claude-code', 'sess-unsupported', PROMPT_CONTEXT_INLINE_CAP_MS);
+    const held = await latePrompt('claude-code', 'sess-unsupported', PROMPT_CONTEXT_INLINE_CAP_MS, { persisted: false, code: 'session_tombstoned' });
     expect(Number(/wait_ms=(\d+)/.exec(held.first.stderr)?.[1])).toBeGreaterThan((PROMPT_CONTEXT_TOOL_CAP_MS + PROMPT_CONTEXT_INLINE_CAP_MS) / 2);
     await held.finish();
     expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
     expect(held.discarded).toEqual([held.receiptId]);
+    await prefetchContext({ spool: spool(), client: new ServerClient({ serverUrl: 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, held.fetch), serverUrl: 'https://member-test.invalid', mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
+    expect(held.discarded).toEqual([held.receiptId]);
+  });
+
+  it('bounds a hung environment recall without treating a slow share as an outage', async () => {
+    let requests = 0;
+    const fetch: FetchLike = async () => ++requests === 1 ? new Promise<Response>(() => {}) : Response.json({ persisted: true, context: 'healthy recall' });
+    const env = { ...process.env, MYCO_HOME: mycoHome, MYCO_SERVER_URL: 'https://member-test.invalid', MYCO_MEMBER_TOKEN: rig.token, MYCO_PROJECT: 'proj_1' };
+    const input = { session_id: 'env-slow', prompt: 'first', transcript_path: transcript('env-slow') };
+    const options = { fetch, env, credential: 'env' as const, symbiont: 'copilot' };
+    const missed = await runHook('user-prompt-submit', input, options);
+    expect(contextOf(missed.stdout)).toBe('Session:: `env-slow`');
+    expect(missed.stderr).toContain(`cap_ms=${PROMPT_CONTEXT_INLINE_CAP_MS} delivery=discarded`);
+    expect(missed.stderr).toContain('result=slow');
+    const recovered = await runHook('user-prompt-submit', { ...input, prompt: 'second' }, options);
+    expect(contextOf(recovered.stdout)).toContain('healthy recall');
+    expect(requests).toBe(2);
+    expect(spool().readRecords('env-slow').filter(record => record?.kind === 'prompt')).toHaveLength(2);
   });
 
   it('reports safe diagnostics for an empty answer and renders the Session line alone', async () => {

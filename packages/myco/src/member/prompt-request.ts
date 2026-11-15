@@ -9,6 +9,7 @@ import { promptContextLogPrefix } from './context-diagnostics.js';
 import { ensureMemberDir, ensurePrivateFile, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { classifyEventAnswer, ServerClient, type Outcome } from './transport.js';
 import type { MemberSpool } from './spool.js';
+import { readSessionState } from './session-state.js';
 
 export interface PromptRequestRun {
   spool: MemberSpool; mycoHome: string; client: ServerClient;
@@ -29,13 +30,13 @@ function readRetry(file: string): Retry | undefined {
   return read.ok ? read.value : undefined;
 }
 
-/** A prior miss suppresses another prompt wait while recall is backing off. */
+/** A prior failure suppresses another prompt wait while recall is backing off. */
 export function promptRequestsBackedOff(spool: MemberSpool, now: number): boolean {
   const retry = readRetry(retryPath(spool));
   return retry !== undefined && retry.backoff > 0 && retry.at > now;
 }
 
-/** Same-prompt recall, admitted after capture; misses back off independently of capture delivery. */
+/** Same-prompt recall, admitted after capture; failures back off independently of capture delivery. */
 export async function requestPromptContext(run: PromptRequestRun, ask: Extract<ContextAskRequest, { kind: 'prompt' }>): Promise<PromptAnswer | undefined> {
   const { spool, mycoHome, client, now } = run;
   const serverUrl = client.serverUrl;
@@ -59,7 +60,9 @@ export async function requestPromptContext(run: PromptRequestRun, ask: Extract<C
     spool.assertClientDestination(client);
     outcome = classifyEventAnswer(await client.request('POST', '/context/prompt', {
         body: JSON.stringify({ sessionId: run.sessionId, promptId: ask.promptId, promptScheme: ask.promptScheme, scopeReason: ask.scopeReason,
-          identity: ask.identity, at: ask.at, text: ask.text, agent: ask.agent }), headers: { 'content-type': 'application/json' },
+          identity: ask.identity, at: ask.at, text: ask.text, agent: ask.agent,
+          rendered: Object.values(readSessionState(spool.dir, run.sessionId).promptRecall?.asks ?? {}).flatMap(held =>
+            held.stage === 'delivered' && held.answer?.receiptId !== undefined ? [held.answer.receiptId] : []) }), headers: { 'content-type': 'application/json' },
         budget,
       }));
     if (outcome?.class !== 'acked') return undefined;
@@ -71,9 +74,10 @@ export async function requestPromptContext(run: PromptRequestRun, ask: Extract<C
   } finally {
     change((prior) => {
       if (prior?.id !== id) return;
-      const backoff = outcome?.class === 'acked' ? 0 : Math.min(Math.max(OFFLINE_BACKOFF_INITIAL_MS, prior.backoff * 2), OFFLINE_BACKOFF_MAX_MS);
+      const failed = outcome?.class === 'retry' || outcome?.class === 'unauthorized';
+      const backoff = failed ? Math.min(Math.max(OFFLINE_BACKOFF_INITIAL_MS, prior.backoff * 2), OFFLINE_BACKOFF_MAX_MS) : 0;
       writePrivateFileAtomic(file, JSON.stringify({ id, at: now() + backoff, backoff }));
     });
-    process.stderr.write(`${promptContextLogPrefix(serverUrl, spool.projectId)}request_ms=${Date.now() - started} result=${outcome?.class ?? 'timeout'}\n`);
+    process.stderr.write(`${promptContextLogPrefix(serverUrl, spool.projectId)}request_ms=${Date.now() - started} result=${outcome?.class ?? 'failed'}\n`);
   }
 }

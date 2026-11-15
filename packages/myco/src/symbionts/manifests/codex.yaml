@@ -283,7 +283,7 @@ registration:
   globalSettingsTarget: ~/.codex/config.toml
   settingsFormat: toml
 capabilities:
-  postToolUseInjection: true
+  promptRecallToolDelivery: true
   # Hook template registers a session-start hook that fetches Cortex context.
   sessionStartInjection: true
   # SubagentStart can inject additionalContext as extra developer context for
