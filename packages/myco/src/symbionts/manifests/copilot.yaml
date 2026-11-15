@@ -28,6 +28,7 @@ registration:
   memberHooksTarget: .github/hooks/myco-hooks.json
   globalHooksTarget: ~/.copilot/hooks/myco-hooks.json
   hooksConfigVersion: 1
+  hooksFileOwned: true
   mcpTarget: .mcp.json
   globalMcpTarget: ~/.copilot/mcp-config.json
   memberCaptureLimits: "Prompt-hook injection is unverified; registry memory arrives after a tool. Earlier transcripts need project attribution."

@@ -8,6 +8,7 @@ import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import { detectedProvisionLines, provisionDetectedAgents } from '@myco/cli/member.js';
 import { REGISTRY_VERSION, writeRegistryEntry } from '@myco/member/registry.js';
 import { readProvisionRecord } from '@myco/symbionts/member-provision-record.js';
+import { detectMachineInstalledSymbionts } from '@myco/symbionts/detect.js';
 import { bindSandboxChildHome } from '../../scripts/test-environment.mjs';
 
 let scratch: string;
@@ -131,6 +132,23 @@ it('removes a Myco-only Copilot hooks file completely', async () => {
   expect(fs.existsSync(path.join(home, targets[0]!.hooks))).toBe(true);
   await memberCli(['provision', '--remove', 'copilot'], deps);
   expect(fs.existsSync(path.join(home, targets[0]!.hooks))).toBe(false);
+});
+
+it('detects the other agents when one agent\'s directory cannot be read', async () => {
+  for (const dir of ['.claude', '.codex']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+  fs.symlinkSync(path.join(home, '.cursor'), path.join(home, '.cursor'));
+  expect(detectMachineInstalledSymbionts().map(manifest => manifest.name)).toEqual(expect.arrayContaining(['claude-code', 'codex']));
+});
+
+it("keeps a person's own Cursor hooks file when Myco's hooks are taken out again", async () => {
+  const deps = { cwd: scratch, mycoHome, env: {}, stdout: () => {}, stderr: () => {} };
+  const file = path.join(home, '.cursor/hooks.json');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{"version":1}');
+  await memberCli(['provision', 'cursor', '--server', 'https://myco.example'], deps);
+  expect(JSON.parse(fs.readFileSync(file, 'utf8')).hooks).toBeDefined();
+  await memberCli(['provision', '--remove', 'cursor'], deps);
+  expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ version: 1 });
 });
 
 it('keeps shared skills when the provision record and destination cannot be read', async () => {

@@ -435,6 +435,11 @@ const RegistrationSchema = z.object({
   /** Top-level `version` integer written alongside the `hooks` object. */
   hooksConfigVersion: z.number().optional(),
   /**
+   * The hooks file is Myco's own: Myco creates it and no one else writes it. Leaving removes the file once no hook
+   * remains. Without this, a file is the person's and keeps its `version` when Myco's hooks are taken out.
+   */
+  hooksFileOwned: z.boolean().optional(),
+  /**
    * Hook stdout contract. `plain-text` writes `additionalContext` verbatim;
    * `json` emits a flat object with semantic HookResponse fields renamed
    * via `fieldNames` (unmapped fields are dropped).

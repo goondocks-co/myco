@@ -283,8 +283,14 @@ describe('a prompt', () => {
     expect(missed.stderr).toContain('result=slow');
     expect(readSessionState(spool().dir, 'env-slow').promptRecall?.asks ?? {}).toEqual({});
     const recovered = await runHook('user-prompt-submit', { ...input, prompt: 'second' }, options);
+    // Copilot drops its prompt hook's output, so the answer is held, uncounted, for the first tool call of the same turn.
     expect(recovered.stdout).toBe('');
-    expect(recovered.stderr).toContain('delivery=inline');
+    expect(recovered.stderr).not.toContain('delivery=inline');
+    const tool = () => runHook('post-tool-use', { session_id: 'env-slow', transcript_path: transcript('env-slow'), tool_name: 'view', tool_input: { path: 'README.md' }, cwd: process.cwd() }, options);
+    const delivered = await tool();
+    expect(contextOf(delivered.stdout)).toContain('healthy recall');
+    expect(delivered.stderr).toContain('delivery=tool');
+    expect(contextOf((await tool()).stdout)).not.toContain('healthy recall');
     expect(requests).toBe(2);
     expect(spool().readRecords('env-slow').filter(record => record?.kind === 'prompt')).toHaveLength(2);
   });

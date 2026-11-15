@@ -1978,6 +1978,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       },
       "hooksFormat": "json",
       "hooksConfigVersion": 1,
+      "hooksFileOwned": true,
       "hookResponse": {
         "format": "json",
         "fieldNames": {

@@ -332,6 +332,27 @@ describe('myco cutover', () => {
     expect(readJson(settingsFile()).mcpServers).toEqual({});
   });
 
+  it('removes 1.4 from harnesses that are not installed, keeps the person\'s entries and connects nothing for them', async () => {
+    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
+    const oldMcp = { type: 'stdio', command: legacyBin, args: ['mcp'] };
+    const mine = { command: 'mine' };
+    const ownHook = { command: 'echo mine' };
+    const copilotHooks = path.join(m.home, '.copilot', 'hooks', 'myco-hooks.json');
+    const copilotMcp = path.join(m.home, '.copilot', 'mcp-config.json');
+    const windsurfHooks = path.join(m.home, '.codeium', 'windsurf', 'hooks.json');
+    const windsurfMcp = path.join(m.home, '.codeium', 'windsurf', 'mcp_config.json');
+    writeJson(copilotHooks, { version: 1, hooks: { SessionStart: [ownHook, { command: `${legacyBin} hook session-start --symbiont copilot --myco-managed` }] } });
+    writeJson(windsurfHooks, { hooks: { pre_user_prompt: [ownHook, { command: `${legacyBin} hook user-prompt-submit --symbiont windsurf --myco-managed` }] } });
+    for (const file of [copilotMcp, windsurfMcp]) writeJson(file, { mcpServers: { myco: oldMcp, mine } });
+
+    const result = await m.run();
+    expect(result.err).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(hookCommands(readJson(copilotHooks).hooks)).toEqual(['echo mine']);
+    expect(hookCommands(readJson(windsurfHooks).hooks)).toEqual(['echo mine']);
+    for (const file of [copilotMcp, windsurfMcp]) expect(readJson(file).mcpServers).toEqual({ mine });
+  });
+
   it('keeps a 2.0 member plugin, and refuses another home\'s plugin', async () => {
     const clinePlugin = path.join(m.home, '.cline', 'plugins', 'myco.ts');
     fs.mkdirSync(path.dirname(clinePlugin), { recursive: true });

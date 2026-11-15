@@ -105,6 +105,17 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
       log(run, id, held, 'pending');
       return { events: [], response: { ...response, recallPending: true } };
     }
+    if (run.credentialSource === 'env') {
+      // No helper runs under an environment credential, so nothing else releases an ask an earlier prompt left behind.
+      for (const [other, ask] of Object.entries(state.promptRecall!.asks)) if (other !== id && ask.stage === 'discarded') delete state.promptRecall!.asks[other];
+    }
+    if (held.stage === 'ready' && HOOK_CONFIG[run.agent]?.capabilities.promptSubmitInjection === false) {
+      // This agent drops its prompt hook's output: the answer waits for the first tool call, and counts as delivered only there.
+      held.late = true;
+      held.request.text = '';
+      log(run, id, held, 'pending');
+      return { events: [], response: {} };
+    }
     if (held.stage === 'pending') held.stage = 'discarded';
     const rendered = consumePromptRecall(run, state, { id, response, delivery: 'inline' });
     if (run.credentialSource === 'env' && held.stage === 'discarded') {

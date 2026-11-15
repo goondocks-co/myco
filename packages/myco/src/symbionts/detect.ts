@@ -77,11 +77,9 @@ export function detectMachineInstalledSymbionts(): SymbiontManifest[] {
 }
 
 function installedDirectory(location: string): boolean {
+  // Any failure to read the location means "not detected": one unreadable or looping entry never stops setup for the other agents.
   try { return fs.statSync(expandHome(location)).isDirectory(); }
-  catch (error) {
-    if (['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
-    throw error;
-  }
+  catch { return false; }
 }
 
 /** Configuration managed by Myco is not installation evidence unless the manifest declares it. */
