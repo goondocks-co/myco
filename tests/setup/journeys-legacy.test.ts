@@ -635,18 +635,23 @@ describe('legacy journey (e)', () => {
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
   });
 
-  it('creates a native Deployment with G and leaves spore import waiting for admin opt-in', async () => {
+  it('creates a native Deployment with G and completes cutover with spores left in the vault', async () => {
     const fixture = await rig();
     const address = 'http://127.0.0.1:8787';
     const owner = ownerDeployment(root, home, 'local', address);
     closers.unshift(owner.close);
     const deps = { ...fixture.deps, ...owner.deps, stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line), sleep: async () => {} };
     const bytes = fs.readFileSync(fixture.legacy.vault);
-    expect(await run(['--create', 'local', '--serve', 'service', '--default', '--cutover', ...fixture.legacy.projects.flatMap(p => ['--route', `${p.id}=${address}`]), '--no-agents', '--no-runner', '--yes'], deps)).toBe(2);
+    expect(await run(['--create', 'local', '--serve', 'service', '--default', '--cutover', ...fixture.legacy.projects.flatMap(p => ['--route', `${p.id}=${address}`]), '--no-agents', '--no-runner', '--yes'], deps)).toBe(0);
     expect(lines.join('\n')).toContain('Allow spore import');
-    expect(legacyMigrationState(home).state).toBe('partial');
+    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[fixture.legacy.projects[0]!.id]?.vault?.state).toBe('complete');
+    expect(errors).toEqual([]);
     expect(readRegistryEntry(fixture.legacy.projects[0]!.root, home)?.serverUrl).toBe(address);
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
+    lines = [];
+    expect(await run(['--status'], deps)).toBe(0);
+    expect(lines.join('\n')).not.toMatch(/deferred|myco setup --cutover/);
   });
 
   for (const noAgents of [true, false]) it(`${noAgents ? 'respects declined' : 'conducts retained'} agent provisioning during legacy handover`, async () => {

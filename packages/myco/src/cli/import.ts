@@ -1,3 +1,4 @@
+import { SPORE_IMPORT_GUIDANCE } from '@goondocks/myco-shared/setup-guidance';
 import { IMPORT_STOP_WORDS } from '@myco/member/import-feedback.js';
 /**
  * `myco import` — bring this machine's existing agent history to its Deployment.
@@ -253,7 +254,7 @@ export const transcriptImportComplete = (report: ImportReport): boolean =>
   report.refused === undefined && report.projects.every((p) => p.endedBy === undefined);
 
 /** What a 1.4 vault import came to, per project, in the order a person reads it. */
-export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): string[] {
+export function legacyReportLines(report: LegacyImportReport, dryRun: boolean, options: { policySummary?: boolean } = {}): string[] {
   const lines: string[] = [];
   for (const p of report.projects) {
     lines.push(`${p.projectId} (${p.root ?? 'no project root recorded'}) from 1.4: ${p.vault.sessions} sessions, ${p.vault.prompts} prompts, ${p.vault.plans} plans, ${p.vault.spores} spores, ${p.vault.lineage} spore history events`);
@@ -273,7 +274,7 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     if (p.unmatchedDeletes.length > 0) lines.push(`  ${p.unmatchedDeletes.length} sessions deleted in 1.4 could not be matched to a transcript; delete them from the dashboard if they reappear: ${p.unmatchedDeletes.join(', ')}`);
     for (const [machine, n] of Object.entries(p.otherMachines)) lines.push(`  ${n} sessions were captured on ${machine}, not this machine; run \`myco import --legacy <this vault>\` on ${machine} to bring them`);
     lines.push(`  sent ${p.prompts} prompts, ${p.responses} responses, ${p.plans.sent} plans (${p.plans.empty} empty, ${p.plans.unsent} of deleted or unknown sessions)`);
-    lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here, ${p.spores.refused} refused; history: ${p.lineage.recorded} recorded, ${p.lineage.duplicate} already here, ${p.lineage.refused} refused`);
+    lines.push(`  spores: ${p.spores.saved} saved, ${p.spores.duplicate} already here${p.spores.refused > 0 ? `, ${p.spores.refused} refused` : ''}; history: ${p.lineage.recorded} recorded, ${p.lineage.duplicate} already here${p.lineage.refused > 0 ? `, ${p.lineage.refused} refused` : ''}`);
     if ((p.spores.kept ?? 0) > 0) lines.push(`  spores: ${p.spores.kept} kept with existing source links`);
     for (const stored of p.unaliased) lines.push(`  kept stored id: ${stored}`);
     const groups = Object.entries(p.causes ?? {});
@@ -285,8 +286,20 @@ export function legacyReportLines(report: LegacyImportReport, dryRun: boolean): 
     for (const failure of p.failures) lines.push(`  failed ${failure}; run the import again to retry it`);
     if (p.notAttempted !== undefined) lines.push(`  not attempted: ${p.notAttempted.sessions} sessions, ${p.notAttempted.spores} spores, ${p.notAttempted.lineage} spore history events; run the import again to bring them`);
   }
+  if (!dryRun && options.policySummary !== false) {
+    const summary = legacyPolicySummary(report.projects);
+    if (summary !== null) lines.push(summary);
+  }
   if (report.projects.length === 0) lines.push('The 1.4 vault holds nothing to import.');
   return lines;
+}
+
+/** One summary for the knowledge the Deployment chose to leave in the vault. */
+export function legacyPolicySummary(projects: LegacyImportReport['projects']): string | null {
+  const counts = projects.reduce((total, p) => ({ spores: total.spores + (p.spores.notImported ?? 0), lineage: total.lineage + (p.lineage.notImported ?? 0) }), { spores: 0, lineage: 0 });
+  return counts.spores + counts.lineage === 0 ? null
+    : `${counts.spores} spore${counts.spores === 1 ? '' : 's'} and ${counts.lineage} spore history event${counts.lineage === 1 ? '' : 's'} stayed in the 1.4 vault, not imported by this Deployment's settings. `
+      + 'This Deployment does not import 1.4 spores unless an admin allows it. ' + SPORE_IMPORT_GUIDANCE + ' The vault is left untouched.';
 }
 
 /** Ctrl-C stops requests and leaves acknowledged progress available to the next run. */

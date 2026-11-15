@@ -22,6 +22,9 @@ import { refuseImportAfter } from '../setup/fixtures/interruption.js';
  *     installation holds anything it would need to take.
  */
 import { type CutoverDeps } from '@myco/cli/cutover.js';
+import { run as importHistory } from '@myco/cli/import.js';
+import { readCutoverState, legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { Database } from 'bun:sqlite';
 import { afterEach,beforeEach,describe,expect,it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -671,12 +674,44 @@ describe('myco cutover', () => {
     expect(fs.readdirSync(path.join(m.legacyHome, 'backups')).length).toBe(2);
   });
 
+  it('completes member cutover with spores left in the vault, then imports them when an admin allows it', async () => {
+    await settingsWriter(m.rig.env.db).setLeaf('import.spores_enabled', false, 'mem_machine_1', Date.now());
+    m.rig.env.sqlite.run("UPDATE members SET role = 'member' WHERE id = 'mem_machine_1'");
+    const vault = new Database(m.vault);
+    try {
+      vault.run("UPDATE spores SET status = 'obsolete' WHERE id = 'gotcha-1'");
+      vault.run("INSERT INTO resolution_events (id, project_id, agent_id, spore_id, action, reason, created_at) VALUES ('retained-event', ?, 'user', 'gotcha-1', 'obsolete', 'Retained decision', ?)", [PROJECT, NOW_S]);
+      vault.run('PRAGMA wal_checkpoint(TRUNCATE)');
+    } finally { vault.close(); }
+    const original = fs.readFileSync(m.vault);
+    const result = await m.run();
+    expect(result.ok).toBe(true);
+    expect(result.err).toEqual([]);
+    expect(legacyMigrationState(m.mycoHome, { homeDir: m.home }).state).toBe('moved');
+    expect(readCutoverState(m.mycoHome).migrations?.[m.vault]?.projects[PROJECT]?.vault?.state).toBe('complete');
+    expect(result.out.filter(line => line.includes('not imported by this Deployment'))).toHaveLength(1);
+    expect(result.out.join('\n')).toContain('1 spore and 1 spore history event stayed in the 1.4 vault');
+    expect(result.out.join('\n')).not.toMatch(/partial|refused|failed/);
+    expect(m.rig.env.sqlite.query('SELECT id FROM spores WHERE project_id = ?').all(PROJECT)).toEqual([]);
+    expect(fs.readFileSync(m.vault)).toEqual(original);
+
+    m.rig.env.sqlite.run("UPDATE members SET role = 'admin' WHERE id = 'mem_machine_1'");
+    await settingsWriter(m.rig.env.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
+    const out: string[] = [];
+    expect(await importHistory(['--legacy', m.vault, '--server', SERVER], { mycoHome: m.mycoHome, machineId: TEST_MACHINE_ID, fetch: m.rig.fetch, sleep: async () => {}, stdout: line => out.push(line), stderr: () => {} })).toBe(true);
+    expect(m.rig.env.sqlite.query('SELECT id FROM spores WHERE project_id = ?').all(PROJECT)).toEqual([{ id: 'gotcha-1' }]);
+    expect(out.join('\n')).toContain('spores: 1 saved');
+    expect(out.join('\n')).toContain('history: 1 recorded');
+    expect(fs.readFileSync(m.vault)).toEqual(original);
+  });
+
   it('fails the run when the Deployment refuses a write', async () => {
     const refusing: MemberRig['fetch'] = async (input, init) =>
       String(input).endsWith('/spores/save') ? new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }) : m.rig.fetch(input, init);
     const result = await m.run([], { fetch: refusing });
     expect(result.ok).toBe(false);
     expect(result.err.join('\n')).toContain('the Deployment refused or failed part of the 1.4 history');
+    expect(legacyMigrationState(m.mycoHome, { homeDir: m.home }).state).toBe('partial');
     expect(result.out.join('\n')).not.toContain('Cutover complete.');
   });
 
