@@ -181,6 +181,8 @@ describe('values refused before storage', () => {
 /** A value each live leaf's rule admits on a hosted Deployment. */
 function sampleFor(leaf: string): unknown {
   const spec = DEPLOYMENT_LEAF_SPECS[leaf] as Record<string, unknown>;
+  if (leaf === 'single_turn.model') return 'title-model';
+  if (leaf === 'single_turn.base_url') return 'http://localhost:1234/v1';
   if (leaf === 'embedding.model') return '@cf/baai/bge-large-en-v1.5';
   if (leaf === 'embedding.provider') return 'openrouter';
   if (spec.type === 'integer') return spec.max;

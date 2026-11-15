@@ -1,3 +1,5 @@
+import { cloudflareCompletionProvider, type CompletionBinding } from './completion.js';
+import { configuredCompletionProvider } from '../../core/completion/configured-provider.js';
 /**
  * The Cloudflare adapter: bindings in, `ServerEnv` out.
  *
@@ -34,7 +36,7 @@ function embeddingPlatform(bindings: Pick<CloudflareBindings, 'AI'>): EmbeddingP
 /** The bindings `wrangler.toml` declares, exactly as the Worker receives them. */
 export interface CloudflareBindings extends OwnerBindings {
   VECTORIZE?: VectorIndex;
-  AI?: EmbeddingBinding;
+  AI?: EmbeddingBinding & CompletionBinding;
   MYCO_DB: RelationalStore;
   BUCKET: BlobStore;
   SOURCE_LIMIT: RateLimiter;
@@ -103,6 +105,7 @@ function durableR2Bucket(bucket: BlobStore): BlobStore {
   };
 }
 export type _VectorStoreSatisfies = AssertAssignable<VectorIndex, VectorizeIndex>;
+export type _CompletionSatisfies = AssertAssignable<CompletionBinding, Ai>;
 export type _EmbeddingSatisfies = AssertAssignable<EmbeddingBinding, Ai>;
 export type _StagingBucketSatisfies = AssertAssignable<StagingBucket, R2Bucket>;
 
@@ -237,6 +240,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
   const outbound: ServerEnv['outbound'] = (input, init) => fetch(input, init);
   return {
     ...(bindings.VECTORIZE === undefined ? {} : { vectors: cloudflareVectorStore(bindings.VECTORIZE) }),
+    completionProvider: () => configuredCompletionProvider(bindings.MYCO_DB, wrappingKey, outbound, { target: 'cloudflare', ...(bindings.AI === undefined ? {} : { bindingProvider: (model) => cloudflareCompletionProvider(bindings.AI!, model) }) }),
     embeddingProvider: () => configuredEmbeddingProvider(bindings.MYCO_DB, wrappingKey, outbound, embeddingPlatform(bindings)),
     embeddingProviderFor: (choice) => embeddingProviderFor(bindings.MYCO_DB, wrappingKey, outbound, embeddingPlatform(bindings), choice),
     embeddingPlatform: embeddingPlatform(bindings),

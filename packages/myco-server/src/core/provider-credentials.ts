@@ -21,3 +21,8 @@ export async function openHarnessCredential(db: RelationalStore, key: SecretWrap
     throw error;
   }
 }
+
+/** The optional key for the operator-selected single-turn endpoint. */
+export function openCompletionCredential(db: RelationalStore, key: SecretWrappingKey): Promise<string | null> {
+  return deploymentSecretStore(db, key).get('single-turn');
+}

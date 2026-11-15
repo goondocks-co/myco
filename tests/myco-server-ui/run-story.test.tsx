@@ -419,6 +419,21 @@ describe('Tries', () => {
   });
 });
 
+
+it('shows direct titling with its model, usage, estimated cost and saved output', async () => {
+  const detail = runDetail(runRow({ id: 'direct_title', task: 'title-summary', provider: 'direct', model: 'local-title-model', harness: null, status: 'completed', result: 'produced', startedAt: NOW - MINUTE, completedAt: NOW, tokensUsed: 890, costUsd: 0.001, costProvenance: 'model_pricing',
+    identity: { status: 'reported', source: 'deployment_direct_call', primary: { model: 'local-title-model' }, models: [{ model: 'local-title-model', source: 'deployment_direct_call', usage: null }] },
+  }), { outcomeEvidence: { hasReport: false, hasAudit: null, artifactPresent: null, skipSupported: null, targetSessionId: 'session_titled' } });
+  const panel = await open('direct_title', detail);
+  expect(story(panel).textContent).toContain('Myco called the model directly');
+  expect(story(panel).textContent).toContain('Wrote the session title and summary');
+  expect(panel.textContent).toContain('Stored the validated title and summary');
+  expect(panel.textContent).toContain('local-title-model');
+  fireEvent.click(within(panel).getByText('Technical details'));
+  expect(panel.textContent).toContain('890');
+  expect(panel.textContent).toContain('Estimate using recorded models and prices');
+});
+
 const HOUR_AGO = 60 * MINUTE;
 function evidence(over: Partial<RunCloseEvidence> = {}): RunCloseEvidence {
   return { hasReport: true, hasAudit: true, artifactPresent: true, skipSupported: null, targetSessionId: null, ...over };

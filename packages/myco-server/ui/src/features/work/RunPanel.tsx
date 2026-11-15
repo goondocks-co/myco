@@ -309,7 +309,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
   const name = useStarterNames();
   // A machine by its name only when the server names it to this viewer, else as its member's; never by its id.
   const machine = ranOn(run.worker, name)?.machine ?? null;
-  const agent = run.harness === null ? null : agentName(run.harness);
+  const agent = run.provider === 'direct' ? 'Myco direct model call' : run.harness === null ? null : agentName(run.harness);
   const cost = run.costUsd ?? run.estimatedCostUsd ?? run.actualCostUsd;
   const tokens = run.tokensUsed === null ? null : `${tokenWords(run.tokensUsed)} tokens`;
 

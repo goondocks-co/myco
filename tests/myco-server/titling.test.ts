@@ -1,3 +1,6 @@
+import { DIRECT_CALLS_PER_MINUTE } from '@myco-server-worker/core/completion/provider.js';
+import type { CompletionProvider } from '@myco-server-worker/core/completion/provider.js';
+import { singleTurnMaterial } from '@myco-server-worker/content/single-turn-material.js';
 /**
  * The titling gate: one harness dispatch per ended session, queued for a worker
  * to claim, with the queued row carrying the whole launch the dispatch asked for
@@ -364,5 +367,88 @@ describe('titleSession on an owner\'s ask', () => {
     h.prompt('s2', 'q1', 'one', NOW - 9000);
     h.prompt('s2', 'q2', 'two', NOW - 8000);
     expect((await h.material('s2', 'owner')).map((m) => m.prompt)).toEqual(['one', 'two']);
+  });
+});
+
+
+describe('direct session titles', () => {
+  const answer = { title: 'Shipped bounded session titles', summary: 'Built direct session titling. Verified title and summary persistence.' };
+  function direct(complete: CompletionProvider['complete']) {
+    const h = harness({ bound: false });
+    const pending: Promise<void>[] = [];
+    h.env.completionProvider = async () => ({ model: '@cf/openai/gpt-oss-20b', complete });
+    h.env.afterResponse = work => { pending.push(work()); };
+    h.session('direct');
+    h.prompt('direct', 'opening', 'Read this task file and do it.', NOW - 8000);
+    return { ...h, settle: () => Promise.all(pending) };
+  }
+
+  it('writes a validated title once, records model usage and estimated cost, and leaves later prompts uncovered', async () => {
+    let calls = 0;
+    const h = direct(async () => {
+      calls++;
+      h.prompt('direct', 'later', 'Also cover a new requirement', NOW + 1);
+      await h.convert();
+      return { text: JSON.stringify(answer), usage: { input: 1200, output: 80 } };
+    });
+    const run = await h.title('direct');
+    expect(run.outcome).toBe('dispatched');
+    await h.settle();
+    expect((await h.title('direct', NOW + 2)).outcome).toBe('already');
+    expect(calls).toBe(1);
+    expect(h.row('direct')).toMatchObject(answer);
+    expect(h.runRow(run.runId!)).toMatchObject({ status: 'completed', model: '@cf/openai/gpt-oss-20b', provider: 'direct' });
+    const persisted = h.sqlite.query('SELECT tokens_used,cost_usd,cost_source FROM agent_runs WHERE id=?').get(run.runId!) as { tokens_used: number; cost_usd: number; cost_source: string };
+    expect(persisted.tokens_used).toBe(1280);
+    expect(persisted.cost_usd).toBeGreaterThan(0);
+    expect(persisted.cost_source).toBe('catalogue_estimate');
+    const coverage = h.sqlite.query('SELECT user_prompts,titled_user_prompts FROM session_documents WHERE session_id=?').get('direct');
+    expect(coverage).toEqual({ user_prompts: 2, titled_user_prompts: 1 });
+    h.sqlite.close();
+  });
+
+  it('retries an invalid answer once, stores a named failure after two, then remains eligible', async () => {
+    let valid = false;
+    const h = direct(async () => ({ text: valid ? JSON.stringify(answer) : '{"title":"bad"}', usage: { input: 40, output: 10 } }));
+    const first = await h.title('direct');
+    await h.settle();
+    expect(h.row('direct')).toEqual(untouched);
+    expect(h.runRow(first.runId!)).toMatchObject({ status: 'failed', error: 'completion_invalid_answer' });
+    valid = true;
+    const next = await h.title('direct', NOW + 1);
+    await h.settle();
+    expect(next.outcome).toBe('dispatched');
+    expect(h.row('direct')).toMatchObject(answer);
+    h.sqlite.close();
+  });
+
+  it('protects the provider across retries and leaves rate-limited sessions eligible', async () => {
+    let calls = 0;
+    const h = direct(async () => { calls++; return { text: '{}', usage: null }; });
+    for (let i = 0; i < DIRECT_CALLS_PER_MINUTE; i++) { await h.title('direct', NOW + i); await h.settle(); }
+    expect(calls).toBe(DIRECT_CALLS_PER_MINUTE);
+    expect(h.runRows().some(run => run.error === 'completion_rate_limited')).toBe(true);
+    expect(h.row('direct')).toEqual(untouched);
+    h.sqlite.close();
+  });
+
+  it('uses the head and tail, final replies and the stored task-file read rather than harness notices', async () => {
+    const h = direct(async () => ({ text: JSON.stringify(answer), usage: null }));
+    h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1','read-task','direct','tok_1','tool.use','cli',?,'hash',?,?)",
+      [JSON.stringify({ toolCallId: 'read-task', promptId: 'opening', toolName: 'Read', input: { file_path: '/task.md' }, output: 'Build direct session titles with bounded calls.', success: true }), NOW - 7900, NOW - 7900]);
+    for (let i = 0; i < 14; i++) {
+      h.prompt('direct', 'turn-' + i, 'Human requirement ' + i, NOW - 7000 + i * 10);
+      h.response('direct', 'turn-' + i, 'early-' + i, 'I will investigate.', NOW - 6999 + i * 10);
+      h.response('direct', 'turn-' + i, 'closing-' + i, 'Completed requirement ' + i, NOW - 6998 + i * 10);
+    }
+    h.prompt('direct', 'notice', 'DO NOT TREAT AS HUMAN', NOW - 1, 'system');
+    await h.convert();
+    const material = await singleTurnMaterial(h.env, 'proj_1', 'direct');
+    expect(material.text).toContain('Human requirement 13');
+    expect(material.text).toContain('Completed requirement 13');
+    expect(material.text).toContain('Build direct session titles');
+    expect(material.text).not.toContain('DO NOT TREAT AS HUMAN');
+    expect(material.text.length).toBeLessThanOrEqual(10000);
+    h.sqlite.close();
   });
 });

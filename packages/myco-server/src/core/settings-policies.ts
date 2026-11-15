@@ -1,3 +1,4 @@
+import { DEFAULT_COMPLETION_MODEL, DIRECT_CALLS_PER_MINUTE } from './completion/provider.js';
 import { BUDGET_LEAF } from './budget-policy.js';
 import { dailyBudget } from './settings.js';
 /**
@@ -252,6 +253,20 @@ const capture: SettingPolicy = {
   },
 };
 
+const singleTurn: SettingPolicy = {
+  id: 'single-turn',
+  owners: ['core/completion/configured-provider.ts'],
+  leaves: ['single_turn.model', 'single_turn.base_url'],
+  async resolve(env) {
+    const held = await storedSettings(env.db, ['single_turn.model', 'single_turn.base_url']);
+    const value = (leaf: string) => { const row = held.get(leaf); return row !== undefined && row.violation === null ? row.value : null; };
+    return {
+      'single_turn.model': { effective: value('single_turn.model') ?? (env.platform.name === 'cloudflare' ? DEFAULT_COMPLETION_MODEL : null), reason: 'Single-turn calls use at most ' + DIRECT_CALLS_PER_MINUTE + ' provider calls per minute, including validation retries.' },
+      'single_turn.base_url': { effective: value('single_turn.base_url'), reason: 'OpenAI-compatible API base URL, including /v1 when required. The optional key is stored under Provider keys, Single-turn endpoint.' },
+    };
+  },
+};
+
 const embedding: SettingPolicy = {
   id: 'embedding',
   owners: ['core/embedding/configured-provider.ts', 'core/embedding/jobs.ts', 'core/embedding/switch.ts'],
@@ -362,7 +377,7 @@ export const SETTING_POLICIES: readonly SettingPolicy[] = [
   { id:'budget', owners:['core/settings.ts'], leaves:[BUDGET_LEAF], async resolve(env) {
     return { [BUDGET_LEAF]:{effective:await dailyBudget(env.db)} };
   } },
-  scheduling, titling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, embedding, executionProfiles, taskOverrides,
+  scheduling, titling, limits, workers, context, codeMap, releases, records, backups, maintenance, capture, singleTurn, embedding, executionProfiles, taskOverrides,
 ];
 
 /** The live leaves: every Deployment leaf not retired. */

@@ -1,0 +1,33 @@
+import type { RelationalStore } from '../../core/adapters.js';
+import { first, read, rows } from '../index.js';
+
+export interface TitleSnapshot { generation: number; userPrompts: number; materialAt: number; first: number; last: number }
+const snapshot = read<[project: string, session: string], TitleSnapshot>({ name: 'titleMaterial.snapshot', sql: `
+  SELECT d.generation,d.user_prompts AS userPrompts,s.last_received_at AS materialAt,
+    (SELECT MIN(ord) FROM session_prompts p WHERE p.project_id=d.project_id AND p.session_id=d.session_id AND p.generation=d.generation AND p.origin='user' AND p.turn_key=p.prompt_id) AS first,
+    (SELECT MAX(ord) FROM session_prompts p WHERE p.project_id=d.project_id AND p.session_id=d.session_id AND p.generation=d.generation AND p.origin='user' AND p.turn_key=p.prompt_id) AS last
+  FROM session_documents d JOIN sessions s ON s.project_id=d.project_id AND s.session_id=d.session_id
+  WHERE d.project_id=?1 AND d.session_id=?2 AND d.state='live'` });
+const selection = (direction: 'ASC' | 'DESC') => read<[project: string, session: string, generation: number, from: number, to: number, limit: number], { promptId: string; ord: number; preview: string }>({
+  name: `titleMaterial.${direction}`, sql: `SELECT prompt_id AS promptId,ord,preview FROM session_prompts INDEXED BY idx_session_prompts_user_turns
+    WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND origin='user' AND turn_key=prompt_id AND ord>=?4 AND ord<=?5
+    ORDER BY ord ${direction},prompt_id ${direction} LIMIT ?6`,
+});
+const ascending = selection('ASC'), descending = selection('DESC');
+export const titleMaterialSnapshot = (db: RelationalStore, project: string, session: string) => first(db, snapshot.bind(project, session));
+
+/** Head, tail and evenly spaced middle seeks are bounded independently of session length. */
+export async function titleMaterialTurns(db: RelationalStore, project: string, session: string, held: TitleSnapshot) {
+  const head = await rows(db, ascending.bind(project, session, held.generation, held.first, held.last, 3));
+  const tail = await rows(db, descending.bind(project, session, held.generation, held.first, held.last, 4));
+  const full = new Set([...head, ...tail].map(r => r.promptId));
+  const selected = new Map([...head, ...tail].map(r => [r.promptId, r]));
+  const from = head.at(-1)?.ord, to = tail.at(-1)?.ord;
+  if (from !== undefined && to !== undefined && to > from) {
+    for (let i = 1; i <= 12; i++) {
+      const row = (await rows(db, ascending.bind(project, session, held.generation, from + (to - from) * i / 13, to - 1, 1)))[0];
+      if (row !== undefined) selected.set(row.promptId, row);
+    }
+  }
+  return [...selected.values()].sort((a, b) => a.ord - b.ord).map(r => ({ ...r, full: full.has(r.promptId) }));
+}

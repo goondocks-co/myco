@@ -1,3 +1,4 @@
+import { COMPLETION_MODEL_CHARS, COMPLETION_BASE_URL_CHARS } from './completion/provider.js';
 import { observedSettingsAssertion } from '../db/meta/settings-observation.js';
 import { rows, type Bound } from '../db/index.js';
 import { CURATION_DAILY_LIMIT_SETTING } from '@goondocks/myco-shared/settings-contract';
@@ -65,6 +66,7 @@ export type ProjectCapability = (typeof PROJECT_CAPABILITIES)[number];
  */
 export type LeafSpec =
   | Record<string, never>
+  | { readonly type: 'completion'; readonly endpoint?: true }
   | { readonly type: 'boolean' }
   | { readonly type: 'number'; readonly min: number; readonly default: number }
   | { readonly type: 'integer'; readonly min: number; readonly max: number; readonly nullable?: true; readonly default?: number | null }
@@ -112,6 +114,8 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   'agent.scheduled_tasks_active_window_days': { type: 'integer', min: 0, max: 365 },
   'agent.scheduled_tasks_enabled': BOOLEAN_SPEC,
   'agent.tasks': { type: 'task-overrides' },
+  'single_turn.model': { type: 'completion' },
+  'single_turn.base_url': { type: 'completion', endpoint: true },
   'agent.titling_idle_close_minutes': { type: 'integer', min: 5, max: 10_080 },
   'backup.auto_interval_hours': { type: 'integer', min: 1, max: 720 },
   // #1547: whether a member's machine may create a project for a repository it meets that no project holds. Absent
@@ -390,6 +394,16 @@ function rootMapViolation(spec: { maxItems: number }, value: unknown): string | 
 /** What the value violates, or null when it satisfies the leaf's rule. */
 export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unknown): string | null {
   if (!('type' in spec)) return null;
+  if (spec.type === 'completion') {
+    const limit = spec.endpoint ? COMPLETION_BASE_URL_CHARS : COMPLETION_MODEL_CHARS;
+    if (typeof value !== 'string' || value.trim() !== value || value.length === 0 || value.length > limit || /[\s\u0000-\u001f\u007f]/.test(value)) return 'expected nonempty text without whitespace or control characters, at most ' + limit + ' characters';
+    if (!spec.endpoint) return null;
+    try {
+      const url = new URL(value);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return 'expected an HTTP base URL without credentials, query or fragment';
+      return null;
+    } catch { return 'expected an HTTP base URL'; }
+  }
   if (spec.type === 'boolean') return typeof value === 'boolean' ? null : 'expected on or off';
   if (spec.type === 'number') return typeof value === 'number' && Number.isFinite(value) && value>=spec.min ? null : `expected a finite number of at least ${spec.min}`;
   if (spec.type === 'integer') {

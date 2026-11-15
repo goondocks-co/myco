@@ -15,6 +15,7 @@ export function embeddingBindings(kind: EmbeddingFixture): Pick<CloudflareBindin
   return {
     VECTORIZE: indexFixture(),
     AI: { async run(model, input) {
+      if (!('text' in input)) throw new Error('This fixture serves embedding requests only');
       const dimensions = EMBEDDING_CATALOGUE['workers-ai'].models.find(row => row.id === model)?.dimensions;
       const [text] = input.text;
       if (dimensions === undefined || text === undefined || input.text.length !== 1) throw new Error('Unknown fixture embedding request');
