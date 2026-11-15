@@ -138,24 +138,6 @@ function settled(ctx: SporeWriteContext, sporeId: string, newSporeId: string | n
   return outcome === 'duplicate' ? 'duplicate' : true;
 }
 
-/**
- * Return a spore retired with nothing in its place to the active set, at the revision the writer read, recorded as the writer's with the reason when one is
- * given. A spore that was replaced or merged, or that moved since it was read, is refused as stale and nothing is saved.
- */
-export async function restoreSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): Promise<{ spore: string; status: 'active' } | Exclude<Settled, true | 'duplicate'>> {
-  const id = str(input.id);
-  if (id === undefined) return failure('id is required to restore a spore');
-  const expectations = sporeExpectations({ expect_revision: input.expect_revision });
-  if (!expectations.ok) return failure(expectations.reason);
-  const by = writerOf(ctx);
-  const outcome = settled(ctx, id, null, await restoreSpore(ctx.env.db, { projectId: ctx.projectId }, {
-    now: ctx.now, revision: expectations.expect.revision, authority: ctx.principal,
-    event: { id: crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId: id, reason: str(input.reason) ?? null, sessionId: null, provenance: null, createdAt: ctx.now },
-  }));
-  if (outcome !== true && outcome !== 'duplicate') return outcome;
-  return { spore: id, status: 'active' };
-}
-
 function sporeMetadataError(input: SporeWriteInput): string | null {
   if (input.channel === 'import' && input.file_path != null && (typeof input.file_path !== 'string' || !input.file_path || input.file_path.length > MAX_FILE_PATH_CHARS)) return `file_path must be nonempty text of at most ${MAX_FILE_PATH_CHARS} characters`;
   for (const [field, max] of Object.entries(OPTIONAL_TEXT_BOUNDS)) {
@@ -327,6 +309,20 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
           + `Reread ${stale.id}, then consolidate again with the sources that are still active at their current revisions.` };
     }
     return { new_spore_id: wisdom.id, sources_consolidated: consolidated, status: 'consolidated', created_at: wisdom.createdAt };
+  }
+
+  if (op === 'restore') {
+    const id = str(input.id);
+    if (id === undefined) return failure('id is required for op: restore');
+    const restoring = sporeExpectations({ expect_revision: input.expect_revision });
+    if (!restoring.ok) return failure(restoring.reason);
+    const by = writerOf(ctx);
+    const outcome = settled(ctx, id, null, await restoreSpore(db, scope, {
+      now: ctx.now, revision: restoring.expect.revision, authority: ctx.principal,
+      event: { id: crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId: id, reason: str(input.reason) ?? null, sessionId: null, provenance: null, createdAt: ctx.now },
+    }));
+    if (outcome !== true && outcome !== 'duplicate') return outcome;
+    return { spore: id, status: 'active' };
   }
 
   return failure('unknown spore operation');

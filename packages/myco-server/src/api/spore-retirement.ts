@@ -1,14 +1,14 @@
 /**
  * A person retires a current spore, or restores one retired with nothing in its place, from the dashboard.
  *
- * Each is the lifecycle write `myco_spores` makes (`core/spore-admission.ts`), recorded as the signed-in member's and bound to the revision
- * the page read: a page showing a spore that has changed since is refused with a conflict and nothing is changed. Each answers the spore
- * as it stands afterwards, as `GET /api/projects/{p}/spores/{id}` does.
+ * Each goes through the spore writer the tools use (`writeSpore`): a retirement is its `obsolete` write, a restore its `restore` transition, which
+ * no tool offers. Each is recorded as the signed-in member's and bound to the revision the page read: a page showing a spore that has changed
+ * since is refused with a conflict and nothing is changed. Each answers the spore as it stands afterwards, as `GET /api/projects/{p}/spores/{id}` does.
  */
 import type { ServerEnv } from '../core/adapters.js';
 import type { OwnerContext } from '../context.js';
 import type { ReadScope } from '../read/scope.js';
-import { restoreSporeWrite, writeSpore } from '../core/spore-admission.js';
+import { writeSpore } from '../core/spore-admission.js';
 import { badRequest, notFound, ok, parseJsonObject, resolveProjectScope } from './scope.js';
 import { sporeArticle } from './intelligence.js';
 
@@ -72,8 +72,8 @@ export async function handleRetireSpore(env: ServerEnv, ctx: OwnerContext): Prom
 export async function handleRestoreSpore(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const request = await requestOf(env, ctx);
   if (request instanceof Response) return request;
-  const outcome = await restoreSporeWrite(
-    { id: request.sporeId, expect_revision: request.revision },
+  const outcome = await writeSpore(
+    { op: 'restore', id: request.sporeId, expect_revision: request.revision },
     { env, projectId: request.scope.projectId, now: ctx.now, principal: memberOf(ctx) },
   ) as Outcome;
   return answer(env, request.scope, request.sporeId, outcome, 'restore');
