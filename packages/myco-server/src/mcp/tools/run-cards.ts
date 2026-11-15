@@ -49,10 +49,11 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
           return { ...runRefusal({ what: 'card material', read: true, actual: 'the live source changed while material was read',
             next: { tool: CARD_TOOL, op: 'material', page: 1 } }), code: MATERIAL_CHANGED };
         const bytes = location.bytes ?? material.bytes;
-        const partial = location.partial ?? (bytes > TURN_SOURCE_MAX_BYTES ? 'source_cap' : null);
+        const complete = material.complete && trimmed.complete;
+        const partial = location.partial ?? (!complete && bytes > TURN_SOURCE_MAX_BYTES ? 'source_cap' : null);
         if (partial !== null && location.partial === null)
-          await markTurnPartial(db, { project: ctx.projectId, session: held.sessionId, turn: turn.turnKey, hash: location.hash, reason: partial });
-        turns.push({ turn_key: turn.turnKey, input: trimmed.text, complete: material.complete && trimmed.complete,
+          await markTurnPartial(db, { project: ctx.projectId, session: held.sessionId, turn: turn.turnKey, hash: location.hash, reason: partial, run: run.runId, token: run.tokenId });
+        turns.push({ turn_key: turn.turnKey, input: trimmed.text, complete,
           ...(partial === null ? {} : { partial_reason: partial }), source_revision: location.hash });
       }
       else if (document !== null) unavailable.push(turn.turnKey);

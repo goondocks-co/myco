@@ -133,7 +133,7 @@ it('triages only mechanical turns by rule', () => {
   expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\n<task-notification><status>done</status></task-notification>' }))).toBe('no_human_text');
   expect(triageTurn(turn({ prompt: '<system-reminder>a hook ran</system-reminder>\nPin bun to 1.4.0 in .bun-version' }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'Scheduled tasks are failing. Fix them by setting jobs.maxRetries to 3.' }))).toBeNull();
-  expect(triageTurn(turn({ prompt: 'continue', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"npm test"}', output: 'boom', success: false, errorMessage: 'exit 1' }] }))).toBe('no_human_text');
+  expect(triageTurn(turn({ prompt: 'continue', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"npm test"}', output: 'boom', success: false, errorMessage: 'exit 1' }] }))).toBeNull();
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && sleep 30"}', output: '', success: true, errorMessage: null }] }))).toBe('polling_only');
   expect(triageTurn(turn({ prompt: 'wait for CI', replies: [{ responseId: 'r', text: 'CI is still running; I will check again.' }], tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12"}', output: '', success: true, errorMessage: null }] }))).toBe('polling_only');
   expect(triageTurn(turn({ prompt: 'wait for CI', tools: [{ toolCallId: 'x', toolName: 'Bash', input: '{"command":"gh pr checks 12 && git push"}', output: '', success: true, errorMessage: null }] }))).toBeNull();
@@ -448,7 +448,8 @@ it('admits 63 complete turns and refuses only the unread turn', async () => {
   await withDocumentStores(async db => {
     const key = uuid(806), turns = [{ id: key, text: 'Read the whole reply', at: NOW - DAY, replies: ['r'.repeat(100_000)] },
       ...Array.from({ length: 63 }, (_, n) => ({ id: uuid(9000 + n), text: 'A short ordinary request', at: NOW - DAY + n + 1,
-        tools: [{ name: 'Bash', input: { command: 'npm test', description: 'Run tests' }, output: n === 0 ? 'ok'.repeat(1_000) : 'ok' }] }))];
+        tools: [n === 0 ? { name: 'Write', input: { file_path: 'src/example.ts', content: 'x'.repeat(TURN_SOURCE_MAX_BYTES) }, output: 'ok' }
+          : { name: 'Bash', input: { command: 'npm test', description: 'Run tests' }, output: 'ok' }] }))];
     const harness = await cardWorker(db);
     await capture(db, 'many', turns);
     await publish(db, NOW, harness.bindings.BUCKET);
@@ -459,6 +460,26 @@ it('admits 63 complete turns and refuses only the unread turn', async () => {
     while (material.next_page) material = await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'material', page: material.next_page, revision: material.revision });
     expect(await harness.call(claim.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision,
       cards: turns.map(turn => ({ turns: [turn.id], signal: 'low', card: EMPTY_CARD })) })).toMatchObject({ written: 63, refused: [{ turns: [key], code: MATERIAL_UNREAD }] });
+    expect((await readLearningStatus(db, NOW + DAY, { projectId: 'project' })).partialTurns).toBe(0);
+  });
+});
+
+it('keeps dry card reads from changing source disposition when the run fails', async () => {
+  await withDocumentStores(async db => {
+    const capped = uuid(820), reading = uuid(821);
+    const run = await cardRun(db, [{ id: capped, text: 'Read this turn', at: NOW - DAY, replies: ['x'.repeat(TURN_SOURCE_MAX_BYTES + 1)] },
+      { id: reading, text: 'Read this other turn', at: NOW - DAY + 1, replies: ['r'.repeat(100_000)] }]);
+    await db.prepare('UPDATE agent_runs SET dry_run=1 WHERE id=?').bind(run.claimed.run.id).run();
+    const disposition = async () => (await db.prepare('SELECT partial_reason,source_failures,source_run_id FROM turn_cards WHERE session_id=? ORDER BY turn_key').bind('long').all()).results;
+    const before = await disposition();
+    await run.material();
+    const refusal = JSON.parse((await run.raw({ op: 'get', turn_key: capped })).content[0]!.text);
+    expect(refusal).toMatchObject({ code: 'turn_source_partial' });
+    expect(refusal.error).toContain('Next call: myco_run {"op":"report"}');
+    expect(JSON.parse((await run.raw({ op: 'get', turn_key: reading })).content[0]!.text)).toMatchObject({ complete: false });
+    await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 },
+      { projectId: 'project', runId: run.claimed.run.id, attemptId: run.claimed.run.attemptId, status: 'failed', error: 'Read unfinished' });
+    expect(await disposition()).toEqual(before);
   });
 });
 

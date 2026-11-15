@@ -9,6 +9,7 @@ import { turnSourceState, markTurnPartial, beginTurnSourceRead } from '../../db/
 import { recordTurnSourceRead } from '../../db/learning/turn-reads.js';
 import type { RunPrincipal, ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
+import { isRunCall } from '../run-allowlist.js';
 import { utf8 } from '../../hash.js';
 
 /** Sequential source traversal: at most one document page and one stored-body window per request. */
@@ -99,13 +100,15 @@ export function turnSourceUnread(run: RunPrincipal, tool: string, required: read
 async function partialReadRefusal(ctx: ToolContext, run: RunPrincipal,
   options: { tool: string; session: string; turn: string; hash: string; reason: string; bytes: number }): Promise<unknown> {
   const { tool, session, turn, reason, bytes } = options;
-  if (tool === 'myco_run_cards') await markTurnPartial(ctx.env.db, { project: ctx.projectId, session, turn, hash: options.hash, reason });
+  if (tool === 'myco_run_cards' && (reason !== 'source_cap' || materialRead(run.runContext, run.tokenId)?.sources?.some(source => source.turnKey === turn)))
+    await markTurnPartial(ctx.env.db, { project: ctx.projectId, session, turn, hash: options.hash, reason, run: run.runId, token: run.tokenId });
   const gate = materialUnread(run);
+  const canWrite = isRunCall(run.allow, tool === 'myco_run_cards' ? 'myco_run_cards' : 'myco_run_learning', tool === 'myco_run_cards' ? 'write' : 'complete');
   const next = gate !== null ? { tool, op: 'material', page: gate.next_page, ...(gate.revision === undefined ? {} : { revision: gate.revision }) }
-    : tool === 'myco_run_cards' ? { tool, op: 'write', revision: materialRead(run.runContext, run.tokenId)!.revision } : { tool, op: 'complete' };
+    : !canWrite ? REPORT_NEXT : tool === 'myco_run_cards' ? { tool, op: 'write', revision: materialRead(run.runContext, run.tokenId)!.revision } : { tool, op: 'complete' };
   return { ...runRefusal({ what: 'full turn source', read: true,
     actual: `turn ${turn}: ${reason}; requested reading is ${bytes} UTF-8 bytes, the per-turn card read limit is ${TURN_SOURCE_MAX_BYTES}`,
-    repair: tool === 'myco_run_cards' ? 'Write its card from the material excerpt; it is stored as written from part of the turn.' : 'Use the card; this optional raw read does not block learning.',
+    repair: !canWrite ? 'This dry run keeps its reads; report the result without writing.' : tool === 'myco_run_cards' ? 'Write its card from the material excerpt; a turn whose material is incomplete is stored as written from part of the turn.' : 'Use the card; this optional raw read does not block learning.',
     next }), code: reason === 'body_missing' ? 'source_body_unavailable' : 'turn_source_partial' };
 }
 

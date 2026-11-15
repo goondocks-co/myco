@@ -259,6 +259,9 @@ describe('Myco’s work now', () => {
     expect(project?.why).toContain('1 turn waiting to be summarized');
     expect(deployment?.why).toContain('1 turn waiting to be summarized');
     expect((await h.read({ projectId: 'proj_2' })).waiting.find((item) => item.key === 'learning')).toBeUndefined();
+    h.sqlite.run("INSERT INTO turn_cards(project_id,session_id,turn_key,state,covered,partial_reason,created_at) VALUES('proj_1','waiting','partial','carded',1,'source_cap',?)", [NOW]);
+    h.sqlite.run("UPDATE learning_sessions SET pending_cards=0 WHERE project_id='proj_1' AND session_id='waiting'");
+    expect((await h.read()).waiting.find(item => item.key === 'learning')).toBeUndefined();
   });
 
   it('names a failing curation group by its own outstanding refusal, beside the next group still due', async () => {

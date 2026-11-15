@@ -143,15 +143,16 @@ function polling(tool: TurnToolInput): boolean {
 }
 
 /** Reply characters a control or notification turn needs when no successful file edit is present. */
-export const CONTROL_REPLY_CHARS = 800;
+export const CONTROL_REPLY_CHARS = 1_500;
 
-/** Only a successful file-changing call or a substantial reply admits a turn with no human request. */
+/** Failed calls and plans need cards; other control turns need a file change or a substantial reply. */
 export function triageTurn(turn: TurnInput): string | null {
+  if (turn.plans.length > 0 || turn.tools.some(failed)) return null;
   const replies = turn.replies.reduce((total, reply) => total + reply.text.length, 0);
   const control = (turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt))
     && turn.steering.every(prompt => noHumanText(prompt.text));
   if (control)
     return replies > CONTROL_REPLY_CHARS || turn.tools.some(tool => tool.success && tool.fileChanging === true) ? null : 'no_human_text';
-  if (turn.steering.length > 0 || turn.plans.length > 0 || turn.tools.some(failed)) return null;
+  if (turn.steering.length > 0) return null;
   return turn.tools.length > 0 && turn.prompt.length + replies <= POLLING_TEXT_CHARS && turn.tools.every(polling) ? 'polling_only' : null;
 }

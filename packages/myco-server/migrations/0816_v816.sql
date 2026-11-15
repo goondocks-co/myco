@@ -18,7 +18,8 @@ CREATE TRIGGER IF NOT EXISTS turn_source_failed AFTER UPDATE OF status ON agent_
         partial_reason=CASE WHEN source_failures+1>=3 THEN 'read_failed' ELSE partial_reason END
       WHERE project_id=NEW.project_id AND source_run_id=NEW.id AND state='pending'; END;
 
-CREATE TRIGGER IF NOT EXISTS turn_source_changed AFTER UPDATE OF changes ON turn_cards WHEN NEW.changes<>OLD.changes BEGIN
+CREATE TRIGGER IF NOT EXISTS turn_source_changed AFTER UPDATE OF changes ON turn_cards WHEN NEW.changes<>OLD.changes
+      AND (OLD.partial_reason IS NOT NULL OR OLD.source_failures<>0 OR OLD.source_run_id IS NOT NULL) BEGIN
       UPDATE turn_cards SET partial_reason=NULL,source_failures=0,source_run_id=NULL
       WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND turn_key=NEW.turn_key; END;
 

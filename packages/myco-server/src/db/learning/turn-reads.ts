@@ -18,20 +18,24 @@ export async function turnSourceState(db: RelationalStore, project: string, sess
 const currentHash = `(SELECT p.input_hash FROM session_prompts p JOIN session_documents d
   ON d.project_id=p.project_id AND d.session_id=p.session_id AND d.generation=p.generation AND d.state='live'
   WHERE p.project_id=turn_cards.project_id AND p.session_id=turn_cards.session_id AND p.prompt_id=turn_cards.turn_key)`;
+/** Only a running, non-dry card attempt may change a turn's source disposition. */
+const writableCardRun = (project: string, run: string, token: string) =>
+  `r.project_id=${project} AND r.id=${run} AND r.dispatched_by=${token} AND r.status='running' AND r.task='${CARD_TASK}' AND r.dry_run=0`;
 const begin = write<[run: string, project: string, session: string, turn: string, hash: string, token: string]>({ name: 'turnReads.begin', sql:
   `UPDATE turn_cards SET source_run_id=?1 WHERE project_id=?2 AND session_id=?3 AND turn_key=?4
    AND state='pending' AND partial_reason IS NULL AND ${currentHash}=?5
-   AND EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=?2 AND r.id=?1 AND r.dispatched_by=?6 AND r.status='running' AND r.task='${CARD_TASK}')` });
+   AND EXISTS(SELECT 1 FROM agent_runs r WHERE ${writableCardRun('?2','?1','?6')})` });
 export async function beginTurnSourceRead(db: RelationalStore, options: { project: string; session: string; turn: string; hash: string; run: string; token: string }): Promise<void> {
   const o = options;
   await commit(db, begin.bind(o.run,o.project,o.session,o.turn,o.hash,o.token));
 }
-const partial = write<[reason: string, project: string, session: string, turn: string, hash: string], { turn_key: string }>({ name: 'turnReads.partial', sql:
+const partial = write<[reason: string, project: string, session: string, turn: string, hash: string, run: string, token: string], { turn_key: string }>({ name: 'turnReads.partial', sql:
   `UPDATE turn_cards SET partial_reason=?1,source_run_id=NULL
-   WHERE project_id=?2 AND session_id=?3 AND turn_key=?4 AND state='pending' AND ${currentHash}=?5 RETURNING turn_key` });
-export async function markTurnPartial(db: RelationalStore, options: { project: string; session: string; turn: string; hash: string; reason: string }): Promise<boolean> {
+   WHERE project_id=?2 AND session_id=?3 AND turn_key=?4 AND state='pending' AND ${currentHash}=?5
+     AND EXISTS(SELECT 1 FROM agent_runs r WHERE ${writableCardRun('?2','?6','?7')}) RETURNING turn_key` });
+export async function markTurnPartial(db: RelationalStore, options: { project: string; session: string; turn: string; hash: string; reason: string; run: string; token: string }): Promise<boolean> {
   const o = options;
-  return await first(db, partial.bind(o.reason,o.project,o.session,o.turn,o.hash)) !== null;
+  return await first(db, partial.bind(o.reason,o.project,o.session,o.turn,o.hash,o.run,o.token)) !== null;
 }
 
 const record = write<[path: string, receipt: string, project: string, run: string, token: string,
@@ -46,7 +50,7 @@ const record = write<[path: string, receipt: string, project: string, run: strin
 const track = write<[complete: number, run: string, project: string, session: string, turn: string, hash: string, token: string, path: string, receipt: string]>({ name: 'turnReads.track', sql:
   `UPDATE turn_cards SET source_run_id=CASE WHEN ?1=1 THEN NULL ELSE ?2 END,source_failures=CASE WHEN ?1=1 THEN 0 ELSE source_failures END
    WHERE project_id=?3 AND session_id=?4 AND turn_key=?5 AND state='pending' AND ${currentHash}=?6
-     AND EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=?3 AND r.id=?2 AND r.status='running' AND r.task='${CARD_TASK}' AND r.dispatched_by=?7 AND json_extract(r.run_context,?8)=?9)` });
+     AND EXISTS(SELECT 1 FROM agent_runs r WHERE ${writableCardRun('?3','?2','?7')} AND json_extract(r.run_context,?8)=?9)` });
 
 /** Credit source and track outstanding work atomically under its fingerprint and attempt. */
 export async function recordTurnSourceRead(db: RelationalStore, options: {
