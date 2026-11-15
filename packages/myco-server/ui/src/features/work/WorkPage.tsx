@@ -327,12 +327,12 @@ function KindCard({ summary, answer, projectId, projectName, window, bounds, liv
 function metaOf(summary: KindSummary, across: boolean, now: number): string {
   const where = across && summary.projects.length > 1 ? ` in ${count(summary.projects.length, 'project')}` : '';
   const latest = summary.latestAt === null ? '' : ` · the latest ${atWords(summary.latestAt, now)}`;
-  // Map skip totals combine carry decisions and held work.
-  const skipped = summary.kind === 'map' ? 0 : summary.runs.skipped ?? 0;
+  const skipped = summary.runs.skipped ?? 0;
+  const current = summary.alreadyCurrent > 0 ? ` · already current ${times(summary.alreadyCurrent)}` : '';
   const held = skipped > 0 ? ` · held off ${times(skipped)}` : '';
   if (summary.kind === 'map' && !across && summary.currentMaps.length === 1) {
     const map = summary.currentMaps[0]!;
-    return `${map.carriedForward ? 'The code map was already current. ' : ''}Now at ${map.branch} @ ${map.commit.slice(0, 7)}, ${atWords(map.generatedAt, now)}${held}`;
+    return `Now at ${map.branch} @ ${map.commit.slice(0, 7)}, ${atWords(map.generatedAt, now)}${held}${current}`;
   }
   if (summary.kind === 'title' && summary.sessions > 0) return `Each session as it ended${where}${latest}${held}`;
   if (summary.finished === 0) {
@@ -340,9 +340,10 @@ function metaOf(summary: KindSummary, across: boolean, now: number): string {
     if (running > 0) return `${count(running, 'run')} in progress${where}${latest}${held}`;
     const queued = summary.runs.queued ?? 0;
     if (queued > 0) return `${count(queued, 'run')} waiting${where}${latest}${held}`;
-    if (skipped > 0) return `Held off ${times(skipped)}${where}${latest}`;
+    if (skipped > 0) return `Held off ${times(skipped)}${where}${latest}${current}`;
+    if (summary.alreadyCurrent > 0) return `Already current ${times(summary.alreadyCurrent)}${where}${latest}`;
   }
-  return `${count(summary.finished, runNoun(summary.kind), runNoun(summary.kind, 2))}${where}${latest}${held}`;
+  return `${count(summary.finished, runNoun(summary.kind), runNoun(summary.kind, 2))}${where}${latest}${held}${current}`;
 }
 
 /** A listed run across projects: when, what it came to, and its project. */

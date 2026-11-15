@@ -54,8 +54,9 @@ export interface WorkOutcome {
   projectId: string;
   kind: OutcomeKind;
   task: string;
-  /** Runs by status, every run in the window counted once. */
+  /** Runs by status, with map carry decisions counted separately. */
   runs: Record<string, number>;
+  alreadyCurrent?: number;
   /** What the runs left: spores written, sessions those spores came from or that a title landed on, and maps written. */
   outcome: { spores: number; sessions: number; maps: number };
   /** Failed runs that still produced something; their output is counted above and the failure is a note. */
@@ -193,7 +194,9 @@ async function summaryOf(db: RelationalStore, set: ProjectSet, window: UtcWindow
     const status = String(row.status);
     const runs = num(row.runs);
     const produced = num(row.produced);
-    outcome.runs[status] = runs;
+    const carried = num(row.carried_runs);
+    outcome.runs[status] = runs - carried;
+    if (carried > 0) outcome.alreadyCurrent = carried;
     outcome.outcome.spores += num(row.spores);
     if (outcome.kind === 'map') outcome.outcome.maps += produced;
     if (status === 'failed') { outcome.failedWithOutput += produced; outcome.failed += runs - produced; }

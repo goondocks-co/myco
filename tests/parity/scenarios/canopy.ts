@@ -126,6 +126,18 @@ export const canopy: ParityScenario = {
         headers: memberHeadersFor(automatic.runToken, target.projectId, { 'content-type': 'application/json' }),
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
       expect(revoked.status).toBe(401);
+      expect((await putSetting(target, 'agent.tasks', { 'canopy-map': { schedule: { enabled: true, intervalSeconds: 0,
+        maxRunsPerDay: 0, runIn: ['active', 'idle', 'sleep'] } } })).status).toBe(200);
+      await captureSession(target, 'map-held-work', 'More source work is waiting.', { ended: true });
+      await wake(target);
+      const day = new Date(now);
+      day.setUTCHours(0, 0, 0, 0);
+      const nextDay = new Date(day);
+      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+      const splitWork = await owner(`/api/work?project=${target.projectId}&since=${day.getTime()}&until=${nextDay.getTime()}`);
+      expect(splitWork.summary.find((entry: { task: string }) => entry.task === 'canopy-map'))
+        .toMatchObject({ runs: { skipped: 1 }, alreadyCurrent: 1 });
+
       expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);
 
     } finally {

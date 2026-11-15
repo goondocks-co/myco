@@ -19,15 +19,19 @@ const MAX_MAP_PIN_ATTEMPTS = 3;
 
 const MAP_EXCLUSIONS_LEAF = 'cortex.canopy.exclude.patterns';
 
+function mapSettingsOf(raw: string | undefined): MapSettings {
+  return { defaultPatterns: [...CANOPY_DEFAULT_EXCLUDE_PATTERNS], userPatterns: raw === undefined ? [] : JSON.parse(raw) as string[] };
+}
+
 export async function readMapSettingsSnapshot(db: RelationalStore): Promise<{ settings: MapSettings; revision: number; guard: Bound }> {
   const observed = await observedSettingsGuard(db, [MAP_EXCLUSIONS_LEAF]);
   const raw = (await settingTexts(observed.view, [MAP_EXCLUSIONS_LEAF])).get(MAP_EXCLUSIONS_LEAF);
-  return { settings: { defaultPatterns: [...CANOPY_DEFAULT_EXCLUDE_PATTERNS], userPatterns: raw === undefined ? [] : JSON.parse(raw) as string[] },
+  return { settings: mapSettingsOf(raw),
     revision: observed.revisions[MAP_EXCLUSIONS_LEAF] ?? 0, guard: observed.assertion };
 }
 
 export async function readMapSettings(db: RelationalStore): Promise<MapSettings> {
-  return (await readMapSettingsSnapshot(db)).settings;
+  return mapSettingsOf((await settingTexts(db, [MAP_EXCLUSIONS_LEAF])).get(MAP_EXCLUSIONS_LEAF));
 }
 
 /**

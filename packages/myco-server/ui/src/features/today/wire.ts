@@ -39,6 +39,7 @@ export interface WorkOutcome {
   kind: OutcomeKind;
   task: string;
   runs: Record<string, number>;
+  alreadyCurrent?: number;
   outcome: { spores: number; sessions: number; maps: number };
   failedWithOutput: number;
   failed: number;

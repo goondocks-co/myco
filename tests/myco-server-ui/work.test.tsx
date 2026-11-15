@@ -30,18 +30,22 @@ import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/toda
 const originalFetch = globalThis.fetch;
 let client: QueryClient;
 
-it('shows a carried map as already current without held counts or tone', async () => {
+it('shows genuine map holds separately from carry decisions in the same card', async () => {
   const carried = runRow({ id: 'run_carriedmap', task: 'canopy-map', status: 'skipped', skipReasonCode: 'input_unchanged',
     tokensUsed: 0, costUsd: 0 });
-  const work: WorkAnswer = { ...WEEK_WORK, summary: [outcome({ kind: 'map', task: 'canopy-map', runs: { skipped: 4 } })],
+  const held = runRow({ id: 'run_heldmap', task: 'canopy-map', status: 'skipped', skipReasonCode: 'max_runs_per_day' });
+  const work: WorkAnswer = { ...WEEK_WORK, summary: [outcome({ kind: 'map', task: 'canopy-map', runs: { skipped: 1 }, alreadyCurrent: 3 })],
     timeline: [], maps: WEEK_WORK.maps.map(map => ({ ...map, carriedForward: true })) };
-  server(week({ work, taskRuns: { 'canopy-map': [carried] } }));
+  server(week({ work, taskRuns: { 'canopy-map': [carried, held] } }));
   mount(`/p/${P}/work`);
   const map = await findCard('map');
   const runs = await within(map).findByRole('list', { name: 'Latest code map updates' });
   expect(runs.textContent).toContain('The code map was already current');
-  expect(map.textContent).not.toContain('held off');
-  expect(runs.querySelector('[data-run-line]')?.getAttribute('data-run-line')).toBe('plain');
+  expect(within(map).getByRole('heading', { level: 2 }).textContent).toBe('The code map update was held off');
+  expect(map.textContent).toContain('held off once');
+  expect(map.textContent).toContain('already current 3 times');
+  expect(runs.textContent).toContain('Held off: today’s run limit was reached');
+  expect([...runs.querySelectorAll('[data-run-line]')].map(row => row.getAttribute('data-run-line'))).toEqual(['plain', 'held']);
 });
 
 it('uses the skip code in a run list instead of the server reason', () => {
@@ -121,7 +125,7 @@ describe('what Myco’s work came to', () => {
     const states = {
       learn: ['Waiting to learn from recent sessions', 'Learning from recent sessions now', 'Learning was held off', 'Read new sessions and found nothing new to keep', 'Learned 1 spore', 'Couldn’t learn from recent sessions'],
       title: ['Waiting to title sessions', 'Titling sessions now', 'Titling was held off', 'Checked for sessions to title; none needed one', 'Titled and summarized 1 session', 'Couldn’t title sessions'],
-      map: ['Waiting to update the code map', 'Updating the code map now', 'No code map update ran', 'Checked the code map; nothing to change', 'Updated the code map once', 'Couldn’t update the code map'],
+      map: ['Waiting to update the code map', 'Updating the code map now', 'The code map update was held off', 'Checked the code map; nothing to change', 'Updated the code map once', 'Couldn’t update the code map'],
       seed: ['Waiting to learn from the project’s code', 'Learning from the project’s code now', 'Learning from the code was held off', 'Read the project’s code and found nothing new to keep', 'Learned 1 spore from the project’s code', 'Couldn’t learn from the project’s code'],
     } as const;
     for (const kind of ['learn', 'title', 'map', 'seed'] as const) {

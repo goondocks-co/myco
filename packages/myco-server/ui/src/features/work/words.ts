@@ -81,6 +81,7 @@ export interface OutcomeCounts {
   finished: number;
   /** Full-window run statuses when available. */
   runs?: Record<string, number>;
+  alreadyCurrent?: number;
 }
 
 export function outcomeHeadline(kind: OutcomeKind, c: OutcomeCounts): string {
@@ -116,7 +117,8 @@ export function outcomeHeadline(kind: OutcomeKind, c: OutcomeCounts): string {
       if (queued > 0) return 'Waiting to update the code map';
       if (c.failed > 0 && c.failed === c.finished) return 'Couldn’t update the code map';
       if (completed > 0) return 'Checked the code map; nothing to change';
-      return skipped > 0 ? 'No code map update ran' : 'The code map hasn’t been updated yet';
+      if (skipped > 0) return 'The code map update was held off';
+      return (c.alreadyCurrent ?? 0) > 0 ? 'The code map was already current' : 'The code map hasn’t been updated yet';
   }
 }
 
