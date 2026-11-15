@@ -108,8 +108,8 @@ work.
 ## CLI fallback (no MCP)
 
 ```bash
-myco tool call myco_plans --json --input '{"op":"get","id":"<plan-id>"}'
-myco tool call myco_plans --json --input '{"op":"save","id":"<plan-id>","status":"in_progress"}'
+myco tool call myco_plans --credential registry --json --input '{"op":"get","id":"<plan-id>"}'
+myco tool call myco_plans --credential registry --json --input '{"op":"save","project":"<project id>","session_id":"<this session id>","id":"<plan-id>","status":"in_progress"}'
 ```
 
 Use `--input @file.json` for any payload containing multiline markdown or

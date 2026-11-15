@@ -36,7 +36,9 @@ beforeEach(() => {
     else {
       calls.push(body.params);
       const params = body.params as { name: string; arguments: unknown };
-      result = params.name === 'unknown'
+      result = params.name === 'refused'
+        ? { content: [{ type: 'text', text: 'session_id not found' }], structuredContent: { result: { ok: false, code: 'not_found', error: 'session_id not found' } } }
+        : params.name === 'unknown'
         ? { isError: true, content: [{ type: 'text', text: 'Unknown tool' }] }
         : { content: [{ type: 'text', text: 'Display text' }], structuredContent: { result: params.arguments } };
     }
@@ -94,5 +96,14 @@ for (const kind of ['empty', 'member', 'legacy']) it('refuses credential-less to
     expect(result.error.message).toContain('myco member provision');
   }
   expect(calls).toHaveLength(0);
+  expect(process.exitCode).toBe(1);
+});
+
+it('reports a refused operation with its code, message and failing exit status', async () => {
+  expect(await invoke(['call', 'refused'])).toEqual({ ok: false, tool: 'refused', error: { code: 'not_found', message: 'session_id not found' } });
+  expect(process.exitCode).toBe(1);
+});
+it('reports an MCP error result as a failing exit status', async () => {
+  expect(await invoke(['call', 'unknown'])).toEqual({ ok: false, tool: 'unknown', error: { code: 'tool_call_failed', message: 'Unknown tool' } });
   expect(process.exitCode).toBe(1);
 });

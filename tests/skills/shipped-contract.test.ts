@@ -1,3 +1,6 @@
+import worker from '@myco-server-worker/index.js';
+import { issueMemberToken } from '../myco-server/helpers/member-token.js';
+import { envelope, memberPost, publishFixture, sqliteEnv } from '../myco-server/helpers/fixtures.js';
 import { COMMANDS } from '@myco/cli/command-registry.js';
 /**
  * The contract every skill that ships with Myco is held to.
@@ -227,4 +230,62 @@ describe('the setup skill against the code it drives', () => {
     expect(markdown).toContain('whitespace');
     expect(markdown).toContain("could not determine this machine's processor architecture");
   });
+});
+
+it('admits the shipped tool examples with their placeholders bound to live records', async () => {
+  const f = sqliteEnv();
+  try {
+    const credential = await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await worker.fetch(memberPost(credential.token, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, '/mcp'), f.env);
+      const body = await response.json() as any;
+      expect(body.error, JSON.stringify({ name, args, body })).toBeUndefined();
+      const result = body.result?.structuredContent?.result;
+      expect(result?.ok, JSON.stringify({ name, args, result })).not.toBe(false);
+      return result;
+    };
+    const captured = await worker.fetch(memberPost(credential.token, envelope()), f.env);
+    expect(captured.status).toBe(200);
+    await publishFixture(f);
+    const base = { project: 'proj_1', session_id: 'sess_1' };
+    const seed = () => call('myco_spores', { ...base, op: 'save', type: 'gotcha', content: 'Fixture knowledge.', agent_line: 'When using this fixture, retain its evidence.' });
+    const plan = await call('myco_plans', { ...base, op: 'save', plan_key: 'example', content: '# Example' });
+    let examples = 0;
+    for (const relative of fs.readdirSync(SKILLS_ROOT, { recursive: true }).map(String).filter(file => file.endsWith('.md'))) {
+      const markdown = fs.readFileSync(path.join(SKILLS_ROOT, relative), 'utf8');
+      const calls: { name: string; json: string }[] = [];
+      for (const m of markdown.matchAll(/(myco_[a-z_]+)\s*(?:\(\s*)?(?=\{)/g)) {
+        const start = m.index! + m[0].length;
+        let json: string | undefined;
+        for (let end = markdown.indexOf('}', start); end !== -1; end = markdown.indexOf('}', end + 1)) {
+          try { JSON.parse(markdown.slice(start, end + 1)); json = markdown.slice(start, end + 1); break; } catch { /* The JSON object may continue. */ }
+        }
+        expect(json, `${relative}: ${m[1]} example must be JSON`).toBeDefined();
+        calls.push({ name: m[1], json: json! });
+      }
+      for (const m of markdown.matchAll(/myco tool call (myco_[a-z_]+)[^\n]*--input '([^']+)'/g)) {
+        expect(m[0]).toContain('--credential registry');
+        calls.push({ name: m[1], json: m[2] });
+      }
+      for (const m of markdown.matchAll(/<<'EOF'\n([\s\S]*?)\nEOF\n(myco tool call (myco_[a-z_]+)[^\n]+)/g)) {
+        expect(m[2]).toContain('--credential registry');
+        calls.push({ name: m[3], json: m[1] });
+      }
+      for (const example of calls) {
+        const old = await seed(), next = await seed();
+        const args = JSON.parse(example.json, (key, value) => {
+          if (typeof value !== 'string' || !value.includes('<')) return value;
+          if (key === 'project') return base.project;
+          if (key === 'session_id' || key === 'session') return base.session_id;
+          if (key === 'id') return example.name === 'myco_plans' ? plan.id : example.name === 'myco_sessions' ? base.session_id : old.id;
+          if (key === 'old_spore_id') return old.id;
+          if (key === 'new_spore_id') return next.id;
+          return value.replace(/<[^>]+>/g, 'example');
+        });
+        await call(example.name, args);
+        examples++;
+      }
+    }
+    expect(examples).toBeGreaterThan(0);
+  } finally { f.sqlite.close(); }
 });

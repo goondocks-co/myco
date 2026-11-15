@@ -12,7 +12,7 @@ import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { DEFAULT_PAGE, MAX_PAGE } from '../read/scope.js';
-import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '../core/spore-curation-contract.js';
+import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN } from '../core/spore-curation-contract.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from '../core/injection.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
@@ -203,7 +203,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_cortex",
-    "description": "Retrieve project intelligence. op: \"instructions\" (default) returns the project's session-start instructions and its project id. op: \"notifications\" returns notifications for the request scope (use unread_only and limit to filter). op: \"maintenance_summary\" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: \"projects_activity\" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: \"canopy_map\" returns the project's repository map as markdown, with the commit it was read from. op: \"digest\" is retired; op: \"canopy_entry\" is not served by a Deployment.",
+    "description": "Retrieve project intelligence. op: \"instructions\" (default) returns the Deployment's session-start instructions and this project's id. op: \"projects_activity\" returns each project's last activity and active flag. op: \"canopy_map\" returns the project's repository map as markdown and the repository commit it describes.",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -211,7 +211,7 @@ const definitions: readonly ServedToolDefinition[] = [
       "openWorldHint": false
     },
     "cortex": {
-      "guidance": "Use op: \"instructions\" to read the project's standing guidance and learn its project id, op: \"notifications\" to read pending operator notifications, op: \"maintenance_summary\" to answer \"are any Groves overdue for backup/optimize/integrity?\", and op: \"projects_activity\" to see which projects are still active. Search with myco_search rather than pulling a project summary; there is no digest.",
+      "guidance": "Read standing guidance and the project id with instructions, orient in the repository with canopy_map, and see project activity with projects_activity. Use myco_search for targeted recall.",
       "priority": 10
     },
     "inputSchema": {
@@ -230,41 +230,16 @@ const definitions: readonly ServedToolDefinition[] = [
           ],
           "description": "Operation (default: \"instructions\")"
         },
-        "tier": {
-          "type": "number",
-          "enum": [
-            1500,
-            5000,
-            10000
-          ],
-          "description": "Digest token budget tier. Larger tiers include more detail. Default: 5000."
-        },
-        "id": {
-          "type": "string",
-          "description": "Canopy entry id for op: \"canopy_entry\" in the form <project>:path"
-        },
-        "path": {
-          "type": "string",
-          "description": "Canopy file path for op: \"canopy_entry\""
-        },
         [PROJECT_PIVOT]: {
           "type": "string",
           "description": PROJECT_DESCRIPTION
-        },
-        "unread_only": {
-          "type": "boolean",
-          "description": "op: \"notifications\" — return only unread entries (default: false)"
-        },
-        "limit": {
-          "type": "number",
-          "description": "op: \"notifications\" — max entries to return"
         }
       }
     }
   },
   {
     "name": "myco_plans",
-    "description": `Manage implementation plans. op: \"list\" (default) returns one page of plan summaries, newest edit first — each with its title, status, a preview of its opening and its task-list progress, never its body — with has_more, the cursor of the next page, and body_call, the call that reads one plan's body: ${PLAN_BODY_CALL}; pass that cursor back to continue. Cursors mark a position, not a snapshot: a plan edited between pages moves to the head and may be absent from the continuation; a fresh first page shows it. To find plans by what they say, call myco_search with type \"plan\". op: \"get\" returns one plan with content by id. op: \"save\" creates a plan for a session with content and at least one of source_path or plan_key (both allowed — plan_key is the identity, source_path is metadata), or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to \"active\". op: \"delete\" removes a plan by id; cross-machine rows require force_remote: true. List example: {\"op\":\"list\",\"status\":\"in_progress\",\"limit\":20}`,
+    "description": `Manage implementation plans. op: \"list\" (default) returns one page of plan summaries, newest edit first — each with its title, status, a preview of its opening and its task-list progress, never its body — with has_more, the cursor of the next page, and body_call, the call that reads one plan's body: ${PLAN_BODY_CALL}; pass that cursor back to continue. Cursors mark a position, not a snapshot: a plan edited between pages moves to the head and may be absent from the continuation; a fresh first page shows it. To find plans by what they say, call myco_search with type \"plan\". op: \"get\" returns one plan with content by id. op: \"save\" requires project and the current session_id. It creates a plan for a session with content and exactly one of source_path (file-backed) or plan_key (non-file-backed), never both, or updates an existing plan when id is passed. On update, content is optional — omit it for a status-only transition (e.g. active → in_progress → completed). Status defaults to \"active\". Keep unused plans with status \"abandoned\". List example: {\"op\":\"list\",\"status\":\"in_progress\",\"limit\":20}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": true,
@@ -290,7 +265,7 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "id": {
           "type": "string",
-          "description": "Plan id. Required for op: \"get\" and op: \"delete\"; for op: \"save\", update this existing plan and preserve its logical key."
+          "description": "Plan id. Required for op: \"get\"; for op: \"save\", update this existing plan and preserve its logical key."
         },
         "session": {
           "type": "string",
@@ -298,7 +273,7 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "session_id": {
           "type": "string",
-          "description": "Session id the plan belongs to for op: \"save\""
+          "description": "Current calling session id, required for every op: \"save\" including status-only updates"
         },
         "content": {
           "type": "string",
@@ -345,10 +320,6 @@ const definitions: readonly ServedToolDefinition[] = [
         "cursor": {
           "type": "string",
           "description": "For op: \"list\": the cursor an earlier list answered; the list continues after it with the same status and session. Example: {\"op\":\"list\",\"status\":\"active\",\"cursor\":\"1762300000000:3f0c\"}"
-        },
-        "force_remote": {
-          "type": "boolean",
-          "description": "Allow op: \"delete\" to remove a plan belonging to another machine. Enqueues a tombstone for team sync."
         },
         [PROJECT_PIVOT]: {
           "type": "string",
@@ -462,7 +433,7 @@ const definitions: readonly ServedToolDefinition[] = [
     },
     "name": "myco_spores",
     inputRepair: 'Correct the named argument and call myco_spores again with the required fields for that op.',
-    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE} For curation runs, consolidate ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read {id,revision} sources into wisdom; correct and retry invalid input once before reporting, or complete keep with the read members. Consolidate example: ${CURATION_CONSOLIDATE_EXAMPLE}`,
+    "description": `Manage durable knowledge spores. op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\". op: \"get\" retrieves one spore by id. op: \"save\" records a new decision, gotcha, bug fix, discovery, or trade-off. op: \"supersede\" marks an old spore as replaced by a newer one. op: \"consolidate\" merges related spores into one comprehensive wisdom note. op: \"obsolete\" retires a spore that is no longer relevant with no replacement (e.g. a dropped feature); requires a reason. Save and consolidate require agent_line, normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE} Member writes require project and the current session_id, or provenance_kind and provenance_ref when there is no session. Member save example: {"op":"save","project":"<project id>","session_id":"<current session id>","type":"gotcha","content":"Delivery requires the outbox lease.","agent_line":"When delivery stalls, check the outbox lease before retrying."}`,
     "annotations": {
       "readOnlyHint": false,
       "destructiveHint": false,
@@ -540,11 +511,11 @@ const definitions: readonly ServedToolDefinition[] = [
         "expect_status": {
           "type": "string",
           "enum": ["active", "superseded", "consolidated", "obsolete"],
-          "description": "Expected source status; defaults to active. Members may explicitly re-resolve a terminal spore. Runs require active."
+          "description": "Expected source status; defaults to active. Members may explicitly re-resolve a terminal spore."
         },
         "expect_revision": {
           "type": "integer",
-          "description": "Expected source revision for supersede or obsolete. Required for every run; optional for members."
+          "description": "Expected source revision for supersede or obsolete. Optional for members; required for runs. Binds the edit to the revision read."
         },
         "source_spore_ids": {
           "type": "array",
@@ -554,7 +525,7 @@ const definitions: readonly ServedToolDefinition[] = [
             "required": ["id"],
             "additionalProperties": false
           },
-          "description": `Sources to consolidate as ids or {id, revision?}. Curation runs require ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources, each with a nonempty string id and its exact nonnegative safe integer revision (at most ${Number.MAX_SAFE_INTEGER}). Every source moves together or none does: a source no longer active, or past the revision given, refuses the call with error stale, names the source in spore_id, and saves nothing; reread it with op \"get\" and consolidate again.`
+          "description": `Sources to consolidate as ids or {id, revision?}. Curation runs require ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources with their exact nonnegative safe integer revisions. Every source moves together or none does. A source no longer active or past the supplied revision refuses with stale and saves nothing; reread it with get before deciding again.`
         },
         "consolidated_content": {
           "type": "string",
@@ -566,11 +537,11 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "session_id": {
           "type": "string",
-          "description": "For save and consolidate: the supporting whole session. Required for new extraction runs and must be a session served to this run. For supersede and obsolete: the acting session. Curation and seeding runs name no session: omit session_id. Other callers use the Session:: line when known."
+          "description": "Members supply the current calling session from Session::, or provenance_kind and provenance_ref when there is no session. Extraction runs supply the supporting whole session served to the run. Curation and seeding runs omit session_id."
         },
         "prompt_id": {
           "type": "string",
-          "description": "Compatibility for extraction runs dispatched before the served-material ledger: the captured prompt resolves the source session. Accepted for other callers within their permitted session. Never stored on a new spore."
+          "description": "Optional captured prompt in the permitted session; never stored on a new spore."
         },
         "tags": {
           "type": "array",

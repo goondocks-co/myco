@@ -289,7 +289,7 @@ describe('a map run a worker claimed', () => {
     expect(read).toMatchObject({ project_id: 'proj_1', repository: { ...SOURCE, commit: COMMIT_A } });
     expect(read.content).toContain('## Directory skeleton');
     expect(read.content).toContain('Starts the application');
-    expect(await r.call(member.token, 'myco_cortex', { op: 'canopy_entry', path: 'src/main.ts' })).toEqual({ failed: "myco_cortex op 'canopy_entry' is not offered by a Deployment" });
+    expect(await r.call(member.token, 'myco_cortex', { op: 'canopy_entry' })).toEqual({ failed: "myco_cortex op 'canopy_entry' is not offered by a Deployment" });
   });
 
   it('closes a second pass over the same commit as unchanged, and holds an unchanged claim over a new commit to the map it owed', async () => {

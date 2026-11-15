@@ -68,9 +68,9 @@ your credential is bound to, and a **write without it is refused**. Saving the
 handoff is a write, so name the project. `myco_cortex` with
 `op: "instructions"` answers this project's guidance and its project id.
 
-Where the `myco` binary is installed, `myco tool call <tool> --json --input
-'{...}'` reaches the same code path from a shell; use `--input @file.json` for
-multiline markdown. Where only the plugin is installed there is no binary and
+Where the `myco` binary is installed, use the complete CLI calls in the
+mode's reference, with `--credential registry` on an enrolled machine and
+`--input @file.json` for multiline markdown. Where only the plugin is installed there is no binary and
 the tools above are the whole surface, which is enough for both modes.
 
 Load suggested skills with the host's own skill mechanism. `myco_skills` names

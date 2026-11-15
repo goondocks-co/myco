@@ -55,6 +55,24 @@ export function callTool(
   return withMcpClient(transport, async (client) => extractStructuredResult(await client.callTool({ name, arguments: args })));
 }
 
+class ToolResultRefused extends Error {
+  constructor(readonly code: string, message: string) { super(message); }
+}
+
+/** A command result; a refusal throws its code and message for the CLI failure envelope. */
+export function requireToolResult(response: ToolCallResult): unknown {
+  const result = extractStructuredResult(response);
+  const refused = result !== null && typeof result === 'object' && 'ok' in result && result.ok === false;
+  if (response.isError || refused) {
+    const detail = result !== null && typeof result === 'object' ? result as Record<string, unknown> : {};
+    const error = detail.error !== null && typeof detail.error === 'object' ? detail.error as Record<string, unknown> : {};
+    const code = typeof detail.code === 'string' ? detail.code : typeof error.code === 'string' ? error.code : 'tool_call_failed';
+    const message = typeof detail.message === 'string' ? detail.message : typeof error.message === 'string' ? error.message : typeof detail.reason === 'string' ? detail.reason : typeof detail.error === 'string' ? detail.error : typeof result === 'string' ? result : JSON.stringify(result);
+    throw new ToolResultRefused(code, message ?? 'Tool call failed');
+  }
+  return result;
+}
+
 /**
  * The tool's full raw result out of a `CallToolResult`: `structuredContent.result`
  * where the server set it, else the text content parsed as JSON, else the text.
@@ -109,6 +127,7 @@ const HOST_REFUSAL_HINTS: Record<string, string> = {
  *     `tool_call_failed` with its message.
  */
 export function classifyMcpError(error: unknown): ToolCallError {
+  if (error instanceof ToolResultRefused) return { code: error.code, message: error.message };
   if (error instanceof ProtocolError) {
     const data = error.data as { code?: unknown } | undefined;
     const code = typeof data?.code === 'string' ? data.code : 'tool_call_failed';

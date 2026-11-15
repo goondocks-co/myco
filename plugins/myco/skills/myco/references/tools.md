@@ -13,13 +13,10 @@ The preview is for choosing. Fetch the hit in full with the tool that owns it.
 | Operation | Answers |
 |---|---|
 | `instructions` (default) | this project's standing guidance, and its project id |
-| `notifications` | pending operator notifications |
-| `maintenance_summary` | whether anything needs an operator's attention |
+| `canopy_map` | the repository map |
 | `projects_activity` | which projects are still active |
 
 `instructions` is the one to reach for. It is also how you learn the project id to pass as `project` on a write.
-
-Some operations the schema still lists answer `not_served`. That is a terminal answer, not an outage.
 
 ## myco_spores
 
@@ -29,16 +26,18 @@ Some operations the schema still lists answer `not_served`. That is a terminal a
 | `get` | one spore in full, by id |
 | `save` | record a new observation |
 | `supersede` | replace an existing spore, keeping the lineage |
+| `consolidate` | merge related spores into a wisdom note |
+| `obsolete` | retire contradicted knowledge or a feature dropped by decision |
 
-`save` and `supersede` need `project`. `type` names the kind of observation — `gotcha`, `decision` and the rest of the vocabulary the schema lists.
+Writes need `project` and the current `session_id`, or explicit PR/commit provenance for a caller without a session. `save` and `consolidate` also need an actionable `agent_line` of at most 158 characters. `type` names the kind of observation — `gotcha`, `decision` and the rest of the vocabulary the schema lists.
 
 An external agent with a per-project access key reaches `list`, `get`, `save` and `supersede` and nothing else, and its writes are attributed to the key rather than to a person.
 
 ## myco_plans
 
-`list` (default), `get`, `save`, `delete`.
+`list` (default), `get`, `save`. Retain an unused plan as `abandoned`.
 
-`save` creates a plan or updates one when given an `id`. Content is optional on update: omitting it makes the call a status-only transition. Status runs `active` (written, not started) → `in_progress` (being worked) → `completed` or `abandoned`.
+`save` requires `project` and the current `session_id`. Create with content and exactly one of `source_path` (file-backed) or `plan_key` (non-file-backed); update by `id` to preserve identity. Content is optional on update: omitting it makes the call a status-only transition. Status runs `active` (written, not started) → `in_progress` (being worked) → `completed` or `abandoned`.
 
 ## myco_sessions
 
@@ -46,7 +45,7 @@ An external agent with a per-project access key reaches `list`, `get`, `save` an
 
 ## myco_outcomes
 
-`list` (default) and `report`. `report` records one pull request, issue, tag, release or deploy you created in this session. It takes `session_id` (your own, from the `Session::` line), `kind` (`pr`, `issue`, `tag`, `release` or `deploy`), `artifact_id` (its own id: a number, a tag name, a release or deploy id), `url` (https, with no user name or password) and `project`. The answer carries `created`: true the first time, false for the same report again. The same artifact under a different URL is refused. A session that is not yours, or that was deleted, gets `session_id not found`. `list` takes a `session_id` and pages with `cursor`. Through the CLI, name the credential source: `myco tool call myco_outcomes --credential registry --json --input '…'` on an enrolled machine, or `--credential env` with `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` set.
+`list` (default) and `report`. `report` records one pull request, issue, tag, release or deploy you created in this session. It takes `session_id` (your own, from the `Session::` line), `kind` (`pr`, `issue`, `tag`, `release` or `deploy`), `artifact_id` (its own id: a number, a tag name, a release or deploy id), `url` (https, with no user name or password) and `project`. The answer carries `created`: true the first time, false for the same report again. The same artifact under a different URL is refused. A session that is not yours, or that was deleted, gets `session_id not found`. `list` takes a `session_id` and pages with `cursor`. Through the CLI, name the credential source: the complete `myco tool call` example in the main skill on an enrolled machine, or `--credential env` with `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` set.
 
 ## myco_skills
 

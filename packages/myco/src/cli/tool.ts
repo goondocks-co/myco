@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { StreamableHTTPClientTransport, type Client } from '@modelcontextprotocol/client';
 import { credentialRequiredError } from '@myco/mcp/credential-refusal.js';
 import { declaredCredentialSource, deploymentTransport, resolveDeploymentUpstream, withoutCredentialFlag } from '@myco/mcp/deployment-upstream.js';
-import { extractStructuredResult, withMcpClient as withTransportClient, type ToolCallError, type ToolCallOutcome } from '@myco/mcp/client-call.js';
+import { requireToolResult, withMcpClient as withTransportClient, type ToolCallError, type ToolCallOutcome } from '@myco/mcp/client-call.js';
 import { CREDENTIAL_FLAG, type CredentialSource } from '@myco/member/constants.js';
 
 /** CLI client of the member's Deployment MCP surface. */
@@ -92,13 +92,13 @@ export async function run(args: string[], _vaultDir: string): Promise<void> {
     }
 
     const called = await withMcpClient(source, (client) =>
-      client.callTool({ name: tool, arguments: input as Record<string, unknown> }));
+      client.callTool({ name: tool, arguments: input as Record<string, unknown> }).then(requireToolResult));
     if (!called.ok) {
       await writeEnvelope({ ok: false, tool, error: called.error });
       process.exitCode = 1;
       return;
     }
-    const result = extractStructuredResult(called.value);
+    const result = called.value;
     await writeEnvelope({ ok: true, tool, result });
     return;
   }

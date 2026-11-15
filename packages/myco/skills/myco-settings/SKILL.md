@@ -37,17 +37,7 @@ The order is the point. Splitting these across call sites is how three of the fo
 
 ## A leaf carries its own rule, as data
 
-A leaf's rule is declarative data, not a validator function. Three shapes exist:
-
-| Shape | Means |
-|---|---|
-| `{}` | no rule; any JSON value |
-| `{ type: 'integer', min, max }` | a whole number in range |
-| `{ type: 'markdown', maxBytes }` | text: a string, no ASCII control character but newline and tab, within a UTF-8 byte budget |
-
-Data rather than a function because three consumers need to read it: the settings page renders a field from it, a gate reads it, and the writer enforces it. A function could serve only the last.
-
-**Most leaves carry `{}`, and that is deliberate.** A leaf that shipped before rules existed keeps no rule, because giving it one now would refuse values a deployment already holds. Add a rule to an existing leaf only when you have checked what is already stored.
+A leaf's rule is declarative data shared by the settings page and writer. Read the specs and rule types in `packages/myco-server/src/core/settings.ts` before adding or changing a leaf. Check existing stored values before narrowing a rule.
 
 ## Adding a setting
 

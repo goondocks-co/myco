@@ -93,7 +93,9 @@ export const canopy: ParityScenario = {
 
       const read = await tool(target.memberToken, 'myco_cortex', { op: 'canopy_map' });
       expect(read).toMatchObject({ project_id: target.projectId, revision: stored.revision, repository: { ...source, commit } });
-      expect(read.content).toContain('Map Provenance');
+      expect(read.content).toContain('Directory skeleton');
+      expect(read.content).not.toContain('Map Provenance');
+      expect(read.content).not.toContain('sha256');
     } finally {
       await owner(`${endpoint}/repository`, 'DELETE', { revision: connected.repository.revision });
     }
