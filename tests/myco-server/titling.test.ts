@@ -1,3 +1,8 @@
+import { backfillTitles } from '@myco-server-worker/core/titling.js';
+import { runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
+import { dispatchLoad } from '@myco-server-worker/db/runs/live.js';
+import { CompletionUnavailable, DIRECT_TITLE_BUDGET_MS, DIRECT_TITLE_SETTLEMENT_MS, COMPLETION_ATTEMPTS } from '@myco-server-worker/core/completion/provider.js';
+import { TITLING_MAX_ATTEMPTS } from '@myco-server-worker/constants.js';
 import { DIRECT_CALLS_PER_MINUTE } from '@myco-server-worker/core/completion/provider.js';
 import type { CompletionProvider } from '@myco-server-worker/core/completion/provider.js';
 import { singleTurnMaterial } from '@myco-server-worker/content/single-turn-material.js';
@@ -379,7 +384,7 @@ describe('direct session titles', () => {
     h.env.completionProvider = async () => ({ model: '@cf/openai/gpt-oss-20b', complete });
     h.env.afterResponse = work => { pending.push(work()); };
     h.session('direct');
-    h.prompt('direct', 'opening', 'Read this task file and do it.', NOW - 8000);
+    h.prompt('direct', 'opening', 'Read /task.md and do it.', NOW - 8000);
     return { ...h, settle: () => Promise.all(pending) };
   }
 
@@ -412,10 +417,11 @@ describe('direct session titles', () => {
     const h = direct(async () => ({ text: valid ? JSON.stringify(answer) : '{"title":"bad"}', usage: { input: 40, output: 10 } }));
     const first = await h.title('direct');
     await h.settle();
-    expect(h.row('direct')).toEqual(untouched);
+    expect(h.row('direct')).toEqual({ ...untouched, titled_at: NOW });
     expect(h.runRow(first.runId!)).toMatchObject({ status: 'failed', error: 'completion_invalid_answer' });
     valid = true;
-    const next = await h.title('direct', NOW + 1);
+    expect((await h.title('direct', NOW + 1)).outcome).toBe('already');
+    const next = await titleSession(h.env, { projectId: 'proj_1', sessionId: 'direct', now: NOW + OWNER_TITLING_WINDOW_MS + 1, origin: ORIGIN }, { retry: true });
     await h.settle();
     expect(next.outcome).toBe('dispatched');
     expect(h.row('direct')).toMatchObject(answer);
@@ -424,11 +430,73 @@ describe('direct session titles', () => {
 
   it('protects the provider across retries and leaves rate-limited sessions eligible', async () => {
     let calls = 0;
-    const h = direct(async () => { calls++; return { text: '{}', usage: null }; });
-    for (let i = 0; i < DIRECT_CALLS_PER_MINUTE; i++) { await h.title('direct', NOW + i); await h.settle(); }
+    const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
+    for (let i = 0; i <= DIRECT_CALLS_PER_MINUTE; i++) {
+      const id = 'rate-' + i; h.session(id); h.prompt(id, 'prompt-' + i, 'Title this work', NOW - 1);
+      await h.title(id, NOW + i); await h.settle();
+    }
     expect(calls).toBe(DIRECT_CALLS_PER_MINUTE);
     expect(h.runRows().some(run => run.error === 'completion_rate_limited')).toBe(true);
-    expect(h.row('direct')).toEqual(untouched);
+    expect(h.row('rate-' + DIRECT_CALLS_PER_MINUTE)).toEqual(untouched);
+    h.sqlite.close();
+  });
+
+
+  it('bounds repeated failures over ticks and titles a healthy session behind failing ones', async () => {
+    let calls = 0;
+    const h = direct(async request => {
+      calls++;
+      return { text: request.messages[1]!.content.includes('poison') ? '{}' : JSON.stringify(answer), usage: { input: 40, output: 10 } };
+    });
+    for (let i = 0; i < 5; i++) { h.session('poison-' + i, { endedAt: NOW + i + 1 }); h.prompt('poison-' + i, 'bad-' + i, 'poison', NOW - 100); }
+    await h.convert();
+    for (const at of [NOW + 10, NOW + 61_010, NOW + OWNER_TITLING_WINDOW_MS + 61_010, NOW + 2 * OWNER_TITLING_WINDOW_MS + 122_010]) {
+      await backfillTitles(h.env, at, 'active'); await h.settle();
+    }
+    expect(h.row('direct')).toMatchObject(answer);
+    const attempts = h.sqlite.query('SELECT titling_attempts FROM sessions WHERE session_id=?').get('poison-0') as { titling_attempts: number };
+    expect(attempts.titling_attempts).toBe(TITLING_MAX_ATTEMPTS);
+    expect(calls).toBeLessThanOrEqual(5 * TITLING_MAX_ATTEMPTS * COMPLETION_ATTEMPTS + 1);
+    const spent = calls;
+    await backfillTitles(h.env, NOW + 4 * OWNER_TITLING_WINDOW_MS, 'active'); await h.settle();
+    expect(calls).toBe(spent);
+    h.sqlite.close();
+  });
+
+  it('closes abandoned direct work without reserving runner capacity', async () => {
+    const h = direct(async () => { throw new Error('not called'); });
+    h.env.afterResponse = () => {};
+    const run = await h.title('direct');
+    expect(await dispatchLoad(h.env.db, TITLING_TASK, NOW)).toMatchObject({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
+    await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 1);
+    expect(h.runRow(run.runId!)).toMatchObject({ status: 'failed', error: 'The direct model call did not settle before its deadline' });
+    const retry = await titleSession(h.env, { projectId: 'proj_1', sessionId: 'direct', now: NOW + OWNER_TITLING_WINDOW_MS + 1, origin: ORIGIN }, { retry: true });
+    expect(retry.outcome).toBe('dispatched');
+    h.sqlite.close();
+  });
+
+  it('does not send archived project material to a provider', async () => {
+    let calls = 0;
+    const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
+    h.sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [NOW, 'proj_1']);
+    expect((await h.title('direct')).outcome).toBe('error');
+    await h.settle();
+    expect(calls).toBe(0);
+    expect(h.runRows()).toEqual([]);
+    h.sqlite.close();
+  });
+
+  it('retains known spend when a validation retry cannot report usage', async () => {
+    let calls = 0;
+    const h = direct(async () => {
+      if (calls++ > 0) throw new CompletionUnavailable('unreachable');
+      return { text: '{}', usage: { input: 100, output: 20 } };
+    });
+    const run = await h.title('direct'); await h.settle();
+    const observed = h.sqlite.query('SELECT tokens_used,cost_usd,cost_source FROM agent_runs WHERE id=?').get(run.runId!) as { tokens_used: number; cost_usd: number; cost_source: string };
+    expect(observed.tokens_used).toBe(120);
+    expect(observed.cost_usd).toBeGreaterThan(0);
+    expect(observed.cost_source).toBe('partial');
     h.sqlite.close();
   });
 
@@ -436,6 +504,10 @@ describe('direct session titles', () => {
     const h = direct(async () => ({ text: JSON.stringify(answer), usage: null }));
     h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1','read-task','direct','tok_1','tool.use','cli',?,'hash',?,?)",
       [JSON.stringify({ toolCallId: 'read-task', promptId: 'opening', toolName: 'Read', input: { file_path: '/task.md' }, output: 'Build direct session titles with bounded calls.', success: true }), NOW - 7900, NOW - 7900]);
+    for (const [id, toolName, input] of [['shell', 'Bash', { command: 'env | head' }], ['unrelated', 'Read', { file_path: '/unrelated.md' }]] as const) {
+      h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1',?,'direct','tok_1','tool.use','cli',?,'hash',?,?)",
+        [id, JSON.stringify({ toolCallId: id, promptId: 'opening', toolName, input, output: 'DO NOT SEND UNRELATED OUTPUT', success: true }), NOW - 7950, NOW - 7950]);
+    }
     for (let i = 0; i < 14; i++) {
       h.prompt('direct', 'turn-' + i, 'Human requirement ' + i, NOW - 7000 + i * 10);
       h.response('direct', 'turn-' + i, 'early-' + i, 'I will investigate.', NOW - 6999 + i * 10);
@@ -448,6 +520,7 @@ describe('direct session titles', () => {
     expect(material.text).toContain('Completed requirement 13');
     expect(material.text).toContain('Build direct session titles');
     expect(material.text).not.toContain('DO NOT TREAT AS HUMAN');
+    expect(material.text).not.toContain('DO NOT SEND UNRELATED OUTPUT');
     expect(material.text.length).toBeLessThanOrEqual(10000);
     h.sqlite.close();
   });

@@ -1,3 +1,4 @@
+import { DIRECT_TITLE_STEPS } from './schema-steps-direct-titles.js';
 import { TURN_COVERAGE_STEPS } from './schema-steps-turn-coverage.js';
 import { contextDeliverySteps } from './schema-steps-context-delivery.js';
 import { curationChangeSql } from './curation-changes.js';
@@ -2407,6 +2408,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
     ...V114_STATEMENTS.filter(sql => /^CREATE INDEX[^]* ON spore_injections /.test(sql)),
     ...V705_STATEMENTS.filter(sql => /^CREATE INDEX[^]* ON spore_injections\(/.test(sql)),
   ]).map(stamp),
+  ...DIRECT_TITLE_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

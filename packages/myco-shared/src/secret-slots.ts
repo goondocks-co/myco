@@ -26,11 +26,11 @@ export interface SecretSlot {
 
 /** Every slot, in the order the settings page lists them: the harnesses' own slots follow Anthropic's. */
 export const SECRET_SLOTS: readonly SecretSlot[] = [
-  { name: 'single-turn', label: 'Single-turn endpoint', alsoUsedFor: 'direct single-turn model calls to the configured base URL' },
   { name: 'anthropic', label: 'Anthropic', alsoUsedFor: null },
   ...RUNNER_OWN_SLOTS.map((slot): SecretSlot => ({ name: slot.name, label: slot.label, alsoUsedFor: null })),
   { name: 'openai', label: 'OpenAI', alsoUsedFor: 'embeddings, when the embedding provider is OpenAI' },
   { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'embeddings, when the embedding provider is OpenRouter' },
+  { name: 'single-turn', label: 'Single-turn endpoint', alsoUsedFor: 'direct single-turn model calls to the configured base URL' },
   { name: 'github', label: 'GitHub', alsoUsedFor: null },
 ];
 

@@ -25,6 +25,7 @@ export function timeoutSecondsOf(runContext: string | null): number {
 export function staleAfter(startedAt: number, runContext: string | null): number {
   let context: unknown = null;
   try { context = runContext === null ? null : JSON.parse(runContext); } catch { /* A malformed context carries no preparation allowance. */ }
+  if (context !== null && typeof context === 'object' && 'execution' in context && context.execution === 'direct') return startedAt + timeoutSecondsOf(runContext) * 1000;
   const preparation = context !== null && typeof context === 'object' && 'preparationTimeoutMs' in context && context.preparationTimeoutMs === REPOSITORY_PREPARATION_TIMEOUT_MS ? REPOSITORY_PREPARATION_TIMEOUT_MS : 0;
   return startedAt + timeoutSecondsOf(runContext) * 1000 + preparation + RUN_OVERRUN_MARGIN_MS;
 }
@@ -49,4 +50,10 @@ export function runDeadlineSql(): string {
 export function preparationAllowanceSql(): string {
   return `CASE WHEN json_valid(run_context) THEN CASE WHEN json_extract(run_context,'$.preparationTimeoutMs')=${REPOSITORY_PREPARATION_TIMEOUT_MS}
     THEN ${REPOSITORY_PREPARATION_TIMEOUT_MS} ELSE 0 END ELSE 0 END`;
+}
+
+
+/** The execution owner recorded by a direct model call. */
+export function isDirectRunContext(runContext: string | null): boolean {
+  try { return JSON.parse(runContext ?? 'null')?.execution === 'direct'; } catch { return false; }
 }

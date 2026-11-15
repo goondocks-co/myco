@@ -360,7 +360,7 @@ describe('provider credentials through the surface', () => {
     const text = await listed.text();
     expect(text).not.toContain(ANTHROPIC);
     const secrets = (JSON.parse(text) as { secrets: Array<Record<string, unknown>> }).secrets;
-    expect(secrets.map((s) => s.name)).toEqual(['single-turn', 'anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'github']);
+    expect(secrets.map((s) => s.name)).toEqual(['anthropic', 'codex', 'cursor', 'openai', 'openrouter', 'single-turn', 'github']);
     expect(secrets.find((s) => s.name === 'openai')).toMatchObject({ configured: false, maskedValue: null });
   });
 

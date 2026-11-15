@@ -74,6 +74,11 @@
       "alsoUsedFor": "embeddings, when the embedding provider is OpenRouter"
     },
     {
+      "name": "single-turn",
+      "label": "Single-turn endpoint",
+      "alsoUsedFor": "direct single-turn model calls to the configured base URL"
+    },
+    {
       "name": "github",
       "label": "GitHub",
       "alsoUsedFor": null
@@ -85,6 +90,7 @@
     "cursor",
     "openai",
     "openrouter",
+    "single-turn",
     "github"
   ],
   "PROFILE_HARNESSES": {

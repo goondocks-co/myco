@@ -380,12 +380,12 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   'import.window_days': { consumer: at('api/import.ts', handleImportPlan), value: () => 7, invalid: () => 2.5, observe: importPlan },
   'import.max_sessions_per_harness': { consumer: at('api/import.ts', handleImportPlan), value: () => 1, invalid: () => 1.5, observe: importPlan },
   'single_turn.model': {
-    setup: () => [['single_turn.base_url', 'http://models.internal/v1']],
+    setup: () => [['single_turn.base_url', 'https://models.internal/v1']],
     value: () => 'local-title-model', invalid: () => '', observe: (r) => completionObservation(r, 'model'),
   },
   'single_turn.base_url': {
     setup: () => [['single_turn.model', 'local-title-model']],
-    value: () => 'http://models.internal/v1', invalid: () => 'not a url', observe: (r) => completionObservation(r, 'url'),
+    value: () => 'https://models.internal/v1', invalid: () => 'not a url', observe: (r) => completionObservation(r, 'url'),
   },
   'embedding.provider': {
     consumer: at('core/embedding/configured-provider.ts', configuredEmbeddingProvider),

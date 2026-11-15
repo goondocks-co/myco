@@ -15,10 +15,24 @@ const clip = (text: string, limit: number) => {
   const line = text.replace(/\s+/g, ' ').trim();
   return line.length <= limit ? line : `${line.slice(0, Math.floor(limit * 2 / 3))} […] ${line.slice(-Math.floor(limit / 3) + 5)}`;
 };
-const fileRead = (record: DocRecord) => record.k === 'tool' && record.success !== 0 && (
-  /^(read|read_file|readfile|file_read)$/i.test(String(record.tool_name).split(/[./]/).at(-1) ?? '')
-  || /\b(cat|sed|head|Get-Content)\b/.test(String(record.input ?? ''))
-);
+
+const READ_TOOLS = new Set(['read', 'read_file', 'readfile', 'file_read', 'read_text_file']);
+const PATH_FIELDS = ['file_path', 'path', 'filePath', 'target_file'] as const;
+const pathBoundary = (char: string | undefined) => char === undefined || /[\s`"'()[\]{},;!?]/.test(char);
+
+/** Only a read-type tool naming the exact path in the person's prompt contributes a file excerpt. */
+function fileRead(record: DocRecord, prompt: string): boolean {
+  if (record.k !== 'tool' || record.success === 0 || !READ_TOOLS.has(String(record.tool_name).split(/[./]/).at(-1)!.toLowerCase())) return false;
+  let input: unknown = record.input;
+  if (typeof input === 'string') { try { input = JSON.parse(input); } catch { return false; } }
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return false;
+  return PATH_FIELDS.some(field => {
+    const path = (input as Record<string, unknown>)[field];
+    if (typeof path !== 'string' || path.length === 0) return false;
+    const at = prompt.indexOf(path);
+    return at >= 0 && pathBoundary(prompt[at - 1]) && pathBoundary(prompt[at + path.length]);
+  });
+}
 
 /** Person-authored head and tail turns with closing replies; file context comes only from that turn's stored read. */
 export async function singleTurnMaterial(env: ContentStore, project: string, session: string) {
@@ -37,8 +51,8 @@ export async function singleTurnMaterial(env: ContentStore, project: string, ses
     const text = await doc.body(prompt, 'text');
     if (text === null) throw new Error('title_prompt_unavailable');
     section.push(`[Person] ${clip(text, PROMPT_CHARS)}`);
-    if (text.length <= SHORT_PROMPT_CHARS && /(?:[~/.][^\s]+\.(?:md|txt)|\bread\b.*\bfile\b)/i.test(text)) {
-      const read = records.find(fileRead);
+    if (text.length <= SHORT_PROMPT_CHARS) {
+      const read = records.find(record => fileRead(record, text));
       const output = read?.output_preview;
       if (typeof output === 'string' && output.trim()) section.push(`[Opening text read for this prompt] ${output.slice(0, FILE_CHARS)}`);
     }

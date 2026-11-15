@@ -1,3 +1,4 @@
+import { projectWorkEnabled } from '../db/settings/admission.js';
 import { beginDirectTitle } from '../db/runs/direct-titles.js';
 import { executeDirectTitle } from './direct-titling.js';
 import { DIRECT_CALLS_PER_MINUTE } from './completion/provider.js';
@@ -111,6 +112,7 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
   const skipped = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return { outcome }; };
   const failed = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, mode }); return { outcome }; };
   try {
+    if (!(await projectWorkEnabled(env.db, projectId))) return skipped('error');
     await assertSessionMaterialReady(env.db, projectId, sessionId);
     const provider = await env.completionProvider?.() ?? null;
     const prepared = provider === null ? await prepareDispatch(env, TITLING_TASK, projectId) : null;

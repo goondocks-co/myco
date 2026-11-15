@@ -1,3 +1,4 @@
+import recorded from '../fixtures/providers/workers-ai-completion.json';
 import { describe, expect, it } from 'bun:test';
 import { configuredCompletionProvider } from '@myco-server-worker/core/completion/configured-provider.js';
 import { cloudflareCompletionProvider } from '@myco-server-worker/platform/cloudflare/completion.js';
@@ -13,10 +14,10 @@ describe('platform completions', () => {
   it('defaults to the Workers AI binding, requests schema-bound output and returns text with usage', async () => {
     const f = sqliteEnv();
     let sent: unknown;
-    const env = serverEnvFromBindings({ ...f.env, AI: { run: async (_model, input) => { sent = input; return body; } } });
+    const env = serverEnvFromBindings({ ...f.env, AI: { run: async (_model, input) => { sent = input; return recorded.r; } } });
     const provider = await env.completionProvider!();
     expect(provider?.model).toBe('@cf/openai/gpt-oss-20b');
-    expect(await provider!.complete(request)).toEqual({ text: '{"title":"Done"}', usage: { input: 12, output: 5 } });
+    expect(await provider!.complete(request)).toEqual({ text: recorded.r.choices[0]!.message.content, usage: { input: recorded.r.usage.prompt_tokens, output: recorded.r.usage.completion_tokens } });
     expect(sent).toMatchObject({ max_tokens: COMPLETION_OUTPUT_TOKENS, response_format: { type: 'json_schema', json_schema: request.schema } });
     f.sqlite.close();
   });
@@ -32,6 +33,7 @@ describe('platform completions', () => {
     const writer = settingsWriter(f.db, { target: 'bun' });
     const actor = 'mem_machine_1';
     expect((await writer.setLeaf('single_turn.base_url', 'http://user:pass@localhost/v1', actor, 1, 0)).applied).toBe(false);
+    expect((await writer.setLeaf('single_turn.base_url', 'http://titles.example.com/v1', actor, 2, 0)).applied).toBe(false);
     expect((await writer.setLeaf('single_turn.base_url', 'http://localhost:1234/v1', actor, 2, 0)).applied).toBe(true);
     expect(await get()).toBeNull();
     expect((await writer.setLeaf('single_turn.model', 'local-model', actor, 3, 0)).applied).toBe(true);

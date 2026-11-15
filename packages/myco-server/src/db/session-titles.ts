@@ -1,3 +1,4 @@
+import { TITLE_WORK_RECHECK_MS } from './sessions/title-work.js';
 import { commit, readSet, read, write, type Bound } from './index.js';
 import { attributedUpdate } from './runs/attribution.js';
 import type { RelationalStore } from '../core/adapters.js';
@@ -103,4 +104,25 @@ export async function overwriteTitle(db: RelationalStore, projectId: string, ses
 /** Stores a session's title and summary where none exists yet; false when one already does. */
 export async function writeTitle(db: RelationalStore, projectId: string, sessionId: string, title: string, summary: string, attribution?: RunWrite): Promise<boolean> {
   return storeSessionTitle(db, { projectId, sessionId, title, summary, mode: 'first', by: null, ...(attribution === undefined ? {} : { attribution }) });
+}
+
+
+const uncalled = (project: string, run: string) => `EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=${project} AND r.id=${run}
+  AND r.provider='direct' AND r.status='running' AND NOT EXISTS(SELECT 1 FROM agent_run_events e
+    WHERE e.project_id=r.project_id AND e.run_id=r.id AND e.event_type='direct_call'))`;
+const uncount = write<[project: string, session: string, stamp: number, run: string], never>({ name: 'sessionTitle.uncountUncalled', sql: `
+  UPDATE sessions SET titling_attempts=MAX(0,titling_attempts-1) WHERE project_id=?1 AND session_id=?2 AND titled_at=?3
+    AND ${uncalled('?1', '?4')} AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=?1 AND id=?4 AND attempt_counted=1)` });
+const restoreUncalled = write<[project: string, session: string, stamp: number, previous: number | null, run: string], never>({ name: 'sessionTitle.restoreUncalled', sql: `
+  UPDATE sessions SET titled_at=?4 WHERE project_id=?1 AND session_id=?2 AND titled_at=?3 AND ${uncalled('?1', '?5')}` });
+const deferUncalled = write<[project: string, session: string, mode: string, run: string, now: number], never>({ name: 'sessionTitle.deferUncalled', sql: `
+  UPDATE session_title_work SET ready=0,waits='timer',due_at=?5+${TITLE_WORK_RECHECK_MS},checks=checks+1
+    WHERE project_id=?1 AND session_id=?2 AND mode=?3 AND ${uncalled('?1', '?4')}` });
+const unmark = write<[project: string, run: string], never>({ name: 'sessionTitle.unmarkUncalled', sql: `
+  UPDATE agent_runs SET attempt_counted=0 WHERE project_id=?1 AND id=?2 AND ${uncalled('?1', '?2')}` });
+
+/** An uncalled attempt gives back its claim and sleeps before the same commit ends its run. */
+export function uncalledTitleRelease(ask: { project: string; session: string; run: string; stamp: number; previous: number | null; mode: string; now: number }): Bound[] {
+  return [uncount.bind(ask.project, ask.session, ask.stamp, ask.run), restoreUncalled.bind(ask.project, ask.session, ask.stamp, ask.previous, ask.run),
+    deferUncalled.bind(ask.project, ask.session, ask.mode, ask.run, ask.now), unmark.bind(ask.project, ask.run)];
 }

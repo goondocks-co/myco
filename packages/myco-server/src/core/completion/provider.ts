@@ -1,6 +1,8 @@
 /** One bounded, non-streaming OpenAI-shaped completion. */
 export const COMPLETION_MODEL_CHARS = 256;
 export const COMPLETION_BASE_URL_CHARS = 2048;
+export const DIRECT_TITLE_BUDGET_MS = 25_000;
+export const DIRECT_TITLE_SETTLEMENT_MS = 5_000;
 export const COMPLETION_TIMEOUT_MS = 30_000;
 export const COMPLETION_OUTPUT_TOKENS = 3_000;
 export const DIRECT_CALL_WINDOW_MS = 60_000;
@@ -46,18 +48,18 @@ export function completionAnswer(body: unknown): CompletionAnswer {
   return { text, usage: valid(input) && valid(output) ? { input, output } : null };
 }
 
-/** A deadline covers the provider call and reading its answer, including bindings that ignore cancellation. */
+/** An abort deadline covers the provider request and reading its answer. */
 export async function boundedCompletion(work: (signal: AbortSignal) => Promise<unknown>, timeoutMs = COMPLETION_TIMEOUT_MS): Promise<CompletionAnswer> {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => { controller.abort(); reject(new CompletionUnavailable('timeout')); }, Math.max(1, Math.min(timeoutMs, COMPLETION_TIMEOUT_MS)));
-  });
-  try { return completionAnswer(await Promise.race([work(controller.signal), timeout])); }
-  catch (error) {
+  const signal = AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, COMPLETION_TIMEOUT_MS)));
+  try {
+    const body = await work(signal);
+    signal.throwIfAborted();
+    return completionAnswer(body);
+  } catch (error) {
+    if (signal.aborted) throw new CompletionUnavailable('timeout');
     if (error instanceof CompletionUnavailable) throw error;
-    throw new CompletionUnavailable(controller.signal.aborted ? 'timeout' : 'unreachable');
-  } finally { clearTimeout(timer); }
+    throw new CompletionUnavailable('unreachable');
+  }
 }
 
 /** Published USD per million tokens; models absent from this catalogue have unknown cost. */
@@ -71,10 +73,10 @@ export function completionCost(model: string, usage: CompletionAnswer['usage']):
 
 
 /** Direct-call evidence uses the shared identity shape without a runner attempt. */
-export function completionAccounting(model: string, usage: CompletionAnswer['usage']) {
+export function completionAccounting(model: string, usage: CompletionAnswer['usage'], unknownAttempts = 0) {
   return JSON.stringify({
     identity: { status: 'reported', source: 'deployment_direct_call', primary: { model, provider: 'direct' },
       models: [{ model, provider: 'direct', source: 'deployment_direct_call', usage: null }] },
-    usage, costProvenance: completionCost(model, usage) === null ? 'unavailable' : 'model_pricing',
+    usage, usageComplete: unknownAttempts === 0, unknownAttempts, costProvenance: completionCost(model, usage) === null ? 'unavailable' : 'model_pricing',
   });
 }

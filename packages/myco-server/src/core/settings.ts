@@ -1,3 +1,4 @@
+import { completionEndpointRefusal } from './completion/endpoint.js';
 import { COMPLETION_MODEL_CHARS, COMPLETION_BASE_URL_CHARS } from './completion/provider.js';
 import { observedSettingsAssertion } from '../db/meta/settings-observation.js';
 import { rows, type Bound } from '../db/index.js';
@@ -401,7 +402,7 @@ export function leafRuleViolation(spec: LeafSpec, value: unknown, previous?: unk
     try {
       const url = new URL(value);
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return 'expected an HTTP base URL without a user name, password, ? parameters or # suffix';
-      return null;
+      return completionEndpointRefusal(url);
     } catch { return 'expected an HTTP base URL'; }
   }
   if (spec.type === 'boolean') return typeof value === 'boolean' ? null : 'expected on or off';
