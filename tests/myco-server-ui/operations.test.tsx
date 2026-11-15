@@ -396,7 +396,7 @@ describe('automatic recovery on Health', () => {
     const advancing = { attempt: 3, stage: 'export', startedAt: null, failure: 'provider_unavailable', waiting: null };
     expect(latestWords({ ...recoveryBase, latest: advancing } as never)).toBe('Attempt 3 is exporting the database.');
     const since = Date.now() - 35 * 60_000;
-    expect(latestWords({ ...recoveryBase, latest: { ...advancing, waiting: 'earlier_export', waitingSince: since } } as never)).toContain('(requested 35m ago)');
+    expect(latestWords({ ...recoveryBase, latest: { ...advancing, waiting: 'earlier_export', waitingSince: since } } as never)).toContain('(requested 35 min ago)');
   });
 });
 
@@ -411,7 +411,7 @@ describe('store checks on Health', () => {
         check: 'integrity', support: { supported: true, label: 'A quick check of every table and index, and of every link between records' },
         cadence: { state: 'on', intervalHours: 168 }, dueAt: 0, running: false,
         latest: {
-          runId: 'run_9c1e0b7a44', trigger: 'schedule', state: 'findings', startedAt: 0, finishedAt: 1, errorClass: null,
+          runId: 'run_9c1e0b7a44', trigger: 'schedule', state: 'findings', startedAt: Date.now() - 3 * 3_600_000, finishedAt: Date.now() - 2 * 3_600_000, errorClass: null,
           findings: ['foreign key: smoke_child row 1 names a missing smoke_parent'], findingsOmitted: 2,
           measurements: [
             { name: 'size', state: 'measured', value: 2 * 1024 * 1024, unit: 'bytes' },
@@ -432,7 +432,7 @@ describe('store checks on Health', () => {
     expect(within(integrity).getByText('foreign key: smoke_child row 1 names a missing smoke_parent')).toBeTruthy();
     expect(within(integrity).getByText('…and 2 more not kept')).toBeTruthy();
     expect(within(integrity).getByText('This measurement is unavailable.')).toBeTruthy();
-    expect(within(integrity).getByText('2.0 MB')).toBeTruthy();
+    expect(within(integrity).getByText('2.0 MB, measured 2 h ago')).toBeTruthy();
     expect(integrity.textContent).not.toContain('run_9c1e0b7a44');
     const optimize = screen.getByTestId('maintenance-optimize');
     expect(within(optimize).getByText('Never run.')).toBeTruthy();

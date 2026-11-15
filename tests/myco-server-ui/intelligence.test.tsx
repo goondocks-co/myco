@@ -246,7 +246,7 @@ describe('a run’s panel', () => {
     mount(`/p/${P}/work/runs/run_q0000000001`);
     open = await panel();
     expect((await within(open).findByRole('heading', { level: 2 })).textContent).toBe('Waiting to start');
-    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^3 of this task waiting\. Waiting for a free slot: this server is already running as many tasks at once as it allows\. Waiting since \d+m ago\.$/);
+    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^3 of this task waiting\. Waiting for a free slot: this server is already running as many tasks at once as it allows\. Waiting since (yesterday )?\d{2}:\d{2}\.$/);
     expect(interval('run_q0000000001')).toEqual({ interval: MOVING_MS, background: false });
   });
 
@@ -259,7 +259,7 @@ describe('a run’s panel', () => {
     mount(`/p/${P}/work/runs/run_held000001`);
     let open = await panel();
     await waitFor(() => expect(open.querySelector('[data-queued]')).not.toBeNull());
-    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^Next in this task’s queue\. Waiting until the daily budget has room for this run\. Waiting since \d+m ago\.$/);
+    expect(open.querySelector('[data-queued]')!.textContent).toMatch(/^Next in this task’s queue\. Waiting until the daily budget has room for this run\. Waiting since (yesterday )?\d{2}:\d{2}\.$/);
     expect(open.querySelector('[data-fleet-wait]')!.textContent).toBe(QUEUE_REASON_WORDS.no_runner);
     cleanup();
     client.clear();

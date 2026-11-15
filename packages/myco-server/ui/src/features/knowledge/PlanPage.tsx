@@ -12,9 +12,9 @@ import { NotFound } from '../../pages/NotFound';
 import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 import { TextOrBlob } from '../sessions/StoredText';
-import { dateTime } from '../sessions/words';
 import type { PlanFields } from './wire';
-import { ago, authorName, PLAN_COLUMNS, planStateWord, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
+import { authorName, PLAN_COLUMNS, planStateWord, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
+import { agoWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 export interface PlanPageProps {
   projectId: string;
@@ -59,7 +59,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
               <StatusChip tone={planStatusTone(plan.status)} data-plan-status="">{planStateWord(plan)}</StatusChip>
               <span className="font-medium text-ink-2">{projectName}</span>
               <span aria-hidden>·</span>
-              <span>updated {ago(plan.updatedAt, now)}</span>
+              <span>updated {agoWords(plan.updatedAt, now)}</span>
             </p>
             <h1 className={cn('t-display', plan.title === null || plan.title.trim() === '' ? 'text-muted' : 'text-ink')} data-plan-title="">{planTitle(plan)}</h1>
             {parts !== null && (
@@ -89,8 +89,8 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
               </FactRow>
             )}
             {plan.resolution?.note != null && <FactRow term="Outcome">{plan.resolution.note}</FactRow>}
-            <FactRow term="Written">{dateTime(plan.createdAt, now)}</FactRow>
-            {plan.updatedAt !== plan.createdAt && <FactRow term="Updated">{dateTime(plan.updatedAt, now)}</FactRow>}
+            <FactRow term="Written">{dateTimeWords(plan.createdAt, now)}</FactRow>
+            {plan.updatedAt !== plan.createdAt && <FactRow term="Updated">{dateTimeWords(plan.updatedAt, now)}</FactRow>}
             {plan.originPath !== null && plan.originPath.trim() !== '' && <FactRow term="File" mono>{plan.originPath}</FactRow>}
             {plan.tags.length > 0 && (
               <FactRow term="Tags">

@@ -6,9 +6,9 @@ import { ApiError, fetchJson, putJson } from '../../../lib/api';
 import type { EffectiveSetting } from '@goondocks/myco-shared/settings-contract';
 import { X } from 'lucide-react';
 import { useMemberNames } from '../members';
-import { ago } from '../../today/words';
 import { StoredValue } from '../StoredValue';
 import { live } from '../../../lib/live';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** The extra folders a machine's agents write plans to. */
 export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
@@ -121,7 +121,7 @@ function FolderList({ field, stored, folders, refusedSave, onChange, onClear }: 
       {(stored.nextSource ?? stored.source) === 'invalid' && <Button variant="ghost" onClick={onClear}>Clear the stored value</Button>}
       {(stored.nextSource ?? stored.source) === 'invalid' && <p className="t-meta text-muted">Clearing restores Myco’s default folders.</p>}
       {stored.configured && stored.updatedAt !== null && (
-        <p className="t-meta text-faint">This value was changed{changedBy === null ? '' : ` by ${changedBy}`} {ago(stored.updatedAt, Date.now())}.</p>
+        <p className="t-meta text-faint">This value was changed{changedBy === null ? '' : ` by ${changedBy}`} {agoWords(stored.updatedAt, Date.now())}.</p>
       )}
     </section>
   );

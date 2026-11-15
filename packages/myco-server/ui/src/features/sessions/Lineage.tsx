@@ -1,7 +1,8 @@
 import { EmptyState, ErrorState, LaneTimeline, LoadingState, type Lane } from '../../design';
 import { useSessionLineage, type LineageEdge, type LineageNode, type SessionLineage } from '../../hooks/use-sessions';
 import { projectPath } from '../../routes/nav';
-import { agentName, clockTime, dateTime } from './words';
+import { agentName } from './words';
+import { clockWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 /** The name of a session a record names but the Project does not hold. */
 export const NOT_CAPTURED_NAME = 'A session not captured here';
@@ -24,9 +25,9 @@ export function parentWords(edge: LineageEdge, parent: string): string {
 
 function spanWords(node: LineageNode, now: number): string {
   if (node.startedAt === null) return 'Times not captured';
-  if (node.endedAt === null) return `${dateTime(node.startedAt, now)} – no end recorded`;
+  if (node.endedAt === null) return `${dateTimeWords(node.startedAt, now)} – no end recorded`;
   const sameDay = new Date(node.startedAt).toDateString() === new Date(node.endedAt).toDateString();
-  return `${dateTime(node.startedAt, now)} – ${sameDay ? clockTime(node.endedAt) : dateTime(node.endedAt, now)}`;
+  return `${dateTimeWords(node.startedAt, now)} – ${sameDay ? clockWords(node.endedAt) : dateTimeWords(node.endedAt, now)}`;
 }
 
 const sameEdge = (edge: LineageEdge, other: LineageEdge | null): boolean =>

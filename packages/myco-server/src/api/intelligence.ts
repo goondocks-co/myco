@@ -19,6 +19,8 @@ import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './s
 import { listSporePage, sporeListWindow } from '../core/spores.js';
 import { getSpore } from '../db/spores/records.js';
 import { listSupersededSporeIds, listSupersedingSporeIds } from '../db/spores/edges.js';
+import { getRun } from '../db/runs/lifecycle.js';
+import { TASK_WORDS, type RetainedTask } from '../core/task-catalogue.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
 import { canonicalNamespace, decodeReleaseStatesCursor, listReleaseStates } from '../core/provenance.js';
 import { decodeCursor } from '../read/scope.js';
@@ -78,17 +80,24 @@ export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Pr
   return ok({ spores: rows, ...page, maxPage: MAX_PAGE });
 }
 
-/** One spore and its lineage in both directions, so a reader sees a retired spore's replacement rather than a dead end, and a replacement what it grew out of. */
+/**
+ * One spore and its lineage in both directions, so a reader sees a retired spore's replacement rather than a dead end, and a
+ * replacement what it grew out of; with the name of the task whose run wrote it, when a run did.
+ */
 export async function handleProjectSpore(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await scopeOf(env, ctx);
   if (scope === null) return notFound();
   const spore = await getSpore(env.db, scope, ctx.params.sporeId ?? '');
   if (spore === null) return notFound();
-  const [supersededBy, supersedes] = await Promise.all([
+  const [supersededBy, supersedes, authorRun] = await Promise.all([
     listSupersedingSporeIds(env.db, scope, spore.id),
     listSupersededSporeIds(env.db, scope, spore.id),
+    spore.authorKind === 'run' && spore.author !== null ? getRun(env.db, scope, spore.author) : null,
   ]);
-  return ok({ spore, supersededBy, supersedes });
+  // The task of the run that wrote it, by its catalogue name, so the reader is told what Myco was reading; null when no run names one.
+  const task = authorRun?.task ?? null;
+  const authorTask = task !== null && Object.hasOwn(TASK_WORDS, task) ? TASK_WORDS[task as RetainedTask].name : null;
+  return ok({ spore, supersededBy, supersedes, authorTask });
 }
 
 export async function handleProjectReleaseStates(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

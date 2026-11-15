@@ -11,10 +11,8 @@ import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
 import { KNOWLEDGE_SUFFIX, keptFilters, projectPath } from '../../routes/nav';
 import type { SporeFacets, SporeStreamRow } from './wire';
-import {
-  ago, count, DEFAULT_SPORE_STATUS, firstLine, SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTypePlural,
-  sporeTypeWord, typeFacetRows, typeFilter, windowSince,
-} from './words';
+import { count, DEFAULT_SPORE_STATUS, firstLine, SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTypePlural, sporeTypeWord, typeFacetRows, typeFilter, windowSince,  } from './words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** How long the search box waits after the last keystroke before the stream is read again. */
 const FILTER_DEBOUNCE_MS = 250;
@@ -168,7 +166,7 @@ function SporeCard({ spore, project, now }: { spore: SporeStreamRow; project: st
         {!current && <StatusChip tone={sporeStatusTone(spore.status)}>{sporeStatusWord(spore.status)}</StatusChip>}
         {project !== null && <span className="font-medium text-ink-2">{project}</span>}
         <span aria-hidden>·</span>
-        <time className="whitespace-nowrap" dateTime={new Date(spore.createdAt).toISOString()}>{ago(spore.createdAt, now)}</time>
+        <time className="whitespace-nowrap" dateTime={new Date(spore.createdAt).toISOString()}>{agoWords(spore.createdAt, now)}</time>
       </p>
     </li>
   );

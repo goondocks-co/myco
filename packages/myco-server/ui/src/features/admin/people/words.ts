@@ -26,12 +26,6 @@ export function invitationExpiry(expiresAt: number, now: number): string {
   return expiresAt <= now ? 'expired' : `expires in ${formatUntil(expiresAt, now)}`;
 }
 
-/** A day as a person says it on a list: "Sep 3", with the year when it is not this one. */
-export function shortDate(at: number, now: number = Date.now()): string {
-  const sameYear = new Date(at).getFullYear() === new Date(now).getFullYear();
-  return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
-}
-
 /** "1 machine", "3 machines". */
 export function machinesCount(n: number): string {
   return `${n.toLocaleString()} ${n === 1 ? 'machine' : 'machines'}`;

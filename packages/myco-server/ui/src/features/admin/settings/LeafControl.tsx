@@ -5,7 +5,6 @@ import { Button, IconButton, Input, Select, Switch, Textarea } from '../../../de
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { isSettingsConflict, settingsRefusalText, useSettingsActions } from '../../../hooks/use-settings';
 import { harnessLabel } from '../../../lib/harness';
-import { ago } from '../../today/words';
 import { SettingRow } from '../AdminFrame';
 import { StoredValue } from '../StoredValue';
 import { useMemberNames } from '../members';
@@ -14,6 +13,7 @@ import { isRetired } from './retired';
 import { EmbeddingRow } from './EmbeddingFields';
 import { ModelRow } from './ModelPicker';
 import type { LeafRow } from './wire';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** The agents a machine can run Myco's work with: the harnesses the server opens a credential for, by the same table. */
 export const WORKER_AGENTS: readonly string[] = Object.keys(HARNESS_CREDENTIALS);
@@ -68,7 +68,7 @@ const textOf = (field: LeafField, value: unknown): string => {
  */
 export function savedWords(row: LeafRow | undefined, name: string | null, now: number = Date.now(), defaults: string | null = null): string {
   if (row === undefined || !row.configured) return defaults === null ? 'Server default' : `Server default: ${defaults}`;
-  const when = row.updatedAt === null ? null : ago(row.updatedAt, now);
+  const when = row.updatedAt === null ? null : agoWords(row.updatedAt, now);
   if (name !== null) return when === null ? `Saved by ${name}` : `Saved by ${name} · ${when}`;
   return when === null ? 'Saved' : `Saved ${when}`;
 }

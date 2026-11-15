@@ -2,7 +2,8 @@ import { Button, Card, HealthDot, ReadState, type HealthTone } from '../../desig
 import { LIVE_WITHIN_MS } from './timeline';
 import type { CaptureRow } from './wire';
 import { useMe } from '../../hooks/use-me';
-import { agentName, ago, machineNames } from './words';
+import { agentName, machineNames } from './words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 const DAY = 24 * 60 * 60_000;
 
@@ -72,7 +73,7 @@ export function CapturePanel({ rows, unavailable, pending, error, onRetry, now }
                 <li key={`${row.machineId}:${row.agent ?? ''}`} className="flex items-center gap-s2 t-small text-ink-2" data-capture-row="">
                   <HealthDot tone={state.tone} live={state.live} label={state.label} />
                   <span className="min-w-0 flex-1 truncate">{agentName(row.agent)}</span>
-                  <span className="shrink-0 text-muted">Received {ago(row.lastEventAt, now)}</span>
+                  <span className="shrink-0 text-muted">Received {agoWords(row.lastEventAt, now)}</span>
                 </li>
               );
             })}
@@ -83,7 +84,7 @@ export function CapturePanel({ rows, unavailable, pending, error, onRetry, now }
                 const latest = group.rows[0]!;
                 return (
                   <li key={group.machineId} className="t-small text-muted" data-capture-row="">
-                    <span className="text-ink-2">{group.name}</span> · {group.rows.map((row) => agentName(row.agent)).join(', ')}, {ago(latest.lastEventAt, now)}
+                    <span className="text-ink-2">{group.name}</span> · {group.rows.map((row) => agentName(row.agent)).join(', ')}, {agoWords(latest.lastEventAt, now)}
                   </li>
                 );
               })}

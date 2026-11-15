@@ -29,7 +29,7 @@ describe('a queued run in the reader\'s words', () => {
   it('names how much of its task waits, what holds it and for how long', () => {
     expect(queuedWords({ ...quiet, waitReason: 'concurrent_runs', taskQueued: 1 }, NOW)).toBe('Next in this task’s queue. Waiting for a free slot: this server is already running as many tasks at once as it allows.');
     expect(queuedWords({ ...quiet, waitReason: 'task_runs_per_hour', taskQueued: 3 }, NOW)).toBe('3 of this task waiting. Waiting until this task’s hourly limit allows another run.');
-    expect(queuedWords({ waitReason: 'fleet', taskQueued: 2, waitingSince: NOW - 5 * 60_000 }, NOW)).toMatch(/^2 of this task waiting\. Waiting for a free machine: every machine that runs tasks is busy\. Waiting since \d+m ago\.$/);
+    expect(queuedWords({ waitReason: 'fleet', taskQueued: 2, waitingSince: NOW - 5 * 60_000 }, NOW)).toMatch(/^2 of this task waiting\. Waiting for a free machine: every machine that runs tasks is busy\. Waiting since (yesterday )?\d{2}:\d{2}\.$/);
   });
 
   it('invents no count or age it wasn\'t given', () => {

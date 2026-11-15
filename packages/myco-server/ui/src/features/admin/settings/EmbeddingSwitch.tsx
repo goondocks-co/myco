@@ -4,7 +4,8 @@ import { Button, ConfirmDialog, Progress, StatusChip } from '../../../design';
 import { useIsAdmin } from '../../../hooks/use-me';
 import { switchRefusalText, useSettingsActions } from '../../../hooks/use-settings';
 import { formatCount } from '../../../lib/format';
-import { ago, when } from '../../today/words';
+import { when } from '../../today/words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** A model's name without its provider's prefix: `@cf/baai/bge-m3` reads as `bge-m3`. */
 export const shortModel = (id: string): string => id.split('/').at(-1) ?? id;
@@ -75,7 +76,7 @@ export function switchWords(sw: EmbeddingSwitchStatus, now: number): { chip: str
     : `${sw.done.toLocaleString()} of ${formatCount(sw.total, 'source')} done (${share}%)`;
   const from = sw.from === null ? null : shortModel(sw.from.model);
   const muted = (text: string): SwitchLine => ({ text, tone: 'muted' });
-  const started = muted(`Started ${ago(sw.startedAt, now)}.`);
+  const started = muted(`Started ${agoWords(sw.startedAt, now)}.`);
   if (sw.state === 'paused') {
     return {
       chip: 'Paused',

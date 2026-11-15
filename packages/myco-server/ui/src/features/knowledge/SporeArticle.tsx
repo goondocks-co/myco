@@ -9,11 +9,9 @@ import { sessionHeadingText } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { KNOWLEDGE_SUFFIX, projectPath, runPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
-import { dateTime } from '../sessions/words';
 import type { SporeArticleAnswer } from './wire';
-import {
-  authorName, dayHeading, DEFAULT_SPORE_STATUS, IMPORTED_AUTHOR_WORDS, shortDay, sporeAuthor, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTags, sporeTypeWord,
-} from './words';
+import { authorName, dayHeading, DEFAULT_SPORE_STATUS, IMPORTED_AUTHOR_WORDS, sporeAuthor, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTags, sporeTypeWord } from './words';
+import { dateTimeWords, dayWords } from '@goondocks/myco-shared/time-words';
 
 /** The top of the importance scale a writer assigns on. */
 const MAX_IMPORTANCE = 10;
@@ -95,8 +93,8 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
             <FactRow term="Type">{sporeTypeWord(spore.observationType)}</FactRow>
             <FactRow term="Status">{sporeStatusWord(spore.status)}</FactRow>
             <FactRow term="Importance">{spore.importance} of {MAX_IMPORTANCE}</FactRow>
-            <FactRow term="Saved">{dateTime(spore.createdAt, now)}</FactRow>
-            {spore.updatedAt !== null && spore.updatedAt !== spore.createdAt && <FactRow term="Changed">{dateTime(spore.updatedAt, now)}</FactRow>}
+            <FactRow term="Saved">{dateTimeWords(spore.createdAt, now)}</FactRow>
+            {spore.updatedAt !== null && spore.updatedAt !== spore.createdAt && <FactRow term="Changed">{dateTimeWords(spore.updatedAt, now)}</FactRow>}
             {spore.filePath !== null && spore.filePath.trim() !== '' && <FactRow term="File" mono>{spore.filePath}</FactRow>}
           </FactsPanel>
         </aside>
@@ -137,7 +135,7 @@ function Neighbours({ projectId, ids, label, now }: { projectId: string; ids: re
                   <ItemLink to={projectPath(projectId, `/spores/${encodeURIComponent(id)}`)} className="text-primary">
                     {sporeHeadline(spore, now).text}
                   </ItemLink>
-                  <span className="shrink-0 t-meta text-muted">{shortDay(spore.createdAt, now)}</span>
+                  <span className="shrink-0 t-meta text-muted">{dayWords(spore.createdAt, now)}</span>
                 </>
               )}
             </li>
@@ -161,7 +159,7 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
         : <FromSession projectId={projectId} sessionId={spore.sessionId} />}
       {author.kind === 'run' && (
         <p className="flex flex-col gap-s1 t-small text-ink-2" data-spore-author="run">
-          Myco wrote it while learning from your sessions.
+          {answer.authorTask === null ? 'Myco wrote it in one of its runs.' : `Myco wrote it in a run of ${answer.authorTask}.`}
           <ActionLink to={runPath(projectId, author.runId)}>The run that wrote it →</ActionLink>
         </p>
       )}
@@ -175,7 +173,7 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
       )}
       {author.kind === 'imported' && <p className="t-small text-ink-2" data-spore-author="imported">{IMPORTED_AUTHOR_WORDS}.</p>}
       {author.kind === 'key' && <p className="t-small text-ink-2" data-spore-author="key">Saved with an access key.</p>}
-      {spore.sourceCreatedAt !== null && <p className="t-meta text-muted">From a session on {dateTime(spore.sourceCreatedAt, now)}.</p>}
+      {spore.sourceCreatedAt !== null && <p className="t-meta text-muted">From a session on {dateTimeWords(spore.sourceCreatedAt, now)}.</p>}
     </Card>
   );
 }

@@ -111,6 +111,17 @@ describe('who wrote a spore', () => {
       expect({ id, kind: (await h.get(`/api/projects/proj_1/spores/${id}`)).body.spore.authorKind }).toEqual({ id, kind });
     }
   });
+
+  it('names the task whose run wrote a spore, so a seeded spore is not told as learned from sessions', async () => {
+    const h = harness();
+    h.sqlite.run(`INSERT INTO agent_runs (project_id, id, agent_id, task, status, started_at, completed_at, resumable)
+                  VALUES ('proj_1', 'run_seed', 'agent_1', 'vault-seed', 'completed', 1, 2, 0)`);
+    h.spore('proj_1', 'sp_seeded', { author: 'run_seed' });
+    h.spore('proj_1', 'sp_lost', { author: 'run_gone' });
+    const authorTask = async (id: string) => (await h.get(`/api/projects/proj_1/spores/${id}`)).body.authorTask;
+    expect(await authorTask('sp_seeded')).toBe('Seed project memory');
+    expect(await authorTask('sp_lost')).toBeNull();
+  });
 });
 
 describe('the spore stream', () => {

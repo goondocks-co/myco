@@ -9,6 +9,8 @@ export type { BackupRow, RestoreJob, RestoreOutcome, RestorePreview } from '../f
 export function useBackups() {
   const qc = useQueryClient();
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ['backups'] }); };
+  // A restore's answer is its progress at that instant: it goes where the job is followed, so a later read replaces it.
+  const remember = (answer: { job: RestoreJob }) => { qc.setQueryData(restoreJobKey(answer.job.id), answer); };
   return {
     list: useInfiniteQuery({
       queryKey: ['backups'],
@@ -24,23 +26,28 @@ export function useBackups() {
     restore: useMutation({
       mutationFn: (v: { id: string; allowForeignLineage?: boolean }) =>
         postJson<RestoreAnswer>(`/api/backups/${encodeURIComponent(v.id)}/restore`, v.allowForeignLineage === true ? { allowForeignLineage: true } : {}),
+      onSuccess: remember,
       onSettled: invalidate,
     }),
     continueRestore: useMutation({
       mutationFn: (id: string) => postJson<RestoreAnswer>(`/api/backups/restores/${encodeURIComponent(id)}/continue`, {}),
+      onSuccess: remember,
       onSettled: invalidate,
     }),
     stopRestore: useMutation({
       mutationFn: (id: string) => postJson<{ job: RestoreJob }>(`/api/backups/restores/${encodeURIComponent(id)}/stop`, {}),
+      onSuccess: remember,
       onSettled: invalidate,
     }),
   };
 }
 
-/** One restore's progress, read again while the server is still walking it. */
+const restoreJobKey = (id: string | null) => ['backups', 'restore', id] as const;
+
+/** One restore's progress, read again while the server is still walking it; a restore, continue or stop answer lands here too. */
 export function useRestoreJob(id: string | null) {
   return useQuery({
-    queryKey: ['backups', 'restore', id],
+    queryKey: restoreJobKey(id),
     enabled: id !== null,
     queryFn: ({ signal }) => fetchJson<{ job: RestoreJob }>(`/api/backups/restores/${encodeURIComponent(id!)}`, signal),
     ...live({ whileMoving: (data: { job: RestoreJob } | undefined) => data?.job.state === 'running' }),

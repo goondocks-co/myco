@@ -5,11 +5,12 @@ import type { StatusResponse } from '../../../lib/api';
 import { formatCount } from '../../../lib/format';
 import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { useAttention } from '../../../hooks/use-attention';
-import { ago, transcriptStopWords, harnessHealthWords } from '../../today/words';
+import { transcriptStopWords, harnessHealthWords } from '../../today/words';
 import { AdminSection, RowCard } from '../AdminFrame';
 import { backlogWords, capabilityWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
 import { EmbeddingSwitchPanel, PassedOverSources } from '../settings/EmbeddingSwitch';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 export interface StatusSectionProps {
   status: ReturnType<typeof useStatus>;
@@ -134,7 +135,7 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
                   {project.archivedAt != null && <StatusChip>Archived</StatusChip>}
                 </span>
                 <span className="t-small text-muted">
-                  {formatCount(project.sessionCount, 'session')} · {project.lastActivityAt === null ? 'nothing yet' : `last ${ago(project.lastActivityAt, now)}`}
+                  {formatCount(project.sessionCount, 'session')} · {project.lastActivityAt === null ? 'nothing yet' : `last ${agoWords(project.lastActivityAt, now)}`}
                 </span>
               </div>
             ))}

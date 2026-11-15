@@ -299,13 +299,13 @@ describe('a project\'s settings', () => {
     expect(row.textContent).not.toContain('Code tasks cannot run');
   });
 
-  it('names the connected repository and branch on every code capability', async () => {
+  it('names the connected repository and branch on every code capability, and which of its tasks reads it', async () => {
     server(base());
     mount(`/p/${P}/settings`);
-    for (const capability of ['canopy', 'vault_evolution']) {
+    for (const [capability, reads] of [['canopy', 'Reads goondocks-co/myco @ main'], ['vault_evolution', 'Seed project memory reads goondocks-co/myco @ main']] as const) {
       const row = await waitFor(() => {
         const found = document.querySelector(`[data-setting="capability.${capability}"]`) as HTMLElement | null;
-        expect(found?.textContent).toContain('Reads goondocks-co/myco @ main');
+        expect(found?.textContent).toContain(reads);
         return found!;
       });
       expect(within(row).queryByRole('link', { name: 'Connect repository' })).toBeNull();

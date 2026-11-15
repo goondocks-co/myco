@@ -9,7 +9,8 @@ import { dayHeading } from '../today/words';
 import { isMechanical } from './card-text';
 import type { ConversationQuery } from './ConversationSearch';
 import { promptPreview } from './Turn';
-import { clockTime, count } from './words';
+import { count } from './words';
+import { clockWords } from '@goondocks/myco-shared/time-words';
 
 export const FILTER_OPTIONS: ReadonlyArray<{ value: TurnFilter; label: string }> = [
   { value: 'you', label: 'Your prompts' },
@@ -39,7 +40,7 @@ function isBackground(origin: string): boolean {
 }
 
 function OutlineRow({ turn, to, open, replace, showError, agent, learningAgedOut }: { turn: TurnRow; to: string; open: boolean; replace: boolean; showError: boolean; agent: string | null; learningAgedOut: boolean }) {
-  const time = <time dateTime={new Date(turn.createdAt).toISOString()} className="pt-px t-meta tabular-nums text-faint">{clockTime(turn.createdAt)}</time>;
+  const time = <time dateTime={new Date(turn.createdAt).toISOString()} className="pt-px t-meta tabular-nums text-faint">{clockWords(turn.createdAt)}</time>;
   const prompt = promptPreview(turn, agent);
   if (isBackground(turn.origin)) {
     return (
@@ -91,7 +92,7 @@ function Marked({ text, query }: { text: string; query: string }) {
 function HitRow({ hit, to, open, replace, query, agent }: { hit: ConversationHit; to: string | null; open: boolean; replace: boolean; query: string; agent: string | null }) {
   const body = (
     <>
-      <time dateTime={new Date(hit.at).toISOString()} className="pt-px t-meta tabular-nums text-faint">{clockTime(hit.at)}</time>
+      <time dateTime={new Date(hit.at).toISOString()} className="pt-px t-meta tabular-nums text-faint">{clockWords(hit.at)}</time>
       <span className="flex min-w-0 flex-col gap-px">
         <span className="line-clamp-3 break-words t-small font-medium text-ink"><Marked text={hit.preview === '' ? 'Matched in this turn’s summary' : hit.preview} query={query} /></span>
         <span className="truncate t-meta text-muted">

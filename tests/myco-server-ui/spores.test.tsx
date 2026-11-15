@@ -306,13 +306,13 @@ describe('the spore stream', () => {
 describe('a spore’s article', () => {
   const article = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => Response.json({
     spore: { ...spore({ status: 'superseded', context: 'Seen on **both** targets.', tags: '["cache","git"]', ...over }), sourceCreatedAt: NOW - 90 * MINUTE },
-    supersededBy: ['gotcha-7a8b9c0d'], supersedes: ['gotcha-0a1b2c3d'], ...extra,
+    supersededBy: ['gotcha-7a8b9c0d'], supersedes: ['gotcha-0a1b2c3d'], authorTask: 'Learn from sessions', ...extra,
   });
   const sessionAnswer = Response.json({
     session: { projectId: MYCO, sessionId: 's1', agent: 'codex', title: 'Flaky test port collision fixed', label: 's1', summary: null, startedAt: NOW - 2 * HOUR, firstReceivedAt: NOW - 2 * HOUR, lastReceivedAt: NOW - HOUR, endedAt: NOW - HOUR, memberId: null, memberLabel: null, runtimeLabel: null, branch: null, originPath: null, parentSessionId: null, parentReason: null, endedBy: null, endedByLabel: null },
     untitled: null, counts: { prompts: 2, toolCalls: 0, responses: 2, plans: 0, attachments: 0 }, release: null, outcome: { runs: [], spores: { total: 0, items: [] } }, projectId: MYCO,
   });
-  const neighbour = (id: string, line: string) => () => Response.json({ spore: { ...spore({ id, agentLine: line }), sourceCreatedAt: null }, supersededBy: [], supersedes: [] });
+  const neighbour = (id: string, line: string) => () => Response.json({ spore: { ...spore({ id, agentLine: line }), sourceCreatedAt: null }, supersededBy: [], supersedes: [], authorTask: null });
 
   it('reads as an article: the replacement first, the one line, the body, context, tags, how it changed, where it came from and the facts', async () => {
     server(base({
@@ -353,6 +353,7 @@ describe('a spore’s article', () => {
     expect(within(origin).getByRole('link', { name: 'Open the session →' }).getAttribute('href')).toBe(`/p/${MYCO}/sessions/s1`);
     expect(within(origin).queryByRole('link', { name: 'The turn it came from →' })).toBeNull();
     expect(within(origin).getByRole('link', { name: 'The run that wrote it →' }).getAttribute('href')).toBe(`/p/${MYCO}/work/runs/run_4f1c9a2e7b`);
+    expect(origin.querySelector('[data-spore-author="run"]')!.textContent).toContain('Myco wrote it in a run of Learn from sessions.');
     const facts = page.querySelector('[data-facts]') as HTMLElement;
     expect(facts.textContent).toContain('Importance8 of 10');
     expect(facts.textContent).toContain('src/cache.ts');

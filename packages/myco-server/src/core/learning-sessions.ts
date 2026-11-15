@@ -24,6 +24,7 @@ import { LEARNING_TOOL } from './tool-catalogue.js';
 import { ackRecordStatement, assignableCards, assignedCardRows, completionProgressStatement, coverCardsStatement } from '../db/learning/progress.js';
 import { advanceLearningDeadlines, learningDeadlinesPending } from '../db/learning/ready.js';
 import { latestLearningCompletion, learningCountsReady, readLearningRollup } from '../db/learning/counts.js';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** Due cards one slice reads at most. */
 const LEARNING_SLICE_CARDS = 200;
@@ -183,7 +184,7 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
     ...(ready && (heldByBudget || (spent !== null && budget !== null && spent >= budget.dailyUsd))
       ? ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window'] : []),
     ...(status.lastCompleted === undefined ? [] : [status.lastCompleted === null ? 'nothing learned yet'
-      : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${Math.max(0, Math.round((now - status.lastCompleted.at) / 60_000))} min ago`]),
+      : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${agoWords(status.lastCompleted.at, now)}`]),
     ...(budget === null || spent === null ? [] : [`spent $${spent.toFixed(2)} of $${budget.dailyUsd.toFixed(2)} in the last 24 hours`]),
   ];
   return `${parts.join('; ')}.`;

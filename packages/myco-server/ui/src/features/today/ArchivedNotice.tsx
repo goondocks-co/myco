@@ -3,7 +3,7 @@ import { Button, Card, HealthDot } from '../../design';
 import { refusalText } from '../../hooks/use-access';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useProjectActions } from '../../hooks/use-projects';
-import { ago } from './words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** An archived project says so first: new capture is refused until it is unarchived, and everything captured stays readable. */
 export function ArchivedNotice({ projectId, archivedAt, now }: { projectId: string; archivedAt: number | null; now: number }) {
@@ -18,7 +18,7 @@ export function ArchivedNotice({ projectId, archivedAt, now }: { projectId: stri
           {admin ? 'This project is archived: agents can’t send it anything until you unarchive it.' : 'This project is archived: agents can’t send it anything until an admin unarchives it.'}
         </p>
         <p className="t-small text-ink-2">
-          {archivedAt === null ? 'Everything captured before stays readable.' : `Archived ${ago(archivedAt, now)}. Everything captured before stays readable.`}
+          {archivedAt === null ? 'Everything captured before stays readable.' : `Archived ${agoWords(archivedAt, now)}. Everything captured before stays readable.`}
         </p>
         {error !== null && <p role="alert" className="t-small font-medium text-ink">{error}</p>}
       </div>

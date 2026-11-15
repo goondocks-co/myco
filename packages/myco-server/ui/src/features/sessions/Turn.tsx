@@ -10,7 +10,8 @@ import { ToolUse } from './ToolCalls';
 import { formatElapsed } from '../../lib/format';
 import { projectPath, PLAN_SUFFIX } from '../../routes/nav';
 import { displayPrompt, promptDisplay, replyDisplay } from '@goondocks/myco-shared/prompt-text';
-import { clockTime, count, dateTime, sporeTypeWord } from './words';
+import { count, sporeTypeWord } from './words';
+import { clockWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 /** How much of a prompt the list row carries, and so what a turn shows before its body is read. */
 export const PROMPT_PREVIEW_CHARS = 120;
@@ -84,7 +85,7 @@ function Attachments({ projectId, attachments }: { projectId: string; attachment
 function Reply({ projectId, sessionId, agent, reply, shownPlans }: { projectId: string; sessionId: string; agent: string | null; reply: ResponseRow; shownPlans: readonly string[] }) {
   return (
     <div className="flex flex-col gap-s1" data-testid="turn-response">
-      <time dateTime={new Date(reply.createdAt).toISOString()} className="t-meta text-faint">{clockTime(reply.createdAt)}</time>
+      <time dateTime={new Date(reply.createdAt).toISOString()} className="t-meta text-faint">{clockWords(reply.createdAt)}</time>
       <TextOrBlob projectId={projectId} text={reply.text} blobKey={reply.blobKey} body={{ kind: 'response', id: reply.responseId, at: reply.locator === undefined ? undefined : { ...reply.locator, sessionId } }} render={(text) => {
         const shown = replyDisplay(text, agent, shownPlans);
         return shown === '' && text.trim() !== '' ? <p className="t-small text-muted">This reply is a plan.</p> : <Markdown content={shown} />;
@@ -221,7 +222,7 @@ function PromptBubble({ origin, thread, at, steering = false, children }: { orig
         <span className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-meta text-muted">
           {steering && <span>Steered while it ran</span>}
           {thread !== null && <StatusChip>{thread}</StatusChip>}
-          {at !== undefined && <time dateTime={new Date(at).toISOString()}>{clockTime(at)}</time>}
+          {at !== undefined && <time dateTime={new Date(at).toISOString()}>{clockWords(at)}</time>}
         </span>
       )}
       {children}
@@ -335,7 +336,7 @@ export function TurnReader({ projectId, sessionId, turn, agent = null, contexts,
       <div className="flex flex-wrap items-center justify-between gap-s2">
         <span className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
           {back}
-          <time dateTime={new Date(turn.createdAt).toISOString()}>{dateTime(turn.createdAt, now)}</time>
+          <time dateTime={new Date(turn.createdAt).toISOString()}>{dateTimeWords(turn.createdAt, now)}</time>
           {elapsed !== null && <><span aria-hidden>·</span><span>{formatElapsed(elapsed)}</span></>}
           <StatusChip>{ORIGIN_LABEL[turn.origin] ?? 'Added'}</StatusChip>
           {turn.signal === 'high' && <StatusChip className="bg-primary-bg text-primary">Key moment</StatusChip>}
@@ -383,7 +384,7 @@ function ContextAnswer({ answer }: { answer: PromptAnswer }) {
   const selection = selectionWords(answer);
   return <Disclosure summary={<StatusChip>{answer.failures.length > 0 ? (answer.outcome === 'empty' ? 'Myco context lookup failed' : 'Myco context partly prepared') : answer.outcome === 'empty' ? 'Myco prepared no context' : 'Myco prepared context'}</StatusChip>}>
     <div className="flex flex-col gap-s1 t-small text-muted">
-      <time dateTime={new Date(answer.createdAt).toISOString()}>{clockTime(answer.createdAt)}</time>
+      <time dateTime={new Date(answer.createdAt).toISOString()}>{clockWords(answer.createdAt)}</time>
       {answer.parts.map((part, i) => <p key={i}>{part.kind === 'plan-nudge' ? 'Plan reminder prepared' : `${count(part.sporeCount ?? 0, 'spore')} and ${count(part.planCount ?? 0, 'plan')} selected`}</p>)}
       {answer.skipped.filter((skip) => !answer.failures.some(f => skip === f.contributor)).map((skip) => <p key={skip}>{words(skip)}</p>)}
       {answer.failures.map((failure, i) => <p key={i} className="text-bad">{words(failure.contributor)} · {ERROR_WORDS[failure.error] ?? 'The request could not be completed'}</p>)}

@@ -43,10 +43,10 @@ export interface SettingsAnswer {
 /** One harness's models as a worker last listed them, and when the server received the list. */
 export type SettingsModelCatalog = ModelCatalog & { receivedAt: number };
 
-/** One worker outcome's effective reasoning tier. */
+/** One worker outcome's effective reasoning tier, with the task's name as the catalogue declares it. */
 export type TaskTierRow =
-  | { task: string; tier: 'low' | 'default' | 'high'; source: 'task' | 'task-override' }
-  | { task: string; tier: null; source: 'invalid'; error: 'invalid_task_tier'; repair: 'reset-task' | 'reset-leaf'; remedy: string };
+  | { task: string; name: string; tier: 'low' | 'default' | 'high'; source: 'task' | 'task-override' }
+  | { task: string; name: string; tier: null; source: 'invalid'; error: 'invalid_task_tier'; repair: 'reset-task' | 'reset-leaf'; remedy: string };
 
 /** `GET /api/secrets`: one provider key's slot, described and never shown. */
 export interface SecretRow {

@@ -6,7 +6,8 @@ import { focusRing, HealthDot } from '../../design';
 import { cn } from '../../lib/cn';
 import type { LedeCounts } from './timeline';
 import type { Upkeep } from './wire';
-import { ago, count, when } from './words';
+import { count, when } from './words';
+import { agoWords } from '@goondocks/myco-shared/time-words';
 
 type Part = string | { strong: string };
 
@@ -74,7 +75,7 @@ export function UpkeepLine({ upkeep, now, statusHref }: { upkeep: Upkeep; now: n
   } else if (upkeep.lastSuccessAt !== null) {
     const retries = upkeep.failedInWindow;
     dot = <HealthDot tone="ok" label="Up to date" />;
-    words = `Search kept up to date · ${ago(upkeep.lastSuccessAt, now)}${retries > 0 ? ` · ${count(retries, 'retry', 'retries')} along the way` : ''}`;
+    words = `Search kept up to date · ${agoWords(upkeep.lastSuccessAt, now)}${retries > 0 ? ` · ${count(retries, 'retry', 'retries')} along the way` : ''}`;
   } else {
     return null;
   }

@@ -222,7 +222,7 @@ describe('Runners page', () => {
     for (const reason of ['capacity', 'no_runner', 'model_profile', 'credential_unavailable', 'settling', 'dispatch_ceiling', 'unavailable'] as const) {
       mount('admin', RUNNER, { queue: { observedAt: NOW, count: 3, oldestAt: NOW - 18 * 60000, reasons: [{ reason, count: 3 }], nativeNeedsRunner: true } });
       await screen.findByText(QUEUE_REASON_WORDS[reason]);
-      expect(screen.getByText(/3 runs waiting; oldest/).textContent).toContain('18m ago');
+      expect(screen.getByText(/3 runs waiting; oldest/).textContent).toContain('18 min ago');
       expect(screen.getByText(/3 runs waiting; oldest/).closest('[data-queue-warning]')?.getAttribute('data-tone')).toBe('warn');
       expect(screen.getByText(/This native server no longer runs agent work by itself/)).toBeTruthy();
       cleanup(); clients.splice(0).forEach(client => client.clear());

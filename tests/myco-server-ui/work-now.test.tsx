@@ -80,7 +80,7 @@ describe('Myco’s work now', () => {
   it('says each part is empty, and names a part the server could not read without hiding the others', () => {
     render(<WorkNow answer={{ ...ANSWER, running: [], runningTotal: 0, needsYou: [], unavailable: ['needsYou'] }} pending={false} error={null} onRetry={() => {}} now={NOW} projectName={() => null} />, { wrapper: wrap(new QueryClient()) });
     expect(screen.getByText('Nothing is running right now.')).toBeTruthy();
-    expect(within(document.querySelector('[data-now-part="needsYou"]') as HTMLElement).queryByText('Nothing needs you.')).toBeNull();
+    expect(within(document.querySelector('[data-now-part="needsYou"]') as HTMLElement).queryByText('Nothing is stuck or failing.')).toBeNull();
     expect(screen.getByText('Curation')).toBeTruthy();
   });
 });

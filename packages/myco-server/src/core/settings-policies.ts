@@ -31,7 +31,7 @@ import {
   PRE_CONDITIONS,
 } from './schedule-rules.js';
 import { TASK_SCHEDULE, TITLING_BACKFILL_SCHEDULE } from './jobs.js';
-import { readDispatchLimits, LIMIT_LEAVES } from './limits.js';
+import { readDispatchLimits, resolvedConcurrency, LIMIT_LEAVES } from './limits.js';
 import { workerPreference } from './worker-selection.js';
 import { readRecallLeaves } from './recall.js';
 import { readMapSettings } from './canopy.js';
@@ -117,8 +117,14 @@ const limits: SettingPolicy = {
   async resolve(env) {
     const set = await readDispatchLimits(env);
     const answer = (n: number | null): LeafAnswer => ({ effective: n, ...(n === null ? { meanwhile: 'No limit applies', reason: 'No limit applies.' } : { meanwhile: `A limit of ${n} applies` }) });
+    // The dispatcher holds runs at the stricter of this leaf and the fleet the operator deployed; Settings says the same.
+    const concurrency = resolvedConcurrency(set);
+    const fleetHolds = concurrency.input === 'fleet' && concurrency.value !== set.concurrent_runs;
     return {
-      [LIMIT_LEAVES.concurrent_runs]: answer(set.concurrent_runs),
+      [LIMIT_LEAVES.concurrent_runs]: fleetHolds
+        ? { effective: concurrency.value, source: 'platform', meanwhile: `A limit of ${concurrency.value} applies`,
+          reason: `This server is set up to run at most ${concurrency.value} at once, so no more start whatever is saved here.` }
+        : answer(set.concurrent_runs),
       [LIMIT_LEAVES.task_concurrent_runs]: answer(set.task_concurrent_runs),
       [LIMIT_LEAVES.task_runs_per_hour]: answer(set.task_runs_per_hour),
     };

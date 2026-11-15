@@ -5,10 +5,11 @@
  */
 import type { FilterDefinition, SelectOption } from '../../design';
 import { memberLabel } from '../../lib/member-name';
-import { agentName, clockTime, count, MYCO_MEMBER_ID, sinceWords } from '../today/words';
+import { agentName, count, MYCO_MEMBER_ID, sinceWords } from '../today/words';
 import type { SessionRun } from './wire';
+import { clockWords } from '@goondocks/myco-shared/time-words';
 
-export { agentName, clockTime, count, memberName, sinceWords, sporeLine, sporeTypeWord, whenWithTime } from '../today/words';
+export { agentName, count, memberName, sinceWords, sporeLine, sporeTypeWord, whenWithTime } from '../today/words';
 
 /** The filter keys the table holds in the URL, in the order the bar shows them. */
 export const SESSION_FILTER_KEYS = ['agent', 'member', 'state', 'window'] as const;
@@ -61,7 +62,7 @@ export function windowBounds(window: string, now: number): { since: number; unti
  * filter covers.
  */
 export function startedWords(startedAt: number, periodStart: number, now: number): string {
-  return startedAt < periodStart ? sinceWords(startedAt, now) : clockTime(startedAt);
+  return startedAt < periodStart ? sinceWords(startedAt, now) : clockWords(startedAt);
 }
 
 /** The agents Myco captures from, in the order the filter offers them. */
@@ -111,14 +112,6 @@ export function spanWords(ms: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
   return `${Math.round(hours / 24)} days`;
-}
-
-/** A date and time as a fact reads: "Sep 29, 14:02", with the year when it is not this one. */
-export function dateTime(at: number, now: number): string {
-  const date = new Date(at);
-  const sameYear = date.getFullYear() === new Date(now).getFullYear();
-  const day = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
-  return `${day}, ${date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
 }
 
 /** What a task of Myco's does, by the task's name. */

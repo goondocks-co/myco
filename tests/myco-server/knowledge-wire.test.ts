@@ -28,7 +28,7 @@ type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 type SporePage = NonNullable<Awaited<ReturnType<typeof listSporePageAcross>>>;
 type SporesAnswer = Omit<SporePage, 'rows'> & { spores: SporePage['rows']; maxPage: number };
 /** `GET /api/projects/{p}/spores/{id}`: the answer `handleProjectSpore` sends. */
-type SporeAnswer = { spore: NonNullable<Awaited<ReturnType<typeof getSpore>>>; supersededBy: string[]; supersedes: string[] };
+type SporeAnswer = { spore: NonNullable<Awaited<ReturnType<typeof getSpore>>>; supersededBy: string[]; supersedes: string[]; authorTask: string | null };
 /** `GET /api/plans`: the page `handlePlansAcross` sends, `rows` renamed `plans`, with the totals on its first page. */
 type PlanTotals = Awaited<ReturnType<typeof planTotals>>;
 type PlansPage = NonNullable<Awaited<ReturnType<typeof pagePlansAcross>>>;

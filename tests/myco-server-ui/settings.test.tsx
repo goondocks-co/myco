@@ -21,7 +21,9 @@ import { DEPLOYMENT_LEAVES, RETIRED_LEAVES, RETIRED_SECRET_SLOTS } from '../../p
 import { oldTabTarget } from '../../packages/myco-server/ui/src/features/admin/settings/SettingsPage';
 import { liftsAt, policyWords, progressWords, waitingWords } from '../../packages/myco-server/ui/src/features/admin/settings/titling';
 import { SETTINGS_SECTIONS } from '../../packages/myco-server/ui/src/routes/nav';
-import { OUTCOME_TASKS, TASK_TIERS } from '../../packages/myco-server/src/core/task-catalogue';
+import { OUTCOME_TASKS, TASK_TIERS, TASK_WORDS, type RetainedTask } from '../../packages/myco-server/src/core/task-catalogue';
+
+const taskName = (task: string): string => TASK_WORDS[task as RetainedTask].name;
 import { rawIdsIn } from '../helpers/raw-ids';
 import { settingsMoving } from '../../packages/myco-server/ui/src/hooks/use-settings';
 import type { EmbeddingSwitchStatus } from '../../packages/myco-shared/src/settings-contract';
@@ -95,7 +97,7 @@ const LIVE_FIELDS = LEAF_FIELDS.filter((f) => !isRetired(f, rowFor(f.leaf)));
 const RETIRED_FIELDS = [...RETIRED_LEAVES].map((leaf) => ({ leaf }));
 const leaves = (over: Record<string, Partial<{ value: unknown; revision: string; updatedBy: string; updatedAt: number; retired: boolean; editableValue: unknown; retiredValue: Record<string, unknown> }>> = {}) => ({
   embedding: HOSTED_CHOICES,
-  taskTiers: OUTCOME_TASKS.map((task) => ({ task, tier: TASK_TIERS[task], source: 'task' })),
+  taskTiers: OUTCOME_TASKS.map((task) => ({ task, name: taskName(task), tier: TASK_TIERS[task], source: 'task' })),
   leaves: DEPLOYMENT_LEAVES.map((leaf) => {
     const f = { leaf };
     const o = over[f.leaf];
@@ -180,20 +182,20 @@ describe('Settings, in five sections', () => {
       '/api/settings': () => Response.json({
         ...leaves(),
         taskTiers: OUTCOME_TASKS.map((task) => task === 'title-summary'
-          ? { task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task', remedy: 'Correct the tier in Settings or reset the task tier.' }
-          : { task, tier: TASK_TIERS[task], source: 'task' }),
+          ? { task, name: taskName(task), tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-task', remedy: 'Correct the tier in Settings or reset the task tier.' }
+          : { task, name: taskName(task), tier: TASK_TIERS[task], source: 'task' }),
       }),
       '/api/settings/agent.tasks': () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
     const editor = within(await group('Task tiers'));
-    expect(editor.getByText('Learning')).toBeTruthy();
-    expect(editor.getByText('Seeding')).toBeTruthy();
-    expect(editor.getByText('Titling')).toBeTruthy();
-    expect(editor.getByText('A code map update')).toBeTruthy();
-    expect(editor.getByRole('combobox', { name: /^Titling\ tier(?::|$)/ })).toBeTruthy();
+    const labels = OUTCOME_TASKS.map((task) => editor.getByRole('combobox', { name: new RegExp(`^${taskName(task)} tier(?::|$)`) }));
+    expect(labels).toHaveLength(OUTCOME_TASKS.length);
+    expect(editor.getByText('Curate overlapping spores')).toBeTruthy();
+    expect(editor.getByText('Curate stale plans')).toBeTruthy();
+    expect(editor.queryByText('A task')).toBeNull();
     expect(statusOf('task-tier-title-summary')).toContain('Correct the tier in Settings or reset the task tier.');
-    fireEvent.click(editor.getByRole('button', { name: 'Reset Titling tier' }));
+    fireEvent.click(editor.getByRole('button', { name: 'Reset Title and summarize sessions tier' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: null } });
     expect(groupsOf('models')[0]?.id).toBe('claude-profile');
@@ -204,13 +206,13 @@ describe('Settings, in five sections', () => {
     const { sent } = server(base({
       '/api/settings': () => Response.json({
         ...leaves({ 'agent.tasks': { value: [] } }),
-        taskTiers: OUTCOME_TASKS.map((task) => ({ task, tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-leaf', remedy: 'Reset task overrides to restore defaults.' })),
+        taskTiers: OUTCOME_TASKS.map((task) => ({ task, name: taskName(task), tier: null, source: 'invalid', error: 'invalid_task_tier', repair: 'reset-leaf', remedy: 'Reset task overrides to restore defaults.' })),
       }),
       '/api/settings/agent.tasks': () => Response.json({ applied: true }),
     }));
     mount('/settings/models');
     const editor = within(await group('Task tiers'));
-    expect(editor.queryByRole('button', { name: 'Reset Titling tier' })).toBeNull();
+    expect(editor.queryByRole('button', { name: 'Reset Title and summarize sessions tier' })).toBeNull();
     fireEvent.click(editor.getByRole('button', { name: 'Reset task overrides' }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'DELETE', path: '/api/settings/agent.tasks' });
@@ -299,7 +301,7 @@ describe('Settings, in five sections', () => {
         ...leaves({ 'agent.tasks': { value: document } }),
         taskTiers: OUTCOME_TASKS.map((task) => {
           const override = document[task] as { reasoningLevel?: 'low' | 'default' | 'high' } | undefined;
-          return { task, tier: override?.reasoningLevel ?? TASK_TIERS[task], source: override?.reasoningLevel ? 'task-override' : 'task' };
+          return { task, name: taskName(task), tier: override?.reasoningLevel ?? TASK_TIERS[task], source: override?.reasoningLevel ? 'task-override' : 'task' };
         }),
       }),
       '/api/settings/agent.tasks': (init) => {
@@ -318,14 +320,14 @@ describe('Settings, in five sections', () => {
       'title-summary': { reasoningLevel: 'low', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
       'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
     };
-    await pick('Titling tier', 'High');
+    await pick('Title and summarize sessions tier', 'High');
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: 'high' } });
     expect(document).toEqual({
       'title-summary': { reasoningLevel: 'high', schedule: { maxRunsPerDay: 7 }, harness: 'claude-code', model: 'sonnet' },
       'canopy-map': { schedule: { intervalSeconds: 900 }, harness: 'codex' },
     });
-    fireEvent.click(editor.getByRole('button', { name: 'Reset Titling tier' }));
+    fireEvent.click(editor.getByRole('button', { name: 'Reset Title and summarize sessions tier' }));
     await waitFor(() => expect(sent).toHaveLength(2));
     expect(sent[1]).toMatchObject({ method: 'PATCH', path: '/api/settings/agent.tasks', body: { task: 'title-summary', tier: null } });
     expect(document).toEqual({

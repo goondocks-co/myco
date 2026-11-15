@@ -7,9 +7,10 @@
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import type { FilterDefinition, SelectOption, Tone } from '../../design';
 import { memberLabel } from '../../lib/member-name';
-import { count, MYCO_MEMBER_ID, shortDay, sporeTypeWord } from '../today/words';
+import { count, MYCO_MEMBER_ID, sporeTypeWord } from '../today/words';
+import { dayWords } from '@goondocks/myco-shared/time-words';
 
-export { ago, count, dayHeading, shortDay, sporeTypeWord } from '../today/words';
+export { count, dayHeading, sporeTypeWord } from '../today/words';
 
 /** The spore types the harness writes, in the order the facets and filters offer them: the one list the Deployment accepts. */
 export const SPORE_TYPES = OBSERVATION_TYPES;
@@ -104,7 +105,7 @@ export function typeFacetRows(facets: Readonly<Record<string, number>> | undefin
 export function sporeHeadline(spore: { agentLine: string | null; observationType: string; createdAt: number }, now: number): { text: string; lined: boolean } {
   const line = spore.agentLine?.trim() ?? '';
   if (line !== '') return { text: line, lined: true };
-  return { text: `${sporeTypeWord(spore.observationType)} saved ${shortDay(spore.createdAt, now)}`, lined: false };
+  return { text: `${sporeTypeWord(spore.observationType)} saved ${dayWords(spore.createdAt, now)}`, lined: false };
 }
 
 /** The first line of a spore's body, without its Markdown marker: what a spore without its one line shows under its headline. */

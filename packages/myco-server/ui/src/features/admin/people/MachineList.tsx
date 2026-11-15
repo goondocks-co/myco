@@ -12,7 +12,8 @@ import { ActivityDialog, type ActivityTarget } from './ActivityDialog';
 import { MachineSettingsDialog } from './MachineSettingsDialog';
 import { canRename } from './rename';
 import { RenameMachineDialog, type RenameTarget } from './RenameMachineDialog';
-import { shortDate, standingWords } from './words';
+import { standingWords } from './words';
+import { dayWords, isInstant } from '@goondocks/myco-shared/time-words';
 
 /** What the list says where it cannot tell whether a machine runs Myco's work. */
 export const FLEET_WORDS = {
@@ -133,7 +134,7 @@ function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }:
   const workers: WorkerRow[] = fleet === undefined ? [] : (fleet.fleet ?? []).filter((worker) => machineOfWorker([machine], worker) !== undefined);
   const lines = workers.map((worker) => ({ worker, ...workerState(worker, now, projectName) }));
   const tone = lines[0]?.tone ?? STANDING_TONE[machine.standing];
-  const meta = [owner, standingWords(machine, stoppedBy), `first signed in ${shortDate(machine.firstSeenAt, now)}`].filter((part) => part !== null).join(' · ');
+  const meta = [owner, standingWords(machine, stoppedBy), isInstant(machine.firstSeenAt) ? `first signed in ${dayWords(machine.firstSeenAt, now)}` : null].filter((part) => part !== null).join(' · ');
   return (
     <li className="flex items-start gap-s3 px-s4 py-s3" data-machine={machine.named ? 'named' : 'unnamed'}>
       <span className="flex h-lh shrink-0 items-center t-body"><HealthDot tone={tone} label={STANDING_LABEL[machine.standing]} /></span>

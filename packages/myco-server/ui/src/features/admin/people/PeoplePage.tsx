@@ -9,7 +9,6 @@ import { permissionOf, useMe } from '../../../hooks/use-me';
 import { usePaged } from '../../../hooks/use-paged';
 import { ApiError } from '../../../lib/api';
 import { formatDateTime } from '../../../lib/format';
-import { ago } from '../../today/words';
 import { AdminPage, AdminSection, useAnchorScroll } from '../AdminFrame';
 import { useMachines } from '../machines';
 import { memberName, peopleOf, useMemberNames } from '../members';
@@ -18,7 +17,8 @@ import { InviteDialog, type InviteTarget } from './InviteDialog';
 import { MachineList } from './MachineList';
 import { RawClaims } from './RawClaims';
 import { Ownership } from './Ownership';
-import { invitationExpiry, machinesCount, shortDate } from './words';
+import { invitationExpiry, machinesCount } from './words';
+import { agoWords, dayWords, isInstant } from '@goondocks/myco-shared/time-words';
 
 /** Where each part of People & machines sits on its page. */
 export const PEOPLE_ANCHORS = { people: 'people', invitations: 'invitations', machines: 'machines', runs: 'runs' } as const;
@@ -213,7 +213,7 @@ function PeopleList({ live, held, removed, viewerId, isAdmin, isOwner, ownerMemb
                     <Avatar name={nameOfPerson(member)} />
                     <div className="flex min-w-0 flex-col">
                       <span className="t-body text-ink-2">{nameOfPerson(member)}</span>
-                      <span className="t-small text-muted">Removed {ago(member.revokedAt!, Date.now())}{by === null ? '' : ` by ${by}`}</span>
+                      <span className="t-small text-muted">Removed {agoWords(member.revokedAt!, Date.now())}{by === null ? '' : ` by ${by}`}</span>
                     </div>
                   </li>
                 );
@@ -301,7 +301,7 @@ function PersonItem({ member, viewerId, machines, machinesComplete, showMachineC
           {member.id === viewerId && name !== 'You' && <StatusChip>You</StatusChip>}
         </span>
         <span className="t-small text-muted">
-          {member.linked ? 'GitHub connected' : 'No GitHub account yet'}{showMachineCount && <> · {machines === null ? 'machine count unavailable' : machinesComplete ? machinesCount(machines) : `${machinesCount(machines)} shown`}</>} · joined {shortDate(member.createdAt)}
+          {member.linked ? 'GitHub connected' : 'No GitHub account yet'}{showMachineCount && <> · {machines === null ? 'machine count unavailable' : machinesComplete ? machinesCount(machines) : `${machinesCount(machines)} shown`}</>}{isInstant(member.createdAt) && ` · joined ${dayWords(member.createdAt)}`}
         </span>
       </div>
       {actions.length > 0 && <MoreMenu label={`More for ${name}`} items={actions} />}
@@ -435,7 +435,7 @@ function RunCredentials() {
             {runs.rows.map((credential) => (
               <li key={credential.id} className="flex items-center gap-s3 px-s4 py-s2" data-run-credential="">
                 <span className="min-w-0 flex-1 t-small text-ink-2">
-                  A run started {ago(credential.lineageStartedAt, now)} · {credential.live ? 'allowed to write' : 'stopped'}
+                  A run started {agoWords(credential.lineageStartedAt, now)} · {credential.live ? 'allowed to write' : 'stopped'}
                 </span>
                 {credential.live && (
                   <MoreMenu label="More for this run" items={[{ label: 'Stop', tone: 'danger', onSelect: () => { setError(null); stop.reset(); setStopping(credential); } }]} />
