@@ -28,6 +28,7 @@ export interface TurnInput {
 }
 export interface TrimmedTurn {
   turnKey: string;
+  complete: boolean;
   text: string;
   rawChars: number;
   records: readonly (readonly [string, string])[];
@@ -75,10 +76,12 @@ function toolLines(tool: TurnToolInput): { kept: string[]; routine: string[] } {
 
 /** The turn as one card run reads it. */
 export function trimTurn(turn: TurnInput): TrimmedTurn {
+  let complete = turn.prompt.length <= B.promptChars && turn.steering.every(s => s.text.length <= B.promptChars);
   const lines = [`## Turn ${turn.turnKey}`, `PROMPT (${turn.origin}):`, clip(turn.prompt, B.promptChars)];
   for (const steer of turn.steering) lines.push('STEERING PROMPT:', clip(steer.text, B.promptChars));
   let replyRoom = B.replyChars;
   for (const reply of turn.replies) {
+    if (replyRoom < reply.text.length) complete = false;
     if (replyRoom <= 0) break;
     lines.push('REPLY:', clip(reply.text, replyRoom));
     replyRoom -= reply.text.length;
@@ -94,15 +97,28 @@ export function trimTurn(turn: TurnInput): TrimmedTurn {
     const routine = (kept || part.kept.length === 0) && part.routine.length > 0 && size(part.routine) <= routineRoom;
     if (routine) { routineRoom -= size(part.routine); lines.push(...part.routine); }
     if (!kept && !routine) counted.set(part.tool.toolName, (counted.get(part.tool.toolName) ?? 0) + 1);
+    const command = commandOf(part.tool);
+    const args = command ?? part.tool.input ?? '';
+    const heldArgs = command ?? (part.tool.input ?? '').replace(/\s+/g, ' ');
+    const commandOnly = command === null || part.tool.input === null || (() => {
+      try { return Object.keys(JSON.parse(part.tool.input)).every(key => key === 'command' || key === 'cmd'); }
+      catch { return true; }
+    })();
+    if (!commandOnly || args !== heldArgs || (!kept && part.kept.length > 0) || (!routine && part.routine.length > 0)
+      || args.length > (command !== null || failed(part.tool) ? B.commandChars : B.toolArgChars)
+      || (part.tool.errorMessage?.length ?? 0) > B.errorChars
+      || (part.tool.output !== null && trimResult(part.tool.output) !== part.tool.output)) complete = false;
   }
   if (counted.size > 0) lines.push(`TOOLS NOT LISTED: ${[...counted].map(([name, n]) => `${name}×${n}`).join(', ')}`);
   for (const plan of turn.plans) lines.push(`PLAN ${plan.title ?? plan.planKey} (${plan.status})`);
+  if (turn.plans.length > 0) complete = false;
   const rawChars = turn.prompt.length + turn.steering.reduce((n, s) => n + s.text.length, 0)
     + turn.replies.reduce((n, r) => n + r.text.length, 0)
     + turn.tools.reduce((n, t) => n + (t.input?.length ?? 0) + (t.output?.length ?? 0) + (t.errorMessage?.length ?? 0), 0)
     + turn.plans.reduce((n, p) => n + (p.content?.length ?? 0), 0);
   return {
     turnKey: turn.turnKey,
+    complete,
     text: lines.join('\n'),
     rawChars,
     records: [
@@ -139,7 +155,7 @@ function polling(tool: TurnToolInput): boolean {
 
 /**
  * The declared triage rules, in order: the first that matches marks the turn `none` and names itself on the card.
- * A turn holding a failed tool call, a plan or a steering prompt is never triaged by rule.
+ * A turn holding substantive replies, non-polling work, a failed call, a plan or a steering prompt reaches the model.
  */
 const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) => boolean }[] = [
   {
@@ -155,5 +171,9 @@ const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) => boole
 /** The rule that marks this turn `none`, or null when the turn needs a card from the model. */
 export function triageTurn(turn: TurnInput): string | null {
   if (turn.steering.length > 0 || turn.plans.length > 0 || turn.tools.some(failed)) return null;
+  if (turn.tools.some(tool => !polling(tool)) || turn.replies.some(reply => {
+    const text = reply.text.trim();
+    return !noHumanText(text) && !/^(noted|done|waiting)\s*[.!]?$/i.test(text);
+  })) return null;
   return TRIAGE_RULES.find((rule) => rule.matches(turn))?.name ?? null;
 }

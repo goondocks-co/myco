@@ -224,13 +224,27 @@ it('keeps the prior handoff and failure count when every assigned card changes m
   });
 });
 
-it('holds one raw turn to an answer the harness keeps, and says how much it cut', async () => {
+it('continues a raw turn within the answer bound and withholds coverage until its last part', async () => {
   await withDocumentStores(async (db) => {
     const key = uuid(600);
     const run = await learningRun(db, [longTurn(key, 'a turn longer than one answer', NOW - DAY + 10, 24)], 'high');
-    const answer = await run.raw('myco_run_learning', { op: 'get', turn_key: key });
-    expect(new TextEncoder().encode(JSON.stringify(answer.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
-    expect((answer.structuredContent as { result: { raw: string } }).result.raw).toMatch(/\[… \d+ more characters\]$/);
+    await run.readAll();
+    let cursor: string | undefined;
+    let raw = '';
+    let checkedUnread = false;
+    do {
+      const answer = await run.raw('myco_run_learning', { op: 'get', turn_key: key, ...(cursor ? { cursor } : {}) });
+      expect(new TextEncoder().encode(JSON.stringify(answer.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
+      const part = (answer.structuredContent as { result: { raw: string; complete: boolean; next_cursor?: string } }).result;
+      raw += part.raw;
+      cursor = part.next_cursor;
+      if (cursor && !checkedUnread) {
+        expect(await run.complete('')).toMatchObject({ code: MATERIAL_UNREAD });
+        checkedUnread = true;
+      }
+    } while (cursor);
+    expect(raw).toContain('exit 23');
+    expect(await run.complete('')).toMatchObject({ completed: true });
   });
 });
 

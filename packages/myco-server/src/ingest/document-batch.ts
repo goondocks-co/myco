@@ -506,7 +506,12 @@ export class DocumentBatch {
         ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
         ...(complete ? { tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
-        input_hash: await sha256Hex(trimmed.text), input_chars: trimmed.text.length,
+        input_hash: await sha256Hex(JSON.stringify({
+          records: records.map(({ src: _src, ev: _ev, bodies, ...record }) => ({ ...record,
+            ...(bodies === undefined ? {} : { bodies: Object.fromEntries(Object.entries(bodies).map(([field, ref]) => [field, ref.digest])) }),
+          })),
+          ...(complete ? {} : { revision: statistics.expected_revision }),
+        })), input_chars: trimmed.text.length,
       });
     }
     return settled;

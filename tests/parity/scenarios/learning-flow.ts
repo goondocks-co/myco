@@ -7,12 +7,13 @@ import { revisionHeaders } from '../settings-revision.ts';
 
 type LearningTarget = Pick<ParityTarget, 'url' | 'projectId' | 'memberHeaders' | 'ownerHeaders' | 'sql'>;
 type Claim = { claimed: boolean; reason?: string; run: { id: string; task: string; attemptId: string; runToken: string } };
-interface CardMaterial { revision: string; turns: { input: string }[] }
+interface CardMaterial { revision: string; turns: { input: string; complete: boolean }[] }
 interface LearningMaterial { cards: { card: string }[] }
 const EXACT_ERROR = "Error: capture lease refused for spool generation 17 (owner mismatch)";
+const repairReply = (repetitions: number) => 'Checked the capture path. '.repeat(repetitions) + EXACT_ERROR + '. Reopen the spool under its recorded owner before capture.';
 
 /** One learning outcome through capture, publication, claims, run tools and settlement. */
-export async function runLearningFlow(target: LearningTarget, request: (request: Request) => Promise<Response> = fetch) {
+export async function runLearningFlow(target: LearningTarget, request: (request: Request) => Promise<Response> = fetch, replyText = repairReply(400)) {
   const now = Date.now(), at = now - 3_600_000, session = 'learning-flow', prompt = crypto.randomUUID();
   const owner = { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' };
   const post = async <T = unknown>(path: string, body: unknown, headers = target.memberHeaders()): Promise<T> => {
@@ -32,9 +33,14 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
       channel: 'cli', producer: { adapter: 'parity', version: '1' }, payload })).toMatchObject({ persisted: true });
   };
   await capture('session.start', { agent: 'claude-code', startedAt: at });
-  await capture('prompt', { promptId: prompt, text: 'Fix the capture lease refusal and preserve the exact error.', origin: 'user' });
-  await capture('tool.failure', { toolCallId: crypto.randomUUID(), promptId: prompt, toolName: 'Bash', input: { command: 'capture --check' }, success: false, errorMessage: EXACT_ERROR });
-  await capture('response', { responseId: crypto.randomUUID(), promptId: prompt, text: 'Reopen the spool under its recorded owner before capture.' });
+  await capture('prompt', { promptId: prompt, text: 'continue', origin: 'user' });
+  await capture('tool.use', { toolCallId: crypto.randomUUID(), promptId: prompt, toolName: 'Edit', input: { path: 'capture.ts', replacement: 'guarded spool write' }, success: true });
+  const reply = new TextEncoder().encode(replyText);
+  const replyKey = [...new Uint8Array(await crypto.subtle.digest('SHA-256', reply))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  const upload = await request(new Request(`${target.url}/blobs/${replyKey}`, { method: 'POST',
+    headers: target.memberHeaders({ 'content-type': 'text/plain', 'content-length': String(reply.byteLength) }), body: reply }));
+  expect(await upload.json()).toMatchObject({ stored: true });
+  await capture('response', { responseId: crypto.randomUUID(), promptId: prompt, blob: replyKey });
   await capture('session.end', { endedAt: at });
   for (let wake = 0; ; wake += 1) {
     const response = await request(new Request(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns`, { headers: target.ownerHeaders() }));
@@ -69,10 +75,21 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
   expect(cards).toMatchObject({ claimed: true, run: { task: 'turn-cards' } });
   const material = await call<CardMaterial>(cards.run, 'myco_run_cards', { op: 'material' });
   expect(material.turns).toHaveLength(1);
-  expect(material.turns[0].input).toContain(EXACT_ERROR);
+  expect(material.turns[0].complete).toBe(false);
+  expect(await call(cards.run, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [] })).toMatchObject({ code: 'material_unread' });
+  const source = async (run: Claim['run'], tool: string) => {
+    let cursor: string | undefined, raw = '';
+    do {
+      const answer = await call<{ raw: string; next_cursor?: string }>(run, tool, { op: 'get', turn_key: prompt, ...(cursor ? { cursor } : {}) });
+      raw += answer.raw;
+      cursor = answer.next_cursor;
+    } while (cursor);
+    return raw;
+  };
+  expect(await source(cards.run, 'myco_run_cards')).toContain(EXACT_ERROR);
   expect(await call(cards.run, 'myco_run_cards', { op: 'write', revision: material.revision, cards: [{ turns: [prompt], signal: 'high', card: {
-    asked: 'Fix capture', done: 'Reopened the spool under its recorded owner', outcome: 'done', decisions: [], rejected: [],
-    errors: [{ error: EXACT_ERROR, fix: 'Reopen the spool under its recorded owner.' }], corrections: [], files: [], commands: ['capture --check'], open_questions: [],
+    asked: 'continue', done: 'Reopened the spool under its recorded owner', outcome: 'done', decisions: [], rejected: [],
+    errors: [{ error: EXACT_ERROR, fix: 'Reopen the spool under its recorded owner.' }], corrections: [], files: ['capture.ts'], commands: [], open_questions: [],
   } }] })).toMatchObject({ written: 1 });
   await settle(cards.run, 'carded');
   const learning = await claim();
@@ -105,5 +122,5 @@ export async function runLearningFlow(target: LearningTarget, request: (request:
 export const learningFlow: ParityScenario = {
   name: 'learning: verbatim failure becomes a session-citing spore and daily spend stops the next claim',
   dedicated: { timeoutMs: 180_000 },
-  run: target => runLearningFlow(target),
+  run: target => runLearningFlow(target, fetch, repairReply(12_000)),
 };

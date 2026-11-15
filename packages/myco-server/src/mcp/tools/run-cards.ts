@@ -5,7 +5,7 @@ import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
  * It takes no session argument. The session and the turns are the ones the claim wrote into the run's context, so a
  * run reads and writes exactly its assignment: the trimmed input of each turn, read from the turn's pages and served in
  * answers the harness holds whole, and one card per turn. A write is admitted only once this attempt has read every page
- * of the last revision it started reading.
+ * of the last revision it started reading, including the full source behind incomplete previews.
  */
 import { runOf, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
@@ -20,7 +20,9 @@ import {
 } from '../../core/turn-cards.js';
 import { trimTurn } from '../../core/turn-card-rules.js';
 import { SessionDocument } from '../../content/session-pages.js';
-import { documentTurnInput } from '../../content/turn-material.js';
+import { promptLocator } from '../../db/documents/prompt-locator.js';
+import { serveTurnSource } from './turn-source.js';
+import { documentTurn } from '../../content/turn-material.js';
 import type { CardAssignment } from '../../core/learning-stages.js';
 import { CARD_TOOL } from '../../core/tool-catalogue.js';
 import { materialUnread, servePage } from './material-page.js';
@@ -38,13 +40,28 @@ export async function handleRunCards(input: ToolInput, ctx: ToolContext): Promis
     const unavailable: string[] = [];
     const document = await SessionDocument.open(ctx.env, ctx.projectId, held.sessionId);
     for (const turn of held.assignment.turns) {
-      const material = await documentTurnInput(ctx.env, ctx.projectId, held.sessionId, turn.turnKey, document);
-      if (material !== null) turns.push({ turn_key: turn.turnKey, input: trimTurn(material).text });
+      const material = await documentTurn(ctx.env, ctx.projectId, held.sessionId, turn.turnKey, document);
+      if (material !== null) {
+        const trimmed = trimTurn(material.input);
+        const location = await promptLocator(db, ctx.projectId, held.sessionId, turn.turnKey);
+        if (location === null || location.documentRevision === null || location.generation !== document?.generation)
+          return { ...runRefusal({ what: 'card material', read: true, actual: 'the live source changed while material was read',
+            next: { tool: CARD_TOOL, op: 'material', page: 1 } }), code: MATERIAL_CHANGED };
+        turns.push({ turn_key: turn.turnKey, input: trimmed.text, complete: material.complete && trimmed.complete,
+          source_revision: `${location.generation}:${location.documentRevision}` });
+      }
       else if (document !== null) unavailable.push(turn.turnKey);
     }
-    const page = await servePage(ctx, run, input, turns, () => cardMaterialPages(held.sessionId, turns), undefined, unavailable);
+    const page = await servePage(ctx, run, input, turns, { paginate: () => cardMaterialPages(held.sessionId, turns), unavailable,
+      sources: turns.filter(turn => !turn.complete).map(turn => ({ turnKey: turn.turn_key, revision: turn.source_revision! })) });
     if ('refusal' in page) return page.refusal;
     return { session_id: held.sessionId, revision: page.revision, page: page.page, ...page.next, turns: page.served };
+  }
+  if (input.op === 'get') {
+    const turn = held.assignment.turns.find(turn => turn.turnKey === input.turn_key);
+    if (turn === undefined) return runRefusal({ what: 'raw turn', read: true, actual: `turn_key ${JSON.stringify(input.turn_key)} is not assigned`,
+      next: { tool: CARD_TOOL, op: 'material', page: 1 } });
+    return serveTurnSource(ctx, run, input, { tool: CARD_TOOL, session: held.sessionId, turn: turn.turnKey });
   }
   if (input.op === 'write') {
     const unread = materialUnread(run);

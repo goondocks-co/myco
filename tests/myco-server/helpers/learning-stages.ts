@@ -1,3 +1,6 @@
+import { handleBlob } from '@myco-server-worker/ingest/blobs.js';
+import { sha256Hex } from '@myco-server-worker/hash.js';
+import { MAX_PAYLOAD_BYTES } from '@myco-server-worker/ingest/envelope.js';
 import { type CardFields } from '@goondocks/myco-shared/turn-card';
 import { expect, it } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
@@ -42,6 +45,19 @@ export async function capture(db: RelationalStore, sessionId: string, turns: rea
   const issued = await issueMemberToken(db, { memberId: 'member', machineId: 'machine' }, 1);
   const ctx = { projectId, machineId: 'machine', tokenId: issued.tokenId, bodyBytes: 1, now: receiptAt };
   const send = async (event: Record<string, unknown>) => {
+    const payload = event.payload as Record<string, unknown>;
+    const field = event.kind === 'prompt' || event.kind === 'response' ? 'text' : 'input';
+    const text = typeof payload[field] === 'string' ? payload[field] as string : JSON.stringify(payload[field]);
+    if (text !== undefined && new TextEncoder().encode(text).length > MAX_PAYLOAD_BYTES) {
+      const key = await sha256Hex(text);
+      const env = serverEnvFromBindings({ MYCO_DB: db, BUCKET: BLOBS, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
+      const uploaded = await handleBlob(env, new Request(`https://myco.test/blobs/${key}`, { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: text }),
+        { projectId, machineId: 'machine', tokenId: issued.tokenId, now: receiptAt, clock: () => receiptAt, contentLength: new TextEncoder().encode(text).length, params: { key } });
+      const upload = await uploaded.json() as { stored: boolean; reason?: string };
+      if (!upload.stored) throw new Error(upload.reason);
+      delete payload[field];
+      payload.blob = key;
+    }
     const result = await ingestEvent(db, ctx, envelope({ eventId: uuid(100_000 + ++serial), sessionId, ...event }), { db, blobs: BLOBS });
     if (!result.persisted) throw new Error(JSON.stringify(result));
   };
@@ -150,16 +166,34 @@ export async function cardRun(db: RelationalStore, turns: readonly Turn[]) {
   };
   const material = async (input: Record<string, unknown> = {}) => JSON.parse((await raw({ op: 'material', ...input })).content[0]!.text) as MaterialAnswer;
   const write = async (keys: readonly string[]) => JSON.parse((await raw({ op: 'write', cards: keys.map((key) => ({ turns: [key], signal: 'low', card: EMPTY_CARD })) })).content[0]!.text) as Record<string, unknown>;
+  const readSource = async (key: string) => {
+    let cursor: string | undefined;
+    let text = '';
+    do {
+      const answer = JSON.parse((await raw({ op: 'get', turn_key: key, ...(cursor === undefined ? {} : { cursor }) })).content[0]!.text);
+      if (answer.ok === false) throw new Error(answer.error);
+      text += answer.raw;
+      cursor = answer.next_cursor;
+    } while (cursor !== undefined);
+    return text;
+  };
   const readAll = async () => {
     const inputs = new Map<string, string>();
+    const incomplete = new Set<string>();
     let answer = await material();
     for (;;) {
-      for (const turn of answer.turns) inputs.set(turn.turn_key, (inputs.get(turn.turn_key) ?? '') + turn.input);
-      if (answer.next_page === undefined) return { inputs, revision: answer.revision, pages: answer.page };
+      for (const turn of answer.turns) {
+        inputs.set(turn.turn_key, (inputs.get(turn.turn_key) ?? '') + turn.input);
+        if (turn.complete === false) incomplete.add(turn.turn_key);
+      }
+      if (answer.next_page === undefined) {
+        for (const key of incomplete) await readSource(key);
+        return { inputs, revision: answer.revision, pages: answer.page };
+      }
       answer = await material({ page: answer.next_page, revision: answer.revision });
     }
   };
-  return { bindings, env, raw, material, write, readAll, principal, claimed, harness };
+  return { bindings, env, raw, material, write, readAll, readSource, principal, claimed, harness };
 }
 
 export const longTurn = (id: string, text: string, at: number, calls: number): Turn => ({ id, text, at, tools: Array.from({ length: calls }, (_, call) => failedCommand(call, 1_900)) });

@@ -87,12 +87,12 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
   return writes;
 }
 
-/** One turn's trimmed input as a card run reads it. `continues` marks an input that goes on under the same key on the next page. */
-export interface CardMaterial { turn_key: string; input: string; continues?: true }
+/** A turn preview: `complete` certifies its source, while `continues` marks preview text on the next answer page. */
+export interface CardMaterial { turn_key: string; input: string; continues?: true; source_revision?: string; complete?: boolean }
 
 const CARD_ENTRY: PagedEntry<CardMaterial> = {
   textOf: (turn) => turn.input,
-  withText: (turn, input, continues) => ({ turn_key: turn.turn_key, input, ...(continues ? { continues: true as const } : {}) }),
+  withText: (turn, input, continues) => ({ ...turn, input, ...(continues ? { continues: true as const } : {}) }),
 };
 
 /** A card run's material as pages, each an answer the harness holds whole. */

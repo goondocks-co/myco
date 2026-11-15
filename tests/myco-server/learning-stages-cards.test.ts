@@ -33,7 +33,7 @@ import { offeredHarness } from './helpers/offered-harness.js';
 import { RUN_AUDIT } from '../helpers/run-audit.ts';
 import { cardsWrittenBy } from '@myco-server-worker/core/run-postconditions.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
-import { BLOBS, NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, cardRun, cardWorker, longTurn } from './helpers/learning-stages.ts';
+import { BLOBS, NOW, HOUR, DAY, enable, capture, fakeCard, publish, cardAll, ready, GOTCHAS, EMPTY_CARD, cardRun, cardWorker, longTurn } from './helpers/learning-stages.ts';
 
 const withDocumentStores = documentFileStores(16);
 beforeAll(async () => { schemaSqlite().close(); await schemaD1Root(); });
@@ -220,6 +220,11 @@ it('pulls cards, then learning, at claim within the budget, and the learned spor
     expect(cards.run).toMatchObject({ task: 'turn-cards', profile: { tier: 'low' } });
     const material = await call(cards.run.runToken, 'myco_run_cards', { op: 'material' }) as { revision: string; turns: { turn_key: string; input: string }[] };
     expect(material.turns.map(turn => turn.turn_key)).toEqual([uuid(1), uuid(2), uuid(3), uuid(4)]);
+    let cursor: string | undefined;
+    do {
+      const source = await call(cards.run.runToken, 'myco_run_cards', { op: 'get', turn_key: uuid(1), ...(cursor ? { cursor } : {}) });
+      cursor = source.next_cursor as string | undefined;
+    } while (cursor !== undefined);
     expect(await call(cards.run.runToken, 'myco_run_cards', { op: 'write', revision: material.revision, cards: material.turns.map(turn => ({ turns: [turn.turn_key], ...fakeCard(turn.input) })) }))
       .toMatchObject({ written: 4 });
     const ran = await db.prepare(`SELECT model FROM agent_runs WHERE id = ?`).bind(cards.run.id).first<{ model: string | null }>();
@@ -303,6 +308,8 @@ it('refuses a card write until this attempt has read every page, and names the n
 
     const last = await run.material({ page: 3, revision: first.revision });
     expect(last.next_page).toBeUndefined();
+    expect(await run.write([key])).toMatchObject({ code: MATERIAL_UNREAD });
+    await run.readSource(key);
     expect(await run.write([key])).toEqual({ written: 1, changed_since_served: [] });
     expect(await pendingCard()).toEqual({ state: 'carded' });
   });
@@ -341,6 +348,18 @@ it('credits material reads to the attempt that made them', () => {
   expect(materialRead(JSON.stringify({ materialRead: read }), 'next-attempt')).toBeNull();
 });
 
+it('requires fresh material when an active run carries an older receipt', async () => {
+  await withDocumentStores(async db => {
+    const key = uuid(804);
+    const run = await cardRun(db, [{ id: key, text: 'Keep the captured history', at: NOW - DAY }]);
+    await run.material();
+    await db.prepare("UPDATE agent_runs SET run_context=json_remove(run_context,'$.materialRead.sources') WHERE id=?").bind(run.claimed.run.id).run();
+    expect(await run.write([key])).toMatchObject({ code: MATERIAL_UNREAD, next_page: 1 });
+    await run.material();
+    expect(await run.write([key])).toMatchObject({ written: 1 });
+  });
+});
+
 it('pages by weight, and a split never lands inside a character', () => {
   for (const turnKey of ['e', 'em', 'emo', 'emoj']) {
     const emoji: CardMaterial = { turn_key: turnKey, input: '😀'.repeat(RUN_ANSWER_BYTES) };
@@ -358,3 +377,59 @@ it('pages by weight, and a split never lands inside a character', () => {
 });
 
 /** A stored card of about `chars` characters of `text`. */
+
+it('cards a continue turn with successful edits and a substantive decision', async () => {
+  await withDocumentStores(async db => {
+    const key = uuid(801);
+    const run = await cardRun(db, [{ id: key, text: 'continue', at: NOW - DAY,
+      replies: ['Keep the guard in the writer because callers race.'], tools: [{ name: 'Edit', input: { path: 'capture.ts', replacement: 'guarded write' } }] }]);
+    const { inputs } = await run.readAll();
+    expect(inputs.get(key)).toContain('Keep the guard in the writer because callers race.');
+    expect(await run.write([key])).toMatchObject({ written: 1 });
+  });
+});
+
+it('requires every source page and spilled body before publishing a complete card', async () => {
+  await withDocumentStores(async db => {
+    const key = uuid(802);
+    const run = await cardRun(db, [{ id: key, text: '😀'.repeat(80_000) + 'PROMPT_BODY_END', at: NOW - DAY,
+      replies: Array.from({ length: 6 }, (_, page) => 'x'.repeat(page === 0 ? 300_000 : 220_000)
+        + (page === 0 ? 'REPLY_BODY_END' : '') + (page === 4 ? 'CORRECTION_FOURTH_PAGE: preserve history.' : '')),
+      tools: [{ name: 'Edit', input: { replacement: 'y'.repeat(300_000) + 'TOOL_BODY_END' } }] }]);
+    let material = await run.material();
+    expect(material.turns[0]).toMatchObject({ complete: false });
+    while (material.next_page !== undefined) material = await run.material({ page: material.next_page, revision: material.revision });
+    expect(await run.write([key])).toMatchObject({ code: MATERIAL_UNREAD });
+    const first = JSON.parse((await run.raw({ op: 'get', turn_key: key })).content[0]!.text);
+    expect(await run.write([key])).toMatchObject({ code: MATERIAL_UNREAD });
+    const raw = await run.readSource(key);
+    expect(raw).not.toContain('�');
+    for (const exact of ['PROMPT_BODY_END', 'REPLY_BODY_END', 'CORRECTION_FOURTH_PAGE: preserve history.', 'TOOL_BODY_END']) expect(raw).toContain(exact);
+    const correction = /CORRECTION_FOURTH_PAGE: preserve history\./.exec(raw)![0];
+    expect(JSON.parse((await run.raw({ op: 'write', cards: [{ turns: [key], signal: 'high',
+      card: { ...EMPTY_CARD, corrections: [{ wrong: '', right: correction }] } }] })).content[0]!.text)).toMatchObject({ written: 1 });
+    expect((await db.prepare('SELECT card FROM turn_cards WHERE turn_key=?').bind(key).first<{ card: string }>())!.card).toContain(correction);
+    await capture(db, 'long', [{ id: key, text: '😀'.repeat(80_000) + 'PROMPT_BODY_END', at: NOW - DAY, replies: ['LATE_CORRECTION: retain the original history.'] }]);
+    await publish(db, NOW + DAY + HOUR, run.bindings.BUCKET);
+    const stale = JSON.parse((await run.raw({ op: 'get', turn_key: key, cursor: first.next_cursor })).content[0]!.text);
+    expect(stale).toMatchObject({ code: MATERIAL_CHANGED, error: expect.stringContaining('Next call: myco_run_cards {"op":"material","page":1}') });
+    expect(await db.prepare('SELECT state,covered FROM turn_cards WHERE turn_key=?').bind(key).first()).toEqual({ state: 'pending', covered: 0 });
+    await run.material();
+    expect(JSON.parse((await run.raw({ op: 'get', turn_key: key })).content[0]!.text)).toMatchObject({ complete: false });
+  });
+});
+
+it('records an unfinished source read as a failed run and leaves the card pending', async () => {
+  await withDocumentStores(async db => {
+    const key = uuid(803);
+    const run = await cardRun(db, [longTurn(key, 'Finish within the run deadline', NOW - DAY, 24)]);
+    let page = await run.material();
+    while (page.next_page) page = await run.material({ page: page.next_page, revision: page.revision });
+    await run.raw({ op: 'get', turn_key: key });
+    await run.harness.call(run.claimed.run.runToken, 'myco_run', { op: 'report', action: CARD_REPORT_ACTION, summary: 'Deadline reached with unread turn source.' });
+    expect(await endLeasedRun(run.env, { principal: run.principal, now: NOW + DAY + 1 },
+      { projectId: 'project', runId: run.claimed.run.id, attemptId: run.claimed.run.attemptId, status: 'completed' })).toMatchObject({ status: 'failed' });
+    expect(await db.prepare('SELECT state,covered FROM turn_cards WHERE turn_key=?').bind(key).first()).toEqual({ state: 'pending', covered: 0 });
+    expect(await getRun(db, { projectId: 'project' }, run.claimed.run.id)).toMatchObject({ status: 'failed', error: expect.any(String) });
+  });
+});

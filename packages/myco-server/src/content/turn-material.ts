@@ -30,13 +30,13 @@ export function turnInput(turnKey: string, records: readonly DocRecord[]): TurnI
   };
 }
 
-/** A turn read from the live document, and whether the read held every page of it. */
+/** A turn preview, and whether every source page and body was held inline in that read. */
 interface DocumentTurn { input: TurnInput; complete: boolean }
 
 /**
  * A turn of the session's live document, read from at most `TURN_PAGES` of its pages: the first `TURN_PAGES - 1`, and
  * its last page when more remain. Null when the session has no live document or the document holds no such turn. A turn
- * whose pages between the head and the last page go unread is not complete. A caller reading several turns of one
+ * whose pages between the head and the last page go unread, or whose records hold separate bodies, is not complete. A caller reading several turns of one
  * session passes its document.
  */
 export async function documentTurn(env: ContentStore, projectId: string, sessionId: string, turnKey: string,
@@ -47,7 +47,9 @@ export async function documentTurn(env: ContentStore, projectId: string, session
   const last = head.more ? await doc.lastPage(turnKey) : null;
   const tail = last === null ? [] : (await doc.ownerPages(turnKey, last, 1)).pages;
   const input = turnInput(turnKey, [...head.pages, ...tail].flatMap((page) => page.records));
-  return input === null ? null : { input, complete: !head.more || last === head.pages.length };
+  const pages = [...head.pages, ...tail];
+  return input === null ? null : { input, complete: (!head.more || last === head.pages.length)
+    && pages.every(page => page.records.every(record => Object.keys(record.bodies ?? {}).length === 0)) };
 }
 
 /** The turn's input as `documentTurn` reads it, complete or not. */
