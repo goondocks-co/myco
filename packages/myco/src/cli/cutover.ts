@@ -847,7 +847,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             }
             if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); }
             if (signal.aborted) return false;
-            if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it`);
+            if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); resolve the named refusals or failures before running the cutover again`);
             deleted = legacy.deleted;
           } else {
             deleted = readLegacyVault(copies.get(project.vault)!).filter(source => source.projectId === project.projectId).flatMap(source => legacyDeletedSessionIds(source, machineId));

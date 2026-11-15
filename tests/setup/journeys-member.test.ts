@@ -185,11 +185,14 @@ async function deployment(target: 'native' | 'd1-adapter', projectIds: readonly 
 }
 
 describe('teammate journey (c)', () => {
-  for (const bound of [0, 1]) for (const yes of [false, true]) it(`completes the printed cutover remedy after login and member join from repository ${bound} with ${yes ? '--yes and no ask callback' : 'cutover consent only'}`, async () => {
+  for (const bound of [0, 1]) for (const yes of [false, true]) it(`moves sessions and plans with the printed cutover remedy and leaves spores pending after login and member join from repository ${bound} with ${yes ? '--yes and no ask callback' : 'cutover consent only'}`, async () => {
     const legacy = legacyFixtureHome(path.join(root, 'inferred-legacy'), { agentSettings: false });
     home = legacy.mycoHome;
     project = legacy.projects[bound]!.root;
     for (const entry of legacy.projects) execFileSync('git', ['init', '-q', entry.root]);
+    const source = new Database(legacy.vault);
+    try { source.run("INSERT INTO plans (id, logical_key, project_id, session_id, title, content, status, created_at) VALUES ('retained-plan', 'retained-plan', ?, ?, 'Retained plan', '- [ ] Keep the plan', 'active', 1700000000)", [legacy.projects[bound]!.id, legacy.projects[bound]!.sessionId]); }
+    finally { source.close(); }
     closers.push(bindSandboxChildHome(root, legacy.env));
     const server = await deployment('native', legacy.projects.map(entry => entry.id));
     const deps: SetupDeps = { mycoHome: home, cwd: project, agents: () => ['claude-code'],
@@ -214,6 +217,7 @@ describe('teammate journey (c)', () => {
     expect(await run(['--status'], deps)).toBe(3);
     const remedy = lines.join('\n').match(/myco setup --cutover/)?.[0];
     expect(remedy).toBe('myco setup --cutover');
+    expect(lines.join('\n')).toContain('Allow spore import');
     const questions: string[] = [];
     if (!yes) deps.ask = async question => {
       questions.push(question);
@@ -221,16 +225,21 @@ describe('teammate journey (c)', () => {
       return 'yes';
     };
     lines = [];
-    expect({ code: await run([...remedy!.split(' ').slice(2), ...(yes ? ['--yes'] : [])], deps), errors }).toEqual({ code: 0, errors: [] });
+    expect(await run([...remedy!.split(' ').slice(2), ...(yes ? ['--yes'] : [])], deps)).toBe(2);
+    expect(errors.join('\n')).toContain('migration remains partial');
+    expect(lines.join('\n')).toMatch(/sessions: 1 distinct[^\n]*1 from the vault/);
+    expect(lines.join('\n')).toContain('sent 1 prompts, 0 responses, 1 plans');
+    expect(lines.join('\n')).toContain('spores: 0 saved, 0 already here, 1 refused');
+    expect(lines.join('\n')).toMatch(/only an admin[\s\S]*Allow spore import[\s\S]*Settings → Capture and retention/);
     expect(questions).toHaveLength(yes ? 0 : 1);
     expect(lines.join('\n')).toContain('Myco 1.4 cutover preview');
-    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(legacyMigrationState(home).state).toBe('partial');
     expect(readRegistryEntry(project, home)?.serverUrl).toBe(URL);
     expect(readDefaultDeployment(home)?.serverUrl).toBe(other);
     expect((await observeSetup(home, { role: 'join', url: URL, root: project }, deps)).find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'complete', detail: 'current' });
     for (const key of ['role', 'url', 'root', 'runWork', 'noAgents', 'makeDefault'] as const) expect(readSetupFile(home).answers[key]).toBeUndefined();
     expect(server.calls.filter(route => route === '/auth/device/start')).toHaveLength(1);
-    expect(await run([], deps)).toBe(0);
+    expect(await run(['--status'], deps)).toBe(3);
   });
 
   it('plain setup resumes login and member join without asking a role or repeating sign-in', async () => {

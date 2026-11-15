@@ -1,3 +1,4 @@
+import { LEGACY_CUTOVER_SCOPE } from '@goondocks/myco-shared/setup-guidance';
 import { LEGACY_DESTINATION_HINT, legacyConfirmationHint } from './legacy-capture.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -42,10 +43,9 @@ function describe(fact: StatusObservation, url: string | undefined): string {
   if (fact.id === 'legacy') {
     const state = legacyState(fact);
     if (fact.state === 'unavailable') return `Myco 1.4 migration records could not be read: ${sentence(fact.legacyError ?? fact.detail.replace(/^unavailable\s*/, ''))}. Inspect ${shortPath(fact.scope)}, then run myco setup --cutover.`;
-    const confirmationHint = legacyConfirmationHint(fact.legacyConfirmation, fact.legacyConfirmationProjects);
-    if (confirmationHint !== null) return confirmationHint;
-    if (state === 'needs-destination' && fact.state === 'incomplete') return LEGACY_DESTINATION_HINT;
-    return [legacySentences[state] ?? legacySentences.unavailable, fact.legacyNotice].filter(Boolean).join(' ');
+    const remedy = legacyConfirmationHint(fact.legacyConfirmation, fact.legacyConfirmationProjects)
+      ?? (state === 'needs-destination' && fact.state === 'incomplete' ? LEGACY_DESTINATION_HINT : legacySentences[state] ?? legacySentences.unavailable);
+    return [remedy, !complete ? LEGACY_CUTOVER_SCOPE : null, fact.legacyNotice].filter(Boolean).join(' ');
   }
   if (fact.state === 'unavailable') return `Could not read ${labels[fact.id] ?? 'this observation'}: ${sentence(fact.detail)}. Inspect with ${fact.id.startsWith('runner.') ? 'myco runner status' : 'myco doctor'}.`;
   if (fact.id === 'runner.choice' && complete) return fact.detail === 'run-work' ? "This machine also runs Myco's work." : "This machine does not run Myco's work.";
