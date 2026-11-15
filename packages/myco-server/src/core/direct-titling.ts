@@ -29,7 +29,7 @@ export interface DirectTitleAsk {
   project: string; session: string; run: string; stamp: number; previous: number | null; mode: TitlingMode; by?: string;
 }
 
-/** Failed attempts retain their claim and backoff; uncalled rate-limited work releases its claim and sleeps. */
+/** An unusable answer or unreadable material spends the session's attempt and keeps its claim; a provider fault, or a rate limit met before any call, gives both back and the session sleeps. */
 export async function executeDirectTitle(env: ServerEnv, provider: CompletionProvider, ask: DirectTitleAsk): Promise<void> {
   const began = Date.now();
   const now = () => ask.stamp + Date.now() - began;

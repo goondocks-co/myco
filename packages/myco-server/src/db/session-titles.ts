@@ -7,6 +7,8 @@ import { titleRunInFlightSql, notTombstonedSql } from './session-read-model.js';
 import { type RunWrite } from './runs/evidence.js';
 import { sessionMaterialReadySql, titlingClaimAvailableSql, transcriptsPublishedSql } from './sessions/material.js';
 import { SQL_NOW_MS } from '../core/run-deadline.js';
+import { contextValue } from './run-context.js';
+import { PROVIDER_FAULTS } from '../core/completion/provider.js';
 
 const stamp = read<[string, string], { titled_at: number | null }>({ name: 'sessionTitle.stamp', sql: 'SELECT titled_at FROM sessions WHERE project_id = ? AND session_id = ?' });
 const claimAutomatic = write<[number, string, string, number | null, number, number | null], { session_id: string }>({ name: 'sessionTitle.claimAutomatic', sql: `UPDATE sessions SET titled_at = ? WHERE project_id = ? AND session_id = ? AND titled_at IS ? AND (ended_at IS NOT NULL OR last_received_at <= ?) AND ${titlingClaimAvailableSql('sessions')} AND ${sessionMaterialReadySql('sessions')} RETURNING session_id` });
@@ -107,22 +109,44 @@ export async function writeTitle(db: RelationalStore, projectId: string, session
 }
 
 
-const uncalled = (project: string, run: string) => `EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=${project} AND r.id=${run}
-  AND r.provider='direct' AND r.status='running' AND NOT EXISTS(SELECT 1 FROM agent_run_events e
-    WHERE e.project_id=r.project_id AND e.run_id=r.id AND e.event_type='direct_call'))`;
-const uncount = write<[project: string, session: string, stamp: number, run: string], never>({ name: 'sessionTitle.uncountUncalled', sql: `
-  UPDATE sessions SET titling_attempts=MAX(0,titling_attempts-1) WHERE project_id=?1 AND session_id=?2 AND titled_at=?3
-    AND ${uncalled('?1', '?4')} AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=?1 AND id=?4 AND attempt_counted=1)` });
-const restoreUncalled = write<[project: string, session: string, stamp: number, previous: number | null, run: string], never>({ name: 'sessionTitle.restoreUncalled', sql: `
-  UPDATE sessions SET titled_at=?4 WHERE project_id=?1 AND session_id=?2 AND titled_at=?3 AND ${uncalled('?1', '?5')}` });
-const deferUncalled = write<[project: string, session: string, mode: string, run: string, now: number], never>({ name: 'sessionTitle.deferUncalled', sql: `
-  UPDATE session_title_work SET ready=0,waits='timer',due_at=?5+${TITLE_WORK_RECHECK_MS},checks=checks+1
-    WHERE project_id=?1 AND session_id=?2 AND (mode=?3 OR ?3='owner') AND ${uncalled('?1', '?4')}` });
-const unmark = write<[project: string, run: string], never>({ name: 'sessionTitle.unmarkUncalled', sql: `
-  UPDATE agent_runs SET attempt_counted=0 WHERE project_id=?1 AND id=?2 AND ${uncalled('?1', '?2')}` });
+type Release = 'uncalled' | 'faulted';
+const FAULT_CODES = PROVIDER_FAULTS.map(code => `'completion_${code}'`).join(',');
+/** How far back a session's provider faults lengthen its next wait. */
+const FAULT_MEMORY_MS = 86_400_000;
+/** The run still open: before any provider call for an uncalled release, at any point for a faulted one. */
+const held = (kind: Release, project: string, run: string) => `EXISTS(SELECT 1 FROM agent_runs r WHERE r.project_id=${project} AND r.id=${run}
+  AND r.provider='direct' AND r.status='running'${kind === 'faulted' ? '' : ` AND NOT EXISTS(SELECT 1 FROM agent_run_events e
+    WHERE e.project_id=r.project_id AND e.run_id=r.id AND e.event_type='direct_call')`})`;
+/** An uncalled attempt looks again after one recheck; a faulted one waits twice as long for each fault the session met in the last day, up to 256 rechecks. */
+const wait = (kind: Release, project: string, session: string, now: string) => kind === 'uncalled' ? `${now}+${TITLE_WORK_RECHECK_MS}`
+  : `${now}+${TITLE_WORK_RECHECK_MS}*(1<<MIN(8,(SELECT COUNT(*) FROM agent_runs WHERE project_id=${project} AND ${contextValue('session_id')}=${session}
+      AND provider='direct' AND status='failed' AND error_code IN (${FAULT_CODES}) AND started_at>${now}-${FAULT_MEMORY_MS})))`;
+const releases = (kind: Release) => ({
+  uncount: write<[project: string, session: string, stamp: number, run: string], never>({ name: `sessionTitle.uncount.${kind}`, sql: `
+    UPDATE sessions SET titling_attempts=MAX(0,titling_attempts-1) WHERE project_id=?1 AND session_id=?2 AND titled_at=?3
+      AND ${held(kind, '?1', '?4')} AND EXISTS(SELECT 1 FROM agent_runs WHERE project_id=?1 AND id=?4 AND attempt_counted=1)` }),
+  restore: write<[project: string, session: string, stamp: number, previous: number | null, run: string], never>({ name: `sessionTitle.restore.${kind}`, sql: `
+    UPDATE sessions SET titled_at=?4 WHERE project_id=?1 AND session_id=?2 AND titled_at=?3 AND ${held(kind, '?1', '?5')}` }),
+  defer: write<[project: string, session: string, mode: string, run: string, now: number], never>({ name: `sessionTitle.defer.${kind}`, sql: `
+    UPDATE session_title_work SET ready=0,waits='timer',due_at=${wait(kind, '?1', '?2', '?5')},checks=checks+1
+      WHERE project_id=?1 AND session_id=?2 AND (mode=?3 OR ?3='owner') AND ${held(kind, '?1', '?4')}` }),
+  unmark: write<[project: string, run: string], never>({ name: `sessionTitle.unmark.${kind}`, sql: `
+    UPDATE agent_runs SET attempt_counted=0 WHERE project_id=?1 AND id=?2 AND ${held(kind, '?1', '?2')}` }),
+});
+const RELEASES = { uncalled: releases('uncalled'), faulted: releases('faulted') };
+
+export interface TitleRelease { project: string; session: string; run: string; stamp: number; previous: number | null; mode: string; now: number }
+const release = (kind: Release, ask: TitleRelease): Bound[] => {
+  const { uncount, restore: restoreStamp, defer, unmark } = RELEASES[kind];
+  return [uncount.bind(ask.project, ask.session, ask.stamp, ask.run), restoreStamp.bind(ask.project, ask.session, ask.stamp, ask.previous, ask.run),
+    defer.bind(ask.project, ask.session, ask.mode, ask.run, ask.now), unmark.bind(ask.project, ask.run)];
+};
 
 /** An uncalled rate-limited attempt gives back its claim and sleeps before the same commit ends its run. */
-export function uncalledTitleRelease(ask: { project: string; session: string; run: string; stamp: number; previous: number | null; mode: string; now: number }): Bound[] {
-  return [uncount.bind(ask.project, ask.session, ask.stamp, ask.run), restoreUncalled.bind(ask.project, ask.session, ask.stamp, ask.previous, ask.run),
-    deferUncalled.bind(ask.project, ask.session, ask.mode, ask.run, ask.now), unmark.bind(ask.project, ask.run)];
-}
+export const uncalledTitleRelease = (ask: TitleRelease): Bound[] => release('uncalled', ask);
+
+/**
+ * An attempt the provider failed gives back its claim and its count: the fault says nothing about the session, so it
+ * never spends one of the session's attempts. The session sleeps longer after each fault before it is tried again.
+ */
+export const faultedTitleRelease = (ask: TitleRelease): Bound[] => release('faulted', ask);

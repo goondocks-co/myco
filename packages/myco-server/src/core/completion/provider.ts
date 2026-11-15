@@ -24,6 +24,8 @@ export interface CompletionProvider {
   complete(request: CompletionRequest): Promise<CompletionAnswer>;
 }
 export type CompletionFailure = 'rate_limited' | 'timeout' | 'unreachable' | 'http' | 'invalid_response' | 'invalid_answer';
+/** Failures that say nothing about what was asked: a passed deadline, no answer, an HTTP error, or a body that is not a completion. */
+export const PROVIDER_FAULTS: readonly CompletionFailure[] = ['timeout', 'unreachable', 'http', 'invalid_response'];
 export class CompletionUnavailable extends Error {
   constructor(readonly code: CompletionFailure, readonly status?: number) {
     super(`completion_${code}${status === undefined ? '' : ` (HTTP ${status})`}`);
