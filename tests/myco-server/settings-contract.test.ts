@@ -47,6 +47,7 @@ import { agentRunRetention, JOB_IMPLEMENTATIONS } from '@myco-server-worker/core
 import { recoveryScheduleOf } from '@myco-server-worker/core/recovery-schedule.js';
 import { retentionDecision } from '@myco-server-worker/core/backup-retention.js';
 import { maintenanceDue } from '@myco-server-worker/core/store-maintenance.js';
+import { sporeImportEnabled } from '@myco-server-worker/core/import-policy.js';
 import { handleImportPlan } from '@myco-server-worker/api/import.js';
 import { handleMemberStatus } from '@myco-server-worker/api/status.js';
 import { mayCreateProjects } from '@myco-server-worker/db/storage/projects.js';
@@ -376,6 +377,7 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   'capture.auto_create_projects': {
     consumer: at('db/storage/projects.ts', mayCreateProjects), value: () => false, invalid: () => 0, observe: (r) => mayCreateProjects(r.env.db, MEMBER_PRINCIPAL.id),
   },
+  'import.spores_enabled': { value: () => true, invalid: () => 0, observe: r => sporeImportEnabled(r.env.db) },
   'import.enabled': { consumer: at('api/import.ts', handleImportPlan), value: () => false, invalid: () => 0, observe: importPlan },
   'import.window_days': { consumer: at('api/import.ts', handleImportPlan), value: () => 7, invalid: () => 2.5, observe: importPlan },
   'import.max_sessions_per_harness': { consumer: at('api/import.ts', handleImportPlan), value: () => 1, invalid: () => 1.5, observe: importPlan },

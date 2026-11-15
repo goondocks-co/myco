@@ -44,7 +44,7 @@ import { scheduledIntervalHours } from './recovery-schedule.js';
 import { keptStagings } from './staging-retention.js';
 import { backupRetentionPolicy } from './backup-retention.js';
 import { cadenceOf, MAINTENANCE_CHECKS, MAINTENANCE_SETTINGS } from './store-maintenance.js';
-import { importPolicy } from './import-policy.js';
+import { importPolicy, sporeImportEnabled } from './import-policy.js';
 import { transcriptRetentionFact } from '../ingest/retention.js';
 import { autoCreateProjects } from '../db/storage/projects.js';
 import { keepsEmbeddingWhileIdle } from './embedding/jobs.js';
@@ -240,13 +240,14 @@ const maintenance: SettingPolicy = {
 const capture: SettingPolicy = {
   id: 'capture',
   owners: ['db/storage/projects.ts', 'core/import-policy.ts'],
-  leaves: ['capture.auto_create_projects', 'import.enabled', 'import.window_days', 'import.max_sessions_per_harness'],
+  leaves: ['capture.auto_create_projects', 'import.spores_enabled', 'import.enabled', 'import.window_days', 'import.max_sessions_per_harness'],
   async resolve(env) {
     const policy = await importPolicy(env.db);
     const off = policy.enabled ? {} : { state: 'inactive' as const, reason: 'Importing past sessions is off.' };
     return {
       'capture.auto_create_projects': { effective: await autoCreateProjects(env.db) },
       'import.enabled': { effective: policy.enabled },
+      'import.spores_enabled': { effective: await sporeImportEnabled(env.db), ...off },
       'import.window_days': { effective: policy.windowDays, ...off },
       'import.max_sessions_per_harness': { effective: policy.maxPerAgent, ...off },
     };

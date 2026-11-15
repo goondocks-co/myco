@@ -484,8 +484,8 @@ export interface LegacyProjectReport {
   responses: number;
   /** Plans sent; plans with no content; plans whose session is deleted or not in the vault. */
   plans: { sent: number; empty: number; unsent: number };
-  spores: { saved: number; duplicate: number; refused: number; kept?: number };
-  lineage: { recorded: number; duplicate: number; refused: number; malformed: number };
+  spores: { saved: number; duplicate: number; refused: number; notImported?: number; kept?: number };
+  lineage: { recorded: number; duplicate: number; refused: number; notImported?: number; malformed: number };
   /** What the Deployment refused, with its reason; a session with a refusal is not recorded as done. */
   refusals: string[];
   /** Steps that could not finish (a status no retry changes, repeated server errors, too long a wait): left for a later run. */
@@ -832,6 +832,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (outcome.endedBy === 'failed') { r.failures.push(failed(r, `spore ${spore.id}`, outcome)); continue; }
       if (outcome.endedBy !== undefined) return outcome.endedBy;
       const answer = outcome as Classified;
+      if (notImportedByPolicy(answer, r.spores)) continue;
       if (answer.refusal !== undefined) { refusedRecord(r, answer.refusalCode ?? 'refused', answer.refusalReason); r.spores.refused += 1; r.refusals.push(`spore ${spore.id}: ${answer.refusal}`); continue; }
       if (answer.body?.sourceKept === true) r.spores.kept = (r.spores.kept ?? 0) + 1;
       else if (answer.duplicate) r.spores.duplicate += 1; else r.spores.saved += 1;
@@ -855,6 +856,7 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
       if (outcome.endedBy === 'failed') { r.failures.push(failed(r, `history ${event.id}`, outcome)); continue; }
       if (outcome.endedBy !== undefined) return outcome.endedBy;
       const answer = outcome as Classified;
+      if (notImportedByPolicy(answer, r.lineage)) continue;
       if (answer.refusal !== undefined) { refusedRecord(r, answer.refusalCode ?? 'refused', answer.refusalReason); r.lineage.refused += 1; r.refusals.push(`history ${event.id}: ${answer.refusal}`); continue; }
       if (answer.body?.resolved === false) { refusedRecord(r, 'missing_reference'); r.lineage.refused += 1; r.refusals.push(`history ${event.id}: its spore ${event.sporeId} is not on the Deployment`); continue; }
       if (answer.duplicate) r.lineage.duplicate += 1; else r.lineage.recorded += 1;
@@ -1064,6 +1066,15 @@ const STILL_WRITING = 'still-writing';
 export const UNREACHABLE = 'unreachable';
 
 type Classified = { endedBy?: string; refusalCode?: string; refusalReason?: string; refusal?: string; duplicate?: boolean; body?: Record<string, unknown> };
+
+const SPORE_IMPORT_POLICY_CODES = new Set(['import_disabled', 'not_admin']);
+
+/** Policy decisions leave knowledge in the vault and eligible for a later admin import. */
+function notImportedByPolicy(answer: Classified, counts: { notImported?: number }): boolean {
+  if (answer.refusal === undefined || !SPORE_IMPORT_POLICY_CODES.has(answer.refusalCode ?? '')) return false;
+  counts.notImported = (counts.notImported ?? 0) + 1;
+  return true;
+}
 
 /** An answer to a persisted route: stopped (retryable or not), refused with a reason, or recorded. */
 function classified(outcome: Outcome): Classified {

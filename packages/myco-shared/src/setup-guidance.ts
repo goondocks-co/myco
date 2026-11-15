@@ -1,5 +1,11 @@
 /** Recovery words shared by the terminal and dashboard. */
-export const LEGACY_AGENT_DEFERRAL = 'Agent setup is deferred because retained Myco 1.4 history has no complete migration receipt. Run myco setup --cutover to review and move it, or preview manually with myco cutover --dry-run.';
+export const SPORE_IMPORT_GUIDANCE =
+  'An admin can turn on Allow spore import in Settings → Capture and retention → Importing past sessions (off by default), '
+  + 'then run myco import --legacy <vault> on the machine that holds the vault.';
+export const LEGACY_CUTOVER_SCOPE = 'Spores stay in the 1.4 vault unless an admin allows spore import.';
+export const LEGACY_AGENT_DEFERRAL =
+  'Agent setup is deferred because retained Myco 1.4 history has no complete migration receipt. '
+  + 'Run myco setup --cutover to review and move it, or preview manually with myco cutover --dry-run.';
 export const cutoverAbsentFolder = (projectId: string, root: string | null): string =>
   `${projectId}: folder ${root ?? '(not recorded)'} is absent or unsafe; vault history only. Use --map <dir>=<root> for retained transcripts.`;
 export const cutoverForeignBinding = (projectId: string, root: string, boundTo: string, serverUrl: string): string =>

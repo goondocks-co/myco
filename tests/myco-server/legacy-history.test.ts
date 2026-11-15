@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
 import { issueMemberToken } from './helpers/member-token.js';
 import { LEGACY_HISTORY_MAX_EVENTS, LEGACY_HISTORY_PATH, LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shared/member-protocol';
@@ -54,6 +55,7 @@ describe('source-specific legacy history confirmation', () => {
 it('requires every spore and lineage ID with Project, member and available machine attribution', async () => {
   const fixture = sqliteEnv();
   try {
+    await settingsWriter(fixture.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
     const token = await issueMemberToken(fixture.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, Date.now());
     const server = createServer({ now: Date.now, sourceOf: () => '192.0.2.32', fetchImpl: noOutboundFetch });
     const post = async (path: string, body: unknown, headers = {}) => jsonBody<Record<string, unknown>>(await server.handleRequest(memberPost(token.token, body, path, headers), fixture.serverEnv));

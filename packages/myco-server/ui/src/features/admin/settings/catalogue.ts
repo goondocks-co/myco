@@ -203,6 +203,7 @@ export const LEAF_GROUPS: readonly LeafGroup[] = [
     note: 'What a machine brings with it when someone joins. Their agents have kept transcripts all along; this is how much of that history arrives.',
     leaves: [
       { leaf: 'import.enabled', label: 'Import past sessions on join', kind: 'toggle', note: 'Off means a machine brings nothing, and `myco import` is refused.' },
+      { leaf: 'import.spores_enabled', label: 'Allow spore import', kind: 'toggle', note: 'Off by default. Only admins can import spores and their history from a Myco 1.4 vault.' },
       { leaf: 'import.window_days', label: 'Reach back at most', kind: 'number', min: 1, max: 3650, unit: 'days', note: 'Most agents keep transcripts for about a month, so reaching further back finds more only on machines whose history survived longer.' },
       { leaf: 'import.max_sessions_per_harness', label: 'At most, per agent', kind: 'number', min: 1, max: 1000, unit: 'sessions' },
     ],

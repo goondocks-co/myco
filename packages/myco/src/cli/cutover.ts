@@ -1,6 +1,6 @@
+import { LEGACY_CUTOVER_SCOPE, machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 import { legacyConfirmationHint, legacyMovedNotice } from './legacy-capture.js';
 import { ServerClient } from '@myco/member/transport.js';
-import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 /**
  * `myco cutover` — move retained 1.4 projects to their routed Deployments.
  *
@@ -68,7 +68,7 @@ import { detectMachineInstalledSymbionts, loadManifests } from '../symbionts/det
 import { removeLegacyRegistrations, rewriteKeepingMode, scanLegacyRegistrations, type LegacyFinding } from '../symbionts/legacy-registrations.js';
 import { staleRegistrationWords, staleRegistrationSurface } from '@myco/member/legacy-registration-files.js';
 import { pinMachineHome, previewGlobalProvision, provisionGlobally, type ProvisionOutcome } from './member.js';
-import { legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
+import { legacyPolicySummary, legacyReportLines, reportLines, STOPPED_WORDS, transcriptImportComplete } from './import.js';
 import { resolveManagedBinaryPath } from '../symbionts/installer.js';
 import { completedLegacyVault, readCutoverState, writeCutoverState as writeState } from '@myco/member/legacy-migration.js';
 import { observeLegacyMigration, legacyDestinationEnd } from '@myco/member/legacy-confirmation.js';
@@ -453,6 +453,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       : p.fallback === 'default' ? ' (default Deployment; no repository route)' : '';
     out(`   ${p.projectId} from ${p.vault}: ${dest.kind === 'destination' ? `to ${dest.serverUrl}${fallback}` : dest.kind === 'moved' ? `moved to ${dest.serverUrl}; completion recorded` : dest.kind} (${JSON.stringify(p.counts)})`);
   }
+  out(`   ${LEGACY_CUTOVER_SCOPE}`);
   for (const line of cutover.strayHistory) out(`   ${line}`);
   for (const b of bindings) {
     if (b.kind === 'absent') out(`   ${cutoverAbsentFolder(b.projectId, b.root)}`);
@@ -813,6 +814,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
 
       // 8. The imports.
       step(8, 'Bring each project\'s 1.4 history and transcripts to its Deployment');
+      const importedProjects = new Map<string, LegacyImportReport['projects']>();
       const imported = await withImportInterrupt(deps.signal, async (signal) => {
         const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
         for (const project of cutover.projects) {
@@ -836,7 +838,8 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           };
           if (!resumedVault) {
             const legacy: LegacyImportReport = await runLegacyImport({ sources: [copies.get(project.vault)!], project: project.projectId, serverUrl: dest.serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
-            for (const line of legacyReportLines(legacy, dry)) out(`   ${line}`);
+            for (const line of legacyReportLines(legacy, dry, { policySummary: false })) out(`   ${line}`);
+            importedProjects.set(dest.serverUrl, [...(importedProjects.get(dest.serverUrl) ?? []), ...legacy.projects]);
             const complete = legacy.refused === undefined && legacy.projects.length > 0 && legacy.projects.every(legacyProjectImportComplete);
             if (!dry && receipt !== undefined) {
               const failures = legacy.projects.flatMap((p) => [...p.failures, ...p.refusals].map((what) => ({ what, cause: p.stoppedBy ?? Object.keys(p.causes ?? {})[0] ?? p.endedBy ?? 'fault' })));
@@ -847,7 +850,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             }
             if (legacy.refused !== undefined) { problem(legacy.refused); out(`   ${stoppedByLine(legacy.refused)}`); }
             if (signal.aborted) return false;
-            if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); run the cutover again to retry it`);
+            if (!complete && !dry) problem(`${project.projectId}: the Deployment refused or failed part of the 1.4 history (above); resolve the named refusals or failures before running the cutover again`);
             deleted = legacy.deleted;
           } else {
             deleted = readLegacyVault(copies.get(project.vault)!).filter(source => source.projectId === project.projectId).flatMap(source => legacyDeletedSessionIds(source, machineId));
@@ -906,6 +909,10 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       else {
         out(`   1.4 also watched these plan folders: ${legacyPlanDirs.join(', ')}`);
         out(`   to keep any, add it in ${machineSettingsLocation(deploymentUrl(serverUrl))}`);
+      }
+      for (const [destination, projects] of importedProjects) {
+        const policySummary = legacyPolicySummary(projects);
+        if (policySummary !== null) out(`${destination}: ${policySummary}`);
       }
       out(ok ? 'Cutover complete.' : 'Cutover finished with the problems above; run it again once they are settled.');
       return ok;

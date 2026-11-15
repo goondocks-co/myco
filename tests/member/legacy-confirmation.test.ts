@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { afterEach, beforeEach, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
@@ -165,6 +166,7 @@ for (const allConfirmed of [true, false]) it(`requires every bounded proof batch
 
 for (const receipt of ['backup-only', 'absent'] as const) for (const refused of ['spores', 'lineage', 'plan', 'prompt', 'response', 'title', 'end', 'complete'] as const) it(refused === 'complete' ? `confirms offered records but leaves transcripts pending with an unattached plan: ${receipt}` : `keeps a manual import stopped at ${refused} unconfirmed with ${receipt} receipt`, async () => {
   const rig = await memberRig({ projectId: 'proj_partial' });
+  await settingsWriter(rig.env.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
   const home = path.join(root, 'myco');
   const folder = path.join(root, 'repo');
   const vault = path.join(home, 'groves', 'retained', 'myco.db');

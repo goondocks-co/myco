@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { run as runCutover,type CutoverDeps } from '@myco/cli/cutover.js';
 import { Database } from 'bun:sqlite';
 import { execFileSync } from 'node:child_process';
@@ -63,6 +64,7 @@ export function fakeLaunchctl(loaded: Set<string>, calls: string[][]): Launchctl
 
 export async function machine(opts: { legacyHome?: string } = {}): Promise<Machine> {
   const rig = await memberRig();
+  await settingsWriter(rig.env.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
   const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-cutover-')));
   const legacyHome = opts.legacyHome === undefined ? path.join(home, '.myco') : path.join(home, opts.legacyHome);
   const root = path.join(home, 'Repos', 'app');
@@ -139,6 +141,7 @@ export async function openCutoverProjects(): Promise<CutoverProjects> {
   const m = await machine();
   const heldHome = process.env.HOME; process.env.HOME = m.home;
   const personal = await memberRig({ projectId: HOMELAB_ID });
+  await settingsWriter(personal.env.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
   const homelab = path.join(m.home, 'Repos', 'homelab');
   fs.mkdirSync(homelab, { recursive: true }); execFileSync('git', ['init', '-q', homelab]);
   writeDeploymentMembership({ serverUrl: PERSONAL_URL, token: personal.token, tokenId: personal.tokenId, machineId: TEST_MACHINE_ID, joinedAt: Date.now(), updatedAt: Date.now() }, { mycoHome: m.mycoHome });

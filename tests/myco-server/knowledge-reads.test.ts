@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 /**
  * The Knowledge page's reads (#1535): one plan by its key, the plan board's totals, who wrote a spore, the spore
  * stream's facets under every structured filter, a text filter refused for search, and search leading a spore with
@@ -38,7 +39,7 @@ function harness() {
     const res = await worker.fetch(new Request('https://s/spores/save', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify(body) }), env);
     return await res.json() as Record<string, any>;
   };
-  return { sqlite, plan, tag, spore, get, save, env };
+  return { db: fixture.db, sqlite, plan, tag, spore, get, save, env };
 }
 
 describe('one plan by its key', () => {
@@ -176,12 +177,13 @@ describe('search leads a spore with its line', () => {
 describe('a written spore answers in the shape a write answers', () => {
   it('carries no author kind, written fresh or held already; the reads carry it', async () => {
     const h = harness();
+    await settingsWriter(h.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', NOW);
     const body = { channel: 'import', id: 'sp_written', agentId: 'myco-agent', observationType: 'gotcha', content: 'imported body' };
     const fresh = await h.save(body);
-    expect(fresh).toMatchObject({ persisted: true, spore: { id: 'sp_written' } });
+    expect(fresh).toEqual({ persisted: true, spore: expect.objectContaining({ id: 'sp_written' }) });
     expect(fresh.spore).not.toHaveProperty('authorKind');
     const again = await h.save(body);
-    expect(again).toMatchObject({ persisted: true, duplicate: true, spore: { id: 'sp_written' } });
+    expect(again).toEqual({ persisted: true, duplicate: true, spore: expect.objectContaining({ id: 'sp_written' }) });
     expect(again.spore).not.toHaveProperty('authorKind');
     expect((await h.get('/api/projects/proj_1/spores/sp_written')).body.spore.authorKind).toBe('imported');
   });

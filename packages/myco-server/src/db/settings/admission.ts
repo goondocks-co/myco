@@ -23,6 +23,10 @@ export function leafOffChecks(leaf: string, off: string): { admission: { sql: st
   };
 }
 
+/** A leaf explicitly carrying the enabled value; absence refuses admission. */
+export const leafOnSql = (leaf: string, on: string): string =>
+  `EXISTS (SELECT 1 FROM deployment_settings WHERE leaf = ${leaf} AND value = ${on})`;
+
 /** A Project accepting new intelligence work, with any additional admission bound inside the same read. */
 function projectWorkSql(project: string, admission = ''): string {
   return `EXISTS (SELECT 1 FROM projects capability_project

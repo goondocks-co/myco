@@ -140,6 +140,7 @@ export const DEPLOYMENT_LEAF_SPECS: Readonly<Record<string, LeafSpec>> = {
   // the window and the per-harness cap are applied where a whole pass is
   // visible, which one event is not.
   'import.enabled': BOOLEAN_SPEC,
+  'import.spores_enabled': BOOLEAN_SPEC,
   'import.max_sessions_per_harness': { type: 'integer', min: 1, max: IMPORT_MAX_SESSIONS_MAX },
   'import.window_days': { type: 'integer', min: 1, max: IMPORT_WINDOW_DAYS_MAX },
   'instructions.template': { type: 'markdown', maxBytes: INSTRUCTIONS_TEMPLATE_MAX_BYTES },

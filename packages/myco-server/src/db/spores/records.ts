@@ -1,8 +1,9 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { importEnabledChecks } from '../../core/import-policy.js';
+import { importEnabledChecks, SPORE_IMPORT_ENABLED_LEAF, SPORE_IMPORT_ON } from '../../core/import-policy.js';
 import { MAX_SPORE_LIMIT, type SporeInsert, type SporeRow } from '../../core/spores.js';
 import type { ReadScope } from '../../read/scope.js';
 import { assertion, commitNamed, first, read, refusalCode, refused, rows, write, type Bound } from '../index.js';
+import { leafOnSql } from '../settings/admission.js';
 import { SPORE_COLUMNS, SPORE_READ_COLUMNS } from './browse.js';
 
 /** One spore row: how it is written, repaired from an import, and read back by id. */
@@ -14,9 +15,10 @@ type InsertSlots = [
 
 const importSwitch = importEnabledChecks().admission;
 const IMPORT_DISABLED = refusalCode('spore_import_disabled');
-const importAdmitted = assertion<[leaf: string, off: string]>({ name: 'spores.importAdmitted', refusal: IMPORT_DISABLED, when: importSwitch.sql });
+const importAdmitted = assertion<[leaf: string, off: string, sporesLeaf: string, on: string]>({ name: 'spores.importAdmitted', refusal: IMPORT_DISABLED,
+  when: `${importSwitch.sql} AND ${leafOnSql('?3', '?4')}` });
 /** The assertion an import-channel write commits ahead of itself, stopping that batch while the Deployment has imports switched off. */
-export const importAdmittedAssertion = (): Bound => importAdmitted.bind(importSwitch.params[0] as string, importSwitch.params[1] as string);
+export const importAdmittedAssertion = (): Bound => importAdmitted.bind(importSwitch.params[0] as string, importSwitch.params[1] as string, SPORE_IMPORT_ENABLED_LEAF, SPORE_IMPORT_ON);
 export const importRefused = (error: unknown): boolean => refused(error, IMPORT_DISABLED);
 
 const insertSql = (conflict: string) => `INSERT INTO spores (project_id,id,agent_id,session_id,observation_type,status,content,context,importance,file_path,tags,content_hash,properties,author,provenance_kind,provenance_ref,agent_line,created_at,embedded)
@@ -56,12 +58,7 @@ export const sporeInsertWrite = (scope: ReadScope, row: SporeInsert): Bound<Spor
 export async function insertSpore(db: RelationalStore, scope: ReadScope, row: SporeInsert): Promise<SporeRow | null> {
   const insert = insertUnlessHeld.bind(...insertSlots(scope, row));
   if (row.channel !== 'import') return first(db, insert);
-  try {
-    return (await commitNamed(db, { imported: importAdmittedAssertion(), insert })).insert.results[0] ?? null;
-  } catch (error) {
-    if (importRefused(error)) return null;
-    throw error;
-  }
+  return (await commitNamed(db, { imported: importAdmittedAssertion(), insert })).insert.results[0] ?? null;
 }
 
 export const getSpore = (db: RelationalStore, scope: ReadScope, id: string): Promise<SporeWithSource | null> => first(db, sporeById.bind(scope.projectId, id));
@@ -69,11 +66,7 @@ export const getSpore = (db: RelationalStore, scope: ReadScope, id: string): Pro
 /** Fill absent import provenance only when the original spore and its stored source agree. */
 export async function repairImportedSporeSource(db: RelationalStore, scope: ReadScope, row: Pick<SporeInsert, 'id' | 'author' | 'agentId' | 'content' | 'sessionId'> & { createdAt?: number }): Promise<'restored' | 'kept' | 'pending'> {
   if (row.sessionId === null) return 'restored';
-  try {
-    await commitNamed(db, { imported: importAdmittedAssertion(), repair: repairSource.bind(row.sessionId, scope.projectId, row.id, row.author, row.agentId, row.content, row.createdAt ?? null) });
-  } catch (error) {
-    if (!importRefused(error)) throw error;
-  }
+  await commitNamed(db, { imported: importAdmittedAssertion(), repair: repairSource.bind(row.sessionId, scope.projectId, row.id, row.author, row.agentId, row.content, row.createdAt ?? null) });
   const held = await getSpore(db, scope, row.id);
   if (held?.sessionId === row.sessionId) return 'restored';
   if (held !== null && ((held.sessionId !== null && held.sessionId !== row.sessionId)

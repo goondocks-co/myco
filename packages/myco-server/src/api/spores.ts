@@ -5,7 +5,7 @@ import { getSpore } from '../db/spores/records.js';
 import { listSupersedingSporeIds } from '../db/spores/edges.js';
 import { writeSpore } from '../core/spore-admission.js';
 import { refused } from '../ingest/events.js';
-import { refusal } from '../telemetry.js';
+import { refusal, type Classifier } from '../telemetry.js';
 import { parseJsonObject } from './scope.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
 const parseBody = parseJsonObject;
@@ -21,10 +21,10 @@ async function write(env: ServerEnv, ctx: RouteContext, body: Record<string, unk
     expect_status: body.expectStatus, expect_revision: body.expectRevision,
     channel: body.channel, agent_id: body.agentId, created_at: body.createdAt, status: body.status,
     event_id: body.eventId, context: body.context, file_path: body.filePath, content_hash: body.contentHash, properties: body.properties, importance: body.importance };
-  const outcome = await writeSpore(input, { env, projectId: ctx.projectId, now: ctx.now, saveId: typeof body.id === 'string' ? body.id : undefined, principal: { kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId } }) as Record<string, unknown>;
+  const outcome = await writeSpore(input, { env, projectId: ctx.projectId, now: ctx.now, saveId: typeof body.id === 'string' ? body.id : undefined, principal: { kind: 'member', memberId: ctx.memberId, machineId: ctx.machineId } }) as Record<string, unknown> & { classifier?: Classifier };
   if (outcome.ok === false) {
     if (op !== 'save' && outcome.error === 'spore_id not found') return Response.json({ persisted: true, resolved: false });
-    return Response.json({ ...refused(ctx, refusal(String(outcome.reason ?? outcome.error), outcome.error === 'stale' ? 'stale' : 'invalid_field')),
+    return Response.json({ ...refused(ctx, refusal(String(outcome.reason ?? outcome.error), outcome.classifier ?? (outcome.error === 'stale' ? 'stale' : 'invalid_field'))),
       ...(outcome.status === undefined ? {} : { status: outcome.status, revision: outcome.revision }) });
   }
   if (op !== 'save') return Response.json({ persisted: true, resolved: outcome.resolved !== false, ...(outcome.duplicate ? { duplicate: true } : {}) });
