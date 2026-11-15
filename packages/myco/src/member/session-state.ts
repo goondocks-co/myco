@@ -139,7 +139,7 @@ export interface SessionState {
    * here, written with the hook's own records, until the helper has asked.
    */
   contextAsks?: ContextAsk[];
-  /** Prompt-bound requests, retained only through delivery or explicit discard. */
+  /** Prompt-bound requests and rendered receipts awaiting delivery acknowledgment. */
   promptRecall?: PromptRecall;
   /** A transcript the member helper is to read prompts from (`member/transcript-prompts.ts`), and when it was asked. */
   promptBackfill?: { transcriptPath: string; at: number };

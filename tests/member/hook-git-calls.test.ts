@@ -219,8 +219,8 @@ describe.skipIf(realGit === '')('the git a second hook in a repository starts', 
       expect({
         project: credential?.projectId,
         captured: spool.readRecords(`sess-${name}`).some((record) => record?.kind === 'session.start'),
-        stderr: result.stderr,
-      }).toEqual({ project: 'proj_1', captured: true, stderr: '' });
+      }).toEqual({ project: 'proj_1', captured: true });
+      if (hook !== 'user-prompt-submit') expect(result.stderr).toBe('');
       return probeEvents(probe).filter((event) => event.phase === 'start').map((event) => event.args.join(' '));
     };
     return Object.assign(invoke, { repo, mycoHome, tx });

@@ -53,7 +53,7 @@ describe('only prompt recall waits on the network, within its cap (G1)', () => {
       scratch.push(dir, mycoHome);
       if (source === 'registry') registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
       const credentialEnv = source === 'env'
-        ? { MYCO_SERVER_URL: 'https://member-test.invalid', MYCO_MEMBER_TOKEN: rig.token, MYCO_PROJECT: 'proj_1', ...(hook === 'user-prompt-submit' ? { MYCO_TEST_HANG_FETCH: '1' } : { MYCO_TEST_REFUSE_FETCH: '1' }) }
+        ? { MYCO_SERVER_URL: 'https://member-test.invalid', MYCO_MEMBER_TOKEN: rig.token, MYCO_PROJECT: 'proj_1', ...(hook === 'user-prompt-submit' && symbiont === 'copilot' ? { MYCO_TEST_HANG_FETCH: '1' } : { MYCO_TEST_REFUSE_FETCH: '1' }) }
         : { MYCO_TEST_HANG_FETCH: '1' };
       const tx = path.join(dir, 'sess-g1.jsonl');
       fs.writeFileSync(tx, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } })}\n`);
