@@ -14,7 +14,7 @@ import { RUNNER_OWN_SLOTS } from './runner-harnesses.generated.js';
 
 /** A slot a harness's manifest declares as its own (`runner.credential.slot: own`), named after the harness. */
 type HarnessOwnSlotName = (typeof RUNNER_OWN_SLOTS)[number]['name'];
-export type SecretSlotName = ProviderSlotName | HarnessOwnSlotName;
+export type SecretSlotName = ProviderSlotName | HarnessOwnSlotName | 'single-turn';
 
 export interface SecretSlot {
   name: SecretSlotName;
@@ -30,6 +30,7 @@ export const SECRET_SLOTS: readonly SecretSlot[] = [
   ...RUNNER_OWN_SLOTS.map((slot): SecretSlot => ({ name: slot.name, label: slot.label, alsoUsedFor: null })),
   { name: 'openai', label: 'OpenAI', alsoUsedFor: 'embeddings, when the embedding provider is OpenAI' },
   { name: 'openrouter', label: 'OpenRouter', alsoUsedFor: 'embeddings, when the embedding provider is OpenRouter' },
+  { name: 'single-turn', label: 'Single-turn endpoint', alsoUsedFor: 'direct single-turn model calls to the configured base URL' },
   { name: 'github', label: 'GitHub', alsoUsedFor: null },
 ];
 

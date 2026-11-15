@@ -1,14 +1,8 @@
-/**
- * A session's title and summary, written on the Deployment by a run of the
- * `title-summary` task on the agent harness.
- *
- * The request that ends a session asks for this, and the wake cycle dispatches
- * it once the session has settled; a person asks for it from the dashboard.
- * Dispatch queues work for a worker, which selects its harness, execution profile
- * and login at claim. This module checks material readiness, session ownership
- * and run limits; it does not ask for provider configuration. The run reads its
- * material and writes its answer over the run routes.
- */
+import { projectWorkEnabled } from '../db/settings/admission.js';
+import { beginDirectTitle } from '../db/runs/direct-titles.js';
+import { executeDirectTitle } from './direct-titling.js';
+import { DIRECT_CALLS_PER_MINUTE } from './completion/provider.js';
+/** Session titling admission shared by direct model work and runner work. */
 import {
   TITLING_FRESH_RESERVE_DIVISOR, TITLING_FRESH_WINDOW_MS,
   TITLING_IDLE_CLOSE_MINUTES_DEFAULT, TITLING_REFRESH_MIN_INTERVAL_MS,
@@ -109,7 +103,7 @@ const REFUSAL_OUTCOME: Readonly<Record<DispatchRefusal, TitlingOutcome>> = {
  * `retry` admits one that ended untitled), on an owner's ask (`owner`), or as the renewal of the title of a session still open
  * (`refresh`).
  * Checks that the session's document is published and holds a user prompt,
- * claims the session, then queues its worker run; no material is read here. Resolves with the outcome
+ * then claims it for either a direct completion or a queued runner task. Resolves with the outcome
  * it emitted; never rejects.
  */
 export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: { mode?: TitlingMode; by?: string; actor?: string; ceiling?: ActorCeiling; retry?: boolean; idleBefore?: number } = {}): Promise<TitlingResult> {
@@ -118,13 +112,15 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
   const skipped = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_skipped', projectId, sessionId, outcome, mode }); return { outcome }; };
   const failed = (outcome: TitlingOutcome): TitlingResult => { emit({ kind: 'session_title_failed', projectId, sessionId, outcome, mode }); return { outcome }; };
   try {
+    if (!(await projectWorkEnabled(env.db, projectId))) return skipped('error');
     await assertSessionMaterialReady(env.db, projectId, sessionId);
-    const prepared = await prepareDispatch(env, TITLING_TASK, projectId);
-    if (!prepared.ok) return skipped(REFUSAL_OUTCOME[prepared.refusal]);
+    const provider = await env.completionProvider?.() ?? null;
+    const prepared = provider === null ? await prepareDispatch(env, TITLING_TASK, projectId) : null;
+    if (prepared !== null && !prepared.ok) return skipped(REFUSAL_OUTCOME[prepared.refusal]);
 
     if (!(await sessionHasUserPrompt(env.db, projectId, sessionId))) return skipped('no_material');
 
-    // The claim is the last thing before the launch, so a refusal decided above costs nothing.
+    // Both execution paths hold the same session claim.
     const claim = mode === 'owner'
       ? await claimOwnerTitling(env.db, projectId, sessionId, now, OWNER_TITLING_WINDOW_MS)
       : mode === 'refresh'
@@ -135,7 +131,27 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
       return skipped('already');
     }
     const previous = claim.previous;
+    if (provider !== null) {
+      const releaseUnlaunched = async () => {
+        await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
+        await deferTitleWork(env.db, { projectId, sessionId, mode }, now);
+      };
+      const runId = crypto.randomUUID();
+      try {
+        const admitted = await beginDirectTitle(env.db, { project: projectId, session: sessionId, run: runId, model: provider.model, now, mode, ...(opts.by === undefined ? {} : { by: opts.by }) });
+        if (!admitted) {
+          await releaseUnlaunched();
+          return skipped('ceiling');
+        }
+      } catch (error) {
+        await releaseUnlaunched();
+        throw error;
+      }
+      env.afterResponse(() => executeDirectTitle(env, provider, { project: projectId, session: sessionId, run: runId, stamp: now, previous, mode, ...(opts.by === undefined ? {} : { by: opts.by }) }));
+      return { outcome: 'dispatched', runId };
+    }
 
+    if (prepared === null || !prepared.ok) throw new Error('titling dispatch not prepared');
     const params: TitlingParams = { session_id: sessionId, mode, ...(mode === 'owner' && opts.by !== undefined ? { by: opts.by } : {}) };
     const spec = {
       serverUrl: target.origin,
@@ -178,10 +194,10 @@ export async function titleReadySessions(env: ServerEnv, now: number): Promise<n
   const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
   const requests = await takeTitleRequests(env.db, { now, idleBefore }, SESSION_TITLE_BATCH);
   if (requests.length === 0) return 0;
-  if (env.origin === undefined) throw new Error('Deferred titling requires the Deployment origin to be configured.');
+  if (env.origin === undefined && (await env.completionProvider?.() ?? null) === null) throw new Error('Deferred titling requires the Deployment origin to be configured.');
   let dispatched = 0;
   for (const target of requests) {
-    const result = await titleSession(env, { ...target, now, origin: env.origin });
+    const result = await titleSession(env, { ...target, now, origin: env.origin ?? '' });
     if (result.outcome === 'dispatched' || result.outcome === 'queued') dispatched += 1;
     else if (NO_LONGER_TAKEABLE.has(result.outcome)) await deferTitleWork(env.db, { ...target, mode: 'claim' }, now);
   }
@@ -232,13 +248,14 @@ export async function titlingBackfillPolicy(env: ServerEnv): Promise<TitlingBack
   const leaves = await scheduleLeaves(env);
   const schedule = scheduleFor(TITLING_TASK, TITLING_BACKFILL_SCHEDULE, leaves.overrides);
   const backfillEnabled = schedule.enabled !== false;
+  const direct = await env.completionProvider?.() ?? null;
   return {
     scheduledTasksEnabled: leaves.enabled,
     backfillEnabled,
-    runsPerDay: schedule.maxRunsPerDay ?? null,
-    intervalSeconds: schedule.intervalSeconds,
+    runsPerDay: direct === null ? schedule.maxRunsPerDay ?? null : null,
+    intervalSeconds: direct === null ? schedule.intervalSeconds : 0,
     runIn: schedule.runIn,
-    overlap: schedule.overlap,
+    overlap: direct === null ? schedule.overlap : 'queue',
     enabled: leaves.enabled && backfillEnabled,
   };
 }
@@ -312,10 +329,12 @@ function reportWait(db: RelationalStore, wait: BackfillWait | null, detail: Reco
  */
 export async function backfillTitles(env: ServerEnv, now: number, state: PowerState): Promise<number> {
   const policy = await titlingBackfillPolicy(env);
+  const direct = await env.completionProvider?.() ?? null;
   if (!(policy.runIn as readonly string[]).includes(state)) {
     reportWait(env.db, { reason: 'state', until: null }, { state });
     return 0;
   }
+  if (direct !== null) return backfillDirectTitles(env, now, policy);
   const interval = intervalWait(policy, await deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR), now);
   if (interval !== null) {
     reportWait(env.db, interval);
@@ -393,6 +412,7 @@ function titleWindow(now: number, idleBefore: number, imported: boolean): TitleW
 type TitlingBackfillWait = BackfillWait & { reason: 'interval' | 'overlap' | 'ceiling' | 'reserved' };
 
 export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
+  directCallsPerMinute: number | null;
   /** True while the title work is still being built from existing sessions: `remaining` and `owed` are not yet known and read null, never zero. */
   building: boolean;
   /** Wholly imported sessions still untitled and ready for the backfill; null while `building`. */
@@ -413,21 +433,37 @@ export interface TitlingBackfillProgress extends TitlingBackfillPolicy {
 
 /** Where the backfill stands: its policy, what is left, how the trailing day's runs went, and what the next dispatch waits for. */
 export async function titlingBackfillProgress(env: ServerEnv, now: number): Promise<TitlingBackfillProgress> {
+  const direct = await env.completionProvider?.() ?? null;
+  const actor = direct === null ? TITLING_BACKFILL_ACTOR : DEPLOYMENT_ACTOR;
   const policy = await titlingBackfillPolicy(env);
   const since = now - DAY_MS;
   const share = backlogShare(policy.runsPerDay);
   const [left, usedToday, tally, window, last, backlogWindow, freshOwed] = await Promise.all([
     titleWorkOwed(env.db),
-    deploymentTaskEntriesSince(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
-    deploymentTaskRunTally(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR),
-    policy.runsPerDay === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, policy.runsPerDay),
-    deploymentLastTaskEntryAt(env.db, TITLING_TASK, TITLING_BACKFILL_ACTOR),
-    share === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, TITLING_BACKFILL_ACTOR, share),
+    deploymentTaskEntriesSince(env.db, TITLING_TASK, since, actor),
+    deploymentTaskRunTally(env.db, TITLING_TASK, since, actor),
+    policy.runsPerDay === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, actor, policy.runsPerDay),
+    deploymentLastTaskEntryAt(env.db, TITLING_TASK, actor),
+    share === null ? null : deploymentTaskCeilingWindow(env.db, TITLING_TASK, since, actor, share),
     freshTitleOwed(env.db, now - TITLING_FRESH_WINDOW_MS, policy.enabled),
   ]);
   const waits = (left.live ?? 0) > 0 || (policy.enabled && (left.imported ?? 0) > 0);
   const overlap: BackfillWait | null = policy.overlap === 'skip' && tally.inFlight > 0 ? { reason: 'overlap', until: null } : null;
   const reserved = backlogWindow === null || share === null || freshOwed ? null : ceilingWait({ runsPerDay: share }, backlogWindow, 'reserved');
   const waiting = !waits ? null : ((window === null ? null : ceilingWait(policy, window)) ?? reserved ?? overlap ?? intervalWait(policy, last, now)) as TitlingBackfillWait | null;
-  return { ...policy, building: left.building, remaining: left.imported, owed: left.live, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed, waiting };
+  return { ...policy, ...(direct === null ? {} : { runsPerDay: null }), directCallsPerMinute: direct === null ? null : DIRECT_CALLS_PER_MINUTE, building: left.building, remaining: left.imported, owed: left.live, usedToday, inFlight: tally.inFlight, completedToday: tally.completed, failedToday: tally.failed, waiting };
+}
+
+/** Direct calls retain the capture cohorts and freshness windows; runner rationing applies only to runner work. */
+async function backfillDirectTitles(env: ServerEnv, now: number, policy: TitlingBackfillPolicy): Promise<number> {
+  const idleBefore = now - (await titlingIdleCloseMinutes(env)) * MINUTE_MS;
+  const candidates = await takeTitleCandidates(env.db, titleWindow(now, idleBefore, policy.enabled), TITLING_BACKFILL_BATCH);
+  let dispatched = 0;
+  for (const target of [...candidates.freshClaims, ...candidates.freshRefreshes, ...candidates.backlogClaims].slice(0, TITLING_BACKFILL_BATCH)) {
+    const result = await titleSession(env, { ...target, now, origin: env.origin ?? '' }, { mode: target.mode, retry: true, idleBefore });
+    if (result.outcome === 'dispatched') dispatched++;
+    else if (NO_LONGER_TAKEABLE.has(result.outcome)) await deferTitleWork(env.db, target, now);
+    else if (result.outcome === 'ceiling') break;
+  }
+  return dispatched;
 }

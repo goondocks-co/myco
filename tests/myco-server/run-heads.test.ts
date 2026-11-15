@@ -5,6 +5,7 @@ import { nextClaimable, queueHeads, queuedWaits, readTaskBudgetHolds, recordTask
 import { todayQueued } from '@myco-server-worker/db/runs/now.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { V719_STATEMENTS } from '@myco-server-worker/db/schema-v719.js';
+import { DIRECT_TITLE_STEPS } from '@myco-server-worker/db/schema-steps-direct-titles.js';
 import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { readWorkNow } from '@myco-server-worker/read/work-now.js';
 import { heldBy } from '@myco-server-worker/core/limits.js';
@@ -95,6 +96,7 @@ it('leaves populated admission building until bounded catch-up finishes and tole
     f.sqlite.run("DELETE FROM projection_catchup WHERE projection='run_admission'");
     for (let n = 0; n < 110; n++) f.queue(`q-${String(n).padStart(3, '0')}`, 'manual');
     for (const sql of V719_STATEMENTS) f.sqlite.exec(sql);
+    for (const step of DIRECT_TITLE_STEPS) for (const sql of step.statements) f.sqlite.exec(sql);
     expect(await admissionReady(f.db)).toBe(false);
     expect((await queuedWaits(f.db, { projectId: 'proj_1' }, ['q-000'])).get('q-000'))
       .toMatchObject({ reason: 'queue_building', taskQueued: null, task: 'title-summary' });

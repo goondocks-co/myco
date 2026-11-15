@@ -309,7 +309,7 @@ function TechnicalDetails({ answer, startedBy, took }: {
   const name = useStarterNames();
   // A machine by its name only when the server names it to this viewer, else as its member's; never by its id.
   const machine = ranOn(run.worker, name)?.machine ?? null;
-  const agent = run.harness === null ? null : agentName(run.harness);
+  const agent = run.provider === 'direct' ? 'Myco direct model call' : run.harness === null ? null : agentName(run.harness);
   const cost = run.costUsd ?? run.estimatedCostUsd ?? run.actualCostUsd;
   const tokens = run.tokensUsed === null ? null : `${tokenWords(run.tokensUsed)} tokens`;
 
@@ -331,8 +331,8 @@ function TechnicalDetails({ answer, startedBy, took }: {
             {run.completedAt !== null && <FactRow term="Finished">{dateWords(run.completedAt)}</FactRow>}
             {run.startedAt !== null && <FactRow term="Started">{new Date(run.startedAt).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}</FactRow>}
             {took !== null && <FactRow term="Execution">{took}</FactRow>}
-            <FactRow term="Tokens">{run.tokensUsed === null ? 'None reported' : run.tokensUsed.toLocaleString()}</FactRow>
-            <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}</span></>}</FactRow>
+            <FactRow term="Tokens">{run.tokensUsed === null ? 'None reported' : run.tokensUsed.toLocaleString()}{run.costSource === 'partial' && ' (partial; some request usage is unknown)'}</FactRow>
+            <FactRow term="Cost">{cost === null ? 'Unknown' : <>{dollars(cost)}<span className="block t-meta text-muted">{costProvenanceWords(run.costProvenance)}{run.costSource === 'partial' && '. Includes only requests with reported usage; other request costs are unknown.'}</span></>}</FactRow>
           </FactsPanel>
           {answer.source !== null ? <p className="break-words t-small text-ink-2">Pinned source: {answer.source.branch} @ {answer.source.commit}</p> : (kindOf(run.task) === 'map' || kindOf(run.task) === 'seed') && <p className="t-small text-muted">Source commit was not recorded for this run.</p>}
           {run.status === 'failed' && (run.error !== null || run.errorCode === 'repository_unprepared') && (

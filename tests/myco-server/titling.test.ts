@@ -1,3 +1,11 @@
+import { backfillTitles } from '@myco-server-worker/core/titling.js';
+import { runStaleSweep } from '@myco-server-worker/core/jobs-run.js';
+import { dispatchLoad } from '@myco-server-worker/db/runs/live.js';
+import { CompletionUnavailable, DIRECT_TITLE_BUDGET_MS, DIRECT_TITLE_SETTLEMENT_MS, COMPLETION_ATTEMPTS } from '@myco-server-worker/core/completion/provider.js';
+import { TITLING_MAX_ATTEMPTS } from '@myco-server-worker/constants.js';
+import { DIRECT_CALLS_PER_MINUTE } from '@myco-server-worker/core/completion/provider.js';
+import type { CompletionProvider } from '@myco-server-worker/core/completion/provider.js';
+import { singleTurnMaterial } from '@myco-server-worker/content/single-turn-material.js';
 /**
  * The titling gate: one harness dispatch per ended session, queued for a worker
  * to claim, with the queued row carrying the whole launch the dispatch asked for
@@ -364,5 +372,184 @@ describe('titleSession on an owner\'s ask', () => {
     h.prompt('s2', 'q1', 'one', NOW - 9000);
     h.prompt('s2', 'q2', 'two', NOW - 8000);
     expect((await h.material('s2', 'owner')).map((m) => m.prompt)).toEqual(['one', 'two']);
+  });
+});
+
+
+describe('direct session titles', () => {
+  const answer = { title: 'Shipped bounded session titles', summary: 'Built direct session titling. Verified title and summary persistence.' };
+  function direct(complete: CompletionProvider['complete']) {
+    const h = harness({ bound: false });
+    const pending: Promise<void>[] = [];
+    h.env.completionProvider = async () => ({ model: '@cf/openai/gpt-oss-20b', complete });
+    h.env.afterResponse = work => { pending.push(work()); };
+    h.session('direct');
+    h.prompt('direct', 'opening', 'Read docs/task.md and do it.', NOW - 8000);
+    return { ...h, settle: () => Promise.all(pending) };
+  }
+
+  it('writes a validated title once, records model usage and estimated cost, and leaves later prompts uncovered', async () => {
+    let calls = 0;
+    const h = direct(async () => {
+      calls++;
+      h.prompt('direct', 'later', 'Also cover a new requirement', NOW + 1);
+      await h.convert();
+      return { text: JSON.stringify(answer), usage: { input: 1200, output: 80 } };
+    });
+    const run = await h.title('direct');
+    expect(run.outcome).toBe('dispatched');
+    await h.settle();
+    expect((await h.title('direct', NOW + 2)).outcome).toBe('already');
+    expect(calls).toBe(1);
+    expect(h.row('direct')).toMatchObject(answer);
+    expect(h.runRow(run.runId!)).toMatchObject({ status: 'completed', model: '@cf/openai/gpt-oss-20b', provider: 'direct' });
+    const persisted = h.sqlite.query('SELECT tokens_used,cost_usd,cost_source FROM agent_runs WHERE id=?').get(run.runId!) as { tokens_used: number; cost_usd: number; cost_source: string };
+    expect(persisted.tokens_used).toBe(1280);
+    expect(persisted.cost_usd).toBeGreaterThan(0);
+    expect(persisted.cost_source).toBe('catalogue_estimate');
+    const coverage = h.sqlite.query('SELECT user_prompts,titled_user_prompts FROM session_documents WHERE session_id=?').get('direct');
+    expect(coverage).toEqual({ user_prompts: 2, titled_user_prompts: 1 });
+    h.sqlite.close();
+  });
+
+  it('retries an invalid answer once, stores a named failure after two, then remains eligible', async () => {
+    let valid = false;
+    const h = direct(async () => ({ text: valid ? JSON.stringify(answer) : '{"title":"bad"}', usage: { input: 40, output: 10 } }));
+    const first = await h.title('direct');
+    await h.settle();
+    expect(h.row('direct')).toEqual({ ...untouched, titled_at: NOW });
+    expect(h.runRow(first.runId!)).toMatchObject({ status: 'failed', error: 'completion_invalid_answer' });
+    valid = true;
+    expect((await h.title('direct', NOW + 1)).outcome).toBe('already');
+    const next = await titleSession(h.env, { projectId: 'proj_1', sessionId: 'direct', now: NOW + OWNER_TITLING_WINDOW_MS + 1, origin: ORIGIN }, { retry: true });
+    await h.settle();
+    expect(next.outcome).toBe('dispatched');
+    expect(h.row('direct')).toMatchObject(answer);
+    h.sqlite.close();
+  });
+
+  it('protects the provider across retries and leaves rate-limited sessions eligible', async () => {
+    let calls = 0;
+    const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
+    for (let i = 0; i <= DIRECT_CALLS_PER_MINUTE; i++) {
+      const id = 'rate-' + i; h.session(id); h.prompt(id, 'prompt-' + i, 'Title this work', NOW - 1);
+      await h.title(id, NOW + i); await h.settle();
+    }
+    expect(calls).toBe(DIRECT_CALLS_PER_MINUTE);
+    expect(h.runRows().some(run => run.error === 'completion_rate_limited')).toBe(true);
+    expect(h.row('rate-' + DIRECT_CALLS_PER_MINUTE)).toEqual(untouched);
+    h.sqlite.close();
+  });
+
+
+  it('bounds repeated failures over ticks and titles a healthy session behind failing ones', async () => {
+    let calls = 0;
+    const h = direct(async request => {
+      calls++;
+      return { text: request.messages[1]!.content.includes('poison') ? '{}' : JSON.stringify(answer), usage: { input: 40, output: 10 } };
+    });
+    for (let i = 0; i < 5; i++) { h.session('poison-' + i, { endedAt: NOW + i + 1 }); h.prompt('poison-' + i, 'bad-' + i, 'poison', NOW - 100); }
+    await h.convert();
+    for (const at of [NOW + 10, NOW + 61_010, NOW + OWNER_TITLING_WINDOW_MS + 61_010, NOW + 2 * OWNER_TITLING_WINDOW_MS + 122_010]) {
+      await backfillTitles(h.env, at, 'active'); await h.settle();
+    }
+    expect(h.row('direct')).toMatchObject(answer);
+    const attempts = h.sqlite.query('SELECT titling_attempts FROM sessions WHERE session_id=?').get('poison-0') as { titling_attempts: number };
+    expect(attempts.titling_attempts).toBe(TITLING_MAX_ATTEMPTS);
+    expect(calls).toBeLessThanOrEqual(5 * TITLING_MAX_ATTEMPTS * COMPLETION_ATTEMPTS + 1);
+    const spent = calls;
+    await backfillTitles(h.env, NOW + 4 * OWNER_TITLING_WINDOW_MS, 'active'); await h.settle();
+    expect(calls).toBe(spent);
+    h.sqlite.close();
+  });
+
+  it('bounds unreadable material attempts and titles an older healthy session behind them', async () => {
+    let calls = 0;
+    const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
+    await h.convert();
+    const readable = new Set(h.bucket.objects.keys());
+    const broken = Array.from({ length: 30 }, (_, i) => 'broken-' + i);
+    for (const [i, id] of broken.entries()) {
+      h.session(id, { endedAt: NOW + i + 1 });
+      h.prompt(id, 'prompt-' + id, 'Unreadable work ' + i, NOW - 100 + i);
+    }
+    await h.convert();
+    h.env.blobs = { ...h.env.blobs, get: async (key, options) => {
+      if (!readable.has(key)) throw new Error('document storage unavailable');
+      return h.bucket.get(key, options);
+    } };
+    for (let tick = 0; tick < 60; tick++) {
+      await backfillTitles(h.env, NOW + 60_000 * tick, 'idle'); await h.settle();
+    }
+    expect(h.row('direct')).toMatchObject(answer);
+    expect(calls).toBe(1);
+    expect(h.runRows().filter(run => run.error === 'title_material_or_write_failed').length).toBeLessThanOrEqual(broken.length * TITLING_MAX_ATTEMPTS);
+    for (const id of broken) {
+      const row = h.sqlite.query('SELECT titling_attempts FROM sessions WHERE session_id=?').get(id) as { titling_attempts: number };
+      expect(row.titling_attempts).toBe(TITLING_MAX_ATTEMPTS);
+    }
+    h.sqlite.close();
+  });
+
+  it('closes abandoned direct work without reserving runner capacity', async () => {
+    const h = direct(async () => { throw new Error('not called'); });
+    h.env.afterResponse = () => {};
+    const run = await h.title('direct');
+    expect(await dispatchLoad(h.env.db, TITLING_TASK, NOW)).toMatchObject({ liveRuns: 0, liveTaskRuns: 0, taskRunsLastHour: 0 });
+    await runStaleSweep(h.env, NOW + DIRECT_TITLE_BUDGET_MS + DIRECT_TITLE_SETTLEMENT_MS + 1);
+    expect(h.runRow(run.runId!)).toMatchObject({ status: 'failed', error: 'The direct model call did not settle before its deadline' });
+    const retry = await titleSession(h.env, { projectId: 'proj_1', sessionId: 'direct', now: NOW + OWNER_TITLING_WINDOW_MS + 1, origin: ORIGIN }, { retry: true });
+    expect(retry.outcome).toBe('dispatched');
+    h.sqlite.close();
+  });
+
+  it('does not send archived project material to a provider', async () => {
+    let calls = 0;
+    const h = direct(async () => { calls++; return { text: JSON.stringify(answer), usage: null }; });
+    h.sqlite.run('UPDATE projects SET archived_at=? WHERE project_id=?', [NOW, 'proj_1']);
+    expect((await h.title('direct')).outcome).toBe('error');
+    await h.settle();
+    expect(calls).toBe(0);
+    expect(h.runRows()).toEqual([]);
+    h.sqlite.close();
+  });
+
+  it('retains known spend when a validation retry cannot report usage', async () => {
+    let calls = 0;
+    const h = direct(async () => {
+      if (calls++ > 0) throw new CompletionUnavailable('unreachable');
+      return { text: '{}', usage: { input: 100, output: 20 } };
+    });
+    const run = await h.title('direct'); await h.settle();
+    const observed = h.sqlite.query('SELECT tokens_used,cost_usd,cost_source FROM agent_runs WHERE id=?').get(run.runId!) as { tokens_used: number; cost_usd: number; cost_source: string };
+    expect(observed.tokens_used).toBe(120);
+    expect(observed.cost_usd).toBeGreaterThan(0);
+    expect(observed.cost_source).toBe('partial');
+    h.sqlite.close();
+  });
+
+  it('uses the head and tail, final replies and the stored task-file read rather than harness notices', async () => {
+    const h = direct(async () => ({ text: JSON.stringify(answer), usage: null }));
+    h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1','read-task','direct','tok_1','tool.use','cli',?,'hash',?,?)",
+      [JSON.stringify({ toolCallId: 'read-task', promptId: 'opening', toolName: 'Read', input: { file_path: '/work/docs/task.md' }, output: 'Build direct session titles with bounded calls.', success: true }), NOW - 7900, NOW - 7900]);
+    for (const [id, toolName, input] of [['shell', 'Bash', { command: 'env | head' }], ['unrelated', 'Read', { file_path: '/work/docs/other-task.md' }]] as const) {
+      h.sqlite.run("INSERT INTO events(project_id,event_id,session_id,token_id,kind,channel,payload,envelope_hash,created_at,received_at) VALUES('proj_1',?,'direct','tok_1','tool.use','cli',?,'hash',?,?)",
+        [id, JSON.stringify({ toolCallId: id, promptId: 'opening', toolName, input, output: 'DO NOT SEND UNRELATED OUTPUT', success: true }), NOW - 7950, NOW - 7950]);
+    }
+    for (let i = 0; i < 14; i++) {
+      h.prompt('direct', 'turn-' + i, 'Human requirement ' + i, NOW - 7000 + i * 10);
+      h.response('direct', 'turn-' + i, 'early-' + i, 'I will investigate.', NOW - 6999 + i * 10);
+      h.response('direct', 'turn-' + i, 'closing-' + i, 'Completed requirement ' + i, NOW - 6998 + i * 10);
+    }
+    h.prompt('direct', 'notice', 'DO NOT TREAT AS HUMAN', NOW - 1, 'system');
+    await h.convert();
+    const material = await singleTurnMaterial(h.env, 'proj_1', 'direct');
+    expect(material.text).toContain('Human requirement 13');
+    expect(material.text).toContain('Completed requirement 13');
+    expect(material.text).toContain('Build direct session titles');
+    expect(material.text).not.toContain('DO NOT TREAT AS HUMAN');
+    expect(material.text).not.toContain('DO NOT SEND UNRELATED OUTPUT');
+    expect(material.text.length).toBeLessThanOrEqual(10000);
+    h.sqlite.close();
   });
 });

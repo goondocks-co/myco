@@ -1,3 +1,4 @@
+import { configuredCompletionProvider } from '../../core/completion/configured-provider.js';
 /**
  * The self-hosted adapter: a SQLite file and a mounted volume in, `ServerEnv` out.
  *
@@ -97,6 +98,7 @@ export function serverEnvFromBunConfig(config: BunServerConfig): BunServerEnv {
   const pending = new Set<Promise<void>>();
   return {
     vectors: sqliteVectorStore(config.sqlite, config.native?.vec0),
+    completionProvider: () => configuredCompletionProvider(db, wrappingKey, fetch, { target: 'bun' }),
     embeddingProvider: () => configuredEmbeddingProvider(db, wrappingKey, fetch, BUN_EMBEDDING_PLATFORM),
     embeddingProviderFor: (choice) => embeddingProviderFor(db, wrappingKey, fetch, BUN_EMBEDDING_PLATFORM, choice),
     embeddingPlatform: BUN_EMBEDDING_PLATFORM,

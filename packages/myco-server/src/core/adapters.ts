@@ -271,6 +271,7 @@ export interface JobBudget {
  * one target's binding shape.
  */
 export interface ServerEnv {
+  completionProvider?: () => Promise<import('./completion/provider.js').CompletionProvider | null>;
   vectors?: VectorStore;
   embeddingProvider?: () => Promise<EmbeddingProvider | null>;
   /** The provider a named embedding choice resolves to on this Deployment, or why it cannot compute vectors here now. */

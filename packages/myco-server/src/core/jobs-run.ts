@@ -1,3 +1,4 @@
+import { isDirectRunContext } from './run-deadline.js';
 import { pruneExpiredReservations } from '../db/context/reservations.js';
 import { CARDS_PENDING_HOLD } from '@goondocks/myco-shared/run-holds';
 import { RUN_FAILURE_WORDS } from '@goondocks/myco-shared/run-control';
@@ -205,7 +206,8 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
   for (const run of await listLiveRunsAcrossProjects(env.db, JOB_BATCH)) {
     if (run.startedAt === null || now < staleAfter(run.startedAt, run.runContext)) continue;
     const scope = { projectId: run.projectId };
-    if (!(await failStaleRun(env.db, scope, run.id, now, STALE_RUN_ERROR, 'machine_unresponsive'))) continue;
+    const direct = isDirectRunContext(run.runContext);
+    if (!(await failStaleRun(env.db, scope, run.id, now, direct ? 'The direct model call did not settle before its deadline' : STALE_RUN_ERROR, direct ? 'run_failed' : 'machine_unresponsive'))) continue;
     await releaseRun(env, scope, run, now, { drain: false });
     changed += 1;
   }

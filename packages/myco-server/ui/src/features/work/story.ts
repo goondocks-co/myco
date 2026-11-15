@@ -186,6 +186,10 @@ export function inferredEnd(code: string | null | undefined): boolean {
  */
 export function runStory({ answer, calls, callsComplete, steps, startedBy, cause, memberName, now }: StoryInput): StoryRow[] {
   const { run } = answer;
+  if (run.provider === 'direct') return [
+    ...(run.startedAt === null ? [] : [row({ key: 'direct-started', at: run.startedAt, words: 'Myco called the model directly', source: 'saw', note: run.model })]),
+    ...(run.completedAt === null ? [] : [row({ key: 'direct-ended', at: run.completedAt, words: run.status === 'completed' ? 'Wrote the session title and summary' : 'The direct model call failed', source: 'saw', tone: run.status === 'completed' ? 'good' : 'bad' })]),
+  ];
   const timed: StoryRow[] = [];
   if (run.queuedAt !== null) timed.push(row({ key: 'queued', at: run.queuedAt, words: startedBy === null ? 'Queued' : `Queued, ${startedBy}`, source: 'saw' }));
   const claims = claimRows(answer.attempts, answer.attemptCount, memberName);
@@ -371,6 +375,10 @@ function examinedWords(reports: readonly RunReport[]): string | null {
 /** Asked versus evidence: model, effort, material, the prompts Myco served and what the agent says it examined, and the evidence the task owes. */
 export function askedRows(answer: RunDetailAnswer): AskedRow[] {
   const { run, read, outcomeEvidence } = answer;
+  if (run.provider === 'direct') return [
+    { key: 'model', label: 'Model', asked: run.model ?? 'Not configured', evidence: run.model ?? 'Not recorded', source: 'saw', tone: null },
+    { key: 'output', label: 'Output', asked: 'Session title and summary', evidence: run.result === 'produced' ? 'Stored the validated title and summary' : run.status === 'failed' ? 'No title saved' : 'In progress', source: 'saw', tone: run.status === 'failed' ? 'bad' : null },
+  ];
   const rows: AskedRow[] = [];
   const live = run.status === 'queued' || run.status === 'running' || run.status === 'claimed';
   const identity = run.identity;

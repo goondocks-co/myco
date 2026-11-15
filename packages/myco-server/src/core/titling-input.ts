@@ -46,6 +46,12 @@ export function titlingPrompt(sessionId: string, mode: TitlingMode): string {
     '2. Call `myco_run_sessions` op "title" with BOTH `title` and `summary`. The run may write only this session, so no session argument is needed.',
     `3. Close by calling \`myco_run\` op "report": after a write that took, action "${TITLING_REPORT_ACTION}" with a one-line \`summary\` of what you wrote and \`details\` as a serialized JSON object string such as "{\\"updated\\":1}"; when the write was refused, action "${RUN_SKIP_ACTION}" with the refusal in \`summary\`. ${RUN_AUDIT_INSTRUCTION}`,
     '',
+    TITLING_RULES,
+  ].join('\n');
+}
+
+/** Editorial rules shared by direct completions and runner tasks. */
+export const TITLING_RULES = [
     '## Title rules',
     '',
     'The title says WHAT WAS ACCOMPLISHED, not what was asked.',
@@ -64,5 +70,5 @@ export function titlingPrompt(sessionId: string, mode: TitlingMode): string {
     '## Summary rules',
     '',
     `2 to 4 sentences, under ${SUMMARY_MAX_CHARS} characters. Rich in detail: summaries are embedded and searched, so name what was built or fixed, the key files touched, the tools used and the outcome. Cover the FULL arc of the session, not one prompt.`,
-  ].join('\n');
-}
+  'State only what the session shows. If the outcome is still in progress, say so. Do not discuss what was or was not captured.',
+].join('\n');

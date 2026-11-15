@@ -1,3 +1,4 @@
+import { configuredCompletionProvider } from '@myco-server-worker/core/completion/configured-provider.js';
 import ts from 'typescript-v6';
 /**
  * The settings contract: every live Deployment and machine leaf is bound to a policy whose consumer a production
@@ -107,6 +108,7 @@ function rigFor(target: DeploymentTarget): Rig {
   const { sqlite, env: base } = target === 'cloudflare' ? hosted() : selfHosted();
   const env = { ...base, origin: ORIGIN, recovery, harnessLaunch: async () => {} } as unknown as ServerEnv;
   const server = createServer({ now: () => Date.now(), sourceOf: () => '1.2.3.4', fetchImpl: fetch });
+  env.completionProvider = async () => null;
   const rig: Rig = { target, env, sqlite, prunes, fetch: (request) => server.handleRequest(request, env) };
   seedWorld(rig);
   return rig;
@@ -140,7 +142,7 @@ interface Consumer { module: string; fn: (...args: never[]) => unknown; member?:
 
 /** One leaf's behavior case. */
 interface BehaviorCase {
-  consumer: Consumer;
+  consumer?: Consumer;
   /** A value its rule admits on the target, distinct from the default the consumer applies. */
   value: (target: DeploymentTarget) => unknown;
   /** A value its rule refuses. */
@@ -377,6 +379,14 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   'import.enabled': { consumer: at('api/import.ts', handleImportPlan), value: () => false, invalid: () => 0, observe: importPlan },
   'import.window_days': { consumer: at('api/import.ts', handleImportPlan), value: () => 7, invalid: () => 2.5, observe: importPlan },
   'import.max_sessions_per_harness': { consumer: at('api/import.ts', handleImportPlan), value: () => 1, invalid: () => 1.5, observe: importPlan },
+  'single_turn.model': {
+    setup: () => [['single_turn.base_url', 'https://models.internal/v1']],
+    value: () => 'local-title-model', invalid: () => '', observe: (r) => completionObservation(r, 'model'),
+  },
+  'single_turn.base_url': {
+    setup: () => [['single_turn.model', 'local-title-model']],
+    value: () => 'https://models.internal/v1', invalid: () => 'not a url', observe: (r) => completionObservation(r, 'url'),
+  },
   'embedding.provider': {
     consumer: at('core/embedding/configured-provider.ts', configuredEmbeddingProvider),
     value: (target) => target === 'cloudflare' ? 'openrouter' : 'ollama', invalid: (target) => target === 'cloudflare' ? 'ollama' : 'nope',
@@ -480,6 +490,7 @@ describe('the settings contract', () => {
 
   it('reaches every consumer from a production entry without passing through the policy registry', async () => {
     for (const [leaf, { consumer }] of Object.entries(CASES)) {
+      if (consumer === undefined) continue;
       const file = path.join(SERVER_SRC, consumer.module);
       const exported = await import(file) as Record<string, unknown>;
       const handles = Object.values(exported).flatMap((member) => typeof member === 'object' && member !== null ? Object.values(member) : [member]);
@@ -731,3 +742,15 @@ describe('machine leaves', () => {
     });
   }
 });
+
+
+async function completionObservation(r: Rig, field: 'model' | 'url'): Promise<unknown> {
+  let url: string | null = null;
+  const provider = await configuredCompletionProvider(r.env.db, r.env.wrappingKey, async (input, init) => {
+    url = String(input);
+    return Response.json({ choices: [{ message: { content: JSON.parse(String(init?.body)).model } }] });
+  }, { target: r.target, bindingProvider: model => ({ model, complete: async () => ({ text: model, usage: null }) }) });
+  if (provider === null) return null;
+  const answer = await provider.complete({ messages: [{ role: 'user', content: 'Title this session' }] });
+  return field === 'model' ? answer.text : url;
+}

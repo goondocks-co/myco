@@ -957,7 +957,8 @@
     "tests/utils/order-stamp.test.ts": 149,
     "tests/utils/repository-name.test.ts": 514,
     "tests/utils/windows-atomic-replace.test.ts": 52,
-    "tests/myco-server/learning-window-migration.test.ts": 25000
+    "tests/myco-server/learning-window-migration.test.ts": 25000,
+    "tests/myco-server/completion.test.ts": 4000
   },
   "parity": {
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
@@ -1053,7 +1054,8 @@
     "worker writes: required state and responses commit together under late authority loss": 232000,
     "working now: a prompt opens the turn past the answer, an older end leaves it open, its own end closes it": 9000,
     "event intake: a large prompt is readable in full and a replay lands once": 12000,
-    "request bodies: a body near the cap is stored whole and a streamed body past it is refused, on the Worker as on Bun": 6000
+    "request bodies: a body near the cap is stored whole and a streamed body past it is refused, on the Worker as on Bun": 6000,
+    "direct titles: configured model writes and records a session title without a runner": 15000
   },
   "jobs": {
     "hook-startup": {
