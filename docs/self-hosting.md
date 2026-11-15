@@ -57,7 +57,7 @@ myco server setup-owner --target local
 myco server install --target local
 ```
 
-`create` prepares storage and generates keys. `github-app` opens GitHub to register the dashboard's sign-in app; confirm there and return to the terminal. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in.
+`create` prepares storage and generates keys. `github-app` opens GitHub to register the dashboard's sign-in app; confirm there and return to the terminal. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in. Run `create` before `install`; a home without a created Deployment is refused with `create` as the next step.
 
 After the server starts, open the private link, sign in with GitHub, check the account and choose **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become the administrator.
 

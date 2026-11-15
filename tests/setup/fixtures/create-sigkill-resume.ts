@@ -58,7 +58,7 @@ export async function resumeCreateAfterSigkill(target: 'cloudflare' | 'local', b
     expect(resumed.totalConversions).toBe(1);
     expect(peekDeploymentRecord(childHome)).toMatchObject({ versionId: expect.any(String), url: HOSTED_URL });
     const deployed = JSON.parse(fs.readFileSync(providerFile, 'utf8')).deployments;
-    expect(deployed.at(-1)?.origin).toBe(HOSTED_URL);
+    expect(deployed.map((deployment: { origin: string | null }) => deployment.origin)).toEqual([null, HOSTED_URL]);
     if (record?.versionId && record.url) expect(deployed).toEqual(deployedBefore);
     expect(fs.existsSync(path.join(childHome, 'server/cloudflare/sign-in-pending.json'))).toBe(false);
   }

@@ -258,7 +258,9 @@ export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptio
       else {
         const status = statusOfService(spec, { ...options, runner, inspectMissing: true });
         if (!status.loaded && !status.running && status.detail === UNIT_NOT_HELD) return;
-        throw new Error(result.error?.message ?? (result.status === 0 ? 'the platform reports no readable registration for a service it still holds' : `registration query exited ${result.status}`));
+        const stop = platform === 'linux' && status.running
+          ? `; stop it with ${commandLine(['systemctl', '--user', 'stop', `${spec.unit.unitName}.service`], 'posix')} before retrying` : '';
+        throw new Error(result.error?.message ?? (result.status === 0 ? `the platform reports no readable registration for a service it still holds${stop}` : `registration query exited ${result.status}`));
       }
     }
   } catch (cause) {

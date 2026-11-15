@@ -161,7 +161,7 @@ describe('new owner journeys (a) and (b)', () => {
     expect(errors.at(-1)).toBe(`myco setup: deployment.signin (${HOSTED_URL}) unavailable: ${HOSTED_URL} did not answer: fixture sign-in unavailable. Restore access, then run myco setup again.`);
     expect(peekDeploymentRecord(home)).toEqual(record);
     expect(server.deployments).toEqual(deployed);
-    expect(server.deployments.at(-1)?.origin).toBe(HOSTED_URL);
+    expect(server.deployments.map(deployment => deployment.origin)).toEqual([null, HOSTED_URL]);
     expect(server.github.calls).toHaveLength(0);
   });
 

@@ -290,7 +290,7 @@ describe('new owner journeys (a) and (b)', () => {
     const vectorCreates = server.commands.filter(command => command.startsWith('vectorize create '));
     const resumed = await run(['--yes'], deps);
     expect({ code: resumed, errors }).toMatchObject({ code: 0 });
-    expect(server.deployments.at(-1)?.origin).toBe(HOSTED_URL);
+    expect(server.deployments.map(deployment => deployment.origin)).toEqual([null, HOSTED_URL]);
     expect(server.commands.filter(command => command.startsWith('d1 create '))).toEqual(databaseCreates);
     if (vectorCreates.length > 0) expect(server.commands.filter(command => command.startsWith('vectorize create '))).toEqual(vectorCreates);
     expect(peekDeploymentRecord(home)).toMatchObject({ url: HOSTED_URL, versionId: expect.any(String) });

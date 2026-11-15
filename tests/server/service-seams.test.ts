@@ -68,6 +68,12 @@ for (const target of ['darwin', 'linux', 'win32'] as const) for (const legacy of
     expect(installService(owner, options).running).toBe(true);
     expect(platform.running.has(name)).toBe(true);
     fs.rmSync(servicePaths(owner, target).unitFile);
+    if (target === 'linux') {
+      platform.loaded.delete(name);
+      expect(() => installService(owner, options)).toThrow('stop it with systemctl --user stop myco-server.service before retrying');
+      expect(platform.running.has(name)).toBe(true);
+      platform.loaded.add(name);
+    }
     readFailure = new Error('registration query timed out');
     expect(() => installService(owner, options)).toThrow('ownership could not be read (registration query timed out)');
     try { installService(owner, options); } catch (error) {
