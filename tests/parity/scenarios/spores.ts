@@ -10,7 +10,9 @@ import { expectPersisted, type ParityScenario, type ParityTarget } from '../harn
  * session, a supersede reads as lineage in both
  * directions through the tool and through the owner route, and the record of
  * what a prompt was served reaches the session explorer under the prompt that
- * carried it, and a session's spores page by cursor past writes between pages.
+ * carried it, a session's spores page by cursor past writes between pages, and
+ * a person retires and restores a spore through the owner routes at the revision
+ * the page read.
  */
 export const spores: ParityScenario = {
   name: 'spores: session citation on a save, lineage both ways, the injection under its turn',
@@ -124,6 +126,22 @@ export const spores: ParityScenario = {
       const across = await owner<SporePage & { facets?: { project: Record<string, number> } }>(`/api/spores?project=${target.projectId}&limit=1`);
       expect([across.body.total, across.body.facets?.project[target.projectId]]).toEqual([projectList.body.spores.length, projectList.body.spores.length]);
       expect((await owner(`/api/projects/${target.projectId}/spores?q=seeded`)).status).toBe(400);
+
+      // A person retires a current spore with a reason and restores it, each at the revision the page read; a replaced spore is not restored.
+      type Article = { spore: { status: string; revision: number }; resolution: { action: string; reason: string | null } | null };
+      const change = async (id: string, action: 'retire' | 'restore', body: Record<string, unknown>) => {
+        const res = await fetch(`${target.url}/api/projects/${target.projectId}/spores/${id}/${action}`, {
+          method: 'POST', headers: { ...target.ownerHeaders(), origin: target.url, 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        return { status: res.status, body: (await res.json()) as Article & { error?: string } };
+      };
+      const shown = (await owner<Article>(`/api/projects/${target.projectId}/spores/${newId}`)).body.spore.revision;
+      const retired = await change(newId, 'retire', { reason: 'The window moved', revision: shown });
+      expect([retired.status, retired.body.spore.status, retired.body.resolution?.action, retired.body.resolution?.reason]).toEqual([200, 'obsolete', 'obsolete', 'The window moved']);
+      expect([(await change(newId, 'restore', { revision: shown })).body.error, (await change(oldId, 'restore', { revision: older.revision })).body.error])
+        .toEqual(['spore_changed', 'spore_replaced']);
+      const restored = await change(newId, 'restore', { revision: retired.body.spore.revision });
+      expect([restored.status, restored.body.spore.status, restored.body.resolution?.action]).toEqual([200, 'active', 'restore']);
     });
   },
 };

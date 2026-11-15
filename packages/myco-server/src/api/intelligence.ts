@@ -19,11 +19,12 @@ import { badRequest, instantParam, notFound, ok, resolveProjectScope } from './s
 import { listSporePage, sporeListWindow } from '../core/spores.js';
 import { getSpore } from '../db/spores/records.js';
 import { listSupersededSporeIds, listSupersedingSporeIds } from '../db/spores/edges.js';
+import { latestSporeResolution } from '../db/spores/resolutions.js';
 import { getRun } from '../db/runs/lifecycle.js';
 import { TASK_WORDS, type RetainedTask } from '../core/task-catalogue.js';
 import { searchRepairRefusal } from '../core/search-repair.js';
 import { canonicalNamespace, decodeReleaseStatesCursor, listReleaseStates } from '../core/provenance.js';
-import { decodeCursor } from '../read/scope.js';
+import { decodeCursor, type ReadScope } from '../read/scope.js';
 
 /** The largest page this surface serves, whatever a caller asks for. */
 export const MAX_PAGE = 200;
@@ -82,22 +83,29 @@ export async function handleProjectSpores(env: ServerEnv, ctx: OwnerContext): Pr
 
 /**
  * One spore and its lineage in both directions, so a reader sees a retired spore's replacement rather than a dead end, and a
- * replacement what it grew out of; with the name of the task whose run wrote it, when a run did.
+ * replacement what it grew out of; its newest lifecycle event, naming who moved it, when and why; and the name of the task whose
+ * run wrote it, when a run did. Null for a spore the Project does not hold.
  */
-export async function handleProjectSpore(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  const scope = await scopeOf(env, ctx);
-  if (scope === null) return notFound();
-  const spore = await getSpore(env.db, scope, ctx.params.sporeId ?? '');
-  if (spore === null) return notFound();
-  const [supersededBy, supersedes, authorRun] = await Promise.all([
+export async function sporeArticle(env: ServerEnv, scope: ReadScope, sporeId: string) {
+  const spore = await getSpore(env.db, scope, sporeId);
+  if (spore === null) return null;
+  const [supersededBy, supersedes, resolution, authorRun] = await Promise.all([
     listSupersedingSporeIds(env.db, scope, spore.id),
     listSupersededSporeIds(env.db, scope, spore.id),
+    latestSporeResolution(env.db, scope, spore.id),
     spore.authorKind === 'run' && spore.author !== null ? getRun(env.db, scope, spore.author) : null,
   ]);
   // The task of the run that wrote it, by its catalogue name, so the reader is told what Myco was reading; null when no run names one.
   const task = authorRun?.task ?? null;
   const authorTask = task !== null && Object.hasOwn(TASK_WORDS, task) ? TASK_WORDS[task as RetainedTask].name : null;
-  return ok({ spore, supersededBy, supersedes, authorTask });
+  return { spore, supersededBy, supersedes, resolution, authorTask };
+}
+
+export async function handleProjectSpore(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
+  const scope = await scopeOf(env, ctx);
+  if (scope === null) return notFound();
+  const article = await sporeArticle(env, scope, ctx.params.sporeId ?? '');
+  return article === null ? notFound() : ok(article);
 }
 
 export async function handleProjectReleaseStates(env: ServerEnv, ctx: OwnerContext): Promise<Response> {

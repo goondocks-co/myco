@@ -131,6 +131,8 @@
   "session:admin POST /api/projects/{projectId}/sessions/{sessionId}/end",
   "session:admin POST /api/projects/{projectId}/sessions/{sessionId}/title",
   "session:admin POST /api/projects/{projectId}/sessions/{sessionId}/tombstone",
+  "session:admin POST /api/projects/{projectId}/spores/{sporeId}/restore",
+  "session:admin POST /api/projects/{projectId}/spores/{sporeId}/retire",
   "session:admin POST /api/projects/{projectId}/unarchive",
   "session:admin POST /api/raw-claims",
   "session:admin POST /api/recovery/exports",

@@ -17,6 +17,8 @@ export interface SporeFields {
   sessionId: string | null;
   observationType: string;
   status: string;
+  /** Moves with every change of status; a retirement or restore names the revision the page read. */
+  revision: number;
   content: string;
   context: string | null;
   importance: number;
@@ -57,13 +59,25 @@ export interface SporeStreamPage {
   readonly facets?: SporeFacets;
 }
 
-/** One spore with its lineage both ways, as `GET /api/projects/{p}/spores/{id}` answers. */
+/** A spore's newest change of status: what moved it, who did, when, why when they said, and what took its place when something did. */
+export interface SporeResolutionFields {
+  action: string;
+  author: string | null;
+  authorKind: 'run' | 'member' | 'imported' | 'grant' | null;
+  reason: string | null;
+  newSporeId: string | null;
+  createdAt: number;
+}
+
+/** One spore with its lineage both ways, as `GET /api/projects/{p}/spores/{id}` answers, and as a retirement or restore answers with the spore afterwards. */
 export interface SporeArticleAnswer {
   spore: SporeFields & { sourceCreatedAt: number | null };
   /** The spores recorded as replacing this one, newest first. */
   supersededBy: string[];
   /** The spores this one replaced, newest first. */
   supersedes: string[];
+  /** Its newest change of status, or null for a spore that never moved. */
+  resolution: SporeResolutionFields | null;
   /** The name of the task whose run wrote it, or null when no run did or the run names no task Myco still serves. */
   authorTask: string | null;
 }

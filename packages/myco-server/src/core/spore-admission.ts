@@ -5,7 +5,7 @@ import { curationChangedReason } from '../db/spores/curation-run.js';
 import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
 import { SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus } from './spores.js';
-import { consolidateSpores, resolveSpore, type SporeExpectation } from '../db/spores/lifecycle.js';
+import { consolidateSpores, resolveSpore, restoreSpore, type ResolveOutcome, type SporeExpectation } from '../db/spores/lifecycle.js';
 import { getSpore, insertSpore, repairImportedSporeSource } from '../db/spores/records.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from './spore-writes.js';
 import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from '../db/runs/served.js';
@@ -24,7 +24,8 @@ import { ensureAgent } from '../db/runs/state.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
 
-type SporePrincipal = { kind: 'member'; memberId: string; machineId: string } | { kind: 'grant'; grantId: string }
+/** A member writes from a machine, or from the dashboard with none (`machineId: null`), where no session can be cited. */
+type SporePrincipal = { kind: 'member'; memberId: string; machineId: string | null } | { kind: 'grant'; grantId: string }
   | { kind: 'run'; runId: string; task: string | null; agentId: string; sessionId: string | null };
 interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
 type SporeWriteInput = Record<string, unknown>;
@@ -45,7 +46,7 @@ async function sessionOf(ctx: SporeWriteContext, scope: ReadScope, input: SporeW
     if (named !== undefined && named !== p.sessionId) return failure(`session_id ${JSON.stringify(named)} is invalid for this run; ${p.sessionId === null ? 'no session id is valid: omit session_id' : 'valid session_id is '+JSON.stringify(p.sessionId)}`);
     return { ok: true, sessionId:p.sessionId !== null && await projectHoldsSession(ctx.env.db,scope,p.sessionId) ? p.sessionId : null };
   }
-  if (named !== undefined && !await sessionHeldByMachine(ctx.env.db, scope, named, p.machineId)) return failure(SESSION_NOT_FOUND);
+  if (named !== undefined && (p.machineId === null || !await sessionHeldByMachine(ctx.env.db, scope, named, p.machineId))) return failure(SESSION_NOT_FOUND);
   return { ok: true, sessionId: named ?? null };
 }
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
@@ -114,13 +115,20 @@ function successorFailure(ctx: SporeWriteContext, state: string, newSporeId: str
 
 type ResolveInput = { sporeId: string; status: SporeStatus; action: ResolutionAction; newSporeId: string | null; reason: string | null; sessionId: string | null; provenance: SporeProvenance | null; expect: SporeExpectation; eventId?: string };
 
-async function resolve(ctx: SporeWriteContext, scope: ReadScope, input: ResolveInput): Promise<true | 'duplicate' | SporeWriteFailure | (SporeWriteFailure & { status: string; revision: number; reason: string })> {
+async function resolve(ctx: SporeWriteContext, scope: ReadScope, input: ResolveInput): Promise<Settled> {
   const by = writerOf(ctx);
   const { sporeId, status, action, newSporeId, reason, sessionId, provenance, expect, eventId } = input;
   const outcome = await resolveSpore(ctx.env.db, scope, {
     status, now: ctx.now, expect, authority: ctx.principal,
     event: { id: eventId ?? crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId, action, newSporeId, reason, sessionId, provenance, createdAt: ctx.now },
   });
+  return settled(ctx, sporeId, newSporeId, outcome);
+}
+
+type Settled = true | 'duplicate' | SporeWriteFailure | (SporeWriteFailure & { status: string; revision: number; reason: string });
+
+/** A lifecycle commit's outcome as the writer reads it: done, a replay, or the refusal naming what to reread. */
+function settled(ctx: SporeWriteContext, sporeId: string, newSporeId: string | null, outcome: ResolveOutcome): Settled {
   if (typeof outcome === 'object') {
     if (outcome.error === 'successor') return successorFailure(ctx, outcome.state, newSporeId);
     const repair = ctx.principal.kind === 'run' ? {} : { repair: 'Nothing was saved. Reread it, then decide again.' };
@@ -301,6 +309,20 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
           + `Reread ${stale.id}, then consolidate again with the sources that are still active at their current revisions.` };
     }
     return { new_spore_id: wisdom.id, sources_consolidated: consolidated, status: 'consolidated', created_at: wisdom.createdAt };
+  }
+
+  if (op === 'restore') {
+    const id = str(input.id);
+    if (id === undefined) return failure('id is required for op: restore');
+    const restoring = sporeExpectations({ expect_revision: input.expect_revision });
+    if (!restoring.ok) return failure(restoring.reason);
+    const by = writerOf(ctx);
+    const outcome = settled(ctx, id, null, await restoreSpore(db, scope, {
+      now: ctx.now, revision: restoring.expect.revision, authority: ctx.principal,
+      event: { id: crypto.randomUUID(), agentId: by.agentId, author: by.author, sporeId: id, reason: str(input.reason) ?? null, sessionId: null, provenance: null, createdAt: ctx.now },
+    }));
+    if (outcome !== true && outcome !== 'duplicate') return outcome;
+    return { spore: id, status: 'active' };
   }
 
   return failure('unknown spore operation');

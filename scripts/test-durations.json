@@ -701,6 +701,7 @@
     "tests/myco-server/spore-curation.test.ts": 25000,
     "tests/myco-server/spore-lifecycle-cost.test.ts": 9000,
     "tests/myco-server/spore-near-matches.test.ts": 1407,
+    "tests/myco-server/spore-retirement-api.test.ts": 1200,
     "tests/myco-server/spores-api.test.ts": 493,
     "tests/myco-server/spores.test.ts": 8014,
     "tests/myco-server/sql-rows.test.ts": 50,
