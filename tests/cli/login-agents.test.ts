@@ -239,7 +239,8 @@ describe('myco login sets up the agents on this machine', () => {
     fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: {} } }), { mode: 0o600 });
     const rig = unjoinedRig();
     expect(await run([await invite(rig)], deps(rig, { agents: () => { throw new Error('must defer legacy hooks'); } }))).toBe(true);
-    expect(out).toContain('Agent setup is deferred because retained Myco 1.4 history has no complete migration receipt. Run myco setup --cutover to review and move it, or preview manually with myco cutover --dry-run.');
+    expect(out.join('\n')).toContain('Agent setup is deferred because retained Myco 1.4 history has no complete migration receipt. Run myco setup --cutover to review and move it, or preview manually with myco cutover --dry-run.');
+    expect(out.join('\n')).toContain('Allow spore import');
     expect(read(settings)).toBe(legacy);
   });
 
