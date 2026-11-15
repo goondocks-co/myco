@@ -39,17 +39,20 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, r
   const independentTasks = capabilityTasks.filter((task) => !REQUIRED_REPOSITORY_TASKS.includes(task.task));
   const readsRepository = repositoryTasks.length > 0;
   const allNeedRepository = allTasksRequireRepository(capabilityTasks.map((task) => task.task));
-  const missingNote = allNeedRepository ? 'Needs this project’s repository to read its code.'
-    : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; connect the repository to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
-  const missingStatus = allNeedRepository ? 'On · Code tasks cannot run until a repository is connected'
-    : 'On · Some tasks need a repository';
-  const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && repository === null;
+  const missingToken = repository?.credential != null && (!repository.credential.configured || !repository.credential.readable);
+  const repositoryRequirement = missingToken ? 'repository token' : 'repository';
+  const repositoryAction = missingToken ? 'enter the repository token' : 'connect the repository';
+  const missingNote = allNeedRepository ? `Needs this project’s ${repositoryRequirement} to read its code.`
+    : `Can run ${independentTasks.map((task) => task.name).join(', ')} ${enabled ? 'now' : 'when enabled'}; ${repositoryAction} to also run ${repositoryTasks.map((task) => task.name).join(', ')}.`;
+  const missingStatus = missingToken ? (allNeedRepository ? 'On · Code tasks need a repository token' : 'On · Some tasks need a repository token')
+    : allNeedRepository ? 'On · Code tasks cannot run until a repository is connected' : 'On · Some tasks need a repository';
+  const missingRepository = taskState === 'ready' && readsRepository && repositoryState === 'ready' && (repository === null || missingToken);
   const repositoryNote = taskState === 'loading' ? 'Checking task requirements.'
     : taskState === 'error' ? 'Couldn’t check task requirements.'
       : !readsRepository ? null
     : repositoryState === 'loading' ? 'Checking this project’s repository.'
       : repositoryState === 'error' ? 'Couldn’t check this project’s repository.'
-        : repository === null ? missingNote
+        : repository === null || missingToken ? missingNote
           : repository === undefined ? 'Couldn’t check this project’s repository.'
             : allNeedRepository ? `Reads ${repositoryName(repository)} @ ${repository.branch}`
               : `${repositoryTasks.map((task) => task.name).join(', ')} reads ${repositoryName(repository)} @ ${repository.branch}`;
@@ -67,7 +70,7 @@ function CapabilityRow({ projectId, capability, enabled, revision, repository, r
       note={<>{words.note}{repositoryNote !== null && <span className="block">{repositoryNote}</span>}</>}
       status={error ?? (enabled ? enabledStatus : 'Off')}
       refused={error !== null}
-      details={enabled && missingRepository && <ActionLink to={projectRepositoryPath(projectId, true)}>Connect repository</ActionLink>}
+      details={enabled && missingRepository && <ActionLink to={projectRepositoryPath(projectId, !missingToken)}>{missingToken ? 'Enter repository token' : 'Connect repository'}</ActionLink>}
       control={(
         <Switch
           id={id}

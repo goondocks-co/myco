@@ -4,8 +4,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
-import { discardRecoveredCredentials } from '@myco-server-worker/db/settings/recovery-credentials.js';
-import { holdCloudflareWrappingKey, readCloudflareWrappingKey, cloudflareWrappingKeyLine } from './cloudflare-wrapping-key.js';
+import { describeRecoveryCredentials, discardRecoveredCredentials, type RecoveryCredential } from '@myco-server-worker/db/settings/recovery-credentials.js';
+import { holdCloudflareWrappingKey, readCloudflareWrappingKey, cloudflareWrappingKeyLine, cloudflareWrappingKeyPath } from './cloudflare-wrapping-key.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/db/embeddings/work.js';
 import { holdRecoveredSwitch } from '@myco-server-worker/core/embedding/switch-store.js';
@@ -42,7 +42,7 @@ const journalSchema = z.object({
   versionId: z.string().optional(), deployedAt: z.string().datetime().optional(),
   schemaVersion: z.number().int().positive().optional(), preparedFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   newSignIn: z.boolean().default(false),
-  newCredentials: z.boolean().default(false), discardedCredentials: z.array(z.string()).default([]),
+  newCredentials: z.boolean().default(false), discardedCredentials: z.array(z.union([z.string(), z.object({ name: z.string(), repositoryProject: z.string().nullable(), releaseProject: z.string().nullable() })])).default([]),
   tenantMode: z.enum(['replacement', 'fork']).default('replacement'),
   vectorProvisioned: z.boolean().default(false),
   schemaUpdates: z.array(cloudflareSchemaUpdateSchema).optional(),
@@ -59,7 +59,7 @@ async function databaseFingerprint(file: string): Promise<string> {
 /** Restore a fresh hosted Deployment; resource receipts survive interruption and no source resources are adopted. */
 export const restoreCloudflareDeployment = cloudflareOperation(async (options: LifecycleOptions & {
   source: string; secretsFile?: string; newCredentials?: boolean; newSignIn?: boolean; tenantMode?: RecoveryTenantMode; sourceRetired?: boolean; native?: NativeSqlite; fetch?: CloudflareFetch;
-}): Promise<{ record: DeploymentRecord; schemaVersion: number; rebuildEmbeddings: true; credentialsToReenter?: string[] }> => {
+}): Promise<{ record: DeploymentRecord; schemaVersion: number; rebuildEmbeddings: true; credentialsToReenter?: RecoveryCredential[] }> => {
   assertRecoveryTenantChoice(options.tenantMode, options.sourceRetired);
   if (readDeploymentRecord(options.mycoHome) !== null) throw new Error(`Cloudflare Deployment record already exists at ${deploymentRecordPath(options.mycoHome)}. Hosted recovery requires a fresh MYCO_HOME without a Cloudflare Deployment record.`);
   const root = ensureCommandDir(options.mycoHome);
@@ -75,7 +75,7 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
   if (journal?.pending !== undefined) throw new Error(`hosted recovery has an unconfirmed ${journal.pending} operation; reconcile the named replacement resource before retrying`);
 
   const heldWrapKey = journal === undefined ? undefined : readCloudflareWrappingKey(options.mycoHome);
-  if (journal?.newCredentials && journal.wrapKeyInstalled && heldWrapKey === undefined) throw new Error('hosted recovery wrapping key file is missing; restore server/cloudflare/secrets.env before resuming');
+  if (journal?.newCredentials && journal.wrapKeyInstalled && heldWrapKey === undefined) throw new Error(`hosted recovery wrapping key file is missing at ${cloudflareWrappingKeyPath(options.mycoHome)}; restore that file before resuming`);
   const { secrets, key } = await prepareRecoveryCredentials({ ...options, fork: options.tenantMode === 'fork',
     ...(heldWrapKey === undefined ? {} : { generatedWrapKey: heldWrapKey }) });
 
@@ -114,6 +114,17 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
       return result;
     }, receipt);
 
+  const credentialDetails = async (): Promise<RecoveryCredential[]> => {
+    const credentials = held().discardedCredentials;
+    if (credentials.every((credential): credential is RecoveryCredential => typeof credential !== 'string')) return credentials;
+    const data = new Database(path.join(root, 'recovery.sqlite'), { readonly: true, create: false });
+    try {
+      const details = [...await describeRecoveryCredentials(sqliteRelationalStore(data), credentials.map(credential => typeof credential === 'string' ? credential : credential.name))];
+      confirmed({ discardedCredentials: details });
+      return details;
+    } finally { data.close(); }
+  };
+
   const name = held().name;
   const carried = restoredFleet(manifest.snapshot!.configuration);
   const fleet = carried.fleet ?? undefined;
@@ -131,9 +142,10 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     if (held().schemaVersion === undefined || held().deployedAt === undefined || held().url === undefined
       || held().databaseId === undefined || held().storeId === undefined) throw new Error('hosted recovery publication receipt is incomplete');
     const record = makeRecord();
+    const credentials = options.newCredentials ? await credentialDetails() : undefined;
     writeDeploymentRecord(record, options.mycoHome);
     options.report?.(cloudflareWrappingKeyLine(options.mycoHome));
-    return { record, schemaVersion: held().schemaVersion!, rebuildEmbeddings: true, ...(options.newCredentials ? { credentialsToReenter: held().discardedCredentials } : {}) };
+    return { record, schemaVersion: held().schemaVersion!, rebuildEmbeddings: true, ...(credentials === undefined ? {} : { credentialsToReenter: credentials }) };
   }
 
   await copyRecoveryBundle(options.source, artifact, options.report);
@@ -218,8 +230,9 @@ export const restoreCloudflareDeployment = cloudflareOperation(async (options: L
     return { versionId: deployed.versionId, deployedAt: new Date().toISOString(), schemaVersion: restored.schemaVersion };
   });
   record = makeRecord();
+  const credentials = options.newCredentials ? await credentialDetails() : undefined;
   writeDeploymentRecord(record, options.mycoHome);
   options.report?.(cloudflareWrappingKeyLine(options.mycoHome));
   options.report?.('Replacement deployed. Verify sign-in, persisted artifacts, workers and embedding readiness before cutover.');
-  return { record, schemaVersion: restored.schemaVersion, rebuildEmbeddings: true, ...(options.newCredentials ? { credentialsToReenter: held().discardedCredentials } : {}) };
+  return { record, schemaVersion: restored.schemaVersion, rebuildEmbeddings: true, ...(credentials === undefined ? {} : { credentialsToReenter: credentials }) };
 });

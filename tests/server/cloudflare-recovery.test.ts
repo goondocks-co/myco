@@ -316,17 +316,32 @@ it('keeps a fresh wrapping key across keyless hosted recovery retries and publis
   try {
     fs.writeFileSync(f.secretsFile, '');
     await expect(f.restore(true, 'fork', true)).rejects.toThrow('Cloudflare recovery import did not finish');
+    const journalFile = path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.json');
+    const journal = JSON.parse(fs.readFileSync(journalFile, 'utf8'));
+    fs.writeFileSync(journalFile, JSON.stringify({ ...journal, discardedCredentials: journal.discardedCredentials.map((credential: { name: string }) => credential.name) }));
     const file = cloudflareWrappingKeyPath(f.mycoHome);
     const held = readLocalSecrets({ secretsFile: file }).SECRET_WRAP_KEY!;
     expect(held !== f.wrapKey).toBe(true);
+    fs.unlinkSync(file);
+    await expect(f.restore(true, 'fork', true)).rejects.toThrow(file);
+    fs.writeFileSync(file, `SECRET_WRAP_KEY=${held}\n`, { mode: 0o600 });
     await expect(f.restore(true, 'fork')).rejects.toThrow('same --new-credentials choice');
     const result = await f.restore(true, 'fork', true);
     expect(readLocalSecrets({ secretsFile: file }).SECRET_WRAP_KEY === held).toBe(true);
     const store = deploymentSecretStore(sqliteRelationalStore(f.destination), wrappingKeyFromText(async () => held, 'fixture'));
     expect(await store.list()).toEqual([]);
-    expect(result.credentialsToReenter).toContain('fixture');
+    expect(result.credentialsToReenter?.some(credential => credential.name === 'fixture')).toBe(true);
     expect(f.freshKeyInstalled()).toBe(true);
     expect(f.reports.join('\n').includes(held)).toBe(false);
     expect(f.reports.join('\n').includes('sealed-fixture-value')).toBe(false);
+  } finally { f.cleanup(); }
+});
+
+it('refuses a wrong hosted recovery key before writing a journal', async () => {
+  const f = await fixture();
+  try {
+    fs.writeFileSync(f.secretsFile, `SECRET_WRAP_KEY=${Buffer.alloc(32, 4).toString('base64')}\n`);
+    await expect(f.restore(true)).rejects.toThrow('cannot open all stored credentials');
+    expect(fs.existsSync(path.join(f.mycoHome, 'server', 'cloudflare', 'recovery.json'))).toBe(false);
   } finally { f.cleanup(); }
 });

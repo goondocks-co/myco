@@ -28,7 +28,15 @@ export function holdCloudflareWrappingKey(options: { mycoHome?: string; value?: 
 /** Local custody is observable; Secrets Store values cannot be read back. */
 export function cloudflareWrappingKeyLine(mycoHome?: string): string {
   const file = cloudflareWrappingKeyPath(mycoHome);
-  const present = fs.statSync(file, { throwIfNoEntry: false }) !== undefined && !!readCloudflareWrappingKey(mycoHome);
+  let present = false;
+  try {
+    present = fs.statSync(file, { throwIfNoEntry: false }) !== undefined;
+    if (present) present = !!readCloudflareWrappingKey(mycoHome);
+  } catch (error) {
+    if (!(error instanceof Error) || !('code' in error)) throw error;
+    const state = present ? 'present but unreadable' : 'unreadable; presence could not be checked';
+    return `Wrapping key file ${state} at ${file} (${String(error.code)}); restore needs a readable file to keep stored credentials, or --new-credentials.`;
+  }
   return present
     ? `Wrapping key file held at ${file}; matching the Secrets Store cannot be verified. Restore with stored credentials needs this file.`
     : `Wrapping key file absent at ${file}; a restore will ask for stored credentials again (--new-credentials).`;

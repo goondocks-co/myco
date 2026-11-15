@@ -1,3 +1,4 @@
+import { prepareDispatch } from '@myco-server-worker/core/harness.js';
 import { run as serverCommand } from '@myco/cli/server.js';
 import { projectRepositories } from '@myco-server-worker/core/repositories.js';
 import { releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
@@ -502,7 +503,6 @@ it('recovers current learning work without a pause marker', async () => {
 it('restores without held wrapping material, starts the server and names each credential to enter again', async () => {
   const f = await fixture('local', { credentialConsumers: true });
   try {
-    const names = (await deploymentSecretStore(f.source.db, f.key).list()).map(row => row.name);
     expect(await harnessCredentialAvailable(f.source.db, f.key, 'claude-code')).toBe(true);
     await expect(restoreLocalDeployment({ sourceRetired: true, source: f.artifact, paths: f.paths, secretsFile: f.secretsFile, newCredentials: true })).rejects.toThrow('both --new-credentials and SECRET_WRAP_KEY');
     fs.writeFileSync(f.secretsFile, Object.entries(f.secrets).filter(([name]) => name !== 'SECRET_WRAP_KEY').map(([name, value]) => `${name}=${value}`).join('\n'));
@@ -524,6 +524,7 @@ it('restores without held wrapping material, starts the server and names each cr
       const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'fixture');
       const store = deploymentSecretStore(server.env.db, key);
       expect(await store.list()).toEqual([]);
+      expect(await prepareDispatch(server.env, 'canopy-map', 'proj_1')).toEqual({ ok: false, refusal: 'repository_missing' });
       expect((await projectRepositories(server.env.db, store).describe('proj_1'))?.credential).toMatchObject({ configured: false });
       await expect(projectRepositories(server.env.db, store).access('proj_1')).rejects.toThrow('Enter it again');
       expect((await releaseProvenance(server.env.db, store).describe('proj_1')).credential.configured).toBe(false);
@@ -531,8 +532,10 @@ it('restores without held wrapping material, starts the server and names each cr
       expect(await openHarnessCredential(server.env.db, key, 'anthropic')).toBeNull();
       expect(await harnessCredentialAvailable(server.env.db, key, 'claude-code')).toBe(false);
       expect(await openCompletionCredential(server.env.db, key)).toBeNull();
-      for (const name of names) expect(lines.some(line => line.includes(name))).toBe(true);
-      expect(lines.join('\n')).toContain('Project Settings → Repository access');
+      expect(lines.join('\n')).toContain('Repository token for a: Project Settings → Repository');
+      expect(lines.join('\n')).toContain('Release tracking token for a: Project Settings → Release tracking');
+      expect(lines.join('\n')).toContain('OpenAI: Settings → Models and keys');
+      expect(lines.join('\n')).not.toMatch(/repository:|release-provenance:|proj_1/);
       expect(lines.join('\n')).toContain('Project Settings → Release tracking');
       expect(lines.join('\n')).toContain('Settings → Models and keys');
       expect(lines.join('\n').includes(secrets.SECRET_WRAP_KEY!)).toBe(false);
