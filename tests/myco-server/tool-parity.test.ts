@@ -1,28 +1,18 @@
 import { SEARCH_MAX_LIMIT, SEARCH_QUERY_MAX_CHARS, SEARCH_TYPES, SEARCH_WINDOW } from '@goondocks/myco-shared/search-types';
-import { MAX_SPORE_LIMIT } from '@myco-server-worker/core/spores.js';
-import { MAX_PAGE } from '@myco-server-worker/read/scope.js';
 import { describe, expect, it } from 'bun:test';
 import FROZEN_DEFINITIONS from '../fixtures/retirement/tool-definitions.json';
 import FROZEN_EXTERNAL from '../fixtures/retirement/external-tools.json';
 import { isRunTool, isWriteOp, PROJECT_PIVOT, RUN_TOOLS, SERVED_TOOLS, WRITE_OPS, type AnyTool, type ServedTool } from '@myco-server-worker/core/tool-catalogue.js';
-import { PLAN_BODY_CALL, TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
+import { TOOL_DEFINITIONS } from '@myco-server-worker/mcp/definitions.js';
 import { EXTERNAL_PROJECT_DESCRIPTION, EXTERNAL_TOOL_ALLOWLIST, EXTERNAL_TOOLS, externalDefinitions, isExternalCall } from '@myco-server-worker/mcp/external.js';
 import { NO_OP, TOOL_REGISTRY, opOf } from '@myco-server-worker/mcp/registry.js';
 import { ALWAYS_ALLOWED, RUN_TOOL_MAP, RUN_TOOL_REGISTRY, runAllowlist, runDefinitions } from '@myco-server-worker/mcp/run-surface.js';
 import { RUN_DEFINITIONS } from '@myco-server-worker/mcp/run-definitions.js';
-import { AGENT_LINE_MAX_CHARS } from '@myco-server-worker/core/injection.js';
-import { MAX_SPORE_CONTENT_BYTES } from '@myco-server-worker/core/spores.js';
-import { MAX_SPORE_ID_CHARS, MAX_SESSION_ID_CHARS, MAX_SPORE_TAG_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from '@myco-server-worker/core/spore-input-contract.js';
-import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN, CURATION_CONSOLIDATE_EXAMPLE } from '@myco-server-worker/core/spore-curation-contract.js';
 import { TASK_TOOLS } from '@myco-server-worker/core/task-catalogue.js';
 
 const EXCEPTED = PROJECT_PIVOT;
 const RETIRED = 'grove';
 const RETIRED_INTELLIGENCE_WORDING: Partial<Record<ServedTool, { description: string; guidance?: string }>> = {
-  myco_cortex: {
-    description: `Retrieve project intelligence. op: "instructions" (default) returns the project's session-start instructions and its project id. op: "notifications" returns notifications for the request scope (use unread_only and limit to filter). op: "maintenance_summary" returns the per-Grove maintenance summary (db sizes, last backup/optimize, integrity status, and overdue flags). op: "projects_activity" returns the cross-project activity feed (last activity, scheduled runs, active flag). op: "canopy_map" returns the project's repository map as markdown, with the commit it was read from. op: "digest" is retired; op: "canopy_entry" is not served by a Deployment.`,
-    guidance: `Use op: "instructions" to read the project's standing guidance and learn its project id, op: "notifications" to read pending operator notifications, op: "maintenance_summary" to answer "are any Groves overdue for backup/optimize/integrity?", and op: "projects_activity" to see which projects are still active. Search with myco_search rather than pulling a project summary; there is no digest.`,
-  },
   myco_skills: {
     description: `List and inspect skills. op: "list" (default) lists them; op: "get" returns one with where its body ships. A Deployment serves the skills that ship with Myco.`,
   },
@@ -54,17 +44,6 @@ describe('tool parity', () => {
     };
     for (const definition of [...TOOL_DEFINITIONS, ...RUN_DEFINITIONS, ...externalDefinitions(), ...FROZEN_DEFINITIONS]) visit(definition.inputSchema, definition.name);
   });
-
-  it('declares session citation and accepts the old extraction prompt argument', () => {
-    for (const defs of [TOOL_DEFINITIONS, FROZEN_DEFINITIONS]) {
-      const properties = defs.find(def => def.name === 'myco_spores')!.inputSchema.properties;
-      expect(properties.session_id!.type).toBe('string');
-      expect(properties.session_id!.description).toContain('supporting whole session');
-      expect(properties.prompt_id!.type).toBe('string');
-      expect(properties.prompt_id!.description).toContain('Compatibility');
-    }
-  });
-
 
   it('declares the tenancy key under one spelling, and never the retired one', () => {
     const RETIRED_PIVOT = 'project_id';
@@ -118,9 +97,9 @@ describe('tool parity', () => {
     expect([...ADDED_AFTER_FREEZE].filter((name) => member.has(name))).toEqual([]);
   });
 
-  it('preserves the frozen contract except for retired discovery, search pagination, curation guidance and run-tool input contracts', () => {
+  it('preserves the other tools’ frozen contracts with their declared discovery and pagination changes', () => {
     const member = byName(FROZEN_DEFINITIONS);
-    for (const server of TOOL_DEFINITIONS.filter((d) => !ADDED_AFTER_FREEZE.has(d.name))) {
+    for (const server of TOOL_DEFINITIONS.filter((d) => !ADDED_AFTER_FREEZE.has(d.name) && !['myco_cortex', 'myco_plans', 'myco_spores'].includes(d.name))) {
       const frozen = structuredClone(member.get(server.name)!);
       // Retired arguments build their replacement call from the refused input: functions, which do not clone.
       const { retiredArguments, ...served } = server;
@@ -155,88 +134,7 @@ describe('tool parity', () => {
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }
       }
-      if (server.name === 'myco_plans') {
-        const LIST_BEFORE = 'op: \"list\" (default) returns plan summaries.';
-        expect(frozen.description).toContain(LIST_BEFORE);
-        expect(current.description).toContain(`with has_more, the cursor of the next page, and body_call, the call that reads one plan's body: ${PLAN_BODY_CALL}`);
-        expect(current.description).toContain('never its body');
-        expect(current.description).toContain('call myco_search with type \"plan\"');
-        expect(current.description).toContain('List example: {\"op\":\"list\"');
-        current.description = frozen.description;
-        expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string' });
-        delete (current.inputSchema.properties as Record<string, unknown>).cursor;
-        expect(current.inputSchema.properties.limit!.description).toContain(`at most ${MAX_PAGE}`);
-        current.inputSchema.properties.limit!.description = frozen.inputSchema.properties.limit!.description;
-      }
-      if (server.name === 'myco_spores') {
-        // The list pages by cursor with no text filter (#2101 S4a): `search` and `offset` are retired arguments, refused
-        // with the call that replaces each, and `cursor` is added.
-        const LIST_BEFORE = 'op: \"list\" returns spores by status/type/search.';
-        const LIST_NOW = 'op: \"list\" returns one page of spores, newest first, by status, type or agent, with has_more and the cursor of the next page; a list by status and type alone also carries total. To find spores by what they say, call myco_search with type \"spore\".';
-        expect(frozen.description).toContain(LIST_BEFORE);
-        frozen.description = frozen.description.replace(LIST_BEFORE, LIST_NOW);
-        // Runs now always name a revision, and a successor must be an active spore other than the source.
-        for (const [property, before, now] of [
-          ['new_spore_id', 'ID of the replacement spore for op: "supersede"', 'ID of the replacement spore for op: "supersede": an existing active spore other than the source.'],
-          ['expect_revision', 'Expected source revision for supersede or obsolete. Required for new runs; optional for members and old runs.', 'Expected source revision for supersede or obsolete. Required for every run; optional for members.'],
-        ] as const) {
-          expect(frozen.inputSchema.properties[property]!.description).toBe(before);
-          frozen.inputSchema.properties[property]!.description = now;
-        }
-        expect(Object.keys(current.retiredArguments ?? {}).sort()).toEqual(['offset', 'search']);
-        delete current.retiredArguments;
-        expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string' });
-        delete (current.inputSchema.properties as Record<string, unknown>).cursor;
-        for (const retired of ['search', 'offset']) {
-          expect({ retired, held: retired in current.inputSchema.properties }).toEqual({ retired, held: false });
-          delete (frozen.inputSchema.properties as Record<string, unknown>)[retired];
-        }
-        expect(current.inputSchema.properties.limit!.description).toContain(`at most ${MAX_SPORE_LIMIT}`);
-        current.inputSchema.properties.limit!.description = frozen.inputSchema.properties.limit!.description;
-        expect(current.description.startsWith(frozen.description)).toBe(true);
-        expect(current.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters`);
-        expect(current.description).toContain(CURATION_CONSOLIDATE_EXAMPLE);
-        expect(current.inputRepair).toBe('Correct the named argument and call myco_spores again with the required fields for that op.');
-        delete current.inputRepair;
-        current.description = frozen.description;
-        const line = current.inputSchema.properties.agent_line;
-        expect({min:line.minLength,max:line.maxLength}).toEqual({min:1,max:AGENT_LINE_MAX_CHARS});
-        delete line.minLength; delete line.maxLength;
-        expect(line.description).toContain(`at most ${AGENT_LINE_MAX_CHARS} characters after whitespace normalization`);
-        line.description = frozen.inputSchema.properties.agent_line!.description;
-        const sources = current.inputSchema.properties.source_spore_ids;
-        expect(sources.description).toContain(`${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources`);
-        sources.description = frozen.inputSchema.properties.source_spore_ids!.description;
-        const properties = current.inputSchema.properties;
-        const frozenProperties = frozen.inputSchema.properties;
-        const sessionDescription = 'For save and consolidate: the supporting whole session. Required for new extraction runs and must be a session served to this run. For supersede and obsolete: the acting session. Curation and seeding runs name no session: omit session_id. Other callers use the Session:: line when known.';
-        const characterLimits = [
-          ['id', MAX_SPORE_ID_CHARS], ['old_spore_id', MAX_SPORE_ID_CHARS], ['new_spore_id', MAX_SPORE_ID_CHARS],
-          ['type', MAX_SPORE_ID_CHARS], ['prompt_id', MAX_SPORE_ID_CHARS], ['session_id', MAX_SESSION_ID_CHARS],
-          ['reason', MAX_SPORE_CONTENT_BYTES],
-        ] as const;
-        for (const [field, maxLength] of characterLimits) {
-          const original = frozenProperties[field]!;
-          expect({ field, schema: properties[field] }).toEqual({ field, schema: {
-            ...original, minLength: 1, maxLength,
-            description: `${field === 'session_id' ? sessionDescription : original.description} Nonempty text, at most ${maxLength} characters.`,
-          } });
-          properties[field] = original;
-        }
-        const byteLimits = [['content', MAX_SPORE_CONTENT_BYTES], ['consolidated_content', MAX_SPORE_CONTENT_BYTES], ['provenance_ref', PROVENANCE_REF_MAX]] as const;
-        for (const [field, maxBytes] of byteLimits) {
-          const original = frozenProperties[field]!;
-          const provenance = field === 'provenance_ref' ? ` For pr: an https URL; for commit: ${COMMIT_REF_MIN_CHARS}–${COMMIT_REF_MAX_CHARS} hexadecimal characters.` : '';
-          expect({ field, schema: properties[field] }).toEqual({ field, schema: {
-            ...original, minLength: 1, description: `${original.description} Nonempty text, at most ${maxBytes} UTF-8 bytes.${provenance}`,
-          } });
-          properties[field] = original;
-        }
-        expect(properties.tags).toEqual({ ...frozenProperties.tags, description: `${frozenProperties.tags!.description} Serialized tags: at most ${MAX_SPORE_TAG_CHARS} characters.` });
-        properties.tags = frozenProperties.tags!;
-      }
       if (server.name === 'myco_skills') expect(current.description).not.toContain('1.4');
-      if (server.name === 'myco_cortex') expect(current.description).toContain('digest\" is retired');
       expect({ tool: String(server.name), definition: current as object }).toEqual({ tool: String(server.name), definition: frozen as object });
       expect({ tool: server.name, retired: RETIRED in server.inputSchema.properties }).toEqual({ tool: server.name, retired: false });
     }

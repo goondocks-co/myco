@@ -12,6 +12,7 @@
  * The notification and maintenance ops are named in the registry as not yet
  * served; nothing here answers them.
  */
+import { renderMap } from '@goondocks/myco-shared/canopy';
 import { readCanopyMap } from '../../read/canopy.js';
 import { sessions_listProjects as listProjects } from '../../read/catalog/sessions.js';
 import { instructionsTemplate } from '../../core/settings.js';
@@ -60,7 +61,7 @@ export async function handleCortexCanopyMap(input: ToolInput, ctx: ToolContext):
   const map = await readCanopyMap(ctx.env.db, scope);
   if (map === null) return { content: '', project_id: scope.projectId, is_empty: true, message: NO_MAP_MESSAGE } satisfies CanopyMapResult;
   return {
-    content: map.content,
+    content: renderMap(map.artifact, map.repository, { includeProvenance: false }),
     project_id: scope.projectId,
     generated_at: map.generatedAt,
     revision: map.revision,

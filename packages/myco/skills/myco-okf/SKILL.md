@@ -106,7 +106,7 @@ order:
    for each area the code map or repository tree surfaced as wiki-worthy. Follow
    each result's `retrieve` hint to pull the full record (`myco_spores`,
    `myco_sessions`, `myco_plans`, `myco_skills`).
-4. **Spores directly** — `myco_spores({"op":"list", ...})` for durable
+4. **Spores directly** — `myco_spores({"op":"list","project":"<project id>"})` for durable
    gotchas and decisions the search pass didn't surface by keyword.
 5. **Skills** — `myco_skills({"op":"list"})`. An existing skill is often
    itself the best source for a "howto" wiki page — it's already a

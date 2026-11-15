@@ -44,7 +44,8 @@ Save a spore when you learn something a future session would want and could not 
 
 ```
 myco_spores { "op": "save", "type": "gotcha", "project": "<project id>",
-              "content": "..." }
+              "session_id": "<session id>", "content": "<finding and evidence>",
+              "agent_line": "When delivery stalls, check the outbox lease before retrying." }
 ```
 
 Good spores are specific and durable. A gotcha names the trap and the tell that reveals it. A decision names what was chosen, what was rejected, and why. Neither is a status update: "finished the parser" helps nobody in three months.
@@ -53,17 +54,18 @@ Search before you save. If a spore already covers the ground, save its replaceme
 
 ```
 myco_spores { "op": "save", "type": "gotcha", "project": "<project id>",
-              "session_id": "<session id>", "content": "<replacement finding>" }
+              "session_id": "<session id>", "content": "<replacement finding>",
+              "agent_line": "When delivery stalls, check the outbox lease before retrying." }
 myco_spores { "op": "supersede", "old_spore_id": "<old id>",
               "new_spore_id": "<id returned by save>", "project": "<project id>",
               "session_id": "<session id>" }
 ```
 
-Plans are the same shape — `myco_plans` with `op: "save"` — and are for work that spans sessions. Status changes through an explicit status-only save.
+Plans use `myco_plans` with `op: "save"`, `project` and the current `session_id`. Create with content and exactly one of `source_path` (file-backed) or `plan_key` (non-file-backed). Update by `id` to preserve identity; omit content for a status-only transition.
 
 ## Retiring a spore that is wrong
 
-Context served to you can include a spore that is wrong, or that describes code that no longer exists. You are the reader best placed to notice, so retire it on the spot. A spore that is merely off-topic for your task is left alone: it may be right, just not relevant now.
+Retire knowledge when it is contradicted, replaced, or its feature was dropped by a recorded decision. A spore that is merely off-topic for your task is left alone: it may be right, just not relevant now.
 
 - **Check before you retire.** Read newer spores, sessions and recorded decisions about the concept. When code is available, read and search it to check the claim. A missing file alone never invalidates knowledge. When in doubt, keep it.
 - **Give a reason** citing the later knowledge, dropped-feature decision or contradictory code you checked. Keep lessons that outlive their implementation; a merge may remove a stale path.
@@ -84,7 +86,7 @@ myco_outcomes { "op": "report", "project": "<project id>", "session_id": "<your 
                 "url": "https://github.com/<owner>/<repo>/pull/1931" }
 ```
 
-`kind` is `pr`, `issue`, `tag`, `release` or `deploy`. The URL must be https. Reporting the same artifact again changes nothing. The same artifact under a different URL is refused: a report is never rewritten. Without MCP, make the same call through the CLI, which always needs its credential source named. On a machine enrolled as a member, run `myco tool call myco_outcomes --credential registry --json --input '<the same arguments>'`. In CI, set `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` and run it with `--credential env`.
+`kind` is `pr`, `issue`, `tag`, `release` or `deploy`. The URL must be https. Reporting the same artifact again changes nothing. The same artifact under a different URL is refused: a report is never rewritten. Without MCP, make the same call through the CLI, which always needs its credential source named. On a machine enrolled as a member, run `myco tool call myco_outcomes --credential registry --json --input '{"op":"report","project":"<project id>","session_id":"<session id>","kind":"pr","artifact_id":"1931","url":"https://github.com/<owner>/<repo>/pull/1931"}'`. In CI, set `MYCO_SERVER_URL`, `MYCO_MEMBER_TOKEN` and `MYCO_PROJECT` and run it with `--credential env`.
 
 ## What happens without you
 

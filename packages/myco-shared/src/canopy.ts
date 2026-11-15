@@ -174,14 +174,14 @@ const code = (text: string) => {
   return `${ticks} ${text} ${ticks}`;
 };
 
-/** One markdown representation for the dashboard, MCP and exported map. */
-export function renderMap(artifact: MapArtifact, repository: RepositoryPin): string {
+/** Markdown map, with optional evidence for storage and export. */
+export function renderMap(artifact: MapArtifact, repository: RepositoryPin, options: { includeProvenance: boolean } = { includeProvenance: true }): string {
   const bullet = (item: MapAnnotation) => `- ${code(item.path)} — ${prose(item.annotation)}`;
   const provenance = JSON.stringify({ repository, directories: artifact.directories.map(({ path, groundedIn }) => ({ path, groundedIn })),
     domains: artifact.domains.map(({ id, files }) => ({ id, annotations: files.map(({ path, groundedIn }) => ({ path, groundedIn })) })) }).replace(/>/g, '\\u003e');
   return ['## Directory skeleton', '', ...artifact.directories.map(bullet), '', '## Key files / golden paths', '',
     ...artifact.domains.flatMap((domain) => [`### ${prose(domain.title)}`, '', ...domain.files.map(bullet), '']),
-    '<!-- Map Provenance', provenance, '-->', ''].join('\n');
+    ...(options.includeProvenance ? ['<!-- Map Provenance', provenance, '-->'] : []), ''].join('\n');
 }
 
 export const CANOPY_DEFAULT_EXCLUDE_PATTERNS: readonly string[] = [

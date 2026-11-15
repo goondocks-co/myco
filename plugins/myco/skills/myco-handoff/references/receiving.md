@@ -31,9 +31,8 @@ Before mutating any plan status:
    HEAD, and `git status --short`. Warn the user if the branch/HEAD clearly
    differs or if the handoff is stale for the work at hand.
 2. Fetch source-session metadata when available:
-   `myco_sessions({"op":"get","id":"<source-session-id>"})`. Use only metadata
-   such as title, branch, agent, timestamps, and transcript path; do not imply
-   this reconstructs the conversation.
+   `myco_sessions({"op":"get","id":"<source-session-id>"})`. Read its metadata to orient; members can also open one conversation turn
+   by supplying its `prompt_id`.
 3. Read every referenced plan with
    `myco_plans({"op":"get","id":"<plan-id>"})`. Skim title, status, tags, and
    current next steps. The digest carries intention; the plans carry state.
@@ -108,8 +107,8 @@ work.
 ## CLI fallback (no MCP)
 
 ```bash
-myco tool call myco_plans --json --input '{"op":"get","id":"<plan-id>"}'
-myco tool call myco_plans --json --input '{"op":"save","id":"<plan-id>","status":"in_progress"}'
+myco tool call myco_plans --credential registry --json --input '{"op":"get","id":"<plan-id>"}'
+myco tool call myco_plans --credential registry --json --input '{"op":"save","project":"<project id>","session_id":"<this session id>","id":"<plan-id>","status":"in_progress"}'
 ```
 
 Use `--input @file.json` for any payload containing multiline markdown or

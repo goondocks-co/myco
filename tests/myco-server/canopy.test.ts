@@ -1,3 +1,4 @@
+import { handleCortexCanopyMap } from '@myco-server-worker/mcp/tools/cortex.js';
 import { expect, it } from 'bun:test';
 import { writeCanopyMap, canopyMapWrittenBy } from '@myco-server-worker/core/canopy.js';
 import { readCanopyMap } from '@myco-server-worker/read/canopy.js';
@@ -38,6 +39,10 @@ it('publishes the prepared map once, reads it by project and verifies unchanged 
   const first = (await readCanopyMap(r.db, scope))!;
   expect(first.repository).toEqual(repository);
   expect(first.content).toContain('Map Provenance');
+  const answer = await handleCortexCanopyMap({}, { env: r.serverEnv, projectId: scope.projectId, now: 2,
+    principal: { kind: 'member', memberId: 'mem_machine_1', machineId: 'machine_1', tokenId: 'fixture' } });
+  expect(answer).toMatchObject({ repository, content: expect.stringContaining('Starts the app') });
+  expect(JSON.stringify(answer)).not.toContain(source.sha256);
   expect(await readCanopyMap(r.db, { projectId: 'proj_2' })).toBeNull();
   expect(await writeCanopyMap(r.db, scope, run, artifact, 2)).toBe(true);
   expect((await readCanopyMap(r.db, scope))?.revision).toBe(first.revision);

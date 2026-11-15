@@ -19,6 +19,7 @@ import { getPluginVersion } from '../version.js';
 export interface ToolCallError {
   code: string;
   message: string;
+  retryable?: boolean;
 }
 
 export type ToolCallOutcome<T> = { ok: true; value: T } | { ok: false; error: ToolCallError };
@@ -53,6 +54,24 @@ export function callTool(
   args: Record<string, unknown>,
 ): Promise<ToolCallOutcome<unknown>> {
   return withMcpClient(transport, async (client) => extractStructuredResult(await client.callTool({ name, arguments: args })));
+}
+
+class ToolResultRefused extends Error {
+  constructor(readonly detail: ToolCallError) { super(detail.message); }
+}
+
+/** A command result; a refusal throws its code and message for the CLI failure envelope. */
+export function requireToolResult(response: ToolCallResult): unknown {
+  const result = extractStructuredResult(response);
+  const refused = result !== null && typeof result === 'object' && 'ok' in result && result.ok === false;
+  if (response.isError || refused) {
+    const detail = result !== null && typeof result === 'object' ? result as Record<string, unknown> : {};
+    const error = detail.error !== null && typeof detail.error === 'object' ? detail.error as Record<string, unknown> : {};
+    const code = typeof detail.code === 'string' ? detail.code : typeof error.code === 'string' ? error.code : typeof detail.error === 'string' && typeof detail.message === 'string' ? detail.error : 'tool_call_failed';
+    const message = typeof detail.message === 'string' ? detail.message : typeof error.message === 'string' ? error.message : typeof detail.reason === 'string' ? detail.reason : typeof detail.error === 'string' ? detail.error : typeof result === 'string' ? result : JSON.stringify(result);
+    throw new ToolResultRefused({ code, message: message ?? 'Tool call failed', ...(typeof detail.retryable === 'boolean' ? { retryable: detail.retryable } : {}) });
+  }
+  return result;
 }
 
 /**
@@ -109,6 +128,7 @@ const HOST_REFUSAL_HINTS: Record<string, string> = {
  *     `tool_call_failed` with its message.
  */
 export function classifyMcpError(error: unknown): ToolCallError {
+  if (error instanceof ToolResultRefused) return error.detail;
   if (error instanceof ProtocolError) {
     const data = error.data as { code?: unknown } | undefined;
     const code = typeof data?.code === 'string' ? data.code : 'tool_call_failed';

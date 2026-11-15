@@ -137,7 +137,7 @@ session resuming into work that already happened.
 2. If a `<!-- myco-handoff:start -->…<!-- myco-handoff:end -->` block already
    exists, **replace** it with the new block. Otherwise append the new block to
    the end. Leave all other plan content untouched.
-3. Save: `myco_plans({"op":"save","id":"<plan-id>","content":"<full updated content>"})`.
+3. Save: `myco_plans({"op":"save","project":"<project id>","session_id":"<this session id>","id":"<plan-id>","content":"<full updated content>"})`.
    (Updating by `id` preserves the plan's existing status.)
 
 ### 5b. Create a new dedicated handoff plan
@@ -150,6 +150,7 @@ A new, non-file-backed plan **requires `plan_key`** (its stable identity; pass
 ```json
 myco_plans({
   "op":"save",
+  "project":"<project id>",
   "session_id":"<this session id>",
   "plan_key":"handoff-<short-slug>",
   "title":"Handoff: <short topic>",
@@ -175,7 +176,7 @@ one-line summary of what was captured. For example:
 Inline JSON is fine for short reads:
 
 ```bash
-myco tool call myco_plans --json --input '{"op":"list","session":"<session-id>"}'
+myco tool call myco_plans --credential registry --json --input '{"op":"list","session":"<session-id>"}'
 ```
 
 For handoff saves, use `--input @file.json` because the content is multiline
@@ -185,11 +186,13 @@ markdown and may contain backticks:
 cat > /tmp/myco-handoff-save.json <<'EOF'
 {
   "op": "save",
+  "project": "<project id>",
+  "session_id": "<this session id>",
   "id": "<plan-id>",
   "content": "<full updated plan markdown>"
 }
 EOF
-myco tool call myco_plans --json --input @/tmp/myco-handoff-save.json
+myco tool call myco_plans --credential registry --json --input @/tmp/myco-handoff-save.json
 ```
 
 This shell path exists only where the `myco` binary is installed; if it is not

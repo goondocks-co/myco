@@ -78,7 +78,7 @@ const HEADER = 'Relevant project memory — retrieve any item in full by id:';
 /** Emitted only where the pool held more than the budget served. */
 const SEARCH_LINE = 'More may match — search with myco_search.';
 /** Emitted with any spore, telling the agent what to do with one that is wrong. Its cost is reserved in every block's budget. */
-export const CURATE_LINE = 'Wrong or code gone? obsolete it, or supersede it with the fix; say what you checked. Off-topic: leave it.';
+export const CURATE_LINE = 'Contradicted, replaced or dropped by decision? Check; obsolete/supersede. Missing file alone? Keep it.';
 /** The room the header, the items and the search line share, which the curation line's own cost is added to. */
 const ITEM_BUDGET_TOKENS = 300;
 /** The rendered block's ceiling in estimated tokens: the shared room plus the curation line's cost, so the per-line cap stays what the published tool contract states. */
