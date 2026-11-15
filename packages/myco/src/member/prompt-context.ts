@@ -13,8 +13,10 @@ import { watchingFeatures } from './prefetch.js';
 import { promptContextLogPrefix } from './context-diagnostics.js';
 import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 
-/** Maximum prompt-hook wait; the helper's request may continue after this window. */
-export const PROMPT_CONTEXT_CAP_MS = 800;
+/** Maximum inline wait when a tool hook can deliver the answer later in the turn. */
+export const PROMPT_CONTEXT_TOOL_CAP_MS = 800;
+/** Maximum inline wait when this harness has no tool-context delivery path. */
+export const PROMPT_CONTEXT_INLINE_CAP_MS = 1_500;
 type PromptAsk = Extract<ContextAskRequest, { kind: 'prompt' }>;
 export interface PromptRecall {
   current: string;
@@ -34,8 +36,11 @@ export function queuePromptRecall(state: SessionState, request: PromptAsk, optio
   return id;
 }
 
+const promptContextCapMs = (held: Pick<PromptRecall['asks'][string], 'late'>): number =>
+  held.late ? PROMPT_CONTEXT_TOOL_CAP_MS : PROMPT_CONTEXT_INLINE_CAP_MS;
+
 function log(run: Pick<HookRun, 'spool' | 'credential' | 'sessionId'>, id: string, held: PromptRecall['asks'][string], delivery: string): void {
-  process.stderr.write(`${promptContextLogPrefix(run.credential.serverUrl, run.spool.projectId)}session ${terminalText(run.sessionId)} ask ${id} prompt ${terminalText(held.request.promptId ?? held.request.scopeReason ?? 'unnamed')} wait_ms=${held.waitedMs ?? 0} delivery=${delivery}\n`);
+  process.stderr.write(`${promptContextLogPrefix(run.credential.serverUrl, run.spool.projectId)}session ${terminalText(run.sessionId)} ask ${id} prompt ${terminalText(held.request.promptId ?? held.request.scopeReason ?? 'unnamed')} wait_ms=${held.waitedMs ?? 0} cap_ms=${promptContextCapMs(held)} delivery=${delivery}\n`);
 }
 
 /** The helper publishes only into the ask that made the request, even after a newer prompt replaces it. */
@@ -50,7 +55,7 @@ export function completePromptRecall(spool: HookRun['spool'], sessionId: string,
 }
 
 /** Wait for an atomic state publication using filesystem notifications, with no polling. */
-async function waitForAnswer(run: HookRun, id: string): Promise<void> {
+async function waitForAnswer(run: HookRun, id: string, capMs: number): Promise<void> {
   const ready = () => readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id]?.stage !== 'pending';
   if (ready() || !run.spool.shouldDial(run.now()) || promptRequestsBackedOff(run.spool, run.now())) return;
   let wake: (() => void) | undefined;
@@ -58,7 +63,7 @@ async function waitForAnswer(run: HookRun, id: string): Promise<void> {
   const file = path.basename(sessionStatePath(run.spool.dir, run.sessionId));
   const watcher = fs.watch(run.spool.dir, (_event, name) => { if (String(name) === file && ready()) wake?.(); });
   try {
-    if (!ready()) await withinRequestDeadline(subRequestBudget(run.budget, PROMPT_CONTEXT_CAP_MS, run.now()), async ({ signal }) => {
+    if (!ready()) await withinRequestDeadline(subRequestBudget(run.budget, capMs, run.now()), async ({ signal }) => {
       let abort: () => void = () => {};
       const expired = new Promise<void>(resolve => { abort = resolve; if (signal.aborted) resolve(); else signal.addEventListener('abort', abort, { once: true }); });
       try { await Promise.race([changed, expired]); }
@@ -71,21 +76,23 @@ async function waitForAnswer(run: HookRun, id: string): Promise<void> {
 export async function promptContext(run: HookRun, id: string, response: HookResponse): Promise<{ events: OutboundEvent[]; claim: (state: SessionState) => HookClaim }> {
   const started = Date.now();
   const original = readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id];
+  if (original === undefined) return { events: [], claim: () => ({ events: [] }) };
+  const capMs = promptContextCapMs(original);
   if (run.credentialSource === 'env') {
     const held = readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id];
     if (held !== undefined) {
       const client = new ServerClient(run.credential, watchingFeatures(run.fetch ?? globalThis.fetch, {
         serverUrl: run.credential.serverUrl, spoolDir: run.spool.dir, mycoHome: run.mycoHome, now: run.now,
       }), { credentialSource: 'env' });
-      const answer = await requestPromptContext({ ...run, client, capMs: PROMPT_CONTEXT_CAP_MS }, held.request);
+      const answer = await requestPromptContext({ ...run, client, capMs }, held.request);
       completePromptRecall(run.spool, run.sessionId, id, answer, run.now());
     }
-  } else await waitForAnswer(run, id);
+  } else await waitForAnswer(run, id, capMs);
   const waitedMs = Date.now() - started;
   return { events: [], claim: state => {
     const held = state.promptRecall?.asks[id];
     if (held === undefined) {
-      if (original !== undefined) log(run, id, { ...original, waitedMs }, 'discarded');
+      log(run, id, { ...original, waitedMs }, 'discarded');
       return { events: [] };
     }
     held.waitedMs = waitedMs;
@@ -149,7 +156,7 @@ export async function fetchPromptRecalls(opts: {
           const outcome = await opts.client.postPersisted('/context/discard', { sessionId, receiptId }, subRequestBudget(opts.budget, opts.capMs, opts.now()));
           if (outcome.class !== 'acked' && outcome.class !== 'route_missing') continue;
         }
-        process.stderr.write(`${promptContextLogPrefix(opts.client.serverUrl, opts.spool.projectId)}session ${terminalText(sessionId)} ask ${id} wait_ms=${live.waitedMs ?? 0} delivery=discarded\n`);
+        process.stderr.write(`${promptContextLogPrefix(opts.client.serverUrl, opts.spool.projectId)}session ${terminalText(sessionId)} ask ${id} wait_ms=${live.waitedMs ?? 0} cap_ms=${promptContextCapMs(live)} delivery=discarded\n`);
         updateSessionState(opts.spool.dir, sessionId, state => { if (state.promptRecall?.asks[id]?.stage === 'discarded') delete state.promptRecall.asks[id]; }, opts.now());
       } else if (live?.stage === 'delivered') {
         updateSessionState(opts.spool.dir, sessionId, state => { if (state.promptRecall?.asks[id]?.stage === 'delivered') delete state.promptRecall.asks[id]; }, opts.now());

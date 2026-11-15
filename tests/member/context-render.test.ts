@@ -1,4 +1,4 @@
-import { PROMPT_CONTEXT_CAP_MS } from '@myco/member/prompt-context.js';
+import { PROMPT_CONTEXT_INLINE_CAP_MS, PROMPT_CONTEXT_TOOL_CAP_MS } from '@myco/member/prompt-context.js';
 import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
  * Prompt recall belongs to its submission; session blocks remain cached for later session hooks.
@@ -116,7 +116,7 @@ describe('a prompt', () => {
     expect(served.asked).toEqual([]);
   });
 
-  async function latePrompt(agent: string, sessionId: string) {
+  async function latePrompt(agent: string, sessionId: string, capMs: number) {
     cacheDeploymentFeatures('https://member-test.invalid', ['prompt-identity', 'prompt-scheme'], mycoHome);
     let resolve: ((answer: Response) => void) | undefined;
     let background: Promise<unknown> | undefined;
@@ -140,7 +140,8 @@ describe('a prompt', () => {
     const tx = transcript(sessionId);
     const started = Date.now();
     const first = await runHook('user-prompt-submit', { session_id: sessionId, prompt: 'late recall', turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
-    expect(Date.now() - started).toBeLessThan(PROMPT_CONTEXT_CAP_MS + 500);
+    expect(Date.now() - started).toBeLessThan(capMs + 500);
+    expect(first.stderr).toContain(`cap_ms=${capMs}`);
     expect(contextOf(first.stdout)).toBe(`Session:: \`${sessionId}\``);
     const finish = async () => { resolve!(Response.json({ persisted: true, context: 'held memory', receiptId })); await background; };
     const tool = () => runHook('post-tool-use', { session_id: sessionId, tool_name: 'Read', tool_input: {}, turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
@@ -148,7 +149,7 @@ describe('a prompt', () => {
   }
 
   it('delivers a missed answer on the first tool hook once, naming the asking prompt', async () => {
-    const held = await latePrompt('codex', 'sess-tool');
+    const held = await latePrompt('codex', 'sess-tool', PROMPT_CONTEXT_TOOL_CAP_MS);
     await held.finish();
     const tool = await held.tool();
     expect(contextOf(tool.stdout)).toContain('held memory');
@@ -159,7 +160,7 @@ describe('a prompt', () => {
   });
 
   it('discards a late answer when the next prompt arrives before it', async () => {
-    const held = await latePrompt('copilot', 'sess-replaced');
+    const held = await latePrompt('copilot', 'sess-replaced', PROMPT_CONTEXT_TOOL_CAP_MS);
     await runHook('user-prompt-submit', { session_id: 'sess-replaced', prompt: 'next prompt', transcript_path: held.tx }, { fetch: held.fetch, symbiont: 'copilot', helperSpawn: held.spawn });
     await held.finish();
     expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
@@ -167,7 +168,8 @@ describe('a prompt', () => {
   });
 
   it('discards a late answer when the harness tool hook cannot add context', async () => {
-    const held = await latePrompt('claude-code', 'sess-unsupported');
+    const held = await latePrompt('claude-code', 'sess-unsupported', PROMPT_CONTEXT_INLINE_CAP_MS);
+    expect(Number(/wait_ms=(\d+)/.exec(held.first.stderr)?.[1])).toBeGreaterThan((PROMPT_CONTEXT_TOOL_CAP_MS + PROMPT_CONTEXT_INLINE_CAP_MS) / 2);
     await held.finish();
     expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
     expect(held.discarded).toEqual([held.receiptId]);
