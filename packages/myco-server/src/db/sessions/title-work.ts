@@ -171,12 +171,12 @@ export async function takeTitleRequests(db: RelationalStore, window: Pick<TitleW
   return requests.results;
 }
 
-const defer = write<[now: number, project: string, session: string, mode: ModeName]>({ name: 'titleWork.defer', sql: `
+const defer = write<[now: number, project: string, session: string, mode: ModeName | 'owner']>({ name: 'titleWork.defer', sql: `
   UPDATE session_title_work SET ready=0,waits='timer',due_at=${recheckAfter('?1', 'checks')},checks=checks+1
-  WHERE project_id=?2 AND session_id=?3 AND mode=?4 AND ready=1` });
+  WHERE project_id=?2 AND session_id=?3 AND (mode=?4 OR ?4='owner') AND ready=1` });
 
 /** Puts a row a pass found no longer takeable back to sleep, so it never sits at the head of the ready order. */
-export async function deferTitleWork(db: RelationalStore, target: { projectId: string; sessionId: string; mode: ModeName }, now: number): Promise<void> {
+export async function deferTitleWork(db: RelationalStore, target: { projectId: string; sessionId: string; mode: ModeName | 'owner' }, now: number): Promise<void> {
   await rows(db, defer.bind(now, target.projectId, target.sessionId, target.mode));
 }
 

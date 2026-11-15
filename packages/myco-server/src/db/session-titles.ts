@@ -117,7 +117,7 @@ const restoreUncalled = write<[project: string, session: string, stamp: number, 
   UPDATE sessions SET titled_at=?4 WHERE project_id=?1 AND session_id=?2 AND titled_at=?3 AND ${uncalled('?1', '?5')}` });
 const deferUncalled = write<[project: string, session: string, mode: string, run: string, now: number], never>({ name: 'sessionTitle.deferUncalled', sql: `
   UPDATE session_title_work SET ready=0,waits='timer',due_at=?5+${TITLE_WORK_RECHECK_MS},checks=checks+1
-    WHERE project_id=?1 AND session_id=?2 AND mode=?3 AND ${uncalled('?1', '?4')}` });
+    WHERE project_id=?1 AND session_id=?2 AND (mode=?3 OR ?3='owner') AND ${uncalled('?1', '?4')}` });
 const unmark = write<[project: string, run: string], never>({ name: 'sessionTitle.unmarkUncalled', sql: `
   UPDATE agent_runs SET attempt_counted=0 WHERE project_id=?1 AND id=?2 AND ${uncalled('?1', '?2')}` });
 

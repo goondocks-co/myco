@@ -132,15 +132,19 @@ export async function titleSession(env: ServerEnv, target: TitlingTarget, opts: 
     }
     const previous = claim.previous;
     if (provider !== null) {
+      const releaseUnlaunched = async () => {
+        await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
+        await deferTitleWork(env.db, { projectId, sessionId, mode }, now);
+      };
       const runId = crypto.randomUUID();
       try {
         const admitted = await beginDirectTitle(env.db, { project: projectId, session: sessionId, run: runId, model: provider.model, now, mode, ...(opts.by === undefined ? {} : { by: opts.by }) });
         if (!admitted) {
-          await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
+          await releaseUnlaunched();
           return skipped('ceiling');
         }
       } catch (error) {
-        await restoreTitlingStamp(env.db, projectId, sessionId, now, previous);
+        await releaseUnlaunched();
         throw error;
       }
       env.afterResponse(() => executeDirectTitle(env, provider, { project: projectId, session: sessionId, run: runId, stamp: now, previous, mode, ...(opts.by === undefined ? {} : { by: opts.by }) }));
