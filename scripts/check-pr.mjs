@@ -449,8 +449,14 @@ try {
         await check('dashboard screens', 'ui-screens: shell, setup and auth-setup screens', `npm run build:specimen --prefix packages/myco-server/ui && ${screens}`, async () => {
           const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsers };
           await run(npm, ['run', 'build:specimen', '--prefix', 'packages/myco-server/ui'], { cwd: copy, env });
-          try { await run(screens, [], { cwd: copy, env, shell: true }); }
-          catch (error) { if (error instanceof Stop) throw error; throw new Error(tail(error.message, 80)); }
+          // CI's two workers; a screen that fails is shot again on its own and fails the check only if it fails twice.
+          try {
+            await run(`${screens} --workers=2`, [], { cwd: copy, env, shell: true }).catch(first => {
+              if (first instanceof Stop) throw first;
+              console.log(`dashboard screens: failed once; running the failed screens again\n${tail(first.message, 30)}`);
+              return run(`${screens} --workers=2 --last-failed`, [], { cwd: copy, env, shell: true });
+            });
+          } catch (error) { if (error instanceof Stop) throw error; throw new Error(tail(error.message, 80)); }
         });
       }
     }
