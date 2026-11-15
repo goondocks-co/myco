@@ -79,6 +79,13 @@ export const MACHINE_UPDATE_LEAVES: readonly MachineUpdateLeaf[] = ['update.auto
 export interface MachineUpdateRequest { id: string; value: boolean | string; savedAt?: number }
 export type MachineUpdateRequests = Partial<Record<MachineUpdateLeaf, MachineUpdateRequest>>;
 export interface MachineUpdateReport { order: number; values: Partial<Record<MachineUpdateLeaf, boolean | string>>; requests: MachineUpdateRequests }
+export interface MachineSettingsBlock {
+  leaves: Record<string, unknown>;
+  feature?: typeof MACHINE_SETTINGS_FEATURE;
+  revision?: string;
+  updateRequests?: MachineUpdateRequests;
+  serverNow?: number;
+}
 export const validMachineUpdateValue = (leaf: MachineUpdateLeaf, value: unknown): value is boolean | string =>
   leaf === 'update.automatic' ? typeof value === 'boolean' : typeof value === 'string' && RELEASE_CHANNELS.includes(value as typeof RELEASE_CHANNELS[number]);
 

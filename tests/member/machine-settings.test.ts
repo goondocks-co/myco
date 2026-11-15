@@ -1,6 +1,8 @@
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { writeInstallMarker } from '@myco/install/managed-binary.js';
 import { effectiveUpdateChannel } from '@myco/upgrade/check-cache.js';
+import { setUpdatePreferences } from '@myco/member/automatic-update-state.js';
+import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
 /**
  * The settings a Deployment holds for this machine, as the machine caches them (#1393): one file per Deployment,
  * beside its membership, never read as a membership, and never cleared by an answer that carries none.
@@ -290,4 +292,26 @@ it('keeps capture settings when damaged installation preferences prevent an upda
     expect(effectiveUpdateChannel(home)).toBe('alpha');
     expect(warning.mock.calls.filter(([line]) => String(line).includes('update settings unavailable'))).toHaveLength(1);
   } finally { warning.mockRestore(); }
+});
+
+const HOUR_MS = 60 * 60 * 1_000;
+for (const skew of [-HOUR_MS, HOUR_MS]) it(`orders dashboard requests around local commands with the machine clock ${skew / HOUR_MS} hour from the server`, () => {
+  const serverCommandAt = 24 * HOUR_MS;
+  const machineCommandAt = serverCommandAt + skew;
+  for (const requestAfterCommand of [false, true]) {
+    const home = tempMycoHome();
+    const server = 'https://clock.example';
+    setUpdatePreferences(home, { channel: 'stable', automaticUpdates: false }, undefined, () => machineCommandAt);
+    const savedAt = serverCommandAt + (requestAfterCommand ? 100 : -100);
+    const requests = {
+      'update.channel': { id: crypto.randomUUID(), value: 'beta', savedAt },
+      'update.automatic': { id: crypto.randomUUID(), value: true, savedAt },
+    };
+    cacheMachineSettings(server, { leaves: {}, updateRequests: requests, serverNow: serverCommandAt + 1_000 }, home, undefined, () => machineCommandAt + 1_000);
+    expect(effectiveUpdateChannel(home)).toBe(requestAfterCommand ? 'beta' : 'stable');
+    expect(automaticUpdatesEnabled(home)).toBe(requestAfterCommand);
+    expect(JSON.parse(machineSettingsHeaders(server, home)[MACHINE_UPDATE_HEADER]!)).toMatchObject({
+      requests, values: { 'update.channel': requestAfterCommand ? 'beta' : 'stable', 'update.automatic': requestAfterCommand },
+    });
+  }
 });

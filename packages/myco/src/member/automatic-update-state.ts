@@ -21,8 +21,8 @@ export function setAutomaticUpdates(home: string, enabled: boolean, waitMs = PRE
 }
 
 /** Apply update preferences under the automatic check's lease and make its next check due. */
-export function setUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string }, waitMs = PREFERENCE_WAIT_MS): void {
-  changeUpdatePreferences(home, preferences, waitMs);
+export function setUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string }, waitMs = PREFERENCE_WAIT_MS, clock: () => number = Date.now): void {
+  changeUpdatePreferences(home, preferences, waitMs, clock);
 }
 
 interface StoredUpdatePreferences {
@@ -46,7 +46,7 @@ export function readAppliedUpdateRequests(home: string, deployment: string): Mac
   return machineUpdateRequests(storedUpdatePreferences(home).machineRequests?.[deployment]);
 }
 
-type RemotePreferences = { deployment: string; requests: MachineUpdateRequests };
+type RemotePreferences = { deployment: string; requests: MachineUpdateRequests; clockOffsetMs: number };
 
 /** Apply pending preferences together, publishing their receipts atomically with their local values. */
 export function applyMachineUpdateRequests(home: string, remote: RemotePreferences): void {
@@ -58,6 +58,10 @@ export function applyMachineUpdateRequests(home: string, remote: RemotePreferenc
   changeUpdatePreferences(home, { machineUpdate: remote }, 0);
 }
 
+/**
+ * Compare local changes in the answer's server clock. The answer's network transit time and machine clock jumps
+ * between the local command and this settings read remain inexact.
+ */
 function pendingUpdatePreferences(home: string, remote: RemotePreferences): { automaticUpdates?: boolean; channel?: string; machineUpdate: RemotePreferences } | null {
   const stored = storedUpdatePreferences(home);
   const applied = machineUpdateRequests(stored.machineRequests?.[remote.deployment]);
@@ -66,7 +70,10 @@ function pendingUpdatePreferences(home: string, remote: RemotePreferences): { au
     return request === undefined || applied[leaf]?.id === request.id ? [] : [[leaf, request]];
   })) as MachineUpdateRequests;
   if (Object.keys(pending).length === 0) return null;
-  const apply = (leaf: keyof MachineUpdateRequests) => pending[leaf] !== undefined && (pending[leaf]!.savedAt ?? 0) >= (stored.changedAt?.[leaf] ?? 0);
+  const apply = (leaf: keyof MachineUpdateRequests) => {
+    const changedAt = stored.changedAt?.[leaf];
+    return pending[leaf] !== undefined && (pending[leaf]!.savedAt ?? 0) >= (changedAt === undefined ? 0 : changedAt + remote.clockOffsetMs);
+  };
   return {
     ...(!apply('update.automatic') ? {} : { automaticUpdates: pending['update.automatic']!.value as boolean }),
     ...(!apply('update.channel') ? {} : { channel: pending['update.channel']!.value as string }),
@@ -74,7 +81,7 @@ function pendingUpdatePreferences(home: string, remote: RemotePreferences): { au
   };
 }
 
-function changeUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string; machineUpdate?: RemotePreferences }, waitMs: number): void {
+function changeUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string; machineUpdate?: RemotePreferences }, waitMs: number, clock: () => number = Date.now): void {
   if (preferences.channel !== undefined && !RELEASE_CHANNELS.includes(preferences.channel as typeof RELEASE_CHANNELS[number])) throw new Error(`Invalid release channel; use ${RELEASE_CHANNELS.join(', ')}`);
   if (preferences.machineUpdate !== undefined && pendingUpdatePreferences(home, preferences.machineUpdate) === null) return;
   const acquired = LifecycleLock.acquire(`${statePath(home)}.lock`, {
@@ -84,7 +91,7 @@ function changeUpdatePreferences(home: string, preferences: { automaticUpdates?:
   try {
     const selected = preferences.machineUpdate === undefined ? preferences : pendingUpdatePreferences(home, preferences.machineUpdate);
     if (selected === null) return;
-    const now = Date.now();
+    const now = clock();
     const changedAt = preferences.machineUpdate === undefined ? {
       ...(selected.automaticUpdates === undefined ? {} : { 'update.automatic': now }),
       ...(selected.channel === undefined ? {} : { 'update.channel': now }),

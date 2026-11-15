@@ -7,7 +7,7 @@
  * and that is not an instruction to forget what this machine was told before.
  */
 import fs from 'node:fs';
-import { MACHINE_UPDATE_HEADER, machineUpdateRequests, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_UPDATE_HEADER, machineUpdateRequests, type MachineSettingsBlock } from '@goondocks/myco-shared/member-protocol';
 import { readAutomaticUpdatePreference, readInstallMarker, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
 import { applyMachineUpdateRequests, readAppliedUpdateRequests } from './automatic-update-state.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
@@ -22,12 +22,12 @@ import { assertDeploymentTokenPair } from './token-pairing.js';
 export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
 
 /** The settings block a Deployment answers, or null when the value is not one. */
-export function machineBlockOf(value: unknown): { leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string; invalidated?: true; cachedOrder?: number; updateRequests?: MachineUpdateRequests } | null {
+export function machineBlockOf(value: unknown): (MachineSettingsBlock & { invalidated?: true; cachedOrder?: number }) | null {
   if (typeof value !== 'object' || value === null) return null;
   const leaves = (value as { leaves?: unknown }).leaves;
   if (typeof leaves !== 'object' || leaves === null || Array.isArray(leaves)) return null;
-  const block = value as { feature?: unknown; revision?: unknown; invalidated?: unknown; cachedOrder?: unknown; updateRequests?: unknown };
-  return { leaves: leaves as Record<string, unknown>, updateRequests: machineUpdateRequests(block.updateRequests), ...(block.feature === MACHINE_SETTINGS_FEATURE && isMachineSettingsRevision(block.revision) ? { feature: MACHINE_SETTINGS_FEATURE, revision: block.revision } : {}), ...(block.feature === MACHINE_SETTINGS_FEATURE && block.invalidated === true ? { feature: MACHINE_SETTINGS_FEATURE, invalidated: true as const } : {}), ...(typeof block.cachedOrder === 'number' && Number.isSafeInteger(block.cachedOrder) && block.cachedOrder >= 0 ? { cachedOrder: block.cachedOrder } : {}) };
+  const block = value as { feature?: unknown; revision?: unknown; invalidated?: unknown; cachedOrder?: unknown; updateRequests?: unknown; serverNow?: unknown };
+  return { leaves: leaves as Record<string, unknown>, updateRequests: machineUpdateRequests(block.updateRequests), ...(typeof block.serverNow === 'number' && Number.isSafeInteger(block.serverNow) && block.serverNow >= 0 ? { serverNow: block.serverNow } : {}), ...(block.feature === MACHINE_SETTINGS_FEATURE && isMachineSettingsRevision(block.revision) ? { feature: MACHINE_SETTINGS_FEATURE, revision: block.revision } : {}), ...(block.feature === MACHINE_SETTINGS_FEATURE && block.invalidated === true ? { feature: MACHINE_SETTINGS_FEATURE, invalidated: true as const } : {}), ...(typeof block.cachedOrder === 'number' && Number.isSafeInteger(block.cachedOrder) && block.cachedOrder >= 0 ? { cachedOrder: block.cachedOrder } : {}) };
 }
 
 interface MachineAnswerOrder { issued: number; received: number }
@@ -142,7 +142,8 @@ function updateSettingsProblem(file: string, error: unknown): string {
  * names it, as the hook resolves it from its own directory, so a pinned project's settings land beside its own
  * membership. Written whole or not at all. Any other value changes nothing.
  */
-export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoHome: string, requestOrder?: number): boolean {
+export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoHome: string, requestOrder?: number, now: () => number = Date.now): boolean {
+  const receivedAt = now();
   const block = machineBlockOf(answered);
   if (block === null) return false;
   return withMachineSettings(serverUrl, mycoHome, (file, order) => {
@@ -150,7 +151,7 @@ export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoH
     if (stamp < order.received) return false;
     let updateApplyError: string | undefined;
     try {
-      applyMachineUpdateRequests(mycoHome, { deployment: deploymentKeyFor(serverUrl), requests: block.updateRequests ?? {} });
+      applyMachineUpdateRequests(mycoHome, { deployment: deploymentKeyFor(serverUrl), requests: block.updateRequests ?? {}, clockOffsetMs: block.serverNow === undefined ? 0 : block.serverNow - receivedAt });
       updateWarnings.delete(file);
     } catch (error) { updateApplyError = updateSettingsProblem(file, error); }
     order.received = stamp;

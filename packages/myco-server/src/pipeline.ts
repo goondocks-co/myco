@@ -742,7 +742,7 @@ export function createServer(deps: ServerDeps) {
       // The two routes that admit a lapsed credential act on it directly: a refresh is fenced by `TOKEN_LIVE`, and a self-revocation is the ending itself.
       return await route.credential(route.admitsLapsed === true ? env : credentialWrites(env, auth), {
         memberId: auth.memberId, machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
-        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, ...machineContractHeaders(request), body: body.text, now,
+        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, ...machineContractHeaders(request), body: body.text, now, clock: deps.now,
       });
     } catch (err) {
       return failed(env, auth, route, err);

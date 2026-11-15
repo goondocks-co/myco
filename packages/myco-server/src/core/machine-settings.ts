@@ -1,4 +1,4 @@
-import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, machineUpdateReport, machineUpdateRequests, validMachineUpdateValue, type MachineUpdateReport, type MachineUpdateLeaf, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, machineUpdateReport, machineUpdateRequests, validMachineUpdateValue, type MachineUpdateReport, type MachineUpdateLeaf, type MachineSettingsBlock } from '@goondocks/myco-shared/member-protocol';
 /**
  * Settings one machine holds: one set per machine identity, edited on the dashboard and read by that machine (#1393).
  *
@@ -183,8 +183,8 @@ export async function resetMachineLeaf(db: RelationalStore, machineId: string, l
  * and null for any other: a credential that joined no machine (a run's) is told nothing about any.
  */
 export async function machineBlockFor(
-  db: RelationalStore, memberId: string, machineId: string, support: { machineSettingsFeature?: boolean; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: boolean; machineUpdateReport?: MachineUpdateReport } = {},
-): Promise<{ leaves: Record<string, unknown>; feature?: typeof MACHINE_SETTINGS_FEATURE; revision?: string; updateRequests?: MachineUpdateRequests } | null> {
+  db: RelationalStore, memberId: string, machineId: string, support: { machineSettingsFeature?: boolean; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: boolean; machineUpdateReport?: MachineUpdateReport; clock?: () => number } = {},
+): Promise<MachineSettingsBlock | null> {
   if (!await readMachineClaimed(db, machineId, memberId)) return null;
   if (support.machineSettingsFeature === true) await noteMachineContract(db, machineId, memberId);
   const reportOrder = support.machineSettingsOrder;
@@ -205,7 +205,7 @@ export async function machineBlockFor(
       const updates = support.machineUpdateReport === undefined ? {} : machineUpdateRequests(Object.fromEntries(
         settings.filter(row => row.requestId !== undefined).map(row => [row.leaf, { id: row.requestId, value: row.value, savedAt: row.updatedAt ?? 0 }]),
       ));
-      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates }) };
+      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates, serverNow: (support.clock ?? Date.now)() }) };
     }
   }
   throw new Error('Machine settings changed while preparing their revision.');

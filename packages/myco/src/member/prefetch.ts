@@ -105,6 +105,7 @@ export async function prefetchContext(opts: {
         headers: { 'content-type': 'application/json', ...machineSettingsHeaders(opts.serverUrl, opts.mycoHome) },
         budget: subRequestBudget(opts.budget, CONTEXT_CAP_MS, now()),
       }));
+      const receivedAt = now();
       if (answer.class === 'refused' && refusalPermanent(answer.code)) {
         const who = `(${ask.kind})`;
         process.stderr.write(`[myco] helper: session ${terminalText(sessionId)} ${who} refused: ${terminalText(answer.code)}\n`);
@@ -132,7 +133,7 @@ export async function prefetchContext(opts: {
         else if (skipped.some((s) => WITHDRAWN.includes(s))) delete cache.blocks[kind];
       });
       // The machine's own settings ride a session's answer.
-      try { cacheMachineSettings(opts.serverUrl, body.machine, opts.mycoHome, machineOrder); } catch { /* the last cache stands */ }
+      try { cacheMachineSettings(opts.serverUrl, body.machine, opts.mycoHome, machineOrder, () => receivedAt); } catch { /* the last cache stands */ }
       settleAsk(spool, sessionId, ask, now());
     }
   }
@@ -193,12 +194,14 @@ export async function warmProjectContext(
     if (!canStartRequest(budget, now())) break;
     const machineOrder = beginMachineSettingsRequest(membership.serverUrl, opts.mycoHome);
     let answer: ReturnType<typeof classifyEventAnswer>;
+    let receivedAt: number;
     try {
       answer = classifyEventAnswer(await client.request('POST', SESSION_PATH, {
         body: JSON.stringify({ kind, preview: true }),
         headers: { 'content-type': 'application/json', ...machineSettingsHeaders(membership.serverUrl, opts.mycoHome) },
         budget: subRequestBudget(budget, CONTEXT_CAP_MS, now()),
       }));
+      receivedAt = now();
     } catch {
       break;
     }
@@ -206,7 +209,7 @@ export async function warmProjectContext(
     const context = typeof answer.body.context === 'string' ? answer.body.context : '';
     if (context.length === 0) continue;
     updateProjectContext(spoolDir, opts.mycoHome, (cache) => { cache.blocks[kind] = { context, at: now() }; });
-    try { cacheMachineSettings(membership.serverUrl, answer.body.machine, opts.mycoHome, machineOrder); } catch { /* the last cache stands */ }
+    try { cacheMachineSettings(membership.serverUrl, answer.body.machine, opts.mycoHome, machineOrder, () => receivedAt); } catch { /* the last cache stands */ }
     cached += 1;
   }
   return cached;

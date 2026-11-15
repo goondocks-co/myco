@@ -25,12 +25,12 @@ const temporary: string[] = [];
 afterAll(() => { for (const dir of temporary) rmSync(dir, { recursive: true, force: true }); });
 const scratch = () => { const dir = mkdtempSync(path.join(tmpdir(), 'myco-machine-contract-')); temporary.push(dir); return dir; };
 
-async function rig(target: DeploymentTarget) {
+async function rig(target: DeploymentTarget, clock: () => number = Date.now) {
   const fixture = sqliteEnv();
   const env = target === 'cloudflare'
     ? serverEnvFromBindings({ ...fixture.env, ...OWNER_ENV }, fixture.deferred)
     : serverEnvFromBunConfig({ sqlite: fixture.sqlite, blobDir: path.join(scratch(), 'blobs'), ...OWNER_ENV });
-  const server = createServer({ now: Date.now, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
+  const server = createServer({ now: clock, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
   const request = (request: Request) => server.handleRequest(request, env);
   fixture.sqlite.run(`INSERT INTO machine_claims(machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', 1)`);
   const { token } = await issueMemberToken(env.db, { machineId: 'machine_1', memberId: 'mem_machine_1' }, Date.now());
@@ -326,10 +326,11 @@ describe('machine settings effective contract', () => {
 });
 
 it('consumes only the confirmed request and never replays it after local receipts are lost', async () => {
-  const r = await rig('bun');
+  const serverNow = Date.now() + 1_000;
+  const r = await rig('bun', () => serverNow);
   writeInstallMarker(r.home, { channel: 'alpha', source: 'curl', bin: path.join(r.home, 'bin', 'myco') });
   expect((await r.set('update.channel', 'beta')).status).toBe(200);
-  await r.sync();
+  expect(await r.sync()).toMatchObject({ serverNow, updateRequests: { 'update.channel': { savedAt: serverNow } } });
   expect(effectiveUpdateChannel(r.home)).toBe('beta');
   expect((await r.set('update.channel', 'stable')).status).toBe(200);
   expect(await r.sync()).toMatchObject({ updateRequests: { 'update.channel': { value: 'stable' } } });

@@ -72,7 +72,7 @@ export interface RouteContext {
 export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'body' | 'now' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated' | 'machineUpdateReport'>;
 
 /** A request answered on the presented credential alone: that credential, and the body. */
-export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime' | 'body' | 'now' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated' | 'machineUpdateReport'>;
+export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime' | 'body' | 'now' | 'clock' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated' | 'machineUpdateReport'>;
 
 /**
  * Context for a Deployment-scoped route: a worker's claim, lease and end.
