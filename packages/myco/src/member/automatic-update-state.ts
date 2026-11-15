@@ -62,7 +62,7 @@ export function applyMachineUpdateRequests(home: string, remote: RemotePreferenc
  * Compare local changes in the answer's server clock. The answer's network transit time and machine clock jumps
  * between the local command and this settings read remain inexact.
  */
-function pendingUpdatePreferences(home: string, remote: RemotePreferences): { automaticUpdates?: boolean; channel?: string; machineUpdate: RemotePreferences } | null {
+function pendingUpdatePreferences(home: string, remote: RemotePreferences): { automaticUpdates?: boolean; channel?: string; machineUpdate: Pick<RemotePreferences, 'deployment' | 'requests'> } | null {
   const stored = storedUpdatePreferences(home);
   const applied = machineUpdateRequests(stored.machineRequests?.[remote.deployment]);
   const pending = Object.fromEntries(MACHINE_UPDATE_LEAVES.flatMap(leaf => {
