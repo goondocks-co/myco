@@ -28,10 +28,10 @@ export const searchPaging: ParityScenario = {
       const res = await fetch(`${target.url}/api/projects/${target.projectId}/search?${new URLSearchParams({ q: word, type: 'card', session_id: session, mode: 'fts', order: 'time', ...extra })}`, { headers: target.ownerHeaders() });
       return { status: res.status, body: await res.json() as SearchAnswer };
     };
-    const mcp = async <T,>(args: Record<string, unknown>): Promise<T> => {
+    const mcp = async <T,>(args: Record<string, unknown>, name = 'myco_search'): Promise<T> => {
       const res = await fetch(`${target.url}/mcp`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'myco_search', arguments: args } }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }),
       });
       const body = await res.json() as { error?: unknown; result: { structuredContent: { result: T } } };
       expect(body.error).toBeUndefined();
@@ -78,6 +78,19 @@ export const searchPaging: ParityScenario = {
     // The MCP tool lists the same matches by the same cursor.
     const first = await mcp<SearchAnswer>({ query: word, type: 'card', session_id: session, mode: 'fts', order: 'time', limit: PAGE });
     expect(first.hits.map((r) => r.id)).toEqual(everyCard.slice(0, PAGE));
+    const hit = first.hits[0]!;
+    expect(hit).toMatchObject({ status: 'carded', learned_at: new Date(at).toISOString(),
+      retrieve: { tool: 'myco_sessions', input: { op: 'get', id: session, prompt_id: hit.prompt_id } } });
+    const opened = await mcp<{ prompt: { text: string }; tools: { total: number } }>(hit.retrieve!.input, hit.retrieve!.tool);
+    expect(opened.prompt.text).toBe(`${word} identical words`);
+    expect(opened.tools.total).toBe(0);
+    const turns = await mcp<{ turns: { rows: { promptId: string }[]; cursor: string } }>({ op: 'get', id: session, limit: 1 }, 'myco_sessions');
+    const moreTurns = await mcp<{ turns: { rows: { promptId: string }[] } }>({ op: 'get', id: session, limit: 1, cursor: turns.turns.cursor }, 'myco_sessions');
+    expect(moreTurns.turns.rows[0]!.promptId).not.toBe(turns.turns.rows[0]!.promptId);
+    const fallback = await mcp<SearchAnswer>({ query: word, type: 'card', session_id: session, mode: 'semantic' });
+    expect(fallback).toMatchObject({ mode: 'fts', fallback_reason: 'no_vectors', provider_unavailable: false });
+    expect(fallback.hits.map(row => row.id).sort()).toEqual(everyCard);
+
     expect(first.nextCursor).not.toBeNull();
     const second = await mcp<SearchAnswer>({ query: word, type: 'card', session_id: session, mode: 'fts', order: 'time', limit: PAGE, cursor: first.nextCursor });
     expect(second.hits.map((r) => r.id)).toEqual(everyCard.slice(PAGE, 2 * PAGE));

@@ -127,9 +127,24 @@ describe('tool parity', () => {
         // The query and limit carry the limits the description states.
         expect(current.inputSchema.properties.query).toMatchObject({ maxLength: SEARCH_QUERY_MAX_CHARS });
         expect(current.inputSchema.properties.limit).toMatchObject({ type: 'integer', minimum: 1, maximum: SEARCH_MAX_LIMIT });
-        for (const changed of ['type', 'mode', 'limit', 'query']) (current.inputSchema.properties as Record<string, unknown>)[changed] = (frozen.inputSchema.properties as Record<string, unknown>)[changed];
+        for (const changed of ['type', 'mode', 'limit', 'query', 'status']) (current.inputSchema.properties as Record<string, unknown>)[changed] = (frozen.inputSchema.properties as Record<string, unknown>)[changed];
         // The search's order, cursor and match, and its session agent and branch filters, are the properties the frozen contract does not carry.
         for (const added of ['order', 'cursor', 'agent', 'branch', 'match']) {
+          expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
+          delete (current.inputSchema.properties as Record<string, unknown>)[added];
+        }
+      }
+      if (server.name === 'myco_sessions' || server.name === 'myco_agent') {
+        current.description = frozen.description;
+        expect(current.inputSchema.properties.limit).toMatchObject({ type: 'integer', minimum: 1, maximum: MAX_PAGE });
+        expect(current.inputSchema.properties.cursor).toMatchObject({ type: 'string', minLength: 1 });
+        (current.inputSchema.properties as Record<string, unknown>).limit = frozen.inputSchema.properties.limit;
+        delete (current.inputSchema.properties as Record<string, unknown>).cursor;
+      }
+      if (server.name === 'myco_sessions') {
+        if (current.cortex !== undefined && frozen.cortex !== undefined) current.cortex.guidance = frozen.cortex.guidance;
+        for (const changed of ['id', 'branch']) (current.inputSchema.properties as Record<string, unknown>)[changed] = (frozen.inputSchema.properties as Record<string, unknown>)[changed];
+        for (const added of ['prompt_id', 'collection']) {
           expect(current.inputSchema.properties[added]).toMatchObject({ type: 'string' });
           delete (current.inputSchema.properties as Record<string, unknown>)[added];
         }

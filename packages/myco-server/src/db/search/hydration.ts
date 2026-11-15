@@ -1,3 +1,4 @@
+import { SEARCH_CURRENT_STATUSES } from '@goondocks/myco-shared/search-types';
 import type { RelationalStore } from '../../core/adapters.js';
 import { occurredAt, presentedStatus } from '../session-dates.js';
 import { read, readSet } from '../index.js';
@@ -40,6 +41,8 @@ export interface HydratedDocument {
   prompt_id: string | null;
   created_at: number;
   agent: string | null;
+  learned_at: number;
+  successor_id: string | null;
   /** A card hit's turn. */
   turn_id: string | null;
   turn_preview: string | null;
@@ -64,6 +67,9 @@ const admitted = (a: Admission) => [
   ...(a.liveSession === null ? [] : [live(a.liveSession)]),
 ].join(' AND ');
 
+const currentStatus = (kind: keyof typeof SEARCH_CURRENT_STATUSES, column: string) =>
+  `(?5 IS NOT NULL OR ${column} IN (${SEARCH_CURRENT_STATUSES[kind].map(status => `'${status}'`).join(',')}))`;
+
 const NO_TURN = 'NULL AS turn_id, NULL AS turn_preview, NULL AS turn_chars';
 /** A past plan's outcome as its hit reads: how and when it was resolved, then its resolution note. */
 const PLAN_LINE = `CASE WHEN ${planResolvedSql('p')} THEN ${planOutcomeLineSql('p')} END AS line`;
@@ -71,28 +77,31 @@ const PLAN_LINE = `CASE WHEN ${planResolvedSql('p')} THEN ${planOutcomeLineSql('
 const HYDRATE = [
   read<Slots, HydratedDocument>({ name: 'searchHydration.sessions', sql:
     `SELECT d.doc_id, 'session' AS kind, d.project_id, s.session_id AS id, NULL AS plan, s.title, NULL AS line, ${textOf('s.summary')},
-      ${presentedStatus('s.')} AS status, NULL AS observation_type, s.session_id, NULL AS prompt_id, ${occurredAt('s.')} AS created_at, s.agent, ${NO_TURN}
+      ${presentedStatus('s.')} AS status, NULL AS observation_type, s.session_id, NULL AS prompt_id, ${occurredAt('s.')} AS created_at, s.agent, ${occurredAt('s.')} AS learned_at, NULL AS successor_id, ${NO_TURN}
     FROM ${IDS} CROSS JOIN sessions s ON s.project_id = d.project_id AND s.session_id = d.source_key
     WHERE d.kind = 'session' AND ${admitted({ agent: 's.agent', branch: 's.branch', status: presentedStatus('s.'), session: 's.session_id', created: occurredAt('s.'), liveSession: 's.session_id' })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.spores', sql:
-    `SELECT d.doc_id, 'spore' AS kind, d.project_id, s.id, NULL AS plan, s.observation_type AS title, s.agent_line AS line, ${textOf('s.content')},
-      s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, ${NO_TURN}
+    `SELECT d.doc_id, 'spore' AS kind, d.project_id, s.id, NULL AS plan, COALESCE(NULLIF(s.agent_line, ''), s.observation_type) AS title, s.agent_line AS line, ${textOf('s.content')},
+      s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, COALESCE(${occurredAt('se.')}, s.created_at) AS learned_at,
+      (SELECT e.new_spore_id FROM resolution_events e WHERE e.project_id=s.project_id AND e.spore_id=s.id
+        AND e.action=CASE s.status WHEN 'superseded' THEN 'supersede' WHEN 'consolidated' THEN 'consolidate' END
+        AND e.new_spore_id IS NOT NULL ORDER BY e.created_at DESC,e.id DESC LIMIT 1) AS successor_id, ${NO_TURN}
     FROM ${IDS} CROSS JOIN spores s ON s.project_id = d.project_id AND s.id = d.source_key ${sessionOf('s.session_id')}
-    WHERE d.kind = 'spore' AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 's.status', session: 's.session_id', created: 's.created_at', liveSession: null })}` }),
+    WHERE d.kind = 'spore' AND ${currentStatus('spore', 's.status')} AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 's.status', session: 's.session_id', created: 's.created_at', liveSession: null })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.plans', sql:
     `SELECT d.doc_id, 'plan' AS kind, d.project_id, p.plan_key AS id, json_array(p.project_id, p.plan_key) AS plan, p.title, ${PLAN_LINE}, ${textOf('p.content')},
-      p.status, NULL AS observation_type, p.session_id, p.prompt_id, p.created_at, se.agent, ${NO_TURN}
+      p.status, NULL AS observation_type, p.session_id, p.prompt_id, p.created_at, se.agent, p.created_at AS learned_at, p.superseded_by AS successor_id, ${NO_TURN}
     FROM ${IDS} CROSS JOIN plans p ON p.project_id = d.project_id AND p.plan_key = d.source_key ${sessionOf('p.session_id')}
-    WHERE d.kind = 'plan' AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 'p.status', session: 'p.session_id', created: 'p.created_at', liveSession: 'p.session_id' })}` }),
+    WHERE d.kind = 'plan' AND ${currentStatus('plan', 'p.status')} AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 'p.status', session: 'p.session_id', created: 'p.created_at', liveSession: 'p.session_id' })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.chunks', sql:
     `SELECT d.doc_id, 'chunk' AS kind, d.project_id, p.plan_key AS id, json_array(p.project_id, p.plan_key) AS plan, p.title, ${PLAN_LINE}, ${textOf('d.body')},
-      p.status, NULL AS observation_type, p.session_id, p.prompt_id, p.created_at, se.agent, ${NO_TURN}
+      p.status, NULL AS observation_type, p.session_id, p.prompt_id, p.created_at, se.agent, p.created_at AS learned_at, p.superseded_by AS successor_id, ${NO_TURN}
     FROM ${IDS} CROSS JOIN search_blob_refs r ON r.project_id = d.project_id AND r.blob_key = d.blob_key
       CROSS JOIN plans p ON p.project_id = r.project_id AND p.plan_key = r.plan_key ${sessionOf('p.session_id')}
-    WHERE d.kind = 'chunk' AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 'p.status', session: 'p.session_id', created: 'p.created_at', liveSession: 'p.session_id' })}` }),
+    WHERE d.kind = 'chunk' AND ${currentStatus('plan', 'p.status')} AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 'p.status', session: 'p.session_id', created: 'p.created_at', liveSession: 'p.session_id' })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.cards', sql:
     `SELECT d.doc_id, 'card' AS kind, d.project_id, c.turn_key AS id, NULL AS plan, c.headline AS title, NULL AS line, ${textOf('c.card')},
-      NULL AS status, NULL AS observation_type, c.session_id, c.turn_key AS prompt_id, c.created_at, se.agent,
+      c.state AS status, NULL AS observation_type, c.session_id, c.turn_key AS prompt_id, c.created_at, se.agent, c.created_at AS learned_at, NULL AS successor_id,
       tp.prompt_id AS turn_id, tp.preview AS turn_preview, tp.text_chars AS turn_chars
     FROM ${IDS} CROSS JOIN turn_cards c ON c.project_id = d.project_id AND c.session_id = d.session_id AND c.turn_key = json_extract(d.source_key, '$[1]')
       ${sessionOf('c.session_id')}

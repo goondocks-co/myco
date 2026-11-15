@@ -22,6 +22,12 @@ export const SEARCH_STOPWORDS: readonly string[] = [
   'of', 'on', 'or', 'that', 'the', 'their', 'then', 'there', 'these', 'this', 'to', 'was', 'were', 'will', 'with',
 ];
 
+export const SEARCH_CURRENT_STATUSES = { spore: ['active'], plan: ['active', 'in_progress'] } as const;
+
+/** Sessions and cards remain browsable regardless of whether their conversation has ended. */
+export const isCurrentSearchStatus = (type: SearchType, status: string): boolean =>
+  type !== 'spore' && type !== 'plan' || (SEARCH_CURRENT_STATUSES[type] as readonly string[]).includes(status);
+
 export interface SearchOptions {
   query: string;
   type?: string;
@@ -68,11 +74,17 @@ export interface SearchResult {
   score: number;
   /** When the hit's own record was created, in epoch milliseconds. */
   created_at: number;
+  /** The record's current lifecycle state. */
+  status: string;
+  /** ISO timestamp of the source knowledge's first occurrence, falling back to record creation. */
+  learned_at: string;
+  /** The recorded replacement of a superseded or consolidated spore. */
+  successor_id?: string;
   session_id?: string;
   prompt_id?: string;
   /** Present on card hits: the turn the hit opens, or null when its prompt reference names no prompt of this Project's session. */
   turn?: SearchTurn | null;
-  retrieve?: { tool: string; input: { op: string; id: string } };
+  retrieve?: { tool: string; input: { op: string; id: string; prompt_id?: string } };
   /** Whether the record's source work is released, as the latest release check left it; absent when it has no release state. */
   release?: ReleaseAnnotation;
 }
@@ -100,6 +112,8 @@ export interface SearchAnswer {
   hits: SearchResult[];
   mode: 'fts' | 'semantic';
   provider_unavailable: boolean;
+  /** Why a requested semantic search used the word path. */
+  fallback_reason?: 'no_vectors' | 'history' | 'empty_semantic' | 'provider_unavailable';
   coverage: SearchCoverage;
   /** True when older matches exist than the ones this answer ranked; the next page reaches them. */
   partial: boolean;

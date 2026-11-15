@@ -90,7 +90,7 @@ describe('finding plans by a body stored apart', () => {
     throw new Error('the walk never ended');
   };
 
-  it('finds every plan whose body is the same stored body, and filters each plan by its own status', async () => {
+  it('finds current plans sharing a stored body and admits history by its own status', async () => {
     const f = fixture();
     await f.blob('shared', body(1, 'okapineedle', 'end'));
     f.spilledPlan('older', 'shared', { over: { status: 'active', created_at: 1000 } });
@@ -103,8 +103,8 @@ describe('finding plans by a body stored apart', () => {
       byTime: (await walk(f, 'okapineedle', { type: 'plan', order: 'time' })).sort(),
       oneAPage: (await walk(f, 'okapineedle', { type: 'plan', limit: 1 })).sort(),
       oneAPageByTime: (await walk(f, 'okapineedle', { type: 'plan', order: 'time', limit: 1 })).sort(),
-    }).toEqual({ all: ['plan:newer', 'plan:older'], active: ['older'], completed: ['newer'], byTime: ['plan:newer', 'plan:older'],
-      oneAPage: ['plan:newer', 'plan:older'], oneAPageByTime: ['plan:newer', 'plan:older'] });
+    }).toEqual({ all: ['plan:older'], active: ['older'], completed: ['newer'], byTime: ['plan:older'],
+      oneAPage: ['plan:older'], oneAPageByTime: ['plan:older'] });
   });
 
   it('lists a plan once across every page when its title and several chunks of its body all match, by relevance and by time', async () => {

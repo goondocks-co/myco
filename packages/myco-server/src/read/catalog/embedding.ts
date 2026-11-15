@@ -1,3 +1,6 @@
+import { isCurrentSearchStatus } from '@goondocks/myco-shared/search-types';
+import { semanticRecords } from '../../db/search/semantic-records.js';
+import { searchPresentation } from '../../core/search-presentation.js';
 import type { RelationalStore as embedding_import_RelationalStore } from "../../core/adapters.js";
 import type { EmbeddingProvider as embedding_import_EmbeddingProvider } from "../../core/embedding/provider.js";
 import { VECTOR_QUERY_LIMIT as embedding_import_VECTOR_QUERY_LIMIT } from "../../core/embedding/vectors.js";
@@ -76,14 +79,17 @@ async function embedding_semanticSearch(db: embedding_import_RelationalStore, sc
   const retained = types.filter((t): t is embedding_import_VectorType => (embedding_import_VECTOR_TYPES as readonly string[]).includes(t));
   const branches = await Promise.all(retained.map((type) => embedding_semanticHits(db, scope, semantic, values,
     { topK: embedding_import_VECTOR_QUERY_LIMIT, minScore: embedding_MIN_SEARCH_SIMILARITY, filters: { ...filters, type }, preview: true })));
-  const tools: Partial<Record<embedding_import_VectorType, string>> = { session: 'myco_sessions', spore: 'myco_spores', plan: 'myco_plans' };
-  return branches.flat().sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
-    const tool = tools[row.type];
+  const candidates = branches.flat().filter(row => options.status !== undefined || isCurrentSearchStatus(row.type, row.status));
+  const records = await semanticRecords(db, { project: scope.projectId, records: candidates, agent: options.agent, branch: options.branch });
+  return candidates.filter(row => records.has(JSON.stringify([row.type, row.record_id])))
+    .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
+    const record = records.get(JSON.stringify([row.type, row.record_id]))!;
     return {
-      id: row.record_id, type: row.type, title: row.title, preview: row.text.slice(0, embedding_import_SEARCH_PREVIEW_CHARS), score: row.score, created_at: row.created_at,
+      id: row.record_id, type: row.type, title: record.agent_line || row.title, preview: record.agent_line || row.text.slice(0, embedding_import_SEARCH_PREVIEW_CHARS), score: row.score, created_at: row.created_at,
       ...(row.session_id === '' ? {} : { session_id: row.session_id }),
       ...(row.prompt_id === null ? {} : { prompt_id: row.prompt_id }),
-      ...(tool === undefined ? {} : { retrieve: { tool, input: { op: 'get', id: row.record_id } } }),
+      ...searchPresentation({ type: row.type, id: row.record_id, status: row.status, learnedAt: Number(record.learned_at),
+        sessionId: row.session_id || null, promptId: row.prompt_id }),
     };
   });
 }

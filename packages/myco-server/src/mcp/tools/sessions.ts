@@ -6,6 +6,10 @@
  * the Deployment dispatches after the session ends; they answer null and
  * empty until it lands. Timestamps are the Deployment's, in milliseconds.
  */
+import { documentTurnCollection, documentTurnDetail, TURN_COLLECTIONS, type TurnCollection } from '../../content/session-turns.js';
+import { listCatalogTurns } from '../../read/document-catalog.js';
+import { decodeCursor } from '../../read/scope.js';
+import { PROMPT_ORIGINS } from '../../ingest/kinds.js';
 import { getReleaseStatus } from '../../core/provenance.js';
 import { plans_getPlan as getPlan } from '../../read/catalog/plans.js';
 import {
@@ -66,15 +70,31 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
     if (id === undefined) return failure('id is required for op: get');
     const row = await getSession(db, scope, id);
     if (row === null) return failure('Session not found');
+    const promptId = str(input.prompt_id);
+    if (promptId === undefined && str(input.collection) !== undefined) return failure('collection requires prompt_id; call myco_sessions with op get and id to list its turns first.');
+    const cursor = str(input.cursor);
+    if (promptId !== undefined) {
+      const collection = str(input.collection);
+      if (collection !== undefined) {
+        if (!(TURN_COLLECTIONS as readonly string[]).includes(collection)) return failure('Unknown collection; call myco_sessions with op get, id and prompt_id, then use a collection named in cursors.');
+        const page = await documentTurnCollection(ctx.env, scope, id, promptId, collection as TurnCollection, cursor);
+        if (page === 'stale') return failure('stale_cursor: the conversation changed; call myco_sessions with op get, id and prompt_id without cursor.');
+        return page ?? failure('Turn or cursor not found; call myco_sessions with op get and id to list its turns.');
+      }
+      if (cursor !== undefined) return failure('A turn cursor requires collection; call myco_sessions with op get, id, prompt_id, collection and the matching cursor.');
+      return await documentTurnDetail(ctx.env, scope, id, promptId) ?? failure('Turn not found; call myco_sessions with op get and id to list its turns.');
+    }
+    if (cursor !== undefined && decodeCursor(cursor) === null) return failure('Invalid cursor; call myco_sessions with op get and id without cursor to list its turns.');
+    const turns = await listCatalogTurns(db, scope, id, { origins: PROMPT_ORIGINS, limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT, cursor });
     const counts = await sessionCounts(db, scope, id);
-    return { ...summary(row, counts), counts, release: await getReleaseStatus(db, scope, 'session', id) };
+    return { ...summary(row, counts), counts, turns, release: await getReleaseStatus(db, scope, 'session', id) };
   }
 
   let sessionId: string | undefined;
   const plan = str(input.plan);
   if (plan !== undefined) {
     const row = await getPlan(db, scope, plan);
-    if (row === null) return [];
+    if (row === null) return { sessions: [], cursor: null };
     sessionId = row.sessionId;
   }
   const since = str(input.since);
@@ -83,13 +103,16 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
   const state = status === 'active' ? 'open' : status === 'completed' ? 'ended' : undefined;
   if (status !== undefined && state === undefined) return failure('status must be active or completed');
 
+  const cursor = str(input.cursor);
+  if (cursor !== undefined && decodeCursor(cursor) === null) return failure('Invalid cursor; call myco_sessions with op list and no cursor to start again.');
   const page = await listSessionSummaries(db, scope, {
     limit: typeof input.limit === 'number' ? input.limit : DEFAULT_LIMIT,
+    cursor,
     branch: str(input.branch),
     since: sinceMs === undefined || Number.isNaN(sinceMs) ? undefined : sinceMs,
     state,
     memberLabel: str(input.user),
     sessionId,
   }, ctx.now);
-  return page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount }));
+  return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount })), cursor: page.cursor };
 }

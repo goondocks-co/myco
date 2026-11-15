@@ -291,6 +291,23 @@ describe('the retained read verbs in a joined project with no 1.4 vault', () => 
     expect(legacyArtifacts()).toEqual([]);
   });
 
+  it('vectors names a word fallback instead of presenting its scores as similarities', async () => {
+    const rig = await memberRig();
+    join(rig);
+    const fetchWords: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method !== 'POST' || new URL(request.url).pathname !== '/mcp') return rig.fetch(request);
+      const wire: { id: number; method: string } = await request.clone().json();
+      if (wire.method !== 'tools/call') return rig.fetch(request);
+      const result = { hits: [], mode: 'fts', provider_unavailable: false, fallback_reason: 'empty_semantic' };
+      return Response.json({ jsonrpc: '2.0', id: wire.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: { result } } });
+    };
+    const ran = await read('vectors', ['architecture'], fetchWords);
+    expect(ran.ok).toBe(false);
+    expect(ran.stderr).toContain('used word search (empty_semantic); use myco search "architecture"');
+    expect(ran.stdout).not.toContain('Sim');
+  });
+
   it('renews a token that lapsed inside its lineage before the read, and answers on the successor', async () => {
     const rig = await memberRig({ now: Date.now() - 20 * DAY_MS });
     join(rig);

@@ -22,10 +22,26 @@ describe('a word search', () => {
     const answer = await f.search('cobalt', { mode: 'fts' });
     expect(answer.hits.map((hit) => `${hit.type}:${hit.id}`).sort()).toEqual(['card:t1', 'plan:pl1', 'session:s1', 'spore:sp1']);
     expect(answer.hits.find((hit) => hit.type === 'spore')!.retrieve).toEqual({ tool: 'myco_spores', input: { op: 'get', id: 'sp1' } });
-    expect(answer.hits.find((hit) => hit.type === 'card')).toMatchObject({ session_id: 's1', prompt_id: 't1' });
+    expect(answer.hits.find((hit) => hit.type === 'card')).toMatchObject({ session_id: 's1', prompt_id: 't1', status: 'carded', retrieve: { tool: 'myco_sessions', input: { op: 'get', id: 's1', prompt_id: 't1' } } });
     expect(answer).toMatchObject({ mode: 'fts', partial: false, nextCursor: null, coverage: { state: 'ready', pendingBlobs: 0, horizon: null } });
     expect(typeof answer.asOf).toBe('number');
     expect(Object.keys(answer).sort()).toEqual(['asOf', 'coverage', 'hits', 'mode', 'nextCursor', 'partial', 'provider_unavailable']);
+  });
+
+  it('labels current knowledge and explicitly requested history with source dates, agent lines and successors', async () => {
+    const f = fixture();
+    f.session('source', { started_at: 1000 });
+    f.spore('old', 'cobalt history', { session_id: 'source', status: 'consolidated', agent_line: 'Use the current cobalt rule.', created_at: 5000, updated_at: 9000 });
+    f.spore('new', 'cobalt current', { agent_line: 'Keep cobalt bounded.' });
+    f.insert('resolution_events', { project_id: 'search-a', id: 'edge', agent_id: 'search-agent', spore_id: 'old', action: 'consolidate', new_spore_id: 'new', created_at: 9000 });
+    f.plan('done', 'cobalt finished', { status: 'completed' });
+    f.plan('working', 'cobalt work', { status: 'in_progress' });
+    expect(ids(await f.search('cobalt', { mode: 'fts' })).sort()).toEqual(['new', 'working']);
+    const hit = (await f.search('cobalt', { mode: 'fts', status: 'consolidated' })).hits[0];
+    expect(await f.search('cobalt', { mode: 'semantic', type: 'spore', status: 'consolidated' }))
+      .toMatchObject({ mode: 'fts', fallback_reason: 'history', hits: [{ id: 'old', successor_id: 'new' }] });
+    expect(hit).toMatchObject({ title: 'Use the current cobalt rule.', status: 'consolidated', learned_at: new Date(1000).toISOString(), successor_id: 'new' });
+    expect(ids(await f.search('cobalt', { mode: 'fts', type: 'plan', status: 'completed' }))).toEqual(['done']);
   });
 
   it('ranks records whose headline holds the words first, then the newest, across kinds', async () => {
@@ -60,11 +76,12 @@ describe('a word search', () => {
     f.card('sa', 'turn', 'basalt card', { created_at: 5_000_000 });
     const search = async (options: Record<string, string | number>) => ids(await f.search('basalt', { mode: 'fts', ...options })).sort();
     expect(await search({ status: 'superseded' })).toEqual(['superseded']);
+    expect(await search({})).toEqual(['active', 'decision', 'turn']);
     expect(await search({ observation_type: 'decision' })).toEqual(['decision']);
     expect(await search({ session_id: 'sa' })).toEqual(['active', 'turn']);
-    expect(await search({ agent: 'claude-code' })).toEqual(['decision', 'superseded']);
+    expect(await search({ agent: 'claude-code' })).toEqual(['decision']);
     expect(await search({ branch: 'main' })).toEqual(['active', 'turn']);
-    expect(await search({ since: 3_000, until: 4_000 })).toEqual(['decision', 'superseded']);
+    expect(await search({ since: 3_000, until: 4_000 })).toEqual(['decision']);
   });
 
   it('searches rendered card values without indexing the wire grammar, and shows a harness prompt as the session shows it', async () => {

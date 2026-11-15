@@ -5,6 +5,7 @@
  */
 import { redactSecrets } from '@goondocks/myco-shared/redact-secrets';
 import { RunBodyUnavailable, RunNotFound, listReportsWithBodies, runInstructionBody } from '../../db/runs/bodies.js';
+import { decodeCursor } from '../../read/scope.js';
 import { getRunDetail, listRuns } from '../../read/runs.js';
 import { failure, scopeOf, viewerOf, type ToolContext } from '../context.js';
 import { snake } from '../shape.js';
@@ -39,6 +40,8 @@ export async function handleAgent(input: ToolInput, ctx: ToolContext): Promise<u
     }
   }
 
-  const page = await listRuns(db, scope, ctx.now, viewerOf(ctx), { task: str(input.task), agentId: str(input.agent_id), limit: typeof input.limit === 'number' ? input.limit : 50 });
+  const cursor = str(input.cursor);
+  if (cursor !== undefined && decodeCursor(cursor) === null) return { ...failure('Invalid cursor; call myco_agent with op runs and no cursor to start again.'), op };
+  const page = await listRuns(db, scope, ctx.now, viewerOf(ctx), { cursor, task: str(input.task), agentId: str(input.agent_id), limit: typeof input.limit === 'number' ? input.limit : 50 });
   return { ok: true, op, data: { runs: snake(page.rows), cursor: page.cursor } };
 }
