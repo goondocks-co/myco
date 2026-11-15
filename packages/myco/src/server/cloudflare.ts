@@ -544,10 +544,12 @@ export async function cloudflareStatus(options: CloudflareOptions & {
     throw error;
   }
   // Wrangler lists deployments oldest first.
-  const versions = [...result.stdout.matchAll(/(?:Version ID:|Version\(s\):\s*\(\d+%\))\s*([0-9a-f-]{36})/g)];
+  const latest = result.stdout.split(/^(?:Created:|Deployment ID:)\s*/m).at(-1) ?? '';
+  const versions = [...latest.matchAll(/(?:Version ID:|Version\(s\):\s*\((\d+)%\))\s*([0-9a-f-]{36})/g)];
+  const version = versions.length === 1 && (versions[0]![1] === undefined || versions[0]![1] === '100') ? versions[0]![2]! : null;
   return {
     deployed: result.code === 0 && result.stdout.trim() !== '',
-    versionId: versions.at(-1)?.[1] ?? null,
+    versionId: version,
     raw: result.stdout,
   };
 }
@@ -870,6 +872,8 @@ export interface DeploymentRecord {
   databaseName: string;
   bucketName: string;
   versionId: string | null;
+  /** Provider-observed serving version before the latest admitted update attempt. */
+  previousVersionId?: string | null;
   deployedAt: string;
   /** Binary release recorded after a successful Worker deployment; absent on older records. */
   release?: string;

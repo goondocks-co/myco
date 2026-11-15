@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   defaultSpec, installService, startService, stopService, uninstallService,
-  statusOfService, reloadServiceDetached, servicePaths,
+  statusOfService, reloadServiceDetached, servicePaths, renderUnit,
   type ServiceOptions,
 } from '@myco/server/service.js';
 import { recordingPlatform } from '../../helpers/fake-service-manager.js';
@@ -14,7 +14,7 @@ it('native service operations require an injected platform', () => {
   const spec = defaultSpec(path.join(process.env.MYCO_HOME!, 'bin', 'myco'), process.env.HOME!, platform, process.env.MYCO_HOME!);
   const paths = servicePaths(spec, platform);
   fs.mkdirSync(path.dirname(paths.unitFile), { recursive: true });
-  fs.writeFileSync(paths.unitFile, 'fixture unit');
+  fs.writeFileSync(paths.unitFile, renderUnit(spec, paths, platform));
   const fake = recordingPlatform();
   const stub = process.env.MYCO_NATIVE_SERVICE_STUB === '1';
   const options: ServiceOptions = { platform, ...(stub ? { runner: fake.runner } : {}) };

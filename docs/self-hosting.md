@@ -57,7 +57,7 @@ myco server setup-owner --target local
 myco server install --target local
 ```
 
-`create` prepares storage and generates keys. `github-app` opens GitHub to register the dashboard's sign-in app; confirm there and return to the terminal. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in.
+`create` prepares storage and generates keys. `github-app` opens GitHub to register the dashboard's sign-in app; confirm there and return to the terminal. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in. Run `create` before `install`; a home without a created Deployment is refused with `create` as the next step.
 
 After the server starts, open the private link, sign in with GitHub, check the account and choose **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become the administrator.
 
@@ -162,6 +162,8 @@ For a code rollback:
 ```bash
 myco server rollback --target cloudflare
 ```
+
+Bare rollback selects the version observed serving before the latest admitted update attempt, including a code-only update. If that earlier version could not be proved (including older operator records), it refuses and asks for `--version <id>`; `wrangler deployments list` lists the versions. After a failed or unacknowledged update, it uses that attempt's observed prior version. It checks the current deployment and refuses if that prior version is still serving or the current version cannot be proved. Repeating create clears the saved rollback target.
 
 This rolls back the Worker, **not the database or blobs**. For a schema rollback, use the exact database restore command printed by the update while its bookmark remains within Time Travel retention, then return to the compatible Worker version:
 

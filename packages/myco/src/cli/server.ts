@@ -22,10 +22,11 @@ import {
   readLocalRecord,
   removeLocalDeployment,
   resolveLocalPaths,
-  updateLocalDeployment,
   type LocalDeploymentRecord,
 } from '../server/local.js';
 import { withLocalDiagnosticStore,withCloudflareDiagnosticStore,localUnplacedContextRecords, cloudflareUnplacedContextRecords, hookPlacementStatusLine } from '../server/hook-placement-status.js';
+import { localServiceSpec, startLocalService, type LocalLifecycleDeps } from '../server/local-lifecycle.js';
+import { updateLocalService } from '../server/local-update.js';
 import { keptArtifacts } from '../server/local-artifacts.js';
 import { volumeMetaValue } from '@myco-server-worker/platform/bun/server-main.js';
 import { carriedNative, carriedNativeIfAny, runLocalDeployment } from '../server/local-run.js';
@@ -41,12 +42,8 @@ import { restoreCloudflareDeployment } from '../server/cloudflare-recovery.js';
 import {
   ServicePathUnsupported,
   ServicePlatformUnsupported,
-  defaultSpec,
-  installService,
   servicePaths,
-  startService,
   statusOfService,
-  stopService,
   uninstallService,
 } from '../server/service.js';
 
@@ -85,8 +82,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           persisted progress to recover from interruption.
   rollback --target cloudflare [--version <id>] [--message <text>]
                                           Return the Worker to an earlier version. Defaults to the
-                                          record's last recorded one — the version a failed update
-                                          left serving.
+                                          version observed serving before the latest admitted update attempt.
+                                          Requires --version when no earlier version is proved.
   materialize --from <staging> --to <dir>
                                           Materialize a myco-recovery/3 staging into a verified
                                           recovery artifact. Local only; reads the staging read-only.
@@ -226,7 +223,7 @@ export function hostedNextSteps(url: string | undefined): string[] {
   ];
 }
 
-export async function run(args: string[], deps: { readRetry?: LifecycleOptions['readRetry']; runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string>; cloudflareOwner?: typeof setupCloudflareOwner; localOwner?: typeof setupLocalOwner } = {}): Promise<void> {
+export async function run(args: string[], deps: { readRetry?: LifecycleOptions['readRetry']; runner?: CommandRunner; fetchImpl?: typeof fetch; openUrl?: (url: string) => Promise<void>; readSecret?: () => Promise<string>; cloudflareOwner?: typeof setupCloudflareOwner; localOwner?: typeof setupLocalOwner; local?: LocalLifecycleDeps } = {}): Promise<void> {
   const [command, ...rest] = args;
   if (command === undefined || command === '--help' || command === '-h') {
     console.log(SERVER_HELP);
@@ -277,7 +274,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
   };
 
   /** Where this machine's own Deployment lives, and what it is running under. */
-  const localSpec = () => defaultSpec(process.execPath, undefined, undefined, resolveMycoHome());
+  const localSpec = () => localServiceSpec(resolveMycoHome(), deps.local ?? {});
 
 
   try {
@@ -308,9 +305,9 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
 
       if (command === 'create') {
         const portFlag = flags.get('port');
-        const port = portFlag === undefined ? DEFAULT_LOCAL_RECORD.port : Number(portFlag);
-        if (portFlag !== undefined && (portFlag === 'true' || !Number.isInteger(port))) fail('--port needs a whole number.');
         const existing = localDeploymentPresent(paths) ? readLocalRecord(paths) : DEFAULT_LOCAL_RECORD;
+        const port = portFlag === undefined ? existing.port : Number(portFlag);
+        if (portFlag !== undefined && (portFlag === 'true' || !Number.isInteger(port))) fail('--port needs a whole number.');
         const record: LocalDeploymentRecord = { ...existing, port };
         const { generated, applied } = createLocalDeployment(record, carriedNative(), paths);
         console.log('\nDeployment ready.');
@@ -333,16 +330,17 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       }
 
       if (command === 'install') {
-        const outcome = installService(localSpec());
-        console.log(outcome.loaded ? 'Deployment installed and running.' : 'Service unit written, and the platform is not running it.');
+        const spec = localSpec();
+        const record = readLocalRecord(paths);
+        const outcome = await startLocalService(spec, `http://127.0.0.1:${record.port}`, { ...deps.local, log: console.log }, 'install');
+        console.log('Deployment installed and running.');
         console.log(`  Unit:       ${outcome.unitFile}`);
-        console.log(`  Logs:       ${servicePaths(localSpec()).outLog}`);
-        if (!outcome.loaded) fail(outcome.detail ?? 'the platform did not accept the service unit');
+        console.log(`  Logs:       ${servicePaths(spec, deps.local?.service?.platform).outLog}`);
         return;
       }
 
       if (command === 'uninstall') {
-        const outcome = uninstallService(localSpec());
+        const outcome = uninstallService(localSpec(), deps.local?.service);
         console.log(outcome.removed ? 'Deployment service removed. Its data is kept.' : 'No service unit was installed.');
         return;
       }
@@ -352,7 +350,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       if (command === 'status') {
         if (!localDeploymentPresent(paths)) { console.log('No Deployment on this machine. `myco server create --target local` provisions one.'); return; }
         const record = readLocalRecord(paths);
-        const service = statusOfService(localSpec());
+        const service = statusOfService(localSpec(), deps.local?.service);
         console.log('\nDeployment');
         console.log(`  Directory:  ${paths.root}`);
         console.log(`  Address:    ${record.origin ?? `http://127.0.0.1:${record.port}`}`);
@@ -365,22 +363,8 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       }
 
       if (command === 'update') {
-        // A running Deployment serves the schema it started against, so the
-        // service stops before the store moves and starts again on the
-        // migrated volume.
-        const spec = localSpec();
-        const running = statusOfService(spec).loaded;
-        if (running) {
-          console.log('Stopping the Deployment before it migrates.');
-          stopService(spec);
-        }
-        const applied = updateLocalDeployment(carriedNative(), paths);
+        const applied = await updateLocalService(resolveMycoHome(), { ...deps.local, native: carriedNative(), log: console.log });
         console.log(applied === 0 ? 'Deployment already current.' : `Deployment updated; ${applied} schema step${applied === 1 ? '' : 's'} applied.`);
-        if (running) {
-          const restarted = startService(spec);
-          console.log(restarted.loaded ? 'Deployment running again.' : 'Deployment migrated, and the platform did not start it again.');
-          if (!restarted.loaded) fail(restarted.detail ?? 'the platform did not start the service again');
-        }
         return;
       }
 
@@ -389,7 +373,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
         if (removeData && !flags.has('yes')) {
           fail('--data removes the Deployment directory and everything in it. Re-run with --yes to confirm.');
         }
-        const removed = uninstallService(localSpec());
+        const removed = uninstallService(localSpec(), deps.local?.service);
         // Read while the volume is still there: what names these artifacts is the Deployment they were taken from.
         const kept = removeData
           ? keptArtifacts(paths, volumeMetaValue(paths.databasePath, 'deployment_id', carriedNative()))

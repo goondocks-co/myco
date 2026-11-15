@@ -32,6 +32,7 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
   const links: string[] = [];
   const providerFile = path.join(root, 'fake-provider.json');
   const saved = fs.existsSync(providerFile) ? JSON.parse(fs.readFileSync(providerFile, 'utf8')) : null;
+  const deployments: { origin: string | null }[] = saved?.deployments ?? [];
   const secrets: Record<string, string> = saved?.secrets ?? { SESSION_SECRET: 'fixture-session-secret-that-is-long-enough' };
   let databaseCreated = saved?.databaseCreated ?? false;
   let storeCreated = saved?.storeCreated ?? false;
@@ -52,7 +53,7 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
   const spec = defaultSpec(binaryPath, root, 'darwin', home);
   const platform = nativeServicePlatform(paths, spec);
   const answer = (stdout = '', code = 0, stderr = ''): CommandResult => {
-    const body = JSON.stringify({ secrets, databaseCreated, storeCreated, vectorCreated, signedIn, conversions, buckets: [...buckets], storeSecrets: [...storeSecrets] });
+    const body = JSON.stringify({ deployments, secrets, databaseCreated, storeCreated, vectorCreated, signedIn, conversions, buckets: [...buckets], storeSecrets: [...storeSecrets] });
     if (!fs.existsSync(providerFile) || fs.readFileSync(providerFile, 'utf8') !== body) fs.writeFileSync(providerFile, body, { mode: 0o600 });
     return { stdout, code, stderr };
   };
@@ -91,7 +92,13 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
     if (flat.startsWith('secret list --name')) return answer(JSON.stringify(Object.keys(secrets).map(name => ({ name }))));
     if (flat.startsWith('secret put ')) { secrets[args[3]] = options!.input!; return answer(); }
     if (flat.startsWith('secret bulk --name')) { Object.assign(secrets, JSON.parse(options!.input!)); return answer(); }
-    if (flat.startsWith('deploy -c ')) return answer(`Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n${HOSTED_URL}\n`);
+    if (flat.startsWith('deploy -c ')) {
+      const config = Bun.TOML.parse(fs.readFileSync(path.join(options!.cwd!, args[args.indexOf('-c') + 1]!), 'utf8'));
+      const vars = 'vars' in config && typeof config.vars === 'object' && config.vars !== null ? config.vars : {};
+      const origin = 'MYCO_ORIGIN' in vars && typeof vars.MYCO_ORIGIN === 'string' ? vars.MYCO_ORIGIN : null;
+      deployments.push({ origin });
+      return answer(`Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n${HOSTED_URL}\n`);
+    }
     throw new Error(`fake Cloudflare: unexpected command ${flat}`);
   } };
   const registrationFetch = asFetch(async (input, init) => {
@@ -154,7 +161,7 @@ export function ownerDeployment(root: string, home: string, target: 'cloudflare'
     expect(callback.status).toBe(200);
   };
   return {
-    github: { ...github, registrationFetch }, calls, commands, links, sqlite, platform, runner, operatorFetch, fetchImpl, openUrl,
+    github: { ...github, registrationFetch }, calls, commands, deployments, links, sqlite, platform, runner, operatorFetch, fetchImpl, openUrl,
     get conversions() { return conversions; },
     signOutWrangler: () => { signedIn = false; answer(); },
     deps: {

@@ -19,7 +19,7 @@ import { fixture, native, plan, signIn, serve, tree, installLocalLifecycle } fro
 installLocalLifecycle();
 
 describe('prepare native lifecycle', () => {
-  it('refuses a service installed for another Myco home before any service command', async () => {
+  it('keeps another home’s service and data unchanged when refusing setup', async () => {
     const f = fixture(); signIn(f);
     const other = defaultSpec(f.spec.binaryPath, f.root, 'darwin', path.join(f.root, 'another-myco'));
     installService(other, f.deps.service);
@@ -27,7 +27,7 @@ describe('prepare native lifecycle', () => {
     const before = tree(f.root);
     await expect(prepareLocal(f.home, plan, f.deps)).rejects.toThrow('does not belong');
     expect(tree(f.root)).toEqual(before);
-    expect(f.platform.commands).toEqual([]);
+    expect(f.platform.running.has(other.unit.label)).toBe(true);
   });
   it('keeps an unexpired pending link during ordinary resume', async () => {
     const f = fixture(); signIn(f);
@@ -70,7 +70,7 @@ describe('prepare native lifecycle', () => {
     expect(fs.readFileSync(servicePaths(f.spec, 'darwin').unitFile, 'utf8')).toContain(f.home);
     expect((await inspectLocal(f.home, f.deps)).owner).toBe('pending-link');
   });
-  it('refuses foreground exclusive work without signals or service calls', async () => {
+  it('preserves foreground serving and stored data when refusing exclusive work', async () => {
     const f = fixture(); signIn(f);
     const held = await serve(f);
     const before = tree(f.root);
@@ -78,7 +78,7 @@ describe('prepare native lifecycle', () => {
       expect((await inspectLocal(f.home, f.deps)).serving).toMatchObject({ mode: 'foreground', pid: process.pid });
       await expect(prepareLocal(f.home, plan, f.deps)).rejects.toThrow(`Your Myco is running in another terminal (process ${process.pid}). Stop it there with Ctrl-C, then rerun myco server install --target local.`);
       expect(tree(f.root)).toEqual(before);
-      expect(f.platform.commands).toEqual([]);
+      expect(f.platform.loaded.size).toBe(0);
     } finally { await held.stop(); }
   });
   it('restores a running service when owner mint fails', async () => {
@@ -154,7 +154,7 @@ describe('prepare native lifecycle', () => {
     } finally { await terminal?.stop(); }
     expect(probes).toBe(3);
     expect(messages).toContain('In another terminal, run: myco server run --target local');
-    expect(f.platform.commands).toEqual([]);
+    expect(f.platform.loaded.size).toBe(0);
   });
   it('health timeout names the retained data and log path', async () => {
     const f = fixture(); signIn(f);

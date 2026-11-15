@@ -26,7 +26,7 @@ import { BUNDLED_WORKER_WRANGLER } from '@myco/worker-bundle.generated.js';
 import { VECTOR_INDEX_DIMENSIONS, VECTOR_INDEX_NAME, VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import type { CommandRunner, CommandResult } from '@myco/server/runner.js';
-import { CommandTimedOut } from '@myco/server/runner.js';
+import { systemRunner, CommandTimedOut } from '@myco/server/runner.js';
 import { WORKER_UPDATE_RETRY_MS, WorkerUpdateStopped } from '@myco/server/cloudflare-worker-update.js';
 
 const ACCOUNT = 'a'.repeat(32);
@@ -85,7 +85,7 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
       'd1 time-travel info': { stdout: JSON.stringify({ bookmark: '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683' }) },
       'secrets-store store list': { stdout: '', code: 0 },
       'secrets-store store create': { stdout: `Created store myco (${STORE})` },
-      'deploy -c wrangler.deploy.toml': { stdout: 'Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
+      'deploy -c wrangler.deploy.toml': { stdout: 'https://myco-server.example.workers.dev\nCurrent Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
       'versions upload': { stdout: 'Worker Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b\n' },
       ...over,
     };
@@ -93,8 +93,14 @@ const runner = (over: Record<string, Partial<CommandResult>> = {}): CommandRunne
     return { code: 0, stdout: '', stderr: '', ...(match?.[1] ?? {}) };
   },
 });
+const activeDrives = new Map<Promise<unknown>, AbortController>();
+const CLI_DRIVE_TIMEOUT_MS = 30_000;
 beforeEach(() => { calls = []; buckets.clear(); storeSecrets.clear(); workerSecrets.clear(); budgetDb=budgetD1Database(); });
-afterEach(()=>budgetDb.close());
+afterEach(async () => {
+  for (const controller of activeDrives.values()) controller.abort();
+  await Promise.allSettled([...activeDrives.keys()]);
+  budgetDb.close();
+});
 
 const readRetry = { sleep: async (_ms: number) => {} };
 
@@ -128,7 +134,7 @@ it('refuses a different account before any command for an existing hosted Deploy
 const freshHome = (): string => mkdtempSync(join(tmpdir(), 'myco-cf-fresh-'));
 
 /** Drives the CLI, capturing what it says and whether it exited. */
-const drive = async (argv: string[]): Promise<{ exited: boolean; said: string; printed: string }> => {
+const drive = async (argv: string[], commandRunner: CommandRunner = runner()): Promise<{ exited: boolean; said: string; printed: string }> => {
   const said: string[] = [];
   const printed: string[] = [];
   const error = console.error;
@@ -139,7 +145,7 @@ const drive = async (argv: string[]): Promise<{ exited: boolean; said: string; p
   process.exit = ((code?: number) => { throw new Error(`exit ${code ?? 0}`); }) as typeof process.exit;
   try {
     const { run } = await import('@myco/cli/server.js');
-    await run(argv);
+    await run(argv, { runner: commandRunner, readRetry });
     return { exited: false, said: said.join('\n'), printed: printed.join('\n') };
   } catch (err) {
     if (!(err instanceof Error) || !err.message.startsWith('exit ')) throw err;
@@ -285,6 +291,18 @@ describe('create', () => {
     expect(calls.some((c) => c.args.some((arg) => ['myco-server', 'myco-server-blobs', 'myco-server-memory', 'myco-server-recovery'].includes(arg)))).toBe(false);
     // The staging store a recorded Deployment provisions is its own, on create and on update alike.
     expect(calls.filter((c) => c.args.includes('recovery-worker-recovery')).length).toBe(2);
+  });
+
+  it('activates its discovered workers.dev origin before create completes', async () => {
+    const { options } = setup();
+    const provider = runner();
+    let active: { vars?: { MYCO_ORIGIN?: string } } | undefined;
+    const result = await createCloudflareDeployment({ ...options, runner: { async run(command, args, runOptions) {
+      if (args[2] === 'deploy') active = Bun.TOML.parse(readFileSync(join(runOptions!.cwd!, args[args.indexOf('-c') + 1]!), 'utf8'));
+      return provider.run(command, args, runOptions);
+    } } });
+    expect(result.record.url).toBe('https://myco-server.example.workers.dev');
+    expect(active?.vars?.MYCO_ORIGIN).toBe(result.record.url);
   });
 
   it('provisions the resources and records their ids and the serving version', async () => {
@@ -701,16 +719,56 @@ describe('rollback', () => {
     expect(readDeploymentRecord(home)!.versionId).toBe(VERSION);
   });
 
-  it('defaults to the record version, and refuses when neither the flag nor the record names one', async () => {
+  it('refuses an unproved earlier version, then undoes a successful code-only update', async () => {
     const { home, options } = setup();
-    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(join(home, 'server', 'cloudflare', 'record.json'));
-    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: null, deployedAt: 'then', databaseId: DB_ID }, home);
-    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow(/no version to roll back to/);
-    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: VERSION, deployedAt: 'then', databaseId: DB_ID }, home);
-    const rolled = await rollbackCloudflareDeployment({ ...options, runner: runner() });
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs', versionId: VERSION, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
+    await expect(rollbackCloudflareDeployment({ ...options, runner: runner() })).rejects.toThrow('myco server rollback --target cloudflare --version <id>');
+    let active = VERSION;
+    const fake = runner({ 'd1 execute': { stdout: JSON.stringify([{ results: [{ value: String(SERVER_SCHEMA_VERSION) }], success: true }]) } });
+    const provider: CommandRunner = { async run(command, args, options) {
+      if (args[2] === 'deployments') return { code: 0, stderr: '', stdout: `Created: old\nVersion(s): (50%) ${VERSION}\nCreated: current\nVersion(s): (100%) ${active}` };
+      if (args[2] === 'versions' && args[3] === 'deploy') active = args[4]!.split('@')[0]!;
+      if (args[2] === 'rollback') active = args[3]!;
+      return fake.run(command, args, options);
+    } };
+    const updated = await updateCloudflareDeployment({ ...options, runner: provider });
+    expect(updated.summary.schema).toBe('unchanged');
+    expect(readDeploymentRecord(home)?.versionId).not.toBe(VERSION);
+    const rolled = await rollbackCloudflareDeployment({ ...options, runner: provider });
     expect(rolled.versionId).toBe(VERSION);
-    expect(calls.some((c) => c.args.join(' ').includes('rollback ' + VERSION))).toBe(true);
+    expect(readDeploymentRecord(home)?.versionId).toBe(VERSION);
+    await expect(rollbackCloudflareDeployment({ ...options, runner: provider })).rejects.toThrow('no earlier serving version can be proved');
+    await updateCloudflareDeployment({ ...options, runner: provider });
+    await createCloudflareDeployment({ ...options, runner: provider });
+    await expect(rollbackCloudflareDeployment({ ...options, runner: provider })).rejects.toThrow('no earlier serving version can be proved');
   });
+  it('rolls back an unacknowledged update to this attempt’s prior version and refuses when it is still serving', async () => {
+    const { home, options } = setup();
+    const prior = '88888888-7777-4666-8555-444444444444';
+    writeDeploymentRecord({ accountId: ACCOUNT, workerName: 'myco-server', databaseName: 'myco-server', bucketName: 'myco-server-blobs',
+      versionId: prior, previousVersionId: VERSION, deployedAt: 'then', databaseId: DB_ID, storeId: STORE }, home);
+    let active = prior, time = 0;
+    let refuseUpload = false;
+    const fake = runner();
+    const provider: CommandRunner = { async run(command, args, runOptions) {
+      if (args[2] === 'deployments') return { code: 0, stderr: '', stdout: `Version ID: ${active}` };
+      if (refuseUpload && args[2] === 'versions' && args[3] === 'upload') return { code: 1, stdout: '', stderr: 'Invalid binding [code: 10021]' };
+      if (args[2] === 'versions' && args[3] === 'deploy') {
+        active = args[4]!.split('@')[0]!;
+        time += WORKER_UPDATE_RETRY_MS;
+        throw new CommandTimedOut(command, args, 1, 'ended');
+      }
+      if (args[2] === 'rollback') active = args[3]!;
+      return fake.run(command, args, runOptions);
+    } };
+    await expect(updateCloudflareDeployment({ ...options, runner: provider, workerRetry: { now: () => time } })).rejects.toThrow('out of time');
+    expect(readDeploymentRecord(home)?.previousVersionId).toBe(prior);
+    expect((await rollbackCloudflareDeployment({ ...options, runner: provider })).versionId).toBe(prior);
+    refuseUpload = true;
+    await expect(updateCloudflareDeployment({ ...options, runner: provider })).rejects.toThrow('stopped: Worker refused');
+    await expect(rollbackCloudflareDeployment({ ...options, runner: provider })).rejects.toThrow('nothing new is serving');
+  });
+
 });
 
 /**
@@ -864,19 +922,26 @@ describe('what the CLI prints when this machine is not ready', () => {
   };
 
   const withEnvironment = async (npxDir: string, argv: string[], home = freshHome()): Promise<{ exited: boolean; said: string; printed: string }> => {
-    const held = { path: process.env.PATH, home: process.env.MYCO_HOME, token: process.env.CLOUDFLARE_API_TOKEN, cwd: process.cwd() };
-    process.env.PATH = `${npxDir}:${held.path ?? ''}`;
+    const held = { home: process.env.MYCO_HOME, token: process.env.CLOUDFLARE_API_TOKEN, cwd: process.cwd() };
     process.env.MYCO_HOME = home;
     delete process.env.CLOUDFLARE_API_TOKEN;
-    try {
-      process.chdir(home);
-      return await drive(argv);
-    } finally {
-      process.chdir(held.cwd);
-      if (held.path === undefined) delete process.env.PATH; else process.env.PATH = held.path;
-      if (held.home === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = held.home;
-      if (held.token !== undefined) process.env.CLOUDFLARE_API_TOKEN = held.token;
-    }
+    const controller = new AbortController();
+    const subprocess = systemRunner();
+    const pinned: CommandRunner = { run: (_command, args, options) => subprocess.run(join(npxDir, 'npx'), args, { ...options, signal: controller.signal }) };
+    process.chdir(home);
+    const running = (async () => {
+      try { return await drive(argv, pinned); }
+      finally {
+        controller.abort();
+        process.chdir(held.cwd);
+        if (held.home === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = held.home;
+        if (held.token !== undefined) process.env.CLOUDFLARE_API_TOKEN = held.token;
+      }
+    })();
+    activeDrives.set(running, controller);
+    try { return await running; }
+    finally { activeDrives.delete(running); }
+
   };
 
   it.skipIf(process.platform === 'win32')('GATE: with no wrangler, `server create --target cloudflare` prints the install refusal and exits 1', async () => {
@@ -904,7 +969,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     `  *"secrets-store secret list"*) echo 'List request returned no secrets.' >&2; exit 1;;`,
     `  *"d1 create"*) echo 'database_id = "${DB_ID}"';;`,
     `  *"secrets-store store list"*) echo '${STORE}';;`,
-    '  *" deploy "*) echo "Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b";;',
+    '  *" deploy "*) echo "https://myco-server.example.workers.dev"; echo "Current Version ID: 16a2423e-af96-4310-b61b-4e2b5fd1310b";;',
     '  *whoami*) echo "account";;',
     `  *--version*) echo " wrangler ${version}";;`,
     'esac',
@@ -919,7 +984,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     expect(done.printed).toContain(join(home, 'server', 'cloudflare', 'record.json'));
     expect(done.printed).not.toContain('~/.myco');
     expect(existsSync(join(home, 'server', 'cloudflare', 'record.json'))).toBe(true);
-  });
+  }, CLI_DRIVE_TIMEOUT_MS);
 
   it.skipIf(process.platform === 'win32')('a finished create names the two commands that follow it, in order', async () => {
     const done = await withEnvironment(npxAnswering(wranglerAnswers(BUNDLED_WORKER_WRANGLER)), ['create', '--target', 'cloudflare', '--account-id', ACCOUNT, '--url', 'https://myco.example.com']);
@@ -930,7 +995,7 @@ describe('what the CLI prints when this machine is not ready', () => {
       '  1. myco server github-app --target cloudflare --url https://myco.example.com',
       '  2. myco server setup-owner --target cloudflare',
     ].join('\n'));
-  });
+  }, CLI_DRIVE_TIMEOUT_MS);
 
   /** Every file under `dir`, with its bytes, so a test can say a command left a tree exactly as it found it. */
   const tree = (dir: string): Record<string, string> => Object.fromEntries(readdirSync(dir, { recursive: true, withFileTypes: true })
@@ -978,7 +1043,7 @@ describe('what the CLI prints when this machine is not ready', () => {
     expect({ exited: done.exited, said: done.said }).toEqual({ exited: false, said: '' });
     expect(done.printed).toContain('wrangler 3.0.0');
     expect(done.printed).toContain(BUNDLED_WORKER_WRANGLER);
-  });
+  }, CLI_DRIVE_TIMEOUT_MS);
 
   it('GATE: `server config` without a record names the file this home would hold it in', async () => {
     const held = process.env.MYCO_HOME;

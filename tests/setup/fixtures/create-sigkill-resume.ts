@@ -47,6 +47,8 @@ export async function resumeCreateAfterSigkill(target: 'cloudflare' | 'local', b
   const childHome = path.join(childRoot, 'myco');
   const keys = target === 'local' ? readLocalSecrets(peekLocalPaths(childHome)) : null;
   const record = peekDeploymentRecord(childHome);
+  const providerFile = path.join(childRoot, 'fake-provider.json');
+  const deployedBefore = target === 'cloudflare' ? JSON.parse(fs.readFileSync(providerFile, 'utf8')).deployments : [];
   const result = Bun.spawnSync([process.execPath, ...args], { env: { ...env, MYCO_SETUP_RESUME: '1' }, cwd: childRoot, stdout: 'pipe', stderr: 'pipe' });
   expect({ code: result.exitCode, output: result.stderr.toString() }).toMatchObject({ code: 0 });
   const resumed = JSON.parse(fs.readFileSync(path.join(childRoot, 'resumed'), 'utf8'));
@@ -55,7 +57,9 @@ export async function resumeCreateAfterSigkill(target: 'cloudflare' | 'local', b
   if (target === 'cloudflare') {
     expect(resumed.totalConversions).toBe(1);
     expect(peekDeploymentRecord(childHome)).toMatchObject({ versionId: expect.any(String), url: HOSTED_URL });
-    expect(resumed.commands.filter((command: string) => command.startsWith('deploy '))).toHaveLength(['cloudflare-login', 'partial-create', 'before-deploy'].includes(boundary) ? 1 : 0);
+    const deployed = JSON.parse(fs.readFileSync(providerFile, 'utf8')).deployments;
+    expect(deployed.map((deployment: { origin: string | null }) => deployment.origin)).toEqual([null, HOSTED_URL]);
+    if (record?.versionId && record.url) expect(deployed).toEqual(deployedBefore);
     expect(fs.existsSync(path.join(childHome, 'server/cloudflare/sign-in-pending.json'))).toBe(false);
   }
   const address = target === 'cloudflare' ? HOSTED_URL : 'http://127.0.0.1:8787';
