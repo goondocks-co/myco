@@ -24,7 +24,6 @@ import { LEARNING_TOOL } from './tool-catalogue.js';
 import { ackRecordStatement, assignableCards, assignedCardRows, completionProgressStatement, coverCardsStatement } from '../db/learning/progress.js';
 import { advanceLearningDeadlines, learningDeadlinesPending } from '../db/learning/ready.js';
 import { latestLearningCompletion, learningCountsReady, readLearningRollup } from '../db/learning/counts.js';
-import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** Due cards one slice reads at most. */
 const LEARNING_SLICE_CARDS = 200;
@@ -169,8 +168,8 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now(), 
   };
 }
 
-/** The status line: what is due, what waits and why, the last completion, and spend against the day's budget. */
-export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, now: number, waitingForSignIn = false, heldByBudget = false): string {
+/** The status line: what is due, what waits and why, and spend against the day's budget. The last completion is an instant the reader's own screen words. */
+export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: number; automaticUsd: number | null; manualUsd: number | null } | null, waitingForSignIn = false, heldByBudget = false): string {
   const n = (count: number, singular: string, plural = `${singular}s`) => `${status.state === 'building' ? `at least ${count}` : count} ${count === 1 && status.state !== 'building' ? singular : plural}`;
   const agedOutOne = status.agedOutSessions === 1 && status.state !== 'building';
   const spent = budget?.automaticUsd == null ? null : budget.automaticUsd + (budget.manualUsd ?? 0);
@@ -183,8 +182,6 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
     ...(ready && waitingForSignIn ? ['waiting for a runner that can sign in'] : []),
     ...(ready && (heldByBudget || (spent !== null && budget !== null && spent >= budget.dailyUsd))
       ? ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window'] : []),
-    ...(status.lastCompleted === undefined ? [] : [status.lastCompleted === null ? 'nothing learned yet'
-      : `last ${status.lastCompleted.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${agoWords(status.lastCompleted.at, now)}`]),
     ...(budget === null || spent === null ? [] : [`spent $${spent.toFixed(2)} of $${budget.dailyUsd.toFixed(2)} in the last 24 hours`]),
   ];
   return `${parts.join('; ')}.`;

@@ -30,7 +30,7 @@ const STUDIO_CREDENTIAL = 'mt_4Kp9Qs2Vx7Lm0Zb1';
 const BUSY_CREDENTIAL = 'mt_Ws8Yt3Nq6Rc2Hd5E';
 const STRAY_CREDENTIAL = 'mt_Pz1Ga7Ue4Oi9Kj3F';
 const STATUS = {
-  learning: { line: '2 sessions ready to learn (5 summaries to learn from); 3 turns waiting to be summarized; 1 session waiting to become readable; last learning completed 2 min ago; spent $2.00 of $20.00 in the last 24 hours.' },
+  learning: { line: '2 sessions ready to learn (5 summaries to learn from); 3 turns waiting to be summarized; 1 session waiting to become readable; spent $2.00 of $20.00 in the last 24 hours.', lastCompleted: { at: NOW - 2 * 60_000, reason: 'learned' } },
   schema: { expected: 57, found: 57, matches: true }, target: 'bun',
   capabilities: [{ capability: 'blobs', label: 'Stored attachments and transcripts', present: true, operatorNames: ['MYCO_BLOBS'] }],
   workers: {
@@ -136,7 +136,7 @@ describe('Health', () => {
 
   it('shows the budget and runner sign-in waits beneath one learning heading', async () => {
     for (const reason of ['learning resumes when the rolling 24 hour budget has room as earlier spending leaves the window', 'waiting for a runner that can sign in']) {
-      const line = `1 session ready to learn (1 summary to learn from); 1 turn waiting to be summarized; 1 session waiting to become readable; ${reason}; nothing learned yet; spent $1.00 of $1.00 in the last 24 hours.`;
+      const line = `1 session ready to learn (1 summary to learn from); 1 turn waiting to be summarized; 1 session waiting to become readable; ${reason}; spent $1.00 of $1.00 in the last 24 hours.`;
       server(routes({ '/api/status': () => Response.json({ ...STATUS, learning: { line } }) }));
       mount('/status/health#status');
       const section = await screen.findByRole('region', { name: 'Status' });
@@ -152,6 +152,7 @@ describe('Health', () => {
     mount('/status/health#status');
     const section = await screen.findByRole('region', { name: 'Status' });
     expect(await within(section).findByText(STATUS.learning.line)).toBeTruthy();
+    expect(section.querySelector('[data-health-last-learning]')!.textContent).toBe('Last learning completed 2 min ago.');
     cleanup();
     server(routes({ '/api/status': () => Response.json({ ...STATUS, learning: null, unavailable: ['learning'] }) }));
     mount('/status/health#status');

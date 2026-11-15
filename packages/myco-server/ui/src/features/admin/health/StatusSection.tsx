@@ -7,7 +7,7 @@ import { HEALTH_ANCHORS } from '../../../routes/nav';
 import { useAttention } from '../../../hooks/use-attention';
 import { transcriptStopWords, harnessHealthWords } from '../../today/words';
 import { AdminSection, RowCard } from '../AdminFrame';
-import { backlogWords, capabilityWords } from './words';
+import { backlogWords, capabilityWords, lastLearningWords } from './words';
 import { useEmbeddingSwitch, usePassedOver } from '../../../hooks/use-settings';
 import { EmbeddingSwitchPanel, PassedOverSources } from '../settings/EmbeddingSwitch';
 import { agoWords } from '@goondocks/myco-shared/time-words';
@@ -92,6 +92,7 @@ function StatusBody({ data, now, projectName, onRetry }: { data: StatusResponse;
         <Card className="flex flex-col gap-s2" data-health-learning="">
           <h3 className="t-h3 text-ink">Learning from sessions</h3>
           <p className="t-body text-ink-2">{data.learning.line}</p>
+          {lastLearningWords(data.learning.lastCompleted, now) !== null && <p className="t-small text-muted" data-health-last-learning="">{lastLearningWords(data.learning.lastCompleted, now)}</p>}
           {data.unavailable?.includes('budget') && <ReadUnavailable label="daily learning spend" onRetry={onRetry} />}
         </Card>}
 

@@ -50,6 +50,13 @@ export function backlogWords(backlog: StatusResponse['transcriptBacklog']): stri
   return `${backlog.limited ? 'At least ' : ''}${formatCount(backlog.transcripts, 'transcript')} (${formatBytes(backlog.bytes)}) waiting to be read into sessions.`;
 }
 
+/** When learning last completed, in this screen's words: "Last learning completed 2 h ago.", or nothing when it was not read. */
+export function lastLearningWords(last: { at: number; reason: string } | null | undefined, now: number): string | null {
+  if (last === undefined) return null;
+  if (last === null) return 'Nothing learned yet.';
+  return `Last ${last.reason === 'no_signal' ? 'session closed with nothing to learn' : 'learning completed'} ${agoWords(last.at, now)}.`;
+}
+
 // ---------- Automatic recovery ----------
 
 /** How long until an instant, in the coarse words a cadence deserves. */

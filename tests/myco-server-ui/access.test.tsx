@@ -13,7 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from '../../packages/myco-server/ui/src/App';
 import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/appearance';
 import { formatUntil } from '../../packages/myco-server/ui/src/lib/format';
-import { agoWords } from '../../packages/myco-shared/src/time-words';
+import { agoWords, dateTimeWords, dayWords } from '../../packages/myco-shared/src/time-words';
 import { FLEET_WORDS } from '../../packages/myco-server/ui/src/features/admin/people/MachineList';
 import type { CredentialRow } from '../../packages/myco-server/ui/src/features/admin/wire';
 import { invitationExpiry, loginCommand } from '../../packages/myco-server/ui/src/features/admin/people/words';
@@ -663,6 +663,6 @@ describe('future instants', () => {
     expect(agoWords(now + 2 * 60_000, now)).toBe('just now');
     expect([agoWords(now - 5 * 60_000, now), agoWords(now - 1195 * 60_000, now), agoWords(now - 6 * day, now)]).toEqual(['5 min ago', '19 h ago', '6 days ago']);
     expect(agoWords(now - 11 * day, now)).toMatch(/^on [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/);
-    expect([agoWords(0, now), agoWords(null, now)]).toEqual(['never', 'never']);
+    expect([agoWords(0, now), agoWords(null, now), dayWords(0, now), dateTimeWords(undefined, now)]).toEqual(['never', 'never', 'never', 'never']);
   });
 });

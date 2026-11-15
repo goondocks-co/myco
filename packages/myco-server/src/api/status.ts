@@ -101,7 +101,7 @@ export async function handleStatus(env: ServerEnv, ctx: OwnerContext): Promise<R
         ctx.now, settings, limits, undefined, fleetSelectionContext(env, isAdmin(ctx.member.role)));
       waitingForSignIn = reason === 'not_signed_in' || reason === 'credential_unavailable';
     }
-    return {...status,line:learningStatusLine(status,budget??null,ctx.now,waitingForSignIn)};
+    return {...status,line:learningStatusLine(status,budget??null,waitingForSignIn)};
   });
   const documents=await readFact('documents',()=>readDocumentStatus(env.db));
   return ok({

@@ -18,8 +18,12 @@ export function isInstant(at: number | null | undefined): at is number {
   return typeof at === 'number' && Number.isFinite(at) && at > 0;
 }
 
-/** A day as a short date: "Sep 12", with the year when it is not this one. */
-export function dayWords(at: number, now: number = Date.now()): string {
+/** Said wherever a missing or zero instant stands in for a time. */
+const NO_INSTANT = 'never';
+
+/** A day as a short date: "Sep 12", with the year when it is not this one; a missing or zero instant reads "never". */
+export function dayWords(at: number | null | undefined, now: number = Date.now()): string {
+  if (!isInstant(at)) return NO_INSTANT;
   const date = new Date(toMillis(at));
   const sameYear = date.getFullYear() === new Date(now).getFullYear();
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
@@ -30,8 +34,8 @@ export function dayWords(at: number, now: number = Date.now()): string {
  * "on Oct 11". A future instant reads "just now": a capturing machine's clock can run ahead of this one. A missing
  * or zero instant reads "never".
  */
-export function agoWords(at: number | null, now: number = Date.now()): string {
-  if (!isInstant(at)) return 'never';
+export function agoWords(at: number | null | undefined, now: number = Date.now()): string {
+  if (!isInstant(at)) return NO_INSTANT;
   const ms = toMillis(at);
   const delta = Math.max(0, now - ms);
   if (delta < MINUTE) return 'just now';
@@ -44,12 +48,14 @@ export function agoWords(at: number | null, now: number = Date.now()): string {
   return `on ${dayWords(ms, now)}`;
 }
 
-/** The time of day on the 24-hour clock: "09:39". */
-export function clockWords(at: number): string {
+/** The time of day on the 24-hour clock: "09:39"; a missing or zero instant reads "never". */
+export function clockWords(at: number | null | undefined): string {
+  if (!isInstant(at)) return NO_INSTANT;
   return new Date(toMillis(at)).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 }
 
-/** A date and time as a fact reads: "Sep 29, 14:02", with the year when it is not this one. */
-export function dateTimeWords(at: number, now: number = Date.now()): string {
+/** A date and time as a fact reads: "Sep 29, 14:02", with the year when it is not this one; a missing or zero instant reads "never". */
+export function dateTimeWords(at: number | null | undefined, now: number = Date.now()): string {
+  if (!isInstant(at)) return NO_INSTANT;
   return `${dayWords(at, now)}, ${clockWords(at)}`;
 }

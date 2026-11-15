@@ -103,7 +103,8 @@ export function postJson<T>(path: string, body?: unknown, headers: Record<string
 
 /** `GET /api/status`. */
 export interface StatusResponse {
-  learning: { line: string } | null;
+  /** Learning's status line, and its last completion as an instant this screen words; null when nothing has completed, absent when unread. */
+  learning: { line: string; lastCompleted?: { at: number; reason: string } | null } | null;
   budget?: BudgetStatus;
   /** How far the move of existing sessions to the current view format has come. */
   harnesses?: MachineHarnessHealth[];
