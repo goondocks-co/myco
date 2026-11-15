@@ -1,4 +1,4 @@
-import { isCurrentSearchStatus } from '@goondocks/myco-shared/search-types';
+import { SEARCH_CURRENT_STATUSES, isCurrentSearchStatus } from '@goondocks/myco-shared/search-types';
 import { semanticRecords } from '../../db/search/semantic-records.js';
 import { searchPresentation } from '../../core/search-presentation.js';
 import type { RelationalStore as embedding_import_RelationalStore } from "../../core/adapters.js";
@@ -65,33 +65,64 @@ async function embedding_semanticHits(db: embedding_import_RelationalStore, scop
   return rows.sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id));
 }
 
+interface embedding_SemanticAnswer {
+  hits: embedding_import_SearchResult[];
+  /** A capped vector query cannot fill the requested page under its session filters. */
+  filtered: boolean;
+}
+
 /** Semantic queries use the same metadata filters as full-text queries. */
-async function embedding_semanticSearch(db: embedding_import_RelationalStore, scope: embedding_import_ReadScope, semantic: embedding_SemanticSearch, types: readonly string[], options: embedding_import_SearchOptions, limit: number): Promise<embedding_import_SearchResult[]> {
+async function embedding_semanticSearch(db: embedding_import_RelationalStore, scope: embedding_import_ReadScope, semantic: embedding_SemanticSearch, types: readonly string[], options: embedding_import_SearchOptions, limit: number): Promise<embedding_SemanticAnswer> {
   const values = await semantic.provider.embed(options.query);
   const filters: embedding_import_VectorFilters = {};
   for (const key of ['status', 'session_id', 'observation_type', 'release_state', 'release_confidence'] as const) {
-    if (options[key] !== undefined) filters[key] = options[key];
+    if (options[key] !== undefined && !(key === 'status' && options.status === 'all')) filters[key] = options[key];
   }
   if (options.since !== undefined || options.until !== undefined) filters.created_at = {
     ...(options.since === undefined ? {} : { gte: options.since * 1000 }),
     ...(options.until === undefined ? {} : { lte: options.until * 1000 }),
   };
   const retained = types.filter((t): t is embedding_import_VectorType => (embedding_import_VECTOR_TYPES as readonly string[]).includes(t));
-  const branches = await Promise.all(retained.map((type) => embedding_semanticHits(db, scope, semantic, values,
-    { topK: embedding_import_VECTOR_QUERY_LIMIT, minScore: embedding_MIN_SEARCH_SIMILARITY, filters: { ...filters, type }, preview: true })));
+  let capped = false;
+  const queries = retained.flatMap(type => {
+    const statuses = options.status === undefined && (type === 'spore' || type === 'plan')
+      ? SEARCH_CURRENT_STATUSES[type]
+      : [filters.status];
+    return statuses.map(status => ({
+      ...filters,
+      type,
+      ...(status === undefined ? {} : { status }),
+    }));
+  });
+  const branches = await Promise.all(queries.map(filters => embedding_semanticHits(
+    db, scope, semantic, values, {
+      topK: embedding_import_VECTOR_QUERY_LIMIT,
+      minScore: embedding_MIN_SEARCH_SIMILARITY,
+      filters,
+      preview: true,
+      observe: counts => {
+        if (counts.rawMatches >= embedding_import_VECTOR_QUERY_LIMIT) capped = true;
+      },
+    },
+  )));
   const candidates = branches.flat().filter(row => options.status !== undefined || isCurrentSearchStatus(row.type, row.status));
   const records = await semanticRecords(db, { project: scope.projectId, records: candidates, agent: options.agent, branch: options.branch });
-  return candidates.filter(row => records.has(JSON.stringify([row.type, row.record_id])))
+  const admitted = candidates.filter(row => records.has(JSON.stringify([row.type, row.record_id])));
+  const filtered = (options.agent !== undefined || options.branch !== undefined)
+    && capped && admitted.length < limit;
+  const hits = admitted
     .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, limit).map((row) => {
     const record = records.get(JSON.stringify([row.type, row.record_id]))!;
     return {
       id: row.record_id, type: row.type, title: record.agent_line || row.title, preview: record.agent_line || row.text.slice(0, embedding_import_SEARCH_PREVIEW_CHARS), score: row.score, created_at: row.created_at,
+      ...(row.type === 'spore' ? { observation_type: row.observation_type } : {}),
       ...(row.session_id === '' ? {} : { session_id: row.session_id }),
       ...(row.prompt_id === null ? {} : { prompt_id: row.prompt_id }),
       ...searchPresentation({ type: row.type, id: row.record_id, status: row.status, learnedAt: Number(record.learned_at),
         sessionId: row.session_id || null, promptId: row.prompt_id }),
     };
   });
+  return { hits, filtered };
 }
 
 export { type embedding_EmbeddingSource, type embedding_SemanticSearch, type embedding_SemanticHit, type embedding_SemanticHitCounts, embedding_semanticHits, embedding_semanticSearch };

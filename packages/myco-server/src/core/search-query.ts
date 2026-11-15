@@ -100,7 +100,7 @@ export function documentKinds(request: SearchRequest): DocumentKind[] {
   const { filters } = request;
   return request.types.flatMap((type): DocumentKind[] => {
     if (filters.observation_type !== undefined && type !== 'spore') return [];
-    if (filters.status !== undefined && type === 'card') return [];
+    if (filters.status !== undefined && filters.status !== 'all' && type === 'card') return [];
     return type === 'plan' ? ['plan', 'chunk'] : [type];
   });
 }
@@ -115,7 +115,7 @@ export function windowExpression(kind: DocumentKind, projects: readonly string[]
   const { filters } = request;
   const parts = [`facets:(${projects.map((project) => `p${hex(project)}`).join(' OR ')})`, `facets:k${kind}`];
   if (filters.session_id !== undefined && kind !== 'chunk') parts.push(`facets:s${hex(filters.session_id)}`);
-  if (kind === 'spore' || kind === 'plan') {
+  if (filters.status !== 'all' && (kind === 'spore' || kind === 'plan')) {
     const statuses = filters.status === undefined ? SEARCH_CURRENT_STATUSES[kind] : [filters.status];
     parts.push(`facets:(${statuses.map((status) => `st${hex(status)}`).join(' OR ')})`);
   }

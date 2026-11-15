@@ -1,3 +1,4 @@
+import { TurnLocatorBuilding } from '../../db/documents/locators.js';
 /**
  * `myco_sessions` over the Deployment's session facts.
  *
@@ -59,11 +60,16 @@ function summary(row: SessionRow, counts: { prompts: number; toolCalls: number }
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.length > 0 ? v : undefined);
 
-export async function handleSessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
+async function sessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const scope = await scopeOf(ctx, input);
   if (scope === null) return failure('Project not found');
   const { db } = ctx.env;
   const op = input.op ?? 'list';
+  if (ctx.principal.kind === 'grant' && (input.prompt_id !== undefined || input.collection !== undefined)) {
+    const id = str(input.id);
+    const next = id === undefined ? { op: 'list' } : { op: 'get', id };
+    return failure(`Not read: conversation turns; grant keys may read session summaries only. Next call: myco_sessions ${JSON.stringify(next)} without prompt_id or collection.`);
+  }
 
   if (op === 'get') {
     const id = str(input.id);
@@ -115,4 +121,13 @@ export async function handleSessions(input: ToolInput, ctx: ToolContext): Promis
     sessionId,
   }, ctx.now);
   return { sessions: page.rows.map((row) => summary(row, { prompts: row.promptCount, toolCalls: row.toolCallCount })), cursor: page.cursor };
+}
+
+/** Turn locator repair is a named, retryable read refusal on MCP. */
+export async function handleSessions(input: ToolInput, ctx: ToolContext): Promise<unknown> {
+  try { return await sessions(input, ctx); }
+  catch (error) {
+    if (error instanceof TurnLocatorBuilding) return { ok: false, error: 'turn_locator_building', retryable: true, message: error.message };
+    throw error;
+  }
 }

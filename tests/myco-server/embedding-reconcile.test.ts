@@ -1,3 +1,4 @@
+import { VECTOR_QUERY_LIMIT } from '@myco-server-worker/core/embedding/vectors.js';
 import { DIAGNOSTIC_PAYLOADS } from '../helpers/secret-corpus.ts';
 import { afterEach, expect, test } from 'bun:test';
 import { sqliteEnv } from './helpers/fixtures.js';
@@ -32,7 +33,8 @@ function fixture() {
   const context = { db: f.db, blobs: f.bucket, vectors, provider };
   const search = (query: string, mode = 'semantic', options: import('@goondocks/myco-shared/search-types').SearchOptions = { query }) => searchDeployment({ db: f.db, vectors, embeddingProvider: async () => context.provider } as unknown as ServerEnv, { projectId: 'p' }, { ...options, query, mode }, 'member:test');
   const step = (now = 1000) => reconcileEmbedding(context, 'p', now);
-  return { ...f, spore, calls, provider, context, search, step, insert };
+  const index = async () => { while (await hasEmbeddingWork(f.db, 'p', context.provider.modelKey, 10000)) await step(10000); };
+  return { ...f, spore, calls, provider, context, search, step, insert, index };
 }
 
 test('deleted sessions are hidden by both searches while saved knowledge remains, then their vectors are reclaimed', async () => {
@@ -220,7 +222,7 @@ for (const leak of DIAGNOSTIC_PAYLOADS) {
   });
 }
 
-test('semantic hits honor agent and branch, lead with the spore line and retain its first source date', async () => {
+test('semantic hits honor agent and branch, lead with the spore line and retain its earliest consolidated source date', async () => {
   const f = fixture();
   f.sqlite.run("UPDATE sessions SET agent='codex',branch='wanted',started_at=1000 WHERE project_id='p' AND session_id='s'");
   f.insert('sessions', { project_id: 'p', session_id: 'other', machine_id: 'm', created_by_token_id: 't', first_received_at: 1, last_received_at: 1, agent: 'claude-code', branch: 'elsewhere' });
@@ -228,12 +230,48 @@ test('semantic hits honor agent and branch, lead with the spore line and retain 
   f.spore('other', 'architecture elsewhere');
   f.sqlite.run("UPDATE spores SET session_id='other',agent_line='Keep architecture bounded.' WHERE project_id='p'");
   f.sqlite.run("UPDATE spores SET session_id='s',created_at=5000,updated_at=9000 WHERE project_id='p' AND id='wanted'");
+  f.spore('source', 'architecture source');
+  f.sqlite.run("UPDATE spores SET status='consolidated',created_at=500 WHERE id='source'");
+  f.insert('resolution_events', {project_id:'p',id:'merged',agent_id:'a',spore_id:'source',action:'consolidate',new_spore_id:'wanted',created_at:9000});
   await f.step(10000);
   await f.step(10000);
   for (const filters of [{ agent: 'codex' }, { branch: 'wanted' }]) {
     const options = { query: 'architecture', type: 'spore', ...filters };
     const semantic = await f.search('architecture', 'semantic', options);
-    expect(semantic).toMatchObject({ mode: 'semantic', hits: [{ id: 'wanted', title: 'Keep architecture bounded.', status: 'active', learned_at: new Date(1000).toISOString() }] });
-    expect(semantic.hits.map(r => r.id)).toEqual((await f.search('architecture', 'fts', options)).hits.map(r => r.id));
+    expect(semantic).toMatchObject({ mode: 'semantic', hits: [{ id: 'wanted', title: 'Keep architecture bounded.', observation_type: 'decision', status: 'active', learned_at: new Date(500).toISOString() }] });
+    const words = await f.search('architecture', 'fts', options);
+    expect(words.hits[0]!.learned_at).toBe(new Date(500).toISOString());
+    expect(semantic.hits.map(r => r.id)).toEqual(words.hits.map(r => r.id));
   }
+});
+
+test('current plan states narrow vector selection while all admits completed plans', async () => {
+  const f = fixture();
+  f.context.provider = { ...f.provider, embed: async text => text.includes('current') ? [0.8,0.6] : [1,0] };
+  for (const [id,status] of [...Array.from({length:VECTOR_QUERY_LIMIT},(_,i)=>[`past-${i}`,'completed']), ['open','active'], ['working','in_progress']]) {
+    f.insert('plans', { project_id:'p',plan_key:id,session_id:'s',event_id:'e',machine_id:'m',token_id:'t',title:'architecture',
+      content:status==='completed'?'architecture past':'architecture current',content_hash:id,status,created_at:1,updated_at:1,received_at:1 });
+  }
+  await f.index();
+  const current = await f.search('architecture','semantic',{query:'architecture',type:'plan',limit:2});
+  expect(current.mode).toBe('semantic');
+  expect(current.hits.map(hit=>hit.id).sort()).toEqual(['open','working']);
+  const all = await f.search('architecture','semantic',{query:'architecture',type:'plan',status:'all',limit:2});
+  expect(all.mode).toBe('semantic');
+  expect(all.hits.every(hit=>hit.status==='completed')).toBe(true);
+});
+
+test('a saturated vector query shortened by a branch filter falls through to all matching words', async () => {
+  const f = fixture();
+  f.sqlite.run("UPDATE sessions SET branch='wanted' WHERE project_id='p' AND session_id='s'");
+  f.insert('sessions',{project_id:'p',session_id:'other',machine_id:'m',created_by_token_id:'t',first_received_at:1,last_received_at:1,branch:'elsewhere'});
+  f.context.provider={...f.provider,embed:async text=>text.includes('other')?[0.99,0.14]:text.includes('far')?[0.8,0.6]:[1,0]};
+  for (const id of [...Array.from({length:VECTOR_QUERY_LIMIT},(_,i)=>`other-${i}`),'near','far']) {
+    f.spore(id,`architecture ${id}`);
+    f.sqlite.run("UPDATE spores SET session_id=? WHERE project_id='p' AND id=?",[id.startsWith('other')?'other':'s',id]);
+  }
+  await f.index();
+  const result=await f.search('architecture','semantic',{query:'architecture',type:'spore',branch:'wanted',limit:2});
+  expect(result).toMatchObject({mode:'fts',fallback_reason:'filtered',provider_unavailable:false});
+  expect(result.hits.map(hit=>hit.id).sort()).toEqual(['far','near']);
 });

@@ -231,18 +231,18 @@ describe('the spore stream', () => {
   });
 
   it('lists a search’s best matches under the filters picked, and reads the next ones by cursor until none follow', async () => {
-    const hit = (id: string, title: string) => ({ id, type: 'spore', title, preview: '', score: 1, created_at: NOW - MINUTE, projectId: MYCO });
+    const hit = (id: string, title: string) => ({ id, type: 'spore', title, observation_type: 'decision', preview: title, score: 1, created_at: NOW - MINUTE, projectId: MYCO });
     const answer = (results: unknown[], cursor: string | null) => Response.json({ hits: results, mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: cursor });
     const { requested } = server(base({
-      '/api/spores?type=decision&status=active&limit=25': () => stream(ROWS),
-      '/api/search?q=port&type=spore&limit=20&observation_type=decision&status=active': () => answer([hit('gotcha-1', 'Ports collide in parallel tests')], 'c1'),
-      '/api/search?q=port&type=spore&limit=20&observation_type=decision&status=active&cursor=c1': () => answer([hit('gotcha-2', 'The second port match')], null),
+      '/api/spores?type=decision&limit=25': () => stream(ROWS),
+      '/api/search?q=port&type=spore&limit=20&observation_type=decision&status=all': () => answer([hit('gotcha-1', 'Ports collide in parallel tests')], 'c1'),
+      '/api/search?q=port&type=spore&limit=20&observation_type=decision&status=all&cursor=c1': () => answer([hit('gotcha-2', 'The second port match')], null),
     }));
-    mount('/knowledge?type=decision&q=port');
+    mount('/knowledge?type=decision&q=port&status=all');
     expect(await screen.findByText('Ports collide in parallel tests')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
     expect(await screen.findByText('The second port match')).toBeTruthy();
-    expect(requested).toContain('/api/search?q=port&type=spore&limit=20&observation_type=decision&status=active&cursor=c1');
+    expect(requested).toContain('/api/search?q=port&type=spore&limit=20&observation_type=decision&status=all&cursor=c1');
     expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
   });
 

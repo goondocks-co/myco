@@ -83,7 +83,7 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
           {searching ? (
             <SearchMatches
               scope={projectId === null ? 'all' : { projectId }}
-              filters={{ query: filterParams.query, type: 'spore', observationType: type === 'all' ? '' : type, status: status === 'all' ? undefined : status, since: since === null ? '' : String(Math.floor(since / 1000)) }}
+              filters={{ query: filterParams.query, type: 'spore', observationType: type === 'all' ? '' : type, status, since: since === null ? '' : String(Math.floor(since / 1000)) }}
               noun="spores"
               projectName={projectName}
               emptyAction={<Button variant="ghost" size="sm" onClick={clear}>Clear the search and filters</Button>}

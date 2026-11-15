@@ -314,6 +314,16 @@ test('curation uses a fixed supported Sonnet low profile with no repository requ
   expect(resolveExecutionProfile('curate-spores', 'codex', offered.profile, new Map())).toHaveProperty('reason');
 });
 
+test('an empty semantic curation search is a successful empty read even when words match', async () => {
+  const f = await fixture();
+  try {
+    await f.enable(); await f.add('a', [1,0], f.now, 'other-topic'); await f.add('b'); await f.discover();
+    const claim = await f.poll(); if (!claim.claimed) throw new Error('curation not claimed');
+    expect(await f.call(claim.run.runToken, 'myco_search', { query: 'other-topic' }))
+      .toEqual({ results: [], searches_remaining: CURATION_SEARCH_LIMIT - 1 });
+  } finally { f.sqlite.close(); }
+});
+
 test('six shared semantic searches admit whole members; one grown group consolidates with complete lineage', async () => {
   const f=await fixture();
   try {

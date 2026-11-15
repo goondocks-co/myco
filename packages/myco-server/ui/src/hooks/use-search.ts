@@ -25,7 +25,7 @@ export interface SearchFilters {
   since: string;
   /** A spore type, or ''. */
   observationType: string;
-  /** A record's status (a spore's, a plan's, or a session's `active` or `completed`), with current knowledge when absent. */
+  /** A record's status (a spore's, a plan's, or a session's `active` or `completed`), with current knowledge when absent and every status for all. */
   status?: string;
   /** The agent of the session a match belongs to. */
   agent?: string;

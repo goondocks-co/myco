@@ -135,11 +135,12 @@ function hitOf(doc: HydratedDocument, input: PageInput, release: ReleaseAnnotati
     preview: (conversational ? displayPrompt(preview, doc.agent) : preview).slice(0, SEARCH_PREVIEW_CHARS),
     score: input.scores?.get(doc.doc_id) ?? 0,
     created_at: doc.created_at,
+    ...(doc.observation_type === null ? {} : { observation_type: doc.observation_type }),
     ...(doc.session_id === null ? {} : { session_id: doc.session_id }),
     ...(doc.prompt_id === null ? {} : { prompt_id: doc.prompt_id }),
     ...(type === 'card' ? { turn: doc.turn_id === null ? null : { prompt_id: doc.turn_id, preview: doc.turn_preview, text_chars: doc.turn_chars, stored: false } } : {}),
     ...searchPresentation({ type, id: doc.id, status: doc.status!, learnedAt: Number(doc.learned_at),
-      successorId: doc.successor_id, sessionId: doc.session_id, promptId: doc.prompt_id }),
+      successorId: doc.successor_id, sessionId: doc.session_id, promptId: type === 'card' ? doc.turn_id : doc.prompt_id }),
     ...(release === undefined ? {} : { release }),
   };
 }

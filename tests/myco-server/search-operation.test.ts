@@ -21,8 +21,9 @@ describe('a word search', () => {
     f.spore('other', 'cobalt elsewhere', {}, 'search-b');
     const answer = await f.search('cobalt', { mode: 'fts' });
     expect(answer.hits.map((hit) => `${hit.type}:${hit.id}`).sort()).toEqual(['card:t1', 'plan:pl1', 'session:s1', 'spore:sp1']);
-    expect(answer.hits.find((hit) => hit.type === 'spore')!.retrieve).toEqual({ tool: 'myco_spores', input: { op: 'get', id: 'sp1' } });
-    expect(answer.hits.find((hit) => hit.type === 'card')).toMatchObject({ session_id: 's1', prompt_id: 't1', status: 'carded', retrieve: { tool: 'myco_sessions', input: { op: 'get', id: 's1', prompt_id: 't1' } } });
+    expect(answer.hits.find((hit) => hit.type === 'spore')).toMatchObject({ observation_type: 'gotcha', retrieve: { tool: 'myco_spores', input: { op: 'get', id: 'sp1' } } });
+    expect(answer.hits.find((hit) => hit.type === 'card')).toMatchObject({ session_id: 's1', prompt_id: 't1', status: 'carded' });
+    expect(answer.hits.find(hit => hit.type === 'card')!.retrieve).toEqual({ tool: 'myco_sessions', input: { op: 'get', id: 's1' } });
     expect(answer).toMatchObject({ mode: 'fts', partial: false, nextCursor: null, coverage: { state: 'ready', pendingBlobs: 0, horizon: null } });
     expect(typeof answer.asOf).toBe('number');
     expect(Object.keys(answer).sort()).toEqual(['asOf', 'coverage', 'hits', 'mode', 'nextCursor', 'partial', 'provider_unavailable']);
@@ -42,6 +43,9 @@ describe('a word search', () => {
       .toMatchObject({ mode: 'fts', fallback_reason: 'history', hits: [{ id: 'old', successor_id: 'new' }] });
     expect(hit).toMatchObject({ title: 'Use the current cobalt rule.', status: 'consolidated', learned_at: new Date(1000).toISOString(), successor_id: 'new' });
     expect(ids(await f.search('cobalt', { mode: 'fts', type: 'plan', status: 'completed' }))).toEqual(['done']);
+    expect(ids(await f.search('cobalt', { mode: 'fts', status: 'all' })).sort()).toEqual(['done', 'new', 'old', 'working']);
+    expect(ids(await f.search('cobalt', { mode: 'semantic', status: 'all' })).sort()).toEqual(['done', 'new', 'old', 'working']);
+    expect((await f.search('cobalt', { mode: 'semantic', status: 'in_progress' })).fallback_reason).not.toBe('history');
   });
 
   it('ranks records whose headline holds the words first, then the newest, across kinds', async () => {

@@ -1,3 +1,4 @@
+import { sporeLearnedAtSql } from './spore-dates.js';
 import { SEARCH_CURRENT_STATUSES } from '@goondocks/myco-shared/search-types';
 import type { RelationalStore } from '../../core/adapters.js';
 import { occurredAt, presentedStatus } from '../session-dates.js';
@@ -50,7 +51,7 @@ export interface HydratedDocument {
 }
 
 type Slots = [ids: string, projects: string, agent: string | null, branch: string | null, status: string | null, session: string | null,
-  since: number | null, until: number | null, chars: number, word: string | null];
+  since: number | null, until: number | null, chars: number, word: string | null, anyStatus: number];
 
 const IDS = 'json_each(?1) j CROSS JOIN search_documents d ON d.doc_id = j.value';
 const sessionOf = (session: string) => `LEFT JOIN sessions se ON se.project_id = d.project_id AND se.session_id = ${session}`;
@@ -62,13 +63,13 @@ const textOf = (column: string) => `CASE WHEN ?9 > 0 THEN substr(${column}, MAX(
 interface Admission { agent: string; branch: string; status: string; session: string; created: string; liveSession: string | null }
 const admitted = (a: Admission) => [
   'd.project_id IN (SELECT value FROM json_each(?2))',
-  `(?3 IS NULL OR ${a.agent} = ?3)`, `(?4 IS NULL OR ${a.branch} = ?4)`, `(?5 IS NULL OR ${a.status} = ?5)`, `(?6 IS NULL OR ${a.session} = ?6)`,
+  `(?3 IS NULL OR ${a.agent} = ?3)`, `(?4 IS NULL OR ${a.branch} = ?4)`, `(?11=1 OR ?5 IS NULL OR ${a.status} = ?5)`, `(?6 IS NULL OR ${a.session} = ?6)`,
   `(?7 IS NULL OR ${a.created} >= ?7)`, `(?8 IS NULL OR ${a.created} <= ?8)`,
   ...(a.liveSession === null ? [] : [live(a.liveSession)]),
 ].join(' AND ');
 
 const currentStatus = (kind: keyof typeof SEARCH_CURRENT_STATUSES, column: string) =>
-  `(?5 IS NOT NULL OR ${column} IN (${SEARCH_CURRENT_STATUSES[kind].map(status => `'${status}'`).join(',')}))`;
+  `(?11=1 OR ?5 IS NOT NULL OR ${column} IN (${SEARCH_CURRENT_STATUSES[kind].map(status => `'${status}'`).join(',')}))`;
 
 const NO_TURN = 'NULL AS turn_id, NULL AS turn_preview, NULL AS turn_chars';
 /** A past plan's outcome as its hit reads: how and when it was resolved, then its resolution note. */
@@ -82,7 +83,7 @@ const HYDRATE = [
     WHERE d.kind = 'session' AND ${admitted({ agent: 's.agent', branch: 's.branch', status: presentedStatus('s.'), session: 's.session_id', created: occurredAt('s.'), liveSession: 's.session_id' })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.spores', sql:
     `SELECT d.doc_id, 'spore' AS kind, d.project_id, s.id, NULL AS plan, COALESCE(NULLIF(s.agent_line, ''), s.observation_type) AS title, s.agent_line AS line, ${textOf('s.content')},
-      s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, COALESCE(${occurredAt('se.')}, s.created_at) AS learned_at,
+      s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, ${sporeLearnedAtSql('s', 'se')} AS learned_at,
       (SELECT e.new_spore_id FROM resolution_events e WHERE e.project_id=s.project_id AND e.spore_id=s.id
         AND e.action=CASE s.status WHEN 'superseded' THEN 'supersede' WHEN 'consolidated' THEN 'consolidate' END
         AND e.new_spore_id IS NOT NULL ORDER BY e.created_at DESC,e.id DESC LIMIT 1) AS successor_id, ${NO_TURN}
@@ -115,8 +116,8 @@ const HYDRATE = [
 export async function hydrateDocuments(db: RelationalStore, ids: readonly number[], filters: HydrationFilters, text: TextRead): Promise<Map<number, HydratedDocument[]>> {
   const found = new Map<number, HydratedDocument[]>();
   if (ids.length === 0) return found;
-  const slots: Slots = [JSON.stringify(ids), JSON.stringify(filters.projects), filters.agent ?? null, filters.branch ?? null, filters.status ?? null,
-    filters.session ?? null, filters.sinceMs ?? null, filters.untilMs ?? null, text.chars, text.word];
+  const slots: Slots = [JSON.stringify(ids), JSON.stringify(filters.projects), filters.agent ?? null, filters.branch ?? null, filters.status === 'all' ? null : filters.status ?? null,
+    filters.session ?? null, filters.sinceMs ?? null, filters.untilMs ?? null, text.chars, text.word, filters.status === 'all' ? 1 : 0];
   const rows = await readSet(db, ...HYDRATE.map((statement) => statement.bind(...slots)));
   for (const row of rows.flat()) {
     const id = Number(row.doc_id);

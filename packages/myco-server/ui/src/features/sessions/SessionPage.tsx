@@ -231,13 +231,13 @@ function Summary({ session, untitled, live }: { session: SessionRow; untitled: S
  */
 function useSessionSearch(projectId: string, sessionId: string, type: 'spore' | 'plan', q: string, narrowed: { observationType?: string; status?: string }) {
   const enabled = q.length >= SEARCH_MIN_CHARS;
-  const search = useSearchPages({ projectId }, { query: q, type, sessionId, since: '', observationType: narrowed.observationType ?? '', ...(narrowed.status === undefined ? {} : { status: narrowed.status }) }, enabled);
+  const search = useSearchPages({ projectId }, { query: q, type, sessionId, since: '', observationType: narrowed.observationType ?? '', status: narrowed.status ?? 'all' }, enabled);
   const rows = search.hits.map((hit): SessionEventRow => ({
     key: hit.id,
     at: hit.created_at,
-    kind: type === 'spore' ? 'Match' : 'Plan',
+    kind: type === 'spore' ? sporeTypeWord(hit.observation_type ?? 'spore') : 'Plan',
     title: hit.title,
-    detail: hit.preview === '' ? undefined : hit.preview,
+    detail: hit.preview === '' || hit.preview === hit.title ? undefined : hit.preview,
     to: type === 'spore' ? projectPath(projectId, `/spores/${encodeURIComponent(hit.id)}`) : planPagePath(projectId, { planKey: hit.id }),
   }));
   return {

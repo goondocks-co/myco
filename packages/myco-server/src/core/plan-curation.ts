@@ -115,7 +115,7 @@ export async function buildPlanCurationInput(env: Pick<ServerEnv, 'db'>, project
 export function planCurationPrompt(material: string): string {
   return [
     'Each plan below is live (active or in progress) and nobody has edited it for two weeks. Decide what became of each one, from the evidence listed with it and from later plans.',
-    'Use `myco_search` with type plan to find later plans covering the same work; a plan id it returns is evidence as plan:<id>.',
+    'Use `myco_search` with type plan and status "all" to find later plans covering the same work; a plan id it returns is evidence as plan:<id>.',
     `For each plan, call \`${PLAN_CURATION_TOOL}\` op "resolve" once, with plan_id, decision and a note:`,
     '- completed: the work landed. The note names what landed, and evidence cites it: an outcome listed for that plan (pr:, issue:, tag:, release:, deploy:), or progress when every checklist item is checked. A session or another plan never shows that the work landed.',
     '- abandoned: the work was dropped. The note says why, and evidence cites what shows it.',

@@ -559,6 +559,13 @@ describe('POST /mcp over an External Agent grant', () => {
     expect(search.result.hits).toMatchObject([{ type: 'spore', id: spores.result.spores[0].id }]);
   });
 
+  it('refuses conversation content to a grant and names the summary call it can make', async () => {
+    const { grant, callAs } = await grantSetup();
+    const answer = (await callAs(grant.key, 'myco_sessions', { op: 'get', id: 'session', prompt_id: 'prompt', collection: 'responses' })).result;
+    expect(answer.ok).toBe(false);
+    expect(answer.error).toContain('Next call: myco_sessions {"op":"get","id":"session"} without prompt_id or collection');
+  });
+
   it('refuses every write, every admin read, myco_agent, an op outside the enum and an empty op exactly as a tool that does not exist', async () => {
     const { grant, callAs } = await grantSetup();
     const unknown = await callAs(grant.key, 'myco_nope');

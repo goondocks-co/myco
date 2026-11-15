@@ -1405,7 +1405,7 @@ describe('the session reading page', () => {
     const { requested } = server(routes({
       [SPORES]: () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
       [`${SPORES.replace('limit=25', 'limit=25&type=decision')}`]: () => Response.json({ spores: [], total: 0, maxPage: 200 }),
-      ['/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&session_id=s1&mode=fts']: () => Response.json({ hits: [], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
+      ['/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&status=all&session_id=s1&mode=fts']: () => Response.json({ hits: [], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
     }));
     mount('/p/x/sessions/s1?tab=spores');
     await screen.findByRole('list', { name: 'Spores' });
@@ -1416,7 +1416,7 @@ describe('the session reading page', () => {
     expect(location()).toBe('/p/x/sessions/s1?tab=spores&type=decision');
     fireEvent.change(screen.getByRole('searchbox', { name: 'Search spores' }), { target: { value: 'cache' } });
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=spores&type=decision&q=cache'));
-    await waitFor(() => expect(requested).toContain('/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&session_id=s1&mode=fts'));
+    await waitFor(() => expect(requested).toContain('/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=decision&status=all&session_id=s1&mode=fts'));
     expect(requested.some((p) => p.startsWith('/api/projects/x/spores') && p.includes('q='))).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Clear search and filters' }));
     await waitFor(() => expect(location()).toBe('/p/x/sessions/s1?tab=spores'));
@@ -1465,7 +1465,7 @@ describe('the session reading page', () => {
   it('drops the search and the filter when another tab opens, so neither lands on a list it was not set on', async () => {
     server(routes({
       '/api/projects/x/spores?limit=25&type=gotcha&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
-      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ hits: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
+      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&status=all&session_id=s1&mode=fts': () => Response.json({ hits: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
       [PLANS]: () => page([plan()]),
     }));
     mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');
@@ -1943,7 +1943,7 @@ describe('the session reading page', () => {
   it('says nothing was recorded in a session without commits or reports, and opens the tab from another with its filter dropped', async () => {
     server(routes({
       '/api/projects/x/spores?limit=25&type=gotcha&session=s1': () => Response.json({ spores: [spore({})], total: 1, maxPage: 200 }),
-      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&session_id=s1&mode=fts': () => Response.json({ hits: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
+      '/api/projects/x/search?q=cache&type=spore&limit=20&observation_type=gotcha&status=all&session_id=s1&mode=fts': () => Response.json({ hits: [{ id: 'sp1', type: 'spore', title: 'The cache lies after a rebase.', preview: '', score: 1, created_at: NOW - MINUTE, session_id: 's1' }], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
       [COMMITS]: () => Response.json({ observations: [], release: null }),
     }));
     mount('/p/x/sessions/s1?tab=spores&type=gotcha&q=cache');

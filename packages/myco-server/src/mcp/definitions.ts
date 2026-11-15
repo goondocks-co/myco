@@ -99,7 +99,7 @@ const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEnt
 const definitions: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
-    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores lead with agent_line and retired spores name successor_id. With no status filter, spores are active and plans active or in_progress. Request a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) are ignored; at most ${SEARCH_MAX_TERMS} words and ${SEARCH_QUERY_MAX_CHARS} characters are searched. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
+    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) are ignored; at most ${SEARCH_MAX_TERMS} words and ${SEARCH_QUERY_MAX_CHARS} characters are searched. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -116,7 +116,7 @@ const definitions: readonly ServedToolDefinition[] = [
         "mode": {
           "type": "string",
           "enum": ["auto", "semantic", "fts"],
-          "description": "Auto and semantic try vectors; card-only searches, spore history, empty semantic answers and provider unavailability fall back to words with fallback_reason. Semantic results cover embedded sessions, spores and plans only; use fts for all words, cards and plan bodies. coverage describes the word index, not vector completeness."
+          "description": "Auto and semantic try vectors; card-only searches, spore history, empty semantic answers, capped results shortened by agent/branch filters (fallback_reason filtered), and provider unavailability fall back to words with fallback_reason. Semantic results cover embedded sessions, spores and plans only; use fts for all words, cards and plan bodies. coverage describes the word index, not vector completeness."
         },
         "session_id": { "type": "string", "description": "Filter by session ID." },
         "query": {
@@ -146,7 +146,7 @@ const definitions: readonly ServedToolDefinition[] = [
         },
         "status": {
           "type": "string",
-          "description": "Exact status filter; omit for active spores and active/in_progress plans. Use superseded, consolidated or obsolete for spore history, completed or abandoned for past plans."
+          "description": "Use all for every status; otherwise an exact status filter. Omit for active spores and active/in_progress plans. Use superseded, consolidated or obsolete for spore history, completed or abandoned for past plans."
         },
         "release_state": {
           "type": "string",
@@ -332,7 +332,7 @@ const definitions: readonly ServedToolDefinition[] = [
   },
   {
     "name": "myco_sessions",
-    "description": `Read sessions and their conversations. list (default) returns {sessions,cursor}; pass cursor with the same filters for older pages. get requires id and returns metadata plus a paged turns list; get with id and prompt_id opens that turn's prompt, replies and tool summary through the shared conversation reader (at most ${TURN_PAGES} document pages). Continue a turn with collection and its matching cursors value; a collection answers {rows,cursor}. Lists take limit 1–${MAX_PAGE} (default 20). Example: {"op":"get","id":"session-id","prompt_id":"prompt-id"}.`,
+    "description": `Read sessions and their conversations. list (default) returns {sessions,cursor}; pass cursor with the same filters for older pages. get requires id and returns metadata plus a paged turns list; get with id and prompt_id opens that turn's prompt, replies and tool summary through the shared conversation reader (at most ${TURN_PAGES} document pages). Grant keys read summaries only; prompt_id and collection require member authority. Turn locator repair answers turn_locator_building with retryable true. Continue a turn with collection and its matching cursors value; a collection answers {rows,cursor}. Lists take limit 1–${MAX_PAGE} (default 20). Example: {"op":"get","id":"session-id","prompt_id":"prompt-id"}.`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,

@@ -128,7 +128,7 @@ describe('plan curation', () => {
     expect(listed.map(plan => [plan.planKey, plan.supersededBy])).toEqual([[r.ids.replaced, { planKey: r.ids.successor, title: 'Export format, second pass' }]]);
 
     // The past plan is found by the words of its outcome, and its hit reads that outcome.
-    const found = await r.call(token, 'myco_search', { query: 'landed', type: 'plan', mode: 'fts' }) as { hits: Array<{ id: string; preview: string }> };
+    const found = await r.call(token, 'myco_search', { query: 'landed', type: 'plan', status: 'all', mode: 'fts' }) as { hits: Array<{ id: string; preview: string }> };
     expect(found.hits.map(hit => hit.id)).toEqual([r.ids.writer]);
     expect(found.hits[0]!.preview).toMatch(/^Completed \d{4}-\d{2}-\d{2}: Landed #2180: one plan writer\.$/);
 

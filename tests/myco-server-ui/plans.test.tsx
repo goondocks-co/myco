@@ -155,11 +155,11 @@ describe('the plans board', () => {
     const hit = { id: KEY, type: 'plan', title: 'Myco’s work as outcomes', preview: 'Group runs by task', score: 1, created_at: NOW - HOUR, projectId: MYCO };
     const { requested } = server(base({
       ...columns(),
-      '/api/search?q=runs&type=plan&limit=20': () => Response.json({ hits: [hit], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
+      '/api/search?q=runs&type=plan&limit=20&status=all': () => Response.json({ hits: [hit], mode: 'fts', provider_unavailable: false, coverage: { state: 'ready', pendingBlobs: 0, horizon: null }, partial: false, asOf: 0, nextCursor: null }),
     }));
     mount('/knowledge/plans');
     fireEvent.change(await screen.findByRole('searchbox', { name: 'Search plans' }), { target: { value: 'runs' } });
-    await asked(requested, '/api/search?q=runs&type=plan&limit=20');
+    await asked(requested, '/api/search?q=runs&type=plan&limit=20&status=all');
     const found = await screen.findByRole('link', { name: /Myco’s work as outcomes/ });
     expect(found.getAttribute('href')).toBe(`/p/${MYCO}/plans/${KEY}`);
     expect(document.querySelector('[data-board]')).toBeNull();

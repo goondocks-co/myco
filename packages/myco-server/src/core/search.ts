@@ -1,5 +1,5 @@
 import {
-  SEARCH_STOPWORDS, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS, type SearchAcrossAnswer, type SearchAcrossResult, type SearchAnswer, type SearchCoverage, type SearchOptions,
+  isCurrentSearchStatus, SEARCH_STOPWORDS, SEARCH_WINDOW, SEARCH_WINDOW_TTL_MS, type SearchAcrossAnswer, type SearchAcrossResult, type SearchAnswer, type SearchCoverage, type SearchOptions,
 } from '@goondocks/myco-shared/search-types';
 import type { ServerEnv } from './adapters.js';
 import type { ProjectSet, ReadScope } from '../read/scope.js';
@@ -39,16 +39,17 @@ export async function searchDeployment(env: ServerEnv, scope: ReadScope, options
   let fallback: SearchAnswer['fallback_reason'];
   if (request.mode !== 'fts' && request.order === 'relevance' && request.cursor === null && request.match === 'all') {
     if (request.types.every(type => type === 'card')) fallback = 'no_vectors';
-    else if (request.filters.status !== undefined && request.filters.status !== 'active'
+    else if (request.filters.status !== undefined && !isCurrentSearchStatus('plan', request.filters.status)
       && request.types.some(type => type === 'spore')) fallback = 'history';
     else {
       const semantic = await resolveSemanticSearch(env);
       if (semantic !== null) {
         try {
-          const hits = await semanticSearch(env.db, scope, semantic, documentKinds(request).filter(kind => kind !== 'chunk'),
+          const semanticAnswer = await semanticSearch(env.db, scope, semantic, documentKinds(request).filter(kind => kind !== 'chunk'),
             { ...request.filters, query: options.query.trim() }, request.limit);
-          if (hits.length > 0) return { hits, mode: 'semantic', provider_unavailable: false, coverage, partial: false, asOf: now, nextCursor: null };
-          fallback = 'empty_semantic';
+          const { hits } = semanticAnswer;
+          if (!semanticAnswer.filtered && hits.length > 0) return { hits, mode: 'semantic', provider_unavailable: false, coverage, partial: false, asOf: now, nextCursor: null };
+          fallback = semanticAnswer.filtered ? 'filtered' : 'empty_semantic';
         } catch (error) { if (!(error instanceof EmbeddingUnavailable)) throw error; fallback = 'provider_unavailable'; }
       } else fallback = 'provider_unavailable';
     }

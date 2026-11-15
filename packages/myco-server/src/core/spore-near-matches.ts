@@ -28,7 +28,7 @@ async function semanticNeighbours(env: ServerEnv, scope: ReadScope, line: string
   try {
     const semantic = await resolveSemanticSearch(env);
     if (semantic === null) return [];
-    return (await semanticSearch(env.db, scope, semantic, ['spore'], { query: line, status: 'active' }, NEAR_MATCH_LIMIT + 1)).map((hit) => hit.id);
+    return (await semanticSearch(env.db, scope, semantic, ['spore'], { query: line, status: 'active' }, NEAR_MATCH_LIMIT + 1)).hits.map((hit) => hit.id);
   } catch { return []; }
 }
 

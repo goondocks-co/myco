@@ -40,7 +40,7 @@ export function PlansBoard({ projectId, projectName }: PlansBoardProps) {
         onClear={() => { draft.reset(); filterParams.clear(); }}
       />
       {searching ? (
-        <SearchMatches scope={projectId === null ? 'all' : { projectId }} filters={{ query: filterParams.query, type: 'plan', since: '', observationType: '' }} noun="plans" projectName={projectName} now={now} />
+        <SearchMatches scope={projectId === null ? 'all' : { projectId }} filters={{ query: filterParams.query, type: 'plan', status: 'all', since: '', observationType: '' }} noun="plans" projectName={projectName} now={now} />
       ) : (
         <>
           <p className="t-small text-muted">Checklist progress is unavailable on this board for large plans.</p>

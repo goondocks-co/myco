@@ -153,7 +153,7 @@ for (const target of ['bun', 'workerd-d1'] as const) {
       const search = await semanticSearch(db, SCOPE, semantic(matches), ['spore', 'plan', 'session'], { query: 'fixture prompt' }, 100);
       const expected = (await Promise.all(['spore', 'plan', 'session'].map((type) => oracle(db, matches, { type })))).flat()
         .sort((a, b) => b.score - a.score || a.vector_id.localeCompare(b.vector_id)).slice(0, 100);
-      expect(search.map(({ id, preview }) => ({ id, preview }))).toEqual(expected.map((row) => ({ id: row.record_id, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS) })));
+      expect(search.hits.map(({ id, preview }) => ({ id, preview }))).toEqual(expected.map((row) => ({ id: row.record_id, preview: row.text.slice(0, SEARCH_PREVIEW_CHARS) })));
     } finally { sqlite.close(); await mf?.dispose(); }
   }, 60_000);
 }

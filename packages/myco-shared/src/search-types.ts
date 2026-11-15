@@ -33,6 +33,7 @@ export interface SearchOptions {
   type?: string;
   mode?: string;
   limit?: number;
+  /** Omit for current knowledge; all admits every status. */
   status?: string;
   session_id?: string;
   observation_type?: string;
@@ -80,6 +81,7 @@ export interface SearchResult {
   learned_at: string;
   /** The recorded replacement of a superseded or consolidated spore. */
   successor_id?: string;
+  observation_type?: string;
   session_id?: string;
   prompt_id?: string;
   /** Present on card hits: the turn the hit opens, or null when its prompt reference names no prompt of this Project's session. */
@@ -113,7 +115,7 @@ export interface SearchAnswer {
   mode: 'fts' | 'semantic';
   provider_unavailable: boolean;
   /** Why a requested semantic search used the word path. */
-  fallback_reason?: 'no_vectors' | 'history' | 'empty_semantic' | 'provider_unavailable';
+  fallback_reason?: 'no_vectors' | 'history' | 'empty_semantic' | 'provider_unavailable' | 'filtered';
   coverage: SearchCoverage;
   /** True when older matches exist than the ones this answer ranked; the next page reaches them. */
   partial: boolean;

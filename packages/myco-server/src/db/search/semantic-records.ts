@@ -1,3 +1,4 @@
+import { sporeLearnedAtSql } from './spore-dates.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, rows } from '../index.js';
 import { occurredAt } from '../session-dates.js';
@@ -12,7 +13,7 @@ const presentation = read<[project: string, records: string, agent: string | nul
     SELECT w.type,w.id,NULL AS agent_line,${occurredAt('s.')} AS learned_at
       FROM wanted w CROSS JOIN sessions s ON s.project_id=?1 AND s.session_id=w.id
       WHERE w.type='session' AND (?3 IS NULL OR s.agent=?3) AND (?4 IS NULL OR s.branch=?4)
-    UNION ALL SELECT w.type,w.id,s.agent_line,COALESCE(${occurredAt('se.')},s.created_at) AS learned_at
+    UNION ALL SELECT w.type,w.id,s.agent_line,${sporeLearnedAtSql('s', 'se')} AS learned_at
       FROM wanted w CROSS JOIN spores s ON s.project_id=?1 AND s.id=w.id
       LEFT JOIN sessions se ON se.project_id=s.project_id AND se.session_id=s.session_id
       WHERE w.type='spore' AND (?3 IS NULL OR se.agent=?3) AND (?4 IS NULL OR se.branch=?4)
