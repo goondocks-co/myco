@@ -28,22 +28,29 @@ export const SERVED_ITEMS_TRIGGER = trigger('session_served_items_receipt', 'spo
   receiptItems('SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id'));
 
 /** A selection reserves candidates briefly while the member renders and reports delivery. */
-export const CONTEXT_RESERVATION_MS = 8_000;
+export const CONTEXT_RESERVATION_MS = 60_000;
 
 /** Candidate membership is permanent only for delivered receipts; pending selections expire. */
-export const receiptExclusions = (receipts: string): string => `INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at)
+export const receiptExclusions = (receipts: string): string => `INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at,reservation_receipt_id)
   ${(['spore', 'plan'] as const).map(kind => `SELECT r.project_id,r.session_id,'${kind}',j.value,
-    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+${CONTEXT_RESERVATION_MS} END
+    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+${CONTEXT_RESERVATION_MS} END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END
     FROM (${receipts}) k CROSS JOIN spore_injections r
     ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(${jsonArray(`r.${kind}_ids`)}) j
-    WHERE j.type='text' AND ${notTombstonedSql('r')}`).join(' UNION ALL ')}
-  ON CONFLICT(project_id,session_id,kind,item_id) DO UPDATE SET reservation_expires_at=CASE
+    WHERE j.type='text' AND r.discarded_at IS NULL AND ${notTombstonedSql('r')}`).join(' UNION ALL ')}
+  ON CONFLICT(project_id,session_id,kind,item_id) DO UPDATE SET reservation_receipt_id=CASE
+    WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN NULL
+    WHEN excluded.reservation_expires_at>=session_served_items.reservation_expires_at THEN excluded.reservation_receipt_id ELSE session_served_items.reservation_receipt_id END,
+    reservation_expires_at=CASE
     WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN 0
     ELSE MAX(session_served_items.reservation_expires_at,excluded.reservation_expires_at) END`;
 
 const newReceipt = 'SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id';
 export const RECEIPT_EXCLUSION_TRIGGERS = [
   trigger('session_served_items_receipt', 'spore_injections', 'INSERT', receiptExclusions(newReceipt)),
+  trigger('session_served_items_discard', 'spore_injections', 'UPDATE OF discarded_at',
+    `DELETE FROM session_served_items WHERE (project_id,session_id,kind,item_id) IN (
+      SELECT project_id,session_id,kind,item_id FROM session_served_items INDEXED BY idx_session_served_reservation
+      WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND reservation_receipt_id=NEW.id AND reservation_expires_at>0)`, 'NEW.discarded_at IS NOT NULL'),
   trigger('session_served_items_delivery', 'spore_injections', 'UPDATE OF delivered_at', receiptExclusions(newReceipt), 'NEW.delivered_at IS NOT NULL'),
 ];
 
@@ -62,7 +69,7 @@ const membershipPhases = read<[], { phase: string; done: number }>({ name: 'serv
 
 /** Every receipt array of the session: read only while the membership is still being built from receipts written before it. */
 const sessionReceiptArrays = read<[project: string, session: string, since: number], { spore_ids: string | null; plan_ids: string | null }>({ name: 'servedItems.receiptArrays',
-  sql: 'SELECT spore_ids,plan_ids FROM spore_injections WHERE project_id=?1 AND session_id=?2 AND (delivered_at IS NOT NULL OR created_at>?3)' });
+  sql: 'SELECT spore_ids,plan_ids FROM spore_injections WHERE project_id=?1 AND session_id=?2 AND discarded_at IS NULL AND (delivered_at IS NOT NULL OR created_at>?3)' });
 
 const ids = (raw: string | null): string[] => {
   if (raw === null) return [];

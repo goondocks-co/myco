@@ -544,7 +544,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "postToolUseInjection": false,
+      "postToolUseInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
@@ -567,6 +567,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "payload.cwd",
       "transcriptRepositoryPath": "payload.git.repository_url",
       "retention": "harness"
+    },
+    "hookResponse": {
+      "format": "plain-text",
+      "shapes": {
+        "PostToolUse": "hookSpecificOutput"
+      }
     },
     "capturePrompts": {
       "shapes": [
@@ -805,7 +811,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "postToolUseInjection": false,
+      "postToolUseInjection": true,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
@@ -825,7 +831,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "hookResponse": {
       "format": "plain-text",
       "shapes": {
-        "SubagentStart": "flat"
+        "SubagentStart": "flat",
+        "PostToolUse": "flat"
       }
     }
   },

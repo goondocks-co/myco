@@ -138,6 +138,11 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
+  it('Copilot emits tool context at the top level', () => {
+    writeHookResponse('copilot', 'post-tool-use', { additionalContext: 'prompt memory' });
+    expect(JSON.parse(captured)).toEqual({ additionalContext: 'prompt memory' });
+  });
+
   describe('unknown symbiont', () => {
     it('falls back to the plain-text default rather than crashing', () => {
       writeHookResponse('some-hypothetical-agent', 'stop', { additionalContext: 'ok' });

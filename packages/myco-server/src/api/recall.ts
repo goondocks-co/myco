@@ -1,3 +1,4 @@
+import { discardContextReceipt } from '../db/context/discard.js';
 /**
  * The recall surface: what a member's hooks are served for one prompt, and for
  * one session or subagent start.
@@ -134,6 +135,19 @@ export async function handlePromptContext(env: ServerEnv, ctx: RouteContext): Pr
   }, () => resolveSemanticSearch(env), env.platform?.classifyError, ctx.contextTimings);
   if (served.refusal !== undefined) return Response.json(refused(ctx, served.refusal));
   return Response.json({ persisted: true, ...served });
+}
+
+/** Release a prompt selection that the member did not render. */
+export async function handleDiscardContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {
+  const body = parseBody(ctx.body);
+  const sessionId = body === null ? null : str(body.sessionId, MAX_SESSION_CHARS);
+  const receiptId = body === null ? null : str(body.receiptId, MAX_PROMPT_ID_CHARS);
+  if (sessionId === null || receiptId === null) return Response.json(refused(ctx, refusal('discard context requires sessionId and receiptId', 'parse')));
+  const admission = sessionWriteAdmission(ctx, sessionId);
+  const unwritable = await admission.refusal(env.db);
+  if (unwritable !== null) return Response.json(refused(ctx, unwritable));
+  await discardContextReceipt(env.db, { project: ctx.projectId, session: sessionId, receipt: receiptId, now: ctx.now, machine: ctx.machineId });
+  return Response.json({ persisted: true });
 }
 
 export async function handleSessionContext(env: ServerEnv, ctx: RouteContext): Promise<Response> {

@@ -10,6 +10,7 @@
   "member GET /members/raw-claims",
   "member GET /members/roles",
   "member POST /blobs/{sha256}",
+  "member POST /context/discard",
   "member POST /context/prompt",
   "member POST /context/session",
   "member POST /events",

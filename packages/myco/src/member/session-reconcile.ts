@@ -48,6 +48,7 @@ export const SESSION_FIELD_RULES = {
   // Count in the target spool's own journal, marks file and retry waits.
   highWater: 'target', markWater: 'target', markGeneration: 'target',
   eventRetry: 'target', transcriptRetry: 'target', agentUnknown: 'target',
+  promptRecall: 'target',
   contextAsks: 'context', renderedAsk: 'context',
   hookAt: 'lifecycle', endedAt: 'lifecycle',
   promptId: 'targetElseSource', agent: 'targetElseSource', promptBackfill: 'targetElseSource',

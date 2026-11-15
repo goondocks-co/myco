@@ -16,12 +16,12 @@ CREATE TABLE spore_injections (
      delivered_at           INTEGER,
      delivered_prompt_id    TEXT,
      delivered_scope_reason TEXT CHECK (delivered_scope_reason IN ('absent_key', 'steering', 'scheme', 'transcript_only')),
-     prompt_hash TEXT NOT NULL,
+     discarded_at INTEGER, prompt_hash TEXT NOT NULL,
      spore_ids   TEXT NOT NULL,
      plan_ids    TEXT,
      created_at  INTEGER NOT NULL,
      PRIMARY KEY (project_id, session_id, id),
-     
+
      CHECK ((prompt_id IS NULL) = (scope_reason IS NOT NULL)),
      CHECK (CASE WHEN delivered_at IS NULL THEN delivered_prompt_id IS NULL AND delivered_scope_reason IS NULL
                  ELSE (delivered_prompt_id IS NULL) = (delivered_scope_reason IS NOT NULL) END));
@@ -182,33 +182,47 @@ CREATE TRIGGER IF NOT EXISTS context_placement_receipt_delete AFTER DELETE ON sp
 
 ALTER TABLE session_served_items ADD COLUMN reservation_expires_at INTEGER NOT NULL DEFAULT 0;
 
+ALTER TABLE session_served_items ADD COLUMN reservation_receipt_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_session_served_reservation ON session_served_items(project_id,session_id,reservation_receipt_id);
+
 DELETE FROM session_served_items;
 
-CREATE TRIGGER IF NOT EXISTS session_served_items_receipt AFTER INSERT ON spore_injections BEGIN INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at)
+CREATE TRIGGER IF NOT EXISTS session_served_items_receipt AFTER INSERT ON spore_injections BEGIN INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at,reservation_receipt_id)
   SELECT r.project_id,r.session_id,'spore',j.value,
-    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+8000 END
+    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+60000 END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END
     FROM (SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id) k CROSS JOIN spore_injections r
     ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(CASE WHEN json_valid(r.spore_ids) AND json_type(r.spore_ids)='array' THEN r.spore_ids ELSE '[]' END) j
-    WHERE j.type='text' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id) UNION ALL SELECT r.project_id,r.session_id,'plan',j.value,
-    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+8000 END
+    WHERE j.type='text' AND r.discarded_at IS NULL AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id) UNION ALL SELECT r.project_id,r.session_id,'plan',j.value,
+    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+60000 END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END
     FROM (SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id) k CROSS JOIN spore_injections r
     ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(CASE WHEN json_valid(r.plan_ids) AND json_type(r.plan_ids)='array' THEN r.plan_ids ELSE '[]' END) j
-    WHERE j.type='text' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id)
-  ON CONFLICT(project_id,session_id,kind,item_id) DO UPDATE SET reservation_expires_at=CASE
+    WHERE j.type='text' AND r.discarded_at IS NULL AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id)
+  ON CONFLICT(project_id,session_id,kind,item_id) DO UPDATE SET reservation_receipt_id=CASE
+    WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN NULL
+    WHEN excluded.reservation_expires_at>=session_served_items.reservation_expires_at THEN excluded.reservation_receipt_id ELSE session_served_items.reservation_receipt_id END,
+    reservation_expires_at=CASE
     WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN 0
     ELSE MAX(session_served_items.reservation_expires_at,excluded.reservation_expires_at) END; END;
 
-CREATE TRIGGER IF NOT EXISTS session_served_items_delivery AFTER UPDATE OF delivered_at ON spore_injections WHEN NEW.delivered_at IS NOT NULL BEGIN INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at)
+CREATE TRIGGER IF NOT EXISTS session_served_items_discard AFTER UPDATE OF discarded_at ON spore_injections WHEN NEW.discarded_at IS NOT NULL BEGIN DELETE FROM session_served_items WHERE (project_id,session_id,kind,item_id) IN (
+      SELECT project_id,session_id,kind,item_id FROM session_served_items INDEXED BY idx_session_served_reservation
+      WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND reservation_receipt_id=NEW.id AND reservation_expires_at>0); END;
+
+CREATE TRIGGER IF NOT EXISTS session_served_items_delivery AFTER UPDATE OF delivered_at ON spore_injections WHEN NEW.delivered_at IS NOT NULL BEGIN INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at,reservation_receipt_id)
   SELECT r.project_id,r.session_id,'spore',j.value,
-    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+8000 END
+    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+60000 END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END
     FROM (SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id) k CROSS JOIN spore_injections r
     ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(CASE WHEN json_valid(r.spore_ids) AND json_type(r.spore_ids)='array' THEN r.spore_ids ELSE '[]' END) j
-    WHERE j.type='text' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id) UNION ALL SELECT r.project_id,r.session_id,'plan',j.value,
-    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+8000 END
+    WHERE j.type='text' AND r.discarded_at IS NULL AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id) UNION ALL SELECT r.project_id,r.session_id,'plan',j.value,
+    CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+60000 END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END
     FROM (SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id) k CROSS JOIN spore_injections r
     ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(CASE WHEN json_valid(r.plan_ids) AND json_type(r.plan_ids)='array' THEN r.plan_ids ELSE '[]' END) j
-    WHERE j.type='text' AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id)
-  ON CONFLICT(project_id,session_id,kind,item_id) DO UPDATE SET reservation_expires_at=CASE
+    WHERE j.type='text' AND r.discarded_at IS NULL AND NOT EXISTS (SELECT 1 FROM session_tombstones t WHERE t.project_id = r.project_id AND t.session_id = r.session_id)
+  ON CONFLICT(project_id,session_id,kind,item_id) DO UPDATE SET reservation_receipt_id=CASE
+    WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN NULL
+    WHEN excluded.reservation_expires_at>=session_served_items.reservation_expires_at THEN excluded.reservation_receipt_id ELSE session_served_items.reservation_receipt_id END,
+    reservation_expires_at=CASE
     WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN 0
     ELSE MAX(session_served_items.reservation_expires_at,excluded.reservation_expires_at) END; END;
 

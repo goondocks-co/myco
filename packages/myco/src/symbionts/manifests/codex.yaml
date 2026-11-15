@@ -249,6 +249,10 @@ capture:
         changeOn: payload.turn_id
     interruptMarker: "<turn_aborted>"
 registration:
+  hookResponse:
+    format: plain-text
+    shapes:
+      PostToolUse: hookSpecificOutput
   memberHookTrustAction: "Restart Codex and trust Myco's hooks"
   hooksTarget: .codex/hooks.json
   # The 2.0 member scope writes the project's own hooks file: Codex reads it
@@ -279,6 +283,7 @@ registration:
   globalSettingsTarget: ~/.codex/config.toml
   settingsFormat: toml
 capabilities:
+  postToolUseInjection: true
   # Hook template registers a session-start hook that fetches Cortex context.
   sessionStartInjection: true
   # SubagentStart can inject additionalContext as extra developer context for

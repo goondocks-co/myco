@@ -12,7 +12,7 @@ export function contextDeliverySteps(receiptBody: string, indexes: readonly stri
     statements: [
       'CREATE TABLE _context_receipts AS SELECT rowid AS saved_rowid,* FROM spore_injections',
       'DROP TABLE spore_injections',
-      `CREATE TABLE spore_injections ${receiptBody.replace('UNIQUE (project_id, session_id, prompt_hash),', '')}`,
+      `CREATE TABLE spore_injections ${receiptBody.replace('     UNIQUE (project_id, session_id, prompt_hash),', '').replace('prompt_hash TEXT NOT NULL,', 'discarded_at INTEGER, prompt_hash TEXT NOT NULL,')}`,
       `INSERT INTO spore_injections(rowid,${columns}) SELECT saved_rowid,${columns} FROM _context_receipts`,
       'DROP TABLE _context_receipts',
       ...indexes,
@@ -20,6 +20,8 @@ export function contextDeliverySteps(receiptBody: string, indexes: readonly stri
       ...kpiTriggers().filter(trigger => trigger.table === 'spore_injections').map(trigger => trigger.sql),
       ...contextPlacementSchemaStatements().filter(sql => /^CREATE TRIGGER[^]* ON spore_injections /.test(sql)),
       'ALTER TABLE session_served_items ADD COLUMN reservation_expires_at INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE session_served_items ADD COLUMN reservation_receipt_id TEXT',
+      'CREATE INDEX IF NOT EXISTS idx_session_served_reservation ON session_served_items(project_id,session_id,reservation_receipt_id)',
       'DELETE FROM session_served_items',
       ...RECEIPT_EXCLUSION_TRIGGERS.map(trigger => trigger.sql),
       `UPDATE projection_catchup SET done=NOT EXISTS(SELECT 1 FROM spore_injections),after_key='[]',frontier=NULL WHERE projection='${SERVED_ITEMS_PROJECTION}'`,
@@ -28,7 +30,9 @@ export function contextDeliverySteps(receiptBody: string, indexes: readonly stri
     reaches: [
       ...changing(['spore_injections', 'session_served_items', 'projection_catchup'], 'Delivery exclusions and expiring reservations rebuild from immutable receipts.'),
     ],
-    deploymentIndexes: [{ index: 'idx_spore_injections_hash', read: 'Receipt admission seeks prior selections for the prompt text.' }],
+    deploymentIndexes: [
+      { index: 'idx_spore_injections_hash', read: 'Receipt admission seeks prior selections for the prompt text.' },
+      { index: 'idx_session_served_reservation', read: 'Discard releases only the memberships owned by its receipt.' },
+    ],
   }];
 }
-

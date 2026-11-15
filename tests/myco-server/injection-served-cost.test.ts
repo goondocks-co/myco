@@ -1,3 +1,4 @@
+import { discardContextReceipt } from '@myco-server-worker/db/context/discard.js';
 /**
  * What a session has been served costs the same however long the session, on D1:
  * the prompt's check of its candidates, and the receipt that records what it served.
@@ -40,6 +41,14 @@ it('a prompt\'s served check and its receipt cost the same at 300 and 3,000 rece
           plans: [{ planKey: `plan-fresh-${scale}`, title: 'Fresh', sessionId: 'other', contentHash: 'h' }] }, contextAdmission(PROJECT, RECEIVER, 'machine'))).toBe(true);
         const served = await servedAmong(db, { project: PROJECT, session: RECEIVER, now: 10, candidates: [['spore', `fresh-${scale}`], ['plan', `plan-fresh-${scale}`]] });
         expect([[...served.spores], [...served.plans]]).toEqual([[`fresh-${scale}`], [`plan-fresh-${scale}`]]);
+      } },
+      { name: 'discard', run: async (db, { scale }) => {
+        const id = crypto.randomUUID();
+        const item = `discard-${scale}`;
+        await commitServedReceipt(db, { project: PROJECT, session: RECEIVER, id, promptId: item, scopeReason: null, protocol: 'legacy',
+          askedAt: null, promptHash: item, spores: [item], now: 10, plans: [] }, contextAdmission(PROJECT, RECEIVER, 'machine'));
+        await discardContextReceipt(db, { project: PROJECT, session: RECEIVER, receipt: id, now: 11, machine: 'machine' });
+        expect((await servedAmong(db, { project: PROJECT, session: RECEIVER, now: 12, candidates: [['spore', item]] })).spores.has(item)).toBe(false);
       } },
     ],
   });

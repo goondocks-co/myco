@@ -1,6 +1,10 @@
 import { NOT_TOMBSTONED_PARAMS } from './session-read-model.js';
 import { read, write, type Bound } from './index.js';
 
+export const contextAdmissionSql = (slots: { project: string; session: string; machine: string }) =>
+  `NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=${slots.project} AND session_id=${slots.session})
+   AND NOT EXISTS(SELECT 1 FROM sessions WHERE project_id=${slots.project} AND session_id=${slots.session} AND machine_id IS NOT ${slots.machine})`;
+
 const CONTEXT_ADMISSION_SQL = `(${NOT_TOMBSTONED_PARAMS}) AND (NOT EXISTS (SELECT 1 FROM sessions WHERE project_id = ? AND session_id = ? AND machine_id IS NOT ?))`;
 export interface ContextAdmission {
   params: [string, string, string, string, string | null];

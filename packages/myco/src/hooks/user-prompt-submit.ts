@@ -2,10 +2,10 @@ import { evaluateUserPromptRules, resolveSubagentThread } from './capture-rules.
 import { isHarnessSystemNotification, type CaptureRuleBundle } from '@goondocks/myco-shared/capture-rules';
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun, type OptionalHookCapture } from '../member/capture.js';
-import { contextDeliveredEvent, deriveId, mintId, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
+import { deriveId, mintId, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
 import { featureAdvertised, PROMPT_ASK_MAX_CHARS, type ContextAskRequest } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
-import { promptContext } from '../member/prompt-context.js';
+import { promptContext, queuePromptRecall } from '../member/prompt-context.js';
 import { sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
@@ -133,7 +133,7 @@ export async function main(opts: HookMainOptions = {}) {
     const human = decision.origin === undefined || decision.origin === 'human';
     // The prompt id the turn-start event names: this submission's own, once it is named.
     let turnPromptId: string | undefined;
-    let asking: { naming: PromptNaming; request: Extract<ContextAskRequest, { kind: 'prompt' }>; response: HookResponse } | undefined;
+    let asking: { id?: string; naming: PromptNaming; request: Extract<ContextAskRequest, { kind: 'prompt' }>; response: HookResponse } | undefined;
 
     /** Everything this submission captures once it is named, read from and recorded into the session's state. */
     const capture = (naming: PromptNaming): Required<Pick<HookOutcome, 'events' | 'record' | 'response'>> => {
@@ -160,6 +160,10 @@ export async function main(opts: HookMainOptions = {}) {
         // A transcript-first symbiont keeps only the plan receipts: its prompt
         // row is the parse's.
         record: (next) => {
+          if (asking !== undefined) asking.id = queuePromptRecall(next, asking.request, {
+            late: HOOK_CONFIG[agent]?.capabilities.postToolUseInjection === true,
+            ...(input.promptKey === undefined ? {} : { promptKey: input.promptKey }),
+          });
           if (!transcriptWritesRows && promptId !== undefined) {
             next.promptId = promptId;
             next.prompts[hash] = promptId;
@@ -169,19 +173,8 @@ export async function main(opts: HookMainOptions = {}) {
       };
     };
     const respond: NonNullable<HookOutcome['respond']> = async () => {
-      if (asking === undefined) return { events: [] };
-      const { naming, request, response: outgoing } = asking;
-      const answer = await promptContext(run, request);
-      if (answer === undefined || answer.context.length === 0) return { events: [] };
-      const events: OutboundEvent[] = [];
-      if (naming.version === 'v1' && (answer.receiptId !== undefined || answer.answerId !== undefined || answer.sessionRecord !== undefined)) {
-        events.push(contextDeliveredEvent(ctx, {
-          receiptId: answer.receiptId, answerId: answer.answerId, sessionRecord: answer.sessionRecord,
-          ...(naming.shared ? { renderedIn: naming.promptId, ...(naming.scheme === undefined ? {} : { renderedScheme: naming.scheme }) }
-            : { renderedScopeReason: naming.scopeReason }),
-        }));
-      }
-      return { events, response: { ...outgoing, additionalContext: `${outgoing.additionalContext}\n\n${answer.context}` } };
+      if (asking?.id === undefined) return { events: [] };
+      return promptContext(run, asking.id, asking.response);
     };
     const optional = (): OptionalHookCapture => ({
       events: featureAdvertised(run.credential, run.mycoHome, 'turn')

@@ -448,7 +448,7 @@ const RegistrationSchema = z.object({
      * How an event's answer is shaped where the harness departs from the `hookSpecificOutput` envelope: `flat` writes
      * `{ additionalContext }` at the top level.
      */
-    shapes: z.object({ SubagentStart: z.enum(['hookSpecificOutput', 'flat']) }).partial().strict().optional(),
+    shapes: z.object({ SubagentStart: z.enum(['hookSpecificOutput', 'flat']), PostToolUse: z.enum(['hookSpecificOutput', 'flat']) }).partial().strict().optional(),
   }).optional(),
   /**
    * Optional file path for a plugin deps package.json. When set, the installer writes

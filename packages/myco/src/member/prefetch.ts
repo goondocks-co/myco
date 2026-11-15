@@ -1,3 +1,4 @@
+import { fetchPromptRecalls } from './prompt-context.js';
 /**
  * The member helper's context step (#1561): ask the Deployment what the hooks asked for, and cache the answers they
  * render from (`member/context-cache.ts`).
@@ -85,6 +86,7 @@ export async function prefetchContext(opts: {
 }): Promise<PrefetchReport> {
   const { spool, client, now } = opts;
   spool.assertClientDestination(client);
+  if (await fetchPromptRecalls({ ...opts, capMs: CONTEXT_CAP_MS })) return { asked: 0, answered: 0, stoppedBy: 'budget' };
   const report: PrefetchReport = { asked: 0, answered: 0 };
   for (const { sessionId, asks } of sessionsWithAsks(spool)) {
     for (const ask of asks) {

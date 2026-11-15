@@ -1549,6 +1549,12 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       ],
       "globalSettingsTarget": "~/.codex/config.toml",
       "hooksFormat": "json",
+      "hookResponse": {
+        "format": "plain-text",
+        "shapes": {
+          "PostToolUse": "hookSpecificOutput"
+        }
+      },
       "mcpTarget": ".codex/config.toml",
       "mcpFormat": "toml",
       "mcpServersKey": "mcpServers",
@@ -1562,7 +1568,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": false,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "postToolUseInjection": false,
+      "postToolUseInjection": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results",
       "canopyReadTools": [
@@ -1944,7 +1950,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "hookResponse": {
         "format": "plain-text",
         "shapes": {
-          "SubagentStart": "flat"
+          "SubagentStart": "flat",
+          "PostToolUse": "flat"
         }
       },
       "mcpTarget": ".vscode/mcp.json",
@@ -1959,7 +1966,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "preToolUseInjection": true,
       "sessionStartInjection": true,
       "subagentStartInjection": true,
-      "postToolUseInjection": false,
+      "postToolUseInjection": true,
       "turnRowSource": "hook",
       "transcriptFidelity": "full",
       "canopyReadTools": [

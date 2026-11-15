@@ -60,6 +60,7 @@ export interface HookRun {
   sessionId: string;
   agent: string;
   credential: CredentialRecord;
+  credentialSource: CredentialSource;
   spool: MemberSpool;
   ctx: EnvelopeContext;
   /** The hook's own time: what reading the transcript and the plan files may spend, and what an inline pass may. */
@@ -115,7 +116,7 @@ export interface HookOutcome {
    */
   ends?: 'turn-end' | 'session-end';
   /** Optional response work after durable capture, outside the session lock. */
-  respond?: (run: HookRun) => Promise<HookClaim>;
+  respond?: (run: HookRun) => Promise<HookClaim & { claim?: (state: SessionState) => HookClaim }>;
   /**
    * A turn's end the Deployment is to learn of from the transcript lane: a turn-end mark (`.<session>.turns`) naming
    * where the session's transcript stood. Appended after the records.
@@ -280,7 +281,7 @@ export async function runMemberHook(
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const serverUrl = credential.serverUrl;
     const run: HookRun = {
-      hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, now, argv, env, mycoHome, fetch: opts.fetch,
+      hookName, input, sessionId, agent: input.agent, credential, credentialSource: source ?? credential.source, spool, ctx, budget, now, argv, env, mycoHome, fetch: opts.fetch,
       machinePlanDirs: () => machinePlanDirs(serverUrl, mycoHome),
       ...(pending !== null ? { pending: true } : {}),
     };
@@ -383,11 +384,15 @@ export async function runMemberHook(
     if (pending === null && outcome.respond !== undefined) {
       try {
         const rendered = await outcome.respond(run);
-        if (rendered.events.length > 0) {
-          append(rendered.events);
-          await deliver(rendered.events);
-        }
-        response = rendered.response ?? response;
+        let decided: HookClaim | undefined;
+        const events: SessionEvents = rendered.claim === undefined ? rendered.events : state => {
+          decided = rendered.claim!(state);
+          return decided.events;
+        };
+        if (rendered.claim !== undefined || rendered.events.length > 0) append(events, () => {});
+        const renderedEvents = decided?.events ?? rendered.events;
+        if (renderedEvents.length > 0) await deliver(renderedEvents);
+        response = decided?.response ?? rendered.response ?? response;
       } catch (error) {
         process.stderr.write(`[myco] ${hookName} response skipped: ${(error as Error).message}\n`);
       }

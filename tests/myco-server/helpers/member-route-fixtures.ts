@@ -110,6 +110,11 @@ export async function memberRouteFixtures(sqlite: Database, issuedAt: number, pe
       malformed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
       wellFormed: (token) => new Request('https://s/spores/resolve', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ eventId: `re_${runSeq++}`, agentId: 'agent_gate', sporeId: 'nope', action: 'obsolete', reason: 'retire fixture', status: 'obsolete' }) }),
     },
+    'POST /context/discard': {
+      shape: 'persisted',
+      malformed: (token) => new Request('https://s/context/discard', { method: 'POST', headers: memberHeaders(token), body: '{}' }),
+      wellFormed: (token) => new Request('https://s/context/discard', { method: 'POST', headers: memberHeaders(token), body: JSON.stringify({ sessionId: `s_gate_${runSeq++}`, receiptId: crypto.randomUUID() }) }),
+    },
     'POST /context/prompt': {
       shape: 'persisted',
       malformed: (token) => new Request('https://s/context/prompt', { method: 'POST', headers: memberHeaders(token), body: '{}' }),

@@ -1,3 +1,4 @@
+import { discardContextReceipt } from '@myco-server-worker/db/context/discard.js';
 import { CONTEXT_RESERVATION_MS } from '@myco-server-worker/db/context/served-items.js';
 /**
  * Prompt injection: the gates in order, the pool, the two rules the record's
@@ -173,9 +174,23 @@ describe('what a session was served', () => {
     expect(first.items.map(item => item.id)).toEqual(['retryable']);
     const retry = await select(db, { promptId: 'later', now: NOW + CONTEXT_RESERVATION_MS + 1 });
     expect(retry.items.map(item => item.id)).toEqual(['retryable']);
+    await discardContextReceipt(db, { project: SCOPE.projectId, session: SESSION, receipt: first.receiptId!, now: NOW + CONTEXT_RESERVATION_MS + 2, machine: 'machine_1' });
+    expect((await select(db, { promptId: 'contender', promptHash: 'contender', now: NOW + CONTEXT_RESERVATION_MS + 3 })).items).toEqual([]);
     sqlite.query(`UPDATE spore_injections SET delivered_at=?,delivered_prompt_id=prompt_id WHERE id=?`).run(NOW + CONTEXT_RESERVATION_MS + 2, retry.receiptId!);
     const afterDelivery = await select(db, { promptId: 'delivered', promptHash: 'delivered', now: NOW + 2 * CONTEXT_RESERVATION_MS });
     expect(afterDelivery.items).toEqual([]);
+  });
+
+  it('reoffers a discarded selection immediately and leaves its replacement reserved', async () => {
+    const { db } = store();
+    await insertSpore(db, SCOPE, spore('discardable'));
+    const first = await select(db);
+    const discard = (receipt: string) => discardContextReceipt(db, { project: SCOPE.projectId, session: SESSION, receipt, now: NOW, machine: 'machine_1' });
+    await discard(first.receiptId!);
+    const retry = await select(db, { promptId: 'retry-after-discard', now: NOW + 1 });
+    expect(retry.items.map(item => item.id)).toEqual(['discardable']);
+    await discard(first.receiptId!);
+    expect((await select(db, { promptId: 'contender', promptHash: 'contender', now: NOW + 2 })).items).toEqual([]);
   });
 
   it('admits overlapping parallel selections only once', async () => {

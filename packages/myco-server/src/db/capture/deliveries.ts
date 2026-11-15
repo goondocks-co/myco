@@ -25,6 +25,7 @@ function delivery(name: string, target: Target) {
       delivered_prompt_id = CASE WHEN ${scoped} = 0 THEN ${prompt} WHEN ${shared} THEN ${prompt} END,
       delivered_scope_reason = CASE WHEN ${scoped} = 0 THEN ${slots.at('reason')} WHEN ${shared} THEN NULL ELSE 'scheme' END
     WHERE project_id=${project} AND session_id=${session} AND ${target.keyColumn}=${slots.at('id')} AND (delivered_at IS NULL${nudge})
+      ${target.table === 'spore_injections' ? 'AND discarded_at IS NULL' : ''}
       AND ${storedByThisRequest(project, slots.at('event'), slots.at('nonce'))}` });
   return { slots, statement };
 }

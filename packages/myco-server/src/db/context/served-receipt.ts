@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { type ContextAdmission } from '../context-records.js';
+import { contextAdmissionSql, type ContextAdmission } from '../context-records.js';
 import { commitNamed, write } from '../index.js';
 import { CONTEXT_RESERVATION_MS, excludedCandidate } from './served-items.js';
 import { planSnapshots, type PlanSnapshot } from './served-plans.js';
@@ -36,9 +36,8 @@ const receiptWrite = write<[project: string, session: string, id: string, prompt
   name: 'context.injectionReceipt',
   sql: `INSERT OR IGNORE INTO spore_injections(project_id,session_id,id,prompt_id,scope_reason,ask_protocol,asked_at,prompt_hash,spore_ids,plan_ids,created_at)
     SELECT ?1,?2,?3,?4,?5,?6,CAST(?7 AS INTEGER),?8,?9,?10,CAST(?11 AS INTEGER)
-    WHERE NOT EXISTS(SELECT 1 FROM sessions r WHERE r.project_id=?1 AND r.session_id=?2 AND r.machine_id IS NOT ?12)
-      AND NOT EXISTS(SELECT 1 FROM session_tombstones WHERE project_id=?1 AND session_id=?2)
+    WHERE ${contextAdmissionSql({ project: '?1', session: '?2', machine: '?12' })}
       AND NOT EXISTS(SELECT 1 FROM spore_injections WHERE project_id=?1 AND session_id=?2 AND prompt_id=?4)
-      AND NOT EXISTS(SELECT 1 FROM spore_injections WHERE project_id=?1 AND session_id=?2 AND prompt_hash=?8 AND (delivered_at IS NOT NULL OR created_at>?11-${CONTEXT_RESERVATION_MS}))
+      AND NOT EXISTS(SELECT 1 FROM spore_injections WHERE project_id=?1 AND session_id=?2 AND prompt_hash=?8 AND discarded_at IS NULL AND (delivered_at IS NOT NULL OR created_at>?11-${CONTEXT_RESERVATION_MS}))
       AND NOT EXISTS(${excludedCandidate({ project: '?1', session: '?2', candidates: '?13', now: '?11' })}) RETURNING id`,
 });

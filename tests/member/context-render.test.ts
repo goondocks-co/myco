@@ -100,7 +100,7 @@ describe('a prompt', () => {
     const served = servingPrompts(body => `Recalled for: ${body.text}`);
     const tx = transcript('sess-p');
     for (const prompt of ['how do we rotate tokens?', 'and the window?']) {
-      const ran = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt, transcript_path: tx }, { fetch: served.fetch, symbiont: 'copilot' });
+      const ran = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt, transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
       expect(contextOf(ran.stdout)).toBe(`Session:: \`sess-p\`\n\nRecalled for: ${prompt}`);
       expect(served.asked.at(-1)?.promptId).toBe(readSessionState(spool().dir, 'sess-p').promptId!);
       expect(ran.stderr).toContain('wait_ms=');
@@ -116,35 +116,66 @@ describe('a prompt', () => {
     expect(served.asked).toEqual([]);
   });
 
-  it('bounds a stalled answer, preserves capture first, backs off and never delivers it later', async () => {
-    const tx = transcript('sess-slow');
-    let asked = 0;
-    let kicked = false;
-    let signal: AbortSignal | undefined;
-    let answer: ((response: Response) => void) | undefined;
-    const slow: FetchLike = (input, init) => {
-      asked++;
-      expect(kicked).toBe(true);
-      signal = init?.signal ?? undefined;
-      expect(readSessionState(spool().dir, 'sess-slow').promptId).toBeDefined();
-      expect(spool().depth('sess-slow')).toBeGreaterThan(0);
-      return new Promise(resolve => { answer = resolve; });
+  async function latePrompt(agent: string, sessionId: string) {
+    cacheDeploymentFeatures('https://member-test.invalid', ['prompt-identity', 'prompt-scheme'], mycoHome);
+    let resolve: ((answer: Response) => void) | undefined;
+    let background: Promise<unknown> | undefined;
+    let asking: { promptId?: string; text: string } | undefined;
+    const discarded: string[] = [];
+    const receiptId = crypto.randomUUID();
+    const fetch: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/context/discard') {
+        discarded.push((await request.json() as { receiptId: string }).receiptId);
+        return Response.json({ persisted: true });
+      }
+      asking = await request.json() as { promptId?: string; text: string };
+      return new Promise<Response>(done => { resolve = done; });
     };
+    const spawn = () => {
+      background ??= prefetchContext({ spool: spool(), client: new ServerClient({ serverUrl: 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, fetch),
+        serverUrl: 'https://member-test.invalid', mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
+      return { started: true, pid: process.pid };
+    };
+    const tx = transcript(sessionId);
     const started = Date.now();
-    const first = await runHook('user-prompt-submit', { session_id: 'sess-slow', prompt: 'while slow', transcript_path: tx }, { fetch: slow, symbiont: 'copilot', helperSpawn: () => { kicked = true; return { started: true, pid: process.pid }; } });
+    const first = await runHook('user-prompt-submit', { session_id: sessionId, prompt: 'late recall', turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
     expect(Date.now() - started).toBeLessThan(PROMPT_CONTEXT_CAP_MS + 500);
-    expect(signal?.aborted).toBe(true);
-    expect(contextOf(first.stdout)).toBe('Session:: `sess-slow`');
-    answer!(Response.json({ persisted: true, context: 'late answer' }));
-    const next = await runHook('user-prompt-submit', { session_id: 'sess-slow', prompt: 'later', transcript_path: tx }, { fetch: slow, symbiont: 'copilot' });
-    expect(asked).toBe(1);
-    expect(contextOf(next.stdout)).toBe('Session:: `sess-slow`');
-    expect(readSessionState(spool().dir, 'sess-slow').contextAsks).toBeUndefined();
+    expect(contextOf(first.stdout)).toBe(`Session:: \`${sessionId}\``);
+    const finish = async () => { resolve!(Response.json({ persisted: true, context: 'held memory', receiptId })); await background; };
+    const tool = () => runHook('post-tool-use', { session_id: sessionId, tool_name: 'Read', tool_input: {}, turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
+    return { first, finish, tool, spawn, fetch, tx, asking: () => asking, discarded, receiptId };
+  }
+
+  it('delivers a missed answer on the first tool hook once, naming the asking prompt', async () => {
+    const held = await latePrompt('codex', 'sess-tool');
+    await held.finish();
+    const tool = await held.tool();
+    expect(contextOf(tool.stdout)).toContain('held memory');
+    expect(tool.stderr).toContain('delivery=tool');
+    expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
+    const delivery = spool().readRecords('sess-tool').find(record => record?.kind === 'context.delivered');
+    expect(delivery?.payload).toMatchObject({ renderedIn: held.asking()?.promptId });
+  });
+
+  it('discards a late answer when the next prompt arrives before it', async () => {
+    const held = await latePrompt('copilot', 'sess-replaced');
+    await runHook('user-prompt-submit', { session_id: 'sess-replaced', prompt: 'next prompt', transcript_path: held.tx }, { fetch: held.fetch, symbiont: 'copilot', helperSpawn: held.spawn });
+    await held.finish();
+    expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
+    expect(held.discarded).toEqual([held.receiptId]);
+  });
+
+  it('discards a late answer when the harness tool hook cannot add context', async () => {
+    const held = await latePrompt('claude-code', 'sess-unsupported');
+    await held.finish();
+    expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
+    expect(held.discarded).toEqual([held.receiptId]);
   });
 
   it('reports safe diagnostics for an empty answer and renders the Session line alone', async () => {
     const served = servingPrompts(() => '');
-    const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'find evidence' }, { fetch: served.fetch, symbiont: 'copilot' });
+    const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'find evidence' }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
     expect(contextOf(ran.stdout)).toBe('Session:: `sess-empty`');
     expect(ran.stderr).toContain('answered empty');
   });
