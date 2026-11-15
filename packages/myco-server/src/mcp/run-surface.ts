@@ -78,7 +78,7 @@ export const RUN_TOOL_REGISTRY: Record<string, { defaultOp: string; ops: Record<
   myco_run_plans: { defaultOp: 'resolve', ops: { resolve: runOperation(handleRunPlans, 'execute') } },
   myco_run_cards: {
     defaultOp: 'material',
-    ops: { material: runOperation(handleRunCards, 'read'), write: runOperation(handleRunCards, 'execute') },
+    ops: { material: runOperation(handleRunCards, 'read'), get: runOperation(handleRunCards, 'read'), write: runOperation(handleRunCards, 'execute') },
   },
   myco_run_learning: {
     defaultOp: 'material',

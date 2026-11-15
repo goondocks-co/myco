@@ -1,3 +1,5 @@
+import { priorTurnFingerprints } from '../db/documents/turn-fingerprints.js';
+import { contentContribution, contentFingerprint, sourceBytes } from '../content/turn-source.js';
 import { publishedDocument } from '../db/documents/publication.js';
 import { PublicationDirectory } from '../db/documents/directory.js';
 import { jsonPages, STATEMENT_JSON_BYTES } from '../db/json-pages.js';
@@ -470,6 +472,8 @@ export class DocumentBatch {
       for (const row of rows) priors.set(row.prompt_id, row);
       this.calls += 1;
     }
+    const fingerprints = new Map((await priorTurnFingerprints(this.db, [this.projectId, this.sessionId, this.doc.generation], owners)).map(row => [row.turn, row]));
+    this.calls += 1;
     const opaque = this.toolChanges.filter(change => change.record.k === 'tool' && change.record.bodies?.input !== undefined)
       .map(change => ({ owner: change.owner, id: change.record.id }));
     const calls = await heldToolCalls(this.db, [this.projectId, this.sessionId, this.doc.generation], opaque);
@@ -500,13 +504,33 @@ export class DocumentBatch {
         if (!complete) settled.push({ id: owner, added, ...statistics });
         continue;
       }
+      const fingerprint = fingerprints.get(owner);
+      let bytes = records.reduce((sum, record) => sum + sourceBytes(record), 0);
+      const changes: [string | null, string][] = [];
+      let deltaBytes = 0;
+      for (const change of this.toolChanges.filter(change => change.owner === owner)) {
+        const before = change.held === null ? null : await contentContribution(change.held);
+        const after = await contentContribution(change.record);
+        if (before !== after) changes.push([before, after]);
+        deltaBytes += sourceBytes(change.record) - (change.held === null ? 0 : sourceBytes(change.held));
+      }
+      let hash: string;
+      if (fingerprint?.hash && fingerprint.bytes !== null && changes.length === 0) hash = fingerprint.hash;
+      else if (complete) hash = await contentFingerprint(await Promise.all(records.map(contentContribution)));
+      else if (fingerprint?.hash && fingerprint.bytes !== null) hash = await contentFingerprint({ previous: fingerprint.hash, changes });
+      else {
+        const seen = new Set(records.map(record => record.id));
+        const material = [...records, ...this.toolChanges.filter(change => change.owner === owner && !seen.has(change.record.id)).map(change => change.record)];
+        hash = await contentFingerprint(await Promise.all(material.map(contentContribution)));
+      }
+      if (!complete && fingerprint?.bytes != null) bytes = fingerprint.bytes + deltaBytes;
       const trimmed = trimTurn(input);
       const prompt = records.find((record) => record.k === 'prompt' && record.id === owner)!;
       settled.push({
         ...statistics, id: owner, at: prompt.created_at, last: Math.max(...records.map((record) => record.created_at)),
         preview: preview(prompt.text), text_chars: typeof prompt.text === 'string' ? prompt.text.length : 0,
         ...(complete ? { tools: input.tools.length, replies: input.replies.length, children: input.steering.length, plans: input.plans.length } : { added }),
-        input_hash: await sha256Hex(trimmed.text), input_chars: trimmed.text.length,
+        input_hash: hash, source_bytes: complete || fingerprint?.bytes != null ? bytes : null, input_chars: trimmed.text.length,
       });
     }
     return settled;
@@ -651,8 +675,8 @@ export class DocumentBatch {
     const layout = write ? this.writer.layout() : null;
     const rewrites = layout?.pageChunks.filter(write => write.previous !== undefined && write.metadata !== 1).map(write => write.chunkNo) ?? [];
     this.rewrittenBefore = rewrites.length === 0 ? null : Math.min(...rewrites);
-    const settled = write ? await this.settledTurns() : [];
     const encoded = layout === null ? [] : await this.encode(layout);
+    const settled = write ? await this.settledTurns() : [];
     const versions = encoded.map(({ version }) => version);
     const holders = versions.map((version): Holder => ({ p: this.projectId, s: this.sessionId, k: version.key, i: version.sourceId }));
     if (holders.length > 0) {

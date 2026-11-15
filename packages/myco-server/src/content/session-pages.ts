@@ -9,6 +9,7 @@ import { toolInputPreview } from '../core/tool-input.js';
 import type { DocRecord, Page } from './document.js';
 import { liveChunk, liveDocumentGeneration, ownerLastPage, ownerPageRows, pageChunksAfter, pageChunksBefore } from '../db/documents/live-document.js';
 import { readBodyChunk, readPageChunk, type ChunkRow } from './document-reader.js';
+import { readStoredRange } from '../core/stored-object.js';
 
 /** Pages of one turn a turn read opens at most. */
 export const TURN_PAGES = 4;
@@ -18,6 +19,10 @@ export interface PageLocator { generation: number; owner: string; page: number; 
 
 /** A page and the immutable chunk version that published its location. */
 export interface LocatedPage extends Page { revision: string }
+
+export class DocumentBodyUnavailable extends Error {
+  constructor(readonly reason: string) { super(`document_body_${reason}`); }
+}
 
 export class SessionDocument {
   /** Blob GETs this request made. */
@@ -85,6 +90,30 @@ export class SessionDocument {
     if (row === null) throw new Error('document_object_missing');
     this.gets += 1;
     return readBodyChunk(this.env, row);
+  }
+
+  async assertBodyAvailable(record: DocRecord, field: string): Promise<void> {
+    const ref = record.bodies?.[field];
+    if (ref === undefined) return;
+    const row = await liveChunk(this.env.db, this.ref, ref.chunk);
+    if (row?.object_key == null) throw new DocumentBodyUnavailable('absent');
+    const object = await this.env.blobs.head(row.object_key);
+    if (object === null) throw new DocumentBodyUnavailable('absent');
+    if (object.size !== ref.bytes) throw new DocumentBodyUnavailable('size_mismatch');
+  }
+
+  /** A UTF-8 aligned prefix of a stored body's byte range; the next offset follows the returned text's bytes. */
+  async bodyWindow(record: DocRecord, field: string, offset: number, limit: number): Promise<string> {
+    const ref = record.bodies?.[field];
+    if (ref === undefined) throw new Error('document_body_reference_missing');
+    const row = await liveChunk(this.env.db, this.ref, ref.chunk);
+    if (row?.object_key == null) throw new DocumentBodyUnavailable('absent');
+    if (row.kind !== 'body') throw new Error('document_chunk_kind');
+    const length = Math.min(limit, ref.bytes - offset);
+    this.gets += 1;
+    const held = await readStoredRange(this.env.blobs, row.object_key, ref.bytes, offset, length);
+    if (held.kind !== 'read') throw new DocumentBodyUnavailable(held.kind);
+    return new TextDecoder('utf-8', { fatal: true }).decode(held.bytes, { stream: offset + length < ref.bytes });
   }
 }
 

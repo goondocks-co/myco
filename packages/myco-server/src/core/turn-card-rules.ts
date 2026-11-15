@@ -15,6 +15,7 @@ interface TurnToolInput {
   input: string | null;
   output: string | null;
   success: boolean;
+  fileChanging?: boolean;
   errorMessage: string | null;
 }
 export interface TurnInput {
@@ -28,6 +29,7 @@ export interface TurnInput {
 }
 export interface TrimmedTurn {
   turnKey: string;
+  complete: boolean;
   text: string;
   rawChars: number;
   records: readonly (readonly [string, string])[];
@@ -75,10 +77,12 @@ function toolLines(tool: TurnToolInput): { kept: string[]; routine: string[] } {
 
 /** The turn as one card run reads it. */
 export function trimTurn(turn: TurnInput): TrimmedTurn {
+  let complete = turn.prompt.length <= B.promptChars && turn.steering.every(s => s.text.length <= B.promptChars);
   const lines = [`## Turn ${turn.turnKey}`, `PROMPT (${turn.origin}):`, clip(turn.prompt, B.promptChars)];
   for (const steer of turn.steering) lines.push('STEERING PROMPT:', clip(steer.text, B.promptChars));
   let replyRoom = B.replyChars;
   for (const reply of turn.replies) {
+    if (replyRoom < reply.text.length) complete = false;
     if (replyRoom <= 0) break;
     lines.push('REPLY:', clip(reply.text, replyRoom));
     replyRoom -= reply.text.length;
@@ -103,6 +107,7 @@ export function trimTurn(turn: TurnInput): TrimmedTurn {
     + turn.plans.reduce((n, p) => n + (p.content?.length ?? 0), 0);
   return {
     turnKey: turn.turnKey,
+    complete,
     text: lines.join('\n'),
     rawChars,
     records: [
@@ -137,23 +142,17 @@ function polling(tool: TurnToolInput): boolean {
   return command !== null && command.split(/&&|;|\|\|/).every((part) => POLLING_COMMAND.test(part));
 }
 
-/**
- * The declared triage rules, in order: the first that matches marks the turn `none` and names itself on the card.
- * A turn holding a failed tool call, a plan or a steering prompt is never triaged by rule.
- */
-const TRIAGE_RULES: readonly { name: string; matches: (turn: TurnInput) => boolean }[] = [
-  {
-    name: 'no_human_text',
-    matches: (turn) => turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt),
-  },
-  {
-    name: 'polling_only',
-    matches: (turn) => turn.tools.length > 0 && turn.prompt.length <= POLLING_TEXT_CHARS && turn.tools.every(polling),
-  },
-];
+/** Reply characters a control or notification turn needs when no successful file edit is present. */
+export const CONTROL_REPLY_CHARS = 1_500;
 
-/** The rule that marks this turn `none`, or null when the turn needs a card from the model. */
+/** Failed calls and plans need cards; other control turns need a file change or a substantial reply. */
 export function triageTurn(turn: TurnInput): string | null {
-  if (turn.steering.length > 0 || turn.plans.length > 0 || turn.tools.some(failed)) return null;
-  return TRIAGE_RULES.find((rule) => rule.matches(turn))?.name ?? null;
+  if (turn.plans.length > 0 || turn.tools.some(failed)) return null;
+  const replies = turn.replies.reduce((total, reply) => total + reply.text.length, 0);
+  const control = (turn.origin === 'system' || turn.origin === 'hook_injected' || noHumanText(turn.prompt))
+    && turn.steering.every(prompt => noHumanText(prompt.text));
+  if (control)
+    return replies > CONTROL_REPLY_CHARS || turn.tools.some(tool => tool.success && tool.fileChanging === true) ? null : 'no_human_text';
+  if (turn.steering.length > 0) return null;
+  return turn.tools.length > 0 && turn.prompt.length + replies <= POLLING_TEXT_CHARS && turn.tools.every(polling) ? 'polling_only' : null;
 }

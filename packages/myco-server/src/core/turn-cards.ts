@@ -87,12 +87,12 @@ export function parseCardWrites(raw: unknown, assigned: ReadonlySet<string>): Ca
   return writes;
 }
 
-/** One turn's trimmed input as a card run reads it. `continues` marks an input that goes on under the same key on the next page. */
-export interface CardMaterial { turn_key: string; input: string; continues?: true }
+/** A turn preview: `complete` certifies its source, while `continues` marks preview text on the next answer page. */
+export interface CardMaterial { turn_key: string; input: string; continues?: true; source_revision?: string; complete?: boolean; partial_reason?: string }
 
 const CARD_ENTRY: PagedEntry<CardMaterial> = {
   textOf: (turn) => turn.input,
-  withText: (turn, input, continues) => ({ turn_key: turn.turn_key, input, ...(continues ? { continues: true as const } : {}) }),
+  withText: (turn, input, continues) => ({ ...turn, input, ...(continues ? { continues: true as const } : {}) }),
 };
 
 /** A card run's material as pages, each an answer the harness holds whole. */
@@ -113,21 +113,21 @@ export function turnMaterial(trimmed: TrimmedTurn): { records: string; inputChar
 export function cardWriteStatement(
   projectId: string, sessionId: string, turn: DueTurn,
   card: { value: CardFields | string; signal: CardSignal; reason: string; sharedWith: string | null; covered: boolean | null; runId: string | null; model: string | null;
-    outline?: ReturnType<typeof cardOutline> },
+    outline?: ReturnType<typeof cardOutline>; partialReason?: string | null },
   now: number, material?: ReturnType<typeof turnMaterial>,
 ) {
   const fields = typeof card.value === 'string' ? null : card.value;
   const text = typeof card.value === 'string' ? card.value : renderCard(card.value);
   const outline = card.outline ?? cardOutline(card.value);
   return writeCardStatement(projectId, sessionId, turn, {
-    headline: outline.headline, marks: JSON.stringify(outline.marks), card: text, fields: fields === null ? null : encodeCard(fields),
+    partialReason: card.partialReason, headline: outline.headline, marks: JSON.stringify(outline.marks), card: text, fields: fields === null ? null : encodeCard(fields),
     signal: card.signal, reason: card.reason, sharedWith: card.sharedWith, covered: card.covered, runId: card.runId, model: card.model,
   }, now, material);
 }
 
 /** The carded turn of the session whose input hash equals the one stored for `turnKey`, coverage first, or null. */
 export async function reusableCard(db: RelationalStore, projectId: string, sessionId: string, turnKey: string):
-  Promise<{ turnKey: string; card: string; fields: CardFields | null; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null } | null> {
+  Promise<{ partialReason: string | null; turnKey: string; card: string; fields: CardFields | null; signal: CardSignal; reason: string; covered: number; headline: string | null; marks: string | null } | null> {
   const row = await reusableCardRow(db, projectId, sessionId, turnKey);
   return row === null ? null : { ...row, signal: row.signal as CardSignal, fields: storedCardFields(row.fields) };
 }

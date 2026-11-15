@@ -305,6 +305,7 @@ export interface TurnInjection {
 
 /** One turn's body; its tool calls are read on their own when opened. */
 export interface TurnDetail {
+  cardPartial?: boolean;
   /** The turn's card as written, or null until it has one. */
   card: string | null;
   /** All the turn's calls, and how many of them the failures, files and Myco lists cover. */

@@ -1,3 +1,4 @@
+import { TURN_SOURCE_PAGES, TURN_SOURCE_CURSOR_MAX_CHARS, TURN_SOURCE_MAX_BYTES, TURN_SOURCE_FAILURE_LIMIT } from '../core/turn-source.js';
 import { CARD_TEXT_FIELDS, CARD_LIST_FIELDS, CARD_PAIR_FIELDS } from '@goondocks/myco-shared/turn-card';
 import { CARD_MAX_CHARS, RUN_ANSWER_BYTES, readWindowFor } from '../core/read-window.js';
 import { HANDOFF_MAX_BYTES } from '../core/learning-sessions.js';
@@ -394,17 +395,19 @@ const definitions: readonly RunToolDefinition[] = [
   },
   {
     name: 'myco_run_cards',
-    description: `The turns this card run was assigned: read their trimmed inputs, then write one card per turn. Each rendered card is at most ${CARD_MAX_CHARS} characters. ${CARD_WRITE_BOUND}`,
+    description: `The turns this card run was assigned: read their trimmed inputs, then write one card per turn. When complete is false and partial_reason is absent, call get with turn_key and follow next_cursor as cursor until complete is true before writing that turn. Other cards can be written immediately; a mixed write answers written plus refused cards. A partial_reason means write from the excerpt: the card remains visibly partial. A full source above ${TURN_SOURCE_MAX_BYTES} raw UTF-8 bytes, a missing stored body, or ${TURN_SOURCE_FAILURE_LIMIT} consecutive failed full-read runs uses this partial disposition. Raw answers are at most ${RUN_ANSWER_BYTES} UTF-8 bytes, with at most ${TURN_SOURCE_PAGES} source page and one record body opened per request; an unfinished read counts toward the consecutive failure limit when its run fails. Example: {"op":"get","turn_key":"turn-a"}. Each rendered card is at most ${CARD_MAX_CHARS} characters. ${CARD_WRITE_BOUND}`,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
         op: {
           type: 'string',
-          enum: ['material', 'write'],
+          enum: ['material', 'get', 'write'],
           description:
-            'material: the assigned turns, each with its turn_key and trimmed input, a page at a time. write: a subset of the assigned cards, repeated until all turns are written.',
+            'material: the assigned turns with turn_key, trimmed input and complete, a page at a time. get: full source from the first record or cursor. write: a subset of the assigned cards, repeated until all turns are written.',
         },
+        turn_key: { type: 'string', minLength: 1, maxLength: RUN_KEY_MAX_CHARS, description: `For get: an assigned turn, up to ${TURN_SOURCE_MAX_BYTES} total raw UTF-8 bytes read by this attempt; restarting does not reset this allowance. A partial_reason means write its card from the excerpt instead.` },
+        cursor: { type: 'string', maxLength: TURN_SOURCE_CURSOR_MAX_CHARS, description: 'For get continuation: next_cursor from the preceding answer. Omit to restart at the first source record.' },
         page: {
           type: 'integer',
           minimum: 1,
@@ -434,7 +437,7 @@ const definitions: readonly RunToolDefinition[] = [
   },
   {
     name: 'myco_run_learning',
-    description: `Read every page before writing spores or completing this learning slice. Open raw turns only for high-signal cards. The completion handoff is at most ${HANDOFF_MAX_BYTES} UTF-8 bytes.`,
+    description: `Read every page before writing spores or completing this learning slice. Open raw turns only for high-signal cards; follow next_cursor as cursor only as far as needed; optional raw reads never block saves or completion. Raw answers are at most ${RUN_ANSWER_BYTES} UTF-8 bytes, opening at most ${TURN_SOURCE_PAGES} source page and one record body per request; stop this optional read when enough detail is available. Example: {"op":"get","turn_key":"turn-a"}. The completion handoff is at most ${HANDOFF_MAX_BYTES} UTF-8 bytes.`,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
@@ -445,13 +448,14 @@ const definitions: readonly RunToolDefinition[] = [
           description:
             "material: the slice's cards a page at a time, with the previous slice's handoff on page 1. get: one raw turn of a high-signal card, by turn_key. complete: mark the slice learned, with a handoff for the next. Spore writes and complete wait until every page is read.",
         },
+        turn_key: { type: 'string', minLength: 1, maxLength: RUN_KEY_MAX_CHARS, description: 'For get: an assigned turn to read in full.' },
+        cursor: { type: 'string', maxLength: TURN_SOURCE_CURSOR_MAX_CHARS, description: 'For get continuation: next_cursor from the preceding answer. Omit to restart at the first source record.' },
         page: {
           type: 'integer',
           minimum: 1,
           description: 'For material: the page to read, from 1. An answer names its next_page until the last.',
         },
         revision: { type: 'string', description: 'For material past page 1: the revision the earlier pages answered.' },
-        turn_key: { type: 'string', minLength: 1, maxLength: RUN_KEY_MAX_CHARS, description: 'For get: the card whose raw turn to read.' },
         handoff: {
           type: 'string',
           description: `For complete: at most ${HANDOFF_MAX_BYTES} UTF-8 bytes for the next slice.`,

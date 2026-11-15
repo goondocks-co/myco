@@ -1,3 +1,4 @@
+import type { RequiredTurnSource } from '../../core/turn-source.js';
 import { runRefusal } from '../../core/run-tool-contract.js';
 import { assignmentOf } from '../../db/run-context.js';
 /**
@@ -25,7 +26,9 @@ const unreadRefusal = (run: RunPrincipal, nextPage: number, revision: string | u
 /** The refusal of a write ahead of the pages served, or null once this attempt has read every page of the last revision it started. */
 export function materialUnread(run: RunPrincipal): ReturnType<typeof unreadRefusal> | null {
   const read = materialRead(run.runContext, run.tokenId);
-  return read === null || read.through < read.pages ? unreadRefusal(run, (read?.through ?? 0) + 1, read?.revision) : null;
+  if (read !== null && read.sources === undefined) return unreadRefusal(run, 1, undefined);
+  return read === null || read.through < read.pages ? unreadRefusal(run, (read?.through ?? 0) + 1, read?.revision)
+    : null;
 }
 
 /**
@@ -37,10 +40,14 @@ export async function servePage<E>(
   run: RunPrincipal,
   input: ToolInput,
   entries: readonly unknown[],
-  paginate: () => E[][],
-  before: (served: readonly E[]) => Promise<void> = async () => {},
-  unavailable: readonly string[] = [],
+  options: {
+    paginate: () => E[][];
+    before?: (served: readonly E[]) => Promise<void>;
+    unavailable?: readonly string[];
+    sources?: readonly RequiredTurnSource[];
+  },
 ): Promise<{ refusal: unknown } | { revision: string; page: number; served: E[]; next: { next_page?: number } }> {
+  const { paginate, before = async () => {}, unavailable = [], sources = [] } = options;
   const page = input.page === undefined ? 1 : (input.page as number);
   if (!Number.isInteger(page) || page < 1)
     return {
@@ -90,7 +97,7 @@ export async function servePage<E>(
       }),
     };
   const read = materialRead(run.runContext, run.tokenId);
-  const through = read?.revision === revision ? read.through : 0;
+  const through = read?.revision === revision && read.sources !== undefined ? read.through : 0;
   if (page > through + 1) return { refusal: unreadRefusal(run, through + 1, revision) };
   await before(served);
   if (page > through)
@@ -101,6 +108,7 @@ export async function servePage<E>(
       through: page,
       items: entries.length,
       ...(unavailable.length === 0 ? {} : { unavailable }),
+      sources,
     });
   return { revision, page, served, next: page < pages.length ? { next_page: page + 1 } : {} };
 }

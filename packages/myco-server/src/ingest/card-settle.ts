@@ -74,7 +74,7 @@ async function settleTurn(env: Pick<ServerEnv, 'db' | 'blobs'>, row: ReadyCard, 
   if (prior === null && rule === null) return await markCardModelDue(db, row, material, now) ? 'settled' : unmoved();
   const card = prior !== null
     ? { value: prior.fields ?? prior.card, outline: prior.headline === null || prior.marks === null ? cardOutline(prior.fields ?? prior.card) : { headline: prior.headline, marks: JSON.parse(prior.marks) as CardMarks },
-      signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
+      partialReason: prior.partialReason, signal: prior.signal, reason: prior.reason, sharedWith: prior.turnKey === turn.turnKey ? null : prior.turnKey, covered: prior.covered === 1, runId: null, model: null }
     : { value: NONE_CARD(rule!), signal: 'none' as const, reason: rule!, sharedWith: null, covered: true, runId: null, model: null };
   const [carded] = await commit(db, cardWriteStatement(p, s, turn, card, now, material), sessionProgressStatement(p, s, now));
   return carded.results.length > 0 ? 'settled' : unmoved();

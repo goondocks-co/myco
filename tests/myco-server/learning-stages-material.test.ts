@@ -224,13 +224,16 @@ it('keeps the prior handoff and failure count when every assigned card changes m
   });
 });
 
-it('holds one raw turn to an answer the harness keeps, and says how much it cut', async () => {
-  await withDocumentStores(async (db) => {
+it('lets learning save and complete after opening an optional raw turn', async () => {
+  await withDocumentStores(async db => {
     const key = uuid(600);
-    const run = await learningRun(db, [longTurn(key, 'a turn longer than one answer', NOW - DAY + 10, 24)], 'high');
+    const run = await learningRun(db, [{ id: key, text: 'Inspect the details', at: NOW - DAY, replies: ['r'.repeat(100_000)] }], 'high');
+    await run.readAll();
     const answer = await run.raw('myco_run_learning', { op: 'get', turn_key: key });
     expect(new TextEncoder().encode(JSON.stringify(answer.structuredContent)).length).toBeLessThanOrEqual(RUN_ANSWER_BYTES);
-    expect((answer.structuredContent as { result: { raw: string } }).result.raw).toMatch(/\[… \d+ more characters\]$/);
+    expect((answer.structuredContent as { result: { complete: boolean } }).result.complete).toBe(false);
+    expect(await run.save('Preserve the captured history.')).toMatchObject({ id: expect.any(String) });
+    expect(await run.complete('')).toMatchObject({ completed: true });
   });
 });
 

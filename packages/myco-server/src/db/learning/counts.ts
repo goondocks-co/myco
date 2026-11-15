@@ -36,10 +36,10 @@ export const LEARNING_COUNT_CATCHUP = {
 } as const satisfies CatchupFamily;
 
 export interface LearningRollup {
-  pending_cards: number; due_cards: number; signal_cards: number; ready_sessions: number;
+  partial_turns: number; pending_cards: number; due_cards: number; signal_cards: number; ready_sessions: number;
   aged_out_sessions: number; awaiting_publication: number;
 }
-const ROLLUP = 'COALESCE(SUM(pending_cards),0) AS pending_cards,COALESCE(SUM(due_cards),0) AS due_cards,COALESCE(SUM(signal_cards),0) AS signal_cards,COALESCE(SUM(ready_sessions),0) AS ready_sessions,COALESCE(SUM(aged_out_sessions),0) AS aged_out_sessions,COALESCE(SUM(awaiting_publication),0) AS awaiting_publication';
+const ROLLUP = 'COALESCE(SUM(partial_turns),0) AS partial_turns,COALESCE(SUM(pending_cards),0) AS pending_cards,COALESCE(SUM(due_cards),0) AS due_cards,COALESCE(SUM(signal_cards),0) AS signal_cards,COALESCE(SUM(ready_sessions),0) AS ready_sessions,COALESCE(SUM(aged_out_sessions),0) AS aged_out_sessions,COALESCE(SUM(awaiting_publication),0) AS awaiting_publication';
 const deploymentRollup = read<[], LearningRollup>({ name: 'learningCounts.deployment', sql: `SELECT ${ROLLUP} FROM learning_project_counts` });
 const projectRollup = read<[project: string], LearningRollup>({ name: 'learningCounts.project', sql: `SELECT ${ROLLUP} FROM learning_project_counts WHERE project_id=?1` });
 const readyProjects = read<[], { n: number }>({ name: 'learningCounts.readyProjects', sql: 'SELECT COUNT(*) AS n FROM (SELECT DISTINCT project_id FROM learning_ready_projects WHERE ready>0)' });

@@ -1,3 +1,4 @@
+import { serveTurnSource } from './turn-source.js';
 import { runRefusal, REPORT_NEXT } from '../../core/run-tool-contract.js';
 import { assignmentOf } from '../../db/run-context.js';
 /**
@@ -11,10 +12,6 @@ import { assignmentOf } from '../../db/run-context.js';
 import { runOf, type RunPrincipal, type ToolContext } from '../context.js';
 import type { ToolInput } from '../validate.js';
 import { recordServedPrompts } from '../../db/runs/served.js';
-import { RUN_ANSWER_BYTES } from '../../core/read-window.js';
-import { answerBytes, headThatFits } from '../../core/material-pages.js';
-import type { TurnInput } from '../../core/turn-card-rules.js';
-import { documentTurnInput } from '../../content/turn-material.js';
 import {
   assignedCards,
   completeLearning,
@@ -31,29 +28,6 @@ export function learningMaterialUnread(run: RunPrincipal): ReturnType<typeof mat
   return assignmentOf<LearningAssignment>(run.runContext, 'learning') === null ? null : materialUnread(run);
 }
 
-function rawTurnText(turn: TurnInput): string {
-  const lines = [`PROMPT (${turn.origin}):`, turn.prompt, ...turn.steering.flatMap((s) => ['STEERING PROMPT:', s.text])];
-  for (const reply of turn.replies) lines.push('REPLY:', reply.text);
-  for (const tool of turn.tools) {
-    lines.push(`TOOL ${tool.toolName} ${tool.input ?? ''}${tool.success ? '' : ' [FAILED]'}`);
-    if (tool.errorMessage !== null) lines.push(`error: ${tool.errorMessage}`);
-    if (tool.output !== null) lines.push(`result:\n${tool.output}`);
-  }
-  for (const plan of turn.plans) lines.push(`PLAN ${plan.title ?? plan.planKey} (${plan.status})`, plan.content ?? '');
-  return lines.join('\n');
-}
-
-/** The room a cut raw turn keeps for the line that counts what it leaves out. */
-const CUT_LINE_BYTES = 64;
-
-/** One raw turn as an answer the harness holds whole; what does not fit is cut, and the cut says how much. */
-function rawTurnAnswer(turnKey: string, text: string): { turn_key: string; raw: string } {
-  const weigh = (raw: string) => answerBytes({ result: { turn_key: turnKey, raw } });
-  if (weigh(text) <= RUN_ANSWER_BYTES) return { turn_key: turnKey, raw: text };
-  const head = headThatFits(text, RUN_ANSWER_BYTES - CUT_LINE_BYTES, weigh);
-  return { turn_key: turnKey, raw: `${head}\n[… ${text.length - head.length} more characters]` };
-}
-
 export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Promise<unknown> {
   const run = runOf(ctx, LEARNING_TOOL);
   const held = assignmentOf<LearningAssignment>(run.runContext, 'learning');
@@ -68,7 +42,7 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
   const scope = { projectId: ctx.projectId };
   const cards = await assignedCards(db, ctx.projectId, held.sessionId, held.assignment);
   if (input.op === 'material') {
-    const entries: LearningMaterial[] = cards.map((card) => ({ turn_key: card.turnKey, signal: card.signal, card: card.card }));
+    const entries: LearningMaterial[] = cards.map((card) => ({ turn_key: card.turnKey, signal: card.signal, card: card.card, ...(card.partial ? { partial: true as const } : {}) }));
     const opening = {
       handoff: held.assignment.handoff,
       more_slices: held.assignment.more,
@@ -79,18 +53,20 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
       run,
       input,
       entries,
-      () => learningMaterialPages(held.sessionId, opening, entries),
-      async (served) => {
-        const onPage = new Set(served.map((entry) => entry.turn_key));
-        await recordServedPrompts(
-          db,
-          scope,
-          run.runId,
-          cards
-            .filter((card) => onPage.has(card.turnKey))
-            .flatMap((card) => card.promptIds.map((promptId) => ({ promptId, sessionId: held.sessionId, createdAt: 0, endedAt: null }))),
-          ctx.now,
-        );
+      {
+        paginate: () => learningMaterialPages(held.sessionId, opening, entries),
+        before: async (served) => {
+          const onPage = new Set(served.map((entry) => entry.turn_key));
+          await recordServedPrompts(
+            db,
+            scope,
+            run.runId,
+            cards
+              .filter((card) => onPage.has(card.turnKey))
+              .flatMap((card) => card.promptIds.map((promptId) => ({ promptId, sessionId: held.sessionId, createdAt: 0, endedAt: null }))),
+            ctx.now,
+          );
+        },
       },
     );
     if ('refusal' in page) return page.refusal;
@@ -119,10 +95,7 @@ export async function handleRunLearning(input: ToolInput, ctx: ToolContext): Pro
         actual: `turn ${card.turnKey} has signal ${card.signal}; expected high`,
         next: { tool: LEARNING_TOOL, op: 'material', page: 1 },
       });
-    const turn = await documentTurnInput(ctx.env, ctx.projectId, held.sessionId, card.turnKey);
-    return turn === null
-      ? runRefusal({ what: 'raw turn read', read: true, actual: `turn ${card.turnKey} is no longer held`, next: REPORT_NEXT })
-      : rawTurnAnswer(card.turnKey, rawTurnText(turn));
+    return serveTurnSource(ctx, run, input, { tool: LEARNING_TOOL, session: held.sessionId, turn: card.turnKey });
   }
   if (input.op === 'complete') {
     const unread = materialUnread(run);

@@ -5,6 +5,7 @@
  * than a page. One revision binds a run's pages to one another, and the attempt keeps one small record in the run's
  * context of how far it has read the last revision it started.
  */
+import type { RequiredTurnSource } from './turn-source.js';
 import { sha256HexOf, utf8 } from '../hash.js';
 import { RUN_ANSWER_BYTES } from './read-window.js';
 import { RUN_MATERIAL_READ_KEY } from '../db/runs/lifecycle.js';
@@ -17,7 +18,7 @@ export const MATERIAL_CHANGED = 'material_changed';
 export const MATERIAL_UNREAD = 'material_unread';
 
 /** How far this attempt has read one revision of its material: every page up to and including `through`. */
-export interface MaterialRead { tokenId: string; revision: string; pages: number; through: number; items: number; unavailable?: readonly string[] }
+export interface MaterialRead { tokenId: string; revision: string; pages: number; through: number; items: number; unavailable?: readonly string[]; sources?: readonly RequiredTurnSource[] }
 
 /** What the material says now, as the token that binds its pages to one another. */
 export async function materialRevision(entries: readonly unknown[]): Promise<string> {

@@ -1,3 +1,4 @@
+import { TURN_COVERAGE_STEPS } from './schema-steps-turn-coverage.js';
 import { curationChangeSql } from './curation-changes.js';
 import { changing, reaching, retiring } from './schema-step.js';
 import { NEXT_CURATION_WHOLE_BASE } from './schema-vNEXT-curation-whole-base.js';
@@ -2399,6 +2400,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ...PUBLICATION_REOPEN_STEPS.map(stamp),
   ...CURATION_WHOLE_BASE_STEPS.map(stamp),
   ...LEARNING_WINDOW_STEPS.map(stamp),
+  ...TURN_COVERAGE_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

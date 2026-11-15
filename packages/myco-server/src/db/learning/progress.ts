@@ -68,8 +68,8 @@ export async function sessionQuiet(db: RelationalStore, project: string, session
   return rows.length > 0;
 }
 
-const assignedRows = read<[assignment: string, project: string, session: string], { turnKey: string; card: string; signal: string; records: string | null }>({
-  name: 'learningProgress.assignedCards', sql: `SELECT c.turn_key AS turnKey,c.card,c.signal,c.records FROM json_each(?1) j
+const assignedRows = read<[assignment: string, project: string, session: string], { turnKey: string; card: string; signal: string; records: string | null; partial_reason: string | null }>({
+  name: 'learningProgress.assignedCards', sql: `SELECT c.turn_key AS turnKey,c.card,c.signal,c.records,c.partial_reason FROM json_each(?1) j
     CROSS JOIN turn_cards c ON c.project_id=?2 AND c.session_id=?3 AND c.turn_key=json_extract(j.value,'$.turnKey')
       AND c.input_hash=json_extract(j.value,'$.inputHash') AND c.state='carded'
     ORDER BY CAST(j.key AS INTEGER)` });

@@ -71,24 +71,25 @@ export function claimLearningWrites(projectId: string, sessionId: string, now: n
   return [claimLearningRetryWrite(projectId, sessionId, run), learningBackoffWrite.bind(now + LEARNING_CLAIM_MS, ...LEARNING_BACKOFF_MS, projectId, sessionId, run.runId, run.dispatchedBy)];
 }
 
-interface LearningCard { turnKey: string; card: string; signal: string; records: string; promptIds: string[] }
+interface LearningCard { turnKey: string; card: string; signal: string; partial: boolean; records: string; promptIds: string[] }
 
 /** The assigned cards as they stand, verbatim, with the prompts each covers. */
 export async function assignedCards(db: RelationalStore, projectId: string, sessionId: string, assignment: LearningAssignment): Promise<LearningCard[]> {
   const rows = await assignedCardRows(db, projectId, sessionId, JSON.stringify(assignment.turns));
   return rows.map((row) => ({
     ...row,
+    partial: row.partial_reason !== null,
     records: row.records ?? '[]',
     promptIds: (JSON.parse(row.records ?? '[]') as [string, string][]).filter(([kind]) => kind === 'prompt').map(([, id]) => id),
   }));
 }
 
 /** One card as a learning run reads it. `continues` marks a card that goes on under the same key on the next page. */
-export interface LearningMaterial { turn_key: string; signal: string; card: string; continues?: true }
+export interface LearningMaterial { turn_key: string; signal: string; card: string; partial?: true; continues?: true }
 
 const LEARNING_ENTRY: PagedEntry<LearningMaterial> = {
   textOf: (entry) => entry.card,
-  withText: (entry, card, continues) => ({ turn_key: entry.turn_key, signal: entry.signal, card, ...(continues ? { continues: true as const } : {}) }),
+  withText: (entry, card, continues) => ({ ...entry, card, ...(continues ? { continues: true as const } : {}) }),
 };
 
 /** A slice's cards as pages, each an answer the harness holds whole; `opening` is what page 1 carries beside its cards. */
@@ -134,6 +135,7 @@ interface LearningStatus {
   dueCards: number;
   signalCards: number;
   turnsAwaitingCards: number;
+  partialTurns: number;
   agedOutSessions: number;
   awaitingPublication: number;
   readyProjects: number;
@@ -161,6 +163,7 @@ export async function readLearningStatus(db: RelationalStore, now = Date.now(), 
     dueCards: rollup.due_cards,
     signalCards: rollup.signal_cards,
     turnsAwaitingCards: rollup.pending_cards,
+    partialTurns: rollup.partial_turns,
     agedOutSessions: rollup.aged_out_sessions,
     awaitingPublication: rollup.awaiting_publication,
     readyProjects: rollup.readyProjects,
@@ -177,6 +180,7 @@ export function learningStatusLine(status: LearningStatus, budget: { dailyUsd: n
   const parts = [
     `${n(status.dueSessions, 'session')} ready to learn (${n(status.dueCards, 'summary', 'summaries')} to learn from)`,
     `${n(status.turnsAwaitingCards, 'turn')} waiting to be summarized`,
+    ...(status.partialTurns > 0 ? [`${n(status.partialTurns, 'turn')} summarized from only part of the turn`] : []),
     ...(status.agedOutSessions > 0 ? [`${n(status.agedOutSessions, 'session')} ${agedOutOne ? 'was' : 'were'} not learned because ${agedOutOne ? 'it' : 'they'} went quiet more than ${LEARNING_WINDOW_MS / 86_400_000} days before Myco reached ${agedOutOne ? 'it' : 'them'}`] : []),
     ...(status.awaitingPublication > 0 ? [`${n(status.awaitingPublication, 'session')} waiting to become readable`] : []),
     ...(ready && waitingForSignIn ? ['waiting for a runner that can sign in'] : []),

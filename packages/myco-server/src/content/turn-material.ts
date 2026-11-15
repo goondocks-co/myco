@@ -1,3 +1,5 @@
+import { editedFiles } from './tool-rollup.js';
+import { sourceBytes } from './turn-source.js';
 /**
  * A turn as the card rules read it, built from the records of its own pages. The publisher builds it from the pages it
  * writes; card settlement and the card and learning runs build it from the live document.
@@ -22,6 +24,7 @@ export function turnInput(turnKey: string, records: readonly DocRecord[]): TurnI
     tools: records.filter((r) => r.k === 'tool').map((r) => ({
       toolCallId: r.id, toolName: s(r.tool_name), input: typeof r.input === 'string' ? r.input : null,
       output: typeof r.output_preview === 'string' ? r.output_preview : null, success: r.success === 1,
+      fileChanging: editedFiles(r, typeof r.harness === 'string' ? r.harness : null).length > 0,
       errorMessage: typeof r.error_message === 'string' ? r.error_message : null,
     })),
     plans: [...new Map(records.filter((r) => r.k === 'plan').map((r) => [planKeyOf(r), r])).values()].map((r) => ({
@@ -30,13 +33,13 @@ export function turnInput(turnKey: string, records: readonly DocRecord[]): TurnI
   };
 }
 
-/** A turn read from the live document, and whether the read held every page of it. */
-interface DocumentTurn { input: TurnInput; complete: boolean }
+/** A turn preview, and whether every source page and body was held inline in that read. */
+interface DocumentTurn { input: TurnInput; complete: boolean; bytes: number }
 
 /**
  * A turn of the session's live document, read from at most `TURN_PAGES` of its pages: the first `TURN_PAGES - 1`, and
  * its last page when more remain. Null when the session has no live document or the document holds no such turn. A turn
- * whose pages between the head and the last page go unread is not complete. A caller reading several turns of one
+ * whose pages between the head and the last page go unread, or whose records hold separate bodies, is not complete. A caller reading several turns of one
  * session passes its document.
  */
 export async function documentTurn(env: ContentStore, projectId: string, sessionId: string, turnKey: string,
@@ -47,7 +50,9 @@ export async function documentTurn(env: ContentStore, projectId: string, session
   const last = head.more ? await doc.lastPage(turnKey) : null;
   const tail = last === null ? [] : (await doc.ownerPages(turnKey, last, 1)).pages;
   const input = turnInput(turnKey, [...head.pages, ...tail].flatMap((page) => page.records));
-  return input === null ? null : { input, complete: !head.more || last === head.pages.length };
+  const pages = [...head.pages, ...tail];
+  return input === null ? null : { input, bytes: pages.flatMap(page => page.records).reduce((sum, record) => sum + sourceBytes(record), 0), complete: (!head.more || last === head.pages.length)
+    && pages.every(page => page.records.every(record => Object.keys(record.bodies ?? {}).length === 0)) };
 }
 
 /** The turn's input as `documentTurn` reads it, complete or not. */
