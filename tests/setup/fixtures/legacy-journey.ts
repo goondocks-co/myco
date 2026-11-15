@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -25,6 +26,7 @@ export async function legacyJourney(root: string, options: { multi?: boolean; mi
     fs.writeFileSync(path.join(legacy.mycoHome, 'unmanaged.txt'), 'Keep this user file byte for byte.\n');
     for (const [index, serverUrl] of LEGACY_URLS.entries()) {
       const rig = await memberRig();
+      await settingsWriter(rig.env.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
       fs.writeFileSync(path.join(root, `deployment-${index}.sqlite`), rig.env.sqlite.serialize());
       rig.env.sqlite.close();
       if (index === 0 || options.multi || options.missing || options.secondMembership) writeDeploymentMembership({ serverUrl, token: rig.token, machineId: 'machine_1', joinedAt: 1, updatedAt: 1 }, { mycoHome: legacy.mycoHome });

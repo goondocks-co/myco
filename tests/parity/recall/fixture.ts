@@ -7,6 +7,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expectPersisted } from '../harness.ts';
+import { withSettings } from '../clients/settings.ts';
 import { event } from '../clients/requests.ts';
 import type { IdentityTarget } from '../clients/identity.ts';
 import { fixtureLookup, type VectorIndexFile } from './lookup.ts';
@@ -35,19 +36,21 @@ export function loadRecallFixture() {
 
 /** Imports the frozen identities and source times through the same channel as a member's legacy import. */
 export async function importCorpus(target: IdentityTarget, corpus: Corpus): Promise<void> {
-  for (const spore of corpus.spores) {
-    const send = () => fetch(`${target.url}/spores/save`, { method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }), body: JSON.stringify({ channel: 'import', id: spore.id, agentId: 'recall-gold', observationType: spore.observationType, content: spore.content, agentLine: spore.agentLine, createdAt: spore.createdAt, status: spore.status }) });
-    let response = await send();
-    if (response.status === 429) {
-      const seconds = Number(response.headers.get('retry-after'));
-      if (!Number.isFinite(seconds) || seconds <= 0 || seconds > MAX_IMPORT_RETRY_AFTER_SECONDS) throw new Error('Corpus import received no bounded Retry-After');
-      await response.body?.cancel();
-      await Bun.sleep(seconds * 1000);
-      response = await send();
+  await withSettings(target, { 'import.spores_enabled': true }, async () => {
+    for (const spore of corpus.spores) {
+      const send = () => fetch(`${target.url}/spores/save`, { method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }), body: JSON.stringify({ channel: 'import', id: spore.id, agentId: 'recall-gold', observationType: spore.observationType, content: spore.content, agentLine: spore.agentLine, createdAt: spore.createdAt, status: spore.status }) });
+      let response = await send();
+      if (response.status === 429) {
+        const seconds = Number(response.headers.get('retry-after'));
+        if (!Number.isFinite(seconds) || seconds <= 0 || seconds > MAX_IMPORT_RETRY_AFTER_SECONDS) throw new Error('Corpus import received no bounded Retry-After');
+        await response.body?.cancel();
+        await Bun.sleep(seconds * 1000);
+        response = await send();
+      }
+      await expectPersisted(response, `corpus ${spore.id}`);
     }
-    await expectPersisted(response, `corpus ${spore.id}`);
-  }
-  const sessionId = 'recall-gold';
-  await event(target, sessionId, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
-  for (const plan of corpus.plans) await event(target, sessionId, 'plan', { planKey: plan.planKey, title: plan.title, status: plan.status, content: plan.content }, Date.now(), target.projectId, { channel: 'import' });
+    const sessionId = 'recall-gold';
+    await event(target, sessionId, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
+    for (const plan of corpus.plans) await event(target, sessionId, 'plan', { planKey: plan.planKey, title: plan.title, status: plan.status, content: plan.content }, Date.now(), target.projectId, { channel: 'import' });
+  });
 }

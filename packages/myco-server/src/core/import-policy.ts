@@ -29,6 +29,16 @@ import { settingTexts } from './settings.js';
 import { leafOffChecks } from '../db/settings/admission.js';
 
 const IMPORT_ENABLED_LEAF = 'import.enabled';
+export const SPORE_IMPORT_ENABLED_LEAF = 'import.spores_enabled';
+export const SPORE_IMPORT_ON = JSON.stringify(true);
+export const SPORE_IMPORT_DISABLED = refusal('Spore import was refused. An admin can turn on Allow spore import in Settings → Capture and retention → Importing past sessions, then run myco import --legacy <vault> again. Import past sessions on join must also be on.', 'import_disabled');
+export const SPORE_IMPORT_NOT_ADMIN = refusal('Spore import was refused; only an admin can import spores. Ask an admin to run myco import --legacy <vault>.', 'not_admin');
+
+export const SPORE_IMPORT_MACHINE_REQUIRED = refusal("Spore import was refused: an admin's machine credential is required. Run myco import --legacy <vault> from that machine.", 'no_machine_identity');
+
+/** Spore import requires explicit opt-in on every Deployment. */
+export const sporeImportEnabled = async (db: RelationalStore): Promise<boolean> =>
+  (await settingTexts(db, [SPORE_IMPORT_ENABLED_LEAF])).get(SPORE_IMPORT_ENABLED_LEAF) === SPORE_IMPORT_ON;
 const IMPORT_WINDOW_DAYS_LEAF = 'import.window_days';
 const IMPORT_MAX_SESSIONS_LEAF = 'import.max_sessions_per_harness';
 

@@ -6,7 +6,7 @@ import { CURATION_TASK } from './task-catalogue.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
 import { SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus } from './spores.js';
 import { consolidateSpores, resolveSpore, restoreSpore, type ResolveOutcome, type SporeExpectation } from '../db/spores/lifecycle.js';
-import { getSpore, insertSpore, repairImportedSporeSource } from '../db/spores/records.js';
+import { importRefused, getSpore, insertSpore, repairImportedSporeSource } from '../db/spores/records.js';
 import { mintSporeId, overSporeCap, planSporeConsolidation, planSporeResolution, SPORE_CAP_REASON, sporeTags, sporeExpectations } from './spore-writes.js';
 import { dispatchedBeforeLedger, servedSessionStore, ServedSessionRefused, SESSION_NOT_SERVED } from '../db/runs/served.js';
 import { extractionSourceSession } from '../db/documents/prompt-locator.js';
@@ -19,7 +19,9 @@ import { EXTRACTION_TASK } from './task-catalogue.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from './injection.js';
 import { nearSpores } from './spore-near-matches.js';
 import { USER_AGENT_ID } from '../constants.js';
-import { importPolicy } from './import-policy.js';
+import { importPolicy, sporeImportEnabled, SPORE_IMPORT_DISABLED, SPORE_IMPORT_NOT_ADMIN, SPORE_IMPORT_MACHINE_REQUIRED } from './import-policy.js';
+import { authorize, memberSubject } from '../auth/authorization.js';
+import type { Classifier, Refusal } from '../telemetry.js';
 import { ensureAgent } from '../db/runs/state.js';
 import type { RelationalStore, ServerEnv } from './adapters.js';
 import type { ReadScope } from '../read/scope.js';
@@ -29,8 +31,9 @@ type SporePrincipal = { kind: 'member'; memberId: string; machineId: string | nu
   | { kind: 'run'; runId: string; task: string | null; agentId: string; sessionId: string | null };
 interface SporeWriteContext { env: ServerEnv; projectId: string; principal: SporePrincipal; now: number; saveId?: string }
 type SporeWriteInput = Record<string, unknown>;
-type SporeWriteFailure = { ok: false; error: string; spore_id?: string; repair?: string; repairCall?: {tool:string;op:string;page?:number;id?:string} };
+type SporeWriteFailure = { ok: false; error: string; classifier?: Classifier; spore_id?: string; repair?: string; repairCall?: {tool:string;op:string;page?:number;id?:string} };
 const failure = (error: string, repairCall?: SporeWriteFailure['repairCall']): SporeWriteFailure => ({ ok: false, error, ...(repairCall === undefined ? {} : {repairCall}) });
+const importFailure = (refused: Refusal): SporeWriteFailure => ({ ...failure(refused.reason), classifier: refused.classifier });
 const SESSION_NOT_FOUND = 'session_id not found';
 
 const writerOf = (ctx: SporeWriteContext) => {
@@ -205,7 +208,10 @@ async function admittedSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext
   catch (error) {
     const changed = curationChangedReason(error);
     if (changed !== null) return failure(`assigned spores changed: ${changed}; nothing was saved`, { tool: 'myco_run', op: 'report' });
-    if (error instanceof MemberWriteRefused) return failure('import authority required');
+    if (input.channel === 'import') {
+      if (error instanceof MemberWriteRefused) return importFailure(SPORE_IMPORT_NOT_ADMIN);
+      if (importRefused(error)) return importFailure(SPORE_IMPORT_DISABLED);
+    }
     if (error instanceof ServedSessionRefused) return failure(SESSION_NOT_SERVED,{tool:'myco_run_learning',op:'material',page:1});
     throw error;
   }
@@ -328,11 +334,15 @@ async function admitSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): 
   return failure('unknown spore operation');
 }
 
-/** Live members import their own history while the Deployment admits imports. */
+/** Admins import their own history while the Deployment explicitly admits spore import. */
 async function importSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
   const p = ctx.principal;
-  if (p.kind !== 'member' || !(await importPolicy(ctx.env.db)).enabled) return failure('import authority required');
-  ctx = { ...ctx, env: { ...ctx.env, db: memberWriteStore(ctx.env.db, p.memberId, 'member') } };
+  if (p.kind !== 'member') return importFailure(SPORE_IMPORT_NOT_ADMIN);
+  const subject = await memberSubject(ctx.env.db, p.memberId, 'http');
+  if (!authorize(subject, 'admin', { kind: 'project', deploymentId: subject.deploymentId, projectId: ctx.projectId, exists: true })) return importFailure(SPORE_IMPORT_NOT_ADMIN);
+  if (p.machineId === null) return importFailure(SPORE_IMPORT_MACHINE_REQUIRED);
+  if (!(await sporeImportEnabled(ctx.env.db)) || !(await importPolicy(ctx.env.db)).enabled) return importFailure(SPORE_IMPORT_DISABLED);
+  ctx = { ...ctx, env: { ...ctx.env, db: memberWriteStore(ctx.env.db, p.memberId, 'admin') } };
   const scope = { projectId: ctx.projectId };
   const session = await sessionOf(ctx, scope, input);
   if (!session.ok) return session;
@@ -372,7 +382,7 @@ async function importSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext):
   if (!expect.ok) return failure(expect.reason);
   const outcome = await resolveSpore(ctx.env.db, scope, { status: status as SporeStatus, now: at, expect: expect.expect, event: { id: eventId, agentId, author: p.memberId, sporeId: id,
     action, newSporeId, reason: str(input.reason) ?? null, sessionId: session.sessionId, provenance: cited.provenance, channel: 'import', createdAt: at } });
-  if (outcome === 'import_disabled') return failure('import authority required');
+  if (outcome === 'import_disabled') return importFailure(SPORE_IMPORT_DISABLED);
   if (typeof outcome === 'object' && outcome.error === 'successor') return failure(`new_spore_id cannot take the source's place: ${outcome.state}`);
   if (typeof outcome === 'object') return { ...failure(outcome.error), status: outcome.status, revision: outcome.revision, reason: outcome.reason };
   return { resolved: outcome !== false, ...(outcome === 'duplicate' ? { duplicate: true } : {}) };

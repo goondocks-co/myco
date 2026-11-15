@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'bun:test';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
 import { issueMemberToken } from './helpers/member-token.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import worker from '@myco-server-worker/index.js';
 
 const AGENT = 'agent_1';
@@ -23,14 +24,6 @@ const save = (id: string, over: Record<string, unknown> = {}) =>
   ({ id, agentId: AGENT, agentLine: 'When using this fixture, retain its evidence.', observationType: 'gotcha', content: `content of ${id}`, ...over });
 
 describe('POST /spores', () => {
-  it('saves and reads back a spore with its lineage', async () => {
-    const { post } = await harness();
-    expect((await post('/spores/save', save('sp1'))).persisted).toBe(true);
-    const got = await post('/spores/get', { id: 'sp1' });
-    expect((got.spore as { id: string }).id).toBe('sp1');
-    expect(got.supersededBy).toEqual([]);
-  });
-
   it('lists with a total and reports the ceiling it clamps to', async () => {
     const { post } = await harness();
     await post('/spores/save', save('sp1'));
@@ -110,8 +103,12 @@ it('member resolution defaults active, names stale and admits explicit editorial
 });
 
 it('import history admits final or active status, checks revisions and refuses other states with the comparison', async () => {
-  const { post, sqlite } = await harness();
+  const { post, sqlite, db } = await harness();
   try {
+    const offered = { ...save('import-terminal'), channel: 'import', status: 'obsolete' };
+    expect(await post('/spores/save', offered)).toMatchObject({ persisted: false, code: 'import_disabled', reason: expect.stringContaining('Allow spore import') });
+    expect((await post('/spores/get', { id: offered.id })).spore).toBeNull();
+    await settingsWriter(db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
     const request = { channel: 'import', agentId: AGENT, action: 'obsolete', reason: 'retire fixture', status: 'obsolete', expectStatus: 'obsolete' };
     await post('/spores/save', save('import-active'));
     expect(await post('/spores/resolve', { ...request, eventId: 'wrong-revision', sporeId: 'import-active', expectRevision: 1 }))

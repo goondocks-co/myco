@@ -1,6 +1,7 @@
 import { expectRunRefusal } from '../../helpers/run-refusal.js';
 import { expect } from 'bun:test';
 import { mcp as tool, runTool } from '../clients/requests.ts';
+import { withSettings } from '../clients/settings.ts';
 import { captureSession, takeRun, failRun } from '../clients/runs.ts';
 import { promptContext, deliver, publishedTurns, withRecall, learningSettings, cardSession } from '../clients/capture.ts';
 import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
@@ -18,7 +19,7 @@ export const spores: ParityScenario = {
   name: 'spores: session citation on a save, lineage both ways, the injection under its turn',
   dedicated: { cloudflare: { embeddingFixture: true }, sqliteVec: true, timeoutMs: 180_000 },
   async run(target: ParityTarget) {
-    await withRecall(target, async () => {
+    await withSettings(target, { 'import.spores_enabled': true }, () => withRecall(target, async () => {
       const post = async (sessionId: string, kind: string, payload: Record<string, unknown>, createdAt = Date.now()) => {
         const res = await fetch(`${target.url}/events`, {
           method: 'POST',
@@ -142,7 +143,7 @@ export const spores: ParityScenario = {
         .toEqual(['spore_changed', 'spore_replaced']);
       const restored = await change(newId, 'restore', { revision: retired.body.spore.revision });
       expect([restored.status, restored.body.spore.status, restored.body.resolution?.action]).toEqual([200, 'active', 'restore']);
-    });
+    }));
   },
 };
 

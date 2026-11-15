@@ -11,6 +11,7 @@ import { HARNESS_MEMBER_ID, MAX_PROJECTS } from '@myco-server-worker/constants.j
 import { parseCardWrites } from '@myco-server-worker/core/turn-cards.js';
 import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { applyRunUpdate } from '@myco-server-worker/db/runs/change.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { writeSpore } from '@myco-server-worker/core/spore-admission.js';
 import { handleRun } from '@myco-server-worker/mcp/tools/run.js';
 import { runAllowlist } from '@myco-server-worker/mcp/run-surface.js';
@@ -81,7 +82,10 @@ test('HTTP and MCP spore admission reject foreign sessions and derive ordinary m
     expect(held).toMatchObject({ agent_id: 'user', status: 'active', author: 'mem_machine_2', agent_line: 'When testing, retain the evidence.' });
     expect(held.created_at).toBeGreaterThan(1);
     expect(await f.post('/spores/save', { ...spore('missing-line'), agentLine: undefined })).toMatchObject({ persisted: false });
-    expect(await f.post('/spores/save', spore('import-owned', { channel: 'import', createdAt: 1 }))).toMatchObject({ persisted: true, spore: { createdAt: 1, author: 'mem_machine_2' } });
+    await settingsWriter(f.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', f.now);
+    expect(await f.post('/spores/save', spore('import-owned', { channel: 'import', createdAt: 1 }))).toMatchObject({ persisted: false, code: 'not_admin', reason: expect.stringContaining('only an admin can import spores') });
+    expect(await f.post('/spores/resolve', { channel: 'import', eventId: 'forbidden-history', sporeId: 'ordinary', agentId: 'user', action: 'obsolete', status: 'obsolete' })).toMatchObject({ persisted: false, code: 'not_admin' });
+    expect(await f.rpc(f.token.token, 'myco_spores', { op: 'save', type: 'gotcha', content: 'member observation', agent_line: 'Retain evidence.' })).toMatchObject({ id: expect.any(String) });
   } finally { f.sqlite.close(); }
 });
 
@@ -298,9 +302,11 @@ test('settings preserve URL boundaries and withhold ambiguous credentials', asyn
   } finally { f.sqlite.close(); }
 });
 
-test('member imports retain final status and every historical resolution shape', async () => {
+test('admin imports retain final status and every historical resolution shape', async () => {
   const f = await rig();
   try {
+    f.sqlite.run("UPDATE members SET role='admin' WHERE id='mem_machine_2'");
+    await settingsWriter(f.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', f.now);
     for (const [id, status, events] of [
       ['live-history', 'active', [{ action: 'obsolete', reason: null }]],
       ['mixed-history', 'superseded', [{ action: 'obsolete', reason: null }, { action: 'supersede', newSporeId: 'retained-successor' }]],
@@ -329,6 +335,7 @@ test('MCP saves always mint a separate identity even when an id was supplied', a
 test('an import disabled at its insert is refused and can be retried after admission', async () => {
   const f = await rig();
   try {
+    await settingsWriter(f.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', f.now);
     const token = await issueMemberToken(f.db, { memberId: 'mem_machine_1', machineId: 'machine_1' }, f.now);
     const post = async (sessionId: string | null = null, fault = false) => {
       const landing = fault ? changingAtStatement(f.db, 'spores.insertUnlessHeld', () => {

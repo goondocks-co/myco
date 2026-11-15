@@ -359,6 +359,9 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
   }
   await publishCapture(url, ownerHeaders, ctx.databasePath);
 
+  const importPath = '/api/settings/import.spores_enabled';
+  const allowImport = async (value: boolean) => expectOk(await fetch(url + importPath, { method: 'PUT', headers: { ...ownerHeaders, ...await revisionHeaders({ url, ownerHeaders: () => ownerHeaders }, importPath) }, body: JSON.stringify({ value }) }), 'set spore import');
+  await allowImport(true);
   const sporeIds: string[] = [];
   for (const spore of SPORES) {
     const session = SESSIONS[spore.session]!;
@@ -387,6 +390,7 @@ export async function seedThroughServer(ctx: SeedContext): Promise<SeededFixture
     sporeIds.push(saved.id);
   }
 
+  await allowImport(false);
   for (const artifact of OUTCOME_ARTIFACTS) {
     const seed = SESSIONS[OUTCOME_SESSION]!;
     const res = await fetch(`${url}/mcp`, {

@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
 import { expectPersisted, type ParityScenario, type ParityTarget } from '../harness.ts';
-import { owner, mcp, sessionDetail } from '../clients/requests.ts';
+import { owner, mcp, sessionDetail, putSetting, resetSetting } from '../clients/requests.ts';
 import { archived } from '../clients/requests.ts';
 import { joinMember, stopMember } from '../clients/identity.ts';
 import { withSettings } from '../clients/settings.ts';
@@ -17,7 +17,7 @@ import { LEGACY_HISTORY_PATH, LEGACY_IMPORT_ADAPTER } from '@goondocks/myco-shar
 export const legacyImportParity: ParityScenario = {
   name: '1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution',
   async run(target: ParityTarget) {
-    await withSettings(target, { 'import.enabled': true }, async () => {
+    await withSettings(target, { 'import.enabled': true, 'import.spores_enabled': true }, async () => {
       const stamp = Date.now();
       const post = (path: string, body: unknown) => fetch(`${target.url}${path}`, {
         method: 'POST', headers: { ...target.memberHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -128,7 +128,7 @@ export const legacyImportParity: ParityScenario = {
 export const legacySporeResolution: ParityScenario = {
   name: 'legacy spores: later vault retirement converges and replays once',
   async run(target) {
-    await withSettings(target, { 'import.enabled': true }, async () => {
+    await withSettings(target, { 'import.enabled': true, 'import.spores_enabled': false }, async () => {
       const id = 'legacy-later-' + crypto.randomUUID();
       const eventId = 'legacy-resolution-' + crypto.randomUUID();
       const post = async (path: string, body: Record<string, unknown>) => {
@@ -140,6 +140,17 @@ export const legacySporeResolution: ParityScenario = {
         return await response.json() as Record<string, unknown>;
       };
       const vault = { id, agentId: 'user', observationType: 'gotcha', content: 'retire later', status: 'active' };
+      expect((await resetSetting(target, 'import.spores_enabled')).status).toBe(200);
+      expect(await post('/spores/save', { channel: 'import', ...vault })).toMatchObject({
+        persisted: false, code: 'import_disabled', reason: expect.stringContaining('Allow spore import'),
+      });
+      expect((await putSetting(target, 'import.spores_enabled', true)).status).toBe(200);
+      const member = await joinMember(target);
+      try {
+        const headers = memberHeadersFor(member.token, target.projectId, { 'content-type': 'application/json' });
+        const refused = await fetch(target.url + '/spores/save', { method: 'POST', headers, body: JSON.stringify({ channel: 'import', ...vault }) });
+        expect(await refused.json()).toMatchObject({ persisted: false, code: 'not_admin', reason: expect.stringContaining('only an admin') });
+      } finally { await stopMember(target, member.id); }
       let retirement: Record<string, unknown> | null = null;
       const importVault = async () => {
         expect((await post('/spores/save', { channel: 'import', ...vault })).persisted).toBe(true);
@@ -162,9 +173,13 @@ export const legacySporeResolution: ParityScenario = {
       const refused = await post('/spores/resolve', {
         channel: 'import', eventId: eventId + '-other', agentId: 'user', sporeId: other,
         action: 'obsolete', status: 'obsolete', expectStatus: 'obsolete',
-    });
-    expect(refused).toMatchObject({ persisted: false, code: 'stale', status: 'superseded', revision: 0 });
-    expect(refused.reason).toBe('source is superseded at revision 0; expected obsolete or active');
+      });
+      expect(refused).toMatchObject({ persisted: false, code: 'stale', status: 'superseded', revision: 0 });
+      expect(refused.reason).toBe('source is superseded at revision 0; expected obsolete or active');
+      expect((await putSetting(target, 'import.spores_enabled', false)).status).toBe(200);
+      expect(await post('/spores/resolve', {
+        channel: 'import', eventId: eventId + '-disabled', agentId: 'user', sporeId: id, action: 'obsolete', status: 'obsolete',
+      })).toMatchObject({ persisted: false, code: 'import_disabled' });
     });
   },
 };

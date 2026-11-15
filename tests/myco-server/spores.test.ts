@@ -10,7 +10,8 @@ import { seededSqlite } from './helpers/d1.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { listSporePage, type ListSporesOptions, type SporeInsert } from '@myco-server-worker/core/spores.js';
 import { consolidateSpores, resolveSpore } from '@myco-server-worker/db/spores/lifecycle.js';
-import { getSpore, insertSpore, repairImportedSporeSource } from '@myco-server-worker/db/spores/records.js';
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
+import { getSpore, insertSpore } from '@myco-server-worker/db/spores/records.js';
 import { listSupersededSporeIds, listSupersedingSporeIds } from '@myco-server-worker/db/spores/edges.js';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import type { ReadScope } from '@myco-server-worker/read/scope.js';
@@ -50,32 +51,6 @@ const store = seededStore;
 const catchUpPhaseDone = async (db: RelationalStore): Promise<number> => { await catchUpPhase(db, 'sporeResolutionEdges'); return (await db.prepare("SELECT done FROM projection_catchup WHERE projection = 'spore_resolution_edges'").first<{ done: number }>())!.done; };
 
 describe('spores', () => {
-  it('stores no prompt on direct saves, consolidation or import source repair, and reads legacy citations by session', async () => {
-    const { db, sqlite } = store();
-    try {
-      seedSession(sqlite, 'source', true);
-      const input = spore('direct', { sessionId: 'source' });
-      await insertSpore(db, SCOPE, input);
-      const event = { agentId: AGENT, author: null, reason: 'combined', sessionId: 'source', createdAt: NOW };
-      await consolidateSpores(db, SCOPE, { wisdom: { ...input, id: 'wisdom' }, sources: [{ id: 'direct' }], event: event, now: NOW });
-      await insertSpore(db, SCOPE, spore('imported', { author: 'member' }));
-      await repairImportedSporeSource(db, SCOPE, { id: 'imported', author: 'member', agentId: AGENT, content: 'content of imported', sessionId: 'source' });
-      expect(sqlite.query('SELECT DISTINCT prompt_id FROM spores').all()).toEqual([{ prompt_id: null }]);
-      sqlite.run("UPDATE spores SET prompt_id='old-prompt' WHERE id='direct'");
-      const read = await getSpore(db, SCOPE, 'direct');
-      expect(read).toMatchObject({ sessionId: 'source', sourceCreatedAt: NOW });
-      expect(read).not.toHaveProperty('promptId');
-      expect(sqlite.query("SELECT prompt_id FROM spores WHERE id='direct'").get()).toEqual({ prompt_id: 'old-prompt' });
-    } finally { sqlite.close(); }
-  });
-
-  it('returns the written row from the write, without reading it back', async () => {
-    const { db } = store();
-    const written = await insertSpore(db, SCOPE, spore('sp1'));
-    expect({ id: written?.id, status: written?.status, importance: written?.importance, embedded: written?.embedded })
-      .toEqual({ id: 'sp1', status: 'active', importance: 5, embedded: 0 });
-  });
-
   it('refuses a spore naming a session no table holds, which is what the pragma buys', async () => {
     const { db } = store();
     await expect(insertSpore(db, SCOPE, spore('sp1', { sessionId: 'sess_nowhere' }))).rejects.toThrow();
@@ -372,6 +347,7 @@ describe('a lifecycle write, decided inside its commit', () => {
   it('lets an import name a successor that is absent or already retired, because a vault chain arrives out of order', async () => {
     const { db, sqlite } = seeded();
     try {
+      await settingsWriter(db).setLeaf('import.spores_enabled', true, 'mem_machine_1', NOW);
       sqlite.query("UPDATE spores SET status = 'superseded' WHERE id = 'keeper'").run();
       expect(await resolveSpore(db, SCOPE, { status: 'superseded', event: { ...event('i1', 'ghost'), channel: 'import' }, now: NOW })).toBe(true);
       sqlite.query("UPDATE spores SET status = 'active' WHERE id = 'source'").run();

@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 /**
  * A person retires and restores a spore from the dashboard: the same lifecycle write the tools make, bound to the revision the page read and
  * recorded as the signed-in member's, refused for a member without the admin role.
@@ -108,6 +109,9 @@ describe('retiring and restoring a spore from the dashboard', () => {
   it('reads the change committed last when several land at the same instant', async () => {
     const h = await harness();
     const at = { env: h.serverEnv, projectId: 'proj_1', now: NOW, principal: { kind: 'member' as const, memberId: PRINCIPAL.id, machineId: null } };
+    await settingsWriter(h.db).setLeaf('import.spores_enabled', true, PRINCIPAL.id, NOW);
+    expect(await writeSpore({ op: 'save', channel: 'import', id: 'dashboard-import', agent_id: AGENT, type: 'gotcha', content: 'dashboard import' }, at)).toMatchObject({ ok: false, classifier: 'no_machine_identity' });
+    expect((await h.get('/api/projects/proj_1/spores/dashboard-import')).status).toBe(404);
     await writeSpore({ op: 'obsolete', id: 'sp1', reason: 'First retirement', expect_revision: 0, event_id: 'ffffffff-ffff-4fff-bfff-ffffffffffff' }, at);
     await writeSpore({ op: 'restore', id: 'sp1', expect_revision: 1 }, at);
     expect((await h.read()).resolution).toMatchObject({ action: 'restore', author: PRINCIPAL.id, reason: null });

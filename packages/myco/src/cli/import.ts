@@ -35,7 +35,9 @@ Options:
                      prompts, plans, spores and spore history, each into the
                      project of the same id. <path> is a 1.4 home (~/.myco), a
                      grove directory, or a myco.db file; repeat for several.
-                     The vault is read, never written.
+                     The vault is read, never written. Importing spores and
+                     their history requires an admin and Allow spore import
+                     in Settings → Capture and retention (off by default).
   --map <dir>=<root> Import transcripts recorded in <dir> (or, with a trailing
                      *, in every sibling directory named like it) into the
                      project connected at <root>. For worktrees that no longer

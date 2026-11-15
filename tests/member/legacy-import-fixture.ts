@@ -1,3 +1,4 @@
+import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { expect } from 'bun:test'; import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import { Database } from 'bun:sqlite';
 import { runLegacyImport } from '@myco/member/legacy-import.js'; import { writeDeploymentMembership, writeRegistryEntry, REGISTRY_VERSION } from '@myco/member/registry.js'; import { rootSlug } from '@myco/symbionts/transcript-attribution.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID, type MemberRig } from './helpers/server.js';
@@ -136,6 +137,7 @@ function buildTranscripts(home: string, root: string): string[] {
 
 export async function fixture(prebuilt?: { base: string }): Promise<Fixture> {
   const rig = await memberRig();
+  await settingsWriter(rig.env.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
   const mycoHome = tempMycoHome();
   const base = prebuilt?.base ?? fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-legacy-')));
   const home = path.join(base, 'home');

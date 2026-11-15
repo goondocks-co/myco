@@ -635,15 +635,16 @@ describe('legacy journey (e)', () => {
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
   });
 
-  it('creates a native Deployment with G before conducting the legacy move', async () => {
+  it('creates a native Deployment with G and leaves spore import waiting for admin opt-in', async () => {
     const fixture = await rig();
     const address = 'http://127.0.0.1:8787';
     const owner = ownerDeployment(root, home, 'local', address);
     closers.unshift(owner.close);
     const deps = { ...fixture.deps, ...owner.deps, stdout: (line: string) => lines.push(line), stderr: (line: string) => errors.push(line), sleep: async () => {} };
     const bytes = fs.readFileSync(fixture.legacy.vault);
-    expect({ code: await run(['--create', 'local', '--serve', 'service', '--default', '--cutover', ...fixture.legacy.projects.flatMap(p => ['--route', `${p.id}=${address}`]), '--no-agents', '--no-runner', '--yes'], deps), errors }).toEqual({ code: 0, errors: [] });
-    expect(legacyMigrationState(home).state).toBe('moved');
+    expect(await run(['--create', 'local', '--serve', 'service', '--default', '--cutover', ...fixture.legacy.projects.flatMap(p => ['--route', `${p.id}=${address}`]), '--no-agents', '--no-runner', '--yes'], deps)).toBe(2);
+    expect(lines.join('\n')).toContain('Allow spore import');
+    expect(legacyMigrationState(home).state).toBe('partial');
     expect(readRegistryEntry(fixture.legacy.projects[0]!.root, home)?.serverUrl).toBe(address);
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(bytes);
   });
