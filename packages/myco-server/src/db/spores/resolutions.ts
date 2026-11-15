@@ -16,9 +16,9 @@ export interface SporeResolution {
 const latest = read<[project: string, spore: string], SporeResolution>({
   name: 'sporeResolutions.latest',
   sql: `SELECT e.action, e.author, ${authorKindSql('e')} AS authorKind, e.reason, e.new_spore_id AS newSporeId, e.created_at AS createdAt
-    FROM resolution_events e WHERE e.project_id=?1 AND e.spore_id=?2 ORDER BY e.created_at DESC, e.id DESC LIMIT 1`,
+    FROM resolution_events e WHERE e.project_id=?1 AND e.spore_id=?2 ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1`,
 });
 
-/** The newest lifecycle event a spore holds, or null for one that never moved. */
+/** The newest lifecycle event a spore holds, events at the same instant ordered as they were committed; null for one that never moved. */
 export const latestSporeResolution = (db: RelationalStore, scope: ReadScope, sporeId: string): Promise<SporeResolution | null> =>
   first(db, latest.bind(scope.projectId, sporeId));

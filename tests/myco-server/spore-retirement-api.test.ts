@@ -8,6 +8,13 @@ import { asOwner, asOwnerPost, MEMBER_SUB, OWNER_ENV, ownerCookie, PRINCIPAL, se
 import worker from '@myco-server-worker/index.js';
 import { insertSpore } from '@myco-server-worker/db/spores/records.js';
 import { resolveSpore } from '@myco-server-worker/db/spores/lifecycle.js';
+import { writeSpore } from '@myco-server-worker/core/spore-admission.js';
+import { reconcileEmbedding } from '@myco-server-worker/core/embedding/reconcile.js';
+import { selectSporesForPrompt } from '@myco-server-worker/core/injection.js';
+import { sessionWriteAdmission } from '@myco-server-worker/ingest/projections.js';
+import { embedding_semanticSearch as semanticSearch } from '@myco-server-worker/read/catalog/embedding.js';
+import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
+import { indexFixture } from './helpers/vector-index.js';
 
 const AGENT = 'agent_1';
 const NOW = 1_700_000_000_000;
@@ -62,6 +69,50 @@ describe('retiring and restoring a spore from the dashboard', () => {
     expect(restored.body).toMatchObject({ spore: { status: 'active' }, resolution: { action: 'restore', author: PRINCIPAL.id, authorKind: 'member' } });
     expect(await h.found()).toEqual(['sp1', 'sp2']);
     expect((await h.get('/api/projects/proj_1/spores?status=active')).body.total).toBe(2);
+  });
+
+  it('finds a restored spore by words at once, and serves it and finds it by meaning once its embedding is written again', async () => {
+    const h = await harness();
+    // Unrelated findings point away from the cobalt ones, so the prompt's matches stand out from the Project's other spores.
+    const unrelated = ['parsers', 'ports', 'locales', 'retries', 'themes', 'queues', 'fonts', 'clocks'];
+    for (const [i, topic] of unrelated.entries()) {
+      await insertSpore(h.db, h.scope, { id: `other-${i}`, agentId: AGENT, sessionId: null, observationType: 'gotcha', content: `notes on ${topic}`, context: null,
+        filePath: null, tags: null, contentHash: null, properties: null, author: null, createdAt: NOW });
+    }
+    const angle = (text: string) => text.includes('cobalt') ? 0 : 1.2 + unrelated.findIndex(topic => text.includes(topic)) * 0.25;
+    const provider = { modelKey: 'restore-model', embed: async (text: string) => [Math.cos(angle(text)), Math.sin(angle(text))] };
+    const semantic = { provider, vectors: cloudflareVectorStore(indexFixture()) };
+    const reconcile = () => reconcileEmbedding({ db: h.db, blobs: h.bucket, ...semantic }, 'proj_1', NOW);
+    for (let step = 0; step < 20 && (await reconcile()).phase !== 'settled'; step++);
+    const byMeaning = async () => (await semanticSearch(h.db, h.scope, semantic, ['spore'], { query: 'cobalt' }, 10)).hits.map(hit => hit.id).filter(id => id.startsWith('sp')).sort();
+    let prompts = 0;
+    const served = async () => {
+      const session = `restore-${++prompts}`;
+      const selected = await selectSporesForPrompt(h.db, h.scope, { enabled: true, maxPerPrompt: 7 }, true, {
+        sessionId: session, admission: sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, session),
+        promptId: `p${prompts}`, promptHash: `hash${prompts}`, prompt: 'Please help me configure the cobalt cache correctly.', now: NOW,
+      }, async () => semantic);
+      return selected.items.map(item => item.id).sort();
+    };
+    expect([await byMeaning(), await served()]).toEqual([['sp1', 'sp2'], ['sp1', 'sp2']]);
+
+    const retired = await h.post(`${SPORE}/retire`, { reason: 'Out of date', revision: (await h.read()).spore.revision });
+    expect([await byMeaning(), await served(), await h.found()]).toEqual([['sp2'], ['sp2'], ['sp2']]);
+    expect((await h.post(`${SPORE}/restore`, { revision: retired.body.spore.revision })).status).toBe(200);
+    expect([await h.found(), await byMeaning(), await served()]).toEqual([['sp1', 'sp2'], ['sp2'], ['sp2']]);
+
+    await reconcile();
+    expect([await byMeaning(), await served()]).toEqual([['sp1', 'sp2'], ['sp1', 'sp2']]);
+  });
+
+  it('reads the change committed last when several land at the same instant', async () => {
+    const h = await harness();
+    const at = { env: h.serverEnv, projectId: 'proj_1', now: NOW, principal: { kind: 'member' as const, memberId: PRINCIPAL.id, machineId: null } };
+    await writeSpore({ op: 'obsolete', id: 'sp1', reason: 'First retirement', expect_revision: 0, event_id: 'ffffffff-ffff-4fff-bfff-ffffffffffff' }, at);
+    await writeSpore({ op: 'restore', id: 'sp1', expect_revision: 1 }, at);
+    expect((await h.read()).resolution).toMatchObject({ action: 'restore', author: PRINCIPAL.id, reason: null });
+    await writeSpore({ op: 'obsolete', id: 'sp1', reason: 'Second retirement', expect_revision: 2, event_id: '00000000-0000-4000-8000-000000000000' }, at);
+    expect((await h.read()).resolution).toMatchObject({ action: 'obsolete', reason: 'Second retirement' });
   });
 
   it('refuses a page that read an older revision and changes nothing', async () => {

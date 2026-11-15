@@ -452,6 +452,35 @@ describe('a spore’s article', () => {
     expect(document.querySelector('[data-spore-change]')).toBeNull();
   });
 
+  it('keeps the dialog open with the reload advice when the spore changed since the page read it, and changes nothing on the page', async () => {
+    const path = `/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
+    let posts = 0;
+    const routes = base({ [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
+      if (init?.method === 'POST') {
+        posts += 1;
+        return Response.json({ error: 'spore_changed', message: 'changed', status: 'obsolete', revision: 1 }, { status: 409 });
+      }
+      if (url.pathname === path) return article({ status: 'active', revision: 0 }, { supersededBy: [], supersedes: [] });
+      return routes[url.pathname]?.() ?? new Response(null, { status: 404 });
+    }) as typeof fetch;
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+    const before = (await screen.findByRole('heading', { level: 1 })).textContent;
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retire' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Why it no longer holds'), { target: { value: 'Out of date' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retire' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('Reload the page and try again');
+    expect(posts).toBe(1);
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect((within(dialog).getByLabelText('Why it no longer holds') as HTMLTextAreaElement).value).toBe('Out of date');
+    expect(document.querySelector('[data-spore-status]')).toBeNull();
+    expect(document.querySelector('[data-spore-retired]')).toBeNull();
+    expect(document.querySelector('[data-spore-title]')!.textContent).toBe(before);
+  });
+
   it('says not found for a spore the project does not hold', async () => {
     server(base());
     mount(`/p/${MYCO}/spores/missing`);

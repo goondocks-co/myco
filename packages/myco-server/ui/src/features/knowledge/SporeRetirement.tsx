@@ -80,7 +80,7 @@ export function SporeStatusControl({ projectId, answer }: { projectId: string; a
         title={retiring ? 'Retire this spore?' : 'Restore this spore?'}
         description={retiring
           ? 'Myco stops serving it to your agents and search leaves it out. It stays readable here with your reason, and can be restored.'
-          : 'It becomes current again: Myco serves it to your agents and search finds it.'}
+          : 'It becomes current again now, and search by words finds it at once. Myco serves it to your agents, and search by meaning finds it, once Myco has indexed it again, usually within a few minutes.'}
         confirmLabel={retiring ? 'Retire' : 'Restore'}
         tone="primary"
         pending={change.isPending}
