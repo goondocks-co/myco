@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Database } from 'bun:sqlite';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
+import { discardRecoveredCredentials } from '@myco-server-worker/db/settings/recovery-credentials.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { discardRecoveredVectorPages } from '@myco-server-worker/db/embeddings/vector-pages.js';
 import { resetEmbeddingIndex } from '@myco-server-worker/db/embeddings/work.js';
@@ -54,20 +55,20 @@ async function prepareRestoredObjects(staging: LocalDeploymentPaths, native: Nat
   return schemaVersion;
 }
 
-/** Publish a complete native volume only after its data and independently supplied wrapping material verify. */
+/** Publish a complete native volume only after its data and selected credential policy verify. */
 export async function restoreLocalDeployment(options: {
-  source: string; secretsFile: string; port?: number; paths?: LocalDeploymentPaths; native?: NativeSqlite;
+  source: string; secretsFile?: string; newCredentials?: boolean; port?: number; paths?: LocalDeploymentPaths; native?: NativeSqlite;
   /** Publish with a fresh sign-in secret and no sign-in credentials, for a Deployment that holds none. */
   newSignIn?: boolean; report?: (line: string) => void;
   tenantMode?: RecoveryTenantMode; sourceRetired?: boolean;
-}): Promise<{ schemaVersion: number; rebuildEmbeddings: boolean }> {
+}): Promise<{ schemaVersion: number; rebuildEmbeddings: boolean; credentialsToReenter?: string[] }> {
   assertRecoveryTenantChoice(options.tenantMode, options.sourceRetired);
   const paths = options.paths ?? resolveLocalPaths();
   const record = { ...DEFAULT_LOCAL_RECORD, port: options.port ?? DEFAULT_LOCAL_RECORD.port };
   assertRecordServable(record);
   return new LocalVolume(paths).exclusive(async () => {
     if (fs.existsSync(paths.root)) throw new Error('recovery requires a fresh local Deployment directory; existing data was not changed');
-    const { secrets, key } = await prepareRecoveryCredentials(options.source, options.secretsFile, options.newSignIn === true, options.tenantMode === 'fork');
+    const { secrets, key } = await prepareRecoveryCredentials({ ...options, fork: options.tenantMode === 'fork' });
     const stagingHome = fs.mkdtempSync(path.join(path.dirname(paths.root), '.local-restore-'));
     fs.chmodSync(stagingHome, 0o700);
     try {
@@ -77,14 +78,18 @@ export async function restoreLocalDeployment(options: {
       const carried = restoredFleet(manifest.snapshot!.configuration);
       const published = carried.fleet === null ? record : { ...record, fleet: carried.fleet };
       assertRecordServable(published);
+      let discardedCredentials: string[] = [];
       const { schemaVersion, rebuildEmbeddings } = await withRecoveryDatabaseCopy(staging.databasePath, manifest.snapshot!.database, async copy => {
         const db = new Database(copy.databasePath);
         let rebuildEmbeddings: boolean;
         try {
           const store = sqliteRelationalStore(db);
           await holdRecoveredSwitch(store, Date.now());
-          const heldSecrets = await deploymentSecretStore(store, key).list();
-          if (heldSecrets.some((secret) => !secret.readable)) throw new Error('recovery wrapping key cannot open all stored credentials');
+          if (options.newCredentials) discardedCredentials = await discardRecoveredCredentials(store);
+          else {
+            const heldSecrets = await deploymentSecretStore(store, key).list();
+            if (heldSecrets.some(secret => !secret.readable)) throw new Error('recovery wrapping key cannot open all stored credentials');
+          }
           rebuildEmbeddings = manifest.source.target === 'cloudflare'
             || db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_vectors'").get() === null;
           if (rebuildEmbeddings) {
@@ -107,7 +112,7 @@ export async function restoreLocalDeployment(options: {
       syncDirectoryForDurability(staging.root);
       fs.renameSync(staging.root, paths.root);
       syncDirectoryForDurability(path.dirname(paths.root));
-      return { schemaVersion, rebuildEmbeddings };
+      return { schemaVersion, rebuildEmbeddings, ...(options.newCredentials ? { credentialsToReenter: discardedCredentials } : {}) };
     } finally { fs.rmSync(stagingHome, { recursive: true, force: true }); }
   });
 }

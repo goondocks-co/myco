@@ -1,3 +1,5 @@
+import { readLocalSecrets } from '@myco/server/local.js';
+import { cloudflareWrappingKeyPath } from '@myco/server/cloudflare-wrapping-key.js';
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -81,6 +83,7 @@ async function fixture(failVectorRead = false, { legacy = false, authority = fal
   const provisioned: Record<string, string[]> = { databaseName: [], bucketName: [], vectorIndexName: [], wrapKeySecretName: [] };
   const deployments: string[] = [];
   const secretCommands: string[] = [];
+  let freshKeyInstalled = false;
   const runner: CommandRunner = { async run(_command, args, options) {
     const flat = args.slice(2).join(' ');
     const answer = (stdout = '', code = 0) => ({ code, stdout, stderr: '' });
@@ -96,7 +99,15 @@ async function fixture(failVectorRead = false, { legacy = false, authority = fal
     }
     if (flat.startsWith('vectorize list-metadata-index ')) return answer(JSON.stringify(VECTOR_METADATA_FIELDS.map(propertyName => ({ propertyName, indexType: propertyName === 'created_at' ? 'Number' : 'String' }))));
     if (flat.startsWith('secrets-store store list')) return answer('f'.repeat(32));
-    if (flat.startsWith('secrets-store secret create') || flat.startsWith('secret ')) { if (flat.startsWith('secrets-store secret create')) provisioned.wrapKeySecretName.push(args[args.indexOf('--name') + 1]!); secretCommands.push(flat); return answer(); }
+    if (flat.startsWith('secrets-store secret create') || flat.startsWith('secret ')) {
+      if (flat.startsWith('secrets-store secret create')) {
+        const held = readLocalSecrets({ secretsFile: cloudflareWrappingKeyPath(mycoHome) }).SECRET_WRAP_KEY;
+        freshKeyInstalled = held !== undefined && held !== wrapKey && options?.input === held;
+        provisioned.wrapKeySecretName.push(args[args.indexOf('--name') + 1]!);
+      }
+      secretCommands.push(flat);
+      return answer();
+    }
     if (flat.startsWith('deployments list')) return answer('Worker not found [code: 10007]', 1);
     if (flat.startsWith('auth token')) return answer(JSON.stringify({ type: 'oauth', token: 'fixture-operator-token' }));
     if (args.includes('--command')) return answer(JSON.stringify([{ success: true, results: destination.query(args[args.indexOf('--command') + 1]!).all() }]));
@@ -126,8 +137,8 @@ async function fixture(failVectorRead = false, { legacy = false, authority = fal
     return stored.has(key) ? new Response(stored.get(key)!) : new Response('absent', { status: 404 });
   };
   return { sourceRecord, provisioned, source, secretsFile, mycoHome, destination, deployments, secretCommands, key, wrapKey, creates: () => creates, bodies, stored,
-    reports,
-    restore: (newSignIn = false, tenantMode: 'replacement' | 'fork' = 'replacement') => restoreCloudflareDeployment({ sourceRetired: true, tenantMode, source, secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn, fetch: fetchObject, report: (line: string) => { reports.push(line); } }),
+    reports, freshKeyInstalled: () => freshKeyInstalled,
+    restore: (newSignIn = false, tenantMode: 'replacement' | 'fork' = 'replacement', newCredentials = false) => restoreCloudflareDeployment({ sourceRetired: true, tenantMode, source, secretsFile: newCredentials && newSignIn ? undefined : secretsFile, mycoHome, accountId: 'fixture-account', runner, newSignIn, newCredentials, fetch: fetchObject, report: (line: string) => { reports.push(line); } }),
     cleanup: () => { destination.close(); fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
@@ -298,4 +309,24 @@ it('replacement requires source retirement; fork permits an independent live sou
   expect(() => assertRecoveryTenantChoice()).toThrow('--source-retired');
   expect(() => assertRecoveryTenantChoice('replacement', true)).not.toThrow();
   expect(() => assertRecoveryTenantChoice('fork')).not.toThrow();
+});
+
+it('keeps a fresh wrapping key across keyless hosted recovery retries and publishes no sealed rows', async () => {
+  const f = await fixture();
+  try {
+    fs.writeFileSync(f.secretsFile, '');
+    await expect(f.restore(true, 'fork', true)).rejects.toThrow('Cloudflare recovery import did not finish');
+    const file = cloudflareWrappingKeyPath(f.mycoHome);
+    const held = readLocalSecrets({ secretsFile: file }).SECRET_WRAP_KEY!;
+    expect(held !== f.wrapKey).toBe(true);
+    await expect(f.restore(true, 'fork')).rejects.toThrow('same --new-credentials choice');
+    const result = await f.restore(true, 'fork', true);
+    expect(readLocalSecrets({ secretsFile: file }).SECRET_WRAP_KEY === held).toBe(true);
+    const store = deploymentSecretStore(sqliteRelationalStore(f.destination), wrappingKeyFromText(async () => held, 'fixture'));
+    expect(await store.list()).toEqual([]);
+    expect(result.credentialsToReenter).toContain('fixture');
+    expect(f.freshKeyInstalled()).toBe(true);
+    expect(f.reports.join('\n').includes(held)).toBe(false);
+    expect(f.reports.join('\n').includes('sealed-fixture-value')).toBe(false);
+  } finally { f.cleanup(); }
 });

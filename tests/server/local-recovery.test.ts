@@ -1,3 +1,8 @@
+import { run as serverCommand } from '@myco/cli/server.js';
+import { projectRepositories } from '@myco-server-worker/core/repositories.js';
+import { releaseProvenance } from '@myco-server-worker/core/release-provenance.js';
+import { providerCredentialReady, openHarnessCredential, openCompletionCredential } from '@myco-server-worker/core/provider-credentials.js';
+import { harnessCredentialAvailable } from '@myco-server-worker/core/secrets.js';
 import { serve } from '@myco-server-worker/entry/bun.js';
 import { issueMemberToken } from '../myco-server/helpers/member-token.js';
 import { signSession, SESSION_COOKIE } from '@myco-server-worker/auth/owner/cookie.js';
@@ -129,7 +134,7 @@ async function seedSealedCalibration(source: ReturnType<typeof sqliteEnv>, model
 
 async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   { legacy = false, configuration = {} as Record<string, unknown>, bundledInput = false, authority = false,
-    learningSource = null as 'paused' | 'pre-pause' | null, budgetSource = null as 'current'|'pre-budget'|null, thinRun = false, sealedCalibration = false } = {}) {
+    learningSource = null as 'paused' | 'pre-pause' | null, budgetSource = null as 'current'|'pre-budget'|null, thinRun = false, sealedCalibration = false, credentialConsumers = false } = {}) {
   const source = legacySource();
   const blobs = await storedBlobs(source);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-native-recovery-'));
@@ -141,6 +146,15 @@ async function fixture(target: 'local' | 'cloudflare' = 'cloudflare',
   fs.writeFileSync(secretsFile, Object.entries(secrets).map(([name, value]) => `${name}=${value}`).join('\n'), { mode: 0o600 });
   const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'fixture');
   await deploymentSecretStore(source.db, key).put('fixture', 'recovered-secret', 'fixture', 1);
+  if (credentialConsumers) {
+    const store = deploymentSecretStore(source.db, key);
+    for (const name of ['openai', 'anthropic', 'single-turn']) await store.put(name, 'synthetic-credential', 'fixture', 1);
+    await projectRepositories(source.db, store).save('proj_1', { url: 'https://github.com/example/repo.git', branch: 'main', revision: null,
+      credential: { username: 'reader', token: 'synthetic-token' } }, 'fixture', 1);
+    await releaseProvenance(source.db, store).save('proj_1', { revision: null, enabled: true, githubRepo: 'example/repo',
+      productionRefs: ['refs/tags/v*'], integrationRefs: ['origin/main'], packageMap: [], includeUnknown: true, maxLookups: 50,
+      credential: { token: 'synthetic-release-token' } }, 'fixture', 1);
+  }
   source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,content,observation_type,created_at) VALUES ('proj_1','memory','user','A durable architecture decision','decision',1)");
   // A switch building to a paid model, and a source embedding passes over, as the source Deployment held them.
   source.sqlite.run(`INSERT INTO embedding_switches (slot, id, provider, model, endpoint, model_key, from_model_key, estimated_tokens, estimated_sources, progressed_at, state, reason, retry_at, failures, started_at, started_by, updated_at)
@@ -482,5 +496,46 @@ it('recovers current learning work without a pause marker', async () => {
       expect(restored.query("SELECT value FROM schema_meta WHERE key='learning_paused_at'").get()).toBeNull();
       expect(restored.query("SELECT id FROM agent_runs WHERE id='thin-held'").get()).toEqual({id:'thin-held'});
     } finally { restored.close(); }
+  } finally { f.cleanup(); }
+});
+
+it('restores without held wrapping material, starts the server and names each credential to enter again', async () => {
+  const f = await fixture('local', { credentialConsumers: true });
+  try {
+    const names = (await deploymentSecretStore(f.source.db, f.key).list()).map(row => row.name);
+    expect(await harnessCredentialAvailable(f.source.db, f.key, 'claude-code')).toBe(true);
+    await expect(restoreLocalDeployment({ sourceRetired: true, source: f.artifact, paths: f.paths, secretsFile: f.secretsFile, newCredentials: true })).rejects.toThrow('both --new-credentials and SECRET_WRAP_KEY');
+    fs.writeFileSync(f.secretsFile, Object.entries(f.secrets).filter(([name]) => name !== 'SECRET_WRAP_KEY').map(([name, value]) => `${name}=${value}`).join('\n'));
+    await expect(f.restore()).rejects.toThrow('--new-credentials');
+    const lines: string[] = [];
+    const previousHome = process.env.MYCO_HOME;
+    const previousLog = console.log;
+    try {
+      process.env.MYCO_HOME = path.dirname(path.dirname(f.paths.root));
+      console.log = line => { lines.push(String(line)); };
+      await serverCommand(['restore', '--target', 'local', '--from', f.artifact, '--secrets-from', f.secretsFile,
+        '--new-credentials', '--source-retired', '--yes']);
+    } finally { process.env.MYCO_HOME = previousHome; console.log = previousLog; }
+    const secrets = readLocalSecrets(f.paths);
+    expect(secrets.SECRET_WRAP_KEY !== f.secrets.SECRET_WRAP_KEY).toBe(true);
+    const server = await startDeployment({ databasePath: f.paths.databasePath, blobDir: f.paths.blobDir, port: 0,
+      sourceFrom: 'socket', transport: 'loopback' });
+    try {
+      const key = wrappingKeyFromText(async () => secrets.SECRET_WRAP_KEY, 'fixture');
+      const store = deploymentSecretStore(server.env.db, key);
+      expect(await store.list()).toEqual([]);
+      expect((await projectRepositories(server.env.db, store).describe('proj_1'))?.credential).toMatchObject({ configured: false });
+      await expect(projectRepositories(server.env.db, store).access('proj_1')).rejects.toThrow('Enter it again');
+      expect((await releaseProvenance(server.env.db, store).describe('proj_1')).credential.configured).toBe(false);
+      expect(await providerCredentialReady(server.env.db, key, 'openai')).toBe(false);
+      expect(await openHarnessCredential(server.env.db, key, 'anthropic')).toBeNull();
+      expect(await harnessCredentialAvailable(server.env.db, key, 'claude-code')).toBe(false);
+      expect(await openCompletionCredential(server.env.db, key)).toBeNull();
+      for (const name of names) expect(lines.some(line => line.includes(name))).toBe(true);
+      expect(lines.join('\n')).toContain('Project Settings → Repository access');
+      expect(lines.join('\n')).toContain('Project Settings → Release tracking');
+      expect(lines.join('\n')).toContain('Settings → Models and keys');
+      expect(lines.join('\n').includes(secrets.SECRET_WRAP_KEY!)).toBe(false);
+    } finally { await server.stop(); }
   } finally { f.cleanup(); }
 });

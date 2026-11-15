@@ -71,7 +71,7 @@ export function projectRepositories(db: RelationalStore, secrets: SecretStore) {
       if (current === null) return null;
       if (current.secretSlot === null) return { url: current.url, branch: current.branch };
       const token = await secrets.get(current.secretSlot);
-      if (token === null) throw new Error('Repository read credential is missing. Reconfigure project repository access.');
+      if (token === null) throw new RepositoryInputError('Repository read token is missing. Enter it again in Project Settings → Repository access.');
       return { url: current.url, branch: current.branch, credential: { username: current.username!, token } };
     },
   };

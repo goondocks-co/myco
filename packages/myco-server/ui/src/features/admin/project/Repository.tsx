@@ -13,6 +13,7 @@ import { agoWords } from '@goondocks/myco-shared/time-words';
 /** How code tasks reach the repository, in words; never the credential. */
 function accessWords(connection: RepositoryRow): string {
   if (connection.credential === null) return 'Public, with no token';
+  if (!connection.credential.configured) return 'Its token is missing; enter it again';
   return connection.credential.readable ? 'With a read-only token' : 'Its token can no longer be opened; enter it again';
 }
 
@@ -102,7 +103,7 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
   const [username, setUsername] = useState(connection?.username ?? 'x-access-token');
   const [token, setToken] = useState('');
   const [publicAccess, setPublicAccess] = useState(connection?.credential == null);
-  const canKeepCredential = connection?.url === url && connection.username === username && connection.credential?.readable === true;
+  const canKeepCredential = connection?.url === url && connection.username === username && connection.credential?.configured === true && connection.credential.readable;
   return (
     <form
       className="flex flex-col gap-s3"
