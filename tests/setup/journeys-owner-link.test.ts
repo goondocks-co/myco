@@ -186,7 +186,7 @@ describe('new owner journeys (a) and (b)', () => {
     expect(await run(['--create', 'local', '--port', '8788', '--serve', 'terminal', '--yes'], { ...base(), ...server.deps })).toBe(2);
     expect(errors.at(-1)).toBe('myco setup: This Deployment uses port 8787; run myco setup --port 8787.');
     expect(readLocalSecrets(peekLocalPaths(home))).toEqual(keys);
-    expect(server.platform.starts).toEqual([]);
+    expect(server.platform.commands).toEqual([]);
   });
 
   it('pins missing Wrangler guidance and keeps the selected target', async () => {
@@ -205,7 +205,7 @@ describe('new owner journeys (a) and (b)', () => {
     expect(await run(['--create', 'local', '--serve', 'service', '--yes'], { ...base(), ...server.deps })).toBe(2);
     expect(errors.at(-1)).toBe('myco setup: Guided local setup is loopback only. Keep this Myco’s configuration and use myco server status --target local.');
     expect(fs.readFileSync(peekLocalPaths(home).databasePath)).toEqual(data);
-    expect(server.platform.starts).toEqual([]);
+    expect(server.platform.commands).toEqual([]);
   });
 
   for (const refusal of ['pending', 'missing'] as const) it(`pins the ${refusal} native owner link refusal`, async () => {
@@ -292,7 +292,7 @@ describe('new owner journeys (a) and (b)', () => {
     }
     expect(errors).toEqual([]);
     expect(serves).toBe(expire ? 2 : 1);
-    expect(server.platform.starts).toEqual([]);
+    expect(server.platform.commands).toEqual([]);
     expect(lines).toContain('In another terminal, run: myco server run --target local');
     expect(lines.at(-1)).toContain('from a git repository');
   });
