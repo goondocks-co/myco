@@ -203,13 +203,19 @@ export function assertServiceTargetHome(spec: ServiceSpec, options: ServiceOptio
 /** Every native service mutation admits the installed home's ownership first. */
 function serviceMutation<O extends ServiceOptions, T>(operation: (spec: ServiceSpec, options: O) => T) {
   return (spec: ServiceSpec, options: O = {} as O): T => {
+    if (spec.unit.label !== SERVER_UNIT.label) return operation(spec, options);
     const mutate = () => {
       assertServiceTargetHome(spec, options);
+      const file = servicePaths(spec, options.platform).unitFile;
+      if (!existsSync(file)) {
+        const held = statusOfService(spec, { ...options, inspectMissing: true });
+        if (held.loaded || held.running || (held.detail !== undefined && held.detail !== UNIT_NOT_HELD)) {
+          throw new Error(`native service mutation refused: owning home is unknown because ${file} is missing (${held.detail ?? 'the platform still holds the service'}). Restore its original unit, then run MYCO_HOME=<owning-home> myco server uninstall --target local before replacing it.`);
+        }
+      }
       return operation(spec, options);
     };
-    return spec.unit.label === SERVER_UNIT.label
-      ? withFileLockSync(`${servicePaths(spec, options.platform).unitFile}.lock`, mutate)
-      : mutate();
+    return withFileLockSync(`${servicePaths(spec, options.platform).unitFile}.lock`, mutate);
   };
 }
 
@@ -456,13 +462,15 @@ const RELOAD_SCRIPT = [
  * delay later. A unit loaded here carries no such requirement. Only macOS: a
  * systemd unit restarts its replaced program, and stopping it kills its cgroup.
  */
-export const reloadServiceDetached = serviceMutation((spec: ServiceSpec, options: ServiceOptions & { spawnDetached?: DetachedSpawner; replacing?: number }): boolean => {
+export function reloadServiceDetached(spec: ServiceSpec, options: ServiceOptions & { spawnDetached?: DetachedSpawner; replacing?: number } = {}): boolean {
   const platform = options.platform ?? process.platform;
   if (platform !== 'darwin') return false;
   const paths = servicePaths(spec, platform);
   if (!existsSync(paths.unitFile)) return false;
-  return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', RELOAD_SCRIPT, 'myco-reload', spec.unit.label, paths.unitFile, options.replacing === undefined ? '' : String(options.replacing)], paths.errLog);
-});
+  return serviceMutation(() => {
+    return (options.spawnDetached ?? platformDetachedSpawner)('/bin/sh', ['-c', RELOAD_SCRIPT, 'myco-reload', spec.unit.label, paths.unitFile, options.replacing === undefined ? '' : String(options.replacing)], paths.errLog);
+  })(spec, options);
+}
 
 /** The unit's text with its `PATH` value blanked, so two units differing only there compare equal. */
 function withoutPath(unit: string): string {

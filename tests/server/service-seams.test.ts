@@ -45,5 +45,9 @@ it('refuses every manual native service mutation from another home and preserves
     expect(platform.running.has(owner.unit.label)).toBe(true);
     uninstallService(owner, options);
     expect(platform.loaded.has(owner.unit.label)).toBe(false);
+    installService(owner, options);
+    fs.rmSync(servicePaths(owner, 'darwin').unitFile);
+    expect(() => installService(other, options)).toThrow('owning home is unknown');
+    expect(platform.running.has(owner.unit.label)).toBe(true);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

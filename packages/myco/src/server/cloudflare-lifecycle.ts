@@ -413,14 +413,6 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
     const withConfig = staged(record, options);
     const workerOptions = { ...withConfig, report: options.report, workerRetry: options.workerRetry };
     let previousVersionId: string | null = null;
-    summary.servingBefore = { versionId: null };
-    try {
-      const serving = await cloudflareStatus({ ...bareCommand(options), workerName: record.workerName, readRetry: options.readRetry });
-      if (!/\((?!100%\))\d+%\)/.test(serving.raw)) previousVersionId = serving.versionId;
-      summary.servingBefore.versionId = previousVersionId;
-    } catch (error) {
-      summary.servingBefore.error = error instanceof Error ? error.message : String(error);
-    }
     const uploader = new CloudflareWorkerUpdate(workerOptions);
     let uploadedVersion: string | undefined;
     record = await applyCloudflareSchema({ ...withConfig, record,
@@ -436,6 +428,14 @@ export const updateCloudflareDeployment = lifecycleOperation('update', async (op
         else summary.schema = phase === 'applied' ? 'applied' : 'attempted; outcome unknown';
       },
       prepare: async (admitted) => {
+        summary.servingBefore = { versionId: null };
+        try {
+          const serving = await cloudflareStatus({ ...bareCommand(options), workerName: resources.workerName, readRetry: options.readRetry });
+          if (serving.deployed && !/\((?!100%\))\d+%\)/.test(serving.raw)) previousVersionId = serving.versionId;
+          summary.servingBefore.versionId = previousVersionId;
+        } catch (error) {
+          summary.servingBefore.error = error instanceof Error ? error.message : String(error);
+        }
         await ensureVectorIndex({ ...bareCommand(options), vectorIndexName: resources.vectorIndexName });
         await ensureBucket({ ...bareCommand(options), bucketName: resources.recoveryBucketName });
         summary.upload = 'attempted; outcome unknown';

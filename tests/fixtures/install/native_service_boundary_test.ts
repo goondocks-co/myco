@@ -1,7 +1,7 @@
 import { expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
-import { defaultSpec, installService, startService, stopService, uninstallService, servicePaths, type ServiceOptions } from '@myco/server/service.js';
+import { defaultSpec, installService, startService, stopService, uninstallService, servicePaths, renderUnit, type ServiceOptions } from '@myco/server/service.js';
 import { recordingPlatform } from '../../helpers/fake-service-manager.js';
 
 it('native lifecycle uses the supplied platform runner', () => {
@@ -13,7 +13,7 @@ it('native lifecycle uses the supplied platform runner', () => {
   if (operation !== 'install') {
     const unitFile = servicePaths(spec, 'darwin').unitFile;
     fs.mkdirSync(path.dirname(unitFile), { recursive: true });
-    fs.writeFileSync(unitFile, 'fixture unit');
+    fs.writeFileSync(unitFile, renderUnit(spec, servicePaths(spec, 'darwin'), 'darwin'));
   }
   if (operation === 'install') expect(installService(spec, options).running).toBe(true);
   else if (operation === 'start') expect(startService(spec, options).running).toBe(true);
