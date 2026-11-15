@@ -1,10 +1,9 @@
 import { recoverPluginCapture } from './plugin-capture.js';
 import { rootKeyFor } from './auto-join.js';
 /**
- * The one capture path every hook runs (#1561): read the normalized input, resolve the declared credential, build the
- * envelope(s), append them to the session spool, render the hook's answer from what this machine holds, kick the
- * project's member helper, and write the response. Nothing on the way waits on the network: the helper delivers the
- * spool, renews the credential and fetches the context the next hooks render, in its own process.
+ * Each hook resolves its credential, appends capture to the spool and kicks the Project's helper before
+ * rendering its response. Prompt recall waits only after capture is durable and delivery has been kicked.
+ * The helper delivers the spool, renews credentials and fetches cached session blocks in its own process.
  *
  * A hook that ends a turn or a session and cannot leave the delivery to a helper (`--ship inline`, a sandbox whose
  * process ends with the hook; or a helper that could not be started apart from it, `shipsInline`) runs the helper's
@@ -73,6 +72,7 @@ export interface HookRun {
   mycoHome: string;
   /** The extra plan folders the Deployment holds for this machine, read from this run's own home; each reader asks here rather than naming a home. */
   machinePlanDirs: () => string[];
+  fetch?: FetchLike;
   /**
    * Set for a run in a repository that is joining a project and has none yet (`auto-join-hook.ts`): its capture goes
    * to the repository's pending spool, nothing is dialled, and nothing keyed to a project is derived.
@@ -114,6 +114,8 @@ export interface HookOutcome {
    * delivery to a helper runs the pass itself.
    */
   ends?: 'turn-end' | 'session-end';
+  /** Optional response work after durable capture, outside the session lock. */
+  respond?: (run: HookRun) => Promise<HookClaim>;
   /**
    * A turn's end the Deployment is to learn of from the transcript lane: a turn-end mark (`.<session>.turns`) naming
    * where the session's transcript stood. Appended after the records.
@@ -278,7 +280,7 @@ export async function runMemberHook(
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const serverUrl = credential.serverUrl;
     const run: HookRun = {
-      hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, now, argv, env, mycoHome,
+      hookName, input, sessionId, agent: input.agent, credential, spool, ctx, budget, now, argv, env, mycoHome, fetch: opts.fetch,
       machinePlanDirs: () => machinePlanDirs(serverUrl, mycoHome),
       ...(pending !== null ? { pending: true } : {}),
     };
@@ -292,7 +294,7 @@ export async function runMemberHook(
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     let claimed: HookClaim | undefined;
     const ask = (): ContextAskRequest | undefined => claimed?.ask ?? outcome.ask;
-    const record = outcome.events.length > 0 || outcome.record || outcome.ask || outcome.claim ? (state: SessionState) => {
+    const record = outcome.events.length > 0 || outcome.record || outcome.ask || outcome.claim || outcome.respond ? (state: SessionState) => {
       state.agent ??= input.agent;
       state.hookAt = now();
       // A session id that hooks again after its end has resumed: its transcript waits on turn ends once more.
@@ -354,7 +356,8 @@ export async function runMemberHook(
         run.credential = credential;
       }
     }
-    if ((pending === null || (capturedInProject && credential.projectId !== '')) && (appendedEvents.length > 0 || ask() !== undefined || outcome.ends !== undefined)) {
+    const deliver = async (events: OutboundEvent[]): Promise<void> => {
+      if (!(pending === null || (capturedInProject && credential.projectId !== ''))) return;
       const reason: KickReason = outcome.ends ?? 'capture';
       const target = { projectId: credential.projectId, serverUrl: credential.serverUrl, mycoHome, reason };
       // Only a hook declared to read the registry may leave its work to a detached helper. One declared `env` runs in a
@@ -363,7 +366,7 @@ export async function runMemberHook(
       // registry: what the command declares says where the hook runs, what it resolves only says what it holds.
       const detachable = source === 'registry';
       const appended: HookAppended = {
-        eventIds: appendedEvents.map((event) => event.envelope.eventId),
+        eventIds: events.map((event) => event.envelope.eventId),
         ...(turnEnd !== undefined ? { turnEnd: turnEndIdentity(turnEnd) } : {}),
         ...(outcome.transcriptAt !== undefined ? { transcriptTo: outcome.transcriptAt } : {}),
       };
@@ -373,6 +376,20 @@ export async function runMemberHook(
       } else {
         const kicked: KickOutcome = kickHelper({ ...target, spawn: opts.helperSpawn, now });
         if (outcome.ends !== undefined && shipsInline(kicked)) await shipInline(run, opts, appended);
+      }
+    };
+    if (appendedEvents.length > 0 || ask() !== undefined || outcome.ends !== undefined || outcome.respond !== undefined) await deliver(appendedEvents);
+
+    if (pending === null && outcome.respond !== undefined) {
+      try {
+        const rendered = await outcome.respond(run);
+        if (rendered.events.length > 0) {
+          append(rendered.events);
+          await deliver(rendered.events);
+        }
+        response = rendered.response ?? response;
+      } catch (error) {
+        process.stderr.write(`[myco] ${hookName} response skipped: ${(error as Error).message}\n`);
       }
     }
 

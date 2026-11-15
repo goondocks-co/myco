@@ -1,7 +1,7 @@
 /**
  * Delivery when no helper can outlive the hook, and journals across builds (#1561 PR 3b).
  *
- * - G4g, sandbox: a credential from the environment never starts a helper. Its prompt hook makes no request; its
+ * - G4g, sandbox: a credential from the environment never starts a helper. Its prompt hook asks for recall; its
  *   turn's end (`--ship inline`) delivers everything in the hook.
  * - The same for any hook told to ship inline, and for a helper started inside the caller's Job Object (`contained`):
  *   the turn's end delivers in-process, and nothing waits on a helper that ends with the hook.
@@ -60,7 +60,7 @@ const noStart: DetachedSpawn = () => { throw new Error('no helper may be started
 const spool = () => new MemberSpool({ projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid' }, { mycoHome });
 
 describe('a sandbox (G4g)', () => {
-  it('captures from the environment\'s credential without a request, and delivers everything at the turn\'s end, in the hook', async () => {
+  it('captures from the environment\'s credential alongside prompt recall, and delivers everything at the turn\'s end, in the hook', async () => {
     process.env[ENV_SERVER_URL] = 'https://sandbox.test';
     process.env[ENV_MEMBER_TOKEN] = rig.token;
     process.env[ENV_PROJECT] = 'proj_1';
@@ -68,17 +68,13 @@ describe('a sandbox (G4g)', () => {
     const tx = transcript('sess-sandbox');
     const start = await runHook('session-start', { session_id: 'sess-sandbox', transcript_path: tx, cwd: process.cwd() }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', helperSpawn: noStart });
     const prompt = await runHook('user-prompt-submit', { session_id: 'sess-sandbox', prompt: 'in the sandbox', transcript_path: tx }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', helperSpawn: noStart });
-    expect(spy.requests).toEqual([]);
+    expect(spy.requests.map(request => request.path)).toEqual(['/context/prompt']);
     // No start was tried: a tried start is logged as one the caller ships inline.
     for (const hook of [start, prompt]) expect(hook.stderr).not.toContain('could not start a helper');
     expect(fs.existsSync(path.join(mycoHome, 'logs', 'helper.log'))).toBe(false);
     expect(spool().depth('sess-sandbox')).toBeGreaterThan(0);
 
     await runHook('stop', { session_id: 'sess-sandbox', last_assistant_message: 'done', transcript_path: tx }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', argv: ['--ship', 'inline'], helperSpawn: noStart });
-    // The capture first, then the context the prompt asked for: the sandbox may end with this hook.
-    const paths = spy.requests.map((r) => r.path);
-    expect(paths.indexOf('/events')).toBeGreaterThanOrEqual(0);
-    expect(paths.indexOf('/context/prompt')).toBeGreaterThan(paths.indexOf('/events'));
     expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
     expect(rig.rows("events WHERE kind='response'")).toBe(1);
     expect(spool().depth('sess-sandbox')).toBe(0);
@@ -96,9 +92,7 @@ describe('a sandbox holding only a join code (G4g)', () => {
     const opts = { fetch: spy.fetch, credential: 'env' as const, symbiont: 'copilot', helperSpawn: noStart };
     const start = await runHook('session-start', { session_id: 'sess-code', transcript_path: tx, cwd: process.cwd() }, opts);
     const prompt = await runHook('user-prompt-submit', { session_id: 'sess-code', prompt: 'in the sandbox', transcript_path: tx }, opts);
-    // The first hook's exchange, and the Project's blocks previewed for the cache with it; nothing after it until the
-    // turn's end.
-    expect(spy.requests.map((r) => r.path)).toEqual(['/members/join', '/context/session', '/context/session']);
+    expect(spy.requests.map((r) => r.path)).toEqual(['/members/join', '/context/session', '/context/session', '/context/prompt']);
     for (const hook of [start, prompt]) expect(hook.stderr).not.toContain('could not start a helper');
     expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
 

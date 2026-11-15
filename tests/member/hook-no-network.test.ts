@@ -1,17 +1,4 @@
-/**
- * Gate G1, deterministic (#1561): no hook waits on the network.
- *
- * Every hook every harness is wired to run (`HOOK_CONFIG`'s events, and the hooks a plugin template runs) runs once,
- * as a hook process, under each credential source a hook command declares. Asserts, for each (harness, hook, source):
- * - with the registry's credential, against a Deployment that never answers: it makes no request at all, and kicks
- *   the member helper whenever it left the helper work (records appended, context asked for, or a turn's or a
- *   session's end);
- * - with the environment's (a sandbox, whose processes end with it): it starts no helper, and makes no request but at
- *   a turn's or a session's end, which delivers in the hook (here against a Deployment that refuses the connection);
- * - either way it answers well inside its declared timeout. How fast each hook answers on the compiled binary is
- *   measured against a budget of its own (`scripts/measure-hook-work.ts`, in CI's hook startup job).
- * A kick is recorded rather than started (`MYCO_TEST_KICK_LOG`), so nothing outlives the test.
- */
+/** Every harness answers inside its hook deadline; only prompt recall and inline turn ends may dial. */
 import { afterEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -50,7 +37,7 @@ function pairs(): Array<{ symbiont: string; hook: string; event?: string; timeou
 const scratch: string[] = [];
 afterEach(() => { for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
-describe('no hook waits on the network (G1)', () => {
+describe('only prompt recall waits on the network, within its cap (G1)', () => {
   const all = pairs();
 
   it('covers every harness and every hook it runs', () => {
@@ -59,7 +46,7 @@ describe('no hook waits on the network (G1)', () => {
   });
 
   for (const { symbiont, hook, event, timeoutMs } of all) for (const source of ['registry', 'env'] as const) {
-    it(`${symbiont} ${hook}${event ? ` (${event})` : ''}, ${source} credential: no request, an answer at once, and a kick only where a helper outlives the hook`, async () => {
+    it(`${symbiont} ${hook}${event ? ` (${event})` : ''}, ${source} credential: bounded recall and a kick only where a helper outlives the hook`, async () => {
       const rig = await memberRig();
       const mycoHome = tempMycoHome();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-g1-'));
@@ -90,7 +77,8 @@ describe('no hook waits on the network (G1)', () => {
       expect({ status: result.status, signal: result.signal }).toEqual({ status: 0, signal: null });
       expect(elapsed).toBeLessThan(Math.min(timeoutMs, ANSWER_MS));
       const requests = fs.existsSync(fetchLog) ? fs.readFileSync(fetchLog, 'utf-8').trim().split('\n') : [];
-      if (source === 'registry' || !ENDS.includes(hook)) expect(requests).toEqual([]);
+      if (hook === 'user-prompt-submit') expect(requests).toHaveLength(1);
+      else if (source === 'registry' || !ENDS.includes(hook)) expect(requests).toEqual([]);
 
       const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
       const state = readSessionState(spool.dir, sessionId);

@@ -3,9 +3,8 @@
  * render from (`member/context-cache.ts`).
  *
  * A session start, a compaction or a delegated agent asks for its block: the answer is cached as the Project's block
- * of that kind, which the next such hook renders. A prompt asks with its own text: the answer is cached for the
- * session's next prompt. Each ask names the session that asked, so the Deployment records what it served to which
- * session, binds the repository's remote at a session start, and stamps the turn's start from the prompt's id.
+ * of that kind, which the next such hook renders. Each ask names the session that asked, so the Deployment records
+ * what it served to which session and binds the repository's remote at a session start.
  *
  * A join warms the cache before any session asks (`warmProjectContext`): the Deployment previews the Project's blocks
  * for no session, so the first session after the join is served its whole block.
@@ -17,10 +16,8 @@
 import { cacheMachineSettings, machineSettingsHeaders, beginMachineSettingsRequest } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
-import { isDeliveredSessionRecord } from '@goondocks/myco-shared/prompt-identity';
-import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, updateProjectContext, writeSessionContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
+import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, updateProjectContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
 import { terminalText } from '@myco/utils/terminal-text.js';
-import { promptContextLogPrefix } from './context-diagnostics.js';
 import { refusalPermanent } from './constants.js';
 import { gitRemote } from './git-facts.js';
 import { readSessionState, updateSessionState } from './session-state.js';
@@ -32,7 +29,6 @@ import { deadlineBudget } from './budget.js';
 export const CONTEXT_CAP_MS = 8_000;
 
 const SESSION_PATH = '/context/session';
-const PROMPT_PATH = '/context/prompt';
 
 /** A served block is replaced or withdrawn by these: the Project serves nothing of that kind now. */
 const WITHDRAWN = ['capability', 'instructions:off', 'instructions:empty'];
@@ -54,7 +50,7 @@ function remoteOf(ask: { remote?: string; remoteFrom?: string }): { remote: stri
   return remote ? { remote } : {};
 }
 
-function requestFor(sessionId: string, ask: ContextAsk): { path: string; body: Record<string, unknown> } {
+function requestFor(sessionId: string, ask: Exclude<ContextAsk, { kind: 'prompt' }>): { path: string; body: Record<string, unknown> } {
   switch (ask.kind) {
     case 'start':
       return { path: SESSION_PATH, body: { sessionId, kind: 'start', ...remoteOf(ask) } };
@@ -62,16 +58,8 @@ function requestFor(sessionId: string, ask: ContextAsk): { path: string; body: R
       return { path: SESSION_PATH, body: { sessionId, kind: 'compact', compaction: ask.compaction, ...remoteOf(ask) } };
     case 'subagent':
       return { path: SESSION_PATH, body: { sessionId, kind: 'subagent', agentId: ask.agentId, agentType: ask.agentType } };
-    case 'prompt':
-      return { path: PROMPT_PATH, body: { sessionId, promptId: ask.promptId, promptScheme: ask.promptScheme, scopeReason: ask.scopeReason, identity: ask.identity, at: ask.at, text: ask.text, ...(ask.agent === undefined ? {} : { agent: ask.agent }) } };
   }
 }
-
-/** How a log line names the prompt an ask is for: its id, or why it names none. */
-const promptNamed = (ask: Extract<ContextAsk, { kind: 'prompt' }>): string => terminalText(ask.promptId ?? `(${ask.scopeReason ?? 'unnamed'})`);
-
-/** A row id the Deployment answered with, when it answered one. */
-const rowId = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
 
 /** Every session holding an ask, the kicking sessions' oldest asks first. */
 function sessionsWithAsks(spool: MemberSpool): Array<{ sessionId: string; asks: ContextAsk[] }> {
@@ -100,9 +88,10 @@ export async function prefetchContext(opts: {
   const report: PrefetchReport = { asked: 0, answered: 0 };
   for (const { sessionId, asks } of sessionsWithAsks(spool)) {
     for (const ask of asks) {
+      if (ask.kind === 'prompt') { settleAsk(spool, sessionId, ask, now()); continue; }
       if (!canStartRequest(opts.budget, now())) { report.stoppedBy = 'budget'; return report; }
       const request = requestFor(sessionId, ask);
-      const machineOrder = ask.kind === 'prompt' ? undefined : beginMachineSettingsRequest(opts.serverUrl, opts.mycoHome);
+      const machineOrder = beginMachineSettingsRequest(opts.serverUrl, opts.mycoHome);
       report.asked += 1;
       const answer = classifyEventAnswer(await client.request('POST', request.path, {
         body: JSON.stringify(request.body),
@@ -110,15 +99,15 @@ export async function prefetchContext(opts: {
         budget: subRequestBudget(opts.budget, CONTEXT_CAP_MS, now()),
       }));
       if (answer.class === 'refused' && refusalPermanent(answer.code)) {
-        const who = ask.kind === 'prompt' ? `prompt ${promptNamed(ask)}` : `(${ask.kind})`;
-        process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} ${who} refused: ${terminalText(answer.code)}\n`);
+        const who = `(${ask.kind})`;
+        process.stderr.write(`[myco] helper: session ${terminalText(sessionId)} ${who} refused: ${terminalText(answer.code)}\n`);
         settleAsk(spool, sessionId, ask, now());
         continue;
       }
       if (answer.class !== 'acked') {
         // Not answered now: the ask stays, and so do the rest, for the next pass.
-        const prefix = ask.kind === 'prompt' ? promptContextLogPrefix(opts.serverUrl, spool.projectId) : '[myco] helper: ';
-        const who = ask.kind === 'prompt' ? `prompt ${promptNamed(ask)}` : `(${ask.kind})`;
+        const prefix = '[myco] helper: ';
+        const who = `(${ask.kind})`;
         process.stderr.write(`${prefix}context for ${terminalText(sessionId)} ${who} not served (${terminalText(answer.class)})\n`);
         report.stoppedBy = 'unanswered';
         return report;
@@ -127,27 +116,16 @@ export async function prefetchContext(opts: {
       const body = answer.body;
       const context = typeof body.context === 'string' ? body.context : '';
       const skipped = Array.isArray(body.skipped) ? body.skipped.filter((s): s is string => typeof s === 'string') : [];
-      if (ask.kind === 'prompt') {
-        const receiptId = rowId(body.receiptId);
-        const answerId = rowId(body.answerId);
-        writeSessionContext(spool.dir, opts.mycoHome, sessionId, { version: 1, prompt: {
-          context, ...(ask.promptId === undefined ? {} : { promptId: ask.promptId }), askId: ask.id,
-          ...(receiptId === undefined ? {} : { receiptId }), ...(answerId === undefined ? {} : { answerId }),
-          ...(isDeliveredSessionRecord(body.sessionRecord) ? { sessionRecord: body.sessionRecord } : {}), skipped, at: now(),
-        } });
-        const reasons = skipped.map((reason) => terminalText(reason)).join(', ');
-        process.stderr.write(`${promptContextLogPrefix(opts.serverUrl, spool.projectId)}session ${terminalText(sessionId)} prompt ${promptNamed(ask)} answered ${context.length > 0 ? 'with context' : 'empty'}; skipped: ${reasons || 'none'}\n`);
-      } else {
-        const kind: SessionBlockKind = ask.kind;
-        updateProjectContext(spool.dir, opts.mycoHome, (cache) => {
-          if (context.length > 0) cache.blocks[kind] = { context, at: now() };
-          // A Project that serves this block no more stops serving it here too; a session served before ('repeat')
-          // says nothing of the Project.
-          else if (skipped.some((s) => WITHDRAWN.includes(s))) delete cache.blocks[kind];
-        });
-        // The machine's own settings ride a session's answer.
-        try { cacheMachineSettings(opts.serverUrl, body.machine, opts.mycoHome, machineOrder); } catch { /* the last cache stands */ }
-      }
+
+      const kind: SessionBlockKind = ask.kind;
+      updateProjectContext(spool.dir, opts.mycoHome, (cache) => {
+        if (context.length > 0) cache.blocks[kind] = { context, at: now() };
+        // A Project that serves this block no more stops serving it here too; a session served before ('repeat')
+        // says nothing of the Project.
+        else if (skipped.some((s) => WITHDRAWN.includes(s))) delete cache.blocks[kind];
+      });
+      // The machine's own settings ride a session's answer.
+      try { cacheMachineSettings(opts.serverUrl, body.machine, opts.mycoHome, machineOrder); } catch { /* the last cache stands */ }
       settleAsk(spool, sessionId, ask, now());
     }
   }
@@ -167,7 +145,7 @@ export function watchingFeatures(fetchImpl: FetchLike, opts: { serverUrl: string
     try { receivedAt = beginFeatureRequest(opts.serverUrl, opts.mycoHome); }
     catch (error) { featureCacheDiagnostic(opts.serverUrl, opts.mycoHome, 'write', error); }
     const res = await fetchImpl(input, init);
-    if (receivedAt !== undefined && res.headers.get(PROTOCOL_HEADER) !== null) {
+    if (receivedAt !== undefined && init?.signal?.aborted !== true && res.headers.get(PROTOCOL_HEADER) !== null) {
       const features = cachedDeploymentFeatures(res.headers.get(FEATURES_HEADER));
       try {
         if (cacheDeploymentFeatures(opts.serverUrl, features, opts.mycoHome, receivedAt, { spoolDir: opts.spoolDir, at: opts.now() })) {

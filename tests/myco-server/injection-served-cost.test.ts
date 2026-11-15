@@ -24,9 +24,9 @@ it('a prompt\'s served check and its receipt cost the same at 300 and 3,000 rece
     },
     // Each unit is one receipt of the session that served five spores and a plan; inserting it records what it served.
     grow: async (db, from, to) => {
-      await eachUnit(db, from, to, `INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at)
+      await eachUnit(db, from, to, `INSERT INTO spore_injections(project_id,session_id,id,prompt_id,prompt_hash,spore_ids,plan_ids,created_at,delivered_at,delivered_prompt_id)
         SELECT ?3,?4,printf('00000000-0000-4000-8000-%012d',i),'prompt-'||i,'hash-'||i,
-          json_array('spore-'||(i*5),'spore-'||(i*5+1),'spore-'||(i*5+2),'spore-'||(i*5+3),'spore-'||(i*5+4)),json_array('plan-'||i),i FROM n`, PROJECT, RECEIVER);
+          json_array('spore-'||(i*5),'spore-'||(i*5+1),'spore-'||(i*5+2),'spore-'||(i*5+3),'spore-'||(i*5+4)),json_array('plan-'||i),i,i,'prompt-'||i FROM n`, PROJECT, RECEIVER);
     },
     cases: [
       { name: 'served check', run: async (db) => {
@@ -38,7 +38,7 @@ it('a prompt\'s served check and its receipt cost the same at 300 and 3,000 rece
         expect(await commitServedReceipt(db, { project: PROJECT, session: RECEIVER, id, promptId: `new-${scale}`, scopeReason: null, protocol: 'legacy',
           askedAt: null, promptHash: `new-hash-${scale}`, spores: [`fresh-${scale}`], now: 10,
           plans: [{ planKey: `plan-fresh-${scale}`, title: 'Fresh', sessionId: 'other', contentHash: 'h' }] }, contextAdmission(PROJECT, RECEIVER, 'machine'))).toBe(true);
-        const served = await servedAmong(db, { project: PROJECT, session: RECEIVER, candidates: [['spore', `fresh-${scale}`], ['plan', `plan-fresh-${scale}`]] });
+        const served = await servedAmong(db, { project: PROJECT, session: RECEIVER, now: 10, candidates: [['spore', `fresh-${scale}`], ['plan', `plan-fresh-${scale}`]] });
         expect([[...served.spores], [...served.plans]]).toEqual([[`fresh-${scale}`], [`plan-fresh-${scale}`]]);
       } },
     ],

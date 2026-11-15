@@ -3,15 +3,16 @@ import { isHarnessSystemNotification, type CaptureRuleBundle } from '@goondocks/
 import { readTranscriptMeta } from './transcript-meta.js';
 import { runMemberHook, type HookMainOptions, type HookOutcome, type HookRun, type OptionalHookCapture } from '../member/capture.js';
 import { contextDeliveredEvent, deriveId, mintId, promptEvent, turnEvent, type OutboundEvent } from '../member/envelope.js';
-import { featureAdvertised, PROMPT_ASK_MAX_CHARS, readSessionContext, type ContextAskRequest } from '../member/context-cache.js';
+import { featureAdvertised, PROMPT_ASK_MAX_CHARS, type ContextAskRequest } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
+import { promptContext } from '../member/prompt-context.js';
 import { sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
 import { transcriptWritesTurnRows } from './turn-rows.js';
 import {
   ASK_IDENTITY_MARKER, canonicalPromptId, hookPromptRequest, hookScheme, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, turnGrained,
-  type DeliveredSessionRecord, type PromptIdentityDeclaration, type PromptIdScheme, type PromptScopeReason,
+  type PromptIdentityDeclaration, type PromptIdScheme, type PromptScopeReason,
 } from '@goondocks/myco-shared/prompt-identity';
 
 /** Notification envelopes each harness declares, from the hook config the manifests generate. */
@@ -90,30 +91,12 @@ function advertised(run: Pick<HookRun, 'credential' | 'mycoHome'>, feature: type
 }
 
 /** The ask this prompt's text is sent with: a `v1` ask carries the marker, and its prompt's id (and its scheme) or why it names none. */
-function promptAsk(naming: PromptNaming, text: string, at: number, agent: string): ContextAskRequest {
+function promptAsk(naming: PromptNaming, text: string, at: number, agent: string): Extract<ContextAskRequest, { kind: 'prompt' }> {
   const base = { kind: 'prompt' as const, text: text.slice(0, PROMPT_ASK_MAX_CHARS), at, agent };
   if (naming.version === 'legacy') return { ...base, promptId: naming.promptId };
   return naming.shared
     ? { ...base, identity: ASK_IDENTITY_MARKER, promptId: naming.promptId, ...(naming.scheme === undefined ? {} : { promptScheme: naming.scheme }) }
     : { ...base, identity: ASK_IDENTITY_MARKER, scopeReason: naming.scopeReason };
-}
-
-/**
- * The `Session::` line, with what the Deployment served the session's previous prompt after a blank line: the helper
- * asks with each prompt's text, and the next prompt renders the answer. Each answer is rendered once, keyed on the
- * id of the ask it answered: while no newer one arrives (the Deployment unreachable, say), the prompts after it are
- * served the line alone. `rendered` names the ask whose answer this prompt rendered, and the receipt and answer rows
- * and the session record that answer named, recorded with its records.
- */
-function withServed(spoolDir: string, sessionId: string, state: SessionState, response: HookResponse): { response: HookResponse; rendered?: { ask: string; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord } } {
-  const served = readSessionContext(spoolDir, sessionId).prompt;
-  if (served === undefined || served.context.length === 0) return { response };
-  const ask = served.askId;
-  if (state.renderedAsk === ask) return { response };
-  return {
-    response: { ...response, additionalContext: `${response.additionalContext}\n\n${served.context}` },
-    rendered: { ask, receiptId: served.receiptId, answerId: served.answerId, sessionRecord: served.sessionRecord },
-  };
 }
 
 export async function main(opts: HookMainOptions = {}) {
@@ -150,9 +133,10 @@ export async function main(opts: HookMainOptions = {}) {
     const human = decision.origin === undefined || decision.origin === 'human';
     // The prompt id the turn-start event names: this submission's own, once it is named.
     let turnPromptId: string | undefined;
+    let asking: { naming: PromptNaming; request: Extract<ContextAskRequest, { kind: 'prompt' }>; response: HookResponse } | undefined;
 
     /** Everything this submission captures once it is named, read from and recorded into the session's state. */
-    const capture = (naming: PromptNaming, state: SessionState): Required<Pick<HookOutcome, 'events' | 'record' | 'response' | 'ask'>> => {
+    const capture = (naming: PromptNaming): Required<Pick<HookOutcome, 'events' | 'record' | 'response'>> => {
       const promptId = naming.promptId;
       turnPromptId = promptId;
       // A symbiont whose transcript carries this turn writes no row here and
@@ -165,20 +149,9 @@ export async function main(opts: HookMainOptions = {}) {
       const events: OutboundEvent[] = transcriptWritesRows || promptId === undefined
         ? []
         : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
-      // A notification is not where a cached answer is delivered, and it leaves that answer for the next prompt.
       const outgoing = { ...response, ...(promptId === undefined ? {} : { promptId }) };
-      const served: ReturnType<typeof withServed> = isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)
-        ? { response: outgoing }
-        : withServed(spool.dir, sessionId, state, outgoing);
-      // The rows the rendered answer named, reported where they reached the agent, in the append that records the render.
-      const delivered = served.rendered;
-      if (naming.version === 'v1' && delivered !== undefined
-        && (delivered.receiptId !== undefined || delivered.answerId !== undefined || delivered.sessionRecord !== undefined)) {
-        events.push(contextDeliveredEvent(ctx, {
-          receiptId: delivered.receiptId, answerId: delivered.answerId, sessionRecord: delivered.sessionRecord,
-          ...(naming.shared ? { renderedIn: naming.promptId, ...(naming.scheme === undefined ? {} : { renderedScheme: naming.scheme }) }
-            : { renderedScopeReason: naming.scopeReason }),
-        }));
+      if (!isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)) {
+        asking = { naming, request: promptAsk(naming, text, run.now(), agent), response: outgoing };
       }
       return {
         events,
@@ -191,12 +164,24 @@ export async function main(opts: HookMainOptions = {}) {
             next.promptId = promptId;
             next.prompts[hash] = promptId;
           }
-          if (delivered !== undefined) next.renderedAsk = delivered.ask;
         },
-        response: served.response,
-        // The helper asks the Deployment with this prompt's text; its answer is the next prompt's context.
-        ask: promptAsk(naming, text, run.now(), agent),
+        response: outgoing,
       };
+    };
+    const respond: NonNullable<HookOutcome['respond']> = async () => {
+      if (asking === undefined) return { events: [] };
+      const { naming, request, response: outgoing } = asking;
+      const answer = await promptContext(run, request);
+      if (answer === undefined || answer.context.length === 0) return { events: [] };
+      const events: OutboundEvent[] = [];
+      if (naming.version === 'v1' && (answer.receiptId !== undefined || answer.answerId !== undefined || answer.sessionRecord !== undefined)) {
+        events.push(contextDeliveredEvent(ctx, {
+          receiptId: answer.receiptId, answerId: answer.answerId, sessionRecord: answer.sessionRecord,
+          ...(naming.shared ? { renderedIn: naming.promptId, ...(naming.scheme === undefined ? {} : { renderedScheme: naming.scheme }) }
+            : { renderedScopeReason: naming.scopeReason }),
+        }));
+      }
+      return { events, response: { ...outgoing, additionalContext: `${outgoing.additionalContext}\n\n${answer.context}` } };
     };
     const optional = (): OptionalHookCapture => ({
       events: featureAdvertised(run.credential, run.mycoHome, 'turn')
@@ -210,14 +195,14 @@ export async function main(opts: HookMainOptions = {}) {
       return {
         events: [],
         claim: (state) => {
-          const captured = capture(claimTurn(state, named, human), state);
+          const captured = capture(claimTurn(state, named, human));
           captured.record(state);
-          return { events: captured.events, ask: captured.ask, response: captured.response };
+          return { events: captured.events, response: captured.response };
         },
         response: { ...response },
-        optional,
+        optional, respond,
       };
     }
-    return { ...capture(named, readSessionState(spool.dir, sessionId)), optional };
+    return { ...capture(named), optional, respond };
   });
 }

@@ -1,6 +1,6 @@
 import { drainEntryBacklog, holdsTranscriptTail } from '@myco/member/backlog.js';
 import { warmProjectContext } from '@myco/member/prefetch.js';
-import { readProjectContext, readSessionContext, sessionContextPath, withAsk, writeSessionContext } from '@myco/member/context-cache.js';
+import { readProjectContext, withAsk } from '@myco/member/context-cache.js';
 import { listRoutingEntries } from '@myco/member/routing.js';
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
@@ -455,7 +455,6 @@ describe('legacy member spool migration', () => {
         expect(performance.now() - started).toBeLessThan(1000);
         expect(result.stderr).not.toContain('inline hook must not scan');
         expect(result.stderr).not.toContain('error:');
-        expect(result.stderr).not.toContain('refused');
       }
       expect(journalReads).toEqual([]);
     } finally { guard.mockRestore(); }
@@ -801,19 +800,5 @@ describe('legacy session state reconciliation', () => {
     expect(readSessionState(target.dir, sessionId).contextAsks).toBeUndefined();
   });
 
-  it('never carries a legacy answer or its render marker, before or after the destination cache is repaired', () => {
-    const { source, target } = rig();
-    updateSessionState(source.dir, sessionId, (state) => { state.renderedAsk = 'legacy-ask'; });
-    updateSessionState(target.dir, sessionId, (state) => { state.renderedAsk = 'destination-ask'; });
-    writeSessionContext(source.dir, mycoHome, sessionId, { version: 1, prompt: { context: 'already rendered legacy answer', at: 11, askId: 'legacy-ask' } });
-    const destination = sessionContextPath(target.dir, sessionId);
-    fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(destination, '{bad-json', { mode: 0o600 });
-    expect(migrateLegacySpool(routeA, mycoHome, 1_000)).toMatchObject({ status: 'migrated', sidecarHolds: [], contextSkipped: 2 });
-    expect(fs.readFileSync(destination, 'utf8')).toBe('{bad-json');
-    fs.unlinkSync(destination);
-    expect(migrateLegacySpool(routeA, mycoHome, 1_001)).toMatchObject({ status: 'migrated', contextSkipped: 0 });
-    expect(readSessionContext(target.dir, sessionId).prompt).toBeUndefined();
-    expect(readSessionState(target.dir, sessionId).renderedAsk).toBe('destination-ask');
-  });
+
 });

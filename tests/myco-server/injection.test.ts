@@ -1,3 +1,4 @@
+import { CONTEXT_RESERVATION_MS } from '@myco-server-worker/db/context/served-items.js';
 /**
  * Prompt injection: the gates in order, the pool, the two rules the record's
  * primary key holds, and the reads over it.
@@ -165,6 +166,25 @@ describe('the pool', () => {
 });
 
 describe('what a session was served', () => {
+  it('reoffers an undelivered selection after its reservation, and excludes it permanently once delivered', async () => {
+    const { db, sqlite } = store();
+    await insertSpore(db, SCOPE, spore('retryable'));
+    const first = await select(db);
+    expect(first.items.map(item => item.id)).toEqual(['retryable']);
+    const retry = await select(db, { promptId: 'later', now: NOW + CONTEXT_RESERVATION_MS + 1 });
+    expect(retry.items.map(item => item.id)).toEqual(['retryable']);
+    sqlite.query(`UPDATE spore_injections SET delivered_at=?,delivered_prompt_id=prompt_id WHERE id=?`).run(NOW + CONTEXT_RESERVATION_MS + 2, retry.receiptId!);
+    const afterDelivery = await select(db, { promptId: 'delivered', promptHash: 'delivered', now: NOW + 2 * CONTEXT_RESERVATION_MS });
+    expect(afterDelivery.items).toEqual([]);
+  });
+
+  it('admits overlapping parallel selections only once', async () => {
+    const { db } = store();
+    await insertSpore(db, SCOPE, spore('contended'));
+    const selected = await Promise.all(['one', 'two'].map(promptId => select(db, { promptId, promptHash: promptId })));
+    expect(selected.flatMap(result => result.items.map(item => item.id))).toEqual(['contended']);
+  });
+
   it('holds receipts written before the membership out of the pool while it is built, and after', async () => {
     const { db, sqlite } = store();
     for (const [id, at] of [['a', NOW - 1], ['b', NOW - 2], ['c', NOW - 3]] as const) await insertSpore(db, SCOPE, spore(id, { createdAt: at }));

@@ -1,9 +1,7 @@
+import { PROMPT_CONTEXT_CAP_MS } from '@myco/member/prompt-context.js';
 import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
- * Context a hook serves from this machine alone (#1561 PR 3b): the member helper fetches what the hooks ask for, and
- * the next hook renders it.
- * - A prompt renders what the Deployment served the session's previous prompt; the helper asks with each prompt's own
- *   id and text.
+ * Prompt recall belongs to its submission; session blocks remain cached for later session hooks.
  * - A session start renders the Project's start block once per session; a block the Project withdraws stops being
  *   served.
  * - A delegated agent renders the subagent block once per delegation.
@@ -19,7 +17,7 @@ import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-
 import { cacheDeploymentFeatures, readDeploymentFeatures, readProjectContext, updateProjectContext } from '@myco/member/context-cache.js';
 import { projectLine } from '@goondocks/myco-shared/recall';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.ts';
-import { featureCacheDiagnostic, projectContextPath, readSessionContext } from '@myco/member/context-cache.js';
+import { featureCacheDiagnostic, projectContextPath } from '@myco/member/context-cache.js';
 import { deploymentFeaturesPath } from '@myco/member/registry.js';
 import { prefetchContext, watchingFeatures } from '@myco/member/prefetch.js';
 import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
@@ -98,106 +96,57 @@ function servingPrompts(serve: (body: { promptId: string; text: string }) => str
 }
 
 describe('a prompt', () => {
-  it('persists a transient non-answer in the scoped helper log and keeps the prompt ask pending', async () => {
-    const serverUrl = 'https://member-test.invalid';
-    const fetch: FetchLike = async (input, init) => new URL(new Request(input, init).url).pathname === '/context/prompt'
-      ? Response.json({}, { status: 503, headers: { [PROTOCOL_HEADER]: '1' } }) : rig.fetch(input, init);
-    await runHook('user-prompt-submit', { session_id: 'sess-transient', prompt: 'look up controller evidence', transcript_path: transcript('sess-transient') }, { fetch, symbiont: 'copilot' });
-    const restore = routeStderrToHelperLog(mycoHome, 'proj_1', serverUrl);
-    try {
-      await prefetchContext({ spool: spool(), client: new ServerClient({ serverUrl, token: rig.token, projectId: 'proj_1' }, fetch), serverUrl, mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
-    } finally { restore(); }
-    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
-    expect(log).toContain(`${serverUrl} proj_1 ${promptContextLogPrefix(serverUrl, 'proj_1')}context for sess-transient prompt `);
-    expect(log).toContain('not served (retry)');
-    expect(readSessionState(spool().dir, 'sess-transient').contextAsks).toHaveLength(1);
-  });
-
-  it('keeps skip reasons from empty prompt answers and writes safe helper diagnostics', async () => {
-    const skipped = ['spores:empty', 'plan-nudge:no_intent', 'server\u001b[31m\ntext'];
-    const fetch: FetchLike = async (input, init) => {
-      const req = new Request(input, init);
-      if (new URL(req.url).pathname !== '/context/prompt') return rig.fetch(req);
-      expect(req.headers.get('x-myco-project')).toBe('proj_1');
-      return Response.json({ persisted: true, context: '', skipped }, { headers: { [PROTOCOL_HEADER]: '1' } });
-    };
-    const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'look up controller evidence', transcript_path: transcript('sess-empty') }, { helpers: 'run', fetch, symbiont: 'copilot' });
-    expect(readSessionContext(spool().dir, 'sess-empty').prompt).toMatchObject({ context: '', skipped });
-    expect(ran.stderr).toContain(`${promptContextLogPrefix('https://member-test.invalid', 'proj_1')}session sess-empty prompt `);
-    expect(ran.stderr).toContain('answered empty; skipped: spores:empty, plan-nudge:no_intent, server [31m text');
-    expect(ran.stderr).not.toContain('\u001b');
-    expect(readSessionState(spool().dir, 'sess-empty').contextAsks).toBeUndefined();
-    const next = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'and now?', transcript_path: transcript('sess-empty') }, { fetch, symbiont: 'copilot' });
-    expect(contextOf(next.stdout)).toBe('Session:: `sess-empty`');
-  });
-
-  it('persists permanent prompt refusals in the destination-scoped helper log and settles the ask', async () => {
-    const serverUrl = 'https://member-test.invalid';
-    const fetch: FetchLike = async (input, init) => {
-      const req = new Request(input, init);
-      return new URL(req.url).pathname === '/context/prompt'
-        ? Response.json({ persisted: false, code: 'parse', message: 'invalid prompt' }, { headers: { [PROTOCOL_HEADER]: '1' } })
-        : rig.fetch(req);
-    };
-    await runHook('user-prompt-submit', { session_id: 'sess-refused', prompt: 'look up controller evidence', transcript_path: transcript('sess-refused') }, { fetch, symbiont: 'copilot' });
-    expect(readSessionState(spool().dir, 'sess-refused').contextAsks).toHaveLength(1);
-    const restore = routeStderrToHelperLog(mycoHome, 'proj_1', serverUrl);
-    try {
-      await prefetchContext({ spool: spool(), client: new ServerClient({ serverUrl, token: rig.token, projectId: 'proj_1' }, fetch), serverUrl, mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
-    } finally { restore(); }
-    const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
-    expect(log).toContain(`${serverUrl} proj_1 ${promptContextLogPrefix(serverUrl, 'proj_1')}session sess-refused prompt `);
-    expect(log).toContain('refused: parse');
-    expect(readSessionState(spool().dir, 'sess-refused').contextAsks).toBeUndefined();
-  });
-
-  it('renders what was served for the session\'s previous prompt, and the helper asks with each prompt\'s own id and text', async () => {
+  it('renders the answer selected for this submission, including a single-prompt session', async () => {
+    const served = servingPrompts(body => `Recalled for: ${body.text}`);
     const tx = transcript('sess-p');
-    const served = servingPrompts((body) => `Recalled for: ${body.text}`);
-    const first = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'how do we rotate tokens?', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
-    // Nothing cached yet: the Session line alone.
-    expect(contextOf(first.stdout)).toBe('Session:: `sess-p`');
-    expect(served.asked.map((a) => a.text)).toEqual(['how do we rotate tokens?']);
-    expect(served.asked[0].promptId).toBe(readSessionState(spool().dir, 'sess-p').promptId!);
-
-    const second = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'and the window?', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
-    expect(contextOf(second.stdout)).toBe('Session:: `sess-p`\n\nRecalled for: how do we rotate tokens?');
-    expect(served.asked.map((a) => a.text)).toEqual(['how do we rotate tokens?', 'and the window?']);
-    // Every ask is answered and done.
+    for (const prompt of ['how do we rotate tokens?', 'and the window?']) {
+      const ran = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt, transcript_path: tx }, { fetch: served.fetch, symbiont: 'copilot' });
+      expect(contextOf(ran.stdout)).toBe(`Session:: \`sess-p\`\n\nRecalled for: ${prompt}`);
+      expect(served.asked.at(-1)?.promptId).toBe(readSessionState(spool().dir, 'sess-p').promptId!);
+      expect(ran.stderr).toContain('wait_ms=');
+    }
     expect(readSessionState(spool().dir, 'sess-p').contextAsks).toBeUndefined();
   });
 
-  it('keeps a cached answer off a task notification and delivers it on the next prompt', async () => {
-    const tx = transcript('sess-note');
-    const recalled = 'PRIVATE PRIOR PROMPT CONTEXT';
-    const served = servingPrompts(() => recalled);
+  it('does not ask for or render memory on a task notification', async () => {
+    const served = servingPrompts(() => 'private recalled context');
     const notice = '<task-notification>\n<task-id>tid-1</task-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>';
-    await runHook('user-prompt-submit', { session_id: 'sess-note', prompt: 'how do we rotate tokens?', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'claude-code' });
-    const held = await runHook('user-prompt-submit', { session_id: 'sess-note', prompt: notice, transcript_path: tx }, { fetch: served.fetch, symbiont: 'claude-code' });
-    expect(contextOf(held.stdout)).toBe('Session:: `sess-note`');
-    const next = await runHook('user-prompt-submit', { session_id: 'sess-note', prompt: 'and the window?', transcript_path: tx }, { fetch: served.fetch, symbiont: 'claude-code' });
-    expect(contextOf(next.stdout)).toBe(`Session:: \`sess-note\`\n\n${recalled}`);
+    const ran = await runHook('user-prompt-submit', { session_id: 'sess-note', prompt: notice, transcript_path: transcript('sess-note') }, { fetch: served.fetch });
+    expect(contextOf(ran.stdout)).toBe('Session:: `sess-note`');
+    expect(served.asked).toEqual([]);
   });
 
-  it('renders each answer once: while the Deployment answers no newer one, the prompts after it are served the line alone', async () => {
-    const tx = transcript('sess-once');
-    const served = servingPrompts((body) => `Recalled for: ${body.text}`);
-    await runHook('user-prompt-submit', { session_id: 'sess-once', prompt: 'first', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
-    const offline: FetchLike = async () => { throw new TypeError('fetch failed'); };
-    const second = await runHook('user-prompt-submit', { session_id: 'sess-once', prompt: 'second', transcript_path: tx }, { helpers: 'run', fetch: offline, symbiont: 'copilot' });
-    expect(contextOf(second.stdout)).toBe('Session:: `sess-once`\n\nRecalled for: first');
-    const third = await runHook('user-prompt-submit', { session_id: 'sess-once', prompt: 'third', transcript_path: tx }, { helpers: 'run', fetch: offline, symbiont: 'copilot' });
-    expect(contextOf(third.stdout)).toBe('Session:: `sess-once`');
+  it('bounds a stalled answer, preserves capture first, backs off and never delivers it later', async () => {
+    const tx = transcript('sess-slow');
+    let asked = 0;
+    let kicked = false;
+    let signal: AbortSignal | undefined;
+    let answer: ((response: Response) => void) | undefined;
+    const slow: FetchLike = (input, init) => {
+      asked++;
+      expect(kicked).toBe(true);
+      signal = init?.signal ?? undefined;
+      expect(readSessionState(spool().dir, 'sess-slow').promptId).toBeDefined();
+      expect(spool().depth('sess-slow')).toBeGreaterThan(0);
+      return new Promise(resolve => { answer = resolve; });
+    };
+    const started = Date.now();
+    const first = await runHook('user-prompt-submit', { session_id: 'sess-slow', prompt: 'while slow', transcript_path: tx }, { fetch: slow, symbiont: 'copilot', helperSpawn: () => { kicked = true; return { started: true, pid: process.pid }; } });
+    expect(Date.now() - started).toBeLessThan(PROMPT_CONTEXT_CAP_MS + 500);
+    expect(signal?.aborted).toBe(true);
+    expect(contextOf(first.stdout)).toBe('Session:: `sess-slow`');
+    answer!(Response.json({ persisted: true, context: 'late answer' }));
+    const next = await runHook('user-prompt-submit', { session_id: 'sess-slow', prompt: 'later', transcript_path: tx }, { fetch: slow, symbiont: 'copilot' });
+    expect(asked).toBe(1);
+    expect(contextOf(next.stdout)).toBe('Session:: `sess-slow`');
+    expect(readSessionState(spool().dir, 'sess-slow').contextAsks).toBeUndefined();
   });
 
-  it('keeps an ask the Deployment did not answer for the next pass', async () => {
-    const tx = transcript('sess-q');
-    const offline: FetchLike = async () => { throw new TypeError('fetch failed'); };
-    await runHook('user-prompt-submit', { session_id: 'sess-q', prompt: 'while offline', transcript_path: tx }, { helpers: 'run', fetch: offline, symbiont: 'copilot' });
-    expect(readSessionState(spool().dir, 'sess-q').contextAsks?.map((a) => a.kind)).toEqual(['prompt']);
-    const served = servingPrompts((body) => `Recalled for: ${body.text}`);
-    await runHook('stop', { session_id: 'sess-q', last_assistant_message: 'ok', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
-    expect(served.asked.map((a) => a.text)).toEqual(['while offline']);
+  it('reports safe diagnostics for an empty answer and renders the Session line alone', async () => {
+    const served = servingPrompts(() => '');
+    const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'find evidence' }, { fetch: served.fetch, symbiont: 'copilot' });
+    expect(contextOf(ran.stdout)).toBe('Session:: `sess-empty`');
+    expect(ran.stderr).toContain('answered empty');
   });
 });
 
@@ -401,7 +350,7 @@ describe('Deployment feature scope', () => {
         if (damage === 'unreadable path') fs.mkdirSync(file);
         else fs.writeFileSync(file, damage === 'corrupt' ? 'invalid' : JSON.stringify({ version: 0, features: [] }), { mode: 0o600 });
         const sessionId = `sess-${hook}-${damage}`;
-        const result = await runHook(hook, { session_id: sessionId, prompt: 'save prompt', last_assistant_message: 'save response', transcript_path: transcript(sessionId), cwd: process.cwd() }, { fetch: rig.fetch, symbiont: 'copilot' });
+        const result = await runHook(hook, { session_id: sessionId, prompt: 'save prompt', last_assistant_message: 'save response', transcript_path: transcript(sessionId), cwd: process.cwd() }, { fetch: async () => Response.json({ persisted: true, context: '' }), symbiont: 'copilot' });
         expect(spool().readRecords(sessionId).some((event) => event?.kind === (hook === 'stop' ? 'response' : 'prompt'))).toBe(true);
         expect(result.stderr).toContain('feature cache read failed');
         expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
@@ -547,12 +496,12 @@ describe('Deployment feature scope', () => {
       advertise('proj_new', ['turn'], 2);
       const sessionId = `sess-scope-${hook}`;
       const tx = transcript(sessionId);
-      await runHook(hook, { session_id: sessionId, prompt: 'one', last_assistant_message: 'done', transcript_path: tx, cwd: process.cwd() }, { fetch: rig.fetch });
+      await runHook(hook, { session_id: sessionId, prompt: 'one', last_assistant_message: 'done', transcript_path: tx, cwd: process.cwd() }, { fetch: async () => Response.json({ persisted: true, context: '' }) });
       const events = spool().readRecords(sessionId);
       expect(events.some((event) => event?.kind === 'turn')).toBe(true);
       advertise('proj_new', [], 3);
       const withdrawn = `${sessionId}-withdrawn`;
-      await runHook(hook, { session_id: withdrawn, prompt: 'two', last_assistant_message: 'done', transcript_path: tx, cwd: process.cwd() }, { fetch: rig.fetch });
+      await runHook(hook, { session_id: withdrawn, prompt: 'two', last_assistant_message: 'done', transcript_path: tx, cwd: process.cwd() }, { fetch: async () => Response.json({ persisted: true, context: '' }) });
       expect(spool().readRecords(withdrawn).some((event) => event?.kind === 'turn')).toBe(false);
     });
   }
