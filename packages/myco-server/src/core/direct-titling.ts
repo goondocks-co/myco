@@ -1,3 +1,4 @@
+import { emit, classify } from '../telemetry.js';
 
 import type { ServerEnv } from './adapters.js';
 import { singleTurnMaterial } from '../content/single-turn-material.js';
@@ -65,7 +66,12 @@ export async function executeDirectTitle(env: ServerEnv, provider: CompletionPro
     if (!written) throw new Error('title_claim_lost');
   } catch (error) {
     if (error instanceof CompletionUnavailable && error.code !== 'invalid_answer') usage = null;
-    await failDirectTitle(env.db, settled(), error instanceof CompletionUnavailable ? `completion_${error.code}` : 'title_material_or_write_failed');
-    await restoreTitlingStamp(env.db, ask.project, ask.session, ask.stamp, ask.previous);
+    try {
+      await failDirectTitle(env.db, settled(), error instanceof CompletionUnavailable ? `completion_${error.code}` : 'title_material_or_write_failed');
+      await restoreTitlingStamp(env.db, ask.project, ask.session, ask.stamp, ask.previous);
+    } catch (persistenceError) {
+      emit({ kind: 'direct_title_persistence_failed', projectId: ask.project, sessionId: ask.session, runId: ask.run, error_class: classify(persistenceError) });
+      throw persistenceError;
+    }
   }
 }
