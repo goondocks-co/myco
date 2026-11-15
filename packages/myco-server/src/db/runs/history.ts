@@ -2,9 +2,11 @@
  * Run history reads: Work summaries over supported UTC windows from the maintained rollups, keyset run timelines, the
  * run list and one run's row, and the failure and hold reads attention takes.
  *
- * Counts never read history: they read `work_daily` and `work_window_totals`. A range that is not a supported UTC
- * window has no totals; it reads the paged timeline only.
+ * Window totals read maintained rollups. Map skips are classified by the stored run reason within the indexed
+ * window. A range that is not a supported UTC window has no totals; it reads the paged timeline only.
  */
+import { MAP_TASK } from '@goondocks/myco-shared/canopy';
+import { INPUT_UNCHANGED } from '../schedule-entry.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope, ProjectSet } from '../../read/scope.js';
 import { EMBEDDING_TASK } from '../../core/embedding/task.js';
@@ -47,8 +49,15 @@ export async function workHistoryReady(db: RelationalStore): Promise<boolean> {
   return rows[0]?.history === 1;
 }
 
-const daily = bySet((all, tag) => read<[string, number, number], Row>({ name: `runs.workDaily${tag}`, sql: `SELECT d.project_id,d.task,d.status,SUM(d.runs) AS runs,SUM(d.tokens) AS tokens,
+const daily = bySet((all, tag) => read<[projects: string, firstDay: number, lastDay: number], Row>({ name: `runs.workDaily${tag}`, sql: `SELECT d.project_id,d.task,d.status,SUM(d.runs) AS runs,SUM(d.tokens) AS tokens,
     SUM(d.cost)+SUM(d.cost_carry) AS cost,SUM(d.no_cost) AS no_cost,SUM(d.produced) AS produced,SUM(d.spores) AS spores,
+    CASE WHEN d.task='${MAP_TASK}' AND d.status='skipped' THEN (
+      SELECT COUNT(*) FROM work_run_contribution c INDEXED BY idx_work_run_latest
+      CROSS JOIN agent_runs r ON r.project_id=c.project_id AND r.id=c.run_id
+      WHERE c.project_id=d.project_id AND c.task=d.task AND c.status='skipped'
+        AND c.at>=?2*${DAY_MS} AND c.at<(?3+1)*${DAY_MS} AND r.status='skipped'
+        AND CASE WHEN json_valid(r.run_context) THEN json_extract(r.run_context,'$.reason') END='${INPUT_UNCHANGED}'
+    ) ELSE 0 END AS carried_runs,
     MIN(d.tokens_low) AS tokens_low,MAX(d.tokens_high) AS tokens_high,MIN(d.cost_low) AS cost_low,MAX(d.cost_high) AS cost_high,MIN(d.duration_low) AS duration_low,MAX(d.duration_high) AS duration_high
   FROM work_daily d WHERE ${setIn(all, 'd.project_id')} AND d.day BETWEEN ?2 AND ?3 GROUP BY d.project_id,d.task,d.status` }));
 const sessions = bySet((all, tag) => read<[string, number, number, string], Row>({ name: `runs.workSessions${tag}`, sql: `SELECT w.project_id,w.task,w.sessions FROM work_window_totals w
@@ -109,7 +118,10 @@ export async function workTimeline(db: RelationalStore, set: ProjectSet, since: 
   return { rows: rows.slice(0, WORK_TIMELINE_PAGE), hasMore: rows.length > WORK_TIMELINE_PAGE };
 }
 
-const maps = bySet((all, tag) => read<[string], Row>({ name: `runs.workMaps${tag}`, sql: `SELECT m.project_id,m.repository_branch,m.repository_commit,m.generated_at,m.source_run_id
+const maps = bySet((all, tag) => read<[string], Row>({ name: `runs.workMaps${tag}`, sql: `SELECT m.project_id,m.repository_branch,m.repository_commit,m.generated_at,m.source_run_id,
+    EXISTS(SELECT 1 FROM agent_runs source WHERE source.project_id=m.project_id AND source.id=m.source_run_id
+      AND json_extract(source.run_context,'$.repository.commit') IS NOT NULL
+      AND json_extract(source.run_context,'$.repository.commit')<>m.repository_commit) AS carried_forward
   FROM canopy_maps m WHERE ${setIn(all, 'm.project_id')}` }));
 export async function currentMaps(db: RelationalStore, set: ProjectSet): Promise<Row[]> {
   const [rows] = await readSet(db, forSet(maps, set).bind(setValue(set)));

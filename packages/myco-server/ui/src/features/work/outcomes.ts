@@ -10,10 +10,11 @@ export interface KindSummary extends OutcomeCounts {
   kind: OutcomeKind;
   /** The projects this kind of work ran in, newest work first. */
   projects: string[];
-  /** Runs by status, every run in the window counted once. */
+  /** Runs by status, with map carry decisions counted separately. */
   runs: Record<string, number>;
   /** Runs that started: finished or still going. */
   started: number;
+  alreadyCurrent: number;
   /** Failed runs that kept what they produced; their output is counted above. */
   failedWithOutput: number;
   latestAt: number | null;
@@ -68,13 +69,14 @@ export function summarize(answer: WorkAnswer): KindSummary[] {
     let entry = byKind.get(outcome.kind);
     if (entry === undefined) {
       entry = {
-        kind: outcome.kind, projects: [], runs: {}, started: 0, spores: 0, sessions: 0, maps: 0, produced: 0, failed: 0, finished: 0,
+        kind: outcome.kind, projects: [], runs: {}, started: 0, alreadyCurrent: 0, spores: 0, sessions: 0, maps: 0, produced: 0, failed: 0, finished: 0,
         failedWithOutput: 0, latestAt: null, tokens: 0, costUsd: 0, runsWithoutCost: 0,
         spend: { tokens: null, costUsd: null, durationMs: null }, currentMaps: [], listed: [], failures: [], failureGroups: [], kept: [],
       };
       byKind.set(outcome.kind, entry);
     }
     entry.projects.push(outcome.projectId);
+    entry.alreadyCurrent += outcome.alreadyCurrent ?? 0;
     for (const [status, n] of Object.entries(outcome.runs)) entry.runs[status] = (entry.runs[status] ?? 0) + n;
     entry.spores += outcome.outcome.spores;
     entry.sessions += outcome.outcome.sessions;

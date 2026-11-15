@@ -3,6 +3,10 @@ import { settingsWriter } from '@myco-server-worker/core/settings.js';
 import { describe, expect, it } from 'bun:test';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { dispatchTask } from '@myco-server-worker/core/harness.js';
+import { completeBudgetMigration } from '@myco-server-worker/db/meta/budget-activation.js';
+import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
+import { readCanopyMap } from '@myco-server-worker/read/canopy.js';
 import { runWorker } from '@myco/runner/loop.js';
 import { detectHarnesses } from '@myco/runner/detect.js';
 import { createServer } from '@myco-server-worker/pipeline.js';
@@ -204,6 +208,23 @@ describe('worker repository checkout over the Deployment wire', () => {
       // The step log names a file in the checkout relative to it, never by the run's random directory.
       const steps = e.sqlite.query(`SELECT kind, target FROM agent_run_steps WHERE run_id='run_map' AND kind IN ('read', 'command') ORDER BY seq`).all();
       expect(steps).toEqual([{ kind: 'read', target: 'AGENTS.md' }, { kind: 'command', target: 'git -C . ls-tree -r …' }]);
+      const beforeCarry = (await readCanopyMap(e.db, { projectId: 'proj_1' }))!;
+      await completeBudgetMigration(e.db, Date.now());
+      const head = source.second;
+      const automatic = await dispatchTask(e.serverEnv, MAP_TASK, 'proj_1', { serverUrl: origin, actor: 'clock' }, Date.now());
+      if (!automatic.dispatched) throw new Error('automatic map was not dispatched');
+      await writeFile(evidence, 'harness has not started');
+      const carried = await runWorker({ serverUrl: origin, token: owner.token, lockDir: null, runRoot: join(source.home, 'runs'),
+        only: ['claude-code'], once: true, repositoryGitPath: source.gitPath, pollIdleMs: 10,
+        signal: AbortSignal.timeout(20_000), log: line => { lines.push(line); } });
+      expect(carried).toEqual({ driven: 1, refused: null });
+      expect(await readFile(evidence, 'utf8')).toBe('harness has not started');
+      expect((await getRun(e.db, { projectId: 'proj_1' }, automatic.runId))?.status).toBe('skipped');
+      expect(await readCanopyMap(e.db, { projectId: 'proj_1' })).toMatchObject({
+        artifact: beforeCarry.artifact, sourceRunId: beforeCarry.sourceRunId, repository: { commit: head },
+      });
+      expect(await readdir(join(source.home, 'runs'))).toEqual([]);
+
     } finally {
       process.env.PATH = previousPath;
       server.stop(true);

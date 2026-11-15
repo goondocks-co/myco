@@ -1,4 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
+import { INPUT_UNCHANGED } from '../schedule-entry.js';
 import { first, read } from '../index.js';
 
 /** A Project's one stored map, as its row holds it: the artifact as JSON text and the source it was read from. */
@@ -15,12 +16,12 @@ export const readCanopyMapRow = (db: RelationalStore, projectId: string): Promis
 
 /**
  * Whether any live session of the Project received capture after its last settled map pass: the latest start of a
- * completed, non-dry map run, or the stored map's generation when no such run stands behind it.
+ * completed map run or non-dry preparation carried as unchanged, or the stored map's generation.
  */
 const CAPTURED_SINCE = read<[project: string, task: string], { one: number }>({ name: 'canopyMap.capturedSince',
   sql: `SELECT 1 AS one FROM session_read_facts INDEXED BY idx_session_read_activity
     WHERE project_id=?1 AND has_session=1 AND tombstoned=0 AND last_received_at > MAX(
-      COALESCE((SELECT MAX(started_at) FROM agent_runs WHERE project_id=?1 AND task=?2 AND status='completed' AND dry_run=0), -1),
+      COALESCE((SELECT MAX(started_at) FROM agent_runs WHERE project_id=?1 AND task=?2 AND (status='completed' OR (status='skipped' AND json_extract(run_context,'$.reason')='${INPUT_UNCHANGED}')) AND dry_run=0), -1),
       COALESCE((SELECT generated_at FROM canopy_maps WHERE project_id=?1), -1)) LIMIT 1` });
 
 export async function capturedSinceMapPass(db: RelationalStore, projectId: string, mapTask: string): Promise<boolean> {

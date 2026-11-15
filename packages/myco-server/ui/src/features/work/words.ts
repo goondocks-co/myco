@@ -81,6 +81,7 @@ export interface OutcomeCounts {
   finished: number;
   /** Full-window run statuses when available. */
   runs?: Record<string, number>;
+  alreadyCurrent?: number;
 }
 
 export function outcomeHeadline(kind: OutcomeKind, c: OutcomeCounts): string {
@@ -116,7 +117,8 @@ export function outcomeHeadline(kind: OutcomeKind, c: OutcomeCounts): string {
       if (queued > 0) return 'Waiting to update the code map';
       if (c.failed > 0 && c.failed === c.finished) return 'Couldn’t update the code map';
       if (completed > 0) return 'Checked the code map; nothing to change';
-      return skipped > 0 ? 'The code map update was held off' : 'The code map hasn’t been updated yet';
+      if (skipped > 0) return 'The code map update was held off';
+      return (c.alreadyCurrent ?? 0) > 0 ? 'The code map was already current' : 'The code map hasn’t been updated yet';
   }
 }
 
@@ -160,8 +162,14 @@ export function shortTime(at: number, now: number): string {
   return `${new Date(at).toLocaleDateString(undefined, { weekday: 'short' })} ${clockWords(at)}`;
 }
 
+/** A map the Deployment confirmed during source preparation, without a harness run. */
+export function isCarriedMap(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'skipReasonCode'>): boolean {
+  return kind === 'map' && run.status === 'skipped' && (run.skipReasonCode ?? run.skipReason) === 'input_unchanged';
+}
+
 /** What one run came to, in a few words, for a line in a list. */
 export function runLineWords(kind: OutcomeKind | null, run: Pick<RunFields, 'status' | 'skipReason' | 'skipReasonCode' | 'targetSessionId'> & { result?: RunFields['result'] }, outcome: Pick<RunOutcomeCounts, 'spores' | 'sessions' | 'readsRecorded'> & { maps?: number }): string {
+  if (isCarriedMap(kind, run)) return 'The code map was already current';
   if (run.status === 'skipped') return `Held off: ${skipWords(run.skipReasonCode ?? run.skipReason)}`;
   if (run.status === 'queued') return 'Waiting to start';
   if (run.status === 'running' || run.status === 'claimed') return 'Running now';

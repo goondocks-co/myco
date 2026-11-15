@@ -11,15 +11,27 @@ import { sha256Hex } from '../hash.js';
 import { mapSourcePinOfRun, pinMapRepositoryForRun, pinMapSourceForRun, repositoryPinOfRun } from '../db/runs/preparation.js';
 import { type RunLease } from '../db/runs/leases.js';
 import { type RunRow } from '../db/runs/lifecycle.js';
-import { settingTexts } from './settings.js';
+import type { Bound } from '../db/index.js';
+import { observedSettingsGuard, settingTexts } from './settings.js';
 import { repositoryIdentity } from './repositories.js';
 
 const MAX_MAP_PIN_ATTEMPTS = 3;
 
-export async function readMapSettings(db: RelationalStore): Promise<MapSettings> {
-  const customLeaf = 'cortex.canopy.exclude.patterns';
-  const raw = (await settingTexts(db, [customLeaf])).get(customLeaf);
+const MAP_EXCLUSIONS_LEAF = 'cortex.canopy.exclude.patterns';
+
+function mapSettingsOf(raw: string | undefined): MapSettings {
   return { defaultPatterns: [...CANOPY_DEFAULT_EXCLUDE_PATTERNS], userPatterns: raw === undefined ? [] : JSON.parse(raw) as string[] };
+}
+
+export async function readMapSettingsSnapshot(db: RelationalStore): Promise<{ settings: MapSettings; revision: number; guard: Bound }> {
+  const observed = await observedSettingsGuard(db, [MAP_EXCLUSIONS_LEAF]);
+  const raw = (await settingTexts(observed.view, [MAP_EXCLUSIONS_LEAF])).get(MAP_EXCLUSIONS_LEAF);
+  return { settings: mapSettingsOf(raw),
+    revision: observed.revisions[MAP_EXCLUSIONS_LEAF] ?? 0, guard: observed.assertion };
+}
+
+export async function readMapSettings(db: RelationalStore): Promise<MapSettings> {
+  return mapSettingsOf((await settingTexts(db, [MAP_EXCLUSIONS_LEAF])).get(MAP_EXCLUSIONS_LEAF));
 }
 
 /**

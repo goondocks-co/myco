@@ -39,6 +39,7 @@ export interface WorkOutcome {
   kind: OutcomeKind;
   task: string;
   runs: Record<string, number>;
+  alreadyCurrent?: number;
   outcome: { spores: number; sessions: number; maps: number };
   failedWithOutput: number;
   failed: number;
@@ -89,7 +90,7 @@ export interface Upkeep {
 }
 
 /** `GET /api/work`. */
-export interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string }
+export interface WorkMap { projectId: string; branch: string; commit: string; generatedAt: number; sourceRunId: string; carriedForward?: boolean }
 
 export interface WorkAnswer {
   window: { since: number; until: number };

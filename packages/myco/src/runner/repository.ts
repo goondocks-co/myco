@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_COMMIT_PATTERN, RUN_REPOSITORY_DIGESTS_FILE, RUN_REPOSITORY_DIR, parseRepositoryComparison, parseRepositoryChanges, type RepositoryAccess, type RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { removeOwnedRunDirectoryEntry } from './run-directory.js';
 import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest, type RepositoryCheckout } from './repository-checkout.js';
 
@@ -8,6 +8,9 @@ import { prepareRepositoryCheckout, CHECKOUT_TIMEOUT_MS, type CheckoutFileDigest
 export function digestListing(digests: readonly CheckoutFileDigest[]): string {
   return digests.map((file) => `${file.sha256}  ${file.path}\n`).join('');
 }
+
+/** The Deployment settled this attempt during source preparation. */
+export class RepositoryAlreadyCurrent extends Error {}
 
 /** Worker checkout task, Git executable, digest listing and optional knowledge cache. */
 export interface WorkerCheckoutOptions { gitPath?: string; digests?: boolean; cacheRoot?: string; task?: string }
@@ -26,8 +29,10 @@ export async function prepareWorkerCheckout(
     throw new Error('The repository read credential is invalid.');
   }
   checkoutSignal.throwIfAborted();
+  const comparison = parseRepositoryComparison(answer.comparison);
   const checkout = await prepareRepositoryCheckout({
     url: spec.url, branch: spec.branch, historyDepth: spec.historyDepth,
+    compareCommit: comparison?.commit,
     credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.task !== undefined && KNOWLEDGE_REPOSITORY_TASKS.includes(options.task) ? options.cacheRoot : undefined,
     destination: join(scratchDir, RUN_REPOSITORY_DIR),
     removeDestination: () => removeOwnedRunDirectoryEntry(scratchDir, RUN_REPOSITORY_DIR),
@@ -41,6 +46,12 @@ export async function prepareWorkerCheckout(
     },
   });
   try {
+    if (comparison !== null) {
+      const candidate = { ...comparison, ...checkout.changes };
+      const evidence = parseRepositoryChanges(candidate) ?? { ...comparison, complete: false, changes: [] };
+      const result = await request({ url: spec.url, branch: spec.branch, commit: checkout.commit, comparison: evidence }, checkoutSignal);
+      if (result.alreadyCurrent === true) throw new RepositoryAlreadyCurrent();
+    }
     if (checkout.digests !== undefined) await writeFile(join(scratchDir, RUN_REPOSITORY_DIGESTS_FILE), digestListing(checkout.digests), { mode: 0o600 });
   } catch (error) {
     await checkout.dispose();

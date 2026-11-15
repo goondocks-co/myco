@@ -115,3 +115,50 @@ export function knowledgeRepositoryInstruction(repository: RepositoryIdentity | 
   return KNOWLEDGE_REPOSITORY_SECTION + (repository === null ? KNOWLEDGE_ONLY_INSTRUCTION
     : `The connected repository ${repository.url} (branch ${repository.branch}) is pinned at its current commit in the ${RUN_REPOSITORY_DIR} checkout beside the run instructions. Your working directory is the checkout; read and search paths relative to it. Check claims against this code before saving, merging or retiring knowledge. Use only file read, grep and glob tools inside the checkout; no edit or shell tools. A missing file alone never invalidates knowledge. Historical paths are hints at most. When in doubt, keep it.`);
 }
+
+/** Maximum comparison evidence beside the repository request's identity and commit. */
+export const MAX_REPOSITORY_COMPARISON_BYTES = 8 * 1024;
+export const MAX_REPOSITORY_CHANGED_PATHS = 128;
+export const MAX_REPOSITORY_CHANGE_PATH_CHARS = 512;
+/** A server-issued comparison binds the map, connection and exclusion generation. */
+export interface RepositoryComparison {
+  commit: string;
+  revision: string;
+  repositoryRevision: string;
+  settingsRevision: number;
+}
+export interface RepositoryChange { path: string; status: 'A' | 'D' | 'M' | 'T' }
+export interface RepositoryChanges extends RepositoryComparison {
+  complete: boolean;
+  changes: RepositoryChange[];
+}
+
+/** Optional preparation evidence; absent or unreadable evidence requires a harness pass. */
+export function parseRepositoryComparison(value: unknown): RepositoryComparison | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.commit !== 'string' || !REPOSITORY_COMMIT_PATTERN.test(record.commit)
+    || ![record.revision, record.repositoryRevision].every(value => typeof value === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(value))
+    || typeof record.settingsRevision !== 'number' || !Number.isSafeInteger(record.settingsRevision) || record.settingsRevision < 0) return null;
+  return { commit: record.commit, revision: record.revision as string, repositoryRevision: record.repositoryRevision as string, settingsRevision: record.settingsRevision };
+}
+
+export function parseRepositoryChanges(value: unknown): RepositoryChanges | null {
+  const comparison = parseRepositoryComparison(value);
+  if (comparison === null) return null;
+  const record = value as Record<string, unknown>;
+  if (record.complete !== true || !Array.isArray(record.changes) || record.changes.length > MAX_REPOSITORY_CHANGED_PATHS
+    || new TextEncoder().encode(JSON.stringify(value)).byteLength > MAX_REPOSITORY_COMPARISON_BYTES) return null;
+  const changes: RepositoryChange[] = [];
+  for (const item of record.changes) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return null;
+    const { path, status } = item as Record<string, unknown>;
+    // eslint-disable-next-line no-control-regex
+    if (typeof path !== 'string' || path.length === 0 || path.length > MAX_REPOSITORY_CHANGE_PATH_CHARS || path.startsWith('/')
+      || path.includes('\\') || /[\x00-\x1f\x7f]/.test(path)
+      || path.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git')
+      || !['A', 'D', 'M', 'T'].includes(String(status))) return null;
+    changes.push({ path, status: status as RepositoryChange['status'] });
+  }
+  return { ...comparison, complete: true, changes };
+}

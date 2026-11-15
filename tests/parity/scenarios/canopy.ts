@@ -3,8 +3,8 @@ import { LATE_HARNESS_ERROR_NOTE } from '@goondocks/myco-shared/run-text';
 import { MAP_ACTION, MAP_UNCHANGED_ACTION } from '@goondocks/myco-shared/canopy';
 import { memberHeadersFor, type ParityScenario } from '../harness.ts';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
-import { allowWorkerClaims, putCapability } from '../clients/requests.ts';
-import { dispatch, takeRun } from '../clients/runs.ts';
+import { allowWorkerClaims, putCapability, putSetting, wake } from '../clients/requests.ts';
+import { captureSession, dispatch, runList, takeRun } from '../clients/runs.ts';
 
 /**
  * A map run on the worker path, on both targets: the worker's repository step
@@ -96,6 +96,50 @@ export const canopy: ParityScenario = {
       expect(read.content).toContain('Directory skeleton');
       expect(read.content).not.toContain('Map Provenance');
       expect(read.content).not.toContain('sha256');
+      expect((await putSetting(target, 'agent.budget.daily_usd', 100)).status).toBe(200);
+      await captureSession(target, 'map-next-work', 'An unrelated source file changed.', { ended: true });
+      expect((await putSetting(target, 'agent.tasks', { 'canopy-map': { schedule: { enabled: true, intervalSeconds: 0,
+        runIn: ['active', 'idle', 'sleep'] } } })).status).toBe(200);
+      expect((await putSetting(target, 'agent.scheduled_tasks_enabled', true)).status).toBe(200);
+      await wake(target);
+      const scheduled = (await runList(target, 'task=canopy-map')).find(row => row.status === 'queued' && row.startedBy === 'clock');
+      expect(scheduled).toBeDefined();
+      const automatic = await takeRun(target, scheduled.id);
+      const identity = { projectId: target.projectId, runId: automatic.id, attemptId: automatic.attemptId };
+      const access = await post('/worker/repository', target.memberToken, identity);
+      expect(access.comparison).toMatchObject({ commit, revision: stored.revision });
+      const nextCommit = 'd'.repeat(40);
+      expect(await post('/worker/repository', target.memberToken, { ...identity, ...source, commit: nextCommit }))
+        .toMatchObject({ pin: { commit: nextCommit } });
+      expect(await post('/worker/repository', target.memberToken, { ...identity, ...source, commit: nextCommit,
+        comparison: { ...access.comparison, complete: true, changes: [{ status: 'A', path: 'src/other.ts' }] } }))
+        .toMatchObject({ alreadyCurrent: true, held: true });
+      const carryDetail = (await owner(`${endpoint}/runs/${automatic.id}`)).run;
+      expect(carryDetail).toMatchObject({ status: 'skipped', skipReasonCode: 'input_unchanged', tokensUsed: 0, leaseExpiresAt: null });
+      expect(carryDetail.actionsTaken).toContain('the code map was already current');
+      expect((await owner(`${endpoint}/canopy-map`)).map)
+        .toMatchObject({ artifact, generatedAt: stored.generatedAt, sourceRunId: first.runId, repository: { ...source, commit: nextCommit } });
+      const carriedWork = await owner(`/api/work?project=${target.projectId}&since=${now - 1000}&until=${Date.now() + 10_000}`);
+      expect(carriedWork.maps.find((map: { projectId: string }) => map.projectId === target.projectId))
+        .toMatchObject({ commit: nextCommit, sourceRunId: first.runId, carriedForward: true });
+      const revoked = await fetch(target.url + '/mcp', { method: 'POST',
+        headers: memberHeadersFor(automatic.runToken, target.projectId, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) });
+      expect(revoked.status).toBe(401);
+      expect((await putSetting(target, 'agent.tasks', { 'canopy-map': { schedule: { enabled: true, intervalSeconds: 0,
+        maxRunsPerDay: 0, runIn: ['active', 'idle', 'sleep'] } } })).status).toBe(200);
+      await captureSession(target, 'map-held-work', 'More source work is waiting.', { ended: true });
+      await wake(target);
+      const day = new Date(now);
+      day.setUTCHours(0, 0, 0, 0);
+      const nextDay = new Date(day);
+      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+      const splitWork = await owner(`/api/work?project=${target.projectId}&since=${day.getTime()}&until=${nextDay.getTime()}`);
+      expect(splitWork.summary.find((entry: { task: string }) => entry.task === 'canopy-map'))
+        .toMatchObject({ runs: { skipped: 1 }, alreadyCurrent: 1 });
+
+      expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);
+
     } finally {
       await owner(`${endpoint}/repository`, 'DELETE', { revision: connected.repository.revision });
     }

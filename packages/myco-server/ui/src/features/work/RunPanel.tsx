@@ -18,7 +18,7 @@ import { AskedVersusDid, SourceMark, Tries, WhatHappened } from './RunStory';
 import { inferredEnd, recordedOutputWords, runStory, SOURCE_WORDS, type Source } from './story';
 import { stepsKnown } from './activity';
 import {
-  atWords, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, fullErrorWords, dollars, fleetWaitWords, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
+  atWords, isCarriedMap, runErrorWords, lateSessionWords, SESSION_ENDING_FIELD_LABELS, fullErrorWords, dollars, fleetWaitWords, kindOf, queuedWords, ranOn, runNoun, skipWords, startedByWords, tokenWords,
 } from './words';
 
 export interface RunPanelProps {
@@ -117,7 +117,9 @@ function RunBody({ answer, projectId, now }: { answer: RunDetailAnswer; projectI
         <ModelSummary run={run} />
         {run.status === 'queued' && <p className="t-small text-ink-2" data-queued="">{queuedWords(run, now)}</p>}
         {fleetWait !== null && <p className="t-small text-muted" data-fleet-wait={run.fleetWait?.reason}>{fleetWait}</p>}
-        {run.status === 'skipped' && <p className="t-small text-ink-2">Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</p>}
+        {run.status === 'skipped' && <p className="t-small text-ink-2">{isCarriedMap(kind, run)
+          ? 'The code map was already current. Nothing ran, and nothing was spent.'
+          : <>Myco held off: {skipWords(run.skipReasonCode ?? run.skipReason)}. Nothing ran, and nothing was spent.</>}</p>}
         {live && (canCancel
           ? <Button size="sm" onClick={() => { setCancelError(null); setConfirmCancel(true); }}>Cancel run</Button>
           : <p className="t-small text-muted">{run.cancelReason ?? 'Run cancellation permission is unavailable. Refresh this run.'}</p>)}

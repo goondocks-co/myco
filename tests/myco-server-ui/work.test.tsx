@@ -30,6 +30,24 @@ import type { WorkAnswer } from '../../packages/myco-server/ui/src/features/toda
 const originalFetch = globalThis.fetch;
 let client: QueryClient;
 
+it('shows genuine map holds separately from carry decisions in the same card', async () => {
+  const carried = runRow({ id: 'run_carriedmap', task: 'canopy-map', status: 'skipped', skipReasonCode: 'input_unchanged',
+    tokensUsed: 0, costUsd: 0 });
+  const held = runRow({ id: 'run_heldmap', task: 'canopy-map', status: 'skipped', skipReasonCode: 'max_runs_per_day' });
+  const work: WorkAnswer = { ...WEEK_WORK, summary: [outcome({ kind: 'map', task: 'canopy-map', runs: { skipped: 1 }, alreadyCurrent: 3 })],
+    timeline: [], maps: WEEK_WORK.maps.map(map => ({ ...map, carriedForward: true })) };
+  server(week({ work, taskRuns: { 'canopy-map': [carried, held] } }));
+  mount(`/p/${P}/work`);
+  const map = await findCard('map');
+  const runs = await within(map).findByRole('list', { name: 'Latest code map updates' });
+  expect(runs.textContent).toContain('The code map was already current');
+  expect(within(map).getByRole('heading', { level: 2 }).textContent).toBe('The code map update was held off');
+  expect(map.textContent).toContain('held off once');
+  expect(map.textContent).toContain('already current 3 times');
+  expect(runs.textContent).toContain('Held off: today’s run limit was reached');
+  expect([...runs.querySelectorAll('[data-run-line]')].map(row => row.getAttribute('data-run-line'))).toEqual(['plain', 'held']);
+});
+
 it('uses the skip code in a run list instead of the server reason', () => {
   expect(runLineWords(null, { status: 'skipped', skipReasonCode: 'machine_did_not_start', skipReason: 'server prose must stay off the page', targetSessionId: null }, { spores: 0, sessions: 0, readsRecorded: false }))
     .toBe('Held off: no machine started it within a day');
