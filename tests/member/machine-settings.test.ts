@@ -1,3 +1,6 @@
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { effectiveUpdateChannel } from '@myco/upgrade/check-cache.js';
 /**
  * The settings a Deployment holds for this machine, as the machine caches them (#1393): one file per Deployment,
  * beside its membership, never read as a membership, and never cleared by an answer that carries none.
@@ -8,7 +11,7 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { cacheMachineSettings, machinePlanDirs, beginMachineSettingsRequest, machineSettingsHeaders, forgetConnectRoot } from '@myco/member/machine-settings.js';
-import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, MACHINE_SETTINGS_ORDER_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_UPDATE_HEADER, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, MACHINE_SETTINGS_ORDER_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { listDeploymentMemberships, machineSettingsPath } from '@myco/member/registry.js';
 import { tempMycoHome } from './helpers/server.js';
 
@@ -253,4 +256,38 @@ describe('the machine settings cache', () => {
     cacheMachineSettings('https://one.example', { leaves: { 'capture.plan_dirs': ['/', '~', '~/', '.', '../up', 'docs/plans', '~/notes'] } }, home);
     expect(machinePlanDirs('https://one.example', home)).toEqual(['docs/plans', '~/notes']);
   });
+});
+
+it('caches capture settings while an updater holds its lock, reports once, and retries the update later', () => {
+  const home = tempMycoHome();
+  const server = 'https://locked.example';
+  const held = LifecycleLock.acquire(path.join(home, 'member', 'keep-current.json.lock'), { command: 'fixture updater' });
+  expect(held.acquired).toBe(true);
+  if (!held.acquired) return;
+  const warning = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const answer = { leaves: { 'capture.plan_dirs': ['~/plans'] }, updateRequests: { 'update.channel': { id: crypto.randomUUID(), value: 'beta' } } };
+  try {
+    expect(cacheMachineSettings(server, answer, home)).toBe(true);
+    expect(cacheMachineSettings(server, answer, home)).toBe(true);
+    expect(machinePlanDirs(server, home)).toEqual(['~/plans']);
+    expect(warning.mock.calls.filter(([line]) => String(line).includes('update settings unavailable'))).toHaveLength(1);
+  } finally { held.lock.release(); warning.mockRestore(); }
+  expect(cacheMachineSettings(server, answer, home)).toBe(true);
+  expect(effectiveUpdateChannel(home)).toBe('beta');
+});
+
+it('keeps capture settings when damaged installation preferences prevent an update request', () => {
+  const home = tempMycoHome();
+  const server = 'https://damaged.example';
+  writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: path.join(home, 'bin', 'myco') });
+  fs.writeFileSync(path.join(home, 'install-update.json'), '{');
+  const warning = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    const answer = { leaves: { 'capture.plan_dirs': ['~/plans'] }, updateRequests: { 'update.channel': { id: crypto.randomUUID(), value: 'beta' } } };
+    expect(machineSettingsHeaders(server, home)[MACHINE_UPDATE_HEADER]).toBeDefined();
+    expect(cacheMachineSettings(server, answer, home)).toBe(true);
+    expect(machinePlanDirs(server, home)).toEqual(['~/plans']);
+    expect(effectiveUpdateChannel(home)).toBe('alpha');
+    expect(warning.mock.calls.filter(([line]) => String(line).includes('update settings unavailable'))).toHaveLength(1);
+  } finally { warning.mockRestore(); }
 });

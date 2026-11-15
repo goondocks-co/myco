@@ -43,6 +43,8 @@ myco update --channel beta
 
 This does not change the recorded channel. An explicit channel on a repeat install does.
 
+Re-running the installer without `--channel` installs from the channel recorded at install; the updater then follows the chosen channel and never downgrades.
+
 ## Update runners
 
 Installed runners check for releases and update themselves **between runs**, within their recorded channel. In **Runners**, an owner or administrator can choose **Update now** when a connected runner reports an available update. A busy runner finishes its run first. The page shows its version, channel and last update result.

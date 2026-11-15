@@ -58,7 +58,6 @@ const ALLOWLIST: readonly string[] = [
   'packages/myco-shared/src/any-agent-rules.generated.ts',
   'packages/myco-shared/src/dot-path.ts',
   'packages/myco-shared/src/member-protocol.ts',
-  'packages/myco-shared/release-channels.json',
   // The identity vocabulary and pure registry shared by the member and Deployment.
   'packages/myco-shared/src/prompt-identity.ts',
   'packages/myco-shared/src/record-identity.ts',

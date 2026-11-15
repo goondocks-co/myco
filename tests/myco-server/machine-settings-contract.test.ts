@@ -1,3 +1,7 @@
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { setUpdatePreferences } from '@myco/member/automatic-update-state.js';
+import { effectiveUpdateChannel } from '@myco/upgrade/check-cache.js';
+import fs from 'node:fs';
 import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from '../support/fenced-fs.mjs';
 import path from 'node:path';
@@ -319,4 +323,20 @@ describe('machine settings effective contract', () => {
       expect((r.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id = 'machine_1' AND leaf = 'capture.plan_dirs'`).get() as { value: string }).value).toBe('{bad');
     });
   }
+});
+
+it('consumes only the confirmed request and never replays it after local receipts are lost', async () => {
+  const r = await rig('bun');
+  writeInstallMarker(r.home, { channel: 'alpha', source: 'curl', bin: path.join(r.home, 'bin', 'myco') });
+  expect((await r.set('update.channel', 'beta')).status).toBe(200);
+  await r.sync();
+  expect(effectiveUpdateChannel(r.home)).toBe('beta');
+  expect((await r.set('update.channel', 'stable')).status).toBe(200);
+  expect(await r.sync()).toMatchObject({ updateRequests: { 'update.channel': { value: 'stable' } } });
+  expect(effectiveUpdateChannel(r.home)).toBe('stable');
+  expect(await r.sync()).toHaveProperty('updateRequests', {});
+  setUpdatePreferences(r.home, { channel: 'alpha' });
+  fs.writeFileSync(path.join(r.home, 'install-update.json'), JSON.stringify({ automaticUpdates: true }));
+  expect(await r.sync()).toHaveProperty('updateRequests', {});
+  expect(effectiveUpdateChannel(r.home)).toBe('alpha');
 });

@@ -1,4 +1,3 @@
-import { machineUpdateRequests, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RELEASE_CHANNELS, type ReleaseChannel } from '@myco/constants/update.js';
@@ -61,22 +60,17 @@ export function readInstallMarker(dir: string, strict = false): InstallMarker | 
   }
 }
 
-/** A persisted channel takes precedence over the installation's original channel. */
-export function readUpdateChannelPreference(home: string): ReleaseChannel | null {
-  let value: unknown;
-  try { value = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid installation update preferences');
-  const channel = (value as Record<string, unknown>).channel;
-  if (channel === undefined) return null;
-  if (!RELEASE_CHANNELS.includes(channel as ReleaseChannel)) throw new Error(`Invalid release channel; use ${RELEASE_CHANNELS.join(', ')}`);
-  return channel as ReleaseChannel;
-}
-
-/** Requests consumed by this installation are persisted with the preference they changed. */
-export function readAppliedUpdateRequests(home: string, deployment: string): MachineUpdateRequests {
-  let value: { machineRequests?: Record<string, unknown> };
-  try { value = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}; throw error; }
-  return machineUpdateRequests(value?.machineRequests?.[deployment]);
+/** Missing or unreadable channel preferences leave the installation's channel in effect. */
+export function readUpdateChannelPreference(home: string): { channel: ReleaseChannel | null; error?: string } {
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8'));
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid installation update preferences');
+    const channel = (value as Record<string, unknown>).channel;
+    if (channel === undefined) return { channel: null };
+    if (!RELEASE_CHANNELS.includes(channel as ReleaseChannel)) throw new Error(`Invalid release channel; use ${RELEASE_CHANNELS.join(', ')}`);
+    return { channel: channel as ReleaseChannel };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { channel: null };
+    return { channel: null, error: error instanceof Error ? error.message : String(error) };
+  }
 }

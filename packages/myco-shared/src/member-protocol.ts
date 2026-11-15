@@ -1,4 +1,3 @@
-import updateChannels from '../release-channels.json';
 import { CONTEXT_DELIVERED_KIND, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE } from './prompt-identity.js';
 
 /** How long a member can spend a GitHub identity link. */
@@ -74,10 +73,10 @@ export const MACHINE_SETTINGS_INVALIDATED_HEADER = 'x-myco-machine-settings-inva
 
 /** Update preferences travel with machine settings; only explicit reports confirm their local value. */
 export const MACHINE_UPDATE_HEADER = 'x-myco-machine-update-settings';
-export const RELEASE_CHANNELS = updateChannels as readonly ('stable' | 'beta' | 'alpha')[];
+export const RELEASE_CHANNELS = ['stable', 'beta', 'alpha'] as const;
 export type MachineUpdateLeaf = 'update.automatic' | 'update.channel';
 export const MACHINE_UPDATE_LEAVES: readonly MachineUpdateLeaf[] = ['update.automatic', 'update.channel'];
-export interface MachineUpdateRequest { id: string; value: boolean | string }
+export interface MachineUpdateRequest { id: string; value: boolean | string; savedAt?: number }
 export type MachineUpdateRequests = Partial<Record<MachineUpdateLeaf, MachineUpdateRequest>>;
 export interface MachineUpdateReport { order: number; values: Partial<Record<MachineUpdateLeaf, boolean | string>>; requests: MachineUpdateRequests }
 export const validMachineUpdateValue = (leaf: MachineUpdateLeaf, value: unknown): value is boolean | string =>
@@ -88,8 +87,8 @@ export function machineUpdateRequests(value: unknown): MachineUpdateRequests {
   return Object.fromEntries(MACHINE_UPDATE_LEAVES.flatMap(leaf => {
     const request = (value as Record<string, unknown>)[leaf];
     if (typeof request !== 'object' || request === null) return [];
-    const { id, value: requested } = request as Record<string, unknown>;
-    return typeof id === 'string' && /^[a-f0-9-]{36}$/.test(id) && validMachineUpdateValue(leaf, requested) ? [[leaf, { id, value: requested }]] : [];
+    const { id, value: requested, savedAt } = request as Record<string, unknown>;
+    return typeof id === 'string' && /^[a-f0-9-]{36}$/.test(id) && validMachineUpdateValue(leaf, requested) ? [[leaf, { id, value: requested, ...(typeof savedAt === 'number' && Number.isSafeInteger(savedAt) && savedAt >= 0 ? { savedAt } : {}) }]] : [];
   }));
 }
 

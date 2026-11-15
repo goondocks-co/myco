@@ -1,12 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
-import updateChannels from '../../myco-shared/release-channels.json' with { type: 'json' };
 
 export const SOURCE_VERSION_PATTERN = '^0[.]0[.]0-dev[+][0-9A-Za-z-]+([.][0-9A-Za-z-]+)*[.]b[0-9a-z]+$';
 
 export const INSTALL_MARKER_SCHEMA = {
   source: 'checkout',
-  channels: Object.freeze(updateChannels),
+  channels: Object.freeze(['stable', 'beta', 'alpha']),
   versionPattern: SOURCE_VERSION_PATTERN,
   hexCharacters: '0-9a-fA-F',
   commitLength: 40,

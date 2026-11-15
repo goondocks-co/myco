@@ -1,3 +1,4 @@
+import { MACHINE_UPDATE_LEAVES } from '@goondocks/myco-shared/member-protocol';
 import type { RelationalStore } from '../../core/adapters.js';
 import { commit, first, read, rows, write } from '../index.js';
 
@@ -114,6 +115,15 @@ const reportUpdates = write<[machine: string, member: string, report: string, or
   WHERE machine_id=?1 AND ${claimedBy('?1', '?2')}
     AND COALESCE(json_extract(settings_cached_values,'$."$updates".order'),-1)<?4` });
 
-/** Keep the machine's actual update preferences beside its cached capture settings, in report order. */
+const consumeUpdate = write<[machine: string, member: string, report: string, order: number, leaf: string]>({ name: 'machineSettings.consumeUpdate', sql: `DELETE FROM machine_settings
+  WHERE machine_id=?1 AND leaf=?5 AND ${claimedBy('?1', '?2')}
+    AND json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END,'$.id')=json_extract(?3,'$.requests."'||?5||'".id')
+    AND json_type(?3,'$.values."'||?5||'"') IS NOT NULL
+    AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id=?1 AND member_id=?2
+      AND json_extract(settings_cached_values,'$."$updates".order')=?4
+      AND json_extract(settings_cached_values,'$."$updates".requests."'||?5||'".id')=json_extract(?3,'$.requests."'||?5||'".id'))` });
+
+/** Keep an ordered report and consume only the requests that the accepted report confirms. */
 export const reportMachineUpdates = (db: RelationalStore, input: { machine: string; member: string; report: string; order: number }) =>
-  commit(db, reportUpdates.bind(input.machine, input.member, input.report, input.order));
+  commit(db, reportUpdates.bind(input.machine, input.member, input.report, input.order),
+    ...MACHINE_UPDATE_LEAVES.map(leaf => consumeUpdate.bind(input.machine, input.member, input.report, input.order, leaf)));

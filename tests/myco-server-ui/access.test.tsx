@@ -695,3 +695,21 @@ it('shows reported update preferences separately from waiting changes and confir
   expect(await within(updates).findByText('Release channel: beta · last reported by this machine')).toBeTruthy();
   expect(within(updates).queryByText(/Waiting for this machine/)).toBeNull();
 });
+
+it('offers no update controls for an admin’s own or another member’s machine on People & machines', async () => {
+  let reads = 0;
+  const settings = () => { reads += 1; return Response.json({ leaves: [
+    { leaf: 'update.channel', effective: 'alpha', nextEffective: 'alpha', application: 'applied' },
+    { leaf: 'update.automatic', effective: true, nextEffective: true, application: 'applied' },
+  ] }); };
+  accessServer({ member: [credential(), credential({ memberId: LIN, machineId: 'lin_77aa00bb', runtimeLabel: 'Lin’s desk' })] }, {
+    '/api/machines/ada_5a2d54af/settings': settings,
+    '/api/machines/lin_77aa00bb/settings': settings,
+  });
+  mount('/people');
+  const machines = await screen.findByRole('list', { name: 'Machines' });
+  await within(machines).findByText('Ada’s MacBook');
+  await within(machines).findByText('Lin’s desk');
+  expect(screen.queryByRole('combobox', { name: /Automatic updates|Release channel/ })).toBeNull();
+  expect(reads).toBe(0);
+});

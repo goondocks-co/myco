@@ -1,3 +1,5 @@
+import { RELEASE_CHANNELS } from '@goondocks/myco-shared/member-protocol';
+import { RELEASE_CHANNELS as INSTALL_CHANNELS } from '@myco/constants/update.js';
 import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -40,6 +42,9 @@ const mixed = [
 const table: Array<[ReleaseChannel, string]> = [['stable', '2.0.0'], ['beta', '2.0.1-beta.10'], ['alpha', '2.1.0-alpha.10']];
 
 describe('one channel policy for install and update', () => {
+  it('offers the same channels to installers, members and the dashboard', () => {
+    expect(RELEASE_CHANNELS).toEqual(INSTALL_CHANNELS);
+  });
   it('commits the generated selector without drift', () => {
     expect(source).toContain(renderReleaseSelector());
     expect(fs.readFileSync(path.join(import.meta.dir, '../../docs/install.ps1'), 'utf8')).toContain(renderPowerShellReleaseSelector());

@@ -498,3 +498,35 @@ it('applies dashboard update settings to the next updater check and retains a la
   expect(channels).toEqual(['beta', 'stable']);
   expect(JSON.parse(machineSettingsHeaders('https://settings.example', mycoHome)[MACHINE_UPDATE_HEADER]!)).toMatchObject({ values: { 'update.channel': 'stable', 'update.automatic': true } });
 });
+
+it('keeps later local commands when older dashboard preferences are still waiting', async () => {
+  const { cacheMachineSettings, machineSettingsHeaders } = await import('@myco/member/machine-settings.js');
+  const { run: config } = await import('@myco/cli/member-config.js');
+  const { effectiveUpdateChannel } = await import('@myco/upgrade/check-cache.js');
+  const { automaticUpdatesEnabled } = await import('@myco/install/marker-reader.js');
+  const { MACHINE_UPDATE_HEADER } = await import('@goondocks/myco-shared/member-protocol');
+  const requests = {
+    'update.channel': { id: crypto.randomUUID(), value: 'beta', savedAt: Date.now() - 1 },
+    'update.automatic': { id: crypto.randomUUID(), value: true, savedAt: Date.now() - 1 },
+  };
+  await run(['--automatic', 'off'], { home });
+  expect(await config(['set', 'update.channel', 'stable'], 'registry', { mycoHome: home })).toBe(true);
+  cacheMachineSettings('https://settings.example', { leaves: {}, updateRequests: requests }, home);
+  expect(effectiveUpdateChannel(home)).toBe('stable');
+  expect(automaticUpdatesEnabled(home)).toBe(false);
+  expect(JSON.parse(machineSettingsHeaders('https://settings.example', home)[MACHINE_UPDATE_HEADER]!)).toMatchObject({
+    values: { 'update.channel': 'stable', 'update.automatic': false }, requests,
+  });
+});
+
+it('checks the marker channel when the installation preferences are damaged and reports their error', async () => {
+  const { updateBinary } = await import('@myco/upgrade/guarded-binary.js');
+  const { readUpdateChannelPreference } = await import('@myco/install/marker-reader.js');
+  fs.writeFileSync(path.join(home, 'install-update.json'), '{');
+  let selected: string | null = null;
+  expect(await updateBinary('manual', {}, { home, cwd: home, currentVersion: '2.0.0-alpha.1',
+    resolveRefs: async channel => { selected = channel; return null; },
+  })).toMatchObject({ kind: 'already-current' });
+  expect(selected).toBe('alpha');
+  expect(readUpdateChannelPreference(home)).toMatchObject({ channel: null, error: expect.any(String) });
+});

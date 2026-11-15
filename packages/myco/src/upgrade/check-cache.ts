@@ -13,7 +13,7 @@ const MACHINE_CONFIG_FILENAME = 'config.yaml';
 /** Installed channels come from the marker; unmarked homes use their own machine config. */
 export function effectiveUpdateChannel(home = resolveMycoHome()): ReleaseChannel {
   const preference = readUpdateChannelPreference(home);
-  if (preference !== null) return preference;
+  if (preference.channel !== null) return preference.channel;
   const marker = readInstallMarker(home, true);
   if (marker) return marker.channel;
   const file = path.join(home, MACHINE_CONFIG_FILENAME);

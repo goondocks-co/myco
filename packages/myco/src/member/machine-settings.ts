@@ -8,8 +8,8 @@
  */
 import fs from 'node:fs';
 import { MACHINE_UPDATE_HEADER, machineUpdateRequests, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
-import { readAppliedUpdateRequests, readAutomaticUpdatePreference, readInstallMarker, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
-import { applyMachineUpdateRequests } from './automatic-update-state.js';
+import { readAutomaticUpdatePreference, readInstallMarker, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
+import { applyMachineUpdateRequests, readAppliedUpdateRequests } from './automatic-update-state.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
 import { MACHINE_SETTING_SPECS, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_ORDER_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, isMachineSettingsRevision, resolveMachineSetting } from '@goondocks/myco-shared/member-protocol';
 import { deploymentKeyFor, deploymentsDir, machineSettingsPath } from './registry.js';
@@ -125,6 +125,18 @@ export function beginMachineSettingsRequest(serverUrl: string, mycoHome: string)
   return withMachineSettings(serverUrl, mycoHome, (_file, order) => nextMachineAnswerOrder(order), true);
 }
 
+const updateWarnings = new Map<string, string>();
+
+function updateSettingsProblem(file: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const previous = readPrivateJson<{ updateApplyError?: string }>(file);
+  if (updateWarnings.get(file) !== message && (!previous.ok || previous.value?.updateApplyError !== message)) {
+    process.stderr.write(`[myco] member: update settings unavailable: ${message}\n`);
+  }
+  updateWarnings.set(file, message);
+  return message;
+}
+
 /**
  * Record the settings `serverUrl` answered for this machine, in the home the membership is held under: the caller
  * names it, as the hook resolves it from its own directory, so a pinned project's settings land beside its own
@@ -136,9 +148,13 @@ export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoH
   return withMachineSettings(serverUrl, mycoHome, (file, order) => {
     const stamp = requestOrder ?? nextMachineAnswerOrder(order);
     if (stamp < order.received) return false;
-    applyMachineUpdateRequests(mycoHome, { deployment: deploymentKeyFor(serverUrl), requests: block.updateRequests ?? {} });
+    let updateApplyError: string | undefined;
+    try {
+      applyMachineUpdateRequests(mycoHome, { deployment: deploymentKeyFor(serverUrl), requests: block.updateRequests ?? {} });
+      updateWarnings.delete(file);
+    } catch (error) { updateApplyError = updateSettingsProblem(file, error); }
     order.received = stamp;
-    writePrivateFileAtomic(file, `${JSON.stringify({ ...block, cachedOrder: stamp })}\n`);
+    writePrivateFileAtomic(file, `${JSON.stringify({ ...block, cachedOrder: stamp, ...(updateApplyError === undefined ? {} : { updateApplyError }) })}\n`);
     return true;
   });
 }
@@ -198,7 +214,8 @@ export function machineSettingsHeaders(serverUrl: string, mycoHome: string): Rec
         values: reportedUpdateValues(mycoHome),
       }) };
     } catch (error) {
-      process.stderr.write(`[myco] member: update settings could not be reported: ${error instanceof Error ? error.message : String(error)}\n`);
+      updateSettingsProblem(file, error);
+      updateReport = { [MACHINE_UPDATE_HEADER]: JSON.stringify({ order: nextMachineAnswerOrder(order), requests: {}, values: {} }) };
     }
     return {
       [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE,
@@ -214,8 +231,9 @@ function reportedUpdateValues(home: string): Record<string, boolean | string> {
   const values: Record<string, boolean | string> = {};
   const automatic = readAutomaticUpdatePreference(home);
   if (automatic.error === undefined) values['update.automatic'] = automatic.enabled;
-  const channel = readUpdateChannelPreference(home) ?? readInstallMarker(home, true)?.channel;
-  if (channel !== undefined && channel !== null) values['update.channel'] = channel;
+  const preference = readUpdateChannelPreference(home);
+  const channel = preference.channel ?? readInstallMarker(home, true)?.channel;
+  if (preference.error === undefined && channel !== undefined && channel !== null) values['update.channel'] = channel;
   return values;
 }
 

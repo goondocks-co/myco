@@ -36,10 +36,10 @@ export function writeUpdatePreferences(home, patch, publish = atomicText) {
   try { previous = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (!previous || typeof previous !== 'object' || Array.isArray(previous)) throw new Error('Invalid installation update preferences');
-  const { machineUpdate, ...preferences } = patch;
+  const { machineUpdate, changedAt, ...preferences } = patch;
   const machineRequests = machineUpdate === undefined ? previous.machineRequests : {
     ...previous.machineRequests,
     [machineUpdate.deployment]: { ...previous.machineRequests?.[machineUpdate.deployment], ...machineUpdate.requests },
   };
-  publishInstallFile(home, AUTOMATIC_UPDATE_PREFERENCE_FILE, { ...previous, ...preferences, ...(machineRequests === undefined ? {} : { machineRequests }) }, publish);
+  publishInstallFile(home, AUTOMATIC_UPDATE_PREFERENCE_FILE, { ...previous, ...preferences, ...(changedAt === undefined ? {} : { changedAt: { ...previous.changedAt, ...changedAt } }), ...(machineRequests === undefined ? {} : { machineRequests }) }, publish);
 }

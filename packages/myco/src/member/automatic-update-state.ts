@@ -3,9 +3,8 @@ import path from 'node:path';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import type { BinaryUpdateOutcome } from '@myco/upgrade/guarded-binary.js';
-import { writeUpdatePreferences } from '../../scripts/install-marker.mjs';
-import { readAppliedUpdateRequests } from '@myco/install/marker-reader.js';
-import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, validMachineUpdateValue, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
+import { AUTOMATIC_UPDATE_PREFERENCE_FILE, writeUpdatePreferences } from '../../scripts/install-marker.mjs';
+import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, validMachineUpdateValue, machineUpdateRequests, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
 
 export const AUTOMATIC_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 export const AUTOMATIC_UPDATE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
@@ -26,6 +25,27 @@ export function setUpdatePreferences(home: string, preferences: { automaticUpdat
   changeUpdatePreferences(home, preferences, waitMs);
 }
 
+interface StoredUpdatePreferences {
+  machineRequests?: Record<string, unknown>;
+  changedAt?: Record<string, number>;
+}
+
+function storedUpdatePreferences(home: string): StoredUpdatePreferences {
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8'));
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid installation update preferences');
+    return value as StoredUpdatePreferences;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+/** Receipts name requests this installation has applied or superseded with a later local command. */
+export function readAppliedUpdateRequests(home: string, deployment: string): MachineUpdateRequests {
+  return machineUpdateRequests(storedUpdatePreferences(home).machineRequests?.[deployment]);
+}
+
 type RemotePreferences = { deployment: string; requests: MachineUpdateRequests };
 
 /** Apply pending preferences together, publishing their receipts atomically with their local values. */
@@ -39,15 +59,17 @@ export function applyMachineUpdateRequests(home: string, remote: RemotePreferenc
 }
 
 function pendingUpdatePreferences(home: string, remote: RemotePreferences): { automaticUpdates?: boolean; channel?: string; machineUpdate: RemotePreferences } | null {
-  const applied = readAppliedUpdateRequests(home, remote.deployment);
+  const stored = storedUpdatePreferences(home);
+  const applied = machineUpdateRequests(stored.machineRequests?.[remote.deployment]);
   const pending = Object.fromEntries(MACHINE_UPDATE_LEAVES.flatMap(leaf => {
     const request = remote.requests[leaf];
     return request === undefined || applied[leaf]?.id === request.id ? [] : [[leaf, request]];
   })) as MachineUpdateRequests;
   if (Object.keys(pending).length === 0) return null;
+  const apply = (leaf: keyof MachineUpdateRequests) => pending[leaf] !== undefined && (pending[leaf]!.savedAt ?? 0) >= (stored.changedAt?.[leaf] ?? 0);
   return {
-    ...(pending['update.automatic'] === undefined ? {} : { automaticUpdates: pending['update.automatic'].value as boolean }),
-    ...(pending['update.channel'] === undefined ? {} : { channel: pending['update.channel'].value as string }),
+    ...(!apply('update.automatic') ? {} : { automaticUpdates: pending['update.automatic']!.value as boolean }),
+    ...(!apply('update.channel') ? {} : { channel: pending['update.channel']!.value as string }),
     machineUpdate: { deployment: remote.deployment, requests: pending },
   };
 }
@@ -62,8 +84,13 @@ function changeUpdatePreferences(home: string, preferences: { automaticUpdates?:
   try {
     const selected = preferences.machineUpdate === undefined ? preferences : pendingUpdatePreferences(home, preferences.machineUpdate);
     if (selected === null) return;
-    fs.rmSync(statePath(home), { force: true });
-    writeUpdatePreferences(home, selected, (file, text) => atomicWriteFileSync(file, text, { durable: true, mode: 0o600 }));
+    const now = Date.now();
+    const changedAt = preferences.machineUpdate === undefined ? {
+      ...(selected.automaticUpdates === undefined ? {} : { 'update.automatic': now }),
+      ...(selected.channel === undefined ? {} : { 'update.channel': now }),
+    } : undefined;
+    if (selected.automaticUpdates !== undefined || selected.channel !== undefined) fs.rmSync(statePath(home), { force: true });
+    writeUpdatePreferences(home, { ...selected, ...(changedAt === undefined ? {} : { changedAt }) }, (file, text) => atomicWriteFileSync(file, text, { durable: true, mode: 0o600 }));
   } finally { acquired.lock.release(); }
 }
 

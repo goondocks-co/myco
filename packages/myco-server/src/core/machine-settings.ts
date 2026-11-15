@@ -203,7 +203,7 @@ export async function machineBlockFor(
     const counter = parseMachineSettingsRevision(revision)!.counter;
     if (await publishMachineSnapshot(db, { machine: machineId, member: memberId, revision, leaves: JSON.stringify(leaves), counter, keep: MACHINE_SETTINGS_SNAPSHOT_LIMIT })) {
       const updates = support.machineUpdateReport === undefined ? {} : machineUpdateRequests(Object.fromEntries(
-        settings.filter(row => row.requestId !== undefined).map(row => [row.leaf, { id: row.requestId, value: row.value }]),
+        settings.filter(row => row.requestId !== undefined).map(row => [row.leaf, { id: row.requestId, value: row.value, savedAt: row.updatedAt ?? 0 }]),
       ));
       return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates }) };
     }
