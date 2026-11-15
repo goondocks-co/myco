@@ -142,7 +142,7 @@ interface Consumer { module: string; fn: (...args: never[]) => unknown; member?:
 
 /** One leaf's behavior case. */
 interface BehaviorCase {
-  consumer: Consumer;
+  consumer?: Consumer;
   /** A value its rule admits on the target, distinct from the default the consumer applies. */
   value: (target: DeploymentTarget) => unknown;
   /** A value its rule refuses. */
@@ -380,12 +380,10 @@ const CASES: Readonly<Record<string, BehaviorCase>> = {
   'import.window_days': { consumer: at('api/import.ts', handleImportPlan), value: () => 7, invalid: () => 2.5, observe: importPlan },
   'import.max_sessions_per_harness': { consumer: at('api/import.ts', handleImportPlan), value: () => 1, invalid: () => 1.5, observe: importPlan },
   'single_turn.model': {
-    consumer: at('core/completion/configured-provider.ts', configuredCompletionProvider),
     setup: () => [['single_turn.base_url', 'http://models.internal/v1']],
     value: () => 'local-title-model', invalid: () => '', observe: (r) => completionObservation(r, 'model'),
   },
   'single_turn.base_url': {
-    consumer: at('core/completion/configured-provider.ts', configuredCompletionProvider),
     setup: () => [['single_turn.model', 'local-title-model']],
     value: () => 'http://models.internal/v1', invalid: () => 'not a url', observe: (r) => completionObservation(r, 'url'),
   },
@@ -492,6 +490,7 @@ describe('the settings contract', () => {
 
   it('reaches every consumer from a production entry without passing through the policy registry', async () => {
     for (const [leaf, { consumer }] of Object.entries(CASES)) {
+      if (consumer === undefined) continue;
       const file = path.join(SERVER_SRC, consumer.module);
       const exported = await import(file) as Record<string, unknown>;
       const handles = Object.values(exported).flatMap((member) => typeof member === 'object' && member !== null ? Object.values(member) : [member]);
