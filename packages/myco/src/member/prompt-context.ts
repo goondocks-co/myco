@@ -18,6 +18,7 @@ import { HOOK_CONFIG } from '../hooks/hook-config.generated.js';
 export const PROMPT_CONTEXT_TOOL_CAP_MS = 800;
 /** Maximum inline wait when this harness has no tool-context delivery path. */
 export const PROMPT_CONTEXT_INLINE_CAP_MS = 1_500;
+type PromptRenderRun = Pick<HookRun, 'spool' | 'credential' | 'sessionId' | 'agent' | 'input' | 'ctx'>;
 type PromptAsk = Extract<ContextAskRequest, { kind: 'prompt' }>;
 export interface PromptRecall {
   current: string;
@@ -107,7 +108,7 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
 }
 
 /** Claim a render under the append lock; the delivery event and the consumed mark commit together. */
-function consumePromptRecall(run: HookRun, state: SessionState, options: { id: string; response: HookResponse; delivery: 'inline' | 'tool' }): HookClaim {
+function consumePromptRecall(run: PromptRenderRun, state: SessionState, options: { id: string; response: HookResponse; delivery: 'inline' | 'tool' }): HookClaim {
   const recall = state.promptRecall;
   const held = recall?.asks[options.id];
   if (held === undefined) return { events: [] };
@@ -132,7 +133,7 @@ function consumePromptRecall(run: HookRun, state: SessionState, options: { id: s
 }
 
 /** A tool hook reads only this session's current held answer and never waits for it. */
-export function toolPromptContext(run: HookRun, state: SessionState, response: HookResponse = {}): HookClaim {
+export function toolPromptContext(run: PromptRenderRun, state: SessionState, response: HookResponse = {}): HookClaim {
   const recall = state.promptRecall;
   const held = recall?.asks[recall.current];
   if (recall === undefined || held === undefined || !held.late || held.stage !== 'ready') return { events: [], response };
@@ -143,7 +144,7 @@ export function toolPromptContext(run: HookRun, state: SessionState, response: H
 
 /** Helper-owned requests finish after the prompt wait and release answers the member has discarded. */
 export async function fetchPromptRecalls(opts: {
-  spool: HookRun['spool']; client: ServerClient; mycoHome: string; budget: HookBudget; now: () => number; capMs: number;
+  spool: HookRun['spool']; client: ServerClient; mycoHome: string; budget: HookBudget; now: () => number; capMs: number; force?: boolean;
 }): Promise<boolean> {
   opts.spool.assertClientDestination(opts.client);
   for (const sessionId of opts.spool.stateSessionIds()) {

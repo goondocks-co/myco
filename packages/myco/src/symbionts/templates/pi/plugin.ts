@@ -1338,6 +1338,20 @@ export default function (pi: any) {
     return { message: { customType: "myco-prompt-context", content: answer.additionalContext, display: false } };
   });
 
+  pi.on("tool_result", async (_event: unknown, ctx: PiContext) => {
+    const session = sessionOf(ctx);
+    if (!session) return;
+    const answer = runMycoHook(session.cwd, AGENT, session.sessionId, "prompt-recall", {
+      session_id: session.sessionId,
+      transcript_path: session.transcriptPath,
+      cwd: session.cwd,
+    });
+    if (answer?.additionalContext) pi.sendMessage(
+      { customType: "myco-prompt-context", content: answer.additionalContext, display: false },
+      { deliverAs: "steer" },
+    );
+  });
+
   /** Turn end: ship whatever Pi has appended to its transcript since the last pass. */
   pi.on("agent_end", async (_event: unknown, ctx: PiContext) => {
     const session = sessionOf(ctx);

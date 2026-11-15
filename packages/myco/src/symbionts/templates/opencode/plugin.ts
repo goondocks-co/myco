@@ -1380,6 +1380,13 @@ export const MycoPlugin = async ({
         failed: output?.error !== undefined,
         at: nowIso(),
       });
+      if (typeof output?.output !== "string") return;
+      const answer = runMycoHook(root, AGENT, sessionId, "prompt-recall", {
+        session_id: sessionId,
+        transcript_path: transcriptPathFor(root, AGENT, sessionId),
+        cwd: root,
+      });
+      if (answer?.additionalContext) output.output += `\n\n${CONTEXT_HEADING}${answer.additionalContext}`;
     },
 
     /** Compaction drops the earlier turns, so the served block is placed again. */

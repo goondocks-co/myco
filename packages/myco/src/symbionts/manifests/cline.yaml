@@ -78,6 +78,7 @@ registration:
   # project-instruction search paths.
 
 capabilities:
+  promptRecallToolDelivery: true
   sessionStartInjection: true
   # The transcript is the only writer of this symbiont's turn rows: the
   # prompt-submit hook mints the prompt id, returns it for the plugin to stamp

@@ -1,6 +1,6 @@
 /**
- * One pass of the member helper over a project (`member/helper.ts`): the project's backlog (both lanes), then the
- * context the hooks asked for, then retention. What a detached helper runs, and what a hook that must deliver
+ * One pass of the member helper over a project (`member/helper.ts`): context and backlog delivery together, then
+ * retention. What a detached helper runs, and what a hook that must deliver
  * before it exits runs in its own process (`--ship inline`, or a helper it could not start apart from itself).
  */
 import { drainEntryBacklog } from './backlog.js';
@@ -39,16 +39,21 @@ export function helperPass(route: MemberRoutingIdentity, mycoHome: string, deps:
     const budget = deadlineBudget(deadline);
     // Every answer the Deployment gives this pass keeps the features the hooks emit by current.
     const fetchImpl = watchingFeatures(deps.fetch ?? globalThis.fetch, { serverUrl: entry.serverUrl, spoolDir: spool.dir, mycoHome, now });
-    const prefetch = async () => spool.shouldDial(now(), force)
-      ? prefetchContext({ spool, client: new ServerClient(deps.entry === undefined ? await liveEntry(entry, mycoHome, fetchImpl, now, budget) : entry, fetchImpl, { credentialSource: deps.entry === undefined ? 'registry' : 'env' }), serverUrl: entry.serverUrl, mycoHome, budget, now })
-      : null;
     // Prompts a harness writes only to its transcript, appended before the drain that delivers them.
     const pluginCapture = recoverPluginCapture(spool, now);
     backfillTranscriptPrompts(spool, now);
-    const backlog = await drainEntryBacklog(entry, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' });
-    let prefetched: Awaited<ReturnType<typeof prefetch>> = null;
-    try { prefetched = await prefetch(); }
-    catch (error) { process.stderr.write(`${promptContextLogPrefix(route.serverUrl, route.projectId)}context prefetch failed: ${terminalText(error instanceof Error ? error.message : String(error))}\n`); }
+    const current = deps.entry === undefined ? await liveEntry(entry, mycoHome, fetchImpl, now, budget) : entry;
+    const prefetch = async () => spool.shouldDial(now(), force)
+      ? prefetchContext({ spool, client: new ServerClient(current, fetchImpl, { credentialSource: deps.entry === undefined ? 'registry' : 'env' }), serverUrl: entry.serverUrl, mycoHome, budget, now, force })
+      : null;
+    const [contextResult, backlogResult] = await Promise.allSettled([
+      prefetch(),
+      drainEntryBacklog(current, { mycoHome, fetch: fetchImpl, now, budget, force, migrateLegacy: deps.migrateLegacy, rescan: false, newestFirst: true, credentialSource: deps.entry === undefined ? 'registry' : 'env' }),
+    ]);
+    if (contextResult.status === 'rejected') process.stderr.write(`${promptContextLogPrefix(route.serverUrl, route.projectId)}context prefetch failed: ${terminalText(contextResult.reason instanceof Error ? contextResult.reason.message : String(contextResult.reason))}\n`);
+    if (backlogResult.status === 'rejected') throw backlogResult.reason;
+    const backlog = backlogResult.value;
+    const prefetched = contextResult.status === 'fulfilled' ? contextResult.value : null;
     // Everything delivered (no journal and no transcript left behind): the state of sessions delivered long ago may go.
     const delivered = backlog.endedBy === 'done' && spool.sessionIds().length === 0 && spool.transcriptBacklogIds().length === 0;
     applySpoolRetention(spool, now(), { delivered });

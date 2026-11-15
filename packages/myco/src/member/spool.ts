@@ -28,7 +28,7 @@ import {
 import type { BlobSource, BlobStager, MemberEnvelope, OutboundEvent } from './envelope.js';
 import { REJOIN_HINT } from './delivery-notice.js';
 import {
-  bufferLockPath, deferAfterRefusal, readSessionState, readSessionStateResult, readSessionStateUnlocked, recordMigrationSettledUnlocked, retryWaiting, sessionStatePath, turnsFileOf, updateSessionState,
+  bufferLockPath, deferAfterRefusal, readSessionState, readSessionStateResult, readSessionStateResultUnlocked, readSessionStateUnlocked, recordMigrationSettledUnlocked, retryWaiting, sessionStatePath, turnsFileOf, updateSessionState,
   writeSessionStateUnlocked, type SessionState, type SessionStateRead,
 } from './session-state.js';
 import { assertMemberPathContained, ensureMemberDir, ensurePrivateFile, memberRoot, pathIsAbsent, readPrivateJson, reportSkippedPrivateFile, writePrivateFileAtomic } from './store.js';
@@ -697,6 +697,15 @@ export class MemberSpool {
     } catch {
       return [];
     }
+  }
+
+  /** An atomic state snapshot without taking the append lock or creating files. Claims recheck under the lock. */
+  peekSessionState(sessionId: string): SessionStateRead {
+    const file = sessionStatePath(this.dir, sessionId);
+    if (path.dirname(file) !== path.resolve(this.dir)) throw new Error('Session state must belong to its spool');
+    assertMemberPathContained(file, this.mycoHome);
+    if (!pathIsAbsent(this.dir)) this.assertDestination();
+    return readSessionStateResultUnlocked(this.dir, sessionId);
   }
 
   /** Strict identity evidence includes fully delivered sessions and refuses incomplete reads. */

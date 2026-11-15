@@ -75,12 +75,13 @@ export function writeHookResponse(
   }
 
   const config = resolveHookResponseConfig(symbiont);
-  if (hookEvent === 'post-tool-use' && symbiontHasCapability(symbiont, 'promptRecallToolDelivery') && config.shapes?.PostToolUse !== undefined) {
+  const toolEvent = hookEvent === 'post-tool-use' ? 'PostToolUse' : hookEvent === 'post-tool-use-failure' ? 'PostToolUseFailure' : undefined;
+  if (toolEvent !== undefined && symbiontHasCapability(symbiont, 'promptRecallToolDelivery') && config.shapes?.[toolEvent] !== undefined) {
     const context = response.additionalContext;
-    const nested = { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } };
-    process.stdout.write(JSON.stringify(context === undefined ? {} : config.shapes.PostToolUse === 'both'
+    const nested = { hookSpecificOutput: { hookEventName: toolEvent, additionalContext: context } };
+    process.stdout.write(JSON.stringify(context === undefined ? {} : config.shapes[toolEvent] === 'both'
       ? { additionalContext: context, ...nested }
-      : config.shapes.PostToolUse === 'flat' ? { additionalContext: context } : nested));
+      : config.shapes[toolEvent] === 'flat' ? { additionalContext: context } : nested));
     return;
   }
 

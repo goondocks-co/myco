@@ -333,12 +333,17 @@ registration:
   globalSkillsTarget: ~/.claude/skills
   settingsTarget: .claude/settings.json
   # The agent schema puts hooks and permissions at the root of settings.json.
+  hookResponse:
+    format: plain-text
+    shapes:
+      PostToolUse: hookSpecificOutput
+      PostToolUseFailure: hookSpecificOutput
   hooksContainSettings: true
   globalSettingsTarget: ~/.claude/settings.json
   instructionsFile: CLAUDE.md
 capabilities:
-  # No PreToolUse hook is wired: the Deployment parses the transcript and the
-  # retained set injects at session start, prompt submit and subagent start.
+  promptRecallToolDelivery: true
+  # Tool hooks render held prompt recall; the transcript remains the only source of tool capture.
   preToolUseInjection: false
   # Hook template registers a session-start hook that fetches Cortex context
   # and emits it as additional system context.
@@ -356,10 +361,7 @@ capabilities:
   canopyReadTools:
     - tool: Read
       pathField: file_path
-  # Broader superset declaring every tool whose tool_input carries a file
-  # path. PostToolUse uses this list to stamp `activities.file_path` for
-  # write-side tools too, so the FTS index and per-activity file column
-  # stay accurate. Canopy entries above are repeated here.
+  # Tools whose input names file paths for captured activities.
   pathBearingTools:
     - tool: Read
       pathField: file_path

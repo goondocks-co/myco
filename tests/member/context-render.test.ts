@@ -1,3 +1,4 @@
+import { helperPass } from '@myco/member/helper-pass.js';
 import { PROMPT_CONTEXT_INLINE_CAP_MS, PROMPT_CONTEXT_TOOL_CAP_MS } from '@myco/member/prompt-context.js';
 import { publishFixture } from '../myco-server/helpers/fixtures.js';
 /**
@@ -162,12 +163,12 @@ describe('a prompt', () => {
     };
     const tx = transcript(sessionId);
     const started = Date.now();
-    const first = await runHook('user-prompt-submit', { session_id: sessionId, prompt: 'late recall', turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
+    const first = await runHook('user-prompt-submit', { session_id: sessionId, conversationId: sessionId, trajectory_id: sessionId, tool_info: { user_prompt: 'late recall', transcript_path: tx }, prompt: 'late recall', turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
     expect(Date.now() - started).toBeLessThan(capMs + 500);
     expect(first.stderr).toContain(`cap_ms=${capMs}`);
     expect(contextOf(first.stdout)).toBe(`Session:: \`${sessionId}\``);
     const finish = async () => { resolve!(Response.json({ persisted: true, context: 'held memory', receiptId })); await background; };
-    const tool = () => runHook('post-tool-use', { session_id: sessionId, tool_name: 'Read', tool_input: {}, turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
+    const tool = () => runHook('post-tool-use', { session_id: sessionId, conversationId: sessionId, trajectory_id: sessionId, agent_action_name: 'post_run_command', tool_info: { transcript_path: tx }, tool_name: 'Read', tool_input: {}, turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
     return { first, finish, tool, spawn, fetch, tx, asking: () => asking, discarded, receiptId };
   }
 
@@ -184,6 +185,51 @@ describe('a prompt', () => {
     expect(delivery?.payload).toMatchObject({ renderedIn: held.asking()?.promptId });
   });
 
+  it('starts Claude recall beside delivery and renders it once without capturing the tool again', async () => {
+    const sessionId = 'sess-claude-late';
+    const tx = transcript(sessionId);
+    cacheDeploymentFeatures('https://member-test.invalid', ['prompt-identity', 'prompt-scheme'], mycoHome);
+    await runHook('session-start', { session_id: sessionId, transcript_path: tx }, { fetch: rig.fetch });
+    let releaseEvents!: () => void;
+    let releaseAnswer!: (response: Response) => void;
+    const events = new Promise<void>(done => { releaseEvents = done; });
+    const answer = new Promise<Response>(done => { releaseAnswer = done; });
+    let asking: { promptId: string } | undefined;
+    const fetch: FetchLike = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname === '/context/prompt') {
+        asking = await request.json() as { promptId: string };
+        releaseEvents();
+        return answer;
+      }
+      if (new URL(request.url).pathname === '/events') await events;
+      return rig.fetch(request);
+    };
+    let background: Promise<unknown> | undefined;
+    const spawn = () => {
+      background ??= helperPass({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, mycoHome, { fetch })(Date.now() + 10_000, { force: true });
+      return { started: true, pid: process.pid };
+    };
+    try {
+      const prompt = await runHook('user-prompt-submit', { session_id: sessionId, prompt_id: 'claude-turn', prompt: 'late Claude memory', transcript_path: tx }, { fetch, helperSpawn: spawn });
+      const startedBeforeDeliveryFinished = asking !== undefined;
+      const drainedBeforeAnswer = spool().depth(sessionId) === 0;
+      releaseEvents();
+      releaseAnswer(Response.json({ persisted: true, context: 'late Claude context', receiptId: crypto.randomUUID() }));
+      await background;
+      expect(startedBeforeDeliveryFinished).toBe(true);
+      expect(drainedBeforeAnswer).toBe(true);
+      expect(prompt.stderr).toContain(`cap_ms=${PROMPT_CONTEXT_TOOL_CAP_MS} delivery=pending`);
+      const input = { session_id: sessionId, prompt_id: 'claude-turn', tool_name: 'Write', tool_input: {}, transcript_path: tx };
+      const tool = await runHook('prompt-recall', input, { fetch });
+      expect(JSON.parse(tool.stdout)).toEqual({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'late Claude context' } });
+      expect((await runHook('prompt-recall', input, { fetch })).stdout).toBe('');
+      const records = spool().readRecords(sessionId).filter(record => record !== null);
+      expect(records.filter(record => record.kind === 'context.delivered').map(record => record.payload.renderedIn)).toEqual([asking!.promptId]);
+      expect(records.some(record => record.kind === 'tool.use' || record.kind === 'plan')).toBe(false);
+    } finally { releaseEvents(); releaseAnswer(Response.json({ persisted: true, context: '' })); await background; }
+  });
+
   it('discards a late answer when the next prompt arrives before it', async () => {
     const held = await latePrompt('copilot', 'sess-replaced', PROMPT_CONTEXT_TOOL_CAP_MS);
     await runHook('user-prompt-submit', { session_id: 'sess-replaced', prompt: 'next prompt', transcript_path: held.tx }, { fetch: held.fetch, symbiont: 'copilot', helperSpawn: held.spawn });
@@ -193,7 +239,7 @@ describe('a prompt', () => {
   });
 
   it('discards a late answer when the harness tool hook cannot add context', async () => {
-    const held = await latePrompt('claude-code', 'sess-unsupported', PROMPT_CONTEXT_INLINE_CAP_MS, { persisted: false, code: 'session_tombstoned' });
+    const held = await latePrompt('windsurf', 'sess-unsupported', PROMPT_CONTEXT_INLINE_CAP_MS, { persisted: false, code: 'session_tombstoned' });
     expect(Number(/wait_ms=(\d+)/.exec(held.first.stderr)?.[1])).toBeGreaterThan((PROMPT_CONTEXT_TOOL_CAP_MS + PROMPT_CONTEXT_INLINE_CAP_MS) / 2);
     await held.finish();
     expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');

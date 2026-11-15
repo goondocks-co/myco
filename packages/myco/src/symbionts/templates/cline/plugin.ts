@@ -12,7 +12,7 @@
  * and every refusal. With no binary installed the plugin is inert.
  *
  * Cline is served at reduced tier: capture, tools over MCP, and injection at
- * session start and prompt submit.
+ * session start, prompt submit and tool results.
  */
 // myco:plugin-marker — Myco owns this file; `myco remove` deletes it while it carries this line.
 // myco:member-plugin — a global Myco plugin steps aside for a project that carries this line.
@@ -1205,8 +1205,8 @@ function stripEnvelope(text: string): string {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isMycoMessage(message: any): boolean {
-  return message?.metadata?.[MYCO_METADATA_MARKER] === true;
+function isContextMessage(message: any): boolean {
+  return message?.metadata?.[MYCO_METADATA_MARKER] === true || message?.metadata?.displayRole === "system";
 }
 
 function clineContext(input: any, context: any) {
@@ -1263,7 +1263,7 @@ export const MycoClinePlugin = {
       const messages = Array.isArray(request?.messages) ? request.messages : [];
       const lastIndex = messages.findLastIndex((m: { role?: string }) => m?.role === "user");
       const last = messages[lastIndex];
-      if (isMycoMessage(last) || !last) return undefined;
+      if (isContextMessage(last) || !last) return undefined;
       const stamped = last.metadata?.[SUBMISSION_METADATA_KEY];
       const submission = typeof last.id === "string" ? `message:${last.id}`
         : typeof stamped === "string" ? stamped : submissionKeys.get(last) ?? `${MYCO_INSTANCE_ID}-submission-${++submissionOrdinal}`;
@@ -1322,7 +1322,7 @@ export const MycoClinePlugin = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     afterTool: async (input: any, ctx?: any) => {
       const call = input?.toolCall ?? input;
-      const { sessionId, directory } = clineContext(input, ctx);
+      const { sessionId, directory, child } = clineContext(input, ctx);
       if (!sessionId) return;
       const state = sessions.get(sessionId);
       captureTranscriptLine(directory, AGENT, sessionId, {
@@ -1337,6 +1337,13 @@ export const MycoClinePlugin = {
         failed: input?.snapshot ? input.result?.isError === true : call?.error !== undefined,
         at: nowIso(),
       });
+      if (child) return undefined;
+      const answer = runMycoHook(directory, AGENT, sessionId, "prompt-recall", {
+        conversationId: sessionId,
+        transcript_path: transcriptPathFor(directory, AGENT, sessionId),
+        cwd: directory,
+      });
+      return answer?.additionalContext ? { appendContext: answer.additionalContext } : undefined;
     },
 
     /** Turn end: ship the delta this run appended. */

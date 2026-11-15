@@ -178,11 +178,15 @@ describe('myco member provision', () => {
     const stale = { type: 'command', command: `${root}/deleted-install/bin/myco hook stop --myco-managed`, timeout: 3 };
     const bytes = JSON.stringify(stale);
     const outdated = structuredClone(current);
+    delete outdated.hooks.PostToolUse;
+    delete outdated.hooks.PostToolUseFailure;
     outdated.hooks.Stop[0].hooks[0].timeout = 999;
     outdated.hooks.Stop[0].hooks.push(stale);
     fs.writeFileSync(file, JSON.stringify(outdated));
     provisionGlobally('claude-code', root, mycoHome, { serverUrl: SERVER });
     const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(after.hooks.PostToolUse).toEqual(current.hooks.PostToolUse);
+    expect(after.hooks.PostToolUseFailure).toEqual(current.hooks.PostToolUseFailure);
     const remaining = after.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks);
     expect(remaining.filter((hook: unknown) => JSON.stringify(hook) === bytes)).toHaveLength(0);
     expect(remaining.filter((hook: { command: string }) => hook.command !== stale.command)).toEqual(current.hooks.Stop.flatMap((group: { hooks: unknown[] }) => group.hooks));

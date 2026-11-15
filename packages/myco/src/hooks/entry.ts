@@ -20,6 +20,7 @@ export const HOOK_DISPATCH = {
   'user-prompt-submit': () => import('./user-prompt-submit.js'),
   'pre-tool-use': () => import('./pre-tool-use.js'),
   'post-tool-use': () => import('./post-tool-use.js'),
+  'prompt-recall': () => import('./prompt-recall.js'),
   'post-tool-use-failure': () => import('./post-tool-use-failure.js'),
   'subagent-start': () => import('./subagent-start.js'),
   'subagent-stop': () => import('./subagent-stop.js'),

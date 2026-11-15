@@ -138,6 +138,11 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
+  it('Claude tool failure context names the failure event', () => {
+    writeHookResponse('claude-code', 'post-tool-use-failure', { additionalContext: 'prompt memory' });
+    expect(JSON.parse(captured)).toEqual({ hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: 'prompt memory' } });
+  });
+
   it('Copilot emits both tool context shapes', () => {
     writeHookResponse('copilot', 'post-tool-use', { additionalContext: 'prompt memory' });
     expect(JSON.parse(captured)).toEqual({ additionalContext: 'prompt memory',

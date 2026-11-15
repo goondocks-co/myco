@@ -83,7 +83,7 @@ function settleAsk(spool: MemberSpool, sessionId: string, ask: ContextAsk, now: 
 }
 
 export async function prefetchContext(opts: {
-  spool: MemberSpool; client: ServerClient; serverUrl: string; mycoHome: string; budget: HookBudget; now: () => number;
+  spool: MemberSpool; client: ServerClient; serverUrl: string; mycoHome: string; budget: HookBudget; now: () => number; force?: boolean;
 }): Promise<PrefetchReport> {
   const { spool, client, now } = opts;
   spool.assertClientDestination(client);

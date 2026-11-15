@@ -645,6 +645,13 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "globalSettingsTarget": "~/.claude/settings.json",
       "hooksContainSettings": true,
       "hooksFormat": "json",
+      "hookResponse": {
+        "format": "plain-text",
+        "shapes": {
+          "PostToolUse": "hookSpecificOutput",
+          "PostToolUseFailure": "hookSpecificOutput"
+        }
+      },
       "mcpTarget": ".mcp.json",
       "mcpFormat": "json",
       "mcpServersKey": "mcpServers",
@@ -661,7 +668,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [
@@ -1204,7 +1211,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
@@ -2696,7 +2703,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
@@ -3100,7 +3107,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
-      "promptRecallToolDelivery": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [],
