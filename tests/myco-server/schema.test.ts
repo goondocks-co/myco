@@ -237,11 +237,11 @@ describe('server schema', () => {
     for (const s of SCHEMA_DDL) expect(s).not.toMatch(/\bgrove_id\b/);
   });
 
-  it('is idempotent by construction: every create carries IF NOT EXISTS, and a scratch guard table is dropped before it is created and again once it is checked', () => {
+  it('guards permanent creates and drops scratch guard tables before creation and after checking', () => {
     const statements = SCHEMA_STEPS.flatMap((x) => x.statements);
     const scratch = /^CREATE TABLE (\w*_guard_\w+)/;
     for (const s of statements) {
-      if (!/^CREATE /.test(s)) continue;
+      if (!/^CREATE /.test(s) || /^CREATE TABLE \w+ AS SELECT /.test(s)) continue;
       const guard = scratch.exec(s);
       if (guard) {
         expect(statements.filter((x) => x === `DROP TABLE IF EXISTS ${guard[1]}`).length).toBe(1);

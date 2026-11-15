@@ -121,6 +121,8 @@ function consumePromptRecall(run: HookRun, state: SessionState, options: { id: s
         ...(ask.promptId !== undefined ? { renderedIn: ask.promptId, renderedScheme: ask.promptScheme } : { renderedScopeReason: ask.scopeReason }) })] : [];
     held.deliveryEventId = events[0]?.envelope.eventId;
     held.answer = { ...answer, context: '' };
+    held.request.text = '';
+    if (held.deliveryEventId === undefined) delete recall.asks[options.id];
     log(run, options.id, held, options.delivery);
     return { events, response: answer.context.length === 0 ? options.response : { ...options.response,
       additionalContext: [options.response.additionalContext, answer.context].filter(Boolean).join('\n\n') } };
@@ -161,7 +163,7 @@ export async function fetchPromptRecalls(opts: {
         }
         process.stderr.write(`${promptContextLogPrefix(opts.client.serverUrl, opts.spool.projectId)}session ${terminalText(sessionId)} ask ${id} wait_ms=${live.waitedMs ?? 0} cap_ms=${promptContextCapMs(live)} delivery=discarded\n`);
         updateSessionState(opts.spool.dir, sessionId, state => { if (state.promptRecall?.asks[id]?.stage === 'discarded') delete state.promptRecall.asks[id]; }, opts.now());
-      } else if (live?.stage === 'delivered' && live.answer?.receiptId === undefined && live.deliveryEventId === undefined) {
+      } else if (live?.stage === 'delivered' && live.deliveryEventId === undefined) {
         updateSessionState(opts.spool.dir, sessionId, state => { if (state.promptRecall?.asks[id]?.stage === 'delivered') delete state.promptRecall.asks[id]; }, opts.now());
       }
     }
@@ -169,8 +171,8 @@ export async function fetchPromptRecalls(opts: {
   return false;
 }
 
-/** Release only the recall whose canonical delivery event the Deployment acknowledged. */
-export function acknowledgePromptRecall(state: SessionState, eventId: string): void {
+/** Release only the recall whose canonical delivery event has settled. */
+export function settlePromptRecall(state: SessionState, eventId: string): void {
   for (const [id, held] of Object.entries(state.promptRecall?.asks ?? {})) {
     if (held.stage === 'delivered' && held.deliveryEventId === eventId) delete state.promptRecall!.asks[id];
   }

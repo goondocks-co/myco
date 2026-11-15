@@ -114,10 +114,21 @@ describe('a prompt', () => {
       expect(ran.stderr).toContain('wait_ms=');
     }
     expect(served.asked[1]?.rendered).toHaveLength(1);
+    expect(Object.values(readSessionState(spool().dir, 'sess-p').promptRecall!.asks).every(held => held.request.text === '')).toBe(true);
     await spool().drainSession('sess-p', new ServerClient({ serverUrl: 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, async () => Response.json({ persisted: true })), deadlineBudget(Date.now() + 10_000));
-    await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'after acknowledgment', transcript_path: tx }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+    await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'after acknowledgment', transcript_path: tx }, { helpers: 'run', fetch, symbiont: 'copilot' });
     expect(served.asked.at(-1)?.rendered).toEqual([]);
     expect(readSessionState(spool().dir, 'sess-p').contextAsks).toBeUndefined();
+    const refused = new ServerClient({ serverUrl: 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, async (input, init) => {
+      const record = await new Request(input, init).json() as { kind: string };
+      return Response.json(record.kind === 'context.delivered' ? { persisted: false, code: 'session_tombstoned' } : { persisted: true });
+    });
+    await spool().drainSession('sess-p', refused, deadlineBudget(Date.now() + 10_000));
+    expect(readSessionState(spool().dir, 'sess-p').promptRecall?.asks).toEqual({});
+    cacheDeploymentFeatures('https://member-test.invalid', [], mycoHome);
+    const legacy = await runHook('user-prompt-submit', { session_id: 'sess-legacy', prompt: 'older Deployment', transcript_path: transcript('sess-legacy') }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+    expect(contextOf(legacy.stdout)).toContain('Recalled for: older Deployment');
+    expect(readSessionState(spool().dir, 'sess-legacy').promptRecall?.asks).toEqual({});
   });
 
   it('does not ask for or render memory on a task notification', async () => {

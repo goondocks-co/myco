@@ -10,8 +10,7 @@ export function contextDeliverySteps(receiptBody: string, indexes: readonly stri
   return [{
     version: NEXT_CONTEXT_DELIVERY,
     statements: [
-      'DROP TABLE IF EXISTS _context_receipts',
-      'CREATE TABLE IF NOT EXISTS _context_receipts AS SELECT rowid AS saved_rowid,* FROM spore_injections',
+      'CREATE TABLE _context_receipts AS SELECT rowid AS saved_rowid,* FROM spore_injections',
       'DROP TABLE IF EXISTS spore_injections',
       `CREATE TABLE IF NOT EXISTS spore_injections ${receiptBody.replace('     UNIQUE (project_id, session_id, prompt_hash),', '').replace('prompt_hash TEXT NOT NULL,', 'discarded_at INTEGER, prompt_hash TEXT NOT NULL,')}`,
       `INSERT INTO spore_injections(rowid,${columns}) SELECT saved_rowid,${columns} FROM _context_receipts`,
