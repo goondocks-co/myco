@@ -49,6 +49,9 @@ export function sporeStatusTone(status: string): Tone {
 /** The status the stream opens on: what the projects hold true now. */
 export const DEFAULT_SPORE_STATUS = 'active';
 
+/** The status of a spore retired with nothing in its place: the one a person may restore. */
+export const RETIRED_SPORE_STATUS = 'obsolete';
+
 /** The status filter: current first, every other status one pick away. */
 export const SPORE_STATUS_FILTER: FilterDefinition = {
   key: 'status',

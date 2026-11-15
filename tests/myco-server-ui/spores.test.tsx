@@ -306,13 +306,13 @@ describe('the spore stream', () => {
 describe('a spore’s article', () => {
   const article = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => Response.json({
     spore: { ...spore({ status: 'superseded', context: 'Seen on **both** targets.', tags: '["cache","git"]', ...over }), sourceCreatedAt: NOW - 90 * MINUTE },
-    supersededBy: ['gotcha-7a8b9c0d'], supersedes: ['gotcha-0a1b2c3d'], authorTask: 'Learn from sessions', ...extra,
+    supersededBy: ['gotcha-7a8b9c0d'], supersedes: ['gotcha-0a1b2c3d'], resolution: null, authorTask: 'Learn from sessions', ...extra,
   });
   const sessionAnswer = Response.json({
     session: { projectId: MYCO, sessionId: 's1', agent: 'codex', title: 'Flaky test port collision fixed', label: 's1', summary: null, startedAt: NOW - 2 * HOUR, firstReceivedAt: NOW - 2 * HOUR, lastReceivedAt: NOW - HOUR, endedAt: NOW - HOUR, memberId: null, memberLabel: null, runtimeLabel: null, branch: null, originPath: null, parentSessionId: null, parentReason: null, endedBy: null, endedByLabel: null },
     untitled: null, counts: { prompts: 2, toolCalls: 0, responses: 2, plans: 0, attachments: 0 }, release: null, outcome: { runs: [], spores: { total: 0, items: [] } }, projectId: MYCO,
   });
-  const neighbour = (id: string, line: string) => () => Response.json({ spore: { ...spore({ id, agentLine: line }), sourceCreatedAt: null }, supersededBy: [], supersedes: [], authorTask: null });
+  const neighbour = (id: string, line: string) => () => Response.json({ spore: { ...spore({ id, agentLine: line }), sourceCreatedAt: null }, supersededBy: [], supersedes: [], resolution: null, authorTask: null });
 
   it('reads as an article: the replacement first, the one line, the body, context, tags, how it changed, where it came from and the facts', async () => {
     server(base({
@@ -392,6 +392,64 @@ describe('a spore’s article', () => {
     expect(origin.textContent).toBe('Imported from Myco 1.4.');
     expect(screen.queryByText(/Saved by/)).toBeNull();
     expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('lets an admin retire a current spore only with a reason, then restore it, and shows a member neither', async () => {
+    const path = `/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
+    const by = { author: ADMIN.member.id, authorKind: 'member', newSporeId: null, createdAt: NOW - MINUTE };
+    const states = {
+      active: () => article({ status: 'active', revision: 0 }, { supersededBy: [], supersedes: [], resolution: null }),
+      retired: () => article({ status: 'obsolete', revision: 1 }, { supersededBy: [], supersedes: [], resolution: { ...by, action: 'obsolete', reason: 'The cache was removed' } }),
+      restored: () => article({ status: 'active', revision: 2 }, { supersededBy: [], supersedes: [], resolution: { ...by, action: 'restore', reason: null } }),
+    };
+    let state: keyof typeof states = 'active';
+    const sent: Array<[string, unknown]> = [];
+    const routes = base({ [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
+      if (init?.method === 'POST') {
+        sent.push([url.pathname, JSON.parse(String(init.body))]);
+        state = url.pathname.endsWith('/retire') ? 'retired' : 'restored';
+      }
+      if (url.pathname === path || url.pathname.startsWith(`${path}/`)) return states[state]();
+      return routes[url.pathname]?.() ?? new Response(null, { status: 404 });
+    }) as typeof fetch;
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Retire' }));
+    const retiring = await screen.findByRole('dialog');
+    const confirm = within(retiring).getByRole('button', { name: 'Retire' });
+    const reason = within(retiring).getByLabelText('Why it no longer holds');
+    for (const text of ['', '   ']) {
+      fireEvent.change(reason, { target: { value: text } });
+      fireEvent.click(confirm);
+      expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    }
+    expect(sent).toEqual([]);
+    fireEvent.change(reason, { target: { value: 'The cache was removed' } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(document.querySelector('[data-spore-status]')?.textContent).toBe('Retired'));
+    expect(sent).toEqual([[`${path}/retire`, { reason: 'The cache was removed', revision: 0 }]]);
+    const note = document.querySelector('[data-spore-retired]')!;
+    expect(note.textContent).toContain('Retired by Ada');
+    expect(note.textContent).toContain('Why: The cache was removed');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Restore' }));
+    await waitFor(() => expect(document.querySelector('[data-spore-status]')).toBeNull());
+    expect(sent[1]).toEqual([`${path}/restore`, { revision: 1 }]);
+    const facts = document.querySelector('[data-facts]') as HTMLElement;
+    expect(facts.textContent).toContain('StatusCurrent');
+    expect(facts.textContent).toContain('Restored by Ada');
+    expect(document.querySelector('[data-spore-retired]')).toBeNull();
+    expect(rawIdsInPage()).toEqual([]);
+
+    cleanup();
+    state = 'active';
+    routes['/auth/me'] = () => Response.json(dashboardMe({ ...ADMIN, member: { ...ADMIN.member, role: 'member' as const } }));
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+    await screen.findByRole('heading', { level: 1 });
+    expect(document.querySelector('[data-spore-change]')).toBeNull();
   });
 
   it('says not found for a spore the project does not hold', async () => {

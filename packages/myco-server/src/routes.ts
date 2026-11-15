@@ -50,6 +50,7 @@ import { handleForgetUnsettledExport, handleRecoveryExportStatus, handleStartRec
 import { MAX_UPLOAD_BODY_BYTES } from './core/backup.js';
 import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
+import { handleRestoreSpore, handleRetireSpore } from './api/spore-retirement.js';
 import { handlePromptContext, handleSessionContext, handleDiscardContext } from './api/recall.js';
 import {
   handleProjectReleaseStates, handleProjectSpore, handleProjectSpores,
@@ -299,6 +300,11 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('plan', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/plans/{planKey}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/plans\/(?<planKey>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/, auth: 'session', authority: 'member', handler: handleProjectPlan },
   { authorization: httpPolicy('spore', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/spores', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores$/, auth: 'session', authority: 'member', handler: handleProjectSpores },
   { authorization: httpPolicy('spore', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/spores/{sporeId}', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/spores\/(?<sporeId>[^/]{1,192})$/, auth: 'session', authority: 'member', handler: handleProjectSpore },
+  ...(['retire', 'restore'] as const).map((change): Route => ({
+    authorization: httpPolicy('settings', 'admin', 'project', ['member']), method: 'POST', path: `/api/projects/{projectId}/spores/{sporeId}/${change}`,
+    pattern: new RegExp(`^/api/projects/(?<projectId>[A-Za-z0-9._-]{1,64})/spores/(?<sporeId>[^/]{1,192})/${change}$`), auth: 'session', authority: 'admin',
+    handler: change === 'retire' ? handleRetireSpore : handleRestoreSpore,
+  })),
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'GET', path: '/api/projects/{projectId}/release-states', pattern: /^\/api\/projects\/(?<projectId>[A-Za-z0-9._-]{1,64})\/release-states$/, auth: 'session', authority: 'member', handler: handleProjectReleaseStates },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'POST', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleStartRecoveryExport },
   { authorization: httpPolicy('backup', 'admin', 'deployment', ['member']), method: 'GET', path: '/api/recovery/exports', auth: 'session', authority: 'admin', handler: handleRecoveryExportStatus },

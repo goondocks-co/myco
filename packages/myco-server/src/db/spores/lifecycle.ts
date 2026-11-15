@@ -5,7 +5,7 @@ import { assertion, commitNamed, refusalCode, refusalDetail, write } from '../in
 import { importAdmittedAssertion, importRefused, sporeInsertWrite } from './records.js';
 
 /**
- * Moving a spore out of the active set: one resolution or one consolidation, each one commit.
+ * Moving a spore out of the active set (one resolution or one consolidation) or a retired spore back into it (one restore), each one commit.
  *
  * An assertion at the head of the batch decides the whole outcome inside the commit: every source still at its expected status and revision, the
  * successor valid, the caller entitled, the event id unused. When it refuses, nothing is written: no wisdom spore, no event, no source moved. Its detail
@@ -13,12 +13,15 @@ import { importAdmittedAssertion, importRefused, sporeInsertWrite } from './reco
  * Status moves run last in the commit.
  */
 
+/** What a lifecycle event records: a resolution, or a restore that returns a retired spore to the active set. */
+type SporeTransition = ResolutionAction | 'restore';
+
 interface ResolutionEventInsert {
   channel?: 'import';
   id: string;
   agentId: string;
   sporeId: string;
-  action: ResolutionAction;
+  action: SporeTransition;
   newSporeId: string | null;
   reason: string | null;
   sessionId: string | null;
@@ -74,7 +77,7 @@ const moveSource = write<[status: string, at: number, project: string, id: strin
 interface StaleSpore { error: 'stale'; reason: string; status: string; revision: number }
 /** Why a successor cannot take a source's place: it is the source, is gone, or has itself left the active set. */
 interface InvalidSuccessor { error: 'successor'; state: string }
-type ResolveOutcome = true | false | 'duplicate' | 'import_disabled' | StaleSpore | InvalidSuccessor;
+export type ResolveOutcome = true | false | 'duplicate' | 'import_disabled' | StaleSpore | InvalidSuccessor;
 
 interface ResolveRequest {
   status: SporeStatus;
@@ -116,6 +119,29 @@ export async function resolveSpore(db: RelationalStore, scope: ReadScope, reques
     if (detail === null) throw error;
     return resolveOutcomeOf(detail, request, expected);
   }
+}
+
+/** The event a restore records: who returned the spore, when, and why when they said. */
+type RestoreEvent = Omit<ResolutionEventInsert, 'channel' | 'action' | 'newSporeId'>;
+
+interface RestoreRequest {
+  event: RestoreEvent;
+  now: number;
+  /** The revision the caller read; the restore lands only while the spore is still retired at it. */
+  revision?: number;
+  authority?: SporeAuthority;
+}
+
+/**
+ * Return a spore retired with no successor to the active set, recording its event, in the same commit a resolution makes: the spore must still be
+ * retired at the revision the caller read, so a replaced spore, a restored one or one that moved since is refused as stale and nothing is written.
+ */
+export function restoreSpore(db: RelationalStore, scope: ReadScope, request: RestoreRequest): Promise<ResolveOutcome> {
+  const { event, now, revision, authority } = request;
+  return resolveSpore(db, scope, {
+    status: 'active', now, authority, expect: { status: 'obsolete', ...(revision === undefined ? {} : { revision }) },
+    event: { ...event, action: 'restore', newSporeId: null },
+  });
 }
 
 type SourceSlots = [project: string, sources: string, grant: string | null];

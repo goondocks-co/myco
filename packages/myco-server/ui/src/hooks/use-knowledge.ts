@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
-import { useInfiniteQuery, useQueries, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   PlanBoardPage, PlanBoardRow, PlanFields, PlanPageAnswer, SporeArticleAnswer, SporeFacets, SporeStreamPage, SporeStreamRow,
 } from '../features/knowledge/wire';
-import { fetchJson } from '../lib/api';
+import { fetchJson, postJson } from '../lib/api';
 import { live } from '../lib/live';
 
 const seg = (value: string) => encodeURIComponent(value);
@@ -83,6 +83,24 @@ export function useSporeNeighbours(projectId: string, ids: readonly string[]) {
       queryFn: ({ signal }: { signal: AbortSignal }) => fetchJson<SporeArticleAnswer>(`/api/projects/${seg(projectId)}/spores/${seg(id)}`, signal),
       ...live({ follows: ['knowledge'] }),
     })),
+  });
+}
+
+/** A person's change to a spore's status: retire a current one with why, or restore a retired one; each names the revision the page read. */
+export type SporeChange = { action: 'retire'; reason: string; revision: number } | { action: 'restore'; revision: number };
+
+/**
+ * Retires or restores a spore as the signed-in member. The answer is the spore as it stands afterwards, which the article shows at once;
+ * the stream and search are read again, since the spore joins or leaves the current ones.
+ */
+export function useChangeSpore(projectId: string, sporeId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ action, ...body }: SporeChange) => postJson<SporeArticleAnswer>(`/api/projects/${seg(projectId)}/spores/${seg(sporeId)}/${action}`, body),
+    onSuccess: async (answer) => {
+      client.setQueryData(['spore', projectId, sporeId], answer);
+      await Promise.all(['spore-stream', 'search'].map((key) => client.invalidateQueries({ queryKey: [key] })));
+    },
   });
 }
 

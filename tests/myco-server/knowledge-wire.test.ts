@@ -9,7 +9,7 @@
  */
 import type * as Ui from '../../packages/myco-server/ui/src/features/knowledge/wire.ts';
 import type { SporeAcrossRow, SporeFacets, SporeRow, listSporePageAcross } from '../../packages/myco-server/src/core/spores.ts';
-import type { getSpore } from '../../packages/myco-server/src/db/spores/records.ts';
+import type { sporeArticle } from '../../packages/myco-server/src/api/intelligence.ts';
 import type {
   plans_PlanAcrossRow as PlanAcrossRow,
   plans_ProjectPlanRow as ProjectPlanRow,
@@ -27,8 +27,8 @@ type Reads<Server, Dashboard> = [Server] extends [Dashboard] ? true : false;
 /** `GET /api/spores`: the answer `handleSporesAcross` sends, the page's `rows` renamed `spores`. */
 type SporePage = NonNullable<Awaited<ReturnType<typeof listSporePageAcross>>>;
 type SporesAnswer = Omit<SporePage, 'rows'> & { spores: SporePage['rows']; maxPage: number };
-/** `GET /api/projects/{p}/spores/{id}`: the answer `handleProjectSpore` sends. */
-type SporeAnswer = { spore: NonNullable<Awaited<ReturnType<typeof getSpore>>>; supersededBy: string[]; supersedes: string[]; authorTask: string | null };
+/** `GET /api/projects/{p}/spores/{id}`, and a retirement or restore: the article `handleProjectSpore` sends. */
+type SporeAnswer = NonNullable<Awaited<ReturnType<typeof sporeArticle>>>;
 /** `GET /api/plans`: the page `handlePlansAcross` sends, `rows` renamed `plans`, with the totals on its first page. */
 type PlanTotals = Awaited<ReturnType<typeof planTotals>>;
 type PlansPage = NonNullable<Awaited<ReturnType<typeof pagePlansAcross>>>;

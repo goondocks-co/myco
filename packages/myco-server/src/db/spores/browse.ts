@@ -4,16 +4,17 @@ import { binaryOrder, type ProjectSet } from '../../read/scope.js';
 import { read, readSet, type BindValue, type Statement } from '../index.js';
 
 /**
- * Who a spore's author is. Every author a write records is a run's id, a member's or a grant's (`mcp/context.ts
+ * Who the author of a spore or of its lifecycle event (`row`) is. Every author a write records is a run's id, a member's or a grant's (`mcp/context.ts
  * writerOf`). Members and grants are never deleted, and a run is pruned by retention, so an author that names no
  * member and no grant is a run's, whether or not the run is still held. A member writes as the `user` agent; a spore a
  * member's credential carried in under another agent is one the 1.4 import brought over (`/spores/save`, which stamps
  * the importing member as author and keeps 1.4's agent), and reads `imported`.
  */
-const AUTHOR_KIND = `CASE WHEN spores.author IS NULL THEN NULL
-  WHEN EXISTS (SELECT 1 FROM members m WHERE m.id = spores.author) THEN CASE WHEN spores.agent_id = '${USER_AGENT_ID}' THEN 'member' ELSE 'imported' END
-  WHEN EXISTS (SELECT 1 FROM external_grants g WHERE g.id = spores.author) THEN 'grant'
+export const authorKindSql = (row: string): string => `CASE WHEN ${row}.author IS NULL THEN NULL
+  WHEN EXISTS (SELECT 1 FROM members m WHERE m.id = ${row}.author) THEN CASE WHEN ${row}.agent_id = '${USER_AGENT_ID}' THEN 'member' ELSE 'imported' END
+  WHEN EXISTS (SELECT 1 FROM external_grants g WHERE g.id = ${row}.author) THEN 'grant'
   ELSE 'run' END`;
+const AUTHOR_KIND = authorKindSql('spores');
 
 /** A spore's stored fields under the names the server answers with. */
 export const SPORE_COLUMNS = `id, agent_id AS agentId, session_id AS sessionId,
