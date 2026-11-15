@@ -75,6 +75,15 @@ export function writeHookResponse(
   }
 
   const config = resolveHookResponseConfig(symbiont);
+  if (hookEvent === 'post-tool-use' && symbiontHasCapability(symbiont, 'promptRecallToolDelivery') && config.shapes?.PostToolUse !== undefined) {
+    const context = response.additionalContext;
+    const nested = { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } };
+    process.stdout.write(JSON.stringify(context === undefined ? {} : config.shapes.PostToolUse === 'both'
+      ? { additionalContext: context, ...nested }
+      : config.shapes.PostToolUse === 'flat' ? { additionalContext: context } : nested));
+    return;
+  }
+
   switch (config.format) {
     case 'json':
       process.stdout.write(serializeJson(response, config.fieldNames ?? {}));

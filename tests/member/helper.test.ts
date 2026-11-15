@@ -131,7 +131,7 @@ describe('a kick', () => {
 });
 
 describe('myco member helper', () => {
-  it('logs a failed prompt-context request under its destination and leaves the ask pending', async () => {
+  it('logs a failed session-block request under its destination and leaves the ask pending', async () => {
     const rig = await memberRig();
     const serverUrl = 'https://s';
     registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, expiresAt: rig.expiresAt, serverUrl });
@@ -139,10 +139,10 @@ describe('myco member helper', () => {
     const sessionId = 'sess-prompt-prefetch-fails';
     const promptId = mintId();
     spool.append(sessionId, promptEvent({ agent: 'claude-code', sessionId, stage: spool.stagerFor(sessionId), version: 't' }, { promptId, text: 'must arrive' }));
-    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'prompt', promptId, text: 'must arrive', at: Date.now() }); });
+    updateSessionState(spool.dir, sessionId, (state) => { state.contextAsks = withAsk(undefined, { kind: 'start', at: Date.now() }); });
     const deployment = async (input: string | URL | Request, init?: RequestInit) => {
       const request = new Request(input, init);
-      if (new URL(request.url).pathname === '/context/prompt') throw new Error('fixture prefetch failure');
+      if (new URL(request.url).pathname === '/context/session') throw new Error('fixture prefetch failure');
       return rig.fetch(request);
     };
     const restore = routeStderrToHelperLog(mycoHome, PROJECT, serverUrl);
@@ -150,7 +150,7 @@ describe('myco member helper', () => {
     finally { restore(); }
     expect(rig.rows('events')).toBe(1);
     const log = fs.readFileSync(helperLogPath(mycoHome), 'utf8');
-    expect(log).toContain(`${promptContextLogPrefix(serverUrl, PROJECT)}context for ${sessionId} prompt ${promptId} not served`);
+    expect(log).toContain(`${serverUrl} ${PROJECT} [myco] helper: context for ${sessionId} (start) not served`);
     expect(readSessionState(spool.dir, sessionId).contextAsks).toHaveLength(1);
   });
 

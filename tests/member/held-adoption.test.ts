@@ -11,7 +11,7 @@ import path from 'node:path';
 import { rootKeyFor } from '@myco/member/auto-join.js';
 import { holdsTranscriptTail } from '@myco/member/backlog.js';
 import { deadlineBudget } from '@myco/member/budget.js';
-import { readSessionContext, withAsk } from '@myco/member/context-cache.js';
+import { readProjectContext, withAsk } from '@myco/member/context-cache.js';
 import { sessionStartEvent } from '@myco/member/envelope.js';
 import { restoreHeldReceiptsForHook } from '@myco/member/held.js';
 import { appendPending, flushPending, flushPendingForRoot, pendingSpool } from '@myco/member/pending.js';
@@ -147,29 +147,29 @@ describe('held capture adoption', () => {
     const r = rig();
     const sessionId = 'restore-settle-flush';
     hold(r, sessionId, (state) => {
-      state.contextAsks = withAsk(undefined, { kind: 'prompt', promptId: 'held', text: 'held prompt', at: 100 });
+      state.contextAsks = withAsk(undefined, { kind: 'compact', compaction: 1, at: 100 });
       state.renderedAsk = 'held-marker';
       state.hookAt = 100;
     });
     updateSessionState(r.live.dir, sessionId, (state) => {
-      state.contextAsks = withAsk(state.contextAsks, { kind: 'prompt', promptId: 'live', text: 'live prompt', at: 200 });
+      state.contextAsks = withAsk(state.contextAsks, { kind: 'compact', compaction: 2, at: 200 });
       state.hookAt = 200;
     });
     restoreHeldReceiptsForHook(r.repo.root, sessionId, r.live, { mycoHome: r.mycoHome, now: 1 });
     const restored = readSessionState(r.live.dir, sessionId);
-    expect(restored.contextAsks?.map((ask) => (ask.kind === 'prompt' ? ask.text : ask.kind))).toEqual(['live prompt']);
+    expect(restored.contextAsks?.map((ask) => (ask.kind === 'compact' ? ask.compaction : ask.kind))).toEqual([2]);
     expect(restored.renderedAsk).toBeUndefined();
-    const asked: string[] = [];
+    const asked: number[] = [];
     const client = new ServerClient({ serverUrl: SERVER_URL, projectId: PROJECT_ID, token: 'fake' }, async (_input, init) => {
-      asked.push(JSON.parse(String(init?.body)).text);
+      asked.push(JSON.parse(String(init?.body)).compaction);
       return Response.json({ persisted: true, context: 'live answer', skipped: [] }, { headers: { 'x-myco-protocol': '1' } });
     }, { credentialSource: 'env' });
     await prefetchContext({ spool: r.live, client, serverUrl: SERVER_URL, mycoHome: r.mycoHome, budget: deadlineBudget(Date.now() + 10_000), now: Date.now });
-    expect(asked).toEqual(['live prompt']);
+    expect(asked).toEqual([2]);
     expect(flushPendingForRoot(r.repo.root, r.live, { mycoHome: r.mycoHome, now: 2 })).toBe(1);
     const after = readSessionState(r.live.dir, sessionId);
     expect(after.contextAsks).toBeUndefined();
     expect(after.renderedAsk).toBeUndefined();
-    expect(readSessionContext(r.live.dir, sessionId).prompt).toMatchObject({ context: 'live answer', askId: restored.contextAsks![0]!.id });
+    expect(readProjectContext(r.live.dir).blocks.compact?.context).toBe('live answer');
   });
 });

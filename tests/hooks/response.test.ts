@@ -138,6 +138,12 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
+  it('Copilot emits both tool context shapes', () => {
+    writeHookResponse('copilot', 'post-tool-use', { additionalContext: 'prompt memory' });
+    expect(JSON.parse(captured)).toEqual({ additionalContext: 'prompt memory',
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'prompt memory' } });
+  });
+
   describe('unknown symbiont', () => {
     it('falls back to the plain-text default rather than crashing', () => {
       writeHookResponse('some-hypothetical-agent', 'stop', { additionalContext: 'ok' });

@@ -1,6 +1,6 @@
 import { expect } from 'bun:test';
-import { lit, type ParityScenario } from '../harness.ts';
-import { deliver, promptContext, publishedTurns, turn, withRecall } from '../clients/capture.ts';
+import { ageRows, lit, type ParityScenario } from '../harness.ts';
+import { context, deliver, promptContext, publishedTurns, turn, withRecall } from '../clients/capture.ts';
 import { saveSpore } from '../clients/knowledge.ts';
 import { event, mcp, owner, untilPublished } from '../clients/requests.ts';
 
@@ -10,7 +10,8 @@ export const receiptSnapshots: ParityScenario = {
   dedicated: { cloudflare: { embeddingFixture: true }, sqliteVec: true, timeoutMs: 180_000 },
   async run(target) {
     await withRecall(target, async () => {
-      const source = 'snapshot-source', receiver = 'snapshot-receiver', promptId = crypto.randomUUID();
+      const source = 'snapshot-source', receiver = 'snapshot-receiver';
+      let promptId = crypto.randomUUID();
       for (const session of [source, receiver]) await event(target, session, 'session.start', { agent: 'claude-code', startedAt: Date.now() });
       const plans: string[] = [];
       for (const [title, status] of [
@@ -27,8 +28,23 @@ export const receiptSnapshots: ParityScenario = {
       await saveSpore(target, 'Capture pending transcript batches until delivery');
       await target.primeEmbedding!(target.projectId);
       const text = 'Preserve pending transcript batches during member reconnect';
-      const answer = await promptContext(target, receiver, promptId, text);
+      let answer = await promptContext(target, receiver, promptId, text);
       expect(answer.receiptId).toEqual(expect.any(String));
+      const recallIds = (value: any): string[] => value.parts.flatMap((part: any) => [...(part.sporeIds ?? []), ...(part.planIds ?? [])]);
+      const parallel = await promptContext(target, receiver, crypto.randomUUID(), `${text} and retained receipts`);
+      expect(recallIds(parallel).filter(id => recallIds(answer).includes(id))).toEqual([]);
+      const discarded = await fetch(`${target.url}/context/discard`, { method: 'POST', headers: target.memberHeaders({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ sessionId: receiver, receiptId: answer.receiptId }) });
+      expect(discarded.status).toBe(200);
+      expect(await discarded.json()).toMatchObject({ persisted: true });
+      promptId = crypto.randomUUID();
+      const retry = await promptContext(target, receiver, promptId, text);
+      expect(recallIds(retry)).toEqual(recallIds(answer));
+      answer = retry;
+      await ageRows(target, { table: 'spore_injections', column: 'created_at', byMs: 120_000, match: { project_id: target.projectId, session_id: receiver, id: answer.receiptId } });
+      await ageRows(target, { table: 'session_served_items', column: 'reservation_expires_at', byMs: 120_000, match: { project_id: target.projectId, session_id: receiver, reservation_receipt_id: answer.receiptId } });
+      const reported = await context(target, 'prompt', { sessionId: receiver, promptId: crypto.randomUUID(), text: `${text} and delivered exclusions`, identity: 1, at: Date.now(), rendered: [answer.receiptId] });
+      expect(recallIds(reported).filter(id => recallIds(answer).includes(id))).toEqual([]);
       // Receiving-session deletion must physically remove its retained receipt snapshots on both stores.
       const storedSnapshots = () => target.sql(`SELECT item_id FROM injection_served_items WHERE project_id=${lit(target.projectId)} AND receipt_id=${lit(answer.receiptId)}`);
       expect((await storedSnapshots()).length).toBeGreaterThan(0);

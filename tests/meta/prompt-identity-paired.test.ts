@@ -4,9 +4,8 @@
  *
  * Each case drives the real hooks with the input its harness sends, carrying the key, against the in-process
  * Deployment, which serves real spores; then the paired transcript is parsed, and the turn is read as the dashboard
- * reads it. Two prompts run: the first prompt's text selects the context, and the second prompt carries it to the
- * agent. The receipt and the answer name the first, their delivery names the second, and the second is where the turn
- * view shows what Myco added. Tool calls and replies sit on their own prompts. Cross-package, so it lives here.
+ * reads it. Each prompt carries only its own selection. The receipt, answer and delivery name that same prompt,
+ * and its turn view shows what Myco added. Tool calls and replies sit on their own prompts. Cross-package, so it lives here.
  */
 import { afterEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
@@ -33,17 +32,17 @@ async function assertSelectedThenDelivered(r: IdentityRig, sessionId: string, fi
   const receipts = r.rows(`SELECT prompt_id, ask_protocol, asked_at, delivered_prompt_id, delivered_scope_reason, spore_ids FROM spore_injections WHERE session_id = ?`, sessionId);
   expect(receipts.length).toBe(1);
   expect(JSON.parse(receipts[0]!.spore_ids as string).length).toBeGreaterThan(0);
-  expect(receipts[0]).toMatchObject({ prompt_id: first, ask_protocol: 'v1', delivered_prompt_id: second, delivered_scope_reason: null });
+  expect(receipts[0]).toMatchObject({ prompt_id: first, ask_protocol: 'v1', delivered_prompt_id: first, delivered_scope_reason: null });
   expect(typeof receipts[0]!.asked_at).toBe('number');
   const answers = r.rows(`SELECT prompt_id, outcome, delivered_prompt_id FROM prompt_context_answers WHERE session_id = ? ORDER BY created_at, rowid`, sessionId);
   expect(answers.length).toBeGreaterThanOrEqual(2);
-  expect(answers[0]).toMatchObject({ prompt_id: first, outcome: 'served', delivered_prompt_id: second });
+  expect(answers[0]).toMatchObject({ prompt_id: first, outcome: 'served', delivered_prompt_id: first });
   expect(answers[1]).toMatchObject({ prompt_id: second });
   const prompts = (await r.records(sessionId)).filter(p=>p.k==='prompt').map(p=>({prompt_id:p.id})).map((p) => p.prompt_id);
   expect(prompts).toEqual([first, second]);
   const env = r.rig.env.serverEnv;
-  expect((await documentTurnDetail(env, SCOPE, sessionId, first))?.injection).toBeNull();
-  const delivered = await documentTurnDetail(env, SCOPE, sessionId, second);
+  expect((await documentTurnDetail(env, SCOPE, sessionId, second))?.injection).toBeNull();
+  const delivered = await documentTurnDetail(env, SCOPE, sessionId, first);
   expect(delivered?.injection?.spores.length).toBeGreaterThan(0);
   expect((await r.records(sessionId)).filter(p=>p.k==='tool').map(p=>({prompt_id:p.prompt_id,tool_name:p.tool_name}))).toEqual([{ prompt_id: first, tool_name: expect.any(String) }]);
   expect((await r.records(sessionId)).filter(p=>p.k==='reply').map(p=>({prompt_id:p.prompt_id})).map((p) => p.prompt_id)).toEqual([first, second]);
@@ -63,9 +62,10 @@ const PAIRED: Record<string, (r: IdentityRig) => Promise<void>> = {
     const common = { session_id: sessionId, transcript_path: file, cwd: '/repo' };
     const hook = { helpers: 'run' as const, fetch: r.fetch.fetch };
     await runHook('session-start', { ...common, hook_event_name: 'SessionStart' }, hook);
-    await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt: FIRST, prompt_id: k1 }, hook);
+    const opening = await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt: FIRST, prompt_id: k1 }, hook);
+    expect(opening.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
     const second = await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', prompt: SECOND, prompt_id: k2 }, hook);
-    expect(second.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
+    expect(second.stdout).not.toContain(`${RELEVANT_WORD} window keeps thirty days`);
     // The agent writes its transcript as the turns run: after each ask and delivery, on the same clock.
     const written = Date.now();
     const at = (s: number) => new Date(written + s * 1000).toISOString();
@@ -94,12 +94,13 @@ const PAIRED: Record<string, (r: IdentityRig) => Promise<void>> = {
     const common = { session_id: sessionId, transcript_path: file, cwd: '/repo' };
     const hook = { helpers: 'run' as const, fetch: r.fetch.fetch, symbiont: 'codex' };
     await runHook('session-start', { ...common, hook_event_name: 'SessionStart', source: 'startup' }, hook);
-    await runHook('user-prompt-submit', { ...observed, ...common, turn_id: t1, prompt: FIRST }, hook);
+    const opening = await runHook('user-prompt-submit', { ...observed, ...common, turn_id: t1, prompt: FIRST }, hook);
+    expect(opening.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
     // A tool the rollout does not record reaches the Deployment from the hook, named by the turn's opener.
     await runHook('post-tool-use', { ...common, hook_event_name: 'PostToolUse', turn_id: t1, tool_name: 'web_search', tool_use_id: 'call_ws_1',
       tool_input: { query: 'retention window' }, tool_response: 'thirty days' }, hook);
     const second = await runHook('user-prompt-submit', { ...observed, ...common, turn_id: t2, prompt: SECOND }, hook);
-    expect(second.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
+    expect(second.stdout).not.toContain(`${RELEVANT_WORD} window keeps thirty days`);
     // Codex writes its rollout as the turns run: after each ask and delivery, on the same clock, and before the parse
     // reads it, which takes no line's time past its own.
     const written = Date.now();
@@ -142,9 +143,11 @@ async function stampedCase(r: IdentityRig, agent: string, harness: { session: (i
     if (typeof answer.promptId !== 'string') throw new Error(`the ${agent} hook returned no prompt id: ${stdout}`);
     return answer.promptId;
   };
-  const first = promptIdOf((await runHook('user-prompt-submit', { ...common, prompt: FIRST }, hook)).stdout);
+  const opening = await runHook('user-prompt-submit', { ...common, prompt: FIRST }, hook);
+  expect(opening.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
+  const first = promptIdOf(opening.stdout);
   const secondRun = await runHook('user-prompt-submit', { ...common, prompt: SECOND }, hook);
-  expect(secondRun.stdout).toContain(`${RELEVANT_WORD} window keeps thirty days`);
+  expect(secondRun.stdout).not.toContain(`${RELEVANT_WORD} window keeps thirty days`);
   const second = promptIdOf(secondRun.stdout);
   // The plugin writes its transcript as the turns run: after each ask and delivery, on the same clock.
   const written = Date.now();

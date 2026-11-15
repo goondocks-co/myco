@@ -1,20 +1,4 @@
-/**
- * What a hook serves its harness, read from this machine alone (#1561): no hook waits on the Deployment.
- *
- * The member helper fills the cache from the Deployment's answers, and a hook renders from it:
- * - `context/project.json` holds the Project's blocks, as the Deployment last composed them: the session start's,
- *   a compaction's and a delegated agent's, plus the features the Deployment advertised on its last answer
- *   (`x-myco-features`). The Deployment-wide snapshot is authoritative for feature gates; project advertisements
- *   supply the upgrade fallback until a protocol-bearing answer writes that snapshot.
- * - `context/<session>.json` holds what was served for the session's latest prompt, rendered on its next one: the
- *   context a prompt gets is the previous prompt's, until a local re-rank can do better.
- *
- * What the helper is to ask for travels in session state (`contextAsks`), written with the hook's own records under
- * the session lock, so a request is never lost to a hook killed between the append and the ask.
- *
- * Each file is written whole (`writePrivateFileAtomic`) by the helper, which holds the project's helper lock; a hook
- * only reads. A file that cannot be read is an empty cache: the hook serves nothing rather than fail.
- */
+/** Project blocks and Deployment feature snapshots cached for session and delegation hooks. */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
@@ -22,7 +6,7 @@ import path from 'node:path';
 import { featuresNamed, featureAdvertised as headerAdvertises, type MemberFeature } from '@goondocks/myco-shared/member-protocol';
 import { HARNESS_HEALTH_FEATURE, HARNESS_DEPLOYMENT_ACTIVITY_FEATURE, HARNESS_HELD_ELSEWHERE_FEATURE } from '@goondocks/myco-shared/harness-health';
 import { BLOCK_JOIN, projectLine, withoutProjectLine } from '@goondocks/myco-shared/recall';
-import { PROMPT_KEY_TEXT_MAX_CHARS, type ASK_IDENTITY_MARKER, type DeliveredSessionRecord, type PromptIdScheme, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
+import { PROMPT_KEY_TEXT_MAX_CHARS, type ASK_IDENTITY_MARKER, type PromptIdScheme, type PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
 import { deploymentFeaturesPath, deploymentsDir, deploymentUrl, listRegistryEntriesResult, type RegistryEntry } from './registry.js';
 import { spoolDirFor } from './spool.js';
 import { ensureMemberDir, ensurePrivateFile, pathIsAbsent, readPrivateJson, writePrivateFileAtomic } from './store.js';
@@ -58,16 +42,6 @@ export interface ProjectContextCache {
   blocks: Partial<Record<SessionBlockKind, CachedBlock>>;
 }
 
-export interface SessionContextCache {
-  version: typeof CACHE_VERSION;
-  /**
-   * What the Deployment served for the session's latest prompt, rendered on the next one: the id of the ask it answered
-   * (`askId`), the prompt it named, the receipt and answer rows the Deployment wrote for it, where it wrote them, and
-   * the session record its block carried (`sessionRecord`).
-   */
-  prompt?: CachedBlock & { promptId?: string; askId: string; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; skipped?: string[] };
-}
-
 /** What a hook asks the helper to fetch for its session. */
 export type ContextAskRequest =
   | { kind: 'start'; remote?: string; remoteFrom?: string; at: number }
@@ -94,7 +68,7 @@ export function projectContextPath(spoolDir: string): string {
   return path.join(contextDir(spoolDir), PROJECT_CONTEXT_FILE);
 }
 
-export function sessionContextPath(spoolDir: string, sessionId: string): string {
+function sessionContextPath(spoolDir: string, sessionId: string): string {
   return path.join(contextDir(spoolDir), `${sessionId}.json`);
 }
 
@@ -129,26 +103,6 @@ export function updateProjectContext(spoolDir: string, mycoHome: string, mutate:
   ensureMemberDir(contextDir(spoolDir), mycoHome);
   writePrivateFileAtomic(projectContextPath(spoolDir), `${JSON.stringify(cache)}\n`);
   return cache;
-}
-
-/** Session caches already reported for an answer with no ask id, so each is reported once per process. */
-const reportedUnidentifiedAnswers = new Set<string>();
-
-/** A session's cache; an answer that names no ask id is absent, and reported once. */
-export function readSessionContext(spoolDir: string, sessionId: string): SessionContextCache {
-  const file = sessionContextPath(spoolDir, sessionId);
-  const cache = readCache<SessionContextCache>(file) ?? { version: CACHE_VERSION };
-  if (cache.prompt === undefined || (typeof cache.prompt.askId === 'string' && cache.prompt.askId.length > 0)) return cache;
-  if (!reportedUnidentifiedAnswers.has(file)) {
-    reportedUnidentifiedAnswers.add(file);
-    process.stderr.write(`[myco] member: 1 cached answer without an ask id not rendered ${file}\n`);
-  }
-  return { version: cache.version };
-}
-
-export function writeSessionContext(spoolDir: string, mycoHome: string, sessionId: string, cache: SessionContextCache): void {
-  ensureMemberDir(contextDir(spoolDir), mycoHome);
-  writePrivateFileAtomic(sessionContextPath(spoolDir, sessionId), `${JSON.stringify(cache)}\n`);
 }
 
 /** Forget a session's cache: it goes with the session's state. */

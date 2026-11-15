@@ -35,7 +35,7 @@ describe('route table', () => {
     '/import/plan',           // advice on what to ship; stores nothing
     '/import/legacy-history', // source completion evidence; stores nothing
     '/spores/save', '/spores/list', '/spores/get', '/spores/resolve',  // the member's own spore surface
-    '/context/prompt', '/context/session',                              // injection reads
+    '/context/prompt', '/context/session', '/context/discard',          // context reads and selection release
     '/worker/claim', '/worker/lease', '/worker/end', '/worker/steps', '/worker/repository', '/worker/models',  // the Deployment's own work, scoped to no Project
   ]);
   const notCapture = (r: { path: string; legacyRunRoute?: true }): boolean =>

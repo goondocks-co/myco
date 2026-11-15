@@ -166,6 +166,16 @@ export async function refreshCredential(record: DeploymentRecord & { projectId?:
   return classifyRefreshAnswer(raw);
 }
 
+/** One request's deadline, disposed when its awaited work ends. */
+export async function withinRequestDeadline<T>(budget: RequestBudget, work: (deadline: { signal: AbortSignal; expired: () => boolean }) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const signal = budget.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, budget.signal]);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, budget.requestTimeoutMs);
+  try { return await work({ signal, expired: () => timedOut }); }
+  finally { clearTimeout(timer); }
+}
+
 export class ServerClient {
   private readonly base: string;
   private readonly protocol: number;
@@ -203,33 +213,41 @@ export class ServerClient {
   /** Authenticated fetch bounded across upload, response headers and response body by the request deadline. A `deployment` request names no Project. */
   async request(method: string, path: string, init: { body?: BodyInit; headers?: Record<string, string>; budget: RequestBudget; scope?: 'project' | 'deployment' }): Promise<RawAnswer> {
     const headers = { ...this.headersFor(init.scope ?? 'project'), ...init.headers };
-    const controller = new AbortController();
-    const signal = init.budget.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, init.budget.signal]);
-    let timedOut = false;
-    let phase: TimeoutPhase = 'headers';
-    let head: Response | null = null;
+    const progress: { phase: TimeoutPhase; head?: Response } = { phase: 'headers' };
     const started = Date.now();
-    const requestTimer = setTimeout(() => { timedOut = true; controller.abort(); }, init.budget.requestTimeoutMs);
-    try {
-      const res = await credentialFetch(this.fetchImpl, memberServerDialUrl(`${this.base}${path}`), {
-        method,
-        headers,
-        body: init.body,
-        signal,
-      });
-      phase = 'body';
-      head = res;
-      return await rawAnswerOf(res, signal);
-    } catch (err) {
-      // A status line that already says busy or failing is the answer, whatever became of its body: a stalled 5xx or
-      // 429 classifies as the retry its status is, never as a slow answer that latches nothing.
-      if ((timedOut || init.budget.signal?.aborted) && head !== null && (head.status >= 500 || head.status === 429)) return statusLineAnswer(head);
-      if (init.budget.signal?.aborted || (timedOut && init.budget.deferOnTimeout)) return { kind: 'deferred', detail: 'delivery deferred by the caller' };
-      if (timedOut) return { kind: 'timeout', phase, elapsedMs: Date.now() - started, capped: init.budget.capped === true };
-      return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
-    } finally {
-      clearTimeout(requestTimer);
-    }
+    return withinRequestDeadline(init.budget, async ({ signal, expired }) => {
+      let removeCancellation: (() => void) | undefined;
+      try {
+        const request = async () => {
+          const res = await credentialFetch(this.fetchImpl, memberServerDialUrl(`${this.base}${path}`), {
+            method,
+            headers,
+            body: init.body,
+            signal,
+          });
+          progress.phase = 'body';
+          progress.head = res;
+          return await rawAnswerOf(res, signal);
+        };
+        if (!init.budget.capped) return await request();
+        return await new Promise<Extract<RawAnswer, { kind: 'response' }>>((resolve, reject) => {
+          const abort = () => reject(new Error('the capped request was cancelled'));
+          if (signal.aborted) { abort(); return; }
+          signal.addEventListener('abort', abort, { once: true });
+          removeCancellation = () => signal.removeEventListener('abort', abort);
+          void request().then(resolve, reject);
+        });
+      } catch (err) {
+        // A status line that already says busy or failing is the answer, whatever became of its body: a stalled 5xx or
+        // 429 classifies as the retry its status is, never as a slow answer that latches nothing.
+        if ((expired() || init.budget.signal?.aborted) && progress.head !== undefined && (progress.head.status >= 500 || progress.head.status === 429)) return statusLineAnswer(progress.head);
+        if (init.budget.signal?.aborted || (expired() && init.budget.deferOnTimeout)) return { kind: 'deferred', detail: 'delivery deferred by the caller' };
+        if (expired()) return { kind: 'timeout', phase: progress.phase, elapsedMs: Date.now() - started, capped: init.budget.capped === true };
+        return { kind: 'transport', detail: err instanceof Error ? err.message : String(err) };
+      } finally {
+        removeCancellation?.();
+      }
+    });
   }
 
   /**

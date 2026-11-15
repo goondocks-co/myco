@@ -29,6 +29,7 @@ export interface HookCapabilities {
   sessionStartInjection: boolean;
   subagentStartInjection: boolean;
   postToolUseInjection: boolean;
+  promptRecallToolDelivery: boolean;
   /** Which side writes this symbiont's turn rows; see the manifest schema. */
   turnRowSource: 'hook' | 'transcript';
   /** What the transcript carries, as the Deployment's parser declares it; see the manifest schema. */
@@ -104,6 +105,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
@@ -176,6 +178,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -440,6 +443,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -545,6 +549,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
@@ -567,6 +572,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "payload.cwd",
       "transcriptRepositoryPath": "payload.git.repository_url",
       "retention": "harness"
+    },
+    "hookResponse": {
+      "format": "plain-text",
+      "shapes": {
+        "PostToolUse": "hookSpecificOutput"
+      }
     },
     "capturePrompts": {
       "shapes": [
@@ -806,6 +817,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": true,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": true,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },
@@ -825,7 +837,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "hookResponse": {
       "format": "plain-text",
       "shapes": {
-        "SubagentStart": "flat"
+        "SubagentStart": "flat",
+        "PostToolUse": "both"
       }
     }
   },
@@ -883,6 +896,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": true,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "no_tool_results"
     },
@@ -953,6 +967,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -1003,6 +1018,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": true,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
@@ -1070,6 +1086,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "sessionStartInjection": false,
       "subagentStartInjection": false,
       "postToolUseInjection": false,
+      "promptRecallToolDelivery": false,
       "turnRowSource": "hook",
       "transcriptFidelity": "full"
     },

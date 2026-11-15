@@ -68,7 +68,7 @@ const delivered = (sessionId: string) => (rig.env.sqlite.query(`SELECT payload F
 describe('a Claude Code prompt under prompt-identity', () => {
   const features = 'turn,project-name,prompt-identity';
 
-  it('asks with the id the transcript derives, and reports the answer delivered to the next prompt under its own id', async () => {
+  it('asks with the id the transcript derives, and reports the answer delivered to the asking prompt under its own id', async () => {
     const sessionId = 'sess-identity';
     const tx = transcript(sessionId);
     const served = serving(features);
@@ -78,14 +78,17 @@ describe('a Claude Code prompt under prompt-identity', () => {
     const k2 = '22222222-2222-4222-8222-222222222222';
     await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'first prompt text', prompt_id: k1 }, { helpers: 'run', fetch: served.fetch });
     const second = await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'second prompt text', prompt_id: k2 }, { helpers: 'run', fetch: served.fetch });
-    expect(second.stdout).toContain('Recalled for: first prompt text');
+    expect(second.stdout).toContain('Recalled for: second prompt text');
     expect(served.asked.map(({ promptId, identity, scopeReason, at }) => ({ promptId, identity, scopeReason, dated: typeof at === 'number' }))).toEqual([
       { promptId: await promptIdFor(sessionId, 'user_prompt', k1), identity: 1, scopeReason: undefined, dated: true },
       { promptId: await promptIdFor(sessionId, 'user_prompt', k2), identity: 1, scopeReason: undefined, dated: true },
     ]);
     expect(delivered(sessionId)).toEqual([{
       receiptId: '00000000-0000-4000-8000-000000000001', answerId: '00000000-0000-4000-8000-0000000000a1',
-      renderedIn: await promptIdFor(sessionId, 'user_prompt', k2),
+      renderedIn: await promptIdFor(sessionId, 'user_prompt', k1), renderedScheme: 'claude-v1',
+    }, {
+      receiptId: '00000000-0000-4000-8000-000000000002', answerId: '00000000-0000-4000-8000-0000000000a2',
+      renderedIn: await promptIdFor(sessionId, 'user_prompt', k2), renderedScheme: 'claude-v1',
     }]);
   });
 
@@ -102,7 +105,7 @@ describe('a Claude Code prompt under prompt-identity', () => {
       { promptId: await promptIdFor(sessionId, 'user_prompt', k1), promptScheme: 'claude-v1' },
       { promptId: await promptIdFor(sessionId, 'user_prompt', k2), promptScheme: 'claude-v1' },
     ]);
-    expect(delivered(sessionId).map((d) => [d.renderedIn, d.renderedScheme])).toEqual([[await promptIdFor(sessionId, 'user_prompt', k2), 'claude-v1']]);
+    expect(delivered(sessionId).map((d) => [d.renderedIn, d.renderedScheme])).toEqual([[await promptIdFor(sessionId, 'user_prompt', k1), 'claude-v1'], [await promptIdFor(sessionId, 'user_prompt', k2), 'claude-v1']]);
   });
 
   it('names no prompt for a submission without a key, and reports a delivery to it with the reason', async () => {
@@ -118,7 +121,7 @@ describe('a Claude Code prompt under prompt-identity', () => {
     ]);
     expect(delivered(sessionId)).toEqual([{
       receiptId: '00000000-0000-4000-8000-000000000001', answerId: '00000000-0000-4000-8000-0000000000a1', renderedScopeReason: 'absent_key',
-    }]);
+    }, { receiptId: '00000000-0000-4000-8000-000000000002', answerId: '00000000-0000-4000-8000-0000000000a2', renderedScopeReason: 'absent_key' }]);
   });
 
   it('renders each answer once by the ask it answered, even when the harness reuses a prompt id', async () => {
@@ -130,9 +133,9 @@ describe('a Claude Code prompt under prompt-identity', () => {
     await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'first', prompt_id: reused }, { helpers: 'run', fetch: served.fetch });
     const second = await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'second', prompt_id: reused }, { helpers: 'run', fetch: served.fetch });
     const third = await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'third', prompt_id: reused }, { helpers: 'run', fetch: served.fetch });
-    expect(second.stdout).toContain('Recalled for: first');
-    expect(third.stdout).toContain('Recalled for: second');
-    expect(delivered(sessionId).map((d) => d.answerId)).toEqual(['00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000a2']);
+    expect(second.stdout).toContain('Recalled for: second');
+    expect(third.stdout).toContain('Recalled for: third');
+    expect(delivered(sessionId).map((d) => d.answerId)).toEqual(['00000000-0000-4000-8000-0000000000a1', '00000000-0000-4000-8000-0000000000a2', '00000000-0000-4000-8000-0000000000a3']);
   });
 
   it('reports the session record an answer carried, by its key, beside the answer', async () => {
@@ -144,8 +147,8 @@ describe('a Claude Code prompt under prompt-identity', () => {
     await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'let us plan it', prompt_id: '11111111-1111-4111-8111-111111111111' }, { helpers: 'run', fetch: served.fetch });
     await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'go on', prompt_id: k2 }, { helpers: 'run', fetch: served.fetch });
     expect(delivered(sessionId)).toEqual([{
-      answerId: '00000000-0000-4000-8000-0000000000a1', sessionRecord: 'plan-nudge', renderedIn: await promptIdFor(sessionId, 'user_prompt', k2),
-    }]);
+      answerId: '00000000-0000-4000-8000-0000000000a1', sessionRecord: 'plan-nudge', renderedIn: await promptIdFor(sessionId, 'user_prompt', '11111111-1111-4111-8111-111111111111'), renderedScheme: 'claude-v1',
+    }, { answerId: '00000000-0000-4000-8000-0000000000a2', sessionRecord: 'plan-nudge', renderedIn: await promptIdFor(sessionId, 'user_prompt', k2), renderedScheme: 'claude-v1' }]);
   });
 
   it('reports nothing for an answer that names no row', async () => {
@@ -155,7 +158,7 @@ describe('a Claude Code prompt under prompt-identity', () => {
     await runHook('session-start', { session_id: sessionId, transcript_path: tx, hook_event_name: 'SessionStart' }, { helpers: 'run', fetch: served.fetch });
     await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'first', prompt_id: '44444444-4444-4444-8444-444444444444' }, { helpers: 'run', fetch: served.fetch });
     const second = await runHook('user-prompt-submit', { session_id: sessionId, transcript_path: tx, prompt: 'second', prompt_id: '55555555-5555-4555-8555-555555555555' }, { helpers: 'run', fetch: served.fetch });
-    expect(second.stdout).toContain('Recalled for: first');
+    expect(second.stdout).toContain('Recalled for: second');
     expect(delivered(sessionId)).toEqual([]);
   });
 });
@@ -203,15 +206,16 @@ describe('a Codex prompt, whose harness key names a turn', () => {
     const steering = await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't1', prompt: 'steer it' }, hook);
     await tool('t1', 'call_2');
     await runHook('user-prompt-submit', { ...common, hook_event_name: 'UserPromptSubmit', turn_id: 't2', prompt: 'next turn' }, hook);
-    expect(steering.stdout).toContain('Recalled for: open the turn');
+    expect(steering.stdout).toContain('Recalled for: steer it');
     expect(served.asked.map(({ promptId, promptScheme, scopeReason }) => ({ promptId, promptScheme, scopeReason }))).toEqual([
       { promptId: opener(sessionId, 't1'), promptScheme: 'codex-turn-v1', scopeReason: undefined },
       { promptId: undefined, promptScheme: undefined, scopeReason: 'steering' },
       { promptId: opener(sessionId, 't2'), promptScheme: 'codex-turn-v1', scopeReason: undefined },
     ]);
     expect(delivered(sessionId)).toEqual([
-      { receiptId: '00000000-0000-4000-8000-000000000001', answerId: '00000000-0000-4000-8000-0000000000a1', renderedScopeReason: 'steering' },
-      { receiptId: '00000000-0000-4000-8000-000000000002', answerId: '00000000-0000-4000-8000-0000000000a2', renderedIn: opener(sessionId, 't2'), renderedScheme: 'codex-turn-v1' },
+      { receiptId: '00000000-0000-4000-8000-000000000001', answerId: '00000000-0000-4000-8000-0000000000a1', renderedIn: opener(sessionId, 't1'), renderedScheme: 'codex-turn-v1' },
+      { receiptId: '00000000-0000-4000-8000-000000000002', answerId: '00000000-0000-4000-8000-0000000000a2', renderedScopeReason: 'steering' },
+      { receiptId: '00000000-0000-4000-8000-000000000003', answerId: '00000000-0000-4000-8000-0000000000a3', renderedIn: opener(sessionId, 't2'), renderedScheme: 'codex-turn-v1' },
     ]);
     expect(toolPrompts(sessionId)).toEqual([opener(sessionId, 't1'), null]);
   });

@@ -50,7 +50,7 @@ import { handleForgetUnsettledExport, handleRecoveryExportStatus, handleStartRec
 import { MAX_UPLOAD_BODY_BYTES } from './core/backup.js';
 import { handleBlobRead } from './api/blobs.js';
 import { handleGetSpore, handleListSpores, handleResolveSpore, handleSaveSpore } from './api/spores.js';
-import { handlePromptContext, handleSessionContext } from './api/recall.js';
+import { handlePromptContext, handleSessionContext, handleDiscardContext } from './api/recall.js';
 import {
   handleProjectReleaseStates, handleProjectSpore, handleProjectSpores,
 } from './api/intelligence.js';
@@ -201,6 +201,7 @@ const ROUTE_DECLARATIONS: readonly Route[] = [
   { authorization: httpPolicy('spore', 'edit', 'project', ['member']), method: 'POST', path: '/spores/resolve', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleResolveSpore },
   // What a prompt is served: the plan nudge and the session's unseen spores.
   // `capture: false`: this route answers a read of the Project's own intelligence.
+  { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'POST', path: '/context/discard', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handleDiscardContext },
   { authorization: httpPolicy('processed', 'read', 'project', ['member']), method: 'POST', path: '/context/prompt', auth: 'member', bodyMode: 'json', shape: 'persisted', capture: false, handler: handlePromptContext },
   // What a starting session or a starting subagent is served: the Project's
   // instructions.

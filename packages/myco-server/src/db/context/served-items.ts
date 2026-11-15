@@ -4,7 +4,7 @@ import { read, readSet, write } from '../index.js';
 import { everyPhaseDone, type CatchupFamily } from '../projections/family.js';
 import { notTombstonedSql } from '../session-read-model.js';
 
-/** What a session has been served: one row per spore or plan any of its receipts named. */
+/** Keyed candidate exclusions for delivered items and pending selections. */
 export const SERVED_ITEMS_PROJECTION = 'session_served_items';
 export const SERVED_ITEMS_PHASE = 'servedItems';
 
@@ -23,24 +23,53 @@ const receiptItems = (receipts: string) => `INSERT OR IGNORE INTO session_served
     ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(${jsonArray('r.plan_ids')}) j
     WHERE j.type='text' AND ${notTombstonedSql('r')}`;
 
-/**
- * Every receipt adds what it served as it is inserted, whichever writer inserts it (the prompt path or a restore), with
- * the same statement the catch-up replays for receipts written before the trigger existed.
- */
+/** Insert-only membership trigger used by its schema step. */
 export const SERVED_ITEMS_TRIGGER = trigger('session_served_items_receipt', 'spore_injections', 'INSERT',
   receiptItems('SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id'));
 
-/** Which of the named candidates the session has been served, read by key: its cost follows the candidates, never the session's history. */
-const servedAmongCandidates = read<[project: string, session: string, candidates: string], { kind: ServedKind; item_id: string }>({ name: 'servedItems.among',
-  sql: `SELECT s.kind,s.item_id FROM json_each(?3) c CROSS JOIN session_served_items s
-    ON s.project_id=?1 AND s.session_id=?2 AND s.kind=json_extract(c.value,'$[0]') AND s.item_id=json_extract(c.value,'$[1]')` });
+/** A selection reserves candidates briefly while the member renders and reports delivery. */
+export const CONTEXT_RESERVATION_MS = 60_000;
+
+/** Candidate membership is permanent only for delivered receipts; pending selections expire. */
+export const receiptExclusions = (receipts: string, options: { delivered?: true } = {}): string => `INSERT INTO session_served_items(project_id,session_id,kind,item_id,reservation_expires_at,reservation_receipt_id)
+  ${(['spore', 'plan'] as const).map(kind => `SELECT r.project_id,r.session_id,'${kind}',j.value,
+    ${options.delivered ? '0,NULL' : `CASE WHEN r.delivered_at IS NOT NULL THEN 0 ELSE r.created_at+${CONTEXT_RESERVATION_MS} END,CASE WHEN r.delivered_at IS NOT NULL THEN NULL ELSE r.id END`}
+    FROM (${receipts}) k CROSS JOIN spore_injections r
+    ON r.project_id=k.project_id AND r.session_id=k.session_id AND r.id=k.id CROSS JOIN json_each(${jsonArray(`r.${kind}_ids`)}) j
+    WHERE j.type='text' AND r.discarded_at IS NULL AND ${notTombstonedSql('r')}`).join(' UNION ALL ')}
+  ON CONFLICT(project_id,session_id,kind,item_id) DO UPDATE SET reservation_receipt_id=CASE
+    WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN NULL
+    WHEN excluded.reservation_expires_at>=session_served_items.reservation_expires_at THEN excluded.reservation_receipt_id ELSE session_served_items.reservation_receipt_id END,
+    reservation_expires_at=CASE
+    WHEN session_served_items.reservation_expires_at=0 OR excluded.reservation_expires_at=0 THEN 0
+    ELSE MAX(session_served_items.reservation_expires_at,excluded.reservation_expires_at) END`;
+
+const newReceipt = 'SELECT NEW.project_id AS project_id,NEW.session_id AS session_id,NEW.id AS id';
+export const RECEIPT_EXCLUSION_TRIGGERS = [
+  trigger('session_served_items_receipt', 'spore_injections', 'INSERT', receiptExclusions(newReceipt)),
+  trigger('session_served_items_discard', 'spore_injections', 'UPDATE OF discarded_at',
+    `DELETE FROM session_served_items WHERE (project_id,session_id,kind,item_id) IN (
+      SELECT project_id,session_id,kind,item_id FROM session_served_items INDEXED BY idx_session_served_reservation
+      WHERE project_id=NEW.project_id AND session_id=NEW.session_id AND reservation_receipt_id=NEW.id AND reservation_expires_at>0)`, 'NEW.discarded_at IS NOT NULL'),
+  trigger('session_served_items_delivery', 'spore_injections', 'UPDATE OF delivered_at', receiptExclusions(newReceipt), 'NEW.delivered_at IS NOT NULL'),
+];
+
+/** A keyed exclusion predicate shared by selection and the receipt's atomic admission. */
+export const excludedCandidate = (slots: { project: string; session: string; candidates: string; now: string }): string =>
+  `SELECT s.kind,s.item_id FROM json_each(${slots.candidates}) c CROSS JOIN session_served_items s
+    ON s.project_id=${slots.project} AND s.session_id=${slots.session} AND s.kind=json_extract(c.value,'$[0]') AND s.item_id=json_extract(c.value,'$[1]')
+    WHERE s.reservation_expires_at=0 OR s.reservation_expires_at>${slots.now}`;
+
+/** Candidate exclusions read by key: cost follows the candidates, never the session's history. */
+const servedAmongCandidates = read<[project: string, session: string, candidates: string, now: number], { kind: ServedKind; item_id: string }>({ name: 'servedItems.among',
+  sql: excludedCandidate({ project: '?1', session: '?2', candidates: '?3', now: '?4' }) });
 
 const membershipPhases = read<[], { phase: string; done: number }>({ name: 'servedItems.phases',
   sql: `SELECT phase,done FROM projection_catchup WHERE projection='${SERVED_ITEMS_PROJECTION}'` });
 
 /** Every receipt array of the session: read only while the membership is still being built from receipts written before it. */
-const sessionReceiptArrays = read<[project: string, session: string], { spore_ids: string | null; plan_ids: string | null }>({ name: 'servedItems.receiptArrays',
-  sql: 'SELECT spore_ids,plan_ids FROM spore_injections WHERE project_id=?1 AND session_id=?2' });
+const sessionReceiptArrays = read<[project: string, session: string, since: number], { spore_ids: string | null; plan_ids: string | null }>({ name: 'servedItems.receiptArrays',
+  sql: 'SELECT spore_ids,plan_ids FROM spore_injections WHERE project_id=?1 AND session_id=?2 AND discarded_at IS NULL AND (delivered_at IS NOT NULL OR created_at>?3)' });
 
 const ids = (raw: string | null): string[] => {
   if (raw === null) return [];
@@ -60,13 +89,13 @@ interface Served { spores: Set<string>; plans: Set<string> }
  */
 export async function servedAmong(
   db: RelationalStore,
-  input: { project: string; session: string; candidates: ReadonlyArray<readonly [ServedKind, string]> },
+  input: { project: string; session: string; now?: number; candidates: ReadonlyArray<readonly [ServedKind, string]> },
 ): Promise<Served> {
   const served: Served = { spores: new Set(), plans: new Set() };
-  const [rows, phases] = await readSet(db, servedAmongCandidates.bind(input.project, input.session, JSON.stringify(input.candidates)), membershipPhases.bind());
+  const [rows, phases] = await readSet(db, servedAmongCandidates.bind(input.project, input.session, JSON.stringify(input.candidates), input.now ?? Date.now()), membershipPhases.bind());
   for (const row of rows) (row.kind === 'spore' ? served.spores : served.plans).add(row.item_id);
   if (everyPhaseDone(SERVED_ITEMS_CATCHUP, phases)) return served;
-  const [receipts] = await readSet(db, sessionReceiptArrays.bind(input.project, input.session));
+  const [receipts] = await readSet(db, sessionReceiptArrays.bind(input.project, input.session, (input.now ?? Date.now()) - CONTEXT_RESERVATION_MS));
   const wanted = new Set(input.candidates.map(([kind, id]) => `${kind}:${id}`));
   for (const receipt of receipts) {
     for (const id of ids(receipt.spore_ids)) if (wanted.has(`spore:${id}`)) served.spores.add(id);
@@ -81,7 +110,7 @@ export const SERVED_ITEMS_CATCHUP = {
   phases: {
     [SERVED_ITEMS_PHASE]: {
       source: { table: 'spore_injections', columns: ['project_id', 'session_id', 'id'], unique: true },
-      reconcile: [write<[keys: string]>({ name: 'servedItems.receiptPage', sql: receiptItems(jsonKeys(['project_id', 'session_id', 'id'])) })],
+      reconcile: [write<[keys: string]>({ name: 'servedItems.receiptPage', sql: receiptExclusions(jsonKeys(['project_id', 'session_id', 'id'])) })],
     },
   },
 } as const satisfies CatchupFamily;

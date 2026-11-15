@@ -105,8 +105,10 @@ registration:
     format: plain-text
     # Copilot reads a subagent's context at the top level of the answer, not inside `hookSpecificOutput`.
     shapes:
+      PostToolUse: both
       SubagentStart: flat
 capabilities:
+  promptRecallToolDelivery: true
   # Copilot's PreToolUse hook accepts JSON on stdout and threads
   # `additionalContext` into the agent's context window before the
   # tool fires. Same shape as Claude Code's PreToolUse injection, so

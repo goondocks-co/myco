@@ -3,39 +3,10 @@ import { servedAmong } from '../db/context/served-items.js';
 import { commitServedReceipt } from '../db/context/served-receipt.js';
 import { readSet } from '../db/index.js';
 /**
- * What the prompt hook is served: the spores that go into one prompt, and the
- * record of having served them.
- *
- * This module OWNS `spore_injections`. Its consumer is the member route
- * `POST /context/prompt`: the route calls the selector and hands the
- * rendered context to the hook. The store's `INSERT OR IGNORE` decides whether
- * to write a record, and its returned row answers that decision.
- *
- * The record carries what 1.4 spreads across a status allowlist, a session-wide
- * exclusion set and a UNIQUE content hash, and the two rules hold to different
- * strengths:
- *
- * **A prompt's content is served once per session — structural.** The row is
- * unique on `(project_id, session_id, prompt_hash)` and on the prompt it names,
- * and the insert is `INSERT OR IGNORE`, so a prompt resubmitted with the same
- * text, or an ask naming a prompt already served, serves nothing a second time
- * whatever the caller does. Each row carries a minted id of its own, which the
- * member reports back when the context reaches the agent.
- *
- * **A spore or plan already served is out of the pool as of the last committed
- * record.** Inserting a receipt records each item it served as a member of the
- * session, and a prompt asks only whether its own candidates are members,
- * so the check costs the same however long the session. It is a read, not a
- * constraint: two prompts of one session that arrive together both read before
- * either writes, and each may then serve the same spore. A repeated observation
- * is the cost of leaving the prompt hook off a lock.
- *
- * The row names a session and a prompt and holds NO foreign key to either. The
- * prompt hook answers before the prompt event lands on the server, so a record
- * may precede its prompt; a key to `sessions` or `prompt_batches` would refuse
- * the ordinary case. 1.4 falls through the same way under `no_batch`.
- *
- * Relevance uses Mutual Proximity over the current semantic candidates.
+ * Prompt recall selects relevant spores and plans and commits their receipt before answering.
+ * Receipt admission atomically excludes delivered items and current reservations. Delivery makes
+ * a reservation permanent; an undelivered selection expires and can be offered again.
+ * Receipts may precede capture on the Deployment, so their session and prompt references have no foreign keys.
  */
 import type { RelationalStore } from './adapters.js';
 import type { AskProtocol, PromptScopeReason } from '@goondocks/myco-shared/prompt-identity';
@@ -335,7 +306,7 @@ async function readSporesForPrompt(
   ]));
   // Only the candidates are asked about: what else the session was served cannot change this prompt's selection.
   const { spores: servedSpores, plans: servedPlans } = await duringInjection('candidates', counts, () => servedAmong(db, {
-    project: scope.projectId, session: input.sessionId,
+    project: scope.projectId, session: input.sessionId, now: input.now,
     candidates: [...sporeHits.map((h) => ['spore', h.record_id] as const), ...planHits.map((h) => ['plan', h.record_id] as const)],
   }), timings, 'candidate');
 
@@ -399,7 +370,7 @@ async function readSporesForPrompt(
   const receiptId = crypto.randomUUID();
   const promptId = input.promptId ?? null;
   const plansById = new Map(planRows.filter(row => row !== null).map(row => [row.planKey, row]));
-  // The receipt and each served plan's snapshot commit together; the receipt's insert adds what it served to the session.
+  // Receipt admission reserves the selected items and retains each plan's snapshot in one commit.
   const written = await duringInjection('record', counts, () => commitServedReceipt(db, { project: scope.projectId, session: input.sessionId, id: receiptId, promptId,
     scopeReason: input.scopeReason ?? null, protocol: input.askProtocol ?? 'legacy', askedAt: input.askedAt ?? null, promptHash: input.promptHash,
     spores: idsOf('spore'), now: input.now,

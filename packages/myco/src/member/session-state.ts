@@ -1,3 +1,4 @@
+import type { PromptRecall } from './prompt-context.js';
 import { isMemberOwnedTranscriptPath } from './transcript-routing.js';
 /**
  * Per-session member state under the spool dir: the spool high-water, the
@@ -138,6 +139,8 @@ export interface SessionState {
    * here, written with the hook's own records, until the helper has asked.
    */
   contextAsks?: ContextAsk[];
+  /** Prompt-bound requests and rendered receipts awaiting delivery acknowledgment. */
+  promptRecall?: PromptRecall;
   /** A transcript the member helper is to read prompts from (`member/transcript-prompts.ts`), and when it was asked. */
   promptBackfill?: { transcriptPath: string; at: number };
   /** When a hook last appended for this session: how a pass tells a live session from one its harness left. */
