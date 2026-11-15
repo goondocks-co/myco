@@ -48,11 +48,20 @@ import { tempMycoHome,TEST_MACHINE_ID,type MemberRig } from '../member/helpers/s
 
 import { DAEMON_LABEL,machine,NOW_S,OTHER_DAEMON_LABEL,plist,PROJECT,readJson,SERVER,sha,WORKER_LABEL,writeJson,type Machine,type RunOpts } from './cutover-machine.js';
 
+async function successfulCutover(fixture: Machine, ...args: Parameters<Machine['run']>) {
+  const result = await fixture.run(...args);
+  expect(result.err).toEqual([]);
+  expect(result.ok).toBe(true);
+  return result;
+}
+
 describe('myco cutover', () => {
   let m: Machine;
+  let legacyBin: string;
   let heldHome: string | undefined;
   beforeEach(async () => {
     m = await machine();
+    legacyBin = path.join(m.legacyHome, 'bin', 'myco');
     heldHome = process.env.HOME;
     process.env.HOME = m.home;
   });
@@ -173,9 +182,7 @@ describe('myco cutover', () => {
     const vaultBytes = sha(m.vault);
     const settingsBytes = fs.readFileSync(settingsFile(), 'utf8');
     fs.chmodSync(settingsFile(), 0o600);
-    const first = await m.run();
-    expect(first.err).toEqual([]);
-    expect(first.ok).toBe(true);
+    const first = await successfulCutover(m);
     expect(first.out.join('\n')).toContain('My machines › Its settings');
     expect(first.out.join('\n')).toContain(`${SERVER}/me/machines`);
 
@@ -245,7 +252,6 @@ describe('myco cutover', () => {
 
   it('plans on a dry run exactly the changes the real run makes, and makes none of them', async () => {
     // Antigravity's 1.4 plugin: its hooks file, and the manifest that goes with it.
-    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
     const plugin = path.join(m.home, '.gemini', 'config', 'plugins', 'myco');
     writeJson(path.join(plugin, 'hooks.json'), { myco: { Stop: [{ type: 'command', command: `${legacyBin} hook stop --symbiont antigravity --myco-managed` }] } });
     writeJson(path.join(plugin, 'plugin.json'), { name: 'myco' });
@@ -276,8 +282,7 @@ describe('myco cutover', () => {
     expect(fs.existsSync(path.join(plugin, 'plugin.json'))).toBe(false);
   });
 
-  it('reconnects supported harnesses and removes their retired 1.4 registrations while keeping user entries', async () => {
-    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
+  function legacyHarnessFixture() {
     const oldMcp = { type: 'stdio', command: legacyBin, args: ['mcp'] };
     const mine = { command: 'mine' };
     const ownHook = { command: 'echo mine' };
@@ -303,15 +308,20 @@ describe('myco cutover', () => {
     fs.mkdirSync(path.dirname(clinePlugin), { recursive: true });
     fs.writeFileSync(clinePlugin, '// myco:plugin-marker — Myco owns this file\nexport default {};\n');
     writeJson(settingsFile(), { ...readJson(settingsFile()), mcpServers: { myco: oldMcp } });
+    return { oldMcp, mine, ownHook, copilotHooks, copilotMcp, vscodeMcp, projectMcp, clinePlugin,
+      agyPlugin, agyHooks, agyMcp, windsurfHooks, windsurfMcp };
+  }
+
+  it('reconnects supported harnesses and removes their retired 1.4 registrations while keeping user entries', async () => {
+    const { oldMcp, mine, ownHook, copilotHooks, copilotMcp, vscodeMcp, projectMcp, clinePlugin,
+      agyPlugin, agyHooks, agyMcp, windsurfHooks, windsurfMcp } = legacyHarnessFixture();
     const installed = { agents: ['claude-code', 'copilot', 'antigravity', 'windsurf'] };
     const dry = await m.run(['--dry-run'], installed);
     expect(dry.ok).toBe(true);
     expect(dry.out.join('\n')).toContain(`GitHub Copilot: would remove the \`myco\` MCP entry from ${vscodeMcp}`);
     expect(readJson(vscodeMcp).servers).toEqual({ myco: oldMcp, mine });
 
-    const result = await m.run([], installed);
-    expect(result.err).toEqual([]);
-    expect(result.ok).toBe(true);
+    const result = await successfulCutover(m, [], installed);
     expect(result.out.join('\n')).not.toContain('is no longer captured');
     expect(hookCommands(readJson(copilotHooks).hooks)).toContain('echo mine');
     expect(hookCommands(readJson(copilotHooks).hooks).some(command => command.includes(CREDENTIAL_FLAG + ' registry'))).toBe(true);
@@ -333,21 +343,9 @@ describe('myco cutover', () => {
   });
 
   it('removes 1.4 from harnesses that are not installed, keeps the person\'s entries and connects nothing for them', async () => {
-    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
-    const oldMcp = { type: 'stdio', command: legacyBin, args: ['mcp'] };
-    const mine = { command: 'mine' };
-    const ownHook = { command: 'echo mine' };
-    const copilotHooks = path.join(m.home, '.copilot', 'hooks', 'myco-hooks.json');
-    const copilotMcp = path.join(m.home, '.copilot', 'mcp-config.json');
-    const windsurfHooks = path.join(m.home, '.codeium', 'windsurf', 'hooks.json');
-    const windsurfMcp = path.join(m.home, '.codeium', 'windsurf', 'mcp_config.json');
-    writeJson(copilotHooks, { version: 1, hooks: { SessionStart: [ownHook, { command: `${legacyBin} hook session-start --symbiont copilot --myco-managed` }] } });
-    writeJson(windsurfHooks, { hooks: { pre_user_prompt: [ownHook, { command: `${legacyBin} hook user-prompt-submit --symbiont windsurf --myco-managed` }] } });
-    for (const file of [copilotMcp, windsurfMcp]) writeJson(file, { mcpServers: { myco: oldMcp, mine } });
+    const { mine, copilotHooks, copilotMcp, windsurfHooks, windsurfMcp } = legacyHarnessFixture();
 
-    const result = await m.run();
-    expect(result.err).toEqual([]);
-    expect(result.ok).toBe(true);
+    const result = await successfulCutover(m);
     expect(hookCommands(readJson(copilotHooks).hooks)).toEqual(['echo mine']);
     expect(hookCommands(readJson(windsurfHooks).hooks)).toEqual(['echo mine']);
     for (const file of [copilotMcp, windsurfMcp]) expect(readJson(file).mcpServers).toEqual({ mine });
@@ -380,7 +378,6 @@ describe('myco cutover', () => {
   });
 
   it('takes 1.4 out of each connected folder, Claude Code\'s per-folder entries and the skill links', async () => {
-    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
     const projectSettings = path.join(m.root, '.claude', 'settings.json');
     const projectMcp = path.join(m.root, '.mcp.json');
     writeJson(projectSettings, { hooks: { Stop: [{ hooks: [{ type: 'command', command: `${legacyBin} hook stop --symbiont claude-code --myco-managed` }, { type: 'command', command: 'echo mine' }] }] } });
@@ -397,9 +394,7 @@ describe('myco cutover', () => {
     const dry = (await m.run(['--dry-run'])).out.join('\n');
     expect(dry).toContain(`would point the skill link ${path.join(skills, 'myco')} (now to ${path.join(m.legacyHome, 'skills', 'myco')}) at ${path.join(m.mycoHome, 'skills', 'myco')}`);
     expect(dry).toContain(`would remove the skill link ${path.join(skills, 'myco-old')} (to ${path.join(m.legacyHome, 'skills', 'myco-old')}); ${m.mycoHome} has no such skill`);
-    const result = await m.run();
-    expect(result.err).toEqual([]);
-    expect(result.ok).toBe(true);
+    const result = await successfulCutover(m);
     expect(hookCommands(readJson(projectSettings).hooks)).toEqual(['echo mine']);
     expect(readJson(projectMcp).mcpServers).toEqual({ mine: { command: 'mine' } });
     const projects = readJson(claudeJson).projects as Record<string, Record<string, unknown>>;
@@ -423,13 +418,10 @@ describe('myco cutover', () => {
   });
 
   it('plans a removal for every MCP file of an agent that provisioning does not write (Cline)', async () => {
-    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
     const written = path.join(m.home, '.cline', 'data', 'settings', 'cline_mcp_settings.json');
     const other = path.join(m.home, '.cline', 'mcp.json');
     for (const file of [written, other]) writeJson(file, { mcpServers: { myco: { type: 'stdio', command: legacyBin, args: ['mcp'] }, mine: { command: 'mine' } } });
-    const result = await m.run([], { agents: ['claude-code', 'cline'] });
-    expect(result.err).toEqual([]);
-    expect(result.ok).toBe(true);
+    const result = await successfulCutover(m, [], { agents: ['claude-code', 'cline'] });
     // Provisioning wrote the member's entry into the one file it writes; the other file's 1.4 entry was planned and removed.
     const member = (readJson(written).mcpServers as Record<string, Record<string, unknown>>).myco;
     expect(JSON.stringify(member)).toContain(CREDENTIAL_FLAG);
@@ -492,7 +484,6 @@ describe('myco cutover', () => {
   });
 
   it('fails when a 1.4 registration is still there once every change is made', async () => {
-    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
     const copilotMcp = path.join(m.home, '.copilot', 'mcp-config.json');
     const provision: CutoverDeps['provision'] = (agent, root, home, opts) => {
       const outcome = provisionGlobally(agent, root, home, opts);
@@ -521,9 +512,7 @@ describe('myco cutover', () => {
   it('passes an MCP entry for its own Deployment before the folder is connected', async () => {
     expect((await m.run()).ok).toBe(true);
     for (const entry of listRegistryEntries(m.mycoHome)) fs.rmSync(registryEntryPath(entry.root!, m.mycoHome));
-    const again = await m.run(['--dry-run']);
-    expect(again.err).toEqual([]);
-    expect(again.ok).toBe(true);
+    const again = await successfulCutover(m, ['--dry-run']);
   });
 
   it('removes the unit file it read even when the file is named for another label', async () => {
@@ -944,9 +933,7 @@ describe('myco cutover', () => {
       const preserved = () => scanLegacyRegistrations({ homeDir: m.home, folders: [m.root], legacyHomes: [m.legacyHome], ownHome: m.mycoHome, allClaudeProjects: true }).findings.filter(finding => finding.file === file && finding.verdict === 'stale').map(finding => finding.subject);
       const entries = preserved();
       for (const args of [['--dry-run'], []]) {
-        const result = await m.run(args, { agents: [...new Set(['claude-code', location.agent])] });
-        expect(result.err).toEqual([]);
-        expect(result.ok).toBe(true);
+        const result = await successfulCutover(m, args, { agents: [...new Set(['claude-code', location.agent])] });
         const stale = result.out.filter((line) => line.includes(`stale Myco entry in ${file}:`));
         expect(stale).toHaveLength(1);
         expect(stale[0]).toContain(`binary ${binary} is missing. Myco leaves this entry alone;`);
@@ -968,9 +955,7 @@ describe('myco cutover', () => {
     fs.symlinkSync(target, file);
     const before = fs.readFileSync(target);
     for (const args of [['--dry-run'], []]) {
-      const result = await m.run(args);
-      expect(result.err).toEqual([]);
-      expect(result.ok).toBe(true);
+      const result = await successfulCutover(m, args);
       expect(result.out.join('\n')).toContain(`stale Myco entry in ${file}`);
       if (kind === 'mcp') expect(result.out.join('\n')).toContain('tools are not set up because this entry occupies their place');
       expect(fs.lstatSync(file).isSymbolicLink()).toBe(true);
@@ -989,9 +974,7 @@ describe('myco cutover', () => {
     } });
     const before = readJson(file).projects;
     for (const args of [['--dry-run'], []]) {
-      const result = await m.run(args);
-      expect(result.err).toEqual([]);
-      expect(result.ok).toBe(true);
+      const result = await successfulCutover(m, args);
       expect(result.out.filter(line => line.includes(`stale Myco entry in ${file}: the "myco" MCP server for project ${folder};`))).toHaveLength(1);
       if (args.length > 0) {
         expect(result.out.join('\n')).toContain(`would set up Claude Code's hooks, tools, skills for ${m.mycoHome}`);
@@ -1013,9 +996,7 @@ describe('myco cutover', () => {
     else writeJson(file, { mcpServers: { myco: { type: 'http', url: 'https://other.invalid/mcp', [helperKey]: helper } } });
     const before = fs.readFileSync(file);
     for (const args of [['--dry-run'], []]) {
-      const result = await m.run(args, { agents: ['claude-code', agent] });
-      expect(result.err).toEqual([]);
-      expect(result.ok).toBe(true);
+      const result = await successfulCutover(m, args, { agents: ['claude-code', agent] });
       expect(result.out.join('\n')).toContain(`stale Myco entry in ${file}: ${agent === 'codex' ? 'the Myco tools entry' : 'the top-level "myco" MCP server'}; binary ${binary} is missing.`);
       expect(result.out.join('\n')).not.toMatch(/held elsewhere|point at https:\/\/other.invalid/);
       if (args.length > 0 || agent !== 'codex') expect(fs.readFileSync(file)).toEqual(before);
@@ -1070,7 +1051,6 @@ describe('myco cutover', () => {
     const otherHome = path.join(m.home, 'other-install');
     fs.mkdirSync(otherHome);
     const other = path.join(otherHome, 'bin', 'myco');
-    const legacyBin = path.join(m.legacyHome, 'bin', 'myco');
     for (const foreign of [`${other} hook stop --symbiont claude-code --myco-managed`, `MYCO_HOME=/elsewhere/member-home ${legacyBin} hook stop --symbiont claude-code --myco-managed`]) {
       writeJson(settingsFile(), { hooks: { Stop: [{ hooks: [{ type: 'command', command: foreign }] }] } });
       const unchanged = untouched();
@@ -1089,17 +1069,13 @@ describe('myco cutover', () => {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: m.home, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir };
     delete env.MYCO_HOME;
     const unchanged = untouched();
-    const dry = await m.run(['--dry-run'], { mycoHome: null, env });
-    expect(dry.err).toEqual([]);
-    expect(dry.ok).toBe(true);
+    const dry = await successfulCutover(m, ['--dry-run'], { mycoHome: null, env });
     const said = dry.out.join('\n');
     expect(said).toContain(`into ${m.mycoHome} (chosen by the machine pin ${path.join(m.legacyHome, 'runtime.home')})`);
     expect(said).toContain(`would set up Claude Code's hooks, tools, skills for ${m.mycoHome}, replacing the 1.4 registrations of ${m.legacyHome}`);
     unchanged();
 
-    const real = await m.run([], { mycoHome: null, env });
-    expect(real.err).toEqual([]);
-    expect(real.ok).toBe(true);
+    const real = await successfulCutover(m, [], { mycoHome: null, env });
     expect(listRegistryEntries(m.mycoHome).map((e) => e.root)).toEqual([m.root]);
     expect(hookCommands(readJson(settingsFile()).hooks).filter((c) => c.includes('hook ')).every((c) => c.includes(CREDENTIAL_FLAG))).toBe(true);
   });
@@ -1134,12 +1110,8 @@ describe('myco cutover on two 1.4 homes, one pinned as the 2.0 home (the owner\'
       const env: NodeJS.ProcessEnv = { ...process.env, HOME: m.home, MYCO_LAUNCH_AGENTS_DIR: m.agentsDir };
       delete env.MYCO_HOME;
       const args = ['--legacy-home', prod, '--legacy-home', m.legacyHome, '--route', `${PROJECT}=${SERVER}`];
-      const dry = await m.run([...args, '--dry-run'], { mycoHome: null, env });
-      expect(dry.err).toEqual([]);
-      expect(dry.ok).toBe(true);
-      const result = await m.run(args, { mycoHome: null, env });
-      expect(result.err).toEqual([]);
-      expect(result.ok).toBe(true);
+      const dry = await successfulCutover(m, [...args, '--dry-run'], { mycoHome: null, env });
+      const result = await successfulCutover(m, args, { mycoHome: null, env });
       expect(m.done).toEqual(m.planned[0]);
 
       expect(bootouts()).toEqual([DAEMON_LABEL]);
