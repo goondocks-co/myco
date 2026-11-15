@@ -39,7 +39,7 @@ test.describe('repository requirements in Project settings', () => {
         connected = true;
         await page.reload();
         await expect(map).toContainText('Reads goondocks-co/myco @ main');
-        await expect(learning).toContainText('Reads goondocks-co/myco @ main');
+        await expect(learning).toContainText('Seed project memory reads goondocks-co/myco @ main');
         await expect(map.getByRole('link', { name: 'Connect repository' })).toHaveCount(0);
         await expectFits(page, viewport);
         await expectNoRawIds(page);
