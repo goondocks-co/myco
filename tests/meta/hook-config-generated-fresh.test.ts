@@ -1,101 +1,17 @@
 /**
- * Meta gate: the generated hook config is fresh.
+ * The generated hook config carries the hook timeouts the harness templates declare.
  *
- * `packages/myco/src/hooks/hook-config.generated.ts` is what every hook reads
- * instead of the YAML manifests, and it also carries the per-event hook
- * timeouts copied from `symbionts/templates/<sym>/hooks.json` — the one
- * source the member's hook budget and the installer's emitted timeouts share.
- * Nothing else gates that file: CI runs no codegen, and a manifest or template
- * edit without `npm run codegen` ships a hook that reads yesterday's config.
- *
- * Regenerates both generator outputs in memory through the generator's own
- * exported function and compares byte-for-byte with the committed files.
- * No subprocess, no writes — same static-scan shape as the other meta gates.
+ * `packages/myco/src/hooks/hook-config.generated.ts` is what every hook reads instead of the YAML manifests, and it
+ * carries the per-event hook timeouts copied from `symbionts/templates/<sym>/hooks.json`: the one source the member's
+ * hook budget and the installer's emitted timeouts share. That the committed file matches a fresh generation is the
+ * build job's to prove ("generators preserve the checkout" runs every codegen generator), and `npm run check:pr` runs
+ * the same generators locally.
  */
 import { describe, expect, it } from 'bun:test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { collectHookEvents, renderHookConfigSources } from '../../packages/myco/scripts/gen-hook-config';
+import { collectHookEvents } from '../../packages/myco/scripts/gen-hook-config';
 import { HOOK_CONFIG } from '../../packages/myco/src/hooks/hook-config.generated';
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const HOOK_CONFIG_PATH = path.join(REPO_ROOT, 'packages/myco/src/hooks/hook-config.generated.ts');
-const BUNDLED_MANIFESTS_PATH = path.join(REPO_ROOT, 'packages/myco/src/symbionts/manifests.generated.ts');
-const CAPTURE_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/capture-rules.generated.ts');
-const RESUME_COMMANDS_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/resume-commands.generated.ts');
-const PREAMBLE_PATH = path.join(REPO_ROOT, 'packages/myco/src/cli/launch-preamble.generated.ts');
-const ANY_AGENT_RULES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/any-agent-rules.generated.ts');
-const RUNNER_HARNESSES_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/runner-harnesses.generated.ts');
-const WORKER_HARNESSES_PATH = path.join(REPO_ROOT, 'packages/myco/src/runner/harnesses.generated.ts');
-const STEP_WORDS_PATH = path.join(REPO_ROOT, 'packages/myco-shared/src/runner-step-words.generated.ts');
-
-/** 1-based line of the first difference, for a failure message that names the drift. */
-function firstDifferingLine(a: string, b: string): number {
-  const aLines = a.split('\n');
-  const bLines = b.split('\n');
-  const n = Math.max(aLines.length, bLines.length);
-  for (let i = 0; i < n; i++) {
-    if (aLines[i] !== bLines[i]) return i + 1;
-  }
-  return 0;
-}
-
-describe('generated hook config freshness', () => {
-  const fresh = renderHookConfigSources();
-
-  it('shares the manifest capture rules with the Deployment without generated drift', () => {
-    expect(fs.readFileSync(CAPTURE_RULES_PATH, 'utf-8')).toBe(fresh.captureRules);
-  });
-
-  it('shares the manifest resume commands with the Deployment without generated drift', () => {
-    expect(fs.readFileSync(RESUME_COMMANDS_PATH, 'utf-8')).toBe(fresh.resumeCommands);
-  });
-
-  it('gives the launch preamble the manifests\' project directories and stdin workspaces without generated drift', () => {
-    expect(fs.readFileSync(PREAMBLE_PATH, 'utf-8')).toBe(fresh.preamble);
-  });
-
-  it('names the harness any_agent rules also apply to without generated drift', () => {
-    expect(fs.readFileSync(ANY_AGENT_RULES_PATH, 'utf-8')).toBe(fresh.anyAgentRules);
-  });
-
-  it('gives the Deployment and the worker each harness\'s runner block without generated drift', () => {
-    expect(fs.readFileSync(RUNNER_HARNESSES_PATH, 'utf-8')).toBe(fresh.runnerHarnesses);
-  });
-
-  it('gives the dashboard each harness\'s step words without generated drift', () => {
-    expect(fs.readFileSync(STEP_WORDS_PATH, 'utf-8')).toBe(fresh.stepWords);
-  });
-
-  it('gives the worker how it runs each harness without generated drift', () => {
-    expect(fs.readFileSync(WORKER_HARNESSES_PATH, 'utf-8')).toBe(fresh.workerHarnesses);
-  });
-
-  it('hooks/hook-config.generated.ts is byte-identical to a fresh generation (run `npm run codegen`)', () => {
-    const committed = fs.readFileSync(HOOK_CONFIG_PATH, 'utf-8');
-    const line = firstDifferingLine(committed, fresh.hookConfig);
-    if (line !== 0) {
-      throw new Error(
-        `hook-config.generated.ts is stale: first difference at line ${line}. `
-        + 'A manifest or symbionts/templates/*/hooks.json changed without `npm run codegen`.',
-      );
-    }
-    expect(committed).toBe(fresh.hookConfig);
-  });
-
-  it('symbionts/manifests.generated.ts is byte-identical to a fresh generation (run `npm run codegen`)', () => {
-    const committed = fs.readFileSync(BUNDLED_MANIFESTS_PATH, 'utf-8');
-    const line = firstDifferingLine(committed, fresh.bundledManifests);
-    if (line !== 0) {
-      throw new Error(
-        `manifests.generated.ts is stale: first difference at line ${line}. `
-        + 'A manifest changed without `npm run codegen`.',
-      );
-    }
-    expect(committed).toBe(fresh.bundledManifests);
-  });
-
+describe('generated hook config', () => {
   it('carries the per-event timeouts the harness templates declare, keyed by harness event name', () => {
     // Spot-pin the Claude Code budget the member derives from (spec §2):
     // UserPromptSubmit 5 s, SessionStart 10 s, Stop 30 s, SessionEnd 10 s.

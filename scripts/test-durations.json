@@ -892,7 +892,6 @@
     "tests/skills/shipped-contract.test.ts": 679,
     "tests/support/process-alive.test.ts": 330,
     "tests/symbionts/claude-code-sdk-entrypoint-capture-rules.test.ts": 277,
-    "tests/symbionts/codegen-drift.test.ts": 841,
     "tests/symbionts/codex-capture-rules.test.ts": 651,
     "tests/symbionts/copilot.test.ts": 173,
     "tests/symbionts/cursor-capture-rules.test.ts": 596,
