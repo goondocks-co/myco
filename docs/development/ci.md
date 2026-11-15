@@ -56,10 +56,36 @@ MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/17 \
 The larger group budget covers the repeated work. Each test keeps its normal
 timeout, and every sibling file in the selected group still runs.
 
-Without those variables, the commands run their full suites. Do not run multiple
-shards in the same checkout concurrently: the runner owns shared bundle/report
-directories and swaps the Bun configuration for DOM tests. CI uses separate
-runners and checkouts.
+Without those variables, the commands run their full suites. Each run writes its
+bundles under its own temp root; shards run at once in one checkout need a
+`MYCO_RUNNER_REPORT_DIR` each, so a finished shard never prunes another's reports.
+
+`MYCO_TEST_SELECTION_FILE` names a file listing test files, one per line: the run
+plans only those files, with the full run's groups, isolation and duration
+weights, so `MYCO_TEST_SHARD` splits them as CI would. It takes no test targets.
+
+## Before pushing: `npm run check:pr`
+
+`check:pr` runs what pull request CI most often fails on, locally:
+
+- the dependency, migration, test-addition, budget and server gates;
+- the changed tests, every test that imports a changed file (heavy suites
+  included), PR-scope `tests/meta`, and the tests of any consumer row below, as
+  one selection split into parallel shards (`--jobs N`, default half the CPUs up
+  to 8; `--skip-importers` leaves the importing tests out and says so on the final
+  line). A file that fails beside the other shards runs once more on its own and
+  fails the check only if it fails again; one that passes alone is named as
+  load-sensitive;
+- the build job's dashboard bundle and every generator `npm run build` runs, in a
+  scratch copy, failing with the command whose output is not committed;
+- the type checks, the shard audit, and the consumer rows in
+  `scripts/check-pr-plan.mjs`: checks that read a change without importing it
+  (installer tests, the self-hosted image's build inputs, the compiled sign-in,
+  routing and hook-startup checks, parity smoke on the self-hosted target, the
+  dashboard screens, the docs site), each naming the CI job it stands in for.
+  Rows that cannot run on the machine (Windows, the Darwin release recipe, the
+  Cloudflare parity target, screens without an installed Chromium) are named on
+  the final line with the reason.
 
 `node scripts/check-test-shards.mjs` audits the workflow's actual matrix against
 test discovery and the full parity catalogue. Every test file and scenario must

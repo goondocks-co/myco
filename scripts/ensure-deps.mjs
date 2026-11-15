@@ -4,9 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { hostReleaseTarget, releaseTarget, RELEASE_TARGETS } from '../packages/myco/scripts/release-targets.mjs';
 
+/** The dashboard's own copies of React and its router and query packages: the test runner removes them before DOM tests, since a second React breaks hooks, so their absence is not a stale install. */
+export const RUNNER_REMOVED_DASHBOARD_PACKAGES = ['react', 'react-dom', 'react-router-dom', 'react-router', '@tanstack/react-query', '@tanstack/query-core'];
 export const installRoots = [
-  { directory: '.', label: 'workspace' },
-  { directory: 'packages/myco-server/ui', label: 'dashboard' },
+  { directory: '.', label: 'workspace', removable: [] },
+  { directory: 'packages/myco-server/ui', label: 'dashboard', removable: RUNNER_REMOVED_DASHBOARD_PACKAGES },
 ];
 export const excludedLockfiles = {
   'docs/package-lock.json': 'The documentation site is built separately; run npm ci --prefix docs before its scripts.',
@@ -95,7 +97,8 @@ function mayOmit(entry, host) {
     || (entry.libc && host.libc !== null && !allows(entry.libc, host.libc));
 }
 
-export function staleReason(root, host = currentHost) {
+export function staleReason(root, host = currentHost, removable = []) {
+  const removed = new Set(removable.map(name => `node_modules/${name}`));
   if (!fs.existsSync(path.join(root, 'node_modules'))) return 'packages missing';
   let installed;
   try { installed = readJson(path.join(root, 'node_modules/.package-lock.json')).packages; }
@@ -112,7 +115,8 @@ export function staleReason(root, host = currentHost) {
       if (mayOmit(entry, host)) continue;
       return 'packages out of date';
     }
-    if (identity(entry) !== identity(present) || !fs.existsSync(path.join(root, name))) return 'packages out of date';
+    if (identity(entry) !== identity(present)) return 'packages out of date';
+    if (!fs.existsSync(path.join(root, name)) && !removed.has(name)) return 'packages out of date';
   }
   if (Object.keys(installed).some(name => !locked[name])) return 'packages out of date';
   return null;
@@ -121,13 +125,13 @@ export function staleReason(root, host = currentHost) {
 export function ensureDeps(root, uiOnly = false) {
   for (const item of installRoots.filter(item => !uiOnly || item.directory !== '.')) {
     const directory = path.resolve(root, item.directory);
-    const reason = staleReason(directory);
+    const reason = staleReason(directory, undefined, item.removable);
     if (!reason) continue;
     console.log(`${item.label} ${reason}; reinstalling`);
     const result = spawnSync('npm', ['ci'], { cwd: directory, stdio: 'inherit' });
     if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`npm ci failed for ${item.label} (exit ${result.status ?? result.signal}).`);
-    const remaining = staleReason(directory);
+    const remaining = staleReason(directory, undefined, item.removable);
     if (remaining) throw new Error(`${item.label} installation is incomplete: ${remaining}. Check npm omit/optional settings.`);
   }
 }

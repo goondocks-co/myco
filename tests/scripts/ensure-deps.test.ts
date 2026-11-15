@@ -85,6 +85,22 @@ describe('dependency preparation', () => {
     expect(f.calls()).toHaveLength(1);
   });
 
+  it('keeps a dashboard install whose React copy the test runner removed, and reinstalls one missing anything else', () => {
+    const f = fixture();
+    const record = { version: '19.0.0', integrity: 'sha512-react' };
+    for (const directory of ['.', 'packages/myco-server/ui']) {
+      f.write(path.join(directory, 'package-lock.json'), { ...f.lock, packages: { ...f.lock.packages, 'node_modules/react': record } });
+      f.write(path.join(directory, 'node_modules/.package-lock.json'), { lockfileVersion: 3, packages: { 'node_modules/fixture': f.lock.packages['node_modules/fixture'], 'node_modules/react': record } });
+    }
+    fs.mkdirSync(path.join(f.root, 'node_modules/react'));
+    const kept = f.run(['--ui']);
+    expect(kept.status, kept.stderr).toBe(0);
+    expect(f.calls()).toEqual([]);
+    fs.rmSync(path.join(f.root, 'node_modules/react'), { recursive: true });
+    expect(f.run().stdout).toContain('workspace packages out of date; reinstalling');
+    expect(f.calls()).toEqual([[f.root, 'ci']]);
+  });
+
   it('installs missing node_modules and supports the dashboard-only entry point', () => {
     const f = fixture();
     for (const { directory } of installRoots) fs.rmSync(path.join(f.root, directory, 'node_modules'), { recursive: true });
