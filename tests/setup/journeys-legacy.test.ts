@@ -209,8 +209,8 @@ describe('legacy journey (e)', () => {
     if (evidence === 'confirmed-setup') expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
     const observations = await observeSetup(home, {}, { fetch: deps.fetch, agents: () => [], status: true });
     if (['confirmed', 'malformed', 'archived', 'transcript', 'transcript-held', 'archived-transcript', 'deleted-transcript', 'receipt-archived-transcript', 'title-only', 'confirmed-dry-run', 'confirmed-setup', 'absent'].includes(evidence)) {
-      const terminal = ['confirmed-setup', 'archived', 'archived-transcript', 'deleted-transcript', 'receipt-archived-transcript'].includes(evidence);
-      expect(legacyMigrationState(home).state).toBe(terminal ? 'moved' : 'partial');
+      const terminal = ['archived', 'archived-transcript'].includes(evidence);
+      expect(legacyMigrationState(home).state).toBe('moved');
       if (!['receipt-archived-transcript', 'deleted-transcript'].includes(evidence)) expect(readCutoverState(home)).toMatchObject({ version: 2, migrations: { [fixture.legacy.vault]: { projects: {
         [fixture.legacy.projects[0]!.id]: { evidence: { kind: 'deployment', machineId: 'machine_1' } },
       } } } });
@@ -219,7 +219,7 @@ describe('legacy journey (e)', () => {
         expect(renderSetupStatus(observations).join('\n')).toContain('Skipped 1 malformed 1.4 lineage event');
       }
       const plan = planCutover(home, { homeDir: fixture.legacy.home, dryRun: true }, fixture.deps.cutoverDeps);
-      expect(plan.projects.map(project => project.destination.kind)).toEqual(terminal ? ['moved', 'moved'] : ['destination', 'destination']);
+      expect(plan.projects.map(project => project.destination.kind)).toEqual(['moved', 'moved']);
       expect(await run(flags, { ...fixture.deps, ask: async question => { throw new Error(`Unexpected prompt: ${question}`); } })).toBe(0);
       expect(fixture.calls.slice(requests).filter(call => ['/events', '/spores/save', '/members/projects/resolve'].includes(call.route))).toEqual([]);
       if (terminal && evidence !== 'confirmed-setup') {
@@ -252,6 +252,7 @@ describe('legacy journey (e)', () => {
       finally { db.close(); }
     } };
     expect(await run(flags, { ...fixture.deps, cutoverDeps })).toBe(0);
+    expect(await cutoverRun(['--import-transcripts'], { ...cutoverDeps, mycoHome: home, fetch: fixture.deps.fetch, sleep: async () => {}, stdout: line => lines.push(line), stderr: line => errors.push(line) })).toBe(true);
     expect(legacyMigrationState(home).state).toBe('moved');
     expect(readCutoverState(home).migrations![fixture.legacy.vault]!.projects[project.id]!.transcripts).toMatchObject({ state: 'none', endedBy: 'project_archived' });
     expect(lines.join('\n') + errors.join('\n')).not.toContain('unarchive');
@@ -259,7 +260,7 @@ describe('legacy journey (e)', () => {
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(before);
   });
 
-  it('confirms each candidate once across an entire setup run and retries only transcripts after vault evidence', async () => {
+  it('completes setup from vault evidence without repeating imports or starting a transcript pass', async () => {
     const fixture = await rig();
     expect(await run(flags, fixture.deps)).toBe(0);
     const state = readCutoverState(home);
@@ -268,10 +269,10 @@ describe('legacy journey (e)', () => {
     expect(await run(flags, fixture.deps)).toBe(0);
     const calls = fixture.calls.slice(requests);
     for (const project of fixture.legacy.projects) {
-      expect(calls.filter(call => call.route === '/import/legacy-history' && call.project === project.id)).toHaveLength(3);
-      expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[project.id]).toMatchObject({ vault: { state: 'complete' }, transcripts: { state: 'complete' } });
+      expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[project.id]?.transcripts).toBeUndefined();
+      expect(readCutoverState(home).migrations?.[fixture.legacy.vault]?.projects[project.id]).toMatchObject({ vault: { state: 'complete' } });
     }
-    expect(lines.join('\n')).toContain('only the transcript pass remains');
+    expect(lines.join('\n')).toContain('Importing earlier agent transcripts is optional');
     expect(calls.filter(call => ['/events', '/spores/save', '/spores/resolve'].includes(call.route))).toEqual([]);
   });
 
@@ -564,11 +565,11 @@ describe('legacy journey (e)', () => {
       const record = readCutoverState(home);
       if (state === 'needs-destination') delete record.migrations;
       if (state === 'handover-pending') delete record.handover;
-      if (state === 'partial') record.migrations![fixture.legacy.vault]!.projects[fixture.legacy.projects[0]!.id]!.transcripts!.state = 'partial';
+      if (state === 'partial') record.migrations![fixture.legacy.vault]!.projects[fixture.legacy.projects[0]!.id]!.transcripts = { state: 'partial', at: 1 };
       fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify(record), { mode: 0o600 });
       if (state === 'partial') {
         const receipt = record.migrations![fixture.legacy.vault]!.projects[fixture.legacy.projects[0]!.id]!;
-        receipt.destinations![deploymentKeyFor(LEGACY_URLS[0])]!.transcripts!.state = 'partial';
+        receipt.destinations![deploymentKeyFor(LEGACY_URLS[0])]!.transcripts = { state: 'partial', at: 1 };
         fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify(record));
       }
       if (state === 'changed') {
@@ -581,17 +582,18 @@ describe('legacy journey (e)', () => {
     expect(legacyMigrationState(home).state).toBe(state);
     const before = fs.readFileSync(fixture.legacy.vault);
     const snapshotBefore = snapshot(root);
-    expect(await run(['--status', '--json'], fixture.deps)).toBe(state === 'moved' ? 0 : 3);
-    if (state === 'needs-destination') expect(legacyMigrationState(home).state).toBe('partial');
+    expect(await run(['--status', '--json'], fixture.deps)).toBe(state === 'moved' || state === 'needs-destination' ? 0 : 3);
+    if (state === 'needs-destination') expect(legacyMigrationState(home).state).toBe('moved');
     else expect(snapshot(root)).toEqual(snapshotBefore);
     lines = []; errors = [];
     const result = await run(flags, fixture.deps);
-    expect({ result, errors }).toEqual({ result: state === 'changed' ? 2 : 0, errors: expect.any(Array) });
+    expect({ result, errors }).toEqual({ result: state === 'changed' || state === 'partial' ? 2 : 0, errors: expect.any(Array) });
     if (state === 'changed') {
       expect(lines.join('\n')).toContain('Keep the 1.4 files');
       expect(errors.join('\n')).toContain('changed plans require fresh consent');
       expect(await run(['--cutover'], { ...fixture.deps, ask: async () => 'yes' })).toBe(0);
     }
+    if (state === 'partial') expect(await cutoverRun(['--import-transcripts'], { ...fixture.deps.cutoverDeps, mycoHome: home, fetch: fixture.deps.fetch, sleep: async () => {}, stdout: line => lines.push(line), stderr: line => errors.push(line) })).toBe(true);
     expect(legacyMigrationState(home).state).toBe('moved');
     expect(fs.readFileSync(fixture.legacy.vault)).toEqual(before);
   });
@@ -876,8 +878,7 @@ describe('legacy journey (e)', () => {
   const LEGACY_CUTOVER_BOUNDARIES = [
     'destinations', 'action:1:0', 'action:1:1', 'action:1:2', 'action:3:0', 'action:3:1',
     'stopped-source:0', 'action:6:0', 'stopped-source:1', 'action:6:1', 'stopped-source:final', 'quiescent',
-    'handover', 'copy', 'vault:proj_legacy_a', 'transcripts:proj_legacy_a', 'vault:proj_legacy_b',
-    'transcripts:proj_legacy_b', 'settings:https://legacy-a.invalid', 'settings:https://legacy-b.invalid',
+    'handover', 'copy', 'vault:proj_legacy_a', 'vault:proj_legacy_b', 'settings:https://legacy-a.invalid', 'settings:https://legacy-b.invalid',
   ] as const;
   let acceptedCaptureCount = 0;
   beforeAll(async () => {

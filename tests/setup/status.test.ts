@@ -490,14 +490,14 @@ for (const explicit of [true, false]) it(`status and dry run confirm the same ${
     return Response.json({ persisted: true, confirmed: true, eventIds: body.eventGroups.flat(), sporeIds: [], lineageIds: [], projectState: 'active' });
   }, { preconnect: () => {} });
   const facts = await observeSetupStatus(fixture.home, {}, { ...deps(), fetch, legacyHomeDir, ...(explicit ? { legacyHomes: [sourceHome] } : {}) });
-  expect(facts.find(fact => fact.id === 'legacy')?.detail).toMatch(/^partial /);
+  expect(facts.find(fact => fact.id === 'legacy')?.detail).toMatch(/^moved /);
   expect(passes).toBe(1);
   expect(await dryCutover(['--dry-run', ...(explicit ? ['--legacy-home', sourceHome] : [])], {
     mycoHome: fixture.home, env: { ...process.env, HOME: legacyHomeDir }, machineId: 'synthetic-machine', fetch,
     stdout: line => lines.push(line), stderr: line => { throw new Error(line); },
   })).toBe(true);
-  expect(passes).toBe(3);
-  expect(lines.join('\n')).toContain('only the transcript pass remains');
+  expect(passes).toBe(1);
+  expect(lines.join('\n')).toContain('Importing earlier agent transcripts is optional');
   expect(fs.readFileSync(vault)).toEqual(bytes);
 });
 

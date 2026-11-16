@@ -4,9 +4,10 @@ import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { run as setup } from '@myco/cli/setup.js';
 import { homeReport, projectReport, refusedHookChecks, useHomeDoctor, type MemberDoctorDeps } from '@myco/cli/member-doctor.js';
 import { readVaultContent } from '@myco/member/legacy-backup.js';
-import { legacyMigrationState } from '@myco/member/legacy-migration.js';
+import { writeCutoverState, legacyMigrationState, type CutoverState } from '@myco/member/legacy-migration.js';
 import { runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { helpText, MEMBER_USAGE } from '@myco/cli/help.js';
 import { runDrain, runProvision } from '@myco/cli/member.js';
@@ -22,7 +23,7 @@ import { logoutDeployment } from '@myco/member/logout.js';
 import { clearLeft, markLeft, rootKeyFor } from '@myco/member/auto-join.js';
 import { recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
-import { readRegistryEntry, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { deploymentKeyFor, readRegistryEntry, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { recordRefusedHook, REFUSED_HOOK_RETENTION_MS } from '@myco/member/refused-hooks.js';
 import { newRunnerBearer, runnerRecordPath } from '@myco/runner/runner-registry.js';
 import { installWorkerService } from '@myco/runner/service.js';
@@ -105,6 +106,36 @@ describe('home doctor', () => {
     }, at);
     return file;
   };
+
+  it('finishes an earlier move with no transcript pass, but keeps failed history and transcript passes unfinished', async () => {
+    connectedHome();
+    recordDefaultDeployment(personal, { mycoHome: home });
+    const vault = path.join(home, 'groves', 'retained', 'myco.db');
+    writeRetainedLegacyVault(vault);
+    const db = new Database(vault);
+    try { db.run("UPDATE sessions SET project_id='proj_repo_1'"); } finally { db.close(); }
+    const { size, mtimeMs } = fs.statSync(vault);
+    const project = { destination: { serverUrl: personal, key: deploymentKeyFor(personal) }, vault: { state: 'complete' as const, at: 1 } };
+    const state: CutoverState = { backups: {}, handover: { at: 1, legacyHomes: [home], agents: [] }, migrations: { [vault]: { ...readVaultContent(vault), size, mtimeMs, projects: { proj_repo_1: project } } } };
+    writeCutoverState(home, state);
+    const status: string[] = [];
+    const statusDeps = { ...deps, fetch: async () => Response.json({ persisted: true, projectState: 'active' }), agents: () => ['claude-code'], stdout: (line: string) => status.push(line) };
+    expect(await setup(['--status'], statusDeps)).toBe(0);
+    expect(status.join('\n')).toContain('Myco 1.4 data has been moved.');
+    expect(status.join('\n')).toContain('Earlier agent transcripts were not imported.');
+    expect((await output()).text).not.toContain('Earlier history:');
+    expect((await output(['--all'])).text).toContain('myco cutover --import-transcripts');
+    for (const failure of [{ ...project, vault: { state: 'partial' as const, at: 1 } }, { ...project, transcripts: { state: 'partial' as const, at: 1, endedBy: 'forbidden' } }]) {
+      state.migrations![vault].projects.proj_repo_1 = failure;
+      writeCutoverState(home, state);
+      status.length = 0;
+      expect(await setup(['--status'], statusDeps)).toBe(3);
+      expect(status.join('\n')).toContain('Some Myco 1.4 data has not finished moving');
+      const doctor = await output();
+      expect(doctor.ok).toBe(true);
+      expect(doctor.text).toContain('WARN Earlier history:');
+    }
+  });
 
   it('summarizes fifteen healthy repositories and six agents, with every item available under --all', async () => {
     const roots = connectedHome();

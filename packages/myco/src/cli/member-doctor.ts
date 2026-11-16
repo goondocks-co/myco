@@ -1,3 +1,4 @@
+import { LEGACY_TRANSCRIPTS_NOT_IMPORTED } from './legacy-capture.js';
 import { captureHealthChecks } from './doctor-capture.js';
 import { doctorOutput } from './doctor-output.js';
 import { managedMemberHarnesses, memberProvisionTarget, memberHarnessStatus } from '@myco/cli/member.js';
@@ -315,15 +316,18 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   } else if (migration.state === 'handover-pending') {
     checks.push(row('Migration', 'warn', `${migration.legacyOwnsCapture ? 'Myco 1.4 services or agent registrations still own capture' : 'history destinations are recorded, but handover has not been confirmed'}; run \`myco cutover --dry-run\`, then \`myco cutover\`.`));
   } else if (migration.state === 'partial') {
-    checks.push(row('Migration', 'warn', 'some project history or transcripts still need to finish; run `myco cutover --dry-run`, then `myco cutover` to resume.'));
+    checks.push(row('Migration', 'warn', 'some project history or transcripts still need to finish; run `myco cutover --dry-run`, then `myco cutover` for history or `myco cutover --import-transcripts` for a failed transcript pass.'));
   } else if (migration.state === 'unmoved' || migration.state === 'changed') {
     const homes = [...new Set([home, defaultMycoHome()].map(directory => path.resolve(directory)))];
     const vaults = [...new Set(homes.flatMap(directory => legacyVaultFiles(directory)))];
     checks.push(row('Myco 1.4', 'warn', migration.state === 'changed' ? migration.warning
       : `migration pending; retained vault files: ${vaults.join(', ')}. Next: \`myco cutover --dry-run\`.`));
+  } else if (migration.state === 'moved') {
+    checks.push(row('Migration', 'ok', migration.transcriptsNotImported
+      ? `history is complete at its recorded destinations. ${LEGACY_TRANSCRIPTS_NOT_IMPORTED}`
+      : 'history and transcripts are complete at their recorded destinations.'));
   } else {
-    checks.push(row('Migration', 'ok', migration.state === 'moved'
-      ? 'history and transcripts are complete at their recorded destinations.' : 'no retained Myco 1.4 capture state.'));
+    checks.push(row('Migration', 'ok', 'no retained Myco 1.4 capture state.'));
   }
   return checks;
 }

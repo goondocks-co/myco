@@ -513,6 +513,8 @@ export const legacyProjectImportComplete = (project: LegacyProjectReport): boole
   && Object.values(project.notAttempted ?? {}).every((count) => count === 0);
 
 export interface LegacyImportOptions {
+  /** Raw harness transcripts may supply vault session content unless explicitly declined. */
+  includeTranscripts?: boolean;
   /** 1.4 homes, grove directories or vault files. */
   sources: readonly string[];
   serverUrl?: string;
@@ -883,7 +885,8 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
     async function importSession(group: SessionGroup): Promise<StepEnd> {
       const s = group.winner;
       const client = clientFor(projectId);
-      const located = locateTranscript(group.agent, group.sessionId, s.transcriptPath, { route: { serverUrl, projectId }, mycoHome });
+      const located = opts.includeTranscripts === false ? null
+        : locateTranscript(group.agent, group.sessionId, s.transcriptPath, { route: { serverUrl, projectId }, mycoHome });
       const agent = located?.agent ?? group.agent;
       const candidate = located === null ? null : transcriptCandidate(agent, group.sessionId, located.file, root ?? '', deps.machineId, now());
       const planned = candidate === null || candidate === 'active' ? null : await planTranscript(candidate, client);
@@ -905,6 +908,9 @@ export async function runLegacyImport(opts: LegacyImportOptions, deps: LegacyImp
           : held.withTranscript.has(group.sessionId) ? 'transcript'
           : 'vault';
         ledger.append({ k: 'source', session: group.sessionId, from: source });
+      }
+      if (opts.includeTranscripts === false && source === 'transcript' && !held.withTranscript.has(group.sessionId)) {
+        return { endedBy: 'failed', detail: 'the selected transcript content has not arrived; run myco cutover --import-transcripts to resume the optional import' };
       }
       if (source === 'deleted') { r.sessions.deleted += 1; return { endedBy: 'deleted' }; }
 

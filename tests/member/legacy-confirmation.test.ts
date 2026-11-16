@@ -49,7 +49,7 @@ for (const scenario of ['unauthorized', 'unreachable', 'stale-root', 'ambiguous'
     }
     if (scenario === 'recorded-route-race') {
       const state = readCutoverState(home);
-      state.migrations![vault]!.projects.proj_old = { root: folder, destination: { serverUrl: 'https://a.invalid', key: deploymentKeyFor('https://a.invalid') }, vault: { state: 'complete', at: 1 } };
+      state.migrations![vault]!.projects.proj_old = { root: folder, destination: { serverUrl: 'https://a.invalid', key: deploymentKeyFor('https://a.invalid') }, vault: { state: 'complete', at: 1 }, transcripts: { state: 'partial', at: 1 } };
       writeCutoverState(home, state);
     }
     const before = readCutoverState(home).migrations![vault]!.projects.proj_old;
@@ -157,14 +157,14 @@ for (const allConfirmed of [true, false]) it(`requires every bounded proof batch
   } });
   time.mockRestore();
   expect(batches).toBe(allConfirmed ? 3 : 2);
-  expect(result.state).toBe(allConfirmed ? 'partial' : 'unmoved');
+  expect(result.state).toBe(allConfirmed ? 'moved' : 'unmoved');
   if (allConfirmed) expect(readCutoverState(home).migrations?.[vault]?.projects.proj_old?.evidence?.eventIds).toHaveLength(count);
   else expect(readCutoverState(home).migrations).toBeUndefined();
   expect(fs.readFileSync(vault)).toEqual(bytes);
 });
 
 
-for (const receipt of ['backup-only', 'absent'] as const) for (const refused of ['spores', 'lineage', 'plan', 'prompt', 'response', 'title', 'end', 'complete'] as const) it(refused === 'complete' ? `confirms offered records but leaves transcripts pending with an unattached plan: ${receipt}` : `keeps a manual import stopped at ${refused} unconfirmed with ${receipt} receipt`, async () => {
+for (const receipt of ['backup-only', 'absent'] as const) for (const refused of ['spores', 'lineage', 'plan', 'prompt', 'response', 'title', 'end', 'complete'] as const) it(refused === 'complete' ? `completes confirmed history without importing transcripts with an unattached plan: ${receipt}` : `keeps a manual import stopped at ${refused} unconfirmed with ${receipt} receipt`, async () => {
   const rig = await memberRig({ projectId: 'proj_partial' });
   await settingsWriter(rig.env.db).setLeaf('import.spores_enabled', true, 'mem_machine_1', Date.now());
   const home = path.join(root, 'myco');
@@ -208,7 +208,7 @@ for (const receipt of ['backup-only', 'absent'] as const) for (const refused of 
       fs.writeFileSync(path.join(home, 'member', 'cutover.json'), JSON.stringify({ backups: { [vault]: { copy, ...readVaultContent(copy), at: 1 } } }), { mode: 0o600 });
     }
     const observed = await observeLegacyMigration(home, { fetch: rig.fetch });
-    expect(observed.state).toBe(refused === 'complete' ? 'partial' : receipt === 'backup-only' ? 'needs-destination' : 'unmoved');
+    expect(observed.state).toBe(refused === 'complete' ? 'moved' : receipt === 'backup-only' ? 'needs-destination' : 'unmoved');
     if (refused === 'complete') expect(readCutoverState(home).migrations?.[vault]?.projects.proj_partial).toMatchObject({ vault: { state: 'complete' }, evidence: { sporeIds: ['spore-a'] } });
     else { expect(observed.confirmation).toBe('not-found'); expect(readCutoverState(home).migrations).toBeUndefined(); }
     expect(readCutoverState(home).migrations?.[vault]?.projects.proj_partial?.transcripts).toBeUndefined();
