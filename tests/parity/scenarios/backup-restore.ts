@@ -10,9 +10,17 @@ import { bootSelfhosted } from '../targets/selfhosted.ts';
 // State-changing owner routes hold a same-origin line; a scenario names its own origin the way a browser would.
 const ownerJson = (target: ParityTarget) => ({ ...target.ownerHeaders(), 'content-type': 'application/json', 'cf-connecting-ip': '1.2.3.4', origin: target.url });
 
-async function ownerPost<T>(target: ParityTarget, path: string, body: unknown): Promise<{ status: number; body: T }> {
-  const res = await fetch(`${target.url}${path}`, { method: 'POST', headers: ownerJson(target), body: JSON.stringify(body) });
-  return { status: res.status, body: (await res.json()) as T };
+const ownerPost = <T>(target: ParityTarget, path: string, body: unknown) => owner<T>(target, path, { method: 'POST', body: JSON.stringify(body), headers: ownerJson(target) });
+
+/** Continues an accepted restore until its outcome is final, including a wake finishing before the next request. */
+async function ownerRestore<T>(target: ParityTarget, path: string, body: unknown): Promise<{ status: number; body: T }> {
+  const answer = await ownerPost<T & { error?: string; job?: { id: string; state: string; outcome: T } }>(target, path, body);
+  if (answer.status === 202) return ownerRestore<T>(target, `/api/backups/restores/${answer.body.job!.id}/continue`, {});
+  if (answer.status === 409 && answer.body.error === 'restore_ended') {
+    expect(answer.body.job?.state).toBe('complete');
+    return { status: 200, body: { ...answer.body.job!.outcome, applied: true } };
+  }
+  return answer;
 }
 
 /**
@@ -42,9 +50,9 @@ export const backupRestore: ParityScenario = {
     expect({ status: preview.status, foreign: preview.body.foreignLineage }).toEqual({ status: 200, foreign: false });
     expect(preview.body.header.counts.sessions).toBeGreaterThanOrEqual(1);
 
-    const restored = await ownerPost<{ applied: boolean; tables: Record<string, { inserted: number }> }>(target, `/api/backups/${id}/restore`, {});
+    const restored = await ownerRestore<{ applied: boolean; tables: Record<string, { inserted: number }> }>(target, `/api/backups/${id}/restore`, {});
     expect({ status: restored.status, applied: restored.body.applied }).toEqual({ status: 200, applied: true });
-    const again = await ownerPost<{ tables: Record<string, { inserted: number }> }>(target, `/api/backups/${id}/restore`, {});
+    const again = await ownerRestore<{ tables: Record<string, { inserted: number }> }>(target, `/api/backups/${id}/restore`, {});
     expect(Object.values(again.body.tables).every((t) => t.inserted === 0)).toBe(true);
 
     // Across deployments: the artifact travels; a sibling refuses it as foreign until adopted.
@@ -62,7 +70,7 @@ export const backupRestore: ParityScenario = {
       // A backup carries no blob bytes. An artifact registering blobs the sibling does not hold is refused whole before any
       // row is written; one registering none is adopted.
       const registersBlobs = text.split('\n').some((line) => line.startsWith('{"t":"blobs"'));
-      const adopted = await ownerPost<{ applied?: boolean; error?: string }>(sibling, '/api/backups/restore-upload', { artifact: text, allowForeignLineage: true });
+      const adopted = await ownerRestore<{ applied?: boolean; error?: string }>(sibling, '/api/backups/restore-upload', { artifact: text, allowForeignLineage: true });
       const session = await owner(sibling, `/api/projects/${sibling.projectId}/sessions/sess_backup`);
       if (registersBlobs) {
         expect({ status: adopted.status, error: adopted.body.error, sessions: session.status }).toEqual({ status: 409, error: 'objects_missing', sessions: 404 });
@@ -91,7 +99,7 @@ export const backupRestore: ParityScenario = {
       expect({ member: (await memberRead(sibling)).status, grant: (await grantList(sibling)).status }).toEqual({ member: 200, grant: 200 });
       const siblingBackup = await ownerPost<{ backup: { id: string } }>(sibling, '/api/backups', {});
       const siblingArtifact = await fetch(`${sibling.url}/api/backups/${siblingBackup.body.backup.id}/artifact`, { headers: ownerJson(sibling) });
-      const back = await ownerPost<{ applied: boolean }>(target, '/api/backups/restore-upload', { artifact: await siblingArtifact.text(), allowForeignLineage: true });
+      const back = await ownerRestore<{ applied: boolean }>(target, '/api/backups/restore-upload', { artifact: await siblingArtifact.text(), allowForeignLineage: true });
       expect({ status: back.status, applied: back.body.applied }).toEqual({ status: 200, applied: true });
       const landed = await credentials(target);
       const byId = (a: { id: string }, b: { id: string }) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
