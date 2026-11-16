@@ -230,6 +230,23 @@ describe('a turn\'s end that ships inline', () => {
     await holder;
   }, 20_000);
 
+  it('retains Copilot capture without a helper through an upload backoff, then publishes its whole turn', async () => {
+    const sessionId = 'sess-deferred-copilot', tx = transcript(sessionId);
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' };
+    await runHook('user-prompt-submit', { session_id: sessionId, prompt: 'hi', transcript_path: tx },
+      { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: false }) });
+    const retryAt = Date.now() + 10 * 60_000;
+    updateSessionState(spool().dir, sessionId, state => { state.transcriptRetry = { at: retryAt, backoffMs: retryAt - Date.now() }; });
+    await runHook('stop', { session_id: sessionId, transcript_path: tx },
+      { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
+    await publishFixture(rig.env);
+    expect(await readFixtureRecords(rig.env.serverEnv, 'proj_1', sessionId)).toEqual([]);
+    const now = () => retryAt + 1;
+    await runHelper({ ...route, mycoHome, now, lingerMs: 0, noSuccessor: true,
+      pass: helperPass(route, mycoHome, { fetch: rig.fetch, now }) });
+    await expectCaptured(sessionId);
+  });
+
   it('leaves an ordinary hook\'s capture to the helper even when no helper could be started', async () => {
     const tx = transcript('sess-capture');
     await runHookWithHookRows('user-prompt-submit', { session_id: 'sess-capture', prompt: 'later', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'windsurf', helperSpawn: () => ({ started: false }) });
