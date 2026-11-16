@@ -208,6 +208,7 @@ describe('home doctor', () => {
     const all = await output(['--all']);
     expect(all.text).toContain('Unconnected folders: info 4 requests outside connected repositories');
     expect(all.text).toContain('last 30 days');
+    expect(all.text).toContain(`most recent ${new Date(now).toISOString()}`);
     for (const root of folders) expect(all.text).toContain(root);
     expect(all.text).toContain('1 unrecognized folder records omitted');
   });

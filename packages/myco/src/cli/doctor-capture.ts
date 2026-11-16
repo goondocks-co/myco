@@ -112,9 +112,11 @@ export function captureHealthChecks(home: string, entries: readonly RegistryEntr
   const refusedCommands = refusalWords.length > 0;
   const misses = listMissingMembershipsResult(home);
   const activeMisses = misses.records.filter(record => now - record.lastAt <= MISSING_MEMBERSHIP_RETENTION_MS);
+  const outsideFirst = activeMisses.reduce((first, record) => Math.min(first, record.firstAt), Infinity);
+  const outsideLast = activeMisses.reduce((last, record) => Math.max(last, record.lastAt), -Infinity);
   const outsideCount = activeMisses.reduce((sum, record) => sum + record.count, 0);
   const topFolders = [...activeMisses].sort((a, b) => b.count - a.count).slice(0, UNCONNECTED_FOLDER_PREVIEW_LIMIT).map(record => `${record.root} (${record.count})`);
-  const outsideNote = `${outsideCount} requests outside connected repositories; retained folder records active in the last ${MISSING_MEMBERSHIP_RETENTION_MS / 86400_000} days${activeMisses.length ? `; counts since ${observationInstant(Math.min(...activeMisses.map(record => record.firstAt)))}` : ''}${topFolders.length ? `; most requests: ${topFolders.join(', ')}` : ''}${!misses.readable ? '; folder records unavailable' : ''}${misses.unavailableRecords ? `; ${misses.unavailableRecords} unrecognized folder records omitted` : ''}. These are not capture losses; capture starts only in connected repositories.`;
+  const outsideNote = `${outsideCount} requests outside connected repositories; retained folder records active in the last ${MISSING_MEMBERSHIP_RETENTION_MS / 86400_000} days${activeMisses.length ? `; counts since ${observationInstant(outsideFirst)}; most recent ${observationInstant(outsideLast)}` : ''}${topFolders.length ? `; most requests: ${topFolders.join(', ')}` : ''}${!misses.readable ? '; folder records unavailable' : ''}${misses.unavailableRecords ? `; ${misses.unavailableRecords} unrecognized folder records omitted` : ''}. These are not capture losses; capture starts only in connected repositories.`;
   const lossWords = `${kinds.length ? kinds.join(', ') : 'no recorded losses or delivery refusals'} in the last ${CAPTURE_LOSS_DAYS} UTC days (including today)${refusalWords.length ? `; ${refusalWords.join('; ')}` : ''}${lastAt ? `; most recent ${observationInstant(lastAt)}` : ''}${lossesReadable ? '' : `; could not read ${lossErrors.join('; ')}`}`;
   const historical = totals.payloads + totals.plans + totals.records > 0;
   const advice = [
