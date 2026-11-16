@@ -1,3 +1,4 @@
+import { recordTranscriptUnavailable } from './capture-health.js';
 import { assertMemberTranscriptDestination } from './transcript-routing.js';
 /**
  * The transcript as the member ships it: bytes from the server-held offset, in
@@ -411,7 +412,10 @@ export async function shipTranscriptSegments(
   let reminted = false;
   for (;;) {
     let size: number;
-    try { size = fs.statSync(pointer.path).size; } catch { return { shipped, endedBy: 'absent' }; }
+    try { size = fs.statSync(pointer.path).size; } catch {
+      recordTranscriptUnavailable(spool, sessionId, pointer.transcriptId, now());
+      return { shipped, endedBy: 'absent' };
+    }
     if (pointer.nextOffset >= size) return { shipped, endedBy: 'done' };
     if (opts.until !== undefined && now() >= opts.until) return { shipped, endedBy: 'budget' };
     if (!canStartRequest(budget, now())) return { shipped, endedBy: 'budget' };
@@ -427,7 +431,12 @@ export async function shipTranscriptSegments(
       length = Math.min(length, last.atSize - offset);
     }
     if (ahead[0] !== undefined) length = Math.min(length, ahead[0].atSize - offset);
-    const bytes = readSlice(pointer.path, offset, length);
+    let bytes: Uint8Array;
+    try { bytes = readSlice(pointer.path, offset, length); }
+    catch (error) {
+      recordTranscriptUnavailable(spool, sessionId, pointer.transcriptId, now());
+      throw error;
+    }
     if (bytes.byteLength === 0) return { shipped, endedBy: 'done' };
     const source = { path: pointer.path, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), mediaType: TEXT_MEDIA_TYPE, size: bytes.byteLength };
 

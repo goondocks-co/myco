@@ -123,9 +123,9 @@ export const COMMANDS: Record<string, CommandRegistration> = {
   },
   doctor: {
     group: "This machine",
-    usage: "",
+    usage: "[--all]",
     description: "Check sign-in, session capture, agent connections and server access",
-    help: "Usage: myco doctor\n\nCheck member wiring and Deployment reachability.\n",
+    help: "Usage: myco doctor [--all]\n\nCheck sign-in, capture and server access. Use --all for every check and its configuration details.\n",
     run: async args => { if (!await (await import('./member-dispatch.js')).runMemberVerb('doctor', args)) process.exitCode = 1; },
   },
   logs: {

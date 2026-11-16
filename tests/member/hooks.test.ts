@@ -21,7 +21,7 @@ import path from 'node:path';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
 import { evaluateUserPromptRules, resolveSubagentThread } from '@myco/hooks/capture-rules.js';
 import { deriveId, mintId, planKeyForPromptTag, promptEvent, type EnvelopeContext } from '@myco/member/envelope.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { MEMBER_SESSION_STATE_RETENTION_MS, TRANSCRIPT_HEAD_HASH_BYTES } from '@myco/member/constants.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { sessionStatePath, updateSessionState } from '@myco/member/session-state.js';

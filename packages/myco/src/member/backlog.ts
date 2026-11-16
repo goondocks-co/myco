@@ -1,3 +1,4 @@
+import { recordTranscriptUnavailable } from './capture-health.js';
 /**
  * The project's backlog: what sessions other than the caller's captured and the
  * Deployment has not acknowledged — their spooled events, and the transcript
@@ -118,10 +119,16 @@ function newestSession(spool: MemberSpool, ids: readonly string[]): string | nul
 }
 
 /** Mark every session whose state holds a transcript pointer behind its file; returns how many were marked. */
-export function markBehindTranscripts(spool: MemberSpool): number {
+export function markBehindTranscripts(spool: MemberSpool, now: number = Date.now()): number {
   let marked = 0;
   for (const sessionId of spool.stateSessionIds()) {
-    if (!pointersOf(readSessionState(spool.dir, sessionId)).some(pointerBehind)) continue;
+    const pointers = pointersOf(readSessionState(spool.dir, sessionId));
+    if (spool.hasTranscriptBacklog(sessionId)) for (const pointer of pointers) {
+      if (pointer.refused !== undefined || pointer.unavailableAt !== undefined) continue;
+      try { fs.accessSync(pointer.path, fs.constants.R_OK); }
+      catch { recordTranscriptUnavailable(spool, sessionId, pointer.transcriptId, now); }
+    }
+    if (!pointers.some(pointerBehind)) continue;
     spool.markTranscriptBacklog(sessionId);
     marked += 1;
   }
@@ -228,7 +235,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
   if (!budget.drains) return report;
   recoverArchivedQuarantine(spool, now(), () => canStartRequest(budget, now()));
   // A transcript grows without a hook of its session: every walk reads each session's pointers against its files.
-  markBehindTranscripts(spool);
+  markBehindTranscripts(spool, now());
   const spooled = new Set(spool.sessionIds());
   const ids = walkOrder(spool, [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude), opts.newestFirst === true);
   let takesTurns: boolean | undefined;

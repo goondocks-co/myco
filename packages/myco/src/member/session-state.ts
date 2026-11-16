@@ -32,6 +32,8 @@ export interface TranscriptPointer {
   awaitingTurnEnd?: true;
   /** The code the Deployment refused this transcript with for good, when it has; nothing ships under this identity again. */
   refused?: string;
+  /** The first failed local read counted as degraded capture. */
+  unavailableAt?: number;
 }
 
 /**

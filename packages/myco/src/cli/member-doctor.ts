@@ -1,3 +1,5 @@
+import { captureHealthChecks } from './doctor-capture.js';
+import { doctorOutput } from './doctor-output.js';
 import { managedMemberHarnesses, memberProvisionTarget, memberHarnessStatus } from '@myco/cli/member.js';
 /** Home diagnostics and the current repository's Deployment checks. No repairs are performed. */
 import { terminalText } from '@myco/utils/terminal-text.js';
@@ -20,7 +22,7 @@ import { joinSentences } from '@myco/utils/sentences.js';
 import { readProvisionRecord, UnreadableProvisionRecordError } from '../symbionts/member-provision-record.js';
 import { missingMemberSkills } from '../symbionts/member-skill-links.js';
 import { getPluginVersion } from '../version.js';
-import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, checkWorkerServices, formatCheck, type DoctorCheck } from './doctor-member.js';
+import { checkInstallation, checkAutomaticUpdate, checkMemberMcpResolution, checkWorkerServices, type DoctorCheck } from './doctor-member.js';
 import { envOf, homeOf, membershipProblem, openDeployment, rootOf, type MemberVerbDeps } from './deployment-reader.js';
 import type { WorkerServiceDeps } from './worker-service.js';
 import { readDefaultDeployment } from '../member/default-deployment.js';
@@ -40,10 +42,10 @@ export interface MemberDoctorDeps extends MemberVerbDeps {
   packageRoot?: string;
 }
 
-const USAGE = 'Usage: myco doctor [--fix]';
+const USAGE = 'Usage: myco doctor [--all]';
 
 
-const row = (name: string, status: DoctorCheck['status'], detail: string): DoctorCheck => ({ name, status, detail, fixable: false });
+const row = (name: string, status: DoctorCheck['status'], detail: string, summary?: string): DoctorCheck => ({ name, status, detail, summary, fixable: false });
 
 /** The program a hook command runs: its first word after any `NAME=value` assignments, unquoted. */
 export function hookExecutable(command: string): string | null {
@@ -76,25 +78,25 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
     const seen = [new SymbiontInstaller(manifest, root, packageRoot, false, mycoHome).inspectMemberHooks()];
     for (const hooks of seen) {
       if (!hooks.readable) {
-        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Restore read access to this file.`));
+        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) could not be read, so whether it captures is unknown. Restore read access to this file.`, `${manifest.displayName}'s capture settings could not be read. Restore read access to ${hooks.target}.`));
       } else if (hooks.member) {
         const broken = [...new Set(hooks.memberCommands.map(hookExecutable).filter((p): p is string => p !== null))]
           .map((program) => ({ program, problem: programProblem(program) }))
           .filter((entry): entry is { program: string; problem: string } => entry.problem !== null);
         if (broken.length > 0) {
           const { program, problem } = broken[0];
-          checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) run ${program}, which ${problem}, so they capture nothing. Check this executable and its access permissions.`));
+          checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) run ${program}, which ${problem}, so they capture nothing. Check this executable and its access permissions.`, `${manifest.displayName} cannot capture: its Myco command ${program} ${problem}. Check this executable and its access permissions.`));
         } else {
           capturing += 1;
-          checks.push(row('Capture', 'not-checked', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are connected; capture execution not checked.${manifest.registration?.memberCaptureLimits ? ' ' + manifest.registration.memberCaptureLimits : ' Start a new agent session to check capture.'}`));
+          checks.push({ ...row('Capture', 'not-checked', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are connected; capture execution not checked.${manifest.registration?.memberCaptureLimits ? ' ' + manifest.registration.memberCaptureLimits : ' Start a new agent session to check capture.'}`), symbiont: manifest.name });
         }
       } else if (hooks.present) {
-        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are Myco's 1.4 capture, not the member's. Review capture handover with \`myco cutover --dry-run\`.`));
+        checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are Myco's 1.4 capture, not the member's. Review capture handover with \`myco cutover --dry-run\`.`, `${manifest.displayName} still uses Myco 1.4 capture. Run \`myco cutover --dry-run\` to review the handover.`));
       }
     }
   }
   if (capturing === 0 && required) {
-    checks.push(row('Capture', 'fail', 'no harness on this machine captures for the member. Review the agent setup checks in this report before starting another session.'));
+    checks.push(row('Capture', 'fail', 'no harness on this machine captures for the member. Review the agent setup checks in this report before starting another session.', 'No agent on this machine captures sessions. Run `myco member provision` before starting another session.'));
   }
   return checks;
 }
@@ -107,8 +109,8 @@ export function refusedHookChecks(mycoHome: string, now: number): DoctorCheck[] 
   return REFUSED_HOOK_KINDS.flatMap((kind) => {
     let record;
     try { record = readRefusedHook(kind, mycoHome, now, { prune: false, strict: true }); }
-    catch (error) { return [row('Capture', 'warn', `refused hooks unavailable: ${error instanceof Error ? error.message : String(error)}. ${DOCTOR_REFUSED_HOOK_REPAIR}`)]; }
-    return record === null ? [] : [row('Capture', 'warn', `${refusedHookWords(record)}, last ${iso(record.lastAt)}${record.lastHook ? ` (hook ${record.lastHook})` : ''}. ${DOCTOR_REFUSED_HOOK_REPAIR}`)];
+    catch (error) { return [row('Capture', 'warn', `refused hooks unavailable: ${error instanceof Error ? error.message : String(error)}. ${DOCTOR_REFUSED_HOOK_REPAIR}`, `Capture refusals could not be checked. Review \`myco doctor --all\` and restore access to the reported file.`)]; }
+    return record === null ? [] : [row('Capture', 'warn', `${refusedHookWords(record)}, last ${iso(record.lastAt)}${record.lastHook ? ` (hook ${record.lastHook})` : ''}. ${DOCTOR_REFUSED_HOOK_REPAIR}`, `${record.count} capture attempts could not run since ${iso(record.firstAt)}; most recent ${iso(record.lastAt)}. ${DOCTOR_REFUSED_HOOK_REPAIR}`)];
   });
 }
 
@@ -137,10 +139,10 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
   for (const manifest of loadManifests().filter((m) => agents.includes(m.name))) {
     try {
       const status = memberHarnessStatus(manifest.name, mycoHome, serverUrl);
-      if (!status.current) issues.push(row('Setup', 'warn', status.stale?.join('\n') ?? `${manifest.displayName}'s capture configuration is missing or stale. The next Myco helper pass repairs it.`));
+      if (!status.current) issues.push(row('Setup', 'warn', status.stale?.join('\n') ?? `${manifest.displayName}'s capture configuration is missing or stale. Run \`myco member provision --refresh\` to repair it.`, `${manifest.displayName}'s capture settings need attention. Run \`myco member provision --refresh\`.`));
       if (status.toolsDeployment !== undefined) {
         heldAgents.add(manifest.name);
-        held.push({ ...row('Setup', status.current ? 'ok' : 'warn', harnessToolsElsewhere(manifest.displayName, os.hostname(), status.toolsDeployment)), toolsDeployment: status.toolsDeployment });
+        held.push({ ...row('Setup', status.current ? 'ok' : 'warn', harnessToolsElsewhere(manifest.displayName, os.hostname(), status.toolsDeployment)), toolsDeployment: status.toolsDeployment, toolsAgents: status.current ? [manifest.name] : [] });
       }
     } catch (error) {
       issues.push(row('Setup', 'warn', setupRefusalWords(manifest.displayName, error)));
@@ -150,12 +152,13 @@ export function setupChecks(mycoHome: string, version: string = getPluginVersion
     const absent = missingMemberSkills(mycoHome, target);
     if (absent.length > 0) missing.push(`${manifest.displayName} (${absent.join(', ')})`);
   }
-  if (missing.length > 0) issues.push(row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. The next Myco helper pass updates them.`));
-  if (record !== null && record.version !== version) issues.unshift(row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. The next Myco helper pass updates them.`));
+  if (missing.length > 0) issues.push(row('Setup', 'warn', `skills are missing for ${missing.join('; ')}. Run \`myco member provision --refresh\` to update them.`));
+  if (record !== null && record.version !== version) issues.unshift(row('Setup', 'warn', `your agents were set up by Myco ${record.version}; this is ${version}. Run \`myco member provision --refresh\` to update them.`));
   if (issues.length > 0) return [...held, ...issues];
   if (held.length === agents.length && held.length > 0) return held;
   const current = agents.filter((agent) => !heldAgents.has(agent));
-  return [...held, row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${serverUrl}.`)];
+  const toolsAgents = current.filter(agent => loadManifests().some(manifest => manifest.name === agent && (manifest.registration?.globalMcpTarget?.length ?? 0) > 0));
+  return [...held, { ...row('Setup', 'ok', `${current.length === 0 ? 'no agent' : current.join(', ')} set up by this build for ${serverUrl}.`), toolsAgents }];
 }
 
 /** The Deployment and capture checks scoped to one repository. */
@@ -264,7 +267,9 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   for (const leftover of repositoryMycoEntries(leftoverRoots)) {
     checks.push(row('Repository entries', 'warn', leftover.kind === 'unreadable'
       ? `${leftover.root}: could not check ${leftover.file}.`
-      : `${leftover.root}: ${leftover.file} — ${leftover.entry}. Myco 2.0 does not manage repository harness config; review and remove these entries by hand.`));
+      : `${leftover.root}: ${leftover.file} — ${leftover.entry}. Myco 2.0 does not manage repository harness config; review and remove these entries by hand.`, leftover.kind === 'unreadable'
+        ? `${leftover.root}: repository agent settings could not be read. Restore access to ${leftover.file}.`
+        : `${leftover.root}: repository agent settings still configure Myco. Review and remove the Myco entries in ${leftover.file} by hand.`));
   }
   for (const entry of projects.entries) {
     checks.push(row('Repository', 'ok', `${entry.displayRoot ?? entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
@@ -278,6 +283,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
         `${entry.root}: ${refusals.readable ? `${refusals.total} refused events; newest ${iso(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run myco logs from that repository.`));
     }
   }
+  checks.push(...captureHealthChecks(home, projects.entries, now));
   checks.push(checkInstallation(home), checkAutomaticUpdate(home));
   checks.push(...leftRepositoryChecks(home), ...refusedHookChecks(home, now));
   if (listing.memberships.length > 0) checks.push(...setupChecks(home));
@@ -325,10 +331,9 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
   const flags = withoutCredentialFlag(args);
-  const unknown = flags.filter(flag => flag !== '--fix');
+  const unknown = flags.filter(flag => flag !== '--all');
   if (unknown.length > 0) { err(`${USAGE}\nmyco doctor: unknown option ${unknown[0]}`); return false; }
   const notice = readUpdateNotice(homeOf(deps), getPluginVersion());
-  if (notice !== null) out(notice);
   const binding = readRegistryEntryResult(rootOf(deps), homeOf(deps));
   const projectChecks = source === 'env' || binding.status !== 'missing' ? await projectReport(source, deps) : [];
   const homeChecks = await homeReport(homeOf(deps), deps);
@@ -338,14 +343,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
     ...projectChecks,
   ];
 
-  out('\nmyco doctor (member)\n');
-  for (const check of checks) out(formatCheck(check));
-  const failed = checks.filter((check) => check.status === 'fail');
-  const warned = checks.filter((check) => check.status === 'warn');
-  out('');
-  const unchecked = checks.filter(check => check.status === 'not-checked');
-  out(failed.length + warned.length + unchecked.length === 0 ? '  All checks passed.' : `  ${failed.length} failed, ${warned.length} warning(s), ${unchecked.length} not checked.`);
-  if (flags.includes('--fix') && failed.length + warned.length > 0) out('  Nothing here repairs automatically; review the commands in warning and failed rows.');
-  out('');
-  return failed.length === 0;
+  for (const line of doctorOutput(checks, { all: flags.includes('--all') })) out(line);
+  if (notice !== null) out(notice);
+  return !checks.some(check => check.status === 'fail');
 }

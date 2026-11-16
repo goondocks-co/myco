@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import { terminalText } from '@myco/utils/terminal-text.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import { MemberSpool } from '../member/spool.js';
+import { MemberSpool } from '../member/capture-observations.js';
 import { helperLogPath } from '../member/helper.js';
 import { isPromptContextLogLine } from '../member/context-diagnostics.js';
 import { deploymentUrl, readRegistryEntryResult } from '../member/registry.js';

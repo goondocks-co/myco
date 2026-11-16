@@ -14,7 +14,7 @@ import { unboundedBudget } from '@myco/member/budget.js';
 import { TRANSCRIPT_HEAD_HASH_BYTES } from '@myco/member/constants.js';
 import type { EnvelopeContext, MemberEnvelope } from '@myco/member/envelope.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { shipTranscriptSegments, transcriptPointerFor } from '@myco/member/transcript.js';
 import type { Outcome, ServerClient } from '@myco/member/transport.js';
 import { tempMycoHome } from './helpers/server.js';

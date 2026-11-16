@@ -49,7 +49,7 @@ clean('refresh');
 await update([], { home: mycoHome, currentVersion: '2.0.0-alpha.2', resolveRefs: async () => null,
   refreshMember: async () => { assert(runProvision(['--refresh'], deps)); } });
 clean('update');
-await doctor([], 'registry', deps);
+await doctor(['--all'], 'registry', deps);
 if (process.env.MYCO_FIXTURE_HOME_DOCTOR === '1') {
   for (const dotfiles of [false, true]) {
     if (dotfiles) execFileSync('git', ['init', '-q'], { cwd: home });

@@ -17,7 +17,7 @@ import { attachmentEvent, mintId, promptEvent, type EnvelopeContext } from '@myc
 import { MISSING_PAYLOAD_CONFIRM_MS } from '@myco/member/payload-disposition.js';
 import { applySpoolRetention, pruneDeliveredSessionState, sweepStagedBlobs } from '@myco/member/retention.js';
 import { drainBacklog, sessionTried } from '@myco/member/backlog.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { readSessionState, sessionStatePath, updateSessionState } from '@myco/member/session-state.js';
 import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';

@@ -23,7 +23,8 @@ import { mintId, promptEvent, sessionStartEvent, type EnvelopeContext, type Outb
 import { bufferLockPath, readSessionState, retireSessionFiles, sessionStatePath, turnsFileOf, updateSessionState } from '@myco/member/session-state.js';
 import { drainBacklog } from '@myco/member/backlog.js';
 import { prunePluginTranscripts } from '@myco/member/retention.js';
-import { isTurnEndMark, JOURNAL_VERSION, MemberSpool, turnEndSatisfied, type SpoolRecord, type TurnEndMark } from '@myco/member/spool.js';
+import { isTurnEndMark, JOURNAL_VERSION, turnEndSatisfied, type SpoolRecord, type TurnEndMark } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { listBufferSessionIds } from '@myco/member/buffer.js';
 import { shipSessionTranscripts, transcriptPointerFor } from '@myco/member/transcript.js';
 import { ServerClient } from './helpers/env-client.js';

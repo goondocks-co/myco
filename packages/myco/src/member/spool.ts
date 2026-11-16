@@ -47,7 +47,7 @@ const DRAIN_LEASE_SUFFIX = '.drain.lock';
 /** Suffix of the marker naming a session whose transcripts may hold bytes the Deployment has not acknowledged. */
 const TRANSCRIPT_BACKLOG_SUFFIX = '.transcript-backlog';
 /** Suffix of a session's state file, the sibling of its spool file. */
-const STATE_FILE_SUFFIX = '.state.json';
+export const STATE_FILE_SUFFIX = '.state.json';
 
 /** The seven envelope fields; nothing else leaves the spool. */
 export const WIRE_FIELDS = ['eventId', 'sessionId', 'kind', 'createdAt', 'channel', 'producer', 'payload'] as const;
@@ -150,30 +150,6 @@ export interface RefusedEntry {
   at: number;
   /** Set when the record stays spooled for a later pass rather than being dropped, with when a backlog walk may send it again. Logged once per held record. */
   held?: { retryAt: number };
-}
-
-/**
- * Whether a line of the refusal log is one `appendRefused` wrote.
- *
- * `eventId` and `kind` are empty for a refusal the drain raises against an
- * unparsable spool line, which names no event; a report carries those as null.
- * Every other field must be there for the line to say anything at all.
- */
-function isRefusedEntry(value: unknown): value is RefusedEntry {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const row = value as Record<string, unknown>;
-  for (const field of ['sessionId', 'code'] as const) {
-    if (typeof row[field] !== 'string' || row[field] === '') return false;
-  }
-  for (const field of ['eventId', 'kind', 'reason'] as const) {
-    if (typeof row[field] !== 'string') return false;
-  }
-  if (row.serverCode !== undefined && typeof row.serverCode !== 'string') return false;
-  if (row.held !== undefined) {
-    const held = row.held as Record<string, unknown> | null;
-    if (held === null || typeof held !== 'object' || typeof held.retryAt !== 'number' || !Number.isFinite(held.retryAt)) return false;
-  }
-  return typeof row.at === 'number' && Number.isFinite(row.at);
 }
 
 /** The lines a spool's bytes hold; a torn line reads as null. */
@@ -301,7 +277,7 @@ export class MemberSpool {
   readonly blobsDir: string;
   /** The home this spool lives under; retention ages that home and no other. */
   readonly mycoHome: string;
-  private readonly createReadLocks: boolean;
+  protected readonly createReadLocks: boolean;
   private readonly stagingTransactions = new Set<string>();
 
   /**
@@ -339,7 +315,7 @@ export class MemberSpool {
    * and one that is not a directory all answer false here, before anything is
    * opened or created.
    */
-  private reachable(target: string): boolean {
+  protected reachable(target: string): boolean {
     try {
       assertMemberPathContained(target, this.mycoHome);
       return true;
@@ -636,7 +612,7 @@ export class MemberSpool {
   // Transcript backlog
   // ---------------------------------------------------------------------------
 
-  private transcriptBacklogPath(sessionId: string): string {
+  protected transcriptBacklogPath(sessionId: string): string {
     return path.join(this.dir, `.${sessionId}${TRANSCRIPT_BACKLOG_SUFFIX}`);
   }
 
@@ -708,25 +684,6 @@ export class MemberSpool {
     return readSessionStateResultUnlocked(this.dir, sessionId);
   }
 
-  /** Strict identity evidence includes fully delivered sessions and refuses incomplete reads. */
-  readSessionRoutes(): Array<{ sessionId: string; agent: string }> {
-    assertMemberPathContained(this.dir, this.mycoHome);
-    if (pathIsAbsent(this.dir)) return [];
-    this.assertDestination();
-    const ids = fs.readdirSync(this.dir).filter(file => file.endsWith(STATE_FILE_SUFFIX)).map(file => file.slice(0, -STATE_FILE_SUFFIX.length));
-    return ids.flatMap(sessionId => {
-      const file = sessionStatePath(this.dir, sessionId);
-      assertMemberPathContained(file, this.mycoHome);
-      assertMemberPathContained(bufferLockPath(this.dir, sessionId), this.mycoHome);
-      const read = readSessionStateResult(this.dir, sessionId, { createLock: false });
-      if (!read.ok && read.reason === 'missing') return [];
-      if (!read.ok) throw new Error(`Session route evidence is ${read.reason}: ${file}`);
-      if (read.state.agent === undefined) return [];
-      if (typeof read.state.agent !== 'string' || !/^[A-Za-z0-9._-]+$/.test(read.state.agent)) throw new Error(`Session route agent is invalid: ${file}`);
-      return [{ sessionId, agent: read.state.agent }];
-    });
-  }
-
   /** Every record of the session's spool, read under the append lock; a torn line reads as null. A spool that is not there is empty; a lock this process cannot take still throws, as every writer here does. */
   readRecords(sessionId: string): Array<SpoolRecord | null> {
     const file = this.spoolFile(sessionId);
@@ -773,29 +730,6 @@ export class MemberSpool {
       catch { return fn({ readable: false, ...(pathIsAbsent(file) ? { absent: true as const } : {}) }); }
       return fn({ readable: true, records: parseSpoolLines(raw) });
     }, { create: options.createLock, readIfMissing: options.createLock === false });
-  }
-
-  /**
-   * A session's acknowledgement, or the fact that its state could not be read.
-   *
-   * State is read under the same append lock the records are, so a lock path
-   * that is a directory fails here too — before any record is counted. A state
-   * file that is not there is a session with no acknowledgement yet.
-   */
-  readAck(sessionId: string): { readable: true; lastDeliveryAt: number | null } | { readable: false } {
-    if (!this.reachable(sessionStatePath(this.dir, sessionId)) || !this.reachable(bufferLockPath(this.dir, sessionId))) return { readable: false };
-    let read: SessionStateRead;
-    try {
-      read = readSessionStateResult(this.dir, sessionId, { createLock: this.createReadLocks });
-    } catch {
-      return { readable: false };
-    }
-    if (read.ok) {
-      const at = Math.max(read.state.lastAckAt ?? 0, read.state.lastDeliveryAt ?? 0);
-      return { readable: true, lastDeliveryAt: at > 0 ? at : null };
-    }
-    // A state a session has not written yet is one with no acknowledgement.
-    return read.reason === 'missing' ? { readable: true, lastDeliveryAt: null } : { readable: false };
   }
 
   /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
@@ -918,58 +852,11 @@ export class MemberSpool {
     fs.appendFileSync(file, line, { mode: MEMBER_FILE_MODE });
   }
 
-  /**
-   * The refusal log: what it holds, what it could not hold, and whether it could
-   * be read at all.
-   *
-   * An absent file is `readable` with no refusals — no log is no refusals, and
-   * absence is the entry's own, so a link to nothing is a log that could not be
-   * read. Any other read failure is `readable: false`, so a log behind a
-   * permission or an I/O error never reads as an empty one. Per line, a line that is not JSON or
-   * not a JSON object is counted rather than carried: one such line costs that
-   * line, and the count says the log is damaged.
-   */
-  readRefused(): { entries: RefusedEntry[]; unreadableLines: number; readable: boolean } {
-    const file = this.refusedPath();
-    if (!this.reachable(file)) {
-      reportSkippedPrivateFile('refusal log', file, { reason: 'unreadable', detail: UNAVAILABLE_PATH });
-      return { entries: [], unreadableLines: 0, readable: false };
-    }
-    let raw: string;
-    try {
-      raw = fs.readFileSync(file, 'utf-8');
-    } catch (err) {
-      // Absence is the entry's own and the read's errno together: a removal a
-      // read lost to, or any other failure, is a log that could not be read.
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(file)) return { entries: [], unreadableLines: 0, readable: true };
-      reportSkippedPrivateFile('refusal log', file, { reason: 'unreadable', detail: (err as Error).message });
-      return { entries: [], unreadableLines: 0, readable: false };
-    }
-    const entries: RefusedEntry[] = [];
-    let unreadableLines = 0;
-    for (const line of raw.split('\n')) {
-      if (line.length === 0) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        unreadableLines += 1;
-        continue;
-      }
-      if (!isRefusedEntry(parsed)) {
-        unreadableLines += 1;
-        continue;
-      }
-      entries.push(parsed);
-    }
-    return { entries, unreadableLines, readable: true };
-  }
-
   // ---------------------------------------------------------------------------
   // Drain
   // ---------------------------------------------------------------------------
 
-  private assertDestination(): void {
+  protected assertDestination(): void {
     assertMemberPathContained(path.join(this.dir, ROUTING_FILE), this.mycoHome);
     const destination = readPrivateJson<MemberRoutingIdentity>(path.join(this.dir, ROUTING_FILE));
     if (!destination.ok || this.routing === null || !sameRoutingIdentity(memberRoutingIdentity(destination.value), this.routing)) throw new Error('Member spool destination is unavailable or mismatched');

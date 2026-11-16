@@ -1,6 +1,6 @@
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { readHarnessSessions } from '@myco/symbionts/harness-activity.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { deploymentUrl } from '@myco/member/registry.js';
 import { listSpoolDestinationsResult } from '@myco/member/routing.js';
 

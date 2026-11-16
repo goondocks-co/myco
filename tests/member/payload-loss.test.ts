@@ -1,3 +1,4 @@
+import { CaptureLossLedger } from '@myco/member/capture-observations.js';
 import { describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +11,7 @@ import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 import { registerTestMember } from './helpers/hooks.js';
 import { runStatus } from '@myco/cli/member.js';
-import { CaptureLossLedger, CAPTURE_LOSS_FILE, MAX_RECENT_CAPTURE_LOSSES, recordSessionLoss } from '@myco/member/capture-loss.js';
+import { CAPTURE_LOSS_FILE, MAX_RECENT_CAPTURE_LOSSES, recordSessionLoss } from '@myco/member/capture-loss.js';
 import { updateSessionState, retireSessionFiles, readSessionState } from '@myco/member/session-state.js';
 
 const TEXT = 'durable capture '.repeat(25_000);
@@ -134,6 +135,7 @@ describe('payload loss disposition', () => {
     live.transferFrom(path.join(home, 'member', 'pending', 'held'), 'held-generation');
     live.transferFrom(path.join(home, 'member', 'pending', 'held'), 'held-generation');
     expect(live.read().plans).toBe(2);
+    expect(live.recent(2)).toMatchObject({ plans: 2, lastAt: 2 });
   });
 
   it('keeps the held record after a crash immediately following journal replacement', async () => {
