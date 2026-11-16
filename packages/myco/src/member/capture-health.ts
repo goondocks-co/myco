@@ -27,7 +27,8 @@ export function captureQueue(spool: ObservedSpool) {
     waiting.set(session.sessionId, pending);
     if (!records.readable || (!state.ok && state.reason !== 'missing')) { readable = false; continue; }
     for (const record of records.records.slice(state.ok ? state.state.highWater : 0)) {
-      if (record !== null && Number.isFinite(record.createdAt)) { dates.push(record.createdAt); pending.eventAt = Math.min(pending.eventAt, record.createdAt); }
+      if (record === null) { readable = false; continue; }
+      if (Number.isFinite(record.createdAt)) { dates.push(record.createdAt); pending.eventAt = Math.min(pending.eventAt, record.createdAt); }
     }
   }
   for (const sessionId of spool.stateSessionIds()) {

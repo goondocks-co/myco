@@ -276,7 +276,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   for (const entry of projects.entries) {
     checks.push(row('Repository', 'ok', `${entry.displayRoot ?? entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
     const facts = observeProjectCapture(entry, home, now);
-    checks.push(row('Capture backlog', facts.spool.readable ? facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'info' : 'warn',
+    checks.push(row('Capture backlog', facts.spool.readable && facts.spool.unacknowledgedTotal !== null ? facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'info' : 'warn',
       `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.${facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? '' : ' Run `myco member drain` from that repository.'}`));
     if (!facts.latchReadable || facts.latch !== null) checks.push(row('Capture', 'warn', `${entry.root}: ${facts.latchReadable ? `delivery held off since ${iso(facts.latch?.since)}; next probe ${iso(facts.latch?.nextProbeAt)}` : 'offline latch unreadable'}. Run \`myco member drain\` from that repository.`));
     const refusals = facts.refusalHistory;

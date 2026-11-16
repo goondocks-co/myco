@@ -90,6 +90,22 @@ describe('home doctor', () => {
     return roots;
   };
 
+  const connectedCapture = () => {
+    const roots = connectedHome();
+    return { roots, root: roots[0], spool: new MemberSpool(readRegistryEntry(roots[0], home)!, { mycoHome: home }) };
+  };
+  const transcript = (spool: MemberSpool, sessionId: string, at: number) => {
+    const file = path.join(scratch, `${sessionId}.jsonl`);
+    fs.writeFileSync(file, 'test');
+    fs.utimesSync(file, new Date(at), new Date(at));
+    updateSessionState(spool.dir, sessionId, state => {
+      state.transcript = { path: file, transcriptId: sessionId, inode: 1, nextOffset: 0, parsedSize: 4 };
+      state.hookAt = at;
+      state.lastDeliveryAt = now - 4 * 60_000;
+    }, at);
+    return file;
+  };
+
   it('summarizes fifteen healthy repositories and six agents, with every item available under --all', async () => {
     const roots = connectedHome();
     const compact = await output();
@@ -148,15 +164,9 @@ describe('home doctor', () => {
   });
 
   it('counts sessions with events and transcripts once, including transcript-only sessions', async () => {
-    const [root, alias] = connectedHome();
+    const { roots: [root, alias], spool } = connectedCapture();
     writeRegistryEntry({ ...readRegistryEntry(root, home)!, root: alias }, { mycoHome: home });
-    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
-    const transcript = path.join(scratch, 'transcript.jsonl');
-    fs.writeFileSync(transcript, 'waiting transcript');
-    fs.utimesSync(transcript, new Date(now - 120_000), new Date(now - 120_000));
-    for (const sessionId of ['both', 'transcript-only']) updateSessionState(spool.dir, sessionId, state => {
-      state.transcript = { path: transcript, transcriptId: sessionId, inode: 1, nextOffset: 0, parsedSize: 0 };
-    }, now);
+    for (const sessionId of ['both', 'transcript-only']) transcript(spool, sessionId, now - 120_000);
     spool.append('both', promptEvent({ agent: 'claude-code', sessionId: 'both', now: () => now - 180_000 }, { promptId: mintId(), text: 'waiting event' }));
     const result = await output();
     expect(result.ok).toBe(true);
@@ -166,17 +176,8 @@ describe('home doctor', () => {
   });
 
   it('keeps growing transcripts and sessions idle between turns out of attention', async () => {
-    const [root] = connectedHome();
-    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
-    for (const [sessionId, minutes] of [['live', 1], ['idle', 57]] as const) {
-      const file = path.join(scratch, `${sessionId}.jsonl`);
-      fs.writeFileSync(file, 'capture in progress');
-      fs.utimesSync(file, new Date(now - minutes * 60_000), new Date(now - minutes * 60_000));
-      updateSessionState(spool.dir, sessionId, state => {
-        state.transcript = { path: file, transcriptId: sessionId, inode: 1, nextOffset: 0, parsedSize: 0 };
-        state.lastDeliveryAt = now - 4 * 60_000;
-      }, now);
-    }
+    const { root, spool } = connectedCapture();
+    for (const [sessionId, minutes] of [['live', 1], ['idle', 57]] as const) transcript(spool, sessionId, now - minutes * 60_000);
     const compact = await output();
     expect(compact.text).toContain('nothing needs attention');
     expect(compact.text).toContain('2 sessions in progress; last delivery');
@@ -185,16 +186,8 @@ describe('home doctor', () => {
   });
 
   it('names the repository when a quiet transcript has not delivered', async () => {
-    const [root] = connectedHome();
-    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
-    const file = path.join(scratch, 'quiet.jsonl');
-    fs.writeFileSync(file, 'undelivered transcript');
-    const quietAt = now - 3 * 60 * 60_000;
-    fs.utimesSync(file, new Date(quietAt), new Date(quietAt));
-    updateSessionState(spool.dir, 'quiet', state => {
-      state.transcript = { path: file, transcriptId: 'quiet', inode: 1, nextOffset: 0, parsedSize: 0 };
-      state.hookAt = quietAt;
-    }, quietAt);
+    const { root, spool } = connectedCapture();
+    transcript(spool, 'quiet', now - 3 * 60 * 60_000);
     const result = await output();
     expect(result.ok).toBe(true);
     const problem = result.lines.find(line => line.startsWith('  WARN Capture waiting:'))!;
@@ -220,8 +213,7 @@ describe('home doctor', () => {
   });
 
   it('names an unreadable capture loss file in the default report', async () => {
-    const [root] = connectedHome();
-    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    const { root, spool } = connectedCapture();
     const file = path.join(spool.dir, 'capture-losses.json');
     fs.writeFileSync(file, '{broken', { mode: 0o600 });
     const result = await output();
@@ -231,11 +223,8 @@ describe('home doctor', () => {
   });
 
   it('reports recent loss kinds and dates without counting old losses as recent', async () => {
-    const [root] = connectedHome();
-    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
-    updateSessionState(spool.dir, 'missing-transcript', state => {
-      state.transcript = { path: path.join(scratch, 'gone.jsonl'), transcriptId: 'missing', inode: 1, nextOffset: 0, parsedSize: 4 };
-    }, now);
+    const { root, spool } = connectedCapture();
+    fs.unlinkSync(transcript(spool, 'missing-transcript', now));
     spool.markTranscriptBacklog('missing-transcript');
     await runDrain([], { ...deps, cwd: root, stdout: () => {} });
     await runDrain([], { ...deps, cwd: root, stdout: () => {} });
@@ -257,8 +246,7 @@ describe('home doctor', () => {
   });
 
   it('keeps previous-build loss totals as a detail note without raising attention', async () => {
-    const [root] = connectedHome();
-    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    const { root, spool } = connectedCapture();
     fs.writeFileSync(path.join(spool.dir, 'capture-losses.json'), JSON.stringify({ version: 1, payloads: 3, plans: 0, records: 1, recent: [], lastAt: now - 200 * 86400_000 }), { mode: 0o600 });
     const compact = await output();
     expect(compact.ok).toBe(true);

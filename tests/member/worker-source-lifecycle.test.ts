@@ -81,16 +81,22 @@ else require('node:readline').createInterface({ input: process.stdin }).on('line
 `, { mode: 0o755 });
   }
   const pids = (): number[] => existsSync(pidFile) ? JSON.parse(readFileSync(pidFile, 'utf8')) as number[] : [];
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath ?? ''}`;
   const cleanup = async () => {
     const receipts = [helperReady, `${helperReady}.tmp`, `${pidFile}.leader`];
     for (const pid of new Set([...pids(), ...receipts.filter(existsSync).map(file => Number(readFileSync(file, 'utf8')))])) {
       if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
       try { process.kill(pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
-    try { await server.stop(true); } finally { cleanups.delete(cleanup); }
+    try { await server.stop(true); } finally {
+      cleanups.delete(cleanup);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   };
   cleanups.add(cleanup);
-  return { spec, bin, repo, pids, ready: () => until(() => pids().length === 2), cleanup };
+  return { spec, bin, repo, pids, ready: () => until(() => pids().length === 2) };
 }
 
 describe('source containment with run process ownership', () => {
@@ -98,8 +104,6 @@ describe('source containment with run process ownership', () => {
     for (const ending of ['return', 'abort', 'consumer exception'] as const) {
       it(`${id} keeps the allocation owned until source-mode ${ending} stops its group`, async () => {
         const f = fixture(id);
-        const previousPath = process.env.PATH;
-        process.env.PATH = `${f.bin}:${previousPath ?? ''}`;
         const stopping = new AbortController();
         const iterator = driverFor(id)!.run(f.spec, stopping.signal)[Symbol.asyncIterator]();
         try {
@@ -125,12 +129,8 @@ describe('source containment with run process ownership', () => {
           discardRunDir(f.spec.scratchDir);
           expect(existsSync(f.spec.scratchDir)).toBe(false);
         } finally {
-          try { stopping.abort(); await bounded(iterator.return!()); }
-          finally {
-            await f.cleanup();
-            if (previousPath === undefined) delete process.env.PATH;
-            else process.env.PATH = previousPath;
-          }
+          stopping.abort();
+          await bounded(iterator.return!());
         }
       }, BOUND_MS * 3);
     }
@@ -138,8 +138,6 @@ describe('source containment with run process ownership', () => {
 
   it('disposes the source SDK and resolves exit without starting its line consumer', async () => {
     const f = fixture('claude-code');
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${f.bin}:${previousPath ?? ''}`;
     const stopping = new AbortController();
     const started = await startClaudeSource(f.spec, runGrant(f.spec, harnessById('claude-code')!), process.env, stopping.signal);
     try {
@@ -150,16 +148,11 @@ describe('source containment with run process ownership', () => {
     } finally {
       stopping.abort();
       await started.dispose();
-      await f.cleanup();
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
     }
   }, BOUND_MS * 3);
 
   it('releases its abort listener when SDK construction refuses ownership', async () => {
     const f = fixture('claude-code');
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${f.bin}:${previousPath ?? ''}`;
     const stopping = new AbortController();
     const removed = spyOn(stopping.signal, 'removeEventListener');
     const manifest = join(f.spec.scratchDir, RUN_DIRECTORY_MANIFEST);
@@ -171,9 +164,6 @@ describe('source containment with run process ownership', () => {
     } finally {
       stopping.abort();
       removed.mockRestore();
-      await f.cleanup();
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
     }
   });
 });

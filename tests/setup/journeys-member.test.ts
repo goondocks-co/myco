@@ -538,7 +538,8 @@ describe('observation and consent contracts', () => {
     const facts = await observeSetup(home, { role: 'join', url: URL, root: project, noAgents: true, runWork: false }, base());
     expect(facts.find(fact => fact.id === 'machine.backlog')).toMatchObject({ state: 'incomplete', detail: expect.stringContaining('2 event(s) waiting') });
     const report = await homeReport(home, { mycoHome: home, cwd: project, fetch: configuredFetch, worker: { home: path.join(root, 'user'), runner: recordingPlatform().runner, lockDir: path.join(root, 'locks') } });
-    expect(report.find(check => check.name === 'Capture backlog')).toMatchObject({ status: 'warn', detail: expect.stringContaining('2 event(s) waiting') });
+    expect(report.find(check => check.name === 'Capture backlog')).toMatchObject({ status: 'info', detail: expect.stringContaining('2 event(s) waiting') });
+    expect(report.find(check => check.name === 'Capture waiting')?.status).toBe('warn');
     expect(snapshot(root)).toEqual(before);
   });
 
