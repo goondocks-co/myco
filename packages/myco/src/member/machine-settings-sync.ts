@@ -17,7 +17,9 @@ export function machineSettingsDelivery(serverUrl: string, home: string, fetchIm
   const fetch: FetchLike = async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
     const headers = new Headers(init?.headers);
-    const paired = url.startsWith(`${target}/`) && headers.has(PROTOCOL_HEADER) && !headers.has(MACHINE_SETTINGS_HEADER);
+    const route = url.startsWith(`${target}/`) ? url.slice(target.length) : '';
+    const paired = (route === '/events' || route.startsWith('/blobs/') || route === '/members/harnesses/report')
+      && headers.has(PROTOCOL_HEADER) && !headers.has(MACHINE_SETTINGS_HEADER);
     const exchange = paired ? await advisory(() => machineSettingsExchange(serverUrl, home)) : undefined;
     const response = await fetchImpl(input, exchange === undefined ? init : {
       ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), ...exchange.headers },
@@ -33,9 +35,10 @@ export function machineSettingsDelivery(serverUrl: string, home: string, fetchIm
   };
   return {
     fetch,
-    async flush(record: { serverUrl: string; token: string }, budget: HookBudget): Promise<void> {
-      if (machineSettingsReportPending(serverUrl, home) && canStartRequest(budget, now())) {
-        await seedMachineSettings(record, { mycoHome: home, fetch, budget: subRequestBudget(budget, SETTINGS_EXCHANGE_CAP_MS, now()) });
+    async flush(readRecord: () => { serverUrl: string; token: string } | null, budget: HookBudget): Promise<void> {
+      if (canStartRequest(budget, now()) && machineSettingsReportPending(serverUrl, home)) {
+        const record = readRecord();
+        if (record !== null) await seedMachineSettings(record, { mycoHome: home, fetch, budget: subRequestBudget(budget, SETTINGS_EXCHANGE_CAP_MS, now()) });
       }
     },
   };

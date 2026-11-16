@@ -136,6 +136,9 @@ export const machineSettings: ParityScenario = {
       expect(member.paths()).toEqual(['/events']);
       await member.pass(0);
       expect(member.paths()).toEqual([]);
+      expect((await put(owner, MACHINE_ID, ['docs/delivery-plans'])).status).toBe(200);
+      await member.pass();
+      expect(machinePlanDirs(target.url, home)).toEqual(['docs/delivery-plans']);
       expect((await automaticWrite(false)).status).toBe(200);
       expect(await automatic()).toMatchObject({ application: 'pending' });
       await member.pass();

@@ -80,6 +80,8 @@ export interface MachineUpdateRequest { id: string; value: boolean | string; sav
 export type MachineUpdateRequests = Partial<Record<MachineUpdateLeaf, MachineUpdateRequest>>;
 export interface MachineUpdateReport { order: number; values: Partial<Record<MachineUpdateLeaf, boolean | string>>; requests: MachineUpdateRequests }
 export interface MachineSettingsBlock {
+  /** The Deployment still holds this revision's confirmed capture values. */
+  cacheConfirmed?: true;
   leaves: Record<string, unknown>;
   feature?: typeof MACHINE_SETTINGS_FEATURE;
   revision?: string;

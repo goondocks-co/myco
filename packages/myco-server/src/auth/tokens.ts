@@ -42,6 +42,7 @@ export interface MemberAuth {
   runtime: RuntimeClaims;
   /** Whether the issuer minted this credential to rotate. Set by the insert that minted the row; nothing the runtime sends changes it. */
   rotates: boolean;
+  machineSettings?: { revision: number; order: number; updateOrder: number; pending: boolean; supported: boolean };
 }
 
 interface IssuedMemberToken {
@@ -233,6 +234,10 @@ export async function authenticateServerMemberToken(
     predecessorId: row.predecessor_id, firstUsedAt: row.first_used_at,
     runtime: { runtimeLabel: row.runtime_label, runtimeKind: row.runtime_kind },
     rotates: row.rotates === 1,
+    ...(row.machine_settings_revision === null ? {} : { machineSettings: {
+      revision: row.machine_settings_revision, order: row.machine_settings_order ?? -1,
+      updateOrder: row.machine_update_order ?? -1, pending: row.machine_update_pending === 1, supported: row.machine_settings_supported === 1,
+    } }),
   };
 }
 

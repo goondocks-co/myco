@@ -53,14 +53,12 @@ function remoteOf(ask: { remote?: string; remoteFrom?: string }): { remote: stri
 }
 
 function requestFor(sessionId: string, ask: Exclude<ContextAsk, { kind: 'prompt' }>): Record<string, unknown> {
-  switch (ask.kind) {
-    case 'start':
-      return { sessionId, kind: 'start', ...remoteOf(ask) };
-    case 'compact':
-      return { sessionId, kind: 'compact', compaction: ask.compaction, ...remoteOf(ask) };
-    case 'subagent':
-      return { sessionId, kind: 'subagent', agentId: ask.agentId, agentType: ask.agentType };
-  }
+  return {
+    sessionId, kind: ask.kind,
+    ...(ask.kind === 'subagent'
+      ? { agentId: ask.agentId, agentType: ask.agentType }
+      : { ...remoteOf(ask), ...(ask.kind === 'compact' ? { compaction: ask.compaction } : {}) }),
+  };
 }
 
 /** Every session holding an ask, the kicking sessions' oldest asks first. */

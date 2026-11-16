@@ -137,10 +137,10 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
       },
     });
     try {
-      const entry = serverUrl === undefined ? null : routingEntry({ projectId, serverUrl }, mycoHome);
-      if (finalPass !== undefined && entry !== null && new MemberSpool(entry, { mycoHome }).shouldDial(now(), finalPass.force)) {
-        await settings?.flush(entry, deadlineBudget(finalPass.deadline));
-      }
+      if (finalPass !== undefined) await settings?.flush(() => {
+        const entry = serverUrl === undefined ? null : routingEntry({ projectId, serverUrl }, mycoHome);
+        return entry !== null && new MemberSpool(entry, { mycoHome }).shouldDial(now(), finalPass!.force) ? entry : null;
+      }, deadlineBudget(finalPass.deadline));
     } catch (error) {
       process.stderr.write(`[myco] member: machine settings exchange failed: ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
     }

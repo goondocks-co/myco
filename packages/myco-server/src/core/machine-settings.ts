@@ -221,11 +221,12 @@ export async function machineBlockFor(
     const revision = settings[0]!.revision;
     if (support.answer === 'changes' && revision === support.machineSettingsRevision && !settings.some(leaf => leaf.requestId !== undefined)) return null;
     const counter = parseMachineSettingsRevision(revision)!.counter;
-    if (await publishMachineSnapshot(db, { machine: machineId, member: memberId, revision, leaves: JSON.stringify(leaves), counter, keep: MACHINE_SETTINGS_SNAPSHOT_LIMIT })) {
+    if ((support.answer === 'changes' && revision === snapshot[0]?.settings_cached_revision)
+      || await publishMachineSnapshot(db, { machine: machineId, member: memberId, revision, leaves: JSON.stringify(leaves), counter, keep: MACHINE_SETTINGS_SNAPSHOT_LIMIT })) {
       const updates = support.machineUpdateReport === undefined ? {} : machineUpdateRequests(Object.fromEntries(
         settings.filter(row => row.requestId !== undefined).map(row => [row.leaf, { id: row.requestId, value: row.value, savedAt: row.updatedAt ?? 0 }]),
       ));
-      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates, serverNow: (support.clock ?? Date.now)() }) };
+      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(snapshot[0]?.settings_cached_revision === revision ? { cacheConfirmed: true as const } : {}), ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates, serverNow: (support.clock ?? Date.now)() }) };
     }
     snapshot = await readMachineRows(db, machineId);
   }

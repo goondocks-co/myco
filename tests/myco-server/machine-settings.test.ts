@@ -2,14 +2,18 @@
  * A machine's settings on the Deployment (#1393): who reaches them, what a value may be, the default that resets a
  * leaf, and the block a machine is answered with.
  */
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { machineAccess, machineBlockFor, readMachineSettings, resetMachineLeaf, setMachineLeaf } from '@myco-server-worker/core/machine-settings.js';
 import type { ServerEnv } from '@myco-server-worker/core/adapters.js';
 import { withDocumentStores } from './helpers/document-stores.js';
-import { changingAtStatement } from './helpers/store-faults.js';
+import { changingAtStatement, failingStatement } from './helpers/store-faults.js';
 import worker from '@myco-server-worker/index.js';
-import { sqliteEnv } from './helpers/fixtures.js';
+import { sqliteEnv, memberPost, count } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
+import { issueMemberToken } from './helpers/member-token.js';
+import { sessionStartEvent } from '@myco/member/envelope.js';
+import { tempStager } from '../member/helpers/server.js';
+import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_HEADER, MACHINE_UPDATE_HEADER } from '@goondocks/myco-shared/member-protocol';
 
 const NOW = 1_800_000_000_000;
 /** The auto-join leaves a machine holds (#1547), at their defaults. */
@@ -148,4 +152,25 @@ describe('a machine\'s settings', () => {
     // A run's credential names the harness member, which claims no machine.
     expect(await machineBlockFor(e.db, 'mem_harness', 'harness-runtime')).toBeNull();
   });
+});
+
+it('keeps a stored delivery successful when its settings exchange fails', async () => {
+  const e = rig();
+  const log = spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const { token } = await issueMemberToken(e.db, { memberId: 'mem_a', machineId: 'm_a' }, Date.now());
+    const failed = failingStatement(e.db, 'machineSettings.read', { times: 1 });
+    e.env.MYCO_DB = failed.store;
+    const event = sessionStartEvent({ agent: 'windsurf', sessionId: crypto.randomUUID(), stage: tempStager().stage }, { startedAt: Date.now() });
+    const response = await worker.fetch(memberPost(token, event.envelope, '/events', {
+      [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE,
+      [MACHINE_UPDATE_HEADER]: JSON.stringify({ order: 1, requests: {}, values: { 'update.automatic': true } }),
+    }), e.env);
+    expect(failed.failures()).toBe(1);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ persisted: true });
+    expect(response.headers.get(MACHINE_UPDATE_HEADER)).toBeNull();
+    expect(count(e.sqlite, 'events')).toBe(1);
+    expect(log.mock.calls.filter(([line]) => JSON.parse(String(line)).kind === 'machine_settings_exchange_failed')).toHaveLength(1);
+  } finally { log.mockRestore(); e.sqlite.close(); }
 });
