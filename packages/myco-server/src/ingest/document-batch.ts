@@ -1,3 +1,5 @@
+import { ToolPromptLinks } from '@goondocks/myco-shared/record-identity';
+import { toolPromptLinkStatements } from '../db/capture/tool-delivery-links.js';
 import { priorTurnFingerprints } from '../db/documents/turn-fingerprints.js';
 import { contentContribution, contentFingerprint, sourceBytes } from '../content/turn-source.js';
 import { publishedDocument } from '../db/documents/publication.js';
@@ -131,6 +133,7 @@ interface TurnAdded { tools: number; replies: number; children: number; plans: n
 
 export class DocumentBatch {
   readonly writer: DocumentWriter;
+  private readonly toolPrompts = new ToolPromptLinks();
   readonly counts = { prompts: 0, user_prompts: 0, replies: 0, tool_calls: 0, failed_tools: 0, plans: 0, myco_calls: 0 };
   records = 0;
   calls = 0;
@@ -277,11 +280,11 @@ export class DocumentBatch {
    * unchanged. While `admitted`, a placement whose commit could no longer be paid leaves the batch unchanged and throws
    * `DocumentPassFull`.
    */
-  async place(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
-    if (!this.admitted) return this.placeAll(records, harness);
+  async place(records: readonly DocRecord[], harness: string | null, toolPrompts?: ReadonlyMap<string, string>): Promise<(DocRecord | null)[]> {
+    if (!this.admitted) return this.placeAll(records, harness, toolPrompts);
     const mark = this.mark();
     try {
-      const placed = await this.placeAll(records, harness);
+      const placed = await this.placeAll(records, harness, toolPrompts);
       if (!commitAdmitted(this.db, this.writer.versions, this.commitStatements)) throw new DocumentPassFull();
       return placed;
     } catch (error) {
@@ -297,17 +300,17 @@ export class DocumentBatch {
     const bytes = this.toolChanges.reduce((sum, change) => sum + 500 + new TextEncoder().encode(JSON.stringify({
       name: change.record.tool_name, myco: change.record.myco_tool, op: change.record.myco_op, files: change.record.files_affected,
     })).length * 8, 0) + this.writer.touched.size * 1_000;
-    return DOCUMENT_COMMIT_FIXED_STATEMENTS + this.writer.metadataStatementCount + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5 + jsonPages(transcriptPlanRows(this.transcriptPlans)).length * PLAN_STATEMENTS_PER_PAGE;
+    return toolPromptLinkStatements(this.projectId, this.sessionId, this.toolPrompts).length + DOCUMENT_COMMIT_FIXED_STATEMENTS + this.writer.metadataStatementCount + Math.ceil(bytes / STATEMENT_JSON_BYTES) * 5 + jsonPages(transcriptPlanRows(this.transcriptPlans)).length * PLAN_STATEMENTS_PER_PAGE;
   }
 
   private mark(): { writer: WriterMark; counts: DocumentBatch['counts']; records: number; lastRecordAt: number | null; openTurn: string | null;
     firstPrompt: string | null; unplaced: number; unresolved: number; inserted: number; newPrompts: number; turns: Map<string, string | null>;
-    added: Map<string, TurnAdded>;
+    added: Map<string, TurnAdded>; toolPrompts: ToolPromptLinks;
     resolved: Set<string>; paths: Map<string, { n: number; edits: number; at: number; turn: string | null }>; toolChanges: number; mycoCalls: Map<string, DocRecord & { harness: string | null }>;
     transcriptPlans: Map<string, TranscriptPlan>; latestUserPrompt: number | null } {
     this.floor = this.writer.versions;
     return {
-      writer: this.writer.mark(), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
+      writer: this.writer.mark(), toolPrompts: new ToolPromptLinks(this.toolPrompts), counts: { ...this.counts }, records: this.records, lastRecordAt: this.lastRecordAt, openTurn: this.openTurn,
       firstPrompt: this.firstPrompt, unplaced: this.unplaced, unresolved: this.unresolved, inserted: this.inserted.length,
       newPrompts: this.newPrompts.length, turns: new Map(this.turns), added: new Map([...this.added].map(([owner, held]) => [owner, { ...held }])), resolved: new Set(this.resolved), paths: new Map(this.paths),
       toolChanges: this.toolChanges.length, mycoCalls: new Map(this.mycoCalls), transcriptPlans: new Map(this.transcriptPlans), latestUserPrompt: this.latestUserPrompt,
@@ -322,7 +325,7 @@ export class DocumentBatch {
     this.inserted.splice(mark.inserted);
     this.newPrompts.splice(mark.newPrompts);
     this.toolChanges.splice(mark.toolChanges);
-    for (const [into, from] of [[this.turns, mark.turns], [this.added, mark.added], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls],
+    for (const [into, from] of [[this.toolPrompts, mark.toolPrompts], [this.turns, mark.turns], [this.added, mark.added], [this.paths, mark.paths], [this.mycoCalls, mark.mycoCalls],
       [this.transcriptPlans, mark.transcriptPlans]] as const) {
       (into as Map<string, unknown>).clear();
       for (const [key, value] of from) (into as Map<string, unknown>).set(key, value);
@@ -361,7 +364,7 @@ export class DocumentBatch {
     this.added.set(owner, held);
   }
 
-  private async placeAll(records: readonly DocRecord[], harness: string | null): Promise<(DocRecord | null)[]> {
+  private async placeAll(records: readonly DocRecord[], harness: string | null, toolPrompts?: ReadonlyMap<string, string>): Promise<(DocRecord | null)[]> {
     if (harness === null) {
       if (this.fallbackHarness === undefined) {
         const session = await sessionAgentRow(this.db, this.projectId, this.sessionId);
@@ -370,6 +373,7 @@ export class DocumentBatch {
       }
       harness = this.fallbackHarness;
     }
+    for (const [id, prompt] of toolPrompts ?? []) this.toolPrompts.set(id, prompt);
     await this.resolve(records);
     this.assignPrompts(records);
     await this.writer.readPlanKeys(records.filter(record => record.k === 'plan').map(planKeyOf));
@@ -692,6 +696,7 @@ export class DocumentBatch {
       }
       const own = await statements(versions);
       const transaction = [...own.before, ...this.statements(layout, versions, settled, chunkState, now), ...own.after,
+        ...toolPromptLinkStatements(this.projectId, this.sessionId, this.toolPrompts),
         ...(layout !== null && chunkState === 'live' ? [publishedDocument(this.projectId, this.sessionId, this.doc.generation)] : [])];
       if (this.admitted && reserveReached(this.db, transaction.length, 0)) throw new DocumentPassFull();
       await commit(this.db, ...transaction);

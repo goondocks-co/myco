@@ -81,10 +81,10 @@ export function SessionPage({ projectId, sessionId, projectName }: SessionPagePr
   );
 }
 
-/** While a live session is read again, what arrived since is read too: its turns, the open turn's body, its commits and its files. */
+/** Session reads follow newly received capture and newly published document content. */
 function useFollowLive(projectId: string, session: SessionRow) {
   const client = useQueryClient();
-  const heard = session.lastReceivedAt;
+  const heard = `${session.lastReceivedAt}:${session.publishedRevision ?? 0}`;
   const seen = useRef(heard);
   useEffect(() => {
     if (seen.current === heard) return;

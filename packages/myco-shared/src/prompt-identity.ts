@@ -190,6 +190,8 @@ export const PROMPT_IDENTITY_FEATURE = 'prompt-identity';
  * prompt ids are derived by, and claims a turn-grained key, only for a Deployment that names it.
  */
 export const PROMPT_SCHEME_FEATURE = 'prompt-scheme';
+/** Delivery anchors name native tool calls while their prompt is not yet readable. */
+export const TOOL_DELIVERY_FEATURE = 'context-tool-link';
 /** The event a hook that rendered a cached answer sends, naming the rows it rendered by their ids. */
 export const CONTEXT_DELIVERED_KIND = 'context.delivered';
 /**

@@ -1287,6 +1287,28 @@ describe('the session reading page', () => {
     expect(within(about).getByText('Wall time')).toBeTruthy();
   });
 
+  it('shows delivered spores when publication advances after the session was first read', async () => {
+    let published = false;
+    server(routes({
+      ...Object.fromEntries(['attachments', 'responses', 'plans', 'children', 'answers'].map(collection =>
+        [`/api/projects/x/sessions/s1/turns/${P1}?collection=${collection}`, () => page([])])),
+      '/api/projects/x/sessions/s1': () => detail({ publishedRevision: published ? 2 : 1 }),
+      '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
+      [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+        prompt: { promptId: P1, origin: 'user', text: 'Inspect the orchard', blobKey: null, createdAt: NOW },
+        responses: [], attachments: [], plans: [], children: [],
+        injection: published ? { sporeIds: ['orchard-memory'], planIds: [], createdAt: NOW, plans: [],
+          spores: [{ id: 'orchard-memory', observationType: 'gotcha', preview: 'Retain delivery evidence.' }] } : null,
+      }),
+    }));
+    const client = mount('/p/x/sessions/s1');
+    await screen.findByText('Inspect the orchard');
+    expect(screen.queryByText(/Myco added 1 spore to this prompt/)).toBeNull();
+    published = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: ['session', 'x', 's1'], exact: true }); });
+    expect(await screen.findByText(/Myco added 1 spore to this prompt/)).toBeTruthy();
+  });
+
   it('explains an empty match set once', async () => {
     server(routes({
       '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),

@@ -44,6 +44,14 @@ export class RecordKindUndeclared extends RecordIdentityError {
 export class RecordSourceInvalid extends RecordIdentityError {
   constructor() { super('record_source_invalid', 'Record source is invalid'); this.name = 'RecordSourceInvalid'; }
 }
+/** Each tool call has one prompt owner across every window of a publication. */
+export class ToolPromptLinks extends Map<string, string> {
+  override set(key: string, prompt: string): this {
+    const held = this.get(key);
+    if (held !== undefined && held !== prompt) throw new RecordSourceInvalid();
+    return super.set(key, prompt);
+  }
+}
 export class RecordSourceAbsent extends RecordSourceInvalid {
   constructor() { super(); this.name = 'RecordSourceAbsent'; }
 }
@@ -201,9 +209,17 @@ function observedIdentity<R>(hash:PromptIdHasher<R>,observe:((parts:readonly str
   return (...parts)=>{observe(Object.freeze([...parts]));return hash(...parts);};
 }
 
+type NativeToolCallRequest = { kind: 'tool-call'; sessionId: string; source: Extract<ReplySource, { key: string }> };
+
 /** Mints one logical record id from declared source facts. */
-export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: RecordIdRequest, observe?:(parts:readonly string[])=>void): R {
+export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: RecordIdRequest, observe?:(parts:readonly string[])=>void): R;
+export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: NativeToolCallRequest, observe?:(parts:readonly string[])=>void): R;
+export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: RecordIdRequest | NativeToolCallRequest, observe?:(parts:readonly string[])=>void): R {
   hash=observedIdentity(hash,observe);
+  if (!('scheme' in request)) {
+    if (request.kind !== 'tool-call' || !keyString(request.sessionId) || !isReplySource(request.source) || !('key' in request.source)) throw new RecordSourceInvalid();
+    return hash('tool-call', request.sessionId, request.source.key);
+  }
   const { source } = request;
   if (!isRecordIdScheme(request.scheme)) throw new RecordSourceInvalid();
   if (request.kind === 'response' && request.replyPromptId !== undefined) {
@@ -221,7 +237,7 @@ export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: RecordIdR
     || !keyString(request.sessionId) || !keyString(request.transcriptId) || !keyString(request.agent)) throw new RecordSourceInvalid();
   if (request.kind === 'plan' && (!keyString(request.tag) || request.coordinate.length === 0
     || request.coordinate.some((part) => typeof part === 'number' ? !index(part) : !keyString(part)))) throw new RecordSourceInvalid();
-  if (request.kind === 'tool-call' && 'key' in source) return hash('tool-call', request.sessionId, source.key);
+  if (request.kind === 'tool-call' && 'key' in source) return canonicalRecordId(hash, { kind: 'tool-call', sessionId: request.sessionId, source });
   if ('position' in source) return hash('source-position-v1', request.transcriptId, request.kind, String(request.offset),
     ...(request.kind === 'response' ? [String(source.block)] : request.kind === 'plan' ? [request.tag, ...request.coordinate.map(String)] : []));
   if (request.kind === 'response') return hash('source-response-v1', request.sessionId, request.agent, source.thread ?? '', source.key, String(source.block));

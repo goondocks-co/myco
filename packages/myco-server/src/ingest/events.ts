@@ -1,3 +1,6 @@
+import { uuidv5 } from '../hash.js';
+import { canonicalRecordId } from '@goondocks/myco-shared/record-identity';
+import { resolveToolDeliveries } from '../db/capture/tool-delivery-links.js';
 import { DOCUMENT_EVENT_KINDS } from '../db/document-tables.js';
 
 import type { RelationalStore, ServerEnv } from '../core/adapters.js';
@@ -99,7 +102,7 @@ function spilledKey(spec: KindSpec, p: Payload): string | null {
  * A delivery's effect on the rows it names, through the modules that own them: each is marked delivered at the event's
  * own instant, in its own session, once, and only when this request stored the event.
  */
-function deliveryStatements(ctx: WriteContext, e: CaptureEnvelope, p: Payload): Bound[] {
+async function deliveryStatements(ctx: WriteContext, e: CaptureEnvelope, p: Payload): Promise<Bound[]> {
   if (e.kind !== CONTEXT_DELIVERED_KIND) return [];
   const delivered: Delivered = {
     projectId: ctx.projectId,
@@ -110,17 +113,19 @@ function deliveryStatements(ctx: WriteContext, e: CaptureEnvelope, p: Payload): 
     scheme: isPromptIdScheme(p.renderedScheme) ? p.renderedScheme : null,
     eventId: e.eventId,
     nonce: ctx.nonce,
+    toolCallId: typeof p.renderedToolCallKey === 'string' ? await canonicalRecordId(uuidv5, { kind: 'tool-call', sessionId: e.sessionId, source: { key: p.renderedToolCallKey, block: 0 } }) : null,
   };
   // The session record by its own key; from a member that names only the answer, through the answer while it is held.
   const record = isDeliveredSessionRecord(p.sessionRecord)
-    ? [deliverSessionRecord(delivered, p.sessionRecord)]
+    ? deliverSessionRecord(delivered, p.sessionRecord)
     : typeof p.answerId === 'string'
-      ? [deliverSessionRecord(delivered, 'plan-nudge', p.answerId)]
+      ? deliverSessionRecord(delivered, 'plan-nudge', p.answerId)
       : [];
   return [
-    ...(typeof p.receiptId === 'string' ? [deliverInjection(delivered, p.receiptId)] : []),
-    ...(typeof p.answerId === 'string' ? [deliverAnswer(delivered, p.answerId)] : []),
+    ...(typeof p.receiptId === 'string' ? deliverInjection(delivered, p.receiptId) : []),
+    ...(typeof p.answerId === 'string' ? deliverAnswer(delivered, p.answerId) : []),
     ...record,
+    ...(delivered.toolCallId === null ? [] : resolveToolDeliveries(ctx.projectId, e.sessionId, [delivered.toolCallId])),
   ];
 }
 
@@ -280,7 +285,7 @@ export async function planEventWrite(
     ...turnEnd,
     ...turnStart,
     ...liveCapture,
-    ...deliveryStatements(write, e, p),
+    ...await deliveryStatements(write, e, p),
     ...(eventBody === undefined ? [] : eventBodyStatements(eventBody, ctx.now)),
   ];
   const statements: Bound[] = [

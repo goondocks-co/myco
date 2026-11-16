@@ -18,7 +18,7 @@
  */
 import { utf8, uuidv5 } from '../../hash.js';
 import { canonicalPromptId, type ClaudePromptShape, type ClaudeRecordKey, type OffsetPromptNamespace, type PromptIdScheme, type PromptIdRequest } from '@goondocks/myco-shared/prompt-identity';
-import { promptPlanKey, canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource } from '@goondocks/myco-shared/record-identity';
+import { promptPlanKey, canonicalRecordId, deriveLegacyRecordId, extractRecordSource, recordPlanCoordinate, RecordSourceAbsent, LEGACY_RECORD_ID_SCHEME, type RecordIdScheme, type RecordSourceRequest, type ReplySource, type ToolPromptLinks } from '@goondocks/myco-shared/record-identity';
 import { evaluatePromptRules } from '@goondocks/myco-shared/capture-rules';
 import { CAPTURE_RULE_BUNDLES } from '@goondocks/myco-shared/capture-rules-data';
 import { planEnvelope } from '@goondocks/myco-shared/prompt-text';
@@ -48,6 +48,8 @@ export interface ParsedLine {
 export interface ParserInput {
   view?: boolean;
   identities?: Map<string,readonly string[]>;
+  /** Canonical tool ids whose owning prompt this window proves. */
+  toolPrompts?: ToolPromptLinks;
   lines: readonly ParsedLine[];
   sessionId: string;
   transcriptId: string;

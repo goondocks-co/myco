@@ -22,7 +22,7 @@ function finite(bound: Bound): boolean {
     case 'stringArray': return bound.maxItems > 0 && bound.maxItems <= MAX_ARRAY_ITEMS && bound.maxItem > 0 && bound.maxItem <= MAX_PAYLOAD_BYTES;
     case 'json': return bound.maxBytes > 0 && bound.maxBytes <= MAX_PAYLOAD_BYTES;
     // Grammar-shaped bounds are finite by their shape; an enum is finite when it names at least one value.
-    case 'id': case 'transcriptId': case 'sessionId': case 'blobKey': case 'bool': return true;
+    case 'sourceKey': case 'id': case 'transcriptId': case 'sessionId': case 'blobKey': case 'bool': return true;
     case 'enum': return bound.values.length > 0;
     // A time is bounded by the server clock at validation, not by a constant in the catalogue.
     case 'time': return true;

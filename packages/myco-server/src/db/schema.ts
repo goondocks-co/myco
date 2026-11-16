@@ -1,3 +1,4 @@
+import { TOOL_DELIVERY_STEPS } from './schema-steps-tool-delivery.js';
 import { DIRECT_TITLE_STEPS } from './schema-steps-direct-titles.js';
 import { MACHINE_UPDATE_STEPS } from './schema-steps-machine-updates.js';
 import { TURN_COVERAGE_STEPS } from './schema-steps-turn-coverage.js';
@@ -2411,6 +2412,7 @@ export const SCHEMA_STEPS: readonly SchemaStep[] = [
   ]).map(stamp),
   ...DIRECT_TITLE_STEPS.map(stamp),
   ...MACHINE_UPDATE_STEPS.map(stamp),
+  ...TOOL_DELIVERY_STEPS.map(stamp),
 ];
 
 /** Every statement of every step, in application order. */

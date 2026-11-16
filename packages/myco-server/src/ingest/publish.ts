@@ -392,7 +392,7 @@ class SessionPublication {
           for (const [key, owner] of claims) if (!this.batch.writer.owners.has(key)) this.batch.writer.owners.set(key, owner);
           claims.clear();
         };
-        if (!await this.placeable(rest, t.agent)) {
+        if (!await this.placeable(rest, t.agent, window.toolPrompts)) {
           this.full = this.more = true;
           if (window.lines < 2) {
             const taken = await this.placeLeading(rest, t.agent);
@@ -467,9 +467,9 @@ class SessionPublication {
   }
 
   /** Places these records, or leaves the batch unchanged and answers false when its commit could not be paid. */
-  private async placeable(records: readonly DocRecord[], harness: string | null): Promise<boolean> {
+  private async placeable(records: readonly DocRecord[], harness: string | null, toolPrompts?: ReadonlyMap<string, string>): Promise<boolean> {
     try {
-      await this.batch.place(records, harness);
+      await this.batch.place(records, harness, toolPrompts);
       return true;
     } catch (error) {
       if (error instanceof DocumentPassFull) return false;

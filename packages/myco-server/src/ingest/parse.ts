@@ -9,7 +9,7 @@ import { parserFor } from './parsers/registry.js';
 
 import { declaredScheme } from './prompt-scheme.js';
 
-import { isRecordIdScheme, RecordIdentityError } from '@goondocks/myco-shared/record-identity';
+import { isRecordIdScheme, RecordIdentityError, ToolPromptLinks } from '@goondocks/myco-shared/record-identity';
 
 import { type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 
@@ -90,6 +90,7 @@ export interface ParsePersistence {
     header(metadata: Record<string, unknown>): Promise<void>;
     publish(window: {
         events: DerivedEvent[];
+        toolPrompts: ReadonlyMap<string, string>;
         state: ParserState;
         metadata: Record<string, unknown> | undefined;
         to: number;
@@ -502,7 +503,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
   let owners: PromptOwners | undefined;
   const derive = async (): Promise<{ state: ParserState; input: ParserInput; parsed: DerivedEvent[] }> => {
     const state: ParserState = structuredClone(initialState);
-    const input: ParserInput = { ...({view:true,identities:new Map<string,readonly string[]>()}), lines: lines!, sessionId: target.sessionId, transcriptId: target.transcriptId, recordScheme, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
+    const input: ParserInput = { ...({view:true,identities:new Map<string,readonly string[]>(),toolPrompts:new ToolPromptLinks()}), lines: lines!, sessionId: target.sessionId, transcriptId: target.transcriptId, recordScheme, scheme, now, openPromptId: target.openPromptId ?? undefined, transcriptMeta, state, owners,
       ...(target.role === undefined ? {} : { role: target.role }),
       terminal: terminalOnly || (limits.completeFile && windowEnd === target.size) ? terminalRule(target, now, limits) : undefined };
     return { state, input, parsed: await parser.parse(input) };
@@ -548,7 +549,7 @@ export async function parseOnce(env: Pick<ServerEnv, 'db' | 'blobs'>, target: Pa
       event.sourceEnd??=lines.find(line=>line.offset>event.offset)?.offset??windowEnd;
     }
     const toPrompt=derivation.parsed.reduce((held,event)=>event.kind==='prompt'&&event.opensTurn!==false?turnOf(event):held,target.openPromptId);
-    const used=await target.persistence.publish({events:derivation.parsed,state:derivation.state,metadata:transcriptMeta,to:windowEnd,lines:lines.length,segmentLines:segmentLinesAt(windowEnd,held),openPromptId:toPrompt,now,fidelity:parser.fidelity});
+    const used=await target.persistence.publish({events:derivation.parsed,toolPrompts:derivation.input.toolPrompts!,state:derivation.state,metadata:transcriptMeta,to:windowEnd,lines:lines.length,segmentLines:segmentLinesAt(windowEnd,held),openPromptId:toPrompt,now,fidelity:parser.fidelity});
     if(used!==null)return {derived:derivation.parsed.length,calls:calls+used,nextOffset:windowEnd,failure:null};
     if(lines.length<2)return {derived:0,calls,nextOffset:null,failure:null};
     const kept=lines.length>>1;

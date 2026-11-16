@@ -24,6 +24,7 @@ export const copilotAdapter: SymbiontAdapter = {
 
   parseTurns: (content) => parseCopilotEventLog(content),
   promptForHook: copilotPromptForHook,
+  toolCallKeyForHook: copilotToolCallKey,
 };
 
 const COPILOT_EVENT_TYPES = {
@@ -129,7 +130,7 @@ function* copilotEvents(content: string): Generator<{ event: CopilotEvent; offse
 
 /** Native message keys name the prompt of a tool request or a delegation. Records arrive newest first. */
 function copilotPromptForHook(records: Iterable<{ value: Record<string, unknown>; offset: number }>, input: { sessionId: string; raw: Record<string, unknown>; kind: 'tool' | 'subagent' }): PromptIdRequest | undefined {
-  const toolKey = input.raw.toolCallId ?? input.raw.tool_call_id;
+  const toolKey = copilotToolCallKey(input.raw);
   if (input.kind === 'tool' && (typeof toolKey !== 'string' || toolKey === '')) return undefined;
   let origin: string | undefined;
   for (const { value, offset } of records) {
@@ -148,4 +149,10 @@ function copilotPromptForHook(records: Iterable<{ value: Record<string, unknown>
     }
   }
   return undefined;
+}
+
+/** The hook payload names the exact native request independently of transcript publication. */
+function copilotToolCallKey(raw: Record<string, unknown>): string | undefined {
+  const key = raw.toolCallId ?? raw.tool_call_id;
+  return typeof key === 'string' && key !== '' ? key : undefined;
 }

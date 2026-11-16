@@ -1,4 +1,4 @@
-import { CONTEXT_DELIVERED_KIND, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE } from './prompt-identity.js';
+import { CONTEXT_DELIVERED_KIND, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, TOOL_DELIVERY_FEATURE } from './prompt-identity.js';
 
 /** How long a member can spend a GitHub identity link. */
 export const IDENTITY_LINK_TTL_MS = 15 * 60 * 1000;
@@ -61,7 +61,7 @@ export const TOOL_RESULT_REASONS = ['reported', 'no_result', 'pending_limit'] as
 export type ToolResultReason = (typeof TOOL_RESULT_REASONS)[number];
 /** The session that launched a session travels in session.start only to Deployments that admit the optional field. */
 export const LAUNCH_PARENT_FEATURE = 'launch-parent';
-export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, TOOL_RESULT_REASON_FEATURE, LAUNCH_PARENT_FEATURE] as const;
+export const MEMBER_FEATURES = ['turn', PROJECT_NAME_FEATURE, PROMPT_IDENTITY_FEATURE, PROMPT_SCHEME_FEATURE, TOOL_RESULT_REASON_FEATURE, LAUNCH_PARENT_FEATURE, TOOL_DELIVERY_FEATURE] as const;
 export type MemberFeature = (typeof MEMBER_FEATURES)[number];
 
 /** Machine settings revisions are exchanged only by members and Deployments advertising this feature. */
