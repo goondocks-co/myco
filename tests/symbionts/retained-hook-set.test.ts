@@ -26,6 +26,10 @@ const RETAINED: Readonly<Record<string, string>> = {
   'user-prompt-submit': 'inject; a plan pasted inside a tag envelope ships as a plan',
   'stop': 'ship the transcript delta and the plan files the turn wrote',
   'session-end': 'ship the final delta and end the session',
+  'error-occurred': 'record the harness error independently of its turn rows',
+  'notification': 'record user-facing session activity',
+  'pre-compact': 'record the compaction boundary',
+  'subagent-stop': 'record the delegated agent ending',
   'subagent-start': 'inject into the delegated agent',
   'prompt-recall': 'deliver late memory selected for the current prompt; no capture row or network request',
 };
@@ -43,9 +47,9 @@ const INJECTION_HOOKS: Readonly<Record<string, readonly string[]>> = {
 describe('the retained hook set', () => {
   const manifests = loadManifests().filter((m) => m.registration?.hooksTarget && (m.registration.hooksFormat ?? 'json') === 'json');
 
-  it('covers the three tier-1 harnesses', () => {
+  it('covers the transcript-owned harnesses', () => {
     const transcriptFirst = manifests.filter((m) => m.capabilities?.turnRowSource === 'transcript').map((m) => m.name).sort();
-    expect(transcriptFirst).toEqual(['claude-code', 'codex', 'cursor']);
+    expect(transcriptFirst).toEqual(['antigravity', 'claude-code', 'codex', 'copilot', 'cursor']);
   });
 
   for (const manifest of manifests) {
@@ -62,7 +66,7 @@ describe('the retained hook set', () => {
       });
       continue;
     }
-    const allowed = [...Object.keys(RETAINED), ...(manifest.capabilities.transcriptFidelity === 'no_tool_results' ? TOOL_CALL_HOOKS : [])];
+    const allowed = [...Object.keys(RETAINED), ...(manifest.capabilities.transcriptFidelity === 'no_tool_results' || manifest.capabilities.promptRecallToolDelivery ? TOOL_CALL_HOOKS : [])];
     it(`${manifest.name}: wires only hooks from the retained set`, () => {
       for (const hook of wired) expect({ hook, retained: allowed.includes(hook as string) }).toEqual({ hook, retained: true });
       if (wired.includes('prompt-recall')) expect(manifest.capabilities?.promptRecallToolDelivery).toBe(true);
@@ -76,8 +80,8 @@ describe('the retained hook set', () => {
         expect(wired).toContain('post-tool-use');
       });
     } else {
-      it(`${manifest.name}: wires no tool-call hook, since its transcript carries the calls`, () => {
-        for (const hook of TOOL_CALL_HOOKS) expect(wired).not.toContain(hook);
+      it(`${manifest.name}: wires tool-call hooks only for context when its transcript carries the calls`, () => {
+        for (const hook of TOOL_CALL_HOOKS) if (!manifest.capabilities?.promptRecallToolDelivery) expect(wired).not.toContain(hook);
       });
     }
   }

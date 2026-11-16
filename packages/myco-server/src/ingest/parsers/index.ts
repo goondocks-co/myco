@@ -170,7 +170,8 @@ export function optionalRecordSource(input: ParserInput, agent: string, request:
 }
 
 type RecordCoordinates = { offset: number } & (
-  | { kind: 'response' | 'tool-call' }
+  | { kind: 'response'; replyPromptId?: string }
+  | { kind: 'tool-call' }
   | { kind: 'plan'; tag: string; coordinate: readonly (string | number)[]; legacyPosition: number }
 );
 type RecordFacts = RecordCoordinates & { source: ReplySource };
@@ -219,6 +220,7 @@ export function parserContinuation(input: ParserInput): {
 
 /** A kind and a payload the catalogue admits, named by the byte offset that produced it. */
 export interface DerivedEvent {
+  replySnapshot?: boolean;
   identity?: readonly string[];
   sourceEnd?: number;
   outcomeOffset?: number;
@@ -254,6 +256,8 @@ interface Continuation {
 export interface TranscriptParser {
   agent: string;
   fidelity: Fidelity;
+  /** A format whose prose snapshots replace earlier narration within the same turn. */
+  replyAggregation?: 'last';
   /** Declared by an agent that continues a conversation under a new id; absent for one that does not. */
   continuation?: Continuation;
   /** A vendor record that explicitly closes the assistant turn. */

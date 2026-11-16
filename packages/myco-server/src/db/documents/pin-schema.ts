@@ -1,7 +1,7 @@
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { assertion, write } from '../index.js';
 import { pinDecision } from './pins.js';
-import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { publicationPolicy } from './publication-policy.js';
 import { jsonKeys } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
 
@@ -61,7 +61,7 @@ const PIN_RECONCILE=reconcilePublicationPins(keys).map((sql,i)=>write<[string]>(
 const PIN_GROUPS_READY=assertion<[]>({name:'publication.pinGroupsInitialized',sql:`SELECT CASE WHEN EXISTS(
   SELECT 1 FROM projection_catchup WHERE projection='publication_pins' AND phase='publicationPinGroups' AND done=1)
   THEN 1 ELSE json_extract('[]','$[publication_pins_building]') END`});
-const policy=publicationPolicy('t.prompt_identity_scheme');
+const policy=publicationPolicy('t.prompt_identity_scheme', 't.agent');
 const PIN_ADMISSION_RECONCILE=[
   write<[string]>({name:'publication.admitPendingPins',sql:`UPDATE transcripts AS t SET prompt_identity_scheme=(SELECT ${pinDecision('t.agent')}
     FROM (SELECT 1) LEFT JOIN document_group_pins g ON (g.project_id,g.session_id,g.agent)=(t.project_id,t.session_id,COALESCE(t.agent,'')))

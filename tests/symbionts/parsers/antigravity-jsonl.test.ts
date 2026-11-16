@@ -1,7 +1,7 @@
+import { cleanAntigravityUserPrompt } from '@goondocks/myco-shared/antigravity-parser';
 import { describe, it, expect } from 'bun:test';
 import {
   AntigravityJsonlParser,
-  cleanAntigravityUserPrompt,
   extractAntigravityFilePath,
 } from '@myco/symbionts/parsers/antigravity-jsonl.js';
 

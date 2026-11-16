@@ -1,3 +1,4 @@
+import { cleanAntigravityUserPrompt, isAntigravityUserInput } from '@goondocks/myco-shared/antigravity-parser';
 import type { TranscriptParser } from '../adapter.js';
 import type { TranscriptTurn } from '../adapter.js';
 
@@ -34,9 +35,7 @@ export class AntigravityJsonlParser implements TranscriptParser {
       const type = entry.type as string | undefined;
       const timestamp = (entry.created_at as string) ?? '';
 
-      // A step the harness records for injected context (Myco's own session block arrives this way) is not the person's prompt.
-      if (type === 'USER_INPUT' && entry.source === 'SYSTEM_SDK') continue;
-      if (type === 'USER_INPUT') {
+      if (isAntigravityUserInput(entry)) {
         const rawContent = typeof entry.content === 'string' ? entry.content : '';
         const promptText = cleanAntigravityUserPrompt(rawContent);
         const submissionId = typeof entry.step_index === 'number' && Number.isSafeInteger(entry.step_index) && entry.step_index >= 0 ? entry.step_index : undefined;
@@ -76,21 +75,6 @@ export class AntigravityJsonlParser implements TranscriptParser {
     if (current) turns.push(current);
     return turns;
   }
-}
-
-/**
- * Extract the body of `<USER_REQUEST>…</USER_REQUEST>` from an
- * Antigravity `USER_INPUT.content` and remove the `<ADDITIONAL_METADATA>`
- * and `<USER_SETTINGS_CHANGE>` envelopes. Falls back to whole-string
- * envelope-strip when no `<USER_REQUEST>` wrapper is present.
- */
-export function cleanAntigravityUserPrompt(raw: string): string {
-  const requestMatch = raw.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-  const body = requestMatch ? requestMatch[1] : raw;
-  return body
-    .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, '')
-    .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '')
-    .trim();
 }
 
 /**

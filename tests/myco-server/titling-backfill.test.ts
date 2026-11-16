@@ -61,8 +61,8 @@ function rig() {
                   VALUES (?, ?, 'm1', 'tok_1', ?, ?, 'claude-code', ?, ?, ?)`, [project, id, endedAt - 10_000, endedAt, endedAt - 10_000, endedAt, over.title ?? null]);
     documented(project, id, over.material === false ? 0 : 1);
     if (over.transcript !== false) {
-      e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at)
-                    VALUES (?, ?, ?, 'm1', 100, ?, ?, ?, 'tok_1', ?)`, [project, `tx_${id}`, id, over.parsed === false ? 40 : 100, endedAt, endedAt, over.imported === false ? null : endedAt]);
+      e.sqlite.run(`INSERT INTO transcripts (project_id, transcript_id, session_id, machine_id, size, parsed_offset, first_received_at, last_received_at, token_id, imported_at, agent)
+                    VALUES (?, ?, ?, 'm1', 100, ?, ?, ?, 'tok_1', ?, 'claude-code')`, [project, `tx_${id}`, id, over.parsed === false ? 40 : 100, endedAt, endedAt, over.imported === false ? null : endedAt]);
       published();
     }
   };
@@ -276,6 +276,12 @@ describe('the imported-session backfill', () => {
     const reason = (id: string) => untitledReason(r.env.db, 'proj_1', id);
     r.session('capture', { parsed: false, material: false });
     r.session('silent', { material: false, imported: false });
+    r.session('unsupported', { parsed: false, material: false });
+    r.sqlite.run("UPDATE transcripts SET agent='unknown-agent' WHERE session_id='unsupported'");
+    r.session('failed', { parsed: false });
+    r.sqlite.run("UPDATE transcript_publication SET state='failed',failure='malformed_lines' WHERE session_id='failed'");
+    r.session('at-end', { material: false });
+    r.sqlite.run("UPDATE transcript_publication SET state='awaiting',unfinished=1 WHERE session_id='at-end'");
     r.session('imported');
     r.session('waiting', { imported: false });
     r.session('requested-import');
@@ -295,6 +301,7 @@ describe('the imported-session backfill', () => {
     r.session('open', { imported: false });
     r.sqlite.run(`UPDATE sessions SET ended_at = NULL WHERE session_id = 'open'`);
     const expected: Record<string, string | null> = {
+      unsupported: 'capture_unsupported', failed: 'capture_stopped', 'at-end': 'no_material',
       capture: 'capture_pending', silent: 'no_material', imported: 'imported', waiting: 'waiting', 'requested-import': 'waiting',
       flight: 'in_progress', 'stopped-in-flight': 'in_progress', stopped: 'stopped', titled: null, open: null, absent: null,
     };

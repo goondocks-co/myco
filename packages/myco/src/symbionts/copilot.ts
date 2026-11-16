@@ -1,3 +1,5 @@
+import { RecordSourceInvalid } from '@goondocks/myco-shared/record-identity';
+import type { PromptIdRequest } from '@goondocks/myco-shared/prompt-identity';
 import type { SymbiontAdapter, TranscriptTurn } from './adapter.js';
 import { PROMPT_PREVIEW_CHARS } from '../constants.js';
 import { findTranscriptFor } from './transcript-discovery.js';
@@ -21,6 +23,7 @@ export const copilotAdapter: SymbiontAdapter = {
   findTranscript: (sessionId) => findTranscriptFor('copilot', sessionId),
 
   parseTurns: (content) => parseCopilotEventLog(content),
+  promptForHook: copilotPromptForHook,
 };
 
 const COPILOT_EVENT_TYPES = {
@@ -54,14 +57,7 @@ function parseCopilotEventLog(content: string): TranscriptTurn[] {
     current = null;
   };
 
-  for (const line of content.split('\n')) {
-    if (!line.trim()) continue;
-    let event: CopilotEvent;
-    try {
-      event = JSON.parse(line) as CopilotEvent;
-    } catch {
-      continue; // skip malformed lines rather than abort the whole parse
-    }
+  for (const { event } of copilotEvents(content)) {
     const data = event.data ?? {};
     switch (event.type) {
       case COPILOT_EVENT_TYPES.USER_MESSAGE: {
@@ -116,4 +112,40 @@ interface CopilotEvent {
 interface CopilotEventData {
   content?: unknown;
   [key: string]: unknown;
+}
+
+/** Decoded native events retain their byte coordinate. */
+function* copilotEvents(content: string): Generator<{ event: CopilotEvent; offset: number }> {
+  let offset = 0;
+  for (const line of content.split('\n')) {
+    const at = offset;
+    offset += Buffer.byteLength(line) + 1;
+    if (!line.trim()) continue;
+    let event: unknown;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event !== null && typeof event === 'object' && !Array.isArray(event)) yield { event: event as CopilotEvent, offset: at };
+  }
+}
+
+/** Native message keys name the prompt of a tool request or a delegation. Records arrive newest first. */
+function copilotPromptForHook(records: Iterable<{ value: Record<string, unknown>; offset: number }>, input: { sessionId: string; raw: Record<string, unknown>; kind: 'tool' | 'subagent' }): PromptIdRequest | undefined {
+  const toolKey = input.raw.toolCallId ?? input.raw.tool_call_id;
+  if (input.kind === 'tool' && (typeof toolKey !== 'string' || toolKey === '')) return undefined;
+  let origin: string | undefined;
+  for (const { value, offset } of records) {
+    const event = value as unknown as CopilotEvent;
+    const data = event.data ?? {};
+    if (event.type === COPILOT_EVENT_TYPES.ASSISTANT_MESSAGE && Array.isArray(data.toolRequests)
+      && data.toolRequests.some(call => call !== null && typeof call === 'object' && call.toolCallId === toolKey)
+      && typeof data.originatingMessageId === 'string' && data.originatingMessageId !== '') {
+      if (origin !== undefined && origin !== data.originatingMessageId) throw new RecordSourceInvalid();
+      origin = data.originatingMessageId;
+    }
+    if (event.type === COPILOT_EVENT_TYPES.USER_MESSAGE && !isSourcedUserMessage(data)
+      && typeof data.content === 'string' && data.content.trim() !== '' && typeof data.messageId === 'string'
+      && (input.kind === 'subagent' || data.messageId === origin)) {
+      return { scheme: 'member-transcript-v1', sessionId: input.sessionId, dedupeKey: data.messageId, position: offset };
+    }
+  }
+  return undefined;
 }

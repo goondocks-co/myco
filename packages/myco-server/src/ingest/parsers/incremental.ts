@@ -30,9 +30,12 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
       const emitReply = async (parts: readonly ReplyPart[], promptId?: string): Promise<void> => {
         for (const part of replyChunks(parts, bound)) {
           if (input.recordScheme !== LEGACY_RECORD_ID_SCHEME && !isReplySource(part.source)) throw new RecordSourceInvalid();
-          const request = { kind: 'response' as const, offset: part.offset };
-          const legacyId = await legacyRecordId(input, request);
-          events.push({ kind: 'response', ...(part.sourceEnd===undefined?{}:{sourceEnd:part.sourceEnd}), offset: part.offset, createdAt: part.createdAt, source: part.source, legacyId,
+          const request = { kind: 'response' as const, offset: part.offset,
+            ...(parser.replyAggregation === 'last' && promptId !== undefined ? { replyPromptId: promptId } : {}) };
+          const legacyId = request.replyPromptId !== undefined && part.source !== undefined
+            ? await recordId({ ...input, recordScheme: LEGACY_RECORD_ID_SCHEME }, parser.agent, { ...request, source: part.source })
+            : await legacyRecordId(input, request);
+          events.push({ kind: 'response', ...(request.replyPromptId === undefined ? {} : { replySnapshot: true }), ...(part.sourceEnd===undefined?{}:{sourceEnd:part.sourceEnd}), offset: part.offset, createdAt: part.createdAt, source: part.source, legacyId,
             payload: { responseId: part.source === undefined ? legacyId : await recordId(input, parser.agent, { ...request, source: part.source }), promptId, text: part.text } });
         }
       };
@@ -46,6 +49,7 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         // A reply is one prompt's: a line naming another prompt than the reply held starts its own.
         const promptId = typeof event.payload.promptId === 'string' ? event.payload.promptId : undefined;
         if (state.reply !== undefined && state.reply.promptId !== promptId) await flushReply();
+        if (parser.replyAggregation === 'last') delete state.reply;
 
         const bytes = textBytes(part.text);
         if (state.reply !== undefined && (state.reply.chars + REPLY_SEPARATOR.length + part.text.length > bound.chars

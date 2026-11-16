@@ -43,6 +43,25 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "member-transcript-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {
@@ -690,8 +709,55 @@ export const CAPTURE_RULE_BUNDLES: readonly CaptureRuleBundle[] = [
     "displayEnvelopeTags": [],
     "transcriptTimestamps": "recorded",
     "promptIdentity": {
-      "kind": "hook-owned",
-      "scheme": "hook-mint-v1"
+      "kind": "transcript-only",
+      "scheme": "member-transcript-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "key": {
+              "from": "record",
+              "path": "id"
+            },
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "toolCallId"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "toolCallId"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "key": {
+              "from": "record",
+              "path": "id"
+            },
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "toolCallId"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "toolCallId"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {

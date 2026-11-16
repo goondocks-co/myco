@@ -252,6 +252,7 @@ describe('KPI projection critical flow', () => {
   it('drains multiple five-session document pages within budget and requests more until done', async () => {
     const r = rig();
     try {
+      await catchUpProjections(r.db);
       for (let i = 0; i < 11; i++) {
         const session = `s${String(i).padStart(2, '0')}`;
         r.session(session, { agent: null }); r.prompt('p', session);

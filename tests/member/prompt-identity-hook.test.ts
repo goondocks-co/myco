@@ -1,3 +1,4 @@
+import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
 /**
  * The prompt hook names each submission by its agent's declared identity, behind the Deployment's `prompt-identity`
  * feature, and reports where a rendered answer reached the agent.
@@ -291,4 +292,53 @@ describe('a Codex prompt, whose harness key names a turn', () => {
     expect(served.asked.map(({ promptId, scopeReason }) => ({ promptId, scopeReason }))).toEqual([{ promptId: undefined, scopeReason: 'transcript_only' }]);
     expect(toolPrompts(sessionId)).toEqual([null]);
   });
+});
+
+it('Copilot delivery names the parsed prompt through native tool and originating-message keys', async () => {
+  const sessionId = 'copilot-render-source';
+  const tx = transcript(sessionId);
+  const records = [
+    { type: 'user.message', id: 'event-one', data: { messageId: 'submission-one', content: 'inspect orchard' } },
+    { type: 'user.message', id: 'event-two', data: { messageId: 'submission-two', content: 'inspect orchard' } },
+    { type: 'assistant.message', id: 'assistant-one', data: { originatingMessageId: 'submission-one', content: '', toolRequests: [{ toolCallId: 'orchard-call', name: 'view', arguments: { path: 'orchard.txt' } }] } },
+    { type: 'tool.execution_start', data: { toolCallId: 'orchard-call', toolName: 'view', arguments: { path: 'orchard.txt' } } },
+  ];
+  fs.writeFileSync(tx, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+  const served = serving('turn,prompt-identity,prompt-scheme');
+  const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) => runHook(name,
+    { session_id: sessionId, transcript_path: tx, ...raw }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+  await hook('session-start', {});
+  await hook('user-prompt-submit', { prompt: 'inspect orchard' });
+  const rendered = await hook('post-tool-use', { toolCallId: 'orchard-call', tool_name: 'view', tool_input: { path: 'orchard.txt' } });
+  expect(rendered.stdout).toContain('Recalled for: inspect orchard');
+  expect((await hook('post-tool-use', { toolCallId: 'orchard-call', tool_name: 'view', tool_input: {} })).stdout).not.toContain('Recalled for: inspect orchard');
+  let offset = 0;
+  const lines = records.map(value => { const line = { value, offset }; offset += Buffer.byteLength(JSON.stringify(value) + '\n'); return line; });
+  const parsed = await PARSERS.copilot.parse({ lines, sessionId, transcriptId: 'copilot-source', now: Date.now(), recordScheme: 'source-record-v1', scheme: 'member-transcript-v1' });
+  const promptId = parsed.find(event => event.kind === 'prompt')!.payload.promptId;
+  expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedIn: promptId, renderedScheme: 'member-transcript-v1' })]);
+  expect(parsed.find(event => event.kind === 'tool.failure')!.payload.promptId).toBe(promptId);
+});
+
+it.each(['ambiguous', 'outside the lookup bound'])('%s native prompt lookup still delivers unscoped memory', async reason => {
+  const sessionId = 'copilot-unscoped-' + reason.replaceAll(' ', '-');
+  const tx = transcript(sessionId);
+  fs.writeFileSync(tx, [
+    { type: 'user.message', data: { messageId: 'one', content: 'inspect orchard' } },
+    ...['one', 'two'].map(originatingMessageId => ({ type: 'assistant.message', data: {
+      originatingMessageId, toolRequests: [{ toolCallId: 'ambiguous' }],
+    } })),
+  ].map(row => JSON.stringify(row)).join('\n') + '\n');
+  if (reason === 'outside the lookup bound') {
+    const { HOOK_PROMPT_LOOKBACK_BYTES } = await import('@myco/member/prompt-context.js');
+    fs.appendFileSync(tx, JSON.stringify({ type: 'padding', text: 'x'.repeat(HOOK_PROMPT_LOOKBACK_BYTES) }) + '\n');
+  }
+  const served = serving('turn,prompt-identity,prompt-scheme');
+  const opts = { helpers: 'run' as const, fetch: served.fetch, symbiont: 'copilot' };
+  await runHook('session-start', { session_id: sessionId, transcript_path: tx }, opts);
+  await runHook('user-prompt-submit', { session_id: sessionId, prompt: 'inspect orchard' }, opts);
+  const result = await runHook('post-tool-use', { session_id: sessionId, transcript_path: tx, toolCallId: 'ambiguous', tool_name: 'view' }, opts);
+  expect(result.stdout).toContain('Recalled for: inspect orchard');
+  if (reason === 'ambiguous') expect(result.stderr).toContain('prompt link unavailable');
+  expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedScopeReason: 'transcript_only' })]);
 });

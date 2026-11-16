@@ -38,6 +38,8 @@ import type { SessionState } from './session-state.js';
 import { MemberSpool, turnEndIdentity, type SessionEvents, type TurnEndMark } from './spool.js';
 import type { FetchLike } from './transport.js';
 import type { DetachedSpawn } from '../runtime/spawn-detached.js';
+import { transcriptWritesTurnRows } from '../hooks/turn-rows.js';
+import { transcriptPointerFor } from './transcript.js';
 
 export interface HookMainOptions {
   /** The declared credential source; read from `--credential` on argv when absent. */
@@ -83,6 +85,8 @@ export interface HookRun {
 
 export interface HookOutcome {
   events: OutboundEvent[];
+  /** This hook's capture rules excluded its input, including its transcript. */
+  ignored?: true;
   /**
    * The receipts for `events` — the prompt hashes, plan hashes, attachment
    * keys and transcript parsed size that stop them being derived twice.
@@ -295,13 +299,19 @@ export async function runMemberHook(
     if (hold !== null && hold.notice !== null) response = withNotice(hold.notice, response);
     let claimed: HookClaim | undefined;
     let transcriptWork = false;
+    const transcriptPath = !outcome.ignored && transcriptWritesTurnRows(input.agent) ? input.transcriptPath : undefined;
     const ask = (): ContextAskRequest | undefined => claimed?.ask ?? outcome.ask;
-    const record = outcome.events.length > 0 || outcome.record || outcome.ask || outcome.claim || outcome.respond ? (state: SessionState) => {
+    const record = transcriptPath || outcome.events.length > 0 || outcome.record || outcome.ask || outcome.claim || outcome.respond ? (state: SessionState) => {
       state.agent ??= input.agent;
       state.hookAt = now();
       // A session id that hooks again after its end has resumed: its transcript waits on turn ends once more.
       if (hookName !== 'session-end') delete state.endedAt;
       outcome.record?.(state);
+      if (transcriptPath && state.transcript === undefined) {
+        const pointer = transcriptPointerFor(transcriptPath, getMachineId());
+        if (pointer) state.transcript = { ...pointer, awaitingTurnEnd: true };
+      }
+      if (outcome.ends && state.transcript?.transcriptId === outcome.transcriptAt?.transcriptId) delete state.transcript?.awaitingTurnEnd;
       transcriptWork = state.promptBackfill !== undefined;
       const asked = ask();
       if (asked) state.contextAsks = withAsk(state.contextAsks, asked);

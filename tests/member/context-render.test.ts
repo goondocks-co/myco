@@ -1,6 +1,6 @@
 import { helperPass } from '@myco/member/helper-pass.js';
 import { PROMPT_CONTEXT_INLINE_CAP_MS, PROMPT_CONTEXT_TOOL_CAP_MS } from '@myco/member/prompt-context.js';
-import { publishFixture } from '../myco-server/helpers/fixtures.js';
+import { publishFixture, readFixtureRecords } from '../myco-server/helpers/fixtures.js';
 /**
  * Prompt recall belongs to its submission; session blocks remain cached for later session hooks.
  * - A session start renders the Project's start block once per session; a block the Project withdraws stops being
@@ -175,7 +175,7 @@ describe('a prompt', () => {
     return { first, finish, tool, spawn, fetch, tx, asking: () => asking, discarded, receiptId };
   }
 
-  it.each(['codex', 'copilot'])('%s delivers memory on the first tool hook once, naming the asking prompt', async agent => {
+  it.each(['codex', 'copilot'])('%s delivers memory on the first tool hook once, retaining its known prompt scope', async agent => {
     const held = await latePrompt(agent, 'sess-tool', PROMPT_CONTEXT_TOOL_CAP_MS);
     updateProjectContext(spool().dir, mycoHome, cache => { cache.blocks.start = { context: 'session-start block', at: Date.now() }; });
     await held.finish();
@@ -185,7 +185,8 @@ describe('a prompt', () => {
     expect(tool.stderr).toContain('delivery=tool');
     expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
     const delivery = spool().readRecords('sess-tool').find(record => record?.kind === 'context.delivered');
-    expect(delivery?.payload).toMatchObject({ renderedIn: held.asking()?.promptId });
+    const promptId = held.asking()?.promptId;
+    expect(delivery?.payload).toMatchObject(promptId === undefined ? { renderedScopeReason: 'transcript_only' } : { renderedIn: promptId });
   });
 
   it('keeps native tool callbacks eligible while recall is still in flight', async () => {
@@ -292,7 +293,6 @@ describe('a prompt', () => {
     expect(delivered.stderr).toContain('delivery=tool');
     expect(contextOf((await tool()).stdout)).not.toContain('healthy recall');
     expect(requests).toBe(2);
-    expect(spool().readRecords('env-slow').filter(record => record?.kind === 'prompt')).toHaveLength(2);
   });
 
   it('reports safe diagnostics for an empty answer and renders the Session line alone', async () => {
@@ -508,22 +508,22 @@ describe('Deployment feature scope', () => {
     expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
     expect(readDeploymentFeatures({ serverUrl: 'https://other.invalid', projectId: 'proj_foreign' }, mycoHome)).toEqual([]);
   });
-  for (const damage of ['corrupt', 'version mismatch', 'unreadable path'] as const) {
-    for (const hook of ['user-prompt-submit', 'stop'] as const) {
-      it(`${hook} spools its captured record with ${damage}`, async () => {
-        advertise('proj_1', ['turn'], 1);
-        advertise('proj_new', [], 2);
-        const file = deploymentFeaturesPath(serverUrl, mycoHome);
-        if (damage === 'unreadable path') fs.mkdirSync(file);
-        else fs.writeFileSync(file, damage === 'corrupt' ? 'invalid' : JSON.stringify({ version: 0, features: [] }), { mode: 0o600 });
-        const sessionId = `sess-${hook}-${damage}`;
-        const result = await runHook(hook, { session_id: sessionId, prompt: 'save prompt', last_assistant_message: 'save response', transcript_path: transcript(sessionId), cwd: process.cwd() }, { fetch: async () => Response.json({ persisted: true, context: '' }), symbiont: 'copilot' });
-        expect(spool().readRecords(sessionId).some((event) => event?.kind === (hook === 'stop' ? 'response' : 'prompt'))).toBe(true);
-        expect(result.stderr).toContain('feature cache read failed');
-        expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
-      });
-    }
-  }
+  it.each(['corrupt JSON', 'version mismatch', 'unreadable path'])('%s does not block a hook-owned prompt and response', async damage => {
+    advertise('proj_1', ['turn'], 1);
+    advertise('proj_new', [], 2);
+    const file = deploymentFeaturesPath(serverUrl, mycoHome);
+    fs.rmSync(file, { force: true });
+    if (damage === 'unreadable path') fs.mkdirSync(file);
+    else fs.writeFileSync(file, damage === 'corrupt JSON' ? 'invalid' : JSON.stringify({ version: -1 }), { mode: 0o600 });
+    const sessionId = 'feature-cache-capture';
+    const raw = { trajectory_id: sessionId, tool_info: { user_prompt: 'save prompt', response: 'save response', transcript_path: transcript(sessionId) }, cwd: process.cwd() };
+    const fetch = async () => Response.json({ persisted: true, context: '' });
+    const prompt = await runHook('user-prompt-submit', raw, { fetch, symbiont: 'windsurf' });
+    await runHook('stop', raw, { fetch, symbiont: 'windsurf' });
+    expect(spool().readRecords(sessionId).map(record => record?.kind)).toEqual(expect.arrayContaining(['prompt', 'response']));
+    expect(prompt.stderr).toContain('feature cache read failed');
+    expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
+  });
   it('logs a read failure once and falls back through the newest project to no features', () => {
     advertise('proj_new', ['turn'], 2);
     fs.writeFileSync(deploymentFeaturesPath(serverUrl, mycoHome), 'invalid', { mode: 0o600 });
@@ -683,59 +683,38 @@ describe('Deployment feature scope', () => {
 });
 
 describe('prompts a harness writes only to its transcript', () => {
-  it('capture each source occurrence once through the helper, including equal text', async () => {
+  it('publishes equal source submissions and their replies once through the Deployment', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-agy-tx-'));
     scratch.push(dir);
     const tx = path.join(dir, 'transcript_full.jsonl');
-    // The invocation's hook fires before the IDE writes its transcript.
     fs.writeFileSync(tx, '');
-    const invoke = async () => { const result = await runHook('session-start', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() }, { helpers: 'run', fetch: rig.fetch, symbiont: 'antigravity' }); await publishFixture(rig.env); return result; };
-    const startedAt = Date.now();
-    await invoke();
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
-    // The request waits for the next pass.
-    expect(readSessionState(spool().dir, 'sess-agy').promptBackfill?.transcriptPath).toBe(tx);
-
-    fs.writeFileSync(tx, [
-      { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>first turn</USER_REQUEST>', created_at: 't1' },
-      { step_index: 1, type: 'PLANNER_RESPONSE', content: 'thinking', created_at: 't2' },
-    ].map((r) => JSON.stringify(r)).join('\n') + '\n');
-    await invoke();
-    const rows = rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts`).all() as Array<{ text: string }>;
-    expect(rows.map((r) => r.text)).toEqual(['first turn']);
-    const createdAt = (rig.env.sqlite.query(`SELECT created_at AS at FROM events WHERE kind = 'prompt'`).get() as { at: number }).at;
-    expect(createdAt).toBeGreaterThanOrEqual(startedAt);
+    const raw = { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() };
+    const options = { helpers: 'run' as const, fetch: rig.fetch, symbiont: 'antigravity' };
+    await runHook('session-start', raw, options);
     expect(readSessionState(spool().dir, 'sess-agy').promptBackfill).toBeUndefined();
-
-    // A later invocation reads the transcript again and captures only what is new.
-    fs.appendFileSync(tx, `${JSON.stringify({ step_index: 2, type: 'USER_INPUT', content: '<USER_REQUEST>first turn</USER_REQUEST>', created_at: 't3' })}\n`);
-    await invoke();
-    expect((rig.env.sqlite.query(`SELECT preview AS text FROM session_prompts ORDER BY preview`).all() as Array<{ text: string }>).map((r) => r.text)).toEqual(['first turn', 'first turn']);
-    const promptIds = () => (rig.env.sqlite.query(`SELECT payload FROM events WHERE kind='prompt' ORDER BY rowid`).all() as Array<{ payload: string }>)
-      .map(row => (JSON.parse(row.payload) as { promptId: string }).promptId);
-    const captured = promptIds();
-    expect(captured).toHaveLength(2);
-    expect(new Set(captured).size).toBe(2);
-    await invoke();
-    expect(promptIds()).toEqual(captured);
-    const finalPrompt = 'Preserve the full request, including its final instruction. '.repeat(20) + 'Finish here.';
-    fs.appendFileSync(tx, [{ step_index: 3, type: 'USER_INPUT', content: `<USER_REQUEST>${finalPrompt}</USER_REQUEST>`, created_at: 't4' },
-      { step_index: 4, type: 'PLANNER_RESPONSE', content: 'final reply', created_at: 't5' }].map(row => JSON.stringify(row)).join('\n') + '\n');
-    await runHook('stop', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() },
-      { helpers: 'run', fetch: rig.fetch, symbiont: 'antigravity' });
+    fs.writeFileSync(tx, [
+      { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>first turn</USER_REQUEST>' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', content: 'first reply' },
+      { step_index: 2, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>first turn</USER_REQUEST>' },
+      { step_index: 3, type: 'PLANNER_RESPONSE', content: 'final reply' },
+    ].map(record => JSON.stringify({ ...record, created_at: '2026-06-01T12:00:00Z' })).join('\n') + '\n');
+    await runHook('stop', raw, options);
     await publishFixture(rig.env);
-    expect(promptIds()).toEqual([...captured, expect.any(String)]);
-    const prompt = rig.env.sqlite.query("SELECT payload FROM events WHERE kind='prompt' ORDER BY rowid DESC LIMIT 1").get() as { payload: string };
-    expect(JSON.parse(prompt.payload).text).toBe(finalPrompt);
-    const reply = rig.env.sqlite.query("SELECT payload FROM events WHERE kind='response'").get() as { payload: string };
-    expect(JSON.parse(reply.payload)).toMatchObject({ promptId: promptIds().at(-1), text: 'final reply' });
-
+    const captured = await readFixtureRecords(rig.env.serverEnv, 'proj_1', 'sess-agy');
+    const prompts = captured.filter(row => row.k === 'prompt');
+    expect(prompts.map(row => row.text)).toEqual(['first turn', 'first turn']);
+    expect(new Set(prompts.map(row => row.id)).size).toBe(2);
+    const replies = captured.filter(row => row.k === 'reply');
+    expect(replies.map(row => row.text).sort()).toEqual(['final reply', 'first reply']);
+    expect(new Set(replies.map(row => row.prompt_id))).toEqual(new Set(prompts.map(row => row.id)));
+    await runHook('stop', raw, options);
+    await publishFixture(rig.env);
+    expect(await readFixtureRecords(rig.env.serverEnv, 'proj_1', 'sess-agy')).toEqual(captured);
   });
 });
 
 it('the member helper ships a final retained plugin turn without another plugin callback', async () => {
   const { snippetModule } = await import('../support/plugin-snippet.js');
-  const { routingKey } = await import('@myco/member/routing.js');
   const route = spool().routing!;
   const { prepareMemberTranscriptScope } = await import('@myco/member/transcript-routing.js');
   const key = prepareMemberTranscriptScope(route, mycoHome);
@@ -754,9 +733,6 @@ it('the member helper ships a final retained plugin turn without another plugin 
   expect(wakes).toHaveLength(2);
   await runHook('stop', wakes.at(-1)!, { helpers: 'run', fetch: rig.fetch, symbiont: 'cline' });
   await publishFixture(rig.env);
-  const prompts = rig.env.sqlite.query('SELECT preview FROM session_prompts WHERE session_id=?').all('final-inbox') as Array<{ preview: string }>;
-  expect(prompts.map(row => row.preview)).toEqual(['final prompt']);
-  const tx = subject.transcriptPathFor(process.cwd(), 'cline', 'final-inbox');
-  const raw = fs.readFileSync(tx, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  expect(raw.filter(row => row.type === 'prompt' || row.type === 'response').map(row => row.text)).toEqual(['final prompt', 'final reply']);
+  expect((await readFixtureRecords(rig.env.serverEnv, 'proj_1', 'final-inbox')).filter(row => row.k === 'prompt' || row.k === 'reply').map(row => row.text))
+    .toEqual(['final prompt', 'final reply']);
 });

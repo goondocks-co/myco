@@ -1,3 +1,4 @@
+import type { PromptIdRequest } from '@goondocks/myco-shared/prompt-identity';
 /**
  * Symbiont adapter interface — declares what each coding agent provides to Myco.
  *
@@ -84,6 +85,9 @@ export interface SymbiontAdapter {
    * Each adapter handles its agent's specific format.
    */
   parseTurns(content: string): TranscriptTurn[];
+
+  /** Native records newest first, naming the canonical prompt of a hook. */
+  promptForHook?(records: Iterable<{ value: Record<string, unknown>; offset: number }>, input: { sessionId: string; raw: Record<string, unknown>; kind: 'tool' | 'subagent' }): PromptIdRequest | undefined;
 
 }
 

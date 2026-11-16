@@ -4,7 +4,8 @@ import { renderedBlock, type ContextAskRequest } from '../member/context-cache.j
 import { readSessionState } from '../member/session-state.js';
 import { sessionInjectionKind } from '@goondocks/myco-shared/recall';
 import { HOOK_CONFIG } from './hook-config.generated.js';
-import { transcriptWritesTurnRows } from './turn-rows.js';
+import { hookShipsSubagentStarts, transcriptWritesTurnRows } from './turn-rows.js';
+import { hookPromptIdentity } from '../member/prompt-context.js';
 
 /** How long a delegated agent's id or type may be before the ask carries a shortened one. */
 const MAX_NAME_CHARS = 64;
@@ -31,9 +32,9 @@ export async function main(opts: HookMainOptions = {}) {
     const served = due ? renderedBlock(run.spool.dir, run.credential.projectId, 'subagent') : undefined;
     // Delivered once the Deployment's block was: a delegation told its Project alone is served the block if it starts again.
     return {
-      // The transcript carries the child's own turns for a symbiont that keeps
-      // one; the start row would be a second write keyed to a minted parent.
-      events: transcriptWritesTurnRows(run.agent) ? [] : [subagentStartEvent(run.ctx, run.input, { parentPromptId: state.promptId })],
+      events: hookShipsSubagentStarts(run.agent) ? [subagentStartEvent(run.ctx, run.input, {
+        parentPromptId: transcriptWritesTurnRows(run.agent) ? hookPromptIdentity(run, 'subagent')?.renderedIn : state.promptId,
+      })] : [],
       response: served === undefined ? undefined : { additionalContext: served.text },
       ask: due ? ask : undefined,
       record: served?.complete !== true ? undefined : (next) => { if (!next.delivered.includes(delivered)) next.delivered.push(delivered); },

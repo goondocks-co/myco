@@ -28,6 +28,8 @@ export interface TranscriptPointer {
   nextOffset: number;
   /** Bytes of the transcript the member has already read for its own derivations: plan-file writes, and for an agent whose hooks write its turn rows, prompts, plans and images. */
   parsedSize: number;
+  /** Discovered before any end hook; held until a turn ends or the session goes idle. */
+  awaitingTurnEnd?: true;
   /** The code the Deployment refused this transcript with for good, when it has; nothing ships under this identity again. */
   refused?: string;
 }

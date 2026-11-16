@@ -35,7 +35,7 @@ import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID } from './helpers/server.js';
 import { machinePlanDirs } from '@myco/member/machine-settings.js';
 import { machineSettingsPath } from '@myco/member/registry.js';
-import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
+import { recordingFetch, registerTestMember, runHookWithHookRows as runHook } from './helpers/hooks.js';
 
 const tmpDirs: string[] = [];
 const originalCwd = process.cwd();
@@ -175,7 +175,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const result = await runHook(
       'post-tool-use',
       { session_id: 'sess-pinned', cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-      { helpers: 'run', fetch, credential: 'registry', symbiont: 'copilot' },
+      { helpers: 'run', fetch, credential: 'registry', symbiont: 'windsurf' },
     );
 
     expect(result.stderr).not.toContain('no registry entry');
@@ -227,7 +227,7 @@ describe('a hook launched with no MYCO_HOME', () => {
     const result = await runHook(
       'post-tool-use',
       { session_id: 'sess-untrusted', cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-      { fetch, credential: 'registry', symbiont: 'copilot' },
+      { fetch, credential: 'registry', symbiont: 'windsurf' },
     );
 
     expect(result.stderr).toContain('pin file mode 0664 is writable by group/other');
@@ -271,7 +271,7 @@ describe('hooks that find no membership', () => {
       await runHook(
         'post-tool-use',
         { session_id: sessionId, cwd: project, tool_name: 'Read', tool_input: { file_path: '/a' } },
-        { fetch, credential: 'registry', symbiont: 'copilot' },
+        { fetch, credential: 'registry', symbiont: 'windsurf' },
       );
     }
     expect(requests).toEqual([]);

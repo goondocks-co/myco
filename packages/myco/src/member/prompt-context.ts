@@ -1,9 +1,12 @@
+import { canonicalPromptId, PROMPT_SCHEME_FEATURE, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { SymbiontRegistry } from '../symbionts/registry.js';
+import { assertMemberTranscriptDestination } from './transcript-routing.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { terminalText } from '../utils/terminal-text.js';
-import { contextDeliveredEvent, type OutboundEvent } from './envelope.js';
+import { contextDeliveredEvent, deriveId, type OutboundEvent } from './envelope.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
-import { type ContextAskRequest } from './context-cache.js';
+import { featureAdvertised, type ContextAskRequest } from './context-cache.js';
 import type { HookRun, HookClaim } from './capture.js';
 import type { HookResponse } from '../hooks/response.js';
 import { readSessionState, updateSessionState, sessionStatePath, type SessionState } from './session-state.js';
@@ -135,10 +138,11 @@ function consumePromptRecall(run: PromptRenderRun, state: SessionState, options:
     held.stage = 'delivered';
     const answer = held.answer;
     const ask = held.request;
+    const rendered = ask.promptId === undefined && options.delivery === 'tool' ? hookPromptIdentity(run, 'tool') : undefined;
     const events = ask.identity !== undefined && answer.context.length > 0
       && (answer.receiptId !== undefined || answer.answerId !== undefined || answer.sessionRecord !== undefined)
       ? [contextDeliveredEvent(run.ctx, { receiptId: answer.receiptId, answerId: answer.answerId, sessionRecord: answer.sessionRecord,
-        ...(ask.promptId !== undefined ? { renderedIn: ask.promptId, renderedScheme: ask.promptScheme } : { renderedScopeReason: ask.scopeReason }) })] : [];
+        ...(rendered ?? (ask.promptId !== undefined ? { renderedIn: ask.promptId, renderedScheme: ask.promptScheme } : { renderedScopeReason: ask.scopeReason })) })] : [];
     held.deliveryEventId = events[0]?.envelope.eventId;
     held.answer = { ...answer, context: '' };
     held.request.text = '';
@@ -149,6 +153,61 @@ function consumePromptRecall(run: PromptRenderRun, state: SessionState, options:
   }
   if (held.stage === 'discarded') log(run, options.id, held, 'discarded');
   return { events: [] };
+}
+
+/** Maximum native transcript bytes a hook reads to resolve a prompt link. */
+export const HOOK_PROMPT_LOOKBACK_BYTES = 1024 * 1024;
+const HOOK_PROMPT_READ_BYTES = 64 * 1024;
+
+/** Complete JSONL records newest first, stopping reads when the caller finds its source key. */
+function* recentRecords(file: string): Generator<{ value: Record<string, unknown>; offset: number }> {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const floor = Math.max(0, size - HOOK_PROMPT_LOOKBACK_BYTES);
+    let end = size;
+    let tail = Buffer.alloc(0);
+    while (end > floor) {
+      const start = Math.max(floor, end - HOOK_PROMPT_READ_BYTES);
+      const chunk = Buffer.alloc(end - start);
+      const read = fs.readSync(fd, chunk, 0, chunk.length, start);
+      if (read !== chunk.length) throw new Error('transcript changed during prompt lookup');
+      const bytes = Buffer.concat([chunk, tail]);
+      let right = bytes.length;
+      for (let i = bytes.length - 1; i >= 0; i--) {
+        if (bytes[i] !== 10) continue;
+        const line = bytes.subarray(i + 1, right).toString('utf8');
+        right = i;
+        let value: unknown;
+        try { value = JSON.parse(line); } catch { continue; }
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) yield { value: value as Record<string, unknown>, offset: start + i + 1 };
+      }
+      tail = bytes.subarray(0, right);
+      end = start;
+    }
+    if (floor === 0 && tail.length > 0) {
+      let value: unknown;
+      try { value = JSON.parse(tail.toString('utf8')); } catch { return; }
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) yield { value: value as Record<string, unknown>, offset: 0 };
+    }
+  } finally { fs.closeSync(fd); }
+}
+
+/** Resolve a native source link; a failed lookup leaves capture and memory delivery unscoped. */
+export function hookPromptIdentity(run: PromptRenderRun, kind: 'tool' | 'subagent'): { renderedIn: string; renderedScheme: PromptIdScheme } | undefined {
+  try {
+    if (!featureAdvertised(run.credential, run.spool.mycoHome, PROMPT_SCHEME_FEATURE)) return undefined;
+    const adapter = new SymbiontRegistry().getAdapter(run.agent);
+    if (adapter?.promptForHook === undefined) return undefined;
+    const transcript = run.input.transcriptPath ?? adapter.findTranscript(run.sessionId);
+    if (transcript === null || transcript === undefined) return undefined;
+    assertMemberTranscriptDestination(transcript, run.credential, run.spool.mycoHome);
+    const request = adapter.promptForHook(recentRecords(transcript), { sessionId: run.sessionId, raw: run.input.raw, kind });
+    return request === undefined ? undefined : { renderedIn: canonicalPromptId(deriveId, request), renderedScheme: request.scheme };
+  } catch (error) {
+    process.stderr.write(`[myco] prompt link unavailable: ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
+    return undefined;
+  }
 }
 
 /** A tool hook reads only this session's current held answer and never waits for it. */

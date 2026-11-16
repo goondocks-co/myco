@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { publicationPolicy } from './publication-policy.js';
 import { assertion, commitNamed, first, read, readSet, refusalCode, refused, rows, write } from '../index.js';
 import { reset, retainedStart } from './rebuild.js';
 
@@ -57,7 +57,7 @@ const KEYS = `(SELECT json_extract(value,'$[0]') AS project_id,json_extract(valu
 const LIVE = `d.state='live' AND NOT EXISTS(SELECT 1 FROM session_tombstones z WHERE (z.project_id,z.session_id)=(d.project_id,d.session_id))`;
 const SELECTED = `FROM ${KEYS} k JOIN transcripts t ON (t.project_id,t.transcript_id)=(k.project_id,k.transcript_id)
   JOIN session_documents d ON (d.project_id,d.session_id)=(t.project_id,t.session_id) WHERE ${LIVE}`;
-const policy = publicationPolicy('t.prompt_identity_scheme');
+const policy = publicationPolicy('t.prompt_identity_scheme', 't.agent');
 
 /** Owner-requested rereads retain the current document and replay the same pinned canonical identities. */
 const replay = write<[keys: string]>({ name: 'reread.replay', sql:

@@ -48,6 +48,7 @@
       "@goondocks/myco-shared/agent-config": ["../myco-shared/src/agent-config.ts"],
       "@goondocks/myco-shared/capture-rule-schema": ["../myco-shared/src/capture-rule-schema.ts"],
       "@goondocks/myco-shared/capture-rules": ["../myco-shared/src/capture-rules.ts"],
+      "@goondocks/myco-shared/antigravity-parser": ["../myco-shared/src/antigravity-parser.ts"],
       "@goondocks/myco-shared/prompt-identity": ["../myco-shared/src/prompt-identity.ts"],
       "@goondocks/myco-shared/record-identity": ["../myco-shared/src/record-identity.ts"],
       "@goondocks/myco-shared/tool-result": ["../myco-shared/src/tool-result.ts"],

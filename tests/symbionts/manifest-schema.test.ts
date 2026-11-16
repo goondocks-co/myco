@@ -527,21 +527,21 @@ describe('symbiont turn-row source', () => {
   const capabilitiesOf = (name: string) => SymbiontManifestSchema.parse(YAML.parse(fs.readFileSync(path.join(MANIFESTS_DIR, `${name}.yaml`), 'utf-8'))).capabilities!;
 
   it('the agents the Deployment parses declare the transcript as the writer of their turn rows', () => {
-    for (const name of ['claude-code', 'codex', 'cursor', 'opencode', 'pi', 'cline']) {
+    for (const name of ['antigravity', 'claude-code', 'codex', 'copilot', 'cursor', 'opencode', 'pi', 'cline']) {
       expect({ name, source: capabilitiesOf(name).turnRowSource }).toEqual({ name, source: 'transcript' });
     }
   });
 
   it('the agents the Deployment does not parse keep their hooks as the writer', () => {
-    for (const name of ['copilot', 'antigravity', 'windsurf']) {
+    for (const name of ['windsurf']) {
       expect({ name, source: capabilitiesOf(name).turnRowSource }).toEqual({ name, source: 'hook' });
     }
   });
 
   it('cursor and codex declare a transcript whose tool calls the parse cannot derive, and no manifest declares a tool transport', () => {
     // Cursor's format carries no tool calls; Codex 0.153 carries them in shapes the parser does not read yet.
-    for (const name of ['cursor', 'codex']) expect({ name, fidelity: capabilitiesOf(name).transcriptFidelity }).toEqual({ name, fidelity: 'no_tool_results' });
-    for (const name of ['claude-code', 'opencode', 'pi', 'cline', 'copilot', 'antigravity', 'windsurf']) {
+    for (const name of ['antigravity', 'cursor', 'codex']) expect({ name, fidelity: capabilitiesOf(name).transcriptFidelity }).toEqual({ name, fidelity: 'no_tool_results' });
+    for (const name of ['claude-code', 'opencode', 'pi', 'cline', 'copilot', 'windsurf']) {
       expect({ name, fidelity: capabilitiesOf(name).transcriptFidelity }).toEqual({ name, fidelity: 'full' });
     }
     for (const file of fs.readdirSync(MANIFESTS_DIR)) expect(fs.readFileSync(path.join(MANIFESTS_DIR, file), 'utf-8')).not.toContain('toolTransport');

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { runHook } from './helpers/hooks.js';
+import { runHookWithHookRows as runHook } from './helpers/hooks.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { removeRegistryEntry, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { assignLegacySpoolDestination, migrateLegacySpool, pinLegacySpoolDestination, pinLegacySpoolDestinationForProject, legacySpoolDir, LEGACY_MIGRATION_FILE, listLegacySpools, listRetiredLegacySpoolDirs, LEGACY_SPOOL_RETIRE_GRACE_MS } from '@myco/member/spool-migration.js';
@@ -451,7 +451,7 @@ describe('legacy member spool migration', () => {
     try {
       for (const hook of ['user-prompt-submit', 'session-end'] as const) {
         const started = performance.now();
-        const result = await runHook(hook, { session_id: 'fresh', hook_event_name: hook === 'user-prompt-submit' ? 'UserPromptSubmit' : 'SessionEnd', cwd: root, prompt: 'fresh capture' }, { fetch: rig.fetch, symbiont: 'copilot', argv: ['--ship', 'inline'] });
+        const result = await runHook(hook, { session_id: 'fresh', hook_event_name: hook === 'user-prompt-submit' ? 'UserPromptSubmit' : 'SessionEnd', cwd: root, prompt: 'fresh capture' }, { fetch: rig.fetch, symbiont: 'windsurf', argv: ['--ship', 'inline'] });
         expect(performance.now() - started).toBeLessThan(1000);
         expect(result.stderr).not.toContain('inline hook must not scan');
         expect(result.stderr).not.toContain('error:');

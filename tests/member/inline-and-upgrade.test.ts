@@ -8,7 +8,7 @@
  * - G4h, upgrade directions: a journal this build writes holds only events an older build can read (its protocol
  *   stamp on every line, turn-end marks kept apart), and a journal an older build wrote delivers whole here.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,10 +23,14 @@ import { ServerClient } from './helpers/env-client.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { helperPaths, runHelper } from '@myco/member/helper.js';
 import { helperPass } from '@myco/member/helper-pass.js';
+import { TAIL_IDLE_MS } from '@myco/member/backlog.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { updateProjectContext } from '@myco/member/context-cache.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
-import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
+import { recordingFetch, registerTestMember, runHook, runHookWithHookRows } from './helpers/hooks.js';
+
+import { documentTurnDetail } from '@myco-server-worker/content/session-turns.js';
+import { publishFixture, readFixtureRecords } from '../myco-server/helpers/fixtures.js';
 
 let mycoHome: string;
 let rig: MemberRig;
@@ -41,6 +45,7 @@ beforeEach(async () => {
 /** Directories a test made, removed after it. */
 const scratch: string[] = [];
 afterEach(() => {
+  setSystemTime();
   for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_JOIN_CODE]) {
     if (savedEnv[key] === undefined) delete process.env[key]; else process.env[key] = savedEnv[key];
@@ -48,16 +53,100 @@ afterEach(() => {
   process.env.MYCO_HOME = savedHome;
 });
 
-const transcript = (id: string): string => {
+const transcript = (id: string, prompts = ['hi']): string => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-inline-tx-'));
   scratch.push(dir);
   const file = path.join(dir, `${id}.jsonl`);
-  fs.writeFileSync(file, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
+  fs.writeFileSync(file, prompts.flatMap((prompt, i) => [
+    { type: 'user.message', id: `user-${i}`, data: { messageId: `message-${i}`, content: prompt } },
+    { type: 'assistant.message', id: `request-${i}`, data: { originatingMessageId: `message-${i}`, content: '',
+      toolRequests: [{ toolCallId: `call-${i}`, name: 'view', arguments: { path: 'orchard.txt' } }] } },
+    { type: 'tool.execution_start', data: { toolCallId: `call-${i}`, toolName: 'view', arguments: { path: 'orchard.txt' } } },
+    { type: 'tool.execution_complete', data: { toolCallId: `call-${i}`, success: true, result: { content: 'Pear trees' } } },
+    { type: 'assistant.message', id: `reply-${i}`, data: { originatingMessageId: `message-${i}`, content: 'The orchard has pears.' } },
+    { type: 'assistant.turn_end' },
+  ]).map(row => JSON.stringify({ ...row, timestamp: '2026-06-01T12:00:00Z' })).join('\n') + '\n');
   return file;
 };
 /** A start that must never happen. */
 const noStart: DetachedSpawn = () => { throw new Error('no helper may be started here'); };
 const spool = () => new MemberSpool({ projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid' }, { mycoHome });
+async function expectCaptured(sessionId: string, prompts = ['hi']): Promise<void> {
+  await publishFixture(rig.env);
+  const rows = await readFixtureRecords(rig.env.serverEnv, 'proj_1', sessionId);
+  const turns = rows.filter(row => row.k === 'prompt');
+  expect(turns.map(row => row.text)).toEqual(prompts);
+  expect(rows.filter(row => row.k === 'reply').map(row => row.text)).toEqual(prompts.map(() => 'The orchard has pears.'));
+  expect(rows.filter(row => row.k === 'tool').map(row => row.prompt_id)).toEqual(turns.map(row => row.id));
+  for (const turn of turns) {
+    const page = await documentTurnDetail(rig.env.serverEnv, { projectId: 'proj_1' }, sessionId, turn.id);
+    expect(page?.responses.map(row => row.text)).toEqual(['The orchard has pears.']);
+    expect(page?.tools.total).toBe(1);
+  }
+}
+
+describe('a transcript whose harness disappears', () => {
+  for (const agent of ['copilot', 'claude-code']) it(`${agent}: recovers a first turn without an end hook after its tail goes idle`, async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const sessionId = `sess-crashed-${agent}`, tx = transcript(sessionId);
+    fs.writeFileSync(tx, '');
+    let clock = Date.now();
+    const spy = recordingFetch(rig.fetch);
+    const opts = { fetch: spy.fetch, symbiont: agent, now: () => clock };
+    const input = { session_id: sessionId, transcript_path: tx };
+    const add = (...rows: unknown[]) => fs.appendFileSync(tx, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+    await runHook('session-start', { ...input, cwd: process.cwd() }, opts);
+    add(agent === 'copilot'
+      ? { type: 'user.message', id: 'user', data: { messageId: 'message', content: 'Inspect the orchard' } }
+      : { type: 'user', uuid: 'user', promptId: 'message', message: { role: 'user', content: 'Inspect the orchard' } });
+    await runHook('user-prompt-submit', { ...input, prompt: 'Inspect the orchard', prompt_id: 'message' }, opts);
+    for (const [i, name] of ['Read', 'Bash'].entries()) {
+      const id = `call-${i}`, args = { path: 'orchard.txt' }, result = 'Pear trees';
+      add(...(agent === 'copilot' ? [
+        { type: 'assistant.message', id: `request-${i}`, data: { originatingMessageId: 'message', content: '', toolRequests: [{ toolCallId: id, name, arguments: args }] } },
+        { type: 'tool.execution_complete', data: { toolCallId: id, success: true, result: { content: result } } },
+      ] : [
+        { type: 'assistant', uuid: `request-${i}`, message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: args }] } },
+        { type: 'user', uuid: `result-${i}`, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: result }] } },
+      ]));
+      await runHook('post-tool-use', { ...input, tool_name: name, tool_use_id: id, toolCallId: id, tool_input: args, tool_response: result }, opts);
+    }
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' };
+    const pass = async () => runHelper({ ...route, mycoHome, now: () => clock, lingerMs: 0, noSuccessor: true,
+      pass: helperPass(route, mycoHome, { fetch: spy.fetch, now: () => clock }) });
+    await pass();
+    expect(spy.requests.filter(request => request.path.startsWith('/blobs/'))).toEqual([]);
+    clock += TAIL_IDLE_MS + 1;
+    setSystemTime(new Date(clock));
+    await pass();
+    await publishFixture(rig.env);
+    const rows = await readFixtureRecords(rig.env.serverEnv, 'proj_1', sessionId);
+    const prompts = rows.filter(row => row.k === 'prompt');
+    expect(prompts.map(row => row.text)).toEqual(['Inspect the orchard']);
+    const page = await documentTurnDetail(rig.env.serverEnv, { projectId: 'proj_1' }, sessionId, prompts[0]!.id);
+    expect(page?.tools.byTool.map(tool => tool.toolName)).toEqual(['Bash', 'Read']);
+    expect(page?.tools.total).toBe(2);
+  });
+
+  it('ships a normal turn at its end and never uploads those bytes again', async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const sessionId = 'sess-normal-delivery', tx = transcript(sessionId);
+    const spy = recordingFetch(rig.fetch), opts = { fetch: spy.fetch, symbiont: 'copilot' };
+    const input = { session_id: sessionId, transcript_path: tx };
+    await runHook('session-start', { ...input, cwd: process.cwd() }, opts);
+    await runHook('user-prompt-submit', { ...input, prompt: 'hi' }, opts);
+    expect(spy.requests.filter(request => request.path.startsWith('/blobs/'))).toEqual([]);
+    await runHook('stop', input, { ...opts, argv: ['--ship', 'inline'], helperSpawn: noStart });
+    await expectCaptured(sessionId);
+    const uploaded = spy.requests.filter(request => request.path.startsWith('/blobs/'));
+    expect(uploaded).toHaveLength(1);
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, now = () => Date.now() + TAIL_IDLE_MS + 1;
+    await runHelper({ ...route, mycoHome, now, lingerMs: 0, noSuccessor: true, pass: helperPass(route, mycoHome, { fetch: spy.fetch, now }) });
+    expect(spy.requests.filter(request => request.path.startsWith('/blobs/'))).toEqual(uploaded);
+    await expectCaptured(sessionId);
+  });
+});
+
 
 describe('a sandbox (G4g)', () => {
   it('captures from the environment\'s credential alongside prompt recall, and delivers everything at the turn\'s end, in the hook', async () => {
@@ -65,7 +154,7 @@ describe('a sandbox (G4g)', () => {
     process.env[ENV_MEMBER_TOKEN] = rig.token;
     process.env[ENV_PROJECT] = 'proj_1';
     const spy = recordingFetch(rig.fetch);
-    const tx = transcript('sess-sandbox');
+    const tx = transcript('sess-sandbox', ['in the sandbox', 'another request']);
     const start = await runHook('session-start', { session_id: 'sess-sandbox', transcript_path: tx, cwd: process.cwd() }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', helperSpawn: noStart });
     const prompt = await runHook('user-prompt-submit', { session_id: 'sess-sandbox', prompt: 'in the sandbox', transcript_path: tx }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', helperSpawn: noStart });
     expect(prompt.stdout).toBe('');
@@ -79,8 +168,7 @@ describe('a sandbox (G4g)', () => {
     expect(spool().depth('sess-sandbox')).toBeGreaterThan(0);
 
     await runHook('stop', { session_id: 'sess-sandbox', last_assistant_message: 'done', transcript_path: tx }, { fetch: spy.fetch, credential: 'env', symbiont: 'copilot', argv: ['--ship', 'inline'], helperSpawn: noStart });
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
-    expect(rig.rows("events WHERE kind='response'")).toBe(1);
+    await expectCaptured('sess-sandbox', ['in the sandbox', 'another request']);
     expect(spool().depth('sess-sandbox')).toBe(0);
   });
 });
@@ -102,8 +190,7 @@ describe('a sandbox holding only a join code (G4g)', () => {
     expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
 
     await runHook('stop', { session_id: 'sess-code', last_assistant_message: 'done', transcript_path: tx }, opts);
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
-    expect(rig.rows("events WHERE kind='response'")).toBe(1);
+    await expectCaptured('sess-code');
     expect(spool().depth('sess-code')).toBe(0);
   });
 });
@@ -118,9 +205,9 @@ describe('a turn\'s end that ships inline', () => {
     const offline = recordingFetch(async () => { throw new TypeError('fetch failed'); });
     // The capture before the turn's end is only spooled (its helper could not reach the Deployment).
     await runHook('user-prompt-submit', { session_id: 'sess-flag', prompt: 'spooled', transcript_path: tx }, { fetch: offline.fetch, symbiont: 'copilot' });
-    expect(spool().depth('sess-flag')).toBe(1);
+    expect(rig.rows("events WHERE session_id='sess-flag'")).toBe(0);
     await runHook('stop', { session_id: 'sess-flag', last_assistant_message: 'done', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', argv: ['--ship', 'inline'], helperSpawn: noStart });
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+    await expectCaptured('sess-flag');
     expect(spool().depth('sess-flag')).toBe(0);
   });
 
@@ -133,15 +220,16 @@ describe('a turn\'s end that ships inline', () => {
       // The helper this start stands for never runs: it ends with the hook, or never began.
       await runHook('stop', { session_id: sessionId, last_assistant_message: `done ${sessionId}`, transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: start });
       expect({ sessionId, depth: spool().depth(sessionId) }).toEqual({ sessionId, depth: 0 });
+      await expectCaptured(sessionId);
     }
-    expect(rig.rows("events WHERE kind='response'")).toBe(2);
+
   });
 
   it('waits on a helper the harness\'s job holds, which cleared the marks as its pass began, until the turn is delivered', async () => {
     const tx = transcript('sess-held');
     // The capture hooks of the turn: their helper was started inside the harness's Job Object.
     await runHook('user-prompt-submit', { session_id: 'sess-held', prompt: 'held', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: true, pid: process.pid, contained: true }) });
-    expect(spool().depth('sess-held')).toBe(1);
+    expect(rig.rows("events WHERE session_id='sess-held'")).toBe(0);
     // That helper takes the lock, clears the marks, and delivers only after a while.
     let passStarted = false;
     const deliver = helperPass({ projectId: 'proj_1', serverUrl: process.env[ENV_SERVER_URL] ?? 'https://member-test.invalid' }, mycoHome, { fetch: rig.fetch });
@@ -153,14 +241,14 @@ describe('a turn\'s end that ships inline', () => {
     expect(fs.existsSync(helperPaths('proj_1', mycoHome, 'https://s').dirty)).toBe(false);
     // The turn's end finds that helper holding the work, and ships inline: it waits for it, never past its budget.
     await runHook('stop', { session_id: 'sess-held', last_assistant_message: 'done', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+    await expectCaptured('sess-held');
     expect(spool().depth('sess-held')).toBe(0);
     await holder;
   });
 
   it('waits only for what the turn\'s end appended: a transcript of the session waiting out a refusal holds it no longer', async () => {
     const tx = transcript('sess-own');
-    await runHook('user-prompt-submit', { session_id: 'sess-own', prompt: 'own', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: true, pid: process.pid, contained: true }) });
+    await runHookWithHookRows('user-prompt-submit', { session_id: 'sess-own', prompt: 'own', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'windsurf', helperSpawn: () => ({ started: true, pid: process.pid, contained: true }) });
     // The Deployment takes `turn`: the turn's end is a record of its own, not a mark on the transcript.
     updateProjectContext(spool().dir, mycoHome, (cache) => { cache.features = ['turn']; });
     // The session's transcripts wait out a refusal for ten minutes: the session as a whole is not delivered before then.
@@ -174,7 +262,7 @@ describe('a turn\'s end that ships inline', () => {
     });
     while (!passStarted) await Bun.sleep(5);
     const started = Date.now();
-    await runHook('stop', { session_id: 'sess-own', last_assistant_message: 'own reply', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
+    await runHookWithHookRows('stop', { session_id: 'sess-own', last_assistant_message: 'own reply', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'windsurf', helperSpawn: noStart });
     // Back once its own records are delivered, not when the helper lets go or the session's transcript ships.
     expect(Date.now() - started).toBeLessThan(4_000);
     expect(rig.rows("events WHERE kind='response'")).toBe(1);
@@ -201,14 +289,31 @@ describe('a turn\'s end that ships inline', () => {
     });
     while (!passStarted) await Bun.sleep(5);
     await runHook('stop', { session_id: 'sess-tx', last_assistant_message: 'tx reply', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
-    expect(rig.rows("events WHERE kind='response'")).toBe(1);
+    await expectCaptured('sess-tx');
     expect(readSessionState(spool().dir, 'sess-tx').transcript?.nextOffset).toBe(fs.statSync(tx).size);
     await holder;
   }, 20_000);
 
+  it('retains Copilot capture without a helper through an upload backoff, then publishes its whole turn', async () => {
+    const sessionId = 'sess-deferred-copilot', tx = transcript(sessionId);
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' };
+    await runHook('user-prompt-submit', { session_id: sessionId, prompt: 'hi', transcript_path: tx },
+      { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: false }) });
+    const retryAt = Date.now() + 10 * 60_000;
+    updateSessionState(spool().dir, sessionId, state => { state.transcriptRetry = { at: retryAt, backoffMs: retryAt - Date.now() }; });
+    await runHook('stop', { session_id: sessionId, transcript_path: tx },
+      { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: noStart });
+    await publishFixture(rig.env);
+    expect(await readFixtureRecords(rig.env.serverEnv, 'proj_1', sessionId)).toEqual([]);
+    const now = () => retryAt + 1;
+    await runHelper({ ...route, mycoHome, now, lingerMs: 0, noSuccessor: true,
+      pass: helperPass(route, mycoHome, { fetch: rig.fetch, now }) });
+    await expectCaptured(sessionId);
+  });
+
   it('leaves an ordinary hook\'s capture to the helper even when no helper could be started', async () => {
     const tx = transcript('sess-capture');
-    await runHook('user-prompt-submit', { session_id: 'sess-capture', prompt: 'later', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'copilot', helperSpawn: () => ({ started: false }) });
+    await runHookWithHookRows('user-prompt-submit', { session_id: 'sess-capture', prompt: 'later', transcript_path: tx }, { fetch: rig.fetch, symbiont: 'windsurf', helperSpawn: () => ({ started: false }) });
     expect(rig.rows("events WHERE kind='prompt'")).toBe(0);
     expect(spool().depth('sess-capture')).toBe(1);
   });
@@ -222,9 +327,9 @@ describe('a journal across builds (G4h)', () => {
   it('this build writes only lines an older build reads as events, and keeps turn-end marks out of the journal', async () => {
     const offline = async () => { throw new TypeError('fetch failed'); };
     const tx = transcript('sess-new');
-    await runHook('session-start', { session_id: 'sess-new', transcript_path: tx, cwd: process.cwd() }, { fetch: offline, symbiont: 'copilot' });
-    await runHook('user-prompt-submit', { session_id: 'sess-new', prompt: 'p', transcript_path: tx }, { fetch: offline, symbiont: 'copilot' });
-    await runHook('stop', { session_id: 'sess-new', last_assistant_message: 'r', transcript_path: tx }, { fetch: offline, symbiont: 'copilot' });
+    await runHookWithHookRows('session-start', { session_id: 'sess-new', transcript_path: tx, cwd: process.cwd() }, { fetch: offline, symbiont: 'windsurf' });
+    await runHookWithHookRows('user-prompt-submit', { session_id: 'sess-new', prompt: 'p', transcript_path: tx }, { fetch: offline, symbiont: 'windsurf' });
+    await runHookWithHookRows('stop', { session_id: 'sess-new', last_assistant_message: 'r', transcript_path: tx }, { fetch: offline, symbiont: 'windsurf' });
     const raw = fs.readFileSync(path.join(spool().dir, 'sess-new.jsonl'), 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(raw.length).toBeGreaterThan(2);
     // An older build stops at a line without its protocol stamp: every line has one, and none is a mark.

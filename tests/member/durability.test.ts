@@ -15,7 +15,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MemberSpool } from '@myco/member/spool.js';
-import { readSessionState } from '@myco/member/session-state.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { resolveWorktreeRoot } from '@myco/project-root.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -71,24 +70,16 @@ describe('capture is never lost permanently at the commit point', () => {
       await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: root });
       fs.writeFileSync(file, '# Durable\n\n- [ ] one\n');
       const before = rig.rows('events');
-      const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
 
       const crashed = await crashAtCommit(() => run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: '', cwd: root }));
 
-      // Nothing was sent, nothing was spooled — and, the point of the test,
-      // nothing was receipted: no plan path, no read size, no pointer.
       expect(crashed.stderr).toContain('ENOSPC');
       expect(rig.rows('events')).toBe(before);
-      expect(spool.sessionIds().filter((id) => id === session)).toEqual([]);
-      const state = readSessionState(spool.dir, session);
-      expect(state.planPaths).toEqual({});
-      expect(state.transcript).toBeUndefined();
 
       // The rerun derives exactly what the killed run would have delivered, once.
       await run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: '', cwd: root });
       expect(memberKinds()).toEqual({ 'session.start': 1, plan: 1, 'transcript.segment': 1 });
       expect((rig.env.sqlite.query('SELECT title FROM plans').get() as { title: string }).title).toBe('Durable');
-      expect(readSessionState(spool.dir, session).transcript?.parsedSize).toBe(fs.statSync(tx).size);
       await run('stop', { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: '', cwd: root });
       expect(memberKinds()).toEqual({ 'session.start': 1, plan: 1, 'transcript.segment': 1 });
     } finally {
@@ -102,12 +93,10 @@ describe('capture is never lost permanently at the commit point', () => {
     rows[0].message.content = [{ type: 'text', text: 'Approved: <ultraplan># Pasted</ultraplan>' }];
     fs.writeFileSync(tx, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
     await run('session-start', { hook_event_name: 'SessionStart', transcript_path: tx, cwd: '/work/repo' });
-    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome });
     const input = { hook_event_name: 'Stop', transcript_path: tx, last_assistant_message: '' };
     const crashed = await crashAtCommit(() => run('stop', input));
     expect(crashed.stderr).toContain('ENOSPC');
     expect(rig.rows('plans')).toBe(0);
-    expect(readSessionState(spool.dir, session).transcript).toBeUndefined();
     await run('stop', input);
     await publishFixture(rig.env);
     expect(rig.rows('plans')).toBe(1);

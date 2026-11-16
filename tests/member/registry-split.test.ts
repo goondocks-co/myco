@@ -18,7 +18,7 @@ import {
 import { ensureMemberDir } from '@myco/member/store.js';
 import { resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
-import { recordingFetch, runHook } from './helpers/hooks.js';
+import { recordingFetch, runHookWithHookRows as runHook } from './helpers/hooks.js';
 
 let mycoHome: string;
 const savedHome = process.env.MYCO_HOME;
@@ -164,7 +164,7 @@ describe('a v1 entry still captures', () => {
     expect(fs.existsSync(deploymentsDir(mycoHome))).toBe(false);
 
     const { fetch, requests } = recordingFetch(rig.fetch);
-    const result = await runHook('post-tool-use', { session_id: 'sess-v1', tool_name: 'Read', tool_input: { file_path: '/a' } }, { helpers: 'run', fetch, credential: 'registry', symbiont: 'copilot' });
+    const result = await runHook('post-tool-use', { session_id: 'sess-v1', tool_name: 'Read', tool_input: { file_path: '/a' } }, { helpers: 'run', fetch, credential: 'registry', symbiont: 'windsurf' });
 
     expect(result.stderr).not.toContain('no registry entry');
     expect(requests.map((r) => r.path)).toEqual(['/events']);
