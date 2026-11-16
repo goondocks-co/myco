@@ -11,8 +11,10 @@ import { BUILD_JOB_FILES, HEAVY_AND_SCALE_SUITES } from './ci-scopes.mjs';
 import { nestedRunnerEnvKeys } from './check-test-shards.mjs';
 import { installRoots, staleReason } from './ensure-deps.mjs';
 import { affectedTests } from './pr-test-selection.mjs';
-import { buildSteps, parseArgs, rowTestFiles, selectConsumers, summaryLine, workflowStepTests } from './check-pr-plan.mjs';
+import { buildSteps, parseArgs, planConsumers, retryAlone, rowTestFiles, settleLanes, summaryLine, windowsJobTests } from './check-pr-plan.mjs';
 import { imageInputs } from './check-pr-image.mjs';
+import { CHILD_HOME_NAMES } from './test-environment.mjs';
+import { resolveTestTool } from './test-tool-path.mjs';
 import { binaryFileName, hostReleaseTarget } from '../packages/myco/scripts/release-targets.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,8 +23,8 @@ const started = performance.now();
 const options = parseArgs(process.argv.slice(2), os.availableParallelism());
 const children = new Set();
 let interrupted;
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => {
-  interrupted = signal;
+let cancelled;
+function signalChildren(signal) {
   for (const child of children) {
     if (!child.pid) continue;
     try {
@@ -30,7 +32,16 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => {
       else process.kill(-child.pid, signal);
     } catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
+}
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => {
+  interrupted = signal;
+  signalChildren(signal);
 });
+/** Stops every lane: no new command starts, and the running ones are ended with their process groups. */
+function cancelAll(reason) {
+  cancelled ??= reason instanceof Error ? reason.message.split('\n')[0] : String(reason);
+  signalChildren('SIGTERM');
+}
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 const PARITY = 'tests/parity/parity.test.ts';
 const CARRIER = 'packages/myco/src/server-ui-assets.generated.ts';
@@ -41,7 +52,16 @@ const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const checkRoot = path.join(root, 'target', 'check-pr');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-check-pr-'));
+// Every command this check starts sees a home of its own, laid out as the test runner's sandbox lays it out, so no
+// generator, npm, type check or test writes to the caller's home or reads its agent configuration.
+const home = fs.mkdtempSync(path.join(scratch, 'h-'));
+const homes = { HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex'), CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
+  XDG_CONFIG_HOME: path.join(home, '.config'), MYCO_HOME: path.join(home, '.myco'), MYCO_LAUNCH_AGENTS_DIR: path.join(home, 'service-units'),
+  MYCO_TEAM_HOME: path.join(home, '.myco-team') };
+if (CHILD_HOME_NAMES.some(name => !(name in homes))) throw new Error(`check:pr does not isolate every home the test sandbox does: ${CHILD_HOME_NAMES}`);
+const sandbox = { ...process.env, ...homes, npm_config_cache: path.join(home, '.npm') };
 const notRun = [];
+const passedOnRerun = [];
 let passed = 0;
 let failed = 0;
 
@@ -53,10 +73,13 @@ class Stop extends Error {}
 const STOP_SIGNALS = new Set(['SIGINT', 'SIGTERM', 'SIGHUP']);
 // npm reports a child stopped by a signal as exit 128 + the signal number.
 const STOP_STATUSES = new Map([[129, 'SIGHUP'], [130, 'SIGINT'], [143, 'SIGTERM']]);
-const stopIfInterrupted = () => { if (interrupted) throw new Stop(`Interrupted by ${interrupted}`); };
+const stopIfInterrupted = () => {
+  if (interrupted) throw new Stop(`Interrupted by ${interrupted}`);
+  if (cancelled) throw new Stop(`Cancelled: ${cancelled}`);
+};
 
 /** Runs a command to completion in its own process group; resolves with its output, rejects with it on failure. */
-function run(tool, args, { cwd = root, env = process.env, shell = false } = {}) {
+function run(tool, args, { cwd = root, env = sandbox, shell = false } = {}) {
   stopIfInterrupted();
   return new Promise((resolve, reject) => {
     const child = spawn(tool, args, { cwd, env, shell, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -71,6 +94,7 @@ function run(tool, args, { cwd = root, env = process.env, shell = false } = {}) 
     child.once('error', error => { children.delete(child); reject(error); });
     child.once('close', (code, signal) => {
       children.delete(child);
+      if (cancelled) return reject(new Stop(`Cancelled: ${cancelled}`));
       if (STOP_SIGNALS.has(signal) || STOP_STATUSES.has(code)) interrupted ??= signal ?? STOP_STATUSES.get(code);
       if (interrupted) reject(new Stop(`Interrupted by ${interrupted}`));
       else if (code === 0) resolve(output);
@@ -82,7 +106,7 @@ function run(tool, args, { cwd = root, env = process.env, shell = false } = {}) 
 /** `run` for the short gates that open the check, which run one after another. */
 function command(tool, args, cwd = root) {
   stopIfInterrupted();
-  const result = spawnSync(tool, args, { cwd, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES });
+  const result = spawnSync(tool, args, { cwd, env: sandbox, encoding: 'utf8', maxBuffer: MAX_OUTPUT_BYTES });
   if (STOP_SIGNALS.has(result.signal) || STOP_STATUSES.has(result.status)) interrupted ??= result.signal ?? STOP_STATUSES.get(result.status);
   stopIfInterrupted();
   if (result.error || result.status !== 0) {
@@ -90,22 +114,24 @@ function command(tool, args, cwd = root) {
   }
 }
 
-function report({ name, ci, fix, start, error }) {
+function report({ name, ci, fix, start, error, output }) {
   if (error) failed++; else passed++;
   console.log(`${error ? 'FAIL' : 'PASS'} ${name} (${((performance.now() - start) / 1000).toFixed(1)} s)`);
+  if (!error && output) console.log(output);
   if (error) console.error(`CI step: ${ci}\n${error.message}\nFix:\n${fix}`);
 }
 
-/** Runs one check, synchronous or not, and reports it; only an interruption escapes. */
+/** Runs one check, synchronous or not, and reports it; only an interruption escapes. A body may return `{ notes }` to print. */
 async function check(name, ci, fix, body) {
   stopIfInterrupted();
   const start = performance.now();
   let error;
-  try { await body(); } catch (caught) {
+  let output;
+  try { output = await body(); } catch (caught) {
     if (caught instanceof Stop) throw caught;
     error = caught;
   }
-  report({ name, ci, fix, start, error });
+  report({ name, ci, fix, start, error, output: output?.notes });
   return !error;
 }
 
@@ -117,7 +143,7 @@ const tail = (text, lines = 60) => text.trimEnd().split('\n').slice(-lines).join
 // ---------------------------------------------------------------------------
 
 function runnerEnv(extra) {
-  const env = { ...process.env };
+  const env = { ...sandbox };
   for (const key of nestedRunnerEnvKeys) delete env[key];
   return { ...env, ...extra };
 }
@@ -144,8 +170,10 @@ async function testShards(groups) {
   fs.writeFileSync(selectionFile, `${files.join('\n')}\n`);
   const planFile = path.join(scratch, 'plan.json');
   const base = { MYCO_TEST_SELECTION_FILE: selectionFile, MYCO_TEST_KIND: 'all' };
-  await run(process.execPath, ['scripts/run-bun-tests.mjs'], { env: runnerEnv({ ...base, MYCO_TEST_SHARD: '1/1',
-    MYCO_RUNNER_DRY_RUN: '1', MYCO_RUNNER_PLAN_FILE: planFile, MYCO_RUNNER_REPORT_DIR: path.join(checkRoot, 'plan') }) });
+  const planned = await check('test plan', 'tests (node/dom shards): the runner\'s plan', `MYCO_RUNNER_DRY_RUN=1 MYCO_TEST_SELECTION_FILE=<selection> npm test`,
+    () => run(process.execPath, ['scripts/run-bun-tests.mjs'], { env: runnerEnv({ ...base, MYCO_TEST_SHARD: '1/1',
+      MYCO_RUNNER_DRY_RUN: '1', MYCO_RUNNER_PLAN_FILE: planFile, MYCO_RUNNER_REPORT_DIR: path.join(checkRoot, 'plan') }) }).then(() => undefined));
+  if (!planned) return;
   const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
   const count = Math.max(1, Math.min(options.jobs, plan.length));
   const estimate = Math.round(plan.reduce((sum, phase) => sum + phase.estimatedMs, 0) / 1000);
@@ -158,25 +186,19 @@ async function testShards(groups) {
     return { index, output: error.output ?? error.message, ok: false };
   })));
   const failures = shards.filter(shard => !shard.ok).map(shard => ({ ...shard, ...runnerFailures(shard.output) }));
-  let failingFiles = new Set(failures.flatMap(failure => [...failure.files]));
-  // Parallel shards share one machine, often with other work on it, and timing-sensitive tests can fail from that alone.
-  // A failing file runs once more on its own, in its CI group; it fails the check only if it fails again.
-  if (failingFiles.size) {
-    const rerunFile = path.join(scratch, 'rerun.txt');
-    fs.writeFileSync(rerunFile, `${[...failingFiles].join('\n')}\n`);
-    console.log(`Running ${failingFiles.size} failing test files again, alone: ${[...failingFiles].join(', ')}`);
-    const rerun = await run(process.execPath, ['scripts/run-bun-tests.mjs'], { env: runnerEnv({ MYCO_TEST_SELECTION_FILE: rerunFile,
-      MYCO_TEST_KIND: 'all', MYCO_TEST_SHARD: '1/1', MYCO_RUNNER_REPORT_DIR: path.join(checkRoot, 'rerun') }) })
-      .then(() => ({ files: new Set(), entries: [] }), error => {
-        if (error instanceof Stop) throw error;
-        const found = runnerFailures(error.output ?? '');
-        // A rerun that fails without naming a file proves nothing passed: every first failure stands.
-        return found.files.size ? found : { ...found, files: failingFiles };
-      });
-    const passedAlone = [...failingFiles].filter(file => !rerun.files.has(file));
-    if (passedAlone.length) console.warn(`WARNING: failed beside the other shards and passed alone (load-sensitive here; CI runs them on its own runner): ${passedAlone.join(', ')}`);
-    failingFiles = new Set([...failingFiles].filter(file => rerun.files.has(file)));
-  }
+  // A file that fails in its shard runs again by itself, one file at a time, in its own CI group. One that passes then
+  // does not fail the step, and the final line names it.
+  const firstFailing = [...new Set(failures.flatMap(failure => [...failure.files]))];
+  const { confirmed, passedOnRerun: passedAlone } = await retryAlone({ failing: firstFailing, runAlone: async file => {
+    const alone = path.join(scratch, 'alone.txt');
+    fs.writeFileSync(alone, `${file}\n`);
+    console.log(`Running ${file} again, by itself`);
+    return run(process.execPath, ['scripts/run-bun-tests.mjs'], { env: runnerEnv({ MYCO_TEST_SELECTION_FILE: alone,
+      MYCO_TEST_KIND: 'all', MYCO_TEST_SHARD: '1/1', MYCO_RUNNER_REPORT_DIR: path.join(checkRoot, 'alone') }) })
+      .then(() => true, error => { if (error instanceof Stop) throw error; return false; });
+  } });
+  passedOnRerun.push(...passedAlone);
+  const failingFiles = new Set(confirmed);
   const owned = new Set();
   for (const group of groups) {
     const mine = group.files.filter(file => !owned.has(file));
@@ -258,7 +280,7 @@ function changedPaths(before, after) {
 
 function stepEnv(copy, cwd) {
   const bins = [path.join(copy, cwd, 'node_modules/.bin'), path.join(copy, 'node_modules/.bin')];
-  return { ...process.env, PATH: [...bins, process.env.PATH].join(path.delimiter) };
+  return { ...sandbox, PATH: [...bins, sandbox.PATH].join(path.delimiter) };
 }
 
 async function dashboard(copy) {
@@ -315,6 +337,22 @@ const generatorFix = steps => `Run the generators the build runs, then commit wh
 
 let base = 'unknown';
 const copy = path.join(scratch, 'checkout');
+const browsers = path.join(root, 'target', 'playwright-browsers');
+/** A tool a consumer row needs: Chromium where Playwright looks for it, anything else on PATH. */
+const hasTool = name => name === 'chromium'
+  ? fs.existsSync(browsers) && fs.readdirSync(browsers).some(entry => entry.startsWith('chromium'))
+  : resolveTestTool(name) !== null;
+const lanes = [];
+/** Runs a check whose subject may fail on a busy machine; a failure is checked once more before it counts. */
+async function againIfFailed(label, once) {
+  try { return await once(); } catch (first) {
+    if (first instanceof Stop) throw first;
+    console.log(`${label}: failed; running it again by itself`);
+    const output = await once();
+    passedOnRerun.push(label);
+    return output;
+  }
+}
 try {
   base = git(['merge-base', 'origin/main', 'HEAD']).trim();
   const changed = [...new Set([
@@ -368,15 +406,16 @@ try {
   const changedTests = affected.filter(({ tier }) => tier === 0).map(({ file }) => file).filter(file => !separate.has(file));
   const importers = affected.filter(({ tier }) => tier > 0).map(({ file }) => file).filter(file => !separate.has(file)).sort();
   const meta = changed.length ? tracked.filter(file => /^tests\/meta\/.*\.test\.tsx?$/.test(file) && !HEAVY_AND_SCALE_SUITES.includes(file)) : [];
-  const windowsTests = workflowStepTests(root, 'windows-native', 'Windows smoke contracts');
-  const rows = selectConsumers({ changed, tests: affected.map(({ file }) => file), windowsTests });
+  const windowsTests = windowsJobTests(root);
+  const plan = planConsumers({ changed, tests: affected.map(({ file }) => file), windowsTests, hasTool });
+  const { rows } = plan;
+  notRun.push(...plan.notRun);
   console.log(`Changed tests: ${changedTests.length}; importing tests: ${importers.length}${options.skipImporters ? ' (skipped by --skip-importers)' : ''}; meta tests: ${meta.length}`);
   for (const row of rows) console.log(`Consumer: ${row.name} — stands in for ${row.ci}; selected by ${row.reasons.slice(0, 3).join(', ')}${row.reasons.length > 3 ? ` and ${row.reasons.length - 3} more` : ''}`);
   if (options.skipImporters && importers.length) {
     notRun.push({ what: `${importers.length} importing test files`, why: '--skip-importers' });
     console.warn(`Run importing tests: npm test -- ${importers.map(quote).join(' ')}`);
   }
-  for (const row of rows.filter(one => one.ciOnly)) notRun.push({ what: `${row.name} [${row.ci}]`, why: `left to CI: ${row.ciOnly}` });
   const groups = [
     { name: 'changed tests', ci: 'tests (node/dom shards)', files: changedTests },
     { name: 'meta tests (PR scope)', ci: 'tests (node): tests/meta in the PR scope', files: meta },
@@ -402,7 +441,7 @@ try {
         const { lines } = runnerFailures(error.output ?? '');
         throw new Error(lines.length ? lines.join('\n') : tail(error.message));
       }
-    }).then(() => notRun.push({ what: 'parity smoke on Cloudflare', why: 'left to CI: lanes never boot the Cloudflare target locally' })) : null;
+    }) : null;
   const buildLane = (async () => {
     let built = false;
     await check('scratch checkout', 'actions/checkout', 'Free space in the temp directory, then rerun', () => {
@@ -411,9 +450,10 @@ try {
     });
     if (!built) return;
     if (wants('image')) {
-      await check('self-hosted image inputs', 'self-hosted-container: Build for both architectures',
+      await check('self-hosted image inputs (build inputs only)', 'self-hosted-container: Build for both architectures',
         'Copy every file the image bundles in packages/myco-server/Dockerfile, or keep the bundle inside what it copies',
-        () => imageInputs({ context: copy, dockerfile: 'packages/myco-server/Dockerfile', scratch: path.join(scratch, 'image'), run, mirrorModules }));
+        async () => ({ notes: (await imageInputs({ context: copy, dockerfile: 'packages/myco-server/Dockerfile', scratch: path.join(scratch, 'image'), run, mirrorModules }))
+          .map(note => `  note: ${note}`).join('\n') }));
     }
     if (changed.some(file => /^packages\/(?:myco-server|myco-shared)\//.test(file)
       || file === CARRIER || /(?:^|\/)(?:package\.json|npm-shrinkwrap\.json|package-lock\.json)$/.test(file)
@@ -436,29 +476,29 @@ try {
           await nativeLibrary(copy, host.name);
           // The version stamp reads the real repository's tags, read-only.
           await run(npm, ['run', 'build:binary', '-w', '@goondocks/myco'], { cwd: copy,
-            env: { ...process.env, TARGET: host.name, GIT_DIR: git(['rev-parse', '--absolute-git-dir']).trim() } });
+            env: { ...sandbox, TARGET: host.name, GIT_DIR: git(['rev-parse', '--absolute-git-dir']).trim() } });
         });
     }
     if (wants('screens')) {
-      const browsers = path.join(root, 'target', 'playwright-browsers');
       const workflow = parseYaml(fs.readFileSync('.github/workflows/ci.yml', 'utf8'));
       const screens = workflow.jobs['ui-screens'].steps.map(step => step.run ?? '').find(text => text.startsWith('npm run test:screens --'));
-      if (!fs.existsSync(browsers) || !fs.readdirSync(browsers).some(name => name.startsWith('chromium'))) {
-        notRun.push({ what: 'dashboard screens [ui-screens]', why: 'Chromium is not installed: PLAYWRIGHT_BROWSERS_PATH=target/playwright-browsers npx playwright install chromium' });
-      } else {
-        await check('dashboard screens', 'ui-screens: shell, setup and auth-setup screens', `npm run build:specimen --prefix packages/myco-server/ui && ${screens}`, async () => {
-          const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browsers };
-          await run(npm, ['run', 'build:specimen', '--prefix', 'packages/myco-server/ui'], { cwd: copy, env });
-          // CI's two workers; a screen that fails is shot again on its own and fails the check only if it fails twice.
-          try {
-            await run(`${screens} --workers=2`, [], { cwd: copy, env, shell: true }).catch(first => {
-              if (first instanceof Stop) throw first;
-              console.log(`dashboard screens: failed once; running the failed screens again\n${tail(first.message, 30)}`);
-              return run(`${screens} --workers=2 --last-failed`, [], { cwd: copy, env, shell: true });
-            });
-          } catch (error) { if (error instanceof Stop) throw error; throw new Error(tail(error.message, 80)); }
+      const runner = screens.slice(0, screens.indexOf(' -- ') + 4);
+      await check('dashboard screens', 'ui-screens: shell, setup and auth-setup screens', `npm run build:specimen --prefix packages/myco-server/ui && ${screens}`, async () => {
+        const env = { ...sandbox, PLAYWRIGHT_BROWSERS_PATH: browsers };
+        await run(npm, ['run', 'build:specimen', '--prefix', 'packages/myco-server/ui'], { cwd: copy, env });
+        // CI's two workers. A screens file that fails runs again by itself, one file at a time, as test files do.
+        const first = await run(`${screens} --workers=2`, [], { cwd: copy, env, shell: true }).then(() => null, error => {
+          if (error instanceof Stop) throw error;
+          return error.message;
         });
-      }
+        if (first === null) return;
+        const failing = [...new Set([...first.matchAll(/✘.*?([\w.-]+\.screens\.ts)/g)].map(match => match[1]))];
+        if (!failing.length) throw new Error(tail(first, 80));
+        const { confirmed, passedOnRerun: passedAlone } = await retryAlone({ failing, runAlone: file =>
+          run(`${runner}${file} --workers=2`, [], { cwd: copy, env, shell: true }).then(() => true, error => { if (error instanceof Stop) throw error; return false; }) });
+        passedOnRerun.push(...passedAlone.map(file => `tests/ui-screens/${file}`));
+        if (confirmed.length) throw new Error(`Failing again by itself: ${confirmed.join(', ')}\n${tail(first, 80)}`);
+      });
     }
   })();
   const typesLane = (async () => {
@@ -473,7 +513,9 @@ try {
     await check('dashboard types', 'lint: check:ui', 'Fix the reported dashboard type errors; npm run check:ui -w @goondocks/myco-server',
       () => run(npm, ['run', 'check:ui', '-w', '@goondocks/myco-server']));
   })();
-  await Promise.all([testsLane, buildLane, typesLane, parityLane]);
+  lanes.push(testsLane, buildLane, typesLane, parityLane);
+  const rejected = await settleLanes(lanes, cancelAll);
+  if (rejected.length) throw rejected[0];
 
   // After the shards: the shard audit reads the runner's plan, and timing is measured on a quieter machine.
   await check('test shards', 'lint: check-test-shards', 'Fix the shard plan or durations; node scripts/check-test-shards.mjs',
@@ -483,12 +525,7 @@ try {
       const once = () => run(process.execPath, ['scripts/run-bun-tests.mjs', file], { env: runnerEnv({ [variable]: binary,
         MYCO_RUNNER_REPORT_DIR: path.join(checkRoot, path.basename(file, '.test.ts')) }) });
       try {
-        // As with the shards, a failure counts only if the file fails again.
-        await once().catch(first => {
-          if (first instanceof Stop) throw first;
-          console.log(`${name}: failed once; running it again`);
-          return once();
-        });
+        await againIfFailed(`${name}: ${file}`, once);
       } catch (error) {
         if (error instanceof Stop) throw error;
         const { lines } = runnerFailures(error.output ?? '');
@@ -508,16 +545,11 @@ try {
       else {
         await check(`no-op hook within ${leg.ceiling} ms`, `hook startup (${host.name}): Measure a no-op hook`,
           `node packages/myco/scripts/measure-hook-startup.mjs <binary> --max-p95-ms ${leg.ceiling}`,
-          () => run(process.execPath, ['packages/myco/scripts/measure-hook-startup.mjs', binary, '--max-p95-ms', String(leg.ceiling)]));
+          () => againIfFailed(`no-op hook within ${leg.ceiling} ms`,
+            () => run(process.execPath, ['packages/myco/scripts/measure-hook-startup.mjs', binary, '--max-p95-ms', String(leg.ceiling)])));
         await check('every hook at work', `hook startup (${host.name}): Measure every hook at work`,
           'bun packages/myco/scripts/measure-hook-work.ts <binary>',
-          // As the no-op measure does, a run over budget is measured again: a hook that is slow is slow twice, a busy
-          // machine seldom is.
-          () => run('bun', ['packages/myco/scripts/measure-hook-work.ts', binary, '--scratch-root', scratch]).catch(first => {
-            if (first instanceof Stop) throw first;
-            console.log('Every hook at work: over budget once; measuring again');
-            return run('bun', ['packages/myco/scripts/measure-hook-work.ts', binary, '--scratch-root', scratch]);
-          }));
+          () => againIfFailed('every hook at work', () => run('bun', ['packages/myco/scripts/measure-hook-work.ts', binary, '--scratch-root', scratch])));
       }
     }
   }
@@ -526,7 +558,10 @@ try {
   if (error instanceof Stop) console.error(`STOPPED: ${error.message}`);
   else console.error(`FAIL check:pr itself: ${error.stack ?? error.message}\nIf origin/main is missing: git fetch origin main, then npm run check:pr`);
 } finally {
+  // Nothing may still be running, or still printing, when the scratch directory goes and the counts are written.
+  if (lanes.length) await settleLanes(lanes, cancelAll);
+  while (children.size) await new Promise(resolve => setTimeout(resolve, 50));
   fs.rmSync(scratch, { recursive: true, force: true });
 }
-console.log(summaryLine({ passed, failed, seconds: Math.ceil((performance.now() - started) / 1000), base, notRun }));
+console.log(summaryLine({ passed, failed, seconds: Math.ceil((performance.now() - started) / 1000), base, notRun, passedOnRerun }));
 process.exitCode = failed ? 1 : 0;

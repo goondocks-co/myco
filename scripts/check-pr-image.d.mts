@@ -14,4 +14,4 @@ export function imageInputs(input: {
   scratch: string;
   run: (command: string, args: string[], options: { cwd: string; shell?: boolean }) => Promise<string>;
   mirrorModules: (source: string, destination: string, packagesRoot: string) => void;
-}): Promise<void>;
+}): Promise<string[]>;

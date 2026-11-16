@@ -80,7 +80,26 @@ function linkInstall(modules, workspaceModules, destination) {
 }
 
 /**
- * Stages each image build stage under `scratch` and runs its bundling commands there.
+ * A `COPY --from=<stage>` source, judged against what that stage produced here. Present in its staging: produced. Named
+ * in one of its RUN commands this check does not run, or the install an `npm ci` leaves: stated, but not known
+ * statically, so it is reported as a note. Anything else: the stage does not produce it, and the image would not build.
+ */
+function judgeStageCopy(copy, stages, stageRoot) {
+  const stage = stages.find((one) => one.name === copy.from);
+  if (!stage) return copy.sources.map((source) => ({ note: `COPY --from=${copy.from} ${source}: another image, not known statically` }));
+  return copy.sources.map((source) => {
+    if (fs.existsSync(path.join(stageRoot(stage.name), source))) return {};
+    const runs = stage.instructions.filter((one) => one.kind === 'run' && !bundles(one.command));
+    const stated = runs.find((one) => one.command.split(/[\s&;|]+/).some((word) => word.replace(/\/$/, '') === source))
+      ?? runs.find((one) => /^npm ci\b/.test(one.command) && source === path.posix.join(one.workdir, 'node_modules'));
+    if (stated) return { note: `COPY --from=${copy.from} ${source}: made by RUN ${stated.command}, which this check does not run; not known statically` };
+    return { problem: `COPY --from=${copy.from} ${source}: stage ${copy.from} does not produce it` };
+  });
+}
+
+/**
+ * Stages each image build stage under `scratch`, runs its bundling commands there, and checks every copy between stages.
+ * Resolves with notes on what could not be known statically.
  * @param {{ context: string, dockerfile: string, scratch: string, run: Function, mirrorModules: Function }} input
  */
 export async function imageInputs({ context, dockerfile, scratch, run, mirrorModules }) {
@@ -88,7 +107,8 @@ export async function imageInputs({ context, dockerfile, scratch, run, mirrorMod
     ? fs.readFileSync(path.join(context, '.dockerignore'), 'utf8').split('\n').map((line) => line.trim()).filter((line) => line && !line.startsWith('#'))
     : [];
   const problems = [];
-  for (const stage of dockerStages(fs.readFileSync(path.join(context, dockerfile), 'utf8'))) {
+  const stages = dockerStages(fs.readFileSync(path.join(context, dockerfile), 'utf8'));
+  for (const stage of stages) {
     const stageRoot = path.join(scratch, stage.name);
     const inside = (containerPath) => path.join(stageRoot, containerPath);
     const fromContext = stage.instructions.filter((one) => one.kind === 'copy' && !one.from);
@@ -123,5 +143,15 @@ export async function imageInputs({ context, dockerfile, scratch, run, mirrorMod
       }
     }
   }
-  if (problems.length) throw new Error(problems.join('\n'));
+  const notes = [];
+  for (const stage of stages) {
+    for (const copy of stage.instructions.filter((one) => one.kind === 'copy' && one.from)) {
+      for (const { note, problem } of judgeStageCopy(copy, stages, (name) => path.join(scratch, name))) {
+        if (note) notes.push(`${stage.name}: ${note}`);
+        if (problem) problems.push(`${stage.name}: ${problem}`);
+      }
+    }
+  }
+  if (problems.length) throw new Error([...problems, ...notes].join('\n'));
+  return notes;
 }

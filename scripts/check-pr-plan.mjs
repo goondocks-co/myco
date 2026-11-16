@@ -10,37 +10,52 @@ export function pathMatches(pattern, file) {
 }
 
 const CLI_AND_HOOKS = ['packages/myco/src/cli/**', 'packages/myco/src/hooks/**', 'packages/myco/src/symbionts/**'];
+/** What a compiled hook runs and how CI builds and measures it. */
+const HOOK_BINARY = ['packages/myco/src/**', 'packages/myco-shared/src/**', 'packages/myco/scripts/build-single-target.mjs',
+  'packages/myco/scripts/build-libsqlite3-target.sh', 'packages/myco/scripts/measure-hook-startup.mjs',
+  'packages/myco/scripts/measure-hook-work.ts', '.bun-version', 'package-lock.json'];
+/** What the self-hosted image is built from, and the scripts that boot it and check its data survives replacement. */
+const IMAGE = ['packages/myco-shared/**', 'packages/myco-server/Dockerfile', 'packages/myco-server/src/**', 'packages/myco-server/ui/**',
+  'packages/myco-server/migrations/**', 'packages/myco-server/docker-entrypoint.sh', '.dockerignore', 'package-lock.json'];
 
 /**
  * Checks that consume a change without importing it, selected by what changed. Each row names the CI job or step it
- * stands in for. `when.paths` matches changed paths; `when.tests` matches a selected test file (changed or importing);
- * `when.changed` is a predicate over every changed path. A row with `tests` adds those test files to the sharded test
- * run; a row with `check` runs that check; a row with `ciOnly` cannot run on this machine and says why.
+ * stands in for. `when.paths` matches changed paths; `when.tests` matches a reached test file (changed or importing),
+ * or names a windows-native step list; `when.changed` is a predicate over every changed path. A row with `tests` adds
+ * those test files to the sharded test run; a row with `check` runs that check; `requires` names the tools its tests or
+ * check need, without which they would skip or cannot run; a row with `ciOnly` runs nothing here and says why.
  */
 export const CONSUMERS = [
   {
     name: 'installer and source install',
     ci: 'tests (node): tests/scripts/source-install.test.ts runs make source-install; tests/install',
-    when: { paths: ['packages/myco/scripts/**', 'Makefile', 'install.sh', 'install.ps1', 'packages/myco-shared/**'] },
+    when: { paths: ['packages/myco/scripts/**', 'Makefile', 'docs/install.sh', 'docs/install.ps1', 'packages/myco-shared/**'] },
     tests: ['tests/install/**', 'tests/scripts/source-install.test.ts', 'tests/scripts/make-dogfood.test.ts'],
+    requires: ['pwsh', 'cc', 'shellcheck'],
   },
   {
-    name: 'self-hosted image inputs',
+    name: 'self-hosted image inputs (build inputs only)',
     ci: 'self-hosted-container: Build for both architectures',
-    when: { paths: ['packages/myco-shared/**', 'packages/myco-server/Dockerfile', 'packages/myco-server/src/**',
-      'packages/myco-server/ui/**', 'packages/myco-server/migrations/**', 'packages/myco-server/docker-entrypoint.sh', '.dockerignore'] },
+    when: { paths: IMAGE },
     check: 'image',
+  },
+  {
+    name: 'native Deployment lifecycle',
+    ci: 'tests (node, full run): tests/server/local-lifecycle-*.test.ts, which boot a native Deployment',
+    when: { paths: ['packages/myco-server/src/**'] },
+    tests: ['tests/server/local-lifecycle-inspection.test.ts', 'tests/server/local-lifecycle-prepare.test.ts', 'tests/server/local-lifecycle-preserve.test.ts'],
   },
   {
     name: 'compiled sign-in',
     ci: 'hook startup (linux-x64, linux-arm64): Check compiled sign-in exits',
     when: { paths: CLI_AND_HOOKS },
     check: 'compiled-sign-in',
+    requires: ['python3'],
   },
   {
-    name: 'compiled hook startup',
-    ci: 'hook startup: Measure a no-op hook; Measure every hook at work',
-    when: { paths: CLI_AND_HOOKS },
+    name: 'compiled hook startup on this machine',
+    ci: 'hook startup (darwin-arm64): Measure a no-op hook; Measure every hook at work',
+    when: { paths: HOOK_BINARY },
     check: 'hook-startup',
   },
   {
@@ -60,6 +75,7 @@ export const CONSUMERS = [
     ci: 'ui-screens: shell, setup and auth-setup screens',
     when: { paths: ['packages/myco-server/ui/**', 'packages/myco-shared/**', 'tests/ui-screens/**'] },
     check: 'screens',
+    requires: ['chromium'],
   },
   {
     name: 'docs site',
@@ -68,10 +84,46 @@ export const CONSUMERS = [
     check: 'docs',
   },
   {
+    name: 'hook startup on Linux',
+    ci: 'hook startup (linux-x64, linux-arm64): Check compiled sign-in exits; Measure a no-op hook; Measure every hook at work',
+    when: { paths: HOOK_BINARY },
+    ciOnly: 'it runs on Linux',
+  },
+  {
+    name: 'hook startup on Windows',
+    ci: 'hook startup (windows-x64, measured): Measure a no-op hook; Measure every hook at work',
+    when: { paths: HOOK_BINARY },
+    ciOnly: 'it runs on Windows',
+  },
+  {
+    name: 'Windows ARM64 smoke',
+    ci: 'windows-arm64: Smoke the Windows ARM64 binary; Measure a no-op hook',
+    when: { paths: [...HOOK_BINARY, 'scripts/windows-arm64-smoke.ps1'] },
+    ciOnly: 'it runs on Windows ARM64',
+  },
+  {
     name: 'Windows contracts',
-    ci: 'windows-native: Windows smoke contracts',
-    when: { tests: 'windows-native' },
-    ciOnly: 'it needs Windows',
+    ci: 'windows-native: Windows smoke contracts, Full Windows unit contracts, Execute Windows native contract',
+    when: { tests: 'windows-native', paths: ['tests/helpers/windows-native-contract.ts'] },
+    ciOnly: 'it runs on Windows',
+  },
+  {
+    name: 'installer under Windows PowerShell 5.1',
+    ci: 'windows-native: The installer resolves a release under Windows PowerShell 5.1',
+    when: { paths: ['docs/install.ps1'] },
+    ciOnly: 'it runs on Windows PowerShell 5.1',
+  },
+  {
+    name: 'parity, full run and Cloudflare target',
+    ci: 'parity (1-8/8): npm run test:parity on both targets',
+    when: { tests: ['tests/parity/parity.test.ts'], paths: ['tests/parity/**'] },
+    ciOnly: 'lanes never boot the Cloudflare target, and the full run is CI\'s',
+  },
+  {
+    name: 'self-hosted image build, boot and persistence',
+    ci: 'self-hosted-container: Build for both architectures; Run the native image and smoke it; Preserve data across replacement',
+    when: { paths: [...IMAGE, 'scripts/smoke-container-persistence.mjs', 'scripts/test-container-persistence-mutations.mjs'] },
+    ciOnly: 'it builds and boots the image with Docker',
   },
   {
     name: 'Darwin release recipe',
@@ -81,18 +133,18 @@ export const CONSUMERS = [
   },
 ];
 
-/** The test files a CI step names on its `npm test --` line. */
-export function workflowStepTests(root, job, stepName) {
+/** The test files the windows-native job's steps name on their `npm test --` lines. */
+export function windowsJobTests(root) {
   const workflow = parseYaml(fs.readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
-  const step = workflow.jobs[job]?.steps.find((one) => one.name === stepName);
-  if (!step) throw new Error(`.github/workflows/ci.yml has no ${job} step named ${stepName}`);
-  return step.run.split(/\s+/).filter((word) => /^tests\/.*\.test\.tsx?$/.test(word));
+  const steps = workflow.jobs['windows-native'].steps.filter((step) => /^npm test --/.test(step.run ?? ''));
+  if (!steps.length) throw new Error('.github/workflows/ci.yml has no windows-native step that runs npm test');
+  return [...new Set(steps.flatMap((step) => step.run.split(/\s+/).filter((word) => /^tests\/.*\.test\.tsx?$/.test(word))))];
 }
 
 /**
  * The rows a change selects, each with the paths or tests that selected it.
- * @param {{ changed: string[], tests: string[], windowsTests: string[] }} input changed paths, the selected test files
- *   (changed and importing), and the Windows job's test files
+ * @param {{ changed: string[], tests: string[], windowsTests: string[] }} input changed paths, the reached test files
+ *   (changed and importing), and the windows-native job's test files
  */
 export function selectConsumers({ changed, tests, windowsTests }) {
   const selected = [];
@@ -107,9 +159,51 @@ export function selectConsumers({ changed, tests, windowsTests }) {
   return selected;
 }
 
+/**
+ * The selected rows that run here, and what the final line names as not run: a CI-only row, or a row missing a tool.
+ * @param {{ changed: string[], tests: string[], windowsTests: string[], hasTool: (name: string) => boolean }} input
+ */
+export function planConsumers({ hasTool, ...input }) {
+  const runnable = [];
+  const notRun = [];
+  for (const row of selectConsumers(input)) {
+    const missing = (row.requires ?? []).filter((tool) => !hasTool(tool));
+    if (row.ciOnly) notRun.push({ what: `${row.name} [${row.ci}]`, why: `CI only: ${row.ciOnly}` });
+    else if (missing.length) notRun.push({ what: `${row.name} [${row.ci}]`, why: `${missing.join(', ')} not installed` });
+    else runnable.push(row);
+  }
+  return { rows: runnable, notRun };
+}
+
 /** The test files a row's `tests` patterns name, among the files present. */
 export function rowTestFiles(row, files) {
   return files.filter((file) => /\.test\.tsx?$/.test(file) && (row.tests ?? []).some((pattern) => pathMatches(pattern, file)));
+}
+
+/**
+ * Runs each failing item again by itself, one after another. An item that fails again stays failed; one that passes is
+ * reported as having failed in its shard and passed when run again, so it is named on the final line, not hidden.
+ * @param {{ failing: Iterable<string>, runAlone: (item: string) => Promise<boolean> }} input
+ */
+export async function retryAlone({ failing, runAlone }) {
+  const confirmed = [];
+  const passedOnRerun = [];
+  for (const item of failing) ((await runAlone(item)) ? passedOnRerun : confirmed).push(item);
+  return { confirmed, passedOnRerun };
+}
+
+/**
+ * Waits for every lane to settle. The first lane to reject cancels the rest, which then settle too; nothing is left
+ * running when this returns, so the summary printed after it is the last line.
+ * @returns {Promise<unknown[]>} the reasons lanes rejected with, first rejection first
+ */
+export async function settleLanes(lanes, cancel) {
+  const reasons = [];
+  await Promise.all(lanes.map((lane) => Promise.resolve(lane).catch((reason) => {
+    if (!reasons.length) cancel(reason);
+    reasons.push(reason);
+  })));
+  return reasons;
 }
 
 /** Commands that build or check the executable; the compiled-binary rows run them, not the generator check. */
@@ -167,8 +261,9 @@ export function parseArgs(argv, cpus) {
   return options;
 }
 
-/** The final line: counts, and anything not run here with the flag or rule that left it to CI. */
-export function summaryLine({ passed, failed, seconds, base, notRun }) {
+/** The final line: counts, what failed in its shard and passed when run again, and anything not run here and why. */
+export function summaryLine({ passed, failed, seconds, base, notRun, passedOnRerun = [] }) {
+  const rerun = passedOnRerun.length ? `; failed in its shard, passed when run again: ${passedOnRerun.join(', ')}` : '';
   const tail = notRun.length ? `; not run here: ${notRun.map(({ what, why }) => `${what} (${why})`).join('; ')}` : '';
-  return `check:pr: ${passed} passed, ${failed} failed in ${seconds} s (base ${base.slice(0, 9)})${tail}`;
+  return `check:pr: ${passed} passed, ${failed} failed in ${seconds} s (base ${base.slice(0, 9)})${rerun}${tail}`;
 }
