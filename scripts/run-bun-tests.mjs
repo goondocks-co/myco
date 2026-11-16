@@ -17,6 +17,7 @@ import { infrastructureRetrySummary, logHasUncarriedError, replaceFileSuites, re
 import { nodeGroupBudget } from './node-test-durations.mjs';
 import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
+import { RUNNER_REMOVED_DASHBOARD_PACKAGES } from './ensure-deps.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
 import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup, readTestProcessTable, readTestProcessCommands } from './test-process-tree.mjs';
 
@@ -236,6 +237,16 @@ const INTEGRATION_INCLUDES = [
 
 const profile = process.env.MYCO_TEST_PROFILE ?? '';
 const forwardedArgs = process.argv.slice(2);
+// A file listing test files (one per line) restricts the full run's plan to them: the same groups, isolation, shards and
+// duration weights CI uses, over fewer files. `npm run check:pr` runs a change's importing tests this way.
+const selectionFile = process.env.MYCO_TEST_SELECTION_FILE;
+delete process.env.MYCO_TEST_SELECTION_FILE;
+const selection = selectionFile === undefined ? null
+  : new Set(fs.readFileSync(selectionFile, 'utf8').split('\n').map((line) => line.trim()).filter(Boolean));
+if (selection !== null && forwardedArgs.some((arg) => !arg.startsWith('-'))) {
+  throw new Error('[run-bun-tests] MYCO_TEST_SELECTION_FILE selects the files; pass no test targets with it');
+}
+const inSelection = (file) => selection === null || selection.has(file);
 // Bound the isolate workers started by one node phase.
 const ISOLATED_NODE_CHUNK_SIZE = Number(process.env.MYCO_RUNNER_ISOLATED_CHUNK_SIZE ?? 3);
 
@@ -672,7 +683,7 @@ function expandTargets(targets) {
 /** Return isolated proof files, node isolation groups and optional DOM arguments. */
 function buildArgs() {
   const { options, targets } = parseForwardedArgs(forwardedArgs);
-  const tsxFiles = relativeUnique(findTsxTests(path.join(REPO, 'tests')));
+  const tsxFiles = relativeUnique(findTsxTests(path.join(REPO, 'tests'))).filter(inSelection);
 
   if (targets.length > 0) {
     const expanded = expandTargets(targets);
@@ -700,7 +711,7 @@ function buildArgs() {
   }
 
   if (profile !== 'integration') {
-    const allTests = relativeUnique(findTests(path.join(REPO, 'tests')));
+    const allTests = relativeUnique(findTests(path.join(REPO, 'tests'))).filter(inSelection);
     const nodeFiles = allTests
       .filter((file) => !file.endsWith('.test.tsx'))
       .filter((file) => profile !== 'fast' || !isFastExcluded(file))
@@ -1550,14 +1561,7 @@ function stripDuplicateReact() {
     path.join(REPO, 'packages/myco-server/ui/node_modules'),
   ];
   for (const base of candidates) {
-    for (const pkg of [
-      'react',
-      'react-dom',
-      'react-router-dom',
-      'react-router',
-      '@tanstack/react-query',
-      '@tanstack/query-core',
-    ]) {
+    for (const pkg of RUNNER_REMOVED_DASHBOARD_PACKAGES) {
       const dupe = path.join(base, pkg);
       if (fs.existsSync(dupe)) {
         fs.rmSync(dupe, { recursive: true, force: true });

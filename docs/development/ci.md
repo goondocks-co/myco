@@ -56,10 +56,49 @@ MYCO_TEST_KIND=node MYCO_TEST_SHARD=2/17 \
 The larger group budget covers the repeated work. Each test keeps its normal
 timeout, and every sibling file in the selected group still runs.
 
-Without those variables, the commands run their full suites. Do not run multiple
-shards in the same checkout concurrently: the runner owns shared bundle/report
-directories and swaps the Bun configuration for DOM tests. CI uses separate
-runners and checkouts.
+Without those variables, the commands run their full suites. Each run writes its
+bundles under its own temp root; shards run at once in one checkout need a
+`MYCO_RUNNER_REPORT_DIR` each, so a finished shard never prunes another's reports.
+
+`MYCO_TEST_SELECTION_FILE` names a file listing test files, one per line: the run
+plans only those files, with the full run's groups, isolation and duration
+weights, so `MYCO_TEST_SHARD` splits them as CI would. It takes no test targets.
+
+## Before pushing: `npm run check:pr`
+
+`check:pr` runs what pull request CI most often fails on, locally. CI stays the
+gate; this is the developer's early look.
+
+- the dependency, migration, test-addition, budget and server gates;
+- the changed tests, every test that imports a changed file (heavy suites
+  included), PR-scope `tests/meta`, and the tests of any consumer row below, as
+  one selection split into parallel shards (`--jobs N`, default half the CPUs up
+  to 8; `--skip-importers` leaves the importing tests out and says so on the final
+  line). A file that fails in its shard runs again by itself, one file at a time;
+  it fails the check only if it fails again, and one that passes is named on the
+  final line as "failed in its shard, passed when run again". Dashboard screens,
+  the compiled-binary tests and the hook measurements follow the same rule;
+- the build job's dashboard bundle and every generator `npm run build` runs, in a
+  scratch copy, failing with the command whose output is not committed;
+- the type checks, the shard audit, and the consumer rows in
+  `scripts/check-pr-plan.mjs`: checks that read a change without importing it,
+  each naming the CI job it stands in for. A row lists the tools its tests probe
+  for (PowerShell, a C compiler, shellcheck, Python, Chromium); when one is
+  missing, the row runs nothing and the final line names it as not run, with the
+  tool. Rows for CI jobs that cannot run on this machine (the Linux and Windows
+  hook-startup legs, the Windows ARM64 smoke, the Windows contracts, the installer
+  under Windows PowerShell 5.1, the full parity run and Cloudflare target, the
+  image's build, boot and persistence, the Darwin release recipe) run nothing and
+  appear on the final line as "CI only" exactly when a change reaches their inputs.
+
+Every command it starts gets a home and agent configuration directories of its
+own under its temp root. It writes to `target/`, its temp root, and two paths
+under `packages/`: worker-bundle preparation writes
+`packages/myco/src/worker-bundle.generated.ts` (staging a transient
+`packages/myco-server/wrangler.bundle-*.toml` while it builds), and DOM test
+runs remove the dashboard's own React copies from
+`packages/myco-server/ui/node_modules`, which `ensure-deps` accepts. The final
+`check:pr:` line is always the last line it prints.
 
 `node scripts/check-test-shards.mjs` audits the workflow's actual matrix against
 test discovery and the full parity catalogue. Every test file and scenario must

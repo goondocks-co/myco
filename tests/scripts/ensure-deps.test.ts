@@ -85,6 +85,14 @@ describe('dependency preparation', () => {
     expect(f.calls()).toHaveLength(1);
   });
 
+  it('keeps a dashboard install whose React copy the test runner removed, and reinstalls one missing anything else', () => {
+    const f = fixture();
+    const react = { 'node_modules/react': { version: '19.0.0', integrity: 'sha512-react' } };
+    for (const directory of ['.', 'packages/myco-server/ui']) for (const file of ['package-lock.json', 'node_modules/.package-lock.json']) f.write(path.join(directory, file), { lockfileVersion: 3, packages: { ...f.lock.packages, ...react } });
+    expect([f.run(['--ui']).status, f.calls()]).toEqual([0, []]);
+    expect([f.run().stdout.includes('workspace packages out of date; reinstalling'), f.calls()]).toEqual([true, [[f.root, 'ci']]]);
+  });
+
   it('installs missing node_modules and supports the dashboard-only entry point', () => {
     const f = fixture();
     for (const { directory } of installRoots) fs.rmSync(path.join(f.root, directory, 'node_modules'), { recursive: true });
