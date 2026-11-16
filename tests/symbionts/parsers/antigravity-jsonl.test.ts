@@ -82,7 +82,7 @@ describe('AntigravityJsonlParser', () => {
 
   it('splits multiple USER_INPUT rows into separate turns and isolates per-turn tool counts', () => {
     const content = toJsonl([
-      userInput(0, 'first ask'),
+      userInput(0, 'first ask'), { ...userInput(7, 'context a hook injected'), source: 'SYSTEM_SDK' },
       plannerWithTool(1, 'view_file', { AbsolutePath: '/repo/a.ts' }),
       plannerWithReply(2, 'done'),
       userInput(3, 'second ask'),
