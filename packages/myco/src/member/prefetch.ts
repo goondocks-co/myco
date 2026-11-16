@@ -15,7 +15,7 @@ import { fetchPromptRecalls } from './prompt-context.js';
  * the Deployment offline (#1559): a capture request decides that. An ask the Deployment answered, or refused for good,
  * is done; one it did not answer stays for the next pass.
  */
-import { cacheMachineSettings, machineSettingsHeaders, beginMachineSettingsRequest } from './machine-settings.js';
+import { machineSettingsExchange } from './machine-settings.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
 import { FEATURES_HEADER, PROTOCOL_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { beginFeatureRequest, featureCacheDiagnostic, cacheDeploymentFeatures, cachedDeploymentFeatures, readProjectContext, updateProjectContext, type ContextAsk, type SessionBlockKind } from './context-cache.js';
@@ -52,14 +52,14 @@ function remoteOf(ask: { remote?: string; remoteFrom?: string }): { remote: stri
   return remote ? { remote } : {};
 }
 
-function requestFor(sessionId: string, ask: Exclude<ContextAsk, { kind: 'prompt' }>): { path: string; body: Record<string, unknown> } {
+function requestFor(sessionId: string, ask: Exclude<ContextAsk, { kind: 'prompt' }>): Record<string, unknown> {
   switch (ask.kind) {
     case 'start':
-      return { path: SESSION_PATH, body: { sessionId, kind: 'start', ...remoteOf(ask) } };
+      return { sessionId, kind: 'start', ...remoteOf(ask) };
     case 'compact':
-      return { path: SESSION_PATH, body: { sessionId, kind: 'compact', compaction: ask.compaction, ...remoteOf(ask) } };
+      return { sessionId, kind: 'compact', compaction: ask.compaction, ...remoteOf(ask) };
     case 'subagent':
-      return { path: SESSION_PATH, body: { sessionId, kind: 'subagent', agentId: ask.agentId, agentType: ask.agentType } };
+      return { sessionId, kind: 'subagent', agentId: ask.agentId, agentType: ask.agentType };
   }
 }
 
@@ -98,14 +98,8 @@ export async function prefetchContext(opts: {
       if (ask.kind === 'prompt') { settleAsk(spool, sessionId, ask, now()); continue; }
       if (!canStartRequest(opts.budget, now())) { report.stoppedBy = 'budget'; return report; }
       const request = requestFor(sessionId, ask);
-      const machineOrder = beginMachineSettingsRequest(opts.serverUrl, opts.mycoHome);
       report.asked += 1;
-      const answer = classifyEventAnswer(await client.request('POST', request.path, {
-        body: JSON.stringify(request.body),
-        headers: { 'content-type': 'application/json', ...machineSettingsHeaders(opts.serverUrl, opts.mycoHome) },
-        budget: subRequestBudget(opts.budget, CONTEXT_CAP_MS, now()),
-      }));
-      const receivedAt = now();
+      const answer = await sessionContextRequest(opts, request);
       if (answer.class === 'refused' && refusalPermanent(answer.code)) {
         const who = `(${ask.kind})`;
         process.stderr.write(`[myco] helper: session ${terminalText(sessionId)} ${who} refused: ${terminalText(answer.code)}\n`);
@@ -132,12 +126,24 @@ export async function prefetchContext(opts: {
         // says nothing of the Project.
         else if (skipped.some((s) => WITHDRAWN.includes(s))) delete cache.blocks[kind];
       });
-      // The machine's own settings ride a session's answer.
-      try { cacheMachineSettings(opts.serverUrl, body.machine, opts.mycoHome, machineOrder, () => receivedAt); } catch { /* the last cache stands */ }
       settleAsk(spool, sessionId, ask, now());
     }
   }
   return report;
+}
+
+/** One session-context request, with machine settings processed even when the context is empty. */
+async function sessionContextRequest(opts: { client: ServerClient; mycoHome: string; budget: HookBudget; now: () => number }, body: Record<string, unknown>) {
+  const machine = machineSettingsExchange(opts.client.serverUrl, opts.mycoHome);
+  const answer = classifyEventAnswer(await opts.client.request('POST', SESSION_PATH, {
+    body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...machine.headers },
+    budget: subRequestBudget(opts.budget, CONTEXT_CAP_MS, opts.now()),
+  }));
+  if (answer.class === 'acked') {
+    try { machine.receive({ machine: answer.body.machine, at: opts.now() }); }
+    catch (error) { process.stderr.write(`[myco] ${terminalText(String(error))}\n`); }
+  }
+  return answer;
 }
 
 /**
@@ -192,24 +198,13 @@ export async function warmProjectContext(
   for (const kind of WARMED) {
     if (readProjectContext(spoolDir).blocks[kind] !== undefined) continue;
     if (!canStartRequest(budget, now())) break;
-    const machineOrder = beginMachineSettingsRequest(membership.serverUrl, opts.mycoHome);
     let answer: ReturnType<typeof classifyEventAnswer>;
-    let receivedAt: number;
-    try {
-      answer = classifyEventAnswer(await client.request('POST', SESSION_PATH, {
-        body: JSON.stringify({ kind, preview: true }),
-        headers: { 'content-type': 'application/json', ...machineSettingsHeaders(membership.serverUrl, opts.mycoHome) },
-        budget: subRequestBudget(budget, CONTEXT_CAP_MS, now()),
-      }));
-      receivedAt = now();
-    } catch {
-      break;
-    }
+    try { answer = await sessionContextRequest({ client, mycoHome: opts.mycoHome, now, budget }, { kind, preview: true }); }
+    catch { break; }
     if (answer.class !== 'acked') break;
     const context = typeof answer.body.context === 'string' ? answer.body.context : '';
     if (context.length === 0) continue;
     updateProjectContext(spoolDir, opts.mycoHome, (cache) => { cache.blocks[kind] = { context, at: now() }; });
-    try { cacheMachineSettings(membership.serverUrl, answer.body.machine, opts.mycoHome, machineOrder, () => receivedAt); } catch { /* the last cache stands */ }
     cached += 1;
   }
   return cached;

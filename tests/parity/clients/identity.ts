@@ -70,13 +70,13 @@ export async function person(target: IdentityTarget, sub: string, options: Param
 }
 
 /** A machine signed in through the device flow and approved in the browser `approver`; the approver's member holds it. */
-export async function deviceMachine(target: IdentityTarget, approver: Record<string, string>, machineId = `machine_${crypto.randomUUID()}`, machineName = 'Parity laptop'): Promise<{ memberId: string; token: string; tokenId: string; machineId: string }> {
+export async function deviceMachine(target: IdentityTarget, approver: Record<string, string>, machineId = `machine_${crypto.randomUUID()}`, machineName = 'Parity laptop'): Promise<{ memberId: string; token: string; tokenId: string; machineId: string; expiresAt: number }> {
   const started = await client(target, '/auth/device/start', { machineId, machineName, os: 'linux' });
   expect(started.status).toBe(200);
   expect((await browser(target, '/api/device/approve', approver, { user_code: started.body.user_code })).status).toBe(200);
   const polled = await client(target, '/auth/device/poll', { device_code: started.body.device_code });
   expect(polled.body).toMatchObject({ joined: true });
-  return { memberId: String(polled.body.memberId), token: String(polled.body.token), tokenId: String(polled.body.tokenId), machineId };
+  return { memberId: String(polled.body.memberId), token: String(polled.body.token), tokenId: String(polled.body.tokenId), machineId, expiresAt: Number(polled.body.expiresAt) };
 }
 
 /** A fresh runner bearer, the candidate a runner offers at registration. */

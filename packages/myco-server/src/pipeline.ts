@@ -1,4 +1,5 @@
 import { MACHINE_UPDATE_HEADER, machineUpdateReport, type MachineUpdateReport } from '@goondocks/myco-shared/member-protocol';
+import { machineBlockFor } from './core/machine-settings.js';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { CARD_WRITE_BOUND } from './core/turn-card-prompt.js';
 import { sessions_projectExists as projectExists } from './read/catalog/sessions.js';
@@ -586,6 +587,19 @@ export function createServer(deps: ServerDeps) {
   /** A member request's store: each write commits only while the credential and member behind it still hold. A refusal raises `TokenRevokedError`, which answers retryable, and the retry meets the revocation at authentication. */
   const credentialWrites = (env: ServerEnv, auth: MemberAuth): ServerEnv => ({ ...env, db: credentialWriteStore(env.db, { tokenId: auth.tokenId, memberId: auth.memberId, clock: deps.now }) });
 
+  /** Member answers carry changed machine settings and acknowledge the report on their request. */
+  async function memberMachineSettings(request: Request, env: ServerEnv, auth: MemberAuth, response: Response): Promise<Response> {
+    const support = machineContractHeaders(request);
+    if (support.machineSettingsFeature !== true || response.status !== 200) return response;
+    const body = await response.clone().json() as Record<string, unknown>;
+    if (body.persisted !== true && body.stored !== true && body.refreshed !== true && body.answered !== true) return response;
+    const machine = body.machine ?? await machineBlockFor(credentialWrites(env, auth).db, auth.memberId, auth.machineId!, { ...support, clock: deps.now, answer: 'changes' });
+    const headers = new Headers(response.headers);
+    if (support.machineUpdateReport !== undefined) headers.set(MACHINE_UPDATE_HEADER, String(support.machineUpdateReport.order));
+    if (machine !== null) headers.set(MACHINE_SETTINGS_HEADER, MACHINE_SETTINGS_FEATURE);
+    return machine === null ? new Response(response.body, { status: response.status, headers }) : Response.json({ ...body, machine }, { status: response.status, headers });
+  }
+
   /** Every failure after authentication answers in the route's shape once the route is known, and carries the protocol number; only what `admitted` returns leaves here. */
   async function member(request: Request, env: ServerEnv, auth: MemberAuth, matched: ReturnType<typeof matchRoute>, url: URL, now: number, contextTimings?: ContextTimings): Promise<Response> {
     try {
@@ -691,7 +705,8 @@ export function createServer(deps: ServerDeps) {
         if (!await authorizeHttp(env, route.authorization, { memberId: auth.memberId }, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, params })) return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
         const limit = await resolved();
         if (limit !== null) return limit;
-        return await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
+        const answered = await route.handler(env, request, { projectId, machineId: auth.machineId, tokenId: auth.tokenId, now, clock: deps.now, contentLength, params });
+        return await memberMachineSettings(request, env, auth, answered);
       } catch (err) {
         return failed(env, auth, route, err);
       }
@@ -715,7 +730,7 @@ export function createServer(deps: ServerDeps) {
         expiresAt: auth.expiresAt, lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime,
         ...machineContractHeaders(request), body: body.text, bodyBytes: body.bytes, now, clock: deps.now, origin: url.origin, turnEnd: request.headers.get(TURN_END_HEADER) === '1',
       });
-      return answered;
+      return await memberMachineSettings(request, env, auth, answered);
     } catch (err) {
       return failed(env, auth, route, err);
     }
@@ -740,10 +755,11 @@ export function createServer(deps: ServerDeps) {
         return refuse(auth, shapeOf(route), NOT_ADMIN, 'not_admin');
       }
       // The two routes that admit a lapsed credential act on it directly: a refresh is fenced by `TOKEN_LIVE`, and a self-revocation is the ending itself.
-      return await route.credential(route.admitsLapsed === true ? env : credentialWrites(env, auth), {
+      const answered = await route.credential(route.admitsLapsed === true ? env : credentialWrites(env, auth), {
         memberId: auth.memberId, machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
         lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, ...machineContractHeaders(request), body: body.text, now, clock: deps.now,
       });
+      return route.admitsLapsed === true ? answered : await memberMachineSettings(request, env, auth, answered);
     } catch (err) {
       return failed(env, auth, route, err);
     }

@@ -7,7 +7,7 @@
  * and that is not an instruction to forget what this machine was told before.
  */
 import fs from 'node:fs';
-import { MACHINE_UPDATE_HEADER, machineUpdateRequests, type MachineSettingsBlock, type MachineUpdateReport } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_UPDATE_HEADER, MACHINE_UPDATE_LEAVES, machineUpdateRequests, type MachineSettingsBlock, type MachineUpdateReport } from '@goondocks/myco-shared/member-protocol';
 import { readAutomaticUpdatePreference, readInstallMarker, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
 import { applyMachineUpdateRequests, readAppliedUpdateRequests } from './automatic-update-state.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
@@ -23,16 +23,21 @@ import { assertDeploymentTokenPair } from './token-pairing.js';
 /** The leaf naming the folders this machine's agents write plans to, beyond the ones each agent's manifest names. */
 export const PLAN_DIRS_LEAF = 'capture.plan_dirs';
 
+function validOrder(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 /** The settings block a Deployment answers, or null when the value is not one. */
 export function machineBlockOf(value: unknown): (MachineSettingsBlock & { invalidated?: true; cachedOrder?: number }) | null {
   if (typeof value !== 'object' || value === null) return null;
   const leaves = (value as { leaves?: unknown }).leaves;
   if (typeof leaves !== 'object' || leaves === null || Array.isArray(leaves)) return null;
   const block = value as { feature?: unknown; revision?: unknown; invalidated?: unknown; cachedOrder?: unknown; updateRequests?: unknown; serverNow?: unknown };
-  return { leaves: leaves as Record<string, unknown>, updateRequests: machineUpdateRequests(block.updateRequests), ...(typeof block.serverNow === 'number' && Number.isSafeInteger(block.serverNow) && block.serverNow >= 0 ? { serverNow: block.serverNow } : {}), ...(block.feature === MACHINE_SETTINGS_FEATURE && isMachineSettingsRevision(block.revision) ? { feature: MACHINE_SETTINGS_FEATURE, revision: block.revision } : {}), ...(block.feature === MACHINE_SETTINGS_FEATURE && block.invalidated === true ? { feature: MACHINE_SETTINGS_FEATURE, invalidated: true as const } : {}), ...(typeof block.cachedOrder === 'number' && Number.isSafeInteger(block.cachedOrder) && block.cachedOrder >= 0 ? { cachedOrder: block.cachedOrder } : {}) };
+  const supported = block.feature === MACHINE_SETTINGS_FEATURE;
+  return { leaves: leaves as Record<string, unknown>, ...(block.updateRequests === undefined ? {} : { updateRequests: machineUpdateRequests(block.updateRequests) }), ...(validOrder(block.serverNow) ? { serverNow: block.serverNow } : {}), ...(supported && isMachineSettingsRevision(block.revision) ? { feature: MACHINE_SETTINGS_FEATURE, revision: block.revision } : {}), ...(supported && block.invalidated === true ? { feature: MACHINE_SETTINGS_FEATURE, invalidated: true as const } : {}), ...(validOrder(block.cachedOrder) ? { cachedOrder: block.cachedOrder } : {}) };
 }
 
-interface MachineAnswerOrder { issued: number; received: number }
+interface MachineAnswerOrder { issued: number; received: number; report?: { state: string; order: number }; reported?: MachineUpdateReport }
 const ORDER_CLOCK_SCALE = 1_000;
 const orderDiagnostics = new Map<string, string>();
 const volatileOrders = new Map<string, MachineAnswerOrder>();
@@ -40,7 +45,7 @@ const volatileOrders = new Map<string, MachineAnswerOrder>();
 /** Allocate a stamp above previous requests and the clock's current millisecond. */
 function nextMachineAnswerOrder(order: MachineAnswerOrder): number {
   const stamp = Math.max(order.issued + 1, Date.now() * ORDER_CLOCK_SCALE);
-  if (!Number.isSafeInteger(stamp)) throw new Error('Machine settings answer order exhausted.');
+  if (!validOrder(stamp)) throw new Error('Machine settings answer order exhausted.');
   order.issued = stamp;
   return stamp;
 }
@@ -55,15 +60,16 @@ function orderDiagnostic(orderFile: string, state: string): void {
       orderDiagnostics.set(orderFile, state);
       return;
     }
-    changed = read.ok ? read.value?.state !== state : orderDiagnostics.get(orderFile) !== state;
+    if (read.ok) changed = read.value?.state !== state;
     if (changed || !read.ok) writePrivateFileAtomic(diagnosticFile, `${JSON.stringify({ state })}\n`);
   } catch { /* keep the process-local deduplication when diagnostics cannot be persisted */ }
   orderDiagnostics.set(orderFile, state);
   if (changed && state !== '') process.stderr.write(`[myco] member: machine settings answer order reset (${state}) ${orderFile}\n`);
 }
 
-/** The order file only sequences answers; its cached generation survives a damaged sidecar. */
+/** The order file sequences answers and reports; its cached generation survives a damaged sidecar. */
 function readMachineAnswerOrder(orderFile: string): { order: MachineAnswerOrder; state: string } {
+  const order: MachineAnswerOrder = { issued: 0, received: 0 };
   let state = '';
   try {
     const stat = fs.lstatSync(orderFile);
@@ -71,23 +77,28 @@ function readMachineAnswerOrder(orderFile: string): { order: MachineAnswerOrder;
     else if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) state = 'foreign-owner';
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') state = (error as NodeJS.ErrnoException).code ?? 'unreadable';
-    else return { order: { issued: 0, received: 0 }, state: '' };
+    else return { order, state };
   }
   if (state === '') {
     const read = readPrivateJson<MachineAnswerOrder>(orderFile);
     if (!read.ok) state = read.reason === 'unreadable' ? `${read.reason}:${read.detail ?? 'unknown'}` : read.reason;
     else if (read.value === null || typeof read.value !== 'object'
-      || !Number.isSafeInteger(read.value.issued) || read.value.issued < 0
-      || !Number.isSafeInteger(read.value.received) || read.value.received < 0
+      || !validOrder(read.value.issued)
+      || !validOrder(read.value.received)
       || read.value.received > read.value.issued) state = 'invalid';
     else {
       return { order: read.value, state: '' };
     }
   }
-  return { order: { issued: 0, received: 0 }, state };
+  return { order, state };
 }
 
-function withMachineSettings<T>(serverUrl: string, mycoHome: string, apply: (file: string, order: MachineAnswerOrder) => T, requireDurableIssue = false): T {
+function readCachedMachineSettings(file: string): ReturnType<typeof machineBlockOf> {
+  const read = readPrivateJson<unknown>(file);
+  return read.ok ? machineBlockOf(read.value) : null;
+}
+
+function withMachineSettings<T>(serverUrl: string, mycoHome: string, apply: (file: string, order: MachineAnswerOrder, block: ReturnType<typeof machineBlockOf>) => T, requireDurableIssue = false): T {
   ensureMemberDir(deploymentsDir(mycoHome), mycoHome);
   const file = machineSettingsPath(serverUrl, mycoHome);
   const orderFile = `${file}.order`;
@@ -97,15 +108,15 @@ function withMachineSettings<T>(serverUrl: string, mycoHome: string, apply: (fil
   return withFileLockSync(lockFile, () => {
     const primary = readMachineAnswerOrder(orderFile);
     const checkpoint = readMachineAnswerOrder(checkpointFile);
-    const order = primary.order;
-    const state = [primary.state, checkpoint.state === '' ? '' : `checkpoint:${checkpoint.state}`].filter(Boolean).join('; ');
-    const cached = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
-    const cachedOrder = cached?.ok ? machineBlockOf(cached.value)?.cachedOrder ?? 0 : 0;
     const volatile = volatileOrders.get(orderFile);
-    order.issued = Math.max(order.issued, checkpoint.order.issued, cachedOrder, volatile?.issued ?? 0);
-    order.received = Math.max(order.received, checkpoint.order.received, cachedOrder, volatile?.received ?? 0);
+    const order = { ...[primary.order, checkpoint.order, volatile ?? primary.order].reduce((a, b) => a.issued >= b.issued ? a : b) };
+    const state = [primary.state, checkpoint.state === '' ? '' : `checkpoint:${checkpoint.state}`].filter(Boolean).join('; ');
+    const block = readCachedMachineSettings(file);
+    const cachedOrder = block?.cachedOrder ?? 0;
+    order.issued = Math.max(order.issued, cachedOrder);
+    order.received = Math.max(primary.order.received, checkpoint.order.received, cachedOrder, volatile?.received ?? 0);
     let result: T;
-    try { result = apply(file, order); }
+    try { result = apply(file, order, block); }
     catch (error) { orderDiagnostic(orderFile, state); throw error; }
     order.issued = Math.max(order.issued, order.received);
     volatileOrders.set(orderFile, { ...order });
@@ -164,11 +175,7 @@ export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoH
 
 /** The extra plan folders `serverUrl` holds for this machine, read from the home `mycoHome` names: `~/`, absolute, or relative to each project root. */
 export function machinePlanDirs(serverUrl: string, mycoHome: string): string[] {
-  const file = machineSettingsPath(serverUrl, mycoHome);
-  if (!fs.existsSync(file)) return [];
-  const read = readPrivateJson<unknown>(file);
-  const block = read.ok ? machineBlockOf(read.value) : null;
-  const dirs = block?.leaves[PLAN_DIRS_LEAF];
+  const dirs = readCachedMachineSettings(machineSettingsPath(serverUrl, mycoHome))?.leaves[PLAN_DIRS_LEAF];
   return resolveMachineSetting(PLAN_DIRS_LEAF, dirs ?? MACHINE_SETTING_SPECS[PLAN_DIRS_LEAF].default).effective as string[];
 }
 
@@ -181,9 +188,7 @@ export const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
 
 /** The leaves auto-join reads, as `serverUrl` last answered them for this machine, each at its default where nothing is cached. */
 export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { autoJoinRoots: string[]; connectRoots: Record<string, string> } {
-  const file = machineSettingsPath(serverUrl, mycoHome);
-  const read = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
-  const leaves = read !== null && read.ok ? machineBlockOf(read.value)?.leaves ?? {} : {};
+  const leaves = readCachedMachineSettings(machineSettingsPath(serverUrl, mycoHome))?.leaves ?? {};
   const roots = leaves[AUTO_JOIN_ROOTS_LEAF];
   const connect = leaves[CONNECT_ROOTS_LEAF];
   return {
@@ -194,9 +199,7 @@ export function machineAutoJoinLeaves(serverUrl: string, mycoHome: string): { au
 
 /** Forget, in this machine's cache, that `serverUrl` told it to connect a repository it left; the Deployment is told so too. */
 export function forgetConnectRoot(serverUrl: string, rootKey: string, mycoHome: string): void {
-  withMachineSettings(serverUrl, mycoHome, (file, order) => {
-    const read = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
-    const block = read !== null && read.ok ? machineBlockOf(read.value) : null;
+  withMachineSettings(serverUrl, mycoHome, (file, order, block) => {
     const connect = block?.leaves[CONNECT_ROOTS_LEAF];
     if (block === null || typeof connect !== 'object' || connect === null || !Object.prototype.hasOwnProperty.call(connect, rootKey)) return;
     const kept = Object.fromEntries(Object.entries(connect as Record<string, unknown>).filter(([key]) => key !== rootKey));
@@ -207,15 +210,43 @@ export function forgetConnectRoot(serverUrl: string, rootKey: string, mycoHome: 
 
 /** Advertise this member's contract support and report only a revision durably cached from a supporting Deployment. */
 export function machineSettingsHeaders(serverUrl: string, mycoHome: string): Record<string, string> {
-  return withMachineSettings(serverUrl, mycoHome, (file, order) => {
-    const read = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
-    const block = read?.ok ? machineBlockOf(read.value) : null;
+  return withMachineSettings(serverUrl, mycoHome, (_file, order, block) => {
+    const state = machineUpdateState(serverUrl, mycoHome);
+    const key = JSON.stringify(state);
+    if (order.report?.state !== key || !validOrder(order.report.order) || order.report.order > order.issued) order.report = { state: key, order: nextMachineAnswerOrder(order) };
+    const cachedOrder = String(block?.cachedOrder ?? order.received);
     return {
       [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE,
-      [MACHINE_UPDATE_HEADER]: JSON.stringify({ order: nextMachineAnswerOrder(order), ...machineUpdateState(serverUrl, mycoHome) }),
-      ...(block?.revision !== undefined ? { [MACHINE_SETTINGS_REVISION_HEADER]: block.revision, [MACHINE_SETTINGS_ORDER_HEADER]: String(block.cachedOrder ?? order.received) } : {}),
-      ...(block?.invalidated === true ? { [MACHINE_SETTINGS_INVALIDATED_HEADER]: '1', [MACHINE_SETTINGS_ORDER_HEADER]: String(block.cachedOrder ?? order.received) } : {}),
+      [MACHINE_UPDATE_HEADER]: JSON.stringify({ order: order.report.order, ...state }),
+      ...(block?.revision !== undefined ? { [MACHINE_SETTINGS_REVISION_HEADER]: block.revision, [MACHINE_SETTINGS_ORDER_HEADER]: cachedOrder } : {}),
+      ...(block?.invalidated === true ? { [MACHINE_SETTINGS_INVALIDATED_HEADER]: '1', [MACHINE_SETTINGS_ORDER_HEADER]: cachedOrder } : {}),
     };
+  });
+}
+
+/** One request's settings headers and its ordered answer, including the report the Deployment accepted. */
+export function machineSettingsExchange(serverUrl: string, home: string) {
+  const stamp = beginMachineSettingsRequest(serverUrl, home);
+  const headers = machineSettingsHeaders(serverUrl, home);
+  const report = JSON.parse(headers[MACHINE_UPDATE_HEADER]!) as MachineUpdateReport;
+  return { headers, receive: (answer: { machine?: unknown; acknowledged?: string | null; at?: number }) => {
+    if (answer.acknowledged === String(report.order) || machineBlockOf(answer.machine)?.updateRequests !== undefined) {
+      withMachineSettings(serverUrl, home, (_file, order) => {
+        if (!validOrder(order.reported?.order) || report.order > order.reported!.order) {
+          order.reported = report;
+          nextMachineAnswerOrder(order);
+        }
+      });
+    }
+    return cacheMachineSettings(serverUrl, answer.machine, home, stamp, () => answer.at ?? Date.now());
+  } };
+}
+
+/** Applied request receipts not yet acknowledged by this Deployment. */
+export function machineSettingsReportPending(serverUrl: string, home: string): boolean {
+  return withMachineSettings(serverUrl, home, (_file, order) => {
+    const requests = machineUpdateState(serverUrl, home).requests;
+    return MACHINE_UPDATE_LEAVES.some(leaf => requests[leaf] !== undefined && requests[leaf]!.id !== order.reported?.requests?.[leaf]?.id);
   });
 }
 
@@ -254,16 +285,16 @@ export async function seedMachineSettings(
   }
   try {
     const client = new ServerClient({ serverUrl: record.serverUrl, token: record.token }, opts.fetch ?? globalThis.fetch);
-    const requestOrder = beginMachineSettingsRequest(record.serverUrl, opts.mycoHome);
+    const exchange = machineSettingsExchange(record.serverUrl, opts.mycoHome);
     const raw = await client.request('POST', SETTINGS_READ_PATH, {
-      body: '{}', headers: { 'content-type': 'application/json', ...machineSettingsHeaders(record.serverUrl, opts.mycoHome) }, scope: 'deployment',
+      body: '{}', headers: { 'content-type': 'application/json', ...exchange.headers }, scope: 'deployment',
       budget: opts.budget ?? { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: SEED_TIMEOUT_MS },
     });
     if (raw.kind !== 'response' || raw.status !== 200 || raw.json === null) {
       const reason = raw.kind === 'response' ? `HTTP ${raw.status}` : raw.kind === 'timeout' ? `timeout reading ${raw.phase}` : raw.detail;
       throw new Error(reason);
     }
-    return cacheMachineSettings(record.serverUrl, raw.json.machine, opts.mycoHome, requestOrder);
+    return exchange.receive({ machine: raw.json.machine });
   } catch (error) {
     process.stderr.write(`[myco] member: machine settings not fetched (${terminalText(error instanceof Error ? error.message : String(error))}); the next settings read retries.\n`);
     return false;

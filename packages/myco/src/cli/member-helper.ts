@@ -19,7 +19,7 @@ import { updateBinary, binaryUpdatePath, type BinaryUpdateDeps } from '@myco/upg
 import { refreshMemberSetup, MEMBER_REFRESH_TIMEOUT_MS } from '@myco/member/refresh-setup.js';
 import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { keepCurrent, reportHarnesses } from '@myco/cli/member-keep-current.js';
-import { syncMachineSettings } from '../member/machine-settings-sync.js';
+import { machineSettingsDelivery } from '../member/machine-settings-sync.js';
 import { routingEntry } from '../member/routing.js';
 import { MemberSpool } from '../member/spool.js';
 import { deadlineBudget } from '../member/budget.js';
@@ -80,8 +80,10 @@ export async function runHelperVerb(args: readonly string[], deps: HelperVerbDep
 async function helperPasses(projectId: string, serverUrl: string | undefined, mycoHome: string, afterFailure: boolean, deps: HelperVerbDeps): Promise<HelperRunResult> {
   const now = deps.now ?? Date.now;
   const started = now();
-  const pass = deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass({ projectId, serverUrl: serverUrl! }, mycoHome, deps));
+  const settings = serverUrl === undefined ? null : machineSettingsDelivery(serverUrl, mycoHome, deps.fetch ?? globalThis.fetch, now);
+  const pass = deps.pass ?? (projectId === JOIN_BUCKET ? (await import('./member-auto-join.js')).joinPass(mycoHome, deps) : helperPass({ projectId, serverUrl: serverUrl! }, mycoHome, { ...deps, fetch: settings?.fetch ?? deps.fetch }));
   let result: HelperRunResult;
+  let finalPass: { deadline: number; force: boolean } | undefined;
   let adoptedVersion: string | undefined;
   const refreshAdopted = (deadline: number) => {
     const remaining = deadline - now();
@@ -100,6 +102,7 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
       spawn: deps.spawn,
       afterFailure,
       pass: async (deadline, options) => {
+        finalPass = { deadline, force: options.force };
         let repaired: ReturnType<typeof keepCurrent> = null;
         let refreshedAdoption = false;
         if (deadline - now() >= AUTOMATIC_UPDATE_MIN_BUDGET_MS) {
@@ -127,20 +130,20 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
           process.stderr.write(`[myco] keep-current failed: ${error instanceof Error ? error.message : String(error)}\n`);
         }
         const delivered = await pass(deadline, options);
-        try {
-          const entry = serverUrl === undefined ? null : routingEntry({ projectId, serverUrl }, mycoHome);
-          if (entry !== null && new MemberSpool(entry, { mycoHome }).shouldDial(now(), options.force)) {
-            await syncMachineSettings(entry, { mycoHome, fetch: deps.fetch ?? globalThis.fetch, budget: deadlineBudget(deadline), now });
-          }
-        } catch (error) {
-          process.stderr.write(`[myco] member: machine settings exchange failed: ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
-        }
-        try { await reportHarnesses(repaired, mycoHome, deadline, deps); } catch (error) {
+        try { await reportHarnesses(repaired, mycoHome, deadline, { ...deps, fetch: settings?.fetch ?? deps.fetch }); } catch (error) {
           process.stderr.write(`[myco] harness report failed: ${error instanceof Error ? error.message : String(error)}\n`);
         }
         return delivered;
       },
     });
+    try {
+      const entry = serverUrl === undefined ? null : routingEntry({ projectId, serverUrl }, mycoHome);
+      if (finalPass !== undefined && entry !== null && new MemberSpool(entry, { mycoHome }).shouldDial(now(), finalPass.force)) {
+        await settings?.flush(entry, deadlineBudget(finalPass.deadline));
+      }
+    } catch (error) {
+      process.stderr.write(`[myco] member: machine settings exchange failed: ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
+    }
   } catch (err) {
     // Written while stderr is still the helper's log: a detached helper has nowhere else to say why it stopped.
     process.stderr.write(`[myco] helper: a pass failed: ${err instanceof Error ? err.message : String(err)}\n`);

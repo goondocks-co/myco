@@ -7,18 +7,17 @@ const claimedBy = (machine: string, member: string): string => `EXISTS (SELECT 1
   WHERE claim.machine_id = ${machine} AND claim.member_id = ${member} AND member.revoked_at IS NULL)`;
 
 export interface MachineSettingRow {
+  member_id: string; settings_report_order: number;
   leaf: string | null; value: string | null; updated_at: number | null; updated_by: string | null;
   settings_revision: number; settings_cached_revision: string | null; settings_cached_values: string | null; settings_contract_supported: number;
 }
 
 const claimant = read<[machine: string], { member_id: string }>({ name: 'machineSettings.claimant', sql: 'SELECT member_id FROM machine_claims WHERE machine_id=?1' });
-const claimed = read<[machine: string, member: string], { held: number }>({ name: 'machineSettings.claimed', sql: 'SELECT 1 AS held FROM machine_claims WHERE machine_id=?1 AND member_id=?2' });
-const all = read<[machine: string], MachineSettingRow>({ name: 'machineSettings.read', sql: `SELECT s.leaf,s.value,s.updated_at,s.updated_by,c.settings_revision,c.settings_cached_revision,c.settings_cached_values,c.settings_contract_supported
+const all = read<[machine: string], MachineSettingRow>({ name: 'machineSettings.read', sql: `SELECT s.leaf,s.value,s.updated_at,s.updated_by,c.member_id,c.settings_report_order,c.settings_revision,c.settings_cached_revision,c.settings_cached_values,c.settings_contract_supported
   FROM machine_claims c LEFT JOIN machine_settings s ON s.machine_id=c.machine_id WHERE c.machine_id=?1` });
 const leafRow = read<[machine: string, leaf: string], { value: string }>({ name: 'machineSettings.leaf', sql: 'SELECT value FROM machine_settings WHERE machine_id=?1 AND leaf=?2' });
 
 export const readClaimant = (db: RelationalStore, machine: string) => first(db, claimant.bind(machine));
-export const readMachineClaimed = async (db: RelationalStore, machine: string, member: string) => (await first(db, claimed.bind(machine, member))) !== null;
 export const readMachineRows = (db: RelationalStore, machine: string) => rows(db, all.bind(machine));
 export const readMachineLeaf = (db: RelationalStore, machine: string, leaf: string) => first(db, leafRow.bind(machine, leaf));
 

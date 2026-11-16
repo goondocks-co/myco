@@ -130,7 +130,7 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect(memberKinds()).toEqual(['session.start', 'transcript.segment', 'session.end', 'session.end']);
     expect(rig.env.sqlite.query("SELECT COUNT(*) AS n FROM knowledge_git_provenance WHERE session_id = ? AND capture_point = 'session_end'").get(session)).toEqual({ n: 1 });
     assertNoRetired();
-    expect(new Set(dialled())).toEqual(new Set(['/events', '/context/prompt', '/context/session', '/members/settings', ...dialled().filter((p) => p.startsWith('/blobs/'))]));
+    expect(new Set(dialled())).toEqual(new Set(['/events', '/context/prompt', '/context/session', ...dialled().filter((p) => p.startsWith('/blobs/'))]));
     expect(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).sessionIds()).toEqual([]);
   });
 
