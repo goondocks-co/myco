@@ -57,6 +57,8 @@ export interface HookMainOptions {
 
 /** What a hook handler receives once input and credential are in hand. */
 export interface HookRun {
+  /** The working directory admitted when this hook resolved its membership. */
+  cwd: string;
   hookName: string;
   input: NormalizedHookInput;
   sessionId: string;
@@ -285,7 +287,7 @@ export async function runMemberHook(
     const ctx: EnvelopeContext = { agent: input.agent, sessionId, stage: spool.stagerFor(sessionId), now };
     const serverUrl = credential.serverUrl;
     const run: HookRun = {
-      hookName, input, sessionId, agent: input.agent, credential, credentialSource: source ?? credential.source, spool, ctx, budget, now, argv, env, mycoHome, fetch: opts.fetch,
+      cwd, hookName, input, sessionId, agent: input.agent, credential, credentialSource: source ?? credential.source, spool, ctx, budget, now, argv, env, mycoHome, fetch: opts.fetch,
       machinePlanDirs: () => machinePlanDirs(serverUrl, mycoHome),
       ...(pending !== null ? { pending: true } : {}),
     };

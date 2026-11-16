@@ -384,7 +384,7 @@ describe('direct session titles', () => {
     h.env.completionProvider = async () => ({ model: '@cf/openai/gpt-oss-20b', complete });
     h.env.afterResponse = work => { pending.push(work()); };
     h.session('direct');
-    h.prompt('direct', 'opening', 'Read docs/task.md and do it.', NOW - 8000);
+    h.prompt('direct', 'opening', 'Read @docs/task.md. Then complete the task.', NOW - 8000);
     return { ...h, settle: () => Promise.all(pending) };
   }
 

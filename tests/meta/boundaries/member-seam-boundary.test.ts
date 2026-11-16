@@ -61,6 +61,7 @@ const ALLOWLIST: readonly string[] = [
   'packages/myco-shared/src/member-protocol.ts',
   // The identity vocabulary and pure registry shared by the member and Deployment.
   'packages/myco-shared/src/prompt-identity.ts',
+  'packages/myco-shared/src/prompt-file-references.ts',
   'packages/myco-shared/src/record-identity.ts',
   'packages/myco-shared/src/harness-health.ts',
   'packages/myco-shared/src/run-control.ts',

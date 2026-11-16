@@ -6,6 +6,7 @@ import { deriveId, mintId, promptEvent, turnEvent, type OutboundEvent } from '..
 import { featureAdvertised, PROMPT_ASK_MAX_CHARS, type ContextAskRequest } from '../member/context-cache.js';
 import { readSessionState, type SessionState } from '../member/session-state.js';
 import { promptContext, queuePromptRecall } from '../member/prompt-context.js';
+import { promptSelectionText } from '../member/prompt-files.js';
 import { sha256Text } from '../member/text.js';
 import type { HookResponse } from './response.js';
 import { HOOK_CONFIG } from './hook-config.generated.js';
@@ -100,7 +101,7 @@ function promptAsk(naming: PromptNaming, text: string, at: number, agent: string
 }
 
 export async function main(opts: HookMainOptions = {}) {
-  await runMemberHook('user-prompt-submit', opts, (run) => {
+  await runMemberHook('user-prompt-submit', opts, async (run) => {
     const { input, sessionId, agent, ctx, spool } = run;
     // `Session::` line matches the daemon's injection format (Branch::, Session::).
     const response = { additionalContext: `Session:: \`${sessionId}\`` };
@@ -129,6 +130,11 @@ export async function main(opts: HookMainOptions = {}) {
     const v1 = advertised(run, PROMPT_IDENTITY_FEATURE);
     const features: AskFeatures = { v1, schemes: v1 && advertised(run, PROMPT_SCHEME_FEATURE) };
     const named = namePrompt(HOOK_CONFIG[agent]?.promptIdentity, sessionId, input.promptKey, features, transcriptWritesRows);
+    const asksPrompt = (HOOK_CONFIG[agent]?.capabilities.promptSubmitInjection !== false || HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true)
+      && !isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text);
+    const selectionText = asksPrompt ? await promptSelectionText({
+      text, cwd: run.cwd, projectRoot: run.credential.root ?? run.cwd, deadline: run.budget.deadline, env: run.env,
+    }) : text;
     const hash = sha256Text(text);
     const human = decision.origin === undefined || decision.origin === 'human';
     // The prompt id the turn-start event names: this submission's own, once it is named.
@@ -150,9 +156,8 @@ export async function main(opts: HookMainOptions = {}) {
         ? []
         : [promptEvent(ctx, { promptId, text, origin: decision.origin, parentPromptId, threadId, threadLabel: thread?.threadLabel ?? undefined })];
       const outgoing = { ...response, ...(promptId === undefined ? {} : { promptId }) };
-      if ((HOOK_CONFIG[agent]?.capabilities.promptSubmitInjection !== false || HOOK_CONFIG[agent]?.capabilities.promptRecallToolDelivery === true)
-        && !isHarnessSystemNotification(NOTIFICATION_BUNDLES, agent, text)) {
-        asking = { naming, request: promptAsk(naming, text, run.now(), agent), response: outgoing };
+      if (asksPrompt) {
+        asking = { naming, request: promptAsk(naming, selectionText, run.now(), agent), response: outgoing };
       }
       return {
         events,

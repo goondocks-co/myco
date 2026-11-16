@@ -78,6 +78,7 @@ describe('plan read dependencies survive transcript derivation', () => {
       const spool = new MemberSpool({ projectId: 'proj_retry', serverUrl: 'https://example.invalid' }, { mycoHome: path.join(root, 'member-home') });
       const sessionId = 'sess-retry';
       const run: HookRun = {
+        cwd: root,
         hookName: 'stop', sessionId, agent: 'claude-code', spool, credentialSource: 'registry',
         input: { agent: 'claude-code', sessionId, transcriptPath: transcript, raw: { cwd: root } },
         credential: { source: 'registry', root, serverUrl: 'https://example.invalid', token: 'fixture-token', projectId: 'proj_retry' },

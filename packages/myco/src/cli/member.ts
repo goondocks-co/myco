@@ -1,3 +1,4 @@
+import { PROMPT_FILE_READER_VERB } from '../member/prompt-file-policy.js';
 import { importSignInHistory, withSignInCapture } from './signin-capture.js';
 import { scanLegacyRegistrations } from '@myco/member/legacy-registration-files.js';
 import { findingOwnedBinary } from '@myco/symbionts/registration-takeover.js';
@@ -1522,6 +1523,7 @@ const memberHelpCommand: MemberCommandRegistration = {
 };
 
 export const MEMBER_COMMANDS: Record<string, MemberCommandRegistration> = {
+  [PROMPT_FILE_READER_VERB]: { hidden: true, help: '', run: async () => { await (await import('../member/prompt-file-reader.js')).runPromptFileReader(); } },
   'trust-pins': {
     help: `  trust-pins [--root <dir>]  Approve the nearest project runtime pin values on this machine.`,
     run: async (rest, deps) => {
