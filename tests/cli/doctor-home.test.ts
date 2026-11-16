@@ -89,7 +89,13 @@ describe('home doctor', () => {
     expect(compact.text).toContain('6 agents connected');
     expect(compact.text).toContain('tools configured for 6 agents');
     expect(compact.text).toContain('nothing waiting to deliver');
-    expect(compact.lines.length).toBeLessThan(25);
+    expect(compact.lines).toHaveLength(8);
+    const summary = compact.lines.findIndex(line => line.startsWith('  Also checked:'));
+    expect(compact.lines[summary]).toContain('Myco connection');
+    expect(compact.lines.findIndex(line => line.startsWith('  Capture waiting:'))).toBeLessThan(summary);
+    expect(compact.lines.findIndex(line => line.startsWith('  Capture losses:'))).toBeLessThan(summary);
+    expect(compact.text).not.toContain('ok Capture');
+    expect(compact.lines.at(-1)).toBe('  7 checks not verified at runtime; use myco doctor --all for every check and detail.');
     expect(compact.text).not.toContain('\x1b');
     expect(compact.text).not.toContain(roots[0]);
     const all = await output(['--all']);
@@ -123,7 +129,10 @@ describe('home doctor', () => {
     expect(warning.text).toContain('myco member join');
     expect(warning.text).not.toContain(roots[2]);
     deps.fetch = async () => { throw new Error('offline'); };
-    expect((await output()).ok).toBe(false);
+    const failed = await output();
+    expect(failed.ok).toBe(false);
+    expect(failed.text).toContain('FAIL Deployment:');
+    expect(failed.lines.find(line => line.startsWith('  Also checked:'))).not.toContain('Deployment');
   });
 
   it('counts sessions with events and transcripts once, including transcript-only sessions', async () => {

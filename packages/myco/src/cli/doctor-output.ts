@@ -61,9 +61,16 @@ export function doctorOutput(checks: readonly DoctorCheck[], options: { all: boo
       const name = names[check.name] ?? check.name;
       groups.set(name, [...(groups.get(name) ?? []), check]);
     }
-    for (const [name, items] of groups) lines.push(`  ${name}: ${items.length} ${items.every(check => check.status === 'ok') ? 'checked' : 'reported; see --all'}`);
-    for (const check of visible.filter(check => ['Capture waiting', 'Capture losses'].includes(check.name))) lines.push(`  ${label(check)} ${check.name}: ${oneLine(shortDetail(check))}`);
+    for (const check of visible.filter(check => ['Capture waiting', 'Capture losses'].includes(check.name))) lines.push(`  ${attention(check) ? label(check) + ' ' : ''}${check.name}: ${oneLine(shortDetail(check))}`);
+    const problemAreas = new Set(visible.filter(attention).map(check => names[check.name] ?? check.name));
     for (const check of visible.filter(check => attention(check) && !['Capture waiting', 'Capture losses'].includes(check.name))) lines.push(`  ${label(check)} ${names[check.name] ?? check.name}: ${oneLine(shortDetail(check))}`);
+    const singleAreas: string[] = [];
+    for (const [name, items] of groups) {
+      if (problemAreas.has(name)) continue;
+      if (items.length === 1) singleAreas.push(name);
+      else lines.push(`  ${name}: ${items.length} ${items.every(check => check.status === 'ok') ? 'checked' : 'reported; see --all'}`);
+    }
+    if (singleAreas.length > 0) lines.push(`  Also checked: ${singleAreas.join(', ')}`);
     lines.push(`  ${unchecked} checks not verified at runtime; use myco doctor --all for every check and detail.`);
   }
   return lines;
