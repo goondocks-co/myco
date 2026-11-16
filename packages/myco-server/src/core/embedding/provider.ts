@@ -22,13 +22,14 @@ export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
 }
 /**
- * Why a provider could not compute a vector: it could not be reached, it did not answer in time, it answered an HTTP
+ * Why a provider could not compute a vector: it could not be reached, it did not answer in time, it redirected, it answered an HTTP
  * error (with how long it asked callers to wait, where it said), its daily quota is spent until `resetsAt`, or it
  * refused this text as input. `detail` carries bounded masked diagnostic detail.
  */
 type EmbeddingFailure =
   | { kind: 'unreachable'; detail: string | null }
   | { kind: 'timeout' }
+  | { kind: 'redirect'; status: number }
   | { kind: 'http'; status: number; retryAfterMs: number | null; detail: string | null }
   | { kind: 'quota'; resetsAt: number; detail: string }
   | { kind: 'input'; detail: string | null };
@@ -96,9 +97,9 @@ export function embeddingDiagnostic(failure: EmbeddingFailure): string {
       : failure.status === 401 || failure.status === 403 ? 'login_missing'
       : failure.status === 429 ? 'rate_limited' : 'harness_error'
     : 'harness_error';
-  const status = failure.kind === 'http' ? `; HTTP ${failure.status}` : '';
+  const status = failure.kind === 'http' || failure.kind === 'redirect' ? `; HTTP ${failure.status}` : '';
   const detail = 'detail' in failure && failure.detail !== null ? `; detail ${diagnosticDetail(failure.detail, FAILURE_DETAIL_CHARS)}` : '';
-  return `${code}${status}${detail}`;
+  return `${code}${status}${failure.kind === 'redirect' ? '; redirect refused' : ''}${detail}`;
 }
 
 /** The longest wait a provider's `Retry-After` is honoured for. */
