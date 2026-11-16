@@ -29,7 +29,8 @@ A prose file must be under the session's credential project root, a machine
 temporary folder, or an extra root approved through the machine setting
 `capture.prompt_file_roots`. The default is an empty list. My machines offers
 “Extra prompt file folders”; the existing machine settings writer validates the
-list, and the member caches it at session start.
+list, and normal member deliveries carry changes into the cache without a new
+session start.
 
 Extra roots use `~/subfolder` syntax. Absolute paths are refused: the Deployment
 cannot verify an absolute path against another machine's home. The home itself,

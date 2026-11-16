@@ -10,7 +10,7 @@ import { machineMember } from '../clients/machine.ts';
 
 const LEAF = 'capture.plan_dirs';
 /** Every other leaf a machine holds, at its default: the folders it captures repositories under, and none told to connect. */
-const AT_DEFAULT = { 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} };
+const AT_DEFAULT = { 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} };
 
 /**
  * A machine's settings on both targets (#1393): set on the dashboard by the machine's own member and nobody else, and
@@ -139,6 +139,10 @@ export const machineSettings: ParityScenario = {
       expect((await put(owner, MACHINE_ID, ['docs/delivery-plans'])).status).toBe(200);
       await member.pass();
       expect(machinePlanDirs(target.url, home)).toEqual(['docs/delivery-plans']);
+      expect((await fetch(`${target.url}${updates}/capture.prompt_file_roots`, { method: 'PUT', headers: owner, body: JSON.stringify({ value: ['~/tasks'] }) })).status).toBe(200);
+      await member.prompt();
+      expect(member.paths()).toEqual(['/events']);
+      expect(member.promptRoots()).toEqual(['~/tasks']);
       expect((await automaticWrite(false)).status).toBe(200);
       expect(await automatic()).toMatchObject({ application: 'pending' });
       await member.pass();
