@@ -243,6 +243,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   let selected;
   try { selected = readDefaultDeployment(home, { strict: true }); }
   catch (error) { checks.push(row('Default Myco', 'warn', `${error instanceof Error ? error.message : String(error)}. Inspect ${path.join(home, 'member', 'default.json')}, then run \`myco login <address> --default\`.`)); }
+  const reachable = new Set<string>();
   for (const membership of listing.memberships) {
     checks.push(row('Membership', 'ok', `${membership.serverUrl}${selected?.serverUrl === deploymentUrl(membership.serverUrl) ? ' (default for new repositories)' : ''}; machine ${membership.machineId}, joined ${iso(membership.joinedAt)}.`));
     const state = membership.refreshTerminal === true ? 'refused renewal' : membership.expiresAt !== undefined && membership.expiresAt <= now ? 'expired' : membership.expiresAt === undefined ? 'expiry unknown' : 'locally unexpired';
@@ -251,6 +252,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
       connectTimeoutMs: HOME_HEALTH_TIMEOUT_MS,
       requestTimeoutMs: Math.min(deps.requestTimeoutMs ?? HOME_HEALTH_TIMEOUT_MS, HOME_HEALTH_TIMEOUT_MS),
     });
+    if (healthy) reachable.add(deploymentUrl(membership.serverUrl));
     checks.push(row('Deployment', healthy ? 'ok' : 'fail', healthy
       ? `${membership.serverUrl} answers its health route.`
       : `${membership.serverUrl} is unreachable or did not answer its health route. Check the address and connection.${membership.expiresAt !== undefined && membership.expiresAt <= now - STALE_CREDENTIAL_MS ? ` If this address was abandoned, run myco logout ${membership.serverUrl} --local-only to remove its local membership.` : ''}`));
@@ -274,7 +276,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   for (const entry of projects.entries) {
     checks.push(row('Repository', 'ok', `${entry.displayRoot ?? entry.root} → ${entry.serverUrl} / ${entry.projectId}.`));
     const facts = observeProjectCapture(entry, home, now);
-    checks.push(row('Capture backlog', facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'warn',
+    checks.push(row('Capture backlog', facts.spool.readable ? facts.spool.unacknowledgedTotal === 0 ? 'ok' : 'info' : 'warn',
       `${entry.root}: ${facts.spool.readable ? `${facts.spool.unacknowledgedTotal ?? 'unknown'} event(s) waiting to deliver` : 'spool unreadable'}; last delivery ${iso(facts.spool.lastDeliveryAt)}.${facts.spool.readable && facts.spool.unacknowledgedTotal === 0 ? '' : ' Run `myco member drain` from that repository.'}`));
     if (!facts.latchReadable || facts.latch !== null) checks.push(row('Capture', 'warn', `${entry.root}: ${facts.latchReadable ? `delivery held off since ${iso(facts.latch?.since)}; next probe ${iso(facts.latch?.nextProbeAt)}` : 'offline latch unreadable'}. Run \`myco member drain\` from that repository.`));
     const refusals = facts.refusalHistory;
@@ -283,7 +285,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
         `${entry.root}: ${refusals.readable ? `${refusals.total} refused events; newest ${iso(refusals.latest)}; ${refusals.recent} in the last 7 days; ${refusals.unreadableLines} unreadable log lines` : 'refusal log unreadable'}. Run myco logs from that repository.`));
     }
   }
-  checks.push(...captureHealthChecks(home, projects.entries, now));
+  checks.push(...captureHealthChecks(home, projects.entries, now, reachable));
   checks.push(checkInstallation(home), checkAutomaticUpdate(home));
   checks.push(...leftRepositoryChecks(home), ...refusedHookChecks(home, now));
   if (listing.memberships.length > 0) checks.push(...setupChecks(home));

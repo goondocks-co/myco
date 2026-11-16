@@ -1,3 +1,4 @@
+import { recordMissingMembership, MISSING_MEMBERSHIP_RETENTION_MS } from '@myco/member/no-membership.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
@@ -34,7 +35,7 @@ let home: string;
 let deps: MemberDoctorDeps;
 let platform: ReturnType<typeof recordingPlatform>;
 let savedHome: string | undefined;
-const now = 2_000_000;
+const now = Date.parse('2026-11-16T12:00:00Z');
 const personal = 'https://homelab.example';
 const work = 'https://work.example';
 beforeEach(() => {
@@ -159,9 +160,74 @@ describe('home doctor', () => {
     spool.append('both', promptEvent({ agent: 'claude-code', sessionId: 'both', now: () => now - 180_000 }, { promptId: mintId(), text: 'waiting event' }));
     const result = await output();
     expect(result.ok).toBe(true);
-    expect(result.text).toContain('2 sessions waiting (1 with events, 2 with transcripts); oldest activity 3 minutes ago');
+    expect((await output(['--all'])).text).toContain('2 sessions waiting (1 with events, 2 with transcripts); oldest activity 3 minutes ago');
     expect(result.text).toContain('myco member drain');
     expect((await output(['--all'])).text).toContain('proj_repo_1 (2 connected repositories:');
+  });
+
+  it('keeps growing transcripts and sessions idle between turns out of attention', async () => {
+    const [root] = connectedHome();
+    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    for (const [sessionId, minutes] of [['live', 1], ['idle', 57]] as const) {
+      const file = path.join(scratch, `${sessionId}.jsonl`);
+      fs.writeFileSync(file, 'capture in progress');
+      fs.utimesSync(file, new Date(now - minutes * 60_000), new Date(now - minutes * 60_000));
+      updateSessionState(spool.dir, sessionId, state => {
+        state.transcript = { path: file, transcriptId: sessionId, inode: 1, nextOffset: 0, parsedSize: 0 };
+        state.lastDeliveryAt = now - 4 * 60_000;
+      }, now);
+    }
+    const compact = await output();
+    expect(compact.text).toContain('nothing needs attention');
+    expect(compact.text).toContain('2 sessions in progress; last delivery');
+    expect(compact.text).not.toContain('myco member drain');
+    expect((await output(['--all'])).text).toContain('2 sessions waiting (0 with events, 2 with transcripts)');
+  });
+
+  it('names the repository when a quiet transcript has not delivered', async () => {
+    const [root] = connectedHome();
+    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    const file = path.join(scratch, 'quiet.jsonl');
+    fs.writeFileSync(file, 'undelivered transcript');
+    const quietAt = now - 3 * 60 * 60_000;
+    fs.utimesSync(file, new Date(quietAt), new Date(quietAt));
+    updateSessionState(spool.dir, 'quiet', state => {
+      state.transcript = { path: file, transcriptId: 'quiet', inode: 1, nextOffset: 0, parsedSize: 0 };
+      state.hookAt = quietAt;
+    }, quietAt);
+    const result = await output();
+    expect(result.ok).toBe(true);
+    const problem = result.lines.find(line => line.startsWith('  WARN Capture waiting:'))!;
+    expect(problem).toContain(root);
+    expect(problem).toContain('myco member drain');
+  });
+
+  it('keeps unconnected folder requests and older unrecognized records informational under --all', async () => {
+    connectedHome();
+    const folders = ['background', 'temporary', 'home'].map(name => path.join(scratch, name));
+    for (const root of [...folders, folders[0]]) recordMissingMembership(root, { mycoHome: home, now: () => now });
+    fs.writeFileSync(path.join(home, 'member', 'unmembered', 'earlier.json'), JSON.stringify({ version: 1, root: folders[0], count: 253, firstAt: now - 2 * MISSING_MEMBERSHIP_RETENTION_MS, lastAt: now - 2 * MISSING_MEMBERSHIP_RETENTION_MS }), { mode: 0o600 });
+    const compact = await output();
+    expect(compact.text).toContain('nothing needs attention');
+    expect(compact.text).not.toContain('could not read');
+    expect(compact.text).not.toContain('myco member join');
+    expect(compact.text).not.toContain('outside connected repositories');
+    const all = await output(['--all']);
+    expect(all.text).toContain('Unconnected folders: info 4 requests outside connected repositories');
+    expect(all.text).toContain('last 30 days');
+    for (const root of folders) expect(all.text).toContain(root);
+    expect(all.text).toContain('1 unrecognized folder records omitted');
+  });
+
+  it('names an unreadable capture loss file in the default report', async () => {
+    const [root] = connectedHome();
+    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    const file = path.join(spool.dir, 'capture-losses.json');
+    fs.writeFileSync(file, '{broken', { mode: 0o600 });
+    const result = await output();
+    const problem = result.lines.find(line => line.startsWith('  WARN Capture losses:'))!;
+    expect(problem).toContain(file);
+    expect(problem).toContain('malformed');
   });
 
   it('reports recent loss kinds and dates without counting old losses as recent', async () => {
@@ -245,16 +311,16 @@ describe('home doctor', () => {
     expect(text).not.toContain('no provisioning recorded for this Deployment');
   });
 
-  it('leads capture attention rows with their repository before the recovery command', async () => {
+  it('leads capture observations with their repository before the recovery command', async () => {
     const fixture = statusHome(path.join(scratch, 'capture'));
     const rows = await homeReport(fixture.home, { ...deps, now: () => STATUS_NOW });
-    for (const [name, root, command] of [
-      ['Capture backlog', fixture.repositories[0], 'myco member drain'],
-      ['Capture', fixture.repositories[0], 'myco member drain'],
-      ['Refusals', fixture.repositories[1], 'myco logs'],
+    for (const [name, root, command, status] of [
+      ['Capture backlog', fixture.repositories[0], 'myco member drain', 'info'],
+      ['Capture', fixture.repositories[0], 'myco member drain', 'warn'],
+      ['Refusals', fixture.repositories[1], 'myco logs', 'warn'],
     ]) {
       const check = rows.find(check => check.name === name && check.detail.startsWith(root + ':'));
-      expect(check?.status).toBe('warn');
+      expect(check?.status).toBe(status);
       expect(check?.detail.indexOf(command)).toBeGreaterThan(root.length);
     }
   });

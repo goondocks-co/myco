@@ -33,7 +33,7 @@ function shortDetail(check: DoctorCheck): string {
 
 /** Details retain every check; the default lists attention and healthy totals by kind. */
 export function doctorOutput(checks: readonly DoctorCheck[], options: { all: boolean }): string[] {
-  const visible = checks.filter(check => check.name !== 'Capture backlog');
+  const visible = checks.filter(check => check.name !== 'Capture backlog' && !check.detailOnly);
   const shown = options.all ? checks : visible;
   const failed = shown.filter(check => check.status === 'fail').length;
   const warned = shown.filter(check => check.status === 'warn').length;
