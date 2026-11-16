@@ -2,7 +2,7 @@ import { emit } from '../../telemetry.js';
 import type { BlobStore, JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { KPI_CATCHUP } from '../insights/kpi-catchup.js';
-import { PUBLICATION_REOPEN_CATCHUP, seedParserReopen } from '../documents/reopen.js';
+import { PUBLICATION_REOPEN_CATCHUP, PARSER_REOPEN_PHASE, seedParserReopen } from '../documents/reopen.js';
 import { PUBLICATION_VERSION_CATCHUP } from '../documents/rebuild.js';
 import { PUBLICATION_PIN_CATCHUP } from '../documents/pin-schema.js';
 import { PUBLICATION_OWNERSHIP_CATCHUP } from '../documents/metadata-catchup.js';
@@ -60,6 +60,7 @@ interface Phase {
   frontier: string | null;
   done: number;
   generation: number;
+  initialize?: number;
 }
 const REGISTERED = new Map<string, { projection: string; phase: CatchupPhase }>();
 for (const family of FAMILIES) {
@@ -71,7 +72,12 @@ for (const family of FAMILIES) {
 const registered = (phase: string) => REGISTERED.get(phase)!;
 
 export const projectionPhases = read<[string], Phase>({ name: 'projection.phases', sql: 'SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE projection=? ORDER BY phase' });
-const pending = read<[], Phase>({ name: 'projection.pending', sql: "SELECT projection,phase,after_key,frontier,done FROM projection_catchup WHERE done=0 ORDER BY CASE projection WHEN 'run_admission' THEN 0 WHEN 'publication_pins' THEN 1 ELSE 2 END,projection,phase" });
+const pending = read<[], Phase>({ name: 'projection.pending', sql: `SELECT * FROM (
+  SELECT projection,phase,after_key,frontier,done,0 AS initialize FROM projection_catchup WHERE done=0
+  UNION ALL SELECT 'publication_reopen','${PARSER_REOPEN_PHASE}','[]',NULL,0,1
+    WHERE NOT EXISTS(SELECT 1 FROM projection_catchup WHERE projection='publication_reopen' AND phase='${PARSER_REOPEN_PHASE}')
+  ) ORDER BY CASE projection WHEN 'run_admission' THEN 0 WHEN 'publication_pins' THEN 1 ELSE 2 END,projection,phase` });
+const PHASE_INITIALIZATION_CALLS = 2;
 /**
  * Restart every phase. Only a phase that has progressed takes a new generation: a page sets its frontier in the same
  * commit as its state read, so a phase still at its start has no page in flight, and restarting it twice is a no-op.
@@ -148,10 +154,15 @@ export async function catchUpProjections(
   { budget = PROJECTION_CATCHUP_BUDGET, clock = Date.now, blobs }: { budget?: Readonly<JobBudget>; clock?: () => number; blobs?: BlobStore } = {},
 ): Promise<{ changed: number; more: boolean; failures?:readonly {projection:string;phase:string}[] }> {
   const deadline = clock() + budget.wallMs;
-  await commit(db, seedParserReopen());
   let [rows] = await readSet(db, pending.bind());
   let changed = 0;
-  let calls = 2;
+  let calls = 1;
+  if (rows.some(row => row.initialize === 1)) {
+    if (calls + PHASE_INITIALIZATION_CALLS > budget.calls || clock() >= deadline) return { changed: 0, more: true };
+    await commit(db, seedParserReopen());
+    [rows] = await readSet(db, pending.bind());
+    calls += PHASE_INITIALIZATION_CALLS;
+  }
   let longestPageMs = 0;
   const deferred = Symbol('projection_page_deferred');
   const skipped=new Set<string>();
