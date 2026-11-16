@@ -308,6 +308,10 @@ const RegistrationSchema = z.object({
   hooksTarget: z.string().optional(),
   /** Repository-relative member hook path recognized by read-only leftover-entry diagnostics. */
   memberHooksTarget: z.string().optional(),
+  /** Root key holding the event map in the harness's JSON hooks file. */
+  hooksRootKey: z.string().min(1).optional(),
+  /** Capture limits shown alongside a connected harness in doctor. */
+  memberCaptureLimits: z.string().max(300).optional(),
   /**
    * A line `myco member provision` prints after writing this symbiont's member
    * surface, for a step only the user can take in the agent (e.g. trusting
@@ -430,6 +434,11 @@ const RegistrationSchema = z.object({
   hooksTemplateFile: z.string().optional(),
   /** Top-level `version` integer written alongside the `hooks` object. */
   hooksConfigVersion: z.number().optional(),
+  /**
+   * The hooks file is Myco's own: Myco creates it and no one else writes it. Leaving removes the file once no hook
+   * remains. Without this, a file is the person's and keeps its `version` when Myco's hooks are taken out.
+   */
+  hooksFileOwned: z.boolean().optional(),
   /**
    * Hook stdout contract. `plain-text` writes `additionalContext` verbatim;
    * `json` emits a flat object with semantic HookResponse fields renamed
@@ -581,6 +590,7 @@ const CapabilitiesSchema = z.object({
    * `injection-support.ts` is retained as a drift check.
    */
   sessionStartInjection: z.boolean().default(false),
+  sessionStartOnce: z.boolean().default(false),
   /**
    * Whether this symbiont has a subagent-start lifecycle hook whose
    * response can place model-visible context into the child agent before
@@ -597,6 +607,8 @@ const CapabilitiesSchema = z.object({
   postToolUseInjection: z.boolean().default(false),
   /** Whether a tool hook can render recall held by the prompt hook. */
   promptRecallToolDelivery: z.boolean().default(false),
+  /** Whether prompt-hook stdout reaches the model. False retains recall for a tool hook, if available. */
+  promptSubmitInjection: z.boolean().default(true),
   /**
    * Which side writes this symbiont's turn rows.
    *
@@ -646,9 +658,11 @@ const CapabilitiesSchema = z.object({
 }).strict().default(() => ({
   preToolUseInjection: false,
   sessionStartInjection: false,
+  sessionStartOnce: false,
   subagentStartInjection: false,
   postToolUseInjection: false,
   promptRecallToolDelivery: false,
+  promptSubmitInjection: true,
   turnRowSource: 'hook' as const,
   transcriptFidelity: 'full' as const,
   canopyReadTools: [],
@@ -1008,17 +1022,7 @@ export const SymbiontManifestSchema = z.object({
   displayName: z.string(),
   binary: z.string(),
   configDir: z.string(),
-  /**
-   * User-global directory whose existence signals that this agent is
-   * installed on the machine. The detection function walks the manifest
-   * registry and checks each declared `detectionDir`. Use the canonical
-   * user-home location (e.g. `~/.claude`, `~/.codex`); `~` is expanded by
-   * the consumer. Manifests that have no global surface (or that should be
-   * detected by a different signal) may omit this field. An explicit `null`
-   * means "intentionally no global detection" — used during the Gemini→
-   * Antigravity transition where two manifests share `~/.gemini` but only
-   * Antigravity should claim detection.
-   */
+  /** Global detection directory; omitted uses executable/install locations, null disables detection. */
   detectionDir: z.string().nullable().optional(),
   health: z.object({
     installLocations: z.array(z.string()),
@@ -1056,6 +1060,8 @@ export const SymbiontManifestSchema = z.object({
      * then `tool_response` — the two keys runtimes deliver a tool's result under.
      * Same transcript-only caveat applies as `lastResponse`. */
     toolOutput: HookFieldPathSchema.default(['tool_output', 'tool_response']),
+    /** Error carried by a completion hook that also reports successful calls. */
+    toolError: HookFieldPathSchema.optional(),
     /** Env var fallback for session ID (e.g., GEMINI_SESSION_ID). */
     sessionIdEnv: z.string().optional(),
     /**

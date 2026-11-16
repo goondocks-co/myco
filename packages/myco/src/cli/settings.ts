@@ -64,7 +64,9 @@ export function run(args: readonly string[], deps: SettingsCliDeps = {}): void {
   const installer = new SymbiontInstaller(manifest, deps.cwd ?? process.cwd(), resolvePackageRoot(), false);
   const hooks = installer.renderMemberHooks('env');
   if (hooks !== null) {
-    out(JSON.stringify({ hooks }, null, 2));
+    const reg = manifest.registration;
+    out(JSON.stringify({ ...(reg?.hooksConfigVersion === undefined ? {} : { version: reg.hooksConfigVersion }),
+      [reg?.hooksRootKey ?? 'hooks']: hooks }, null, 2));
     return;
   }
   // A plugin-file symbiont has no hook block; its plugin carries the same

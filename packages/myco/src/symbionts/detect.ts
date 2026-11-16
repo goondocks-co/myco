@@ -69,25 +69,22 @@ function byName(manifests: SymbiontManifest[]): SymbiontManifest[] {
   return [...manifests].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-/**
- * Manifests for agents installed on THIS MACHINE — i.e. whose declared
- * `detectionDir` (a user-level dir like `~/.claude`) exists. This is the same
- * machine-global basis the installer's `isAvailableForScope()` and the
- * Symbionts UI use for "detected", and the basis for deciding which agents a
- * project's skills should be symlinked into: agents are machine-global, so a
- * detected agent applies to every project (minus per-project opt-out). Cheap —
- * a `statSync` per manifest, no subprocess spawns. `expandHome` honors
- * `MYCO_SANDBOX_ROOT`, so hermetic tests resolve against the sandboxed home.
- */
+/** Installed agents use their declared directory, or executable and installation locations. */
 export function detectMachineInstalledSymbionts(): SymbiontManifest[] {
-  return loadManifests().filter((m) => {
-    if (!m.detectionDir) return false;
-    try {
-      return fs.statSync(expandHome(m.detectionDir)).isDirectory();
-    } catch {
-      return false;
-    }
-  });
+  return loadManifests().filter(m => m.detectionDir === null ? false : m.detectionDir
+    ? installedDirectory(m.detectionDir)
+    : hasSymbiontInstallation(m));
+}
+
+function installedDirectory(location: string): boolean {
+  // Any failure to read the location means "not detected": one unreadable or looping entry never stops setup for the other agents.
+  try { return fs.statSync(expandHome(location)).isDirectory(); }
+  catch { return false; }
+}
+
+/** Configuration managed by Myco is not installation evidence unless the manifest declares it. */
+export function hasSymbiontInstallation(manifest: SymbiontManifest, binaryFound = isBinaryOnPath): boolean {
+  return binaryFound(manifest.binary) || (manifest.health?.installLocations ?? []).some(location => fs.existsSync(expandHome(location)));
 }
 
 /**

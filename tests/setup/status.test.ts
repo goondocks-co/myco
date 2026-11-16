@@ -355,7 +355,7 @@ for (const backupOnly of [false, true]) it(`reports installed 2.0 capture separa
     expect(text).not.toContain('earlier move');
     const doctor = (await homeReport(fixture.home, { ...deps(), worker: { runner: () => { throw new Error('No service calls'); } } })).map(check => check.detail).join('\n');
     expect(doctor).toContain('hooks (');
-    expect(doctor).toContain('are installed; capture execution not checked');
+    expect(doctor).toContain('are connected; capture execution not checked');
     expect(doctor).not.toContain('still own capture');
     recordProvision(fixture.home, { serverUrl: STATUS_URL, agents: [], version: 'earlier-build', at: 1 }, { replace: true });
     const stale = await observeSetupStatus(fixture.home, { role: 'join', url: STATUS_URL, noAgents: true }, deps());

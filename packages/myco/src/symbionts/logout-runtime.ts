@@ -6,6 +6,7 @@ import {
   logoutDeployment as logoutMemberDeployment,
   type LogoutDeps, type LogoutReport, type LogoutRuntime,
 } from '../member/logout.js';
+import { prepareMemberSkillRemoval, skillsFolder } from './member-skill-links.js';
 import { loadManifests, resolvePackageRoot } from './detect.js';
 import { MemberFileReconciliation, SymbiontInstaller } from './installer.js';
 import { readProvisionRecord, reconcileProvisionDeployment } from './member-provision-record.js';
@@ -54,7 +55,15 @@ export function logoutDeployment(
         reconciliation.attempt(manifest, () => installer.reconcileDeploymentLogout(serverUrl, nextDefault, keepHooks));
       }
       reconciliation.finish(
-        () => reconcileProvisionDeployment(mycoHome, serverUrl, nextDefault, [...problems.keys()]),
+        () => {
+          if (!keepHooks && problems.size === 0) {
+            const folders = new Set(loadManifests().flatMap(manifest => manifest.registration?.globalSkillsTarget
+              ? [skillsFolder(manifest.registration.globalSkillsTarget)] : []));
+            const removals = [...folders].map(folder => prepareMemberSkillRemoval(mycoHome, folder));
+            for (const remove of removals) remove();
+          }
+          reconcileProvisionDeployment(mycoHome, serverUrl, nextDefault, [...problems.keys()]);
+        },
         deps.onReconciliationProblem ?? (problem => process.stderr.write(`myco logout: ${problem}\n`)),
       );
       return [...problems].map(([agent, reason]) => ({ agent, reason }));

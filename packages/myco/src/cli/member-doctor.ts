@@ -86,7 +86,7 @@ function captureChecks(root: string, mycoHome: string, packageRoot: string, requ
           checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) run ${program}, which ${problem}, so they capture nothing. Check this executable and its access permissions.`));
         } else {
           capturing += 1;
-          checks.push(row('Capture', 'not-checked', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are installed; capture execution not checked. Start a new agent session to check capture.`));
+          checks.push(row('Capture', 'not-checked', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are connected; capture execution not checked.${manifest.registration?.memberCaptureLimits ? ' ' + manifest.registration.memberCaptureLimits : ' Start a new agent session to check capture.'}`));
         }
       } else if (hooks.present) {
         checks.push(row('Capture', 'warn', `${manifest.displayName}'s ${hooks.scope} hooks (${hooks.target}) are Myco's 1.4 capture, not the member's. Review capture handover with \`myco cutover --dry-run\`.`));

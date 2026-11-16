@@ -899,6 +899,7 @@
     "tests/symbionts/detect-path-lookup-program.test.ts": 198,
     "tests/symbionts/detect.test.ts": 639,
     "tests/symbionts/ensure-symlink.test.ts": 109,
+    "tests/symbionts/harness-members.test.ts": 1000,
     "tests/symbionts/harness-attribution.test.ts": 5870,
     "tests/symbionts/hook-template-symbiont-flag.test.ts": 234,
     "tests/symbionts/installer-capture-roundtrip.test.ts": 814,

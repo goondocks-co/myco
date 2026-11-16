@@ -34,7 +34,7 @@ beforeEach(() => {
   previousPath = process.env.PATH;
   const bin = path.join(process.env.HOME!, 'bin');
   fs.mkdirSync(bin, { recursive: true });
-  for (const name of ['claude', 'codex']) fs.writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  for (const name of ['claude', 'codex', 'copilot', 'agy', 'windsurf']) fs.writeFileSync(path.join(bin, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
   writeDeploymentMembership({ serverUrl: SERVER, token: 'A'.repeat(43), machineId: 'fixture', joinedAt: 1, updatedAt: 1 }, { mycoHome: home });
 });
@@ -61,7 +61,8 @@ it('keeps chosen current agents complete and offers each installed agent never s
   expect(facts.find(fact => fact.id === 'machine.agents')).toMatchObject({ state: 'complete', detail: 'current' });
   const lines = renderSetupStatus(facts);
   expect(lines).toContain("Codex is installed; Myco doesn't capture it yet. Run myco member provision codex to add it.");
-  expect(lines).toContain("Myco can't capture Windsurf or GitHub Copilot in this build.");
+  expect(lines).toContain("Windsurf is installed; Myco doesn't capture it yet. Run myco member provision windsurf to add it.");
+  expect(lines).toContain("GitHub Copilot is installed; Myco doesn't capture it yet. Run myco member provision copilot to add it.");
   expect(lines.join('\n')).not.toContain('Out of date');
   expect(refresh()).toBe(true);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
@@ -88,7 +89,7 @@ it('an empty Windsurf hooks file is no Myco registration and is never enrolled b
   expect(member.managedMemberHarnesses(home, SERVER)).toEqual(['claude-code', 'codex']);
   const facts = await status();
   expect(facts.find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
-  expect(renderSetupStatus(facts)).toContain("Myco can't capture Windsurf or GitHub Copilot in this build.");
+  expect(renderSetupStatus(facts)).toContain("Windsurf is installed; Myco doesn't capture it yet. Run myco member provision windsurf to add it.");
   expect(refresh()).toBe(true);
   expect(readProvisionRecord(home)?.agents).toEqual(['claude-code', 'codex']);
   expect(fs.readFileSync(file, 'utf8')).toBe('{}');
@@ -135,24 +136,14 @@ it('keep-current leaves a torn record alone and logs once until its readable sta
   } finally { log.mockRestore(); }
 });
 
-for (const repair of ['refresh', 'provision', 'keep-current'] as const) it(`${repair} drops recorded uncapturable agents without judging or repairing them`, async () => {
+it('refresh repairs recorded harnesses and retains their provision choices', async () => {
   provision('claude-code');
-  recordProvision(home, { version: getPluginVersion(), serverUrl: SERVER, agents: ['claude-code', 'windsurf', 'copilot', 'antigravity'] });
-  const facts = await observeSetupStatus(home, { role: 'join', url: SERVER }, { agents: () => ['claude-code', 'antigravity', 'copilot', 'windsurf'], includeCapture: false });
-  expect(facts.find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
-  const lines = renderSetupStatus(facts);
-  expect(lines).toContain("Myco can't capture Google Antigravity, GitHub Copilot or Windsurf in this build.");
-  expect(lines.filter(line => /Antigravity|GitHub Copilot|Windsurf/.test(line))).toHaveLength(1);
-  expect(lines.join('\n')).not.toContain('Out of date');
-  expect(setupChecks(home).every(check => check.status === 'ok')).toBe(true);
-  expect(setupChecks(home).map(check => check.detail).join('\n')).not.toMatch(/Windsurf|Copilot|Antigravity/);
-  if (repair === 'refresh') {
-    let ids: string[] | undefined;
-    expect(member.runProvision(['--refresh'], { mycoHome: home, cwd: scratch, stdout: () => {} }, result => { ids = result?.harnesses.map(fact => fact.id); })).toBe(true);
-    expect(ids).toEqual(['claude-code']);
-  } else if (repair === 'provision') expect(member.runProvision(['claude-code', '--server', SERVER], { mycoHome: home, cwd: scratch, stdout: () => {} })).toBe(true);
-  else expect(keepCurrent(home, { binaryFound: () => true })?.harnesses.map(fact => fact.id)).toEqual(['claude-code']);
-  expect(readProvisionRecord(home)?.agents).toEqual(['claude-code']);
+  const agents = ['claude-code', 'windsurf', 'copilot', 'antigravity'];
+  recordProvision(home, { version: getPluginVersion(), serverUrl: SERVER, agents });
+  expect((await status()).find(fact => fact.id === 'machine.agents')?.state).toBe('incomplete');
+  expect(refresh()).toBe(true);
+  expect(readProvisionRecord(home)?.agents).toEqual([...agents].sort());
+  expect((await status()).find(fact => fact.id === 'machine.agents')?.state).toBe('complete');
 });
 
 it('read paths stay quiet and an installed agent offer respects a left Deployment conflict', async () => {

@@ -711,6 +711,17 @@ describe('member hooks through the worker: hook-source agents', () => {
     expect(rig.rows('transcript_segments')).toBe(1);
   });
 
+  it('records a failed Antigravity completion as a failure', async () => {
+    // Input: https://antigravity.google/docs/hooks#posttooluse
+    await runHook('post-tool-use', { conversationId: session, cwd: process.cwd(), stepIdx: 5,
+      toolCall: { name: 'run_command', args: { CommandLine: 'npm test' } }, error: 'exit status 1' },
+      { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'antigravity' });
+    const rows = rig.env.sqlite.query('SELECT kind, payload FROM events').all() as Array<{ kind: string; payload: string }>;
+    const failure = rows.find(row => row.kind === 'tool.failure');
+    expect(failure).toBeDefined();
+    expect(JSON.parse(failure!.payload)).toMatchObject({ toolName: 'run_command', success: false, errorMessage: 'exit status 1' });
+  });
+
   it('copilot, which the Deployment does not parse, still ships its turn rows from the hooks', async () => {
     const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
     const copilot = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>

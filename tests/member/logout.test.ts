@@ -740,8 +740,8 @@ describe('Deployment-scoped logout', () => {
   it('reconciles each global MCP target independently and preserves the other target bytes', async () => {
     join(A); join(B);
     recordDefaultDeployment(A, { mycoHome });
-    const copilot = loadManifests().find((m) => m.name === 'copilot')!;
-    const manifest = { ...claude(), registration: { ...claude().registration!, globalMcpTarget: copilot.registration!.globalMcpTarget } };
+    const cline = loadManifests().find((m) => m.name === 'cline')!;
+    const manifest = { ...claude(), registration: { ...claude().registration!, globalMcpTarget: cline.registration!.globalMcpTarget } };
     const installer = new SymbiontInstaller(manifest, mycoHome, PKG, false, mycoHome).withoutProjectRoot();
     const targets = manifest.registration!.globalMcpTarget!;
     expect(targets.length).toBeGreaterThan(1);

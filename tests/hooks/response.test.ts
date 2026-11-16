@@ -89,21 +89,15 @@ describe('writeHookResponse (manifest-driven)', () => {
     });
   });
 
-  describe('pre-tool-use envelope is capability-driven', () => {
-    it('copilot pre-tool-use emits the hookSpecificOutput envelope (preToolUseInjection enabled)', () => {
-      writeHookResponse('copilot', 'pre-tool-use', { additionalContext: 'BLOB' });
-      expect(JSON.parse(captured)).toEqual({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          additionalContext: 'BLOB',
-        },
-      });
-    });
+  it('returns CLI post-tool context in Copilot\'s documented flat output', () => {
+    // https://docs.github.com/en/copilot/reference/hooks-reference#posttooluse-output
+    writeHookResponse('copilot', 'post-tool-use', { additionalContext: 'memory' });
+    expect(JSON.parse(captured)).toEqual({ additionalContext: 'memory' });
+  });
 
-    it('cursor pre-tool-use does not emit the envelope (no preToolUseInjection capability)', () => {
-      writeHookResponse('cursor', 'pre-tool-use', { additionalContext: 'BLOB' });
-      expect(captured).not.toContain('hookSpecificOutput');
-    });
+  it.each(['copilot', 'windsurf'])('%s emits nothing at the prompt hook whose output is discarded', (agent) => {
+    writeHookResponse(agent, 'user-prompt-submit', { additionalContext: 'memory' });
+    expect(captured).toBe('');
   });
 
   describe('subagent-start envelope is capability-driven', () => {
@@ -143,11 +137,7 @@ describe('writeHookResponse (manifest-driven)', () => {
     expect(JSON.parse(captured)).toEqual({ hookSpecificOutput: { hookEventName: 'PostToolUseFailure', additionalContext: 'prompt memory' } });
   });
 
-  it('Copilot emits both tool context shapes', () => {
-    writeHookResponse('copilot', 'post-tool-use', { additionalContext: 'prompt memory' });
-    expect(JSON.parse(captured)).toEqual({ additionalContext: 'prompt memory',
-      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'prompt memory' } });
-  });
+
 
   describe('unknown symbiont', () => {
     it('falls back to the plain-text default rather than crashing', () => {

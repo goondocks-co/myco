@@ -75,6 +75,8 @@ export interface SessionState {
    * the same session again, and the Deployment already holds it. Kept when the journal is deleted.
    */
   startSettled?: true;
+  /** The conversation has recorded its one session start. */
+  sessionStartRecorded?: true;
   /** The current prompt, minted by UserPromptSubmit. */
   promptId?: string;
   /** Capture receipt → canonical prompt id for every prompt this session has captured. */

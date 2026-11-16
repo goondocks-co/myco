@@ -228,9 +228,9 @@ function assertSafeBinaryPathForUnquoted(binaryPath: string): void {
   }
 }
 
-function hookCommandsIn(raw: string): string[] {
+function hookCommandsIn(raw: string, rootKey: string): string[] {
   try {
-    return hookCommands((JSON.parse(raw) as { hooks?: unknown }).hooks);
+    return hookCommands((JSON.parse(raw) as Record<string, unknown>)[rootKey]);
   } catch {
     return [...raw.matchAll(/"command"\s*:\s*("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]) as string);
   }
@@ -323,6 +323,10 @@ export class SymbiontInstaller {
   ) {
   }
 
+  private get hooksRootKey(): string {
+    return this.manifest.registration?.hooksRootKey ?? 'hooks';
+  }
+
   private resolveAbsoluteTarget(field: 'hooks' | 'skills' | 'settings'): string | null {
     const reg = this.manifest.registration;
     if (!reg) return null;
@@ -365,9 +369,10 @@ export class SymbiontInstaller {
     // wired in" correctly across both shapes; the writer (installHooks)
     // still owns the strict-JSON contract.
     try {
-      const parsed = JSON.parse(raw) as { hooks?: Record<string, unknown[]> };
-      const hooks = parsed.hooks ?? {};
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const hooks = (parsed[this.hooksRootKey] ?? {}) as Record<string, unknown[]>;
       for (const groups of Object.values(hooks)) {
+        if (!Array.isArray(groups)) continue;
         for (const group of groups as Array<Record<string, unknown>>) {
           if (isMycoHookGroup(group)) return true;
         }
@@ -478,9 +483,9 @@ export class SymbiontInstaller {
     return this.writeRegistrationTarget(this.resolveAbsoluteTarget('hooks'), 'hooks', scan, (targetPath) => {
 
       const settings = readJsonFile(targetPath);
-      const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
-      const mergedHooks: Record<string, unknown[]> = {};
-      for (const event of new Set([...Object.keys(existingHooks), ...Object.keys(block)])) {
+      const existingHooks = (settings[this.hooksRootKey] ?? {}) as Record<string, unknown[]>;
+      const mergedHooks: Record<string, unknown> = Object.fromEntries(Object.entries(existingHooks).filter(([, groups]) => !Array.isArray(groups)));
+      for (const event of new Set([...Object.keys(existingHooks).filter(key => Array.isArray(existingHooks[key])), ...Object.keys(block)])) {
         const wanted = [...((block[event] ?? []) as Record<string, unknown>[])];
         const merged: unknown[] = [];
         for (const group of (existingHooks[event] ?? []) as Record<string, unknown>[]) {
@@ -496,7 +501,7 @@ export class SymbiontInstaller {
         merged.push(...wanted);
         if (merged.length > 0) mergedHooks[event] = merged;
       }
-      settings.hooks = mergedHooks;
+      settings[this.hooksRootKey] = mergedHooks;
       const reg = this.manifest.registration;
       if (reg?.hooksConfigVersion !== undefined) settings.version = reg.hooksConfigVersion;
       const written = writeJsonFile(targetPath, settings);
@@ -506,7 +511,7 @@ export class SymbiontInstaller {
 
   renderMemberMcp(source: CredentialSource, serverUrlOverride?: string): Record<string, unknown> | null {
     const reg = this.manifest.registration;
-    if (!reg?.mcpTarget) return null;
+    if (!reg?.globalMcpTarget?.length) return null;
     if (reg.memberMcpHeadersHelperKey && !this.sessionMcpRouting()) {
       const serverUrl = serverUrlOverride ?? readRegistryEntry(this.projectRoot, this.memberHomeDir())?.serverUrl ?? this.expectedServerUrl ?? this.deploymentUrl;
       if (serverUrl === undefined) return null;
@@ -842,7 +847,7 @@ export class SymbiontInstaller {
     if (this.manifest.registration?.hooksFormat === HOOKS_FORMAT_PLUGIN_FILE) {
       return { ...none, present, member: present && pluginFileVerdict(raw, this.legacyHomes, this.memberHomeDir()) !== 'stale' && raw.includes(MEMBER_PLUGIN_MARKER), readable: true };
     }
-    const memberCommands = hookCommandsIn(raw)
+    const memberCommands = hookCommandsIn(raw, this.hooksRootKey)
       .filter((command) => this.managesHook(command) && parseCredentialFlag(command.split(/\s+/)) !== null);
     return { ...none, present, member: present && memberCommands.length > 0, memberCommands, readable: true };
   }
@@ -1172,7 +1177,7 @@ export class SymbiontInstaller {
       if (this.isMemberPluginFile()) {
         const content = fs.readFileSync(target, 'utf8');
         if (!this.blocksRegistration(target, 'hooks', scan) && !this.takesOver(ownedPluginBinary(content)) && content.includes(MEMBER_PLUGIN_MARKER)) return true;
-      } else if (hookCommands(this.readMcpFile(target, false)?.hooks).some((command) => !this.takesOver(ownedHookBinary(command)) && this.managesHook(command) && parseCredentialFlag(command.split(/\s+/)) === 'registry')) return true;
+      } else if (hookCommands(this.readMcpFile(target, false)?.[this.hooksRootKey]).some((command) => !this.takesOver(ownedHookBinary(command)) && this.managesHook(command) && parseCredentialFlag(command.split(/\s+/)) === 'registry')) return true;
     }
     const mcp = this.memberMcpTargetPath();
     if (mcp === null) return false;
@@ -1192,8 +1197,9 @@ export class SymbiontInstaller {
     if (this.isMemberPluginFile()) {
       if (fs.readFileSync(target, 'utf8') !== this.renderMemberPlugin('registry')) return false;
     } else {
-      const hooks = this.readMcpFile(target, false)?.hooks;
+      const hooks = this.readMcpFile(target, false)?.[this.hooksRootKey];
       const managed = Object.fromEntries(Object.entries((hooks ?? {}) as Record<string, Record<string, unknown>[]>).flatMap(([event, groups]) => {
+        if (!Array.isArray(groups)) return [];
         const owned = groups.filter(group => hookCommands(group).some(command => this.managesHook(command))).map(group => managedHookGroup(group, command => this.managesHook(command)));
         return owned.length === 0 ? [] : [[event, owned]];
       }));
@@ -1380,7 +1386,7 @@ export class SymbiontInstaller {
         }
       } else {
         const settings = this.readMcpFile(target, false);
-        const commands = hookCommands(settings?.hooks)
+        const commands = hookCommands(settings?.[this.hooksRootKey])
           .filter((command) => !this.takesOver(ownedHookBinary(command)) && rawHasMycoOwnershipSignal(command) && commandVerdict(command, this.legacyHomes) !== 'stale' && !(this.legacyHomes.length > 0 && commandVerdict(command, this.legacyHomes) === 'legacy'));
         const foreign = commands.find((command) => parseCredentialFlag(command.split(/\s+/)) !== 'registry' || !ownBinaries.some((binary) => command.startsWith(`${binary} `)));
         if (foreign !== undefined) {
@@ -1509,19 +1515,22 @@ export class SymbiontInstaller {
       return true;
     }
     const settings = this.readMcpFile(targetPath, false) ?? {};
-    const existingHooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
-    const kept: Record<string, unknown[]> = {};
+    const existingHooks = (settings[this.hooksRootKey] ?? {}) as Record<string, unknown[]>;
+    const kept: Record<string, unknown> = {};
     let removed = false;
     for (const [event, groups] of Object.entries(existingHooks)) {
+      if (!Array.isArray(groups)) { kept[event] = groups; continue; }
       const foreign = withoutMycoHooks(groups as Array<Record<string, unknown>>, command => this.managesHook(command) && command.includes(CREDENTIAL_FLAG));
       if (!isDeepStrictEqual(groups, foreign)) removed = true;
       if (foreign.length > 0) kept[event] = foreign;
     }
     if (!removed) return false;
     if (Object.keys(kept).length > 0) {
-      settings.hooks = kept;
+      settings[this.hooksRootKey] = kept;
     } else {
-      delete settings.hooks;
+      delete settings[this.hooksRootKey];
+      const reg = this.manifest.registration;
+      if (reg?.hooksFileOwned === true && Object.keys(settings).length === 1 && settings.version === reg.hooksConfigVersion) delete settings.version;
     }
     this.writeMemberJson(targetPath, settings, this.readOwnedSettingsAudit()?.file as SettingsFileAudit | undefined);
     return true;

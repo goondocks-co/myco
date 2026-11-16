@@ -5,12 +5,12 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { harnessToolsElsewhere } from '@goondocks/myco-shared/setup-guidance';
-import { expandHome, resolveMycoHome } from '@myco/paths/home.js';
+import { resolveMycoHome } from '@myco/paths/home.js';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { getPluginVersion } from '@myco/version.js';
 import type { SymbiontManifest } from '@myco/symbionts/manifest-schema.js';
 import { LifecycleLock, withFileLockSync } from '@myco/utils/lifecycle-lock.js';
-import { isBinaryOnPath, loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
+import { hasSymbiontInstallation, loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { readProvisionRecord, settleHookTrust, UnreadableProvisionRecordError, type ProvisionRecord } from '@myco/symbionts/member-provision-record.js';
 import { provisionGlobally, withManagedMemberHarnesses, memberHarnessStatus, provisionBackup } from '@myco/cli/member.js';
 import type { ProvisionedHarnessFact } from '@goondocks/myco-shared/harness-health';
@@ -66,10 +66,6 @@ function scopedHarnessFact(fact: ProvisionedHarnessFact, manifest: SymbiontManif
   }
 }
 
-function installEvidence(manifest: SymbiontManifest, binaryFound: (binary: string) => boolean): boolean {
-  return binaryFound(manifest.binary) || (manifest.health?.installLocations ?? []).some((location) => fs.existsSync(expandHome(location)));
-}
-
 function rememberState(mycoHome: string, result: KeepCurrentResult, reportedProblems: ReadonlySet<string>): void {
   const { harnesses, localActions } = result;
   const target = `${harnessReportPath(mycoHome, result.serverUrl)}.states`;
@@ -115,7 +111,7 @@ export function keepCurrent(mycoHome: string, deps: { binaryFound?: (binary: str
         try {
           if (manifest === undefined) throw new Error('This build has no manifest for the provisioned harness');
           new SymbiontInstaller(manifest, mycoHome, deps.packageRoot ?? resolvePackageRoot(), false, mycoHome).withoutProjectRoot().forDeployment(record.serverUrl).assertMemberProvisionAllowed();
-          const installed = installEvidence(manifest, deps.binaryFound ?? isBinaryOnPath);
+          const installed = hasSymbiontInstallation(manifest, deps.binaryFound);
           let status = installed ? memberHarnessStatus(id, mycoHome, record.serverUrl, deps) : { current: false };
           if (installed && (!status.current || record.version !== getPluginVersion())) {
             const backup = provisionBackup(mycoHome);

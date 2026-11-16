@@ -192,8 +192,7 @@ it.each(['cursor', 'copilot'])('keep-current migrates %s even when its hooks are
   const { file, expected } = seed(name, VALUE);
   recordProvision(memberHome, { version: getPluginVersion(), serverUrl: SERVER, agents: [name] }, { replace: true });
   const current = keepCurrent(memberHome, { binaryFound: binary => binary === name });
-  if (name === 'cursor') expect(current?.harnesses).toContainEqual(expect.objectContaining({ id: name, state: 'ready' }));
-  else expect(current?.harnesses).toEqual([]);
+  expect(current?.harnesses).toContainEqual(expect.objectContaining({ id: name, state: 'ready' }));
   expect(fs.readFileSync(file, 'utf8')).toBe(expected);
 });
 

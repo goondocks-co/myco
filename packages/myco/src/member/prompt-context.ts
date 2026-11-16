@@ -79,6 +79,9 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
   const started = Date.now();
   const original = readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id];
   if (original === undefined) return { events: [], claim: () => ({ events: [] }) };
+  if (run.credentialSource === 'registry' && HOOK_CONFIG[run.agent]?.capabilities.promptSubmitInjection === false) {
+    return { events: [], claim: () => ({ events: [], response: {} }) };
+  }
   const capMs = promptContextCapMs(original);
   if (run.credentialSource === 'env') {
     const held = readSessionState(run.spool.dir, run.sessionId).promptRecall?.asks[id];
@@ -102,8 +105,24 @@ export async function promptContext(run: HookRun, id: string, response: HookResp
       log(run, id, held, 'pending');
       return { events: [], response: { ...response, recallPending: true } };
     }
+    if (run.credentialSource === 'env') {
+      // No helper runs under an environment credential, so nothing else releases an ask an earlier prompt left behind.
+      for (const [other, ask] of Object.entries(state.promptRecall!.asks)) if (other !== id && ask.stage === 'discarded') delete state.promptRecall!.asks[other];
+    }
+    if (held.stage === 'ready' && HOOK_CONFIG[run.agent]?.capabilities.promptSubmitInjection === false) {
+      // This agent drops its prompt hook's output: the answer waits for the first tool call, and counts as delivered only there.
+      held.late = true;
+      held.request.text = '';
+      log(run, id, held, 'pending');
+      return { events: [], response: {} };
+    }
     if (held.stage === 'pending') held.stage = 'discarded';
-    return consumePromptRecall(run, state, { id, response, delivery: 'inline' });
+    const rendered = consumePromptRecall(run, state, { id, response, delivery: 'inline' });
+    if (run.credentialSource === 'env' && held.stage === 'discarded') {
+      held.request.text = '';
+      if (held.answer?.receiptId === undefined) delete state.promptRecall!.asks[id];
+    }
+    return rendered;
   } };
 }
 

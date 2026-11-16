@@ -26,6 +26,7 @@ export interface NormalizedHookInput {
   toolName?: string;
   toolInput?: unknown;
   toolOutput?: unknown;
+  toolError?: string;
   /** The harness's own key for this submission, at the field its manifest's `promptIdentity.hookKey` names; absent when the harness sent none. */
   promptKey?: string;
   /** The full raw input for any fields not covered by the mapping. */
@@ -119,6 +120,7 @@ export function normalizeHookInput(input: Record<string, unknown>): NormalizedHo
     toolName: getFirstAtPath(input, fields.toolName) as string | undefined,
     toolInput: getFirstAtPath(input, fields.toolInput),
     toolOutput: getFirstAtPath(input, fields.toolOutput),
+    ...(fields.toolError === undefined ? {} : { toolError: getFirstAtPath(input, fields.toolError) as string | undefined }),
     ...(promptKey === undefined ? {} : { promptKey }),
     raw: input,
   };

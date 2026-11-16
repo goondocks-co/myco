@@ -301,9 +301,9 @@ describe('what a report reads from the member MCP targets', () => {
   });
 
   it('answers for each target on its own, so a malformed one is not hidden by a valid one', () => {
-    // Copilot declares more than one global target and takes no headers helper,
+    // Cline declares more than one global target and takes no headers helper,
     // so its member entry is the launcher carrying the credential flag.
-    const { installer } = globalInstaller('copilot');
+    const { installer } = globalInstaller('cline');
     const targets = globalTargets(installer);
     expect(targets.length).toBeGreaterThan(1);
     for (const { path: file } of targets) fs.mkdirSync(path.dirname(file), { recursive: true });

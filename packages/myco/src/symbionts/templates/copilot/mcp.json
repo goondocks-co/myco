@@ -1,7 +1,12 @@
 {
   "myco": {
-    "type": "stdio",
+    "type": "local",
     "command": "{{mycoBinary}}",
-    "args": ["mcp"]
+    "args": [
+      "mcp"
+    ],
+    "tools": [
+      "*"
+    ]
   }
 }

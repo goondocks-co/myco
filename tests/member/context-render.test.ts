@@ -74,8 +74,8 @@ const spool = () => new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://m
 /** The context a hook answered, whether its harness takes JSON or plain text. */
 const contextOf = (stdout: string): string => {
   try {
-    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string }; additionalContext?: string };
-    return parsed.hookSpecificOutput?.additionalContext ?? parsed.additionalContext ?? stdout;
+    const parsed = JSON.parse(stdout) as { hookSpecificOutput?: { additionalContext?: string }; additionalContext?: string; additional_context?: string };
+    return parsed.hookSpecificOutput?.additionalContext ?? parsed.additionalContext ?? parsed.additional_context ?? stdout;
   } catch {
     return stdout.trim();
   }
@@ -109,7 +109,7 @@ describe('a prompt', () => {
       return served.fetch(request);
     };
     for (const prompt of ['how do we rotate tokens?', 'and the window?']) {
-      const ran = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt, transcript_path: tx }, { helpers: 'run', fetch, symbiont: 'copilot' });
+      const ran = await runHook('user-prompt-submit', { session_id: 'sess-p', prompt, transcript_path: tx }, { helpers: 'run', fetch, symbiont: 'pi' });
       expect(contextOf(ran.stdout)).toBe(`Session:: \`sess-p\`\n\nRecalled for: ${prompt}`);
       expect(served.asked.at(-1)?.promptId).toBe(readSessionState(spool().dir, 'sess-p').promptId!);
       expect(ran.stderr).toContain('wait_ms=');
@@ -117,7 +117,7 @@ describe('a prompt', () => {
     expect(served.asked[1]?.rendered).toHaveLength(1);
     expect(Object.values(readSessionState(spool().dir, 'sess-p').promptRecall!.asks).every(held => held.request.text === '')).toBe(true);
     await spool().drainSession('sess-p', new ServerClient({ serverUrl: 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, async () => Response.json({ persisted: true })), deadlineBudget(Date.now() + 10_000));
-    await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'after acknowledgment', transcript_path: tx }, { helpers: 'run', fetch, symbiont: 'copilot' });
+    await runHook('user-prompt-submit', { session_id: 'sess-p', prompt: 'after acknowledgment', transcript_path: tx }, { helpers: 'run', fetch, symbiont: 'pi' });
     expect(served.asked.at(-1)?.rendered).toEqual([]);
     expect(readSessionState(spool().dir, 'sess-p').contextAsks).toBeUndefined();
     const refused = new ServerClient({ serverUrl: 'https://member-test.invalid', token: rig.token, projectId: 'proj_1' }, async (input, init) => {
@@ -127,7 +127,7 @@ describe('a prompt', () => {
     await spool().drainSession('sess-p', refused, deadlineBudget(Date.now() + 10_000));
     expect(readSessionState(spool().dir, 'sess-p').promptRecall?.asks).toEqual({});
     cacheDeploymentFeatures('https://member-test.invalid', [], mycoHome);
-    const legacy = await runHook('user-prompt-submit', { session_id: 'sess-legacy', prompt: 'older Deployment', transcript_path: transcript('sess-legacy') }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+    const legacy = await runHook('user-prompt-submit', { session_id: 'sess-legacy', prompt: 'older Deployment', transcript_path: transcript('sess-legacy') }, { helpers: 'run', fetch: served.fetch, symbiont: 'pi' });
     expect(contextOf(legacy.stdout)).toContain('Recalled for: older Deployment');
     expect(readSessionState(spool().dir, 'sess-legacy').promptRecall?.asks).toEqual({});
   });
@@ -165,15 +165,18 @@ describe('a prompt', () => {
     const started = Date.now();
     const first = await runHook('user-prompt-submit', { session_id: sessionId, conversationId: sessionId, trajectory_id: sessionId, tool_info: { user_prompt: 'late recall', transcript_path: tx }, prompt: 'late recall', turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
     expect(Date.now() - started).toBeLessThan(capMs + 500);
-    expect(first.stderr).toContain(`cap_ms=${capMs}`);
-    expect(contextOf(first.stdout)).toBe(`Session:: \`${sessionId}\``);
+    if (agent === 'copilot') expect(first.stdout).toBe('');
+    else {
+      expect(first.stderr).toContain(`cap_ms=${capMs}`);
+      expect(contextOf(first.stdout)).toBe(`Session:: \`${sessionId}\``);
+    }
     const finish = async () => { resolve!(Response.json({ persisted: true, context: 'held memory', receiptId })); await background; };
     const tool = () => runHook('post-tool-use', { session_id: sessionId, conversationId: sessionId, trajectory_id: sessionId, agent_action_name: 'post_run_command', tool_info: { transcript_path: tx }, tool_name: 'Read', tool_input: {}, turn_id: 'turn-one', transcript_path: tx }, { fetch, symbiont: agent, helperSpawn: spawn });
     return { first, finish, tool, spawn, fetch, tx, asking: () => asking, discarded, receiptId };
   }
 
-  it('delivers a missed answer on the first tool hook once, naming the asking prompt', async () => {
-    const held = await latePrompt('codex', 'sess-tool', PROMPT_CONTEXT_TOOL_CAP_MS);
+  it.each(['codex', 'copilot'])('%s delivers memory on the first tool hook once, naming the asking prompt', async agent => {
+    const held = await latePrompt(agent, 'sess-tool', PROMPT_CONTEXT_TOOL_CAP_MS);
     updateProjectContext(spool().dir, mycoHome, cache => { cache.blocks.start = { context: 'session-start block', at: Date.now() }; });
     await held.finish();
     const tool = await held.tool();
@@ -249,8 +252,17 @@ describe('a prompt', () => {
     expect(held.discarded).toEqual([held.receiptId]);
   });
 
+  it('captures Windsurf prompts without requesting memory that its hooks cannot deliver', async () => {
+    const served = servingPrompts(() => 'unreadable memory');
+    const ran = await runHook('user-prompt-submit', { trajectory_id: 'sess-unsupported', tool_info: { user_prompt: 'capture me' } },
+      { helpers: 'run', fetch: served.fetch, symbiont: 'windsurf' });
+    expect(ran.stdout).toBe('');
+    expect(served.asked).toEqual([]);
+    expect(readSessionState(spool().dir, 'sess-unsupported').promptRecall).toBeUndefined();
+  });
+
   it('discards a late answer when the harness tool hook cannot add context', async () => {
-    const held = await latePrompt('windsurf', 'sess-unsupported', PROMPT_CONTEXT_INLINE_CAP_MS, { persisted: false, code: 'session_tombstoned' });
+    const held = await latePrompt('cursor', 'sess-unsupported', PROMPT_CONTEXT_INLINE_CAP_MS, { persisted: false, code: 'session_tombstoned' });
     expect(Number(/wait_ms=(\d+)/.exec(held.first.stderr)?.[1])).toBeGreaterThan((PROMPT_CONTEXT_TOOL_CAP_MS + PROMPT_CONTEXT_INLINE_CAP_MS) / 2);
     await held.finish();
     expect(contextOf((await held.tool()).stdout)).not.toContain('held memory');
@@ -266,18 +278,26 @@ describe('a prompt', () => {
     const input = { session_id: 'env-slow', prompt: 'first', transcript_path: transcript('env-slow') };
     const options = { fetch, env, credential: 'env' as const, symbiont: 'copilot' };
     const missed = await runHook('user-prompt-submit', input, options);
-    expect(contextOf(missed.stdout)).toBe('Session:: `env-slow`');
+    expect(missed.stdout).toBe('');
     expect(missed.stderr).toContain(`cap_ms=${PROMPT_CONTEXT_INLINE_CAP_MS} delivery=discarded`);
     expect(missed.stderr).toContain('result=slow');
+    expect(readSessionState(spool().dir, 'env-slow').promptRecall?.asks ?? {}).toEqual({});
     const recovered = await runHook('user-prompt-submit', { ...input, prompt: 'second' }, options);
-    expect(contextOf(recovered.stdout)).toContain('healthy recall');
+    // Copilot drops its prompt hook's output, so the answer is held, uncounted, for the first tool call of the same turn.
+    expect(recovered.stdout).toBe('');
+    expect(recovered.stderr).not.toContain('delivery=inline');
+    const tool = () => runHook('post-tool-use', { session_id: 'env-slow', transcript_path: transcript('env-slow'), tool_name: 'view', tool_input: { path: 'README.md' }, cwd: process.cwd() }, options);
+    const delivered = await tool();
+    expect(contextOf(delivered.stdout)).toContain('healthy recall');
+    expect(delivered.stderr).toContain('delivery=tool');
+    expect(contextOf((await tool()).stdout)).not.toContain('healthy recall');
     expect(requests).toBe(2);
     expect(spool().readRecords('env-slow').filter(record => record?.kind === 'prompt')).toHaveLength(2);
   });
 
   it('reports safe diagnostics for an empty answer and renders the Session line alone', async () => {
     const served = servingPrompts(() => '');
-    const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'find evidence' }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+    const ran = await runHook('user-prompt-submit', { session_id: 'sess-empty', prompt: 'find evidence' }, { helpers: 'run', fetch: served.fetch, symbiont: 'pi' });
     expect(contextOf(ran.stdout)).toBe('Session:: `sess-empty`');
     expect(ran.stderr).toContain('answered empty');
   });
@@ -304,6 +324,20 @@ describe('a session start', () => {
     rig.env.sqlite.query(`INSERT OR REPLACE INTO project_capabilities (project_id, capability, enabled, updated_at, updated_by) VALUES ('proj_1', 'cortex', ?, ?, 'test')`).run(text === null ? 0 : 1, Date.now());
     rig.env.sqlite.query(`INSERT OR REPLACE INTO deployment_settings (leaf, value, updated_at, updated_by) VALUES ('instructions.template', ?, ?, 'test')`).run(JSON.stringify(text ?? ''), Date.now());
   };
+
+  it('records and injects Antigravity session context once across model invocations', async () => {
+    instructions('Conversation context.');
+    const invoke = (id: string, invocationNum: number) => runHook('session-start', {
+      conversationId: id, transcriptPath: transcript(id), workspacePaths: [process.cwd()],
+      invocationNum, lastUserInput: 'the current request',
+    }, { symbiont: 'antigravity', helpers: 'run', fetch: rig.fetch });
+    await invoke('ag-warm', 1);
+    const first = await invoke('ag-once', 1);
+    expect(JSON.parse(first.stdout).injectSteps).toContainEqual({ userMessage: expect.stringContaining('Conversation context.') });
+    const events = rig.env.sqlite.query('SELECT kind, payload FROM events WHERE session_id=? ORDER BY rowid').all('ag-once');
+    for (const invocation of [2, 3]) expect(JSON.parse((await invoke('ag-once', invocation)).stdout)).toEqual({});
+    expect(rig.env.sqlite.query('SELECT kind, payload FROM events WHERE session_id=? ORDER BY rowid').all('ag-once')).toEqual(events);
+  });
 
   it('tells a project\'s first session on this machine its Project, from nothing cached and with no request', async () => {
     const spy = recordingFetch(rig.fetch);
@@ -684,6 +718,18 @@ describe('prompts a harness writes only to its transcript', () => {
     expect(new Set(captured).size).toBe(2);
     await invoke();
     expect(promptIds()).toEqual(captured);
+    const finalPrompt = 'Preserve the full request, including its final instruction. '.repeat(20) + 'Finish here.';
+    fs.appendFileSync(tx, [{ step_index: 3, type: 'USER_INPUT', content: `<USER_REQUEST>${finalPrompt}</USER_REQUEST>`, created_at: 't4' },
+      { step_index: 4, type: 'PLANNER_RESPONSE', content: 'final reply', created_at: 't5' }].map(row => JSON.stringify(row)).join('\n') + '\n');
+    await runHook('stop', { conversationId: 'sess-agy', transcriptPath: tx, cwd: process.cwd() },
+      { helpers: 'run', fetch: rig.fetch, symbiont: 'antigravity' });
+    await publishFixture(rig.env);
+    expect(promptIds()).toEqual([...captured, expect.any(String)]);
+    const prompt = rig.env.sqlite.query("SELECT payload FROM events WHERE kind='prompt' ORDER BY rowid DESC LIMIT 1").get() as { payload: string };
+    expect(JSON.parse(prompt.payload).text).toBe(finalPrompt);
+    const reply = rig.env.sqlite.query("SELECT payload FROM events WHERE kind='response'").get() as { payload: string };
+    expect(JSON.parse(reply.payload)).toMatchObject({ promptId: promptIds().at(-1), text: 'final reply' });
+
   });
 });
 

@@ -23,5 +23,15 @@
     {
       "command": "{{mycoLauncher}} hook stop --symbiont windsurf --phases transcript"
     }
+  ],
+  "post_read_code": [
+    {
+      "command": "{{mycoLauncher}} hook post-tool-use --symbiont windsurf"
+    }
+  ],
+  "post_mcp_tool_use": [
+    {
+      "command": "{{mycoLauncher}} hook post-tool-use --symbiont windsurf"
+    }
   ]
 }

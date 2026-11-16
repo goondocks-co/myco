@@ -2,10 +2,9 @@ name: windsurf
 displayName: Windsurf
 binary: windsurf
 health:
-  installLocations: ["~/.codeium/windsurf", "/Applications/Windsurf.app", "~/Applications/Windsurf.app"]
+  installLocations: ["/Applications/Windsurf.app", "~/Applications/Windsurf.app"]
   activityLocations: [{ kind: file, path: "@transcripts" }]
 configDir: .windsurf
-detectionDir: ~/.codeium/windsurf
 pluginRootEnvVar: WINDSURF_PLUGIN_ROOT
 projectDirEnvVar: WINDSURF_PROJECT_DIR
 hookFields:
@@ -21,6 +20,7 @@ hookFields:
   toolName: agent_action_name
   toolInput: tool_info
   prompt: tool_info.user_prompt
+  toolOutput: tool_info.mcp_result
 capture:
   # Windsurf stores transcripts flat, keyed by trajectory id.
   transcriptDiscovery:
@@ -31,6 +31,8 @@ capture:
     - ~/.windsurf/plans/
 registration:
   hooksTarget: .windsurf/hooks.json
+  memberHooksTarget: .windsurf/hooks.json
+  memberCaptureLimits: "Hooks capture only: no session-start, prompt-time or tool-time memory injection; no session-end hook. Earlier transcripts need project attribution."
   globalHooksTarget: ~/.codeium/windsurf/hooks.json
   # Cascade reads `~/.codeium/windsurf/hooks.json` and requires the
   # documented `{ "hooks": { "<event_name>": [...] } }` envelope — see
@@ -40,9 +42,6 @@ registration:
   # optional per the docs (the field surfaces stdout to the user) and is
   # NOT required for the hook command to execute — confirmed live on a
   # wrapped file with no `show_output`.
-  # New capability — Windsurf MCP only available at the user-global location
-  # under ~/.codeium/windsurf/mcp_config.json. No project-local equivalent;
-  # mcpTarget omitted on purpose.
   globalMcpTarget: ~/.codeium/windsurf/mcp_config.json
   skillsTarget: .agents/skills
   globalSkillsTarget: ~/.agents/skills
@@ -51,6 +50,7 @@ registration:
   settingsTarget: null
   globalSettingsTarget: null
 capabilities:
+  promptSubmitInjection: false
   # Windsurf's bundled hook template does not currently register a
   # session-start hook. Cortex falls back to inline delivery via
   # `myco_cortex` and to the AGENTS.md managed-guidance bullet.
@@ -62,21 +62,15 @@ capabilities:
   # `{ edits: [...], file_path: "..." }` — confirmed from the live buffer of
   # smoke session 028329ac… (2026-06-11).
   #
-  # READ-HOOK ABSENCE (app-side limitation): Cascade file views fire NO hook
-  # at all. The same smoke session read README.md (the assistant response
-  # even says "*Viewed file:…README.md*") yet the buffer contains only
-  # pre_user_prompt, post_write_code, and the cascade-response events.
-  # Windsurf's hook surface has no read/view event, so read activities
-  # cannot be captured — nothing to declare here until the app ships one.
-  # `post_run_command` IS registered in our hook template and documented
-  # (docs.windsurf.com/windsurf/cascade/hooks) to carry `tool_info.command`,
-  # so cat-style shell reads are the one read signal we can extract.
+  # https://docs.windsurf.com/de/windsurf/cascade/hooks
   pathBearingTools:
+    - tool: post_read_code
+      pathField: file_path
     - tool: post_write_code
       pathField: file_path
       mutates: true
     - tool: post_run_command
-      pathField: command
+      pathField: command_line
       extract: shell-arg
       readCommands: [cat, head, tail, less, more, bat, wc, file, nl, sed, awk, grep, rg, perl]
 hooks:

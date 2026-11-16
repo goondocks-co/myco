@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { windsurfAdapter } from '@myco/symbionts/windsurf.js';
 
+// Transcript step shape: https://docs.windsurf.com/de/windsurf/cascade/hooks#post_cascade_response_with_transcript
 /** Build a JSONL string from an array of objects. */
 function toJsonl(entries: Record<string, unknown>[]): string {
   return entries.map((e) => JSON.stringify(e)).join('\n');

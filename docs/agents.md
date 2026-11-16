@@ -12,6 +12,9 @@ Myco works beside the coding agents you already use. It records their sessions a
 | OpenCode | `opencode` |
 | Pi | `pi` |
 | Cline | `cline` |
+| GitHub Copilot CLI | `copilot` |
+| Google Antigravity | `antigravity` |
+| Windsurf | `windsurf` |
 
 Other agents can use project knowledge through an access key; see [External agents](external-agents.md). Capture support and running Myco's own tasks are different: runners can use Claude Code, Codex, OpenCode, Cursor or Antigravity.
 
@@ -37,13 +40,17 @@ Provisioning writes each agent's **global user configuration**, shared across re
 | OpenCode | `~/.config/opencode/plugins/myco.ts` | `~/.config/opencode/opencode.json` |
 | Pi | `~/.pi/agent/extensions/myco/index.ts` | The extension |
 | Cline | `~/.cline/plugins/myco.ts` | Cline's global MCP settings |
+| Copilot CLI | `~/.copilot/hooks/myco-hooks.json` | `~/.copilot/mcp-config.json` |
+| Antigravity | `~/.gemini/config/hooks.json` (named `myco` block) | `~/.gemini/config/mcp_config.json` |
+| Windsurf | `~/.codeium/windsurf/hooks.json` | `~/.codeium/windsurf/mcp_config.json` |
 
 Shipped skills are linked to the agent's live skills location:
 
 | Agent | Location |
 |---|---|
 | Claude Code | `~/.claude/skills` |
-| Codex, Cursor, OpenCode and Pi | `~/.agents/skills` |
+| Codex, Cursor, OpenCode, Pi, Copilot CLI and Windsurf | `~/.agents/skills` |
+| Antigravity | `~/.gemini/config/skills` |
 | Cline | `~/.cline/skills` |
 
 To disconnect one agent:
@@ -52,7 +59,7 @@ To disconnect one agent:
 myco member provision --remove claude-code
 ```
 
-This removes that agent's Myco configuration. To sign the whole machine out, use `myco logout <address>`; see [Leaving a Myco](quickstart.md#leaving-a-myco).
+This removes that agent's Myco hooks, tools and skill links. A shared skills folder keeps its links while another connected agent uses it. To sign the whole machine out, use `myco logout <address>`; see [Leaving a Myco](quickstart.md#leaving-a-myco).
 
 ## What is captured
 
@@ -61,6 +68,44 @@ Myco records your prompts, the agent's replies, its tool activity and plans as y
 Repositories under your capture folders (`~/Repos` by default) join automatically when an agent works in them. Elsewhere, use `myco member join` inside the Git repository. Change **Folders it captures** and **Extra plan folders** under **My machines**.
 
 When the server cannot be reached, capture waits on the machine. `myco member status` shows queued delivery and refusals; `myco member drain` delivers queued capture now.
+
+## Copilot CLI, Antigravity and Windsurf limits
+
+These agents use the same login, provision and logout commands above. Copilot means the terminal CLI; provisioning it leaves VS Code's configuration alone. Antigravity is detected by the `agy` command on PATH. Windsurf’s English documentation now redirects to Devin Desktop, which uses a different hooks file; Myco follows the installed Windsurf IDE’s contract. Doctor shows connected hooks and their limits on one line. Connected configuration does not prove a session has reached Myco.
+
+The matrix separates available contracts from live verification. The supported paths below have isolated configuration and payload tests. Copilot CLI also recognizes the installed MCP entry and lists the Myco skills; Antigravity CLI recognizes its MCP entry. End-to-end capture, model-visible context, MCP calls and skill discovery still need a signed-in harness and an isolated Myco Deployment; no account sign-in or real Deployment was used for this verification.
+
+| Capability | Copilot CLI | Antigravity | Windsurf |
+|---|---|---|---|
+| Session start context | unverified: signed-in CLI needed [C-hooks] | unverified: signed-in agent needed [A-hooks] | no: no session-start hook [W-hooks] |
+| Prompt-time memory | unverified: hook docs say output is dropped; CLI 1.0.65 release notes say included [C-hooks], [C-releases] | not wired: PreInvocation carries lastUserInput and accepts injectSteps [A-hooks] | no: prompt hook has no model-context output [W-hooks] |
+| Late memory at the first tool call | unverified: signed-in CLI with registry credentials needed [C-hooks], [recall] | no: tool-hook output carries no context [A-hooks] | no: tool hooks have no model-context output [W-hooks] |
+| Prompt capture | unverified: signed-in CLI needed; prompt hook [C-hooks] | unverified: signed-in agent needed; transcript backfill [backfill] | unverified: installed, signed-in app needed; prompt hook [W-hooks] |
+| Tool-call capture | unverified: signed-in CLI needed; post-tool hooks [C-hooks] | unverified: signed-in agent needed; post-tool hook, no result body [A-hooks] | unverified: installed, signed-in app needed; read/write/command/MCP hooks [W-hooks] |
+| Response capture | unverified: signed-in CLI needed; transcript at Stop [transcripts] | unverified: signed-in agent needed; transcript at Stop [transcripts] | unverified: installed, signed-in app needed; response hook [W-hooks] |
+| Transcript import | unverified: transcript Project attribution needed [import] | unverified: transcript Project attribution needed [import] | unverified: transcript Project attribution needed [import] |
+| Session end | unverified: signed-in CLI needed; SessionEnd [C-hooks] | no: no session-end hook; Stop ends an execution [A-hooks] | no: no session-end hook; response hooks end turns [W-hooks] |
+| MCP tools | unverified: signed-in CLI and reachable Myco needed [C-mcp] | unverified: signed-in agent and reachable Myco needed [A-mcp] | unverified: installed, signed-in app and reachable Myco needed [W-mcp] |
+| Skills | unverified: model invocation needs sign-in; CLI discovery passes [C-skills] | unverified: agent discovery needed [A-skills] | unverified: app discovery needed [W-skills] |
+
+Copilot receives prompt recall at a completed tool hook: a signed-in machine's helper fetches it, and under an environment credential the prompt hook fetches it within its time bound and holds it for that tool hook. It counts as delivered only when the tool hook prints it. Prompt-hook injection remains unverified because the hook documentation and CLI release notes disagree. A turn with no tool call receives no prompt recall. Antigravity reads prompts from its transcript by source step identity; it injects the session block through SessionStart or PreInvocation once per conversation. Windsurf captures through its hooks and transcript while knowledge is available on demand through MCP and skills. Missing injection hooks do not block any session.
+
+Transcripts are shipped at turn end. Earlier on-disk transcripts are discovered, but these three manifests declare no trustworthy Project attribution field, so automatic history import reports them as unattributable. It does not assign them to the current folder. Antigravity and Windsurf lack an explicit session-end hook; server idle closure remains available.
+
+[C-hooks]: https://docs.github.com/en/copilot/reference/hooks-reference
+[C-releases]: https://github.com/github/copilot-cli/releases/tag/v1.0.65
+[C-mcp]: https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers
+[C-skills]: https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills
+[A-hooks]: https://antigravity.google/docs/hooks
+[A-mcp]: https://antigravity.google/docs/mcp
+[A-skills]: https://antigravity.google/docs/skills
+[W-hooks]: https://docs.windsurf.com/de/windsurf/cascade/hooks
+[W-mcp]: https://docs.windsurf.com/de/windsurf/cascade/mcp
+[W-skills]: https://docs.windsurf.com/de/windsurf/cascade/skills
+[recall]: https://github.com/goondocks-co/myco/blob/main/packages/myco/src/member/prompt-context.ts
+[backfill]: https://github.com/goondocks-co/myco/blob/main/packages/myco/src/member/transcript-prompts.ts
+[transcripts]: https://github.com/goondocks-co/myco/blob/main/packages/myco/src/hooks/stop.ts
+[import]: https://github.com/goondocks-co/myco/blob/main/packages/myco/src/member/import.ts
 
 ## Sessions that start other sessions
 
