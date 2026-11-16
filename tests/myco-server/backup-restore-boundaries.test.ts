@@ -1,5 +1,5 @@
 import { commit } from '@myco-server-worker/db/index.js';
-import { expect, test } from 'bun:test';
+import { expect, spyOn, test } from 'bun:test';
 import type { RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { backupArtifact, createBackup, deploymentId } from '@myco-server-worker/core/backup.js';
 import { restoreArtifact } from './helpers/restore-artifact.js';
@@ -14,6 +14,9 @@ import { eventContent } from '@myco-server-worker/core/event-content.js';
 import { EVENT_INLINE_PAYLOAD_BYTES } from '@myco-server-worker/ingest/event-payload.js';
 import { latestRestore } from '@myco-server-worker/core/restore-job.js';
 import { observing } from './helpers/store-faults.js';
+import { observeRestoreStore } from './helpers/restore-observer.js';
+
+await withDocumentStores(async () => {});
 
 async function artifact(db: RelationalStore, rows: { t: string; r: Record<string, unknown> }[]) {
   return [JSON.stringify({ format: 'myco-backup/1', deploymentId: await deploymentId(db), schemaVersion: 100, createdAt: 1, producer: 'test', counts: {} }),
@@ -136,18 +139,19 @@ test('restoring a hot transcript range after archival keeps one selected range',
       SELECT t.project_id,t.transcript_id,d.generation,t.session_id,?,'source-record-v1',1,'active',? FROM transcripts t
       JOIN session_documents d ON d.project_id=t.project_id AND d.session_id=t.session_id WHERE t.transcript_id=?`)
       .bind(text.length, now, transcript).run();
-    for (let pass = 0; pass < 8; pass++) await archiveRawSources(env, now + 100 * 86_400_000, 90);
+    const clock = spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      for (let pass = 0; pass < 8; pass++) await archiveRawSources(env, now + 100 * 86_400_000, 90);
+    } finally { clock.mockRestore(); }
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
     const { planKind } = await import('@myco-server-worker/ingest/projections.js');
     const { kindSpec } = await import('@myco-server-worker/ingest/kinds.js');
-    const { envelope } = await import('./helpers/fixtures.js');
     const payload = JSON.parse(String(originalEvent.payload));
     const { parseEnvelope } = await import('@myco-server-worker/ingest/envelope.js');
     const parsed = parseEnvelope(envelope({eventId:String(hot.event_id),sessionId:'session',kind:'transcript.segment',payload}),now);
     if (!parsed.ok) throw new Error(parsed.reason);
     const plan = planKind(kindSpec('transcript.segment')!, { ctx: { projectId:'project', machineId:'machine', tokenId:String(hot.token_id), now,
       nonce:String(originalEvent.ingest_nonce), actor:null }, e:parsed.value, p:payload, contentHash:null });
-    const { commit } = await import('@myco-server-worker/db/index.js');
     await commit(db, ...plan.projections);
     expect(await db.prepare('SELECT COUNT(*) n FROM transcript_segments').first(), target).toEqual({ n: 0 });
     const coldRows = (await Promise.all(['raw_archive_refs','blobs','registered_content_proofs'].map(async t =>
@@ -245,7 +249,6 @@ test('a deletion landing once the restore is admitted keeps the session\'s raw r
 });
 
 test('restore guard reads per restored row stay the same as the artifact grows', async () => {
-  const { observeRestoreStore } = await import('./helpers/restore-observer.js');
   const perRow: number[] = [];
   for (const sessionCount of [500, 2_000]) await withDocumentStores(async (db,target) => {
     if (target !== 'D1') return;
@@ -263,7 +266,6 @@ test('restore guard reads per restored row stay the same as the artifact grows',
 
 test('archive selection clears only its named range at the same store cost as the transcript grows', async () => {
   const { clearArchivedTranscriptRanges } = await import('@myco-server-worker/db/documents/ranges.js');
-  const { observeRestoreStore } = await import('./helpers/restore-observer.js');
   await withDocumentStores(async (db,target)=>{
     const blobs=memoryBlobStore();
     await captureDocumentTranscript(db,blobs,'session',transcript,'x',Date.now());
@@ -290,7 +292,6 @@ test('archive selection clears only its named range at the same store cost as th
 });
 
 test('release drain reads do not multiply by retained backup count', async()=>{
-  const { observeRestoreStore }=await import('./helpers/restore-observer.js');
   await withDocumentStores(async(db,target)=>{
     if(target!=='D1')return;
     const releases=2_000;
