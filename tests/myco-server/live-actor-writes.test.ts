@@ -9,7 +9,7 @@ import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.js';
 import { runTimeoutForTask } from '@myco-server-worker/core/task-catalogue.js';
 import { BACKUP_FORMAT } from '@myco-server-worker/core/backup.js';
-import { changingAt, failingStatement, storingCall } from './helpers/store-faults.js';
+import { changingAt, storingCall } from './helpers/store-faults.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -37,7 +37,8 @@ const operations: Operation[] = [
 ];
 
 function snapshot(f: ReturnType<typeof sqliteEnv>) {
-  return { objects: [...f.bucket.objects.keys()], rows: Object.fromEntries(['deployment_settings', 'deployment_setting_resets', 'project_capabilities', 'projects', 'deployment_secrets', 'agent_runs', 'agents', 'member_credentials', 'members', 'backups', 'recovery_forget_commands']
+  const unpublished = new Set(f.sqlite.query<{ key: string }, []>('SELECT key FROM backup_publications').all().map(row => row.key));
+  return { objects: [...f.bucket.objects.keys()].filter(key => !unpublished.has(key)), rows: Object.fromEntries(['deployment_settings', 'deployment_setting_resets', 'project_capabilities', 'projects', 'deployment_secrets', 'agent_runs', 'agents', 'member_credentials', 'members', 'backups', 'recovery_forget_commands']
     .map(table => [table, f.sqlite.query(table === 'members' ? 'SELECT COUNT(*) AS n FROM members' : `SELECT * FROM ${table} ORDER BY rowid`).all()])) };
 }
 
@@ -79,12 +80,11 @@ function stored(f: Fixture) {
 
 /**
  * A request sent on a fresh Deployment with `change` landing just before the call that stores its write: the call is
- * found on another fresh Deployment by what the uninterrupted request stores, never by the SQL it sends. `fault` wraps
- * the store under the change, for a second failure after it.
+ * found on another fresh Deployment by what the uninterrupted request stores, never by the SQL it sends.
  */
 async function raced(options: {
   prepare?: (f: Fixture) => unknown; request: (f: Fixture) => Promise<Response>; change: (f: Fixture) => void;
-  fault?: (f: Fixture) => void; owned?: boolean;
+  owned?: boolean;
 }): Promise<{ f: Fixture; response: Response; unchanged: () => void; landed: boolean }> {
   const observed = await setup(options.owned);
   let at = 0;
@@ -100,7 +100,6 @@ async function raced(options: {
     return { rows, members: members.length, objects: snapshot(fixture).objects };
   };
   const before = kept(f);
-  options.fault?.(f);
   const landing = changingAt(f.env.MYCO_DB, at, () => options.change(f));
   f.env.MYCO_DB = landing.store;
   return { f, response: await options.request(f), unchanged: () => expect(kept(f)).toEqual(before), landed: landing.landed() };
@@ -216,35 +215,20 @@ describe('live authority at administrative writes', () => {
     });
   }
 
-  for (const fault of ['read', 'delete'] as const) {
-    it(`backup cleanup ${fault} failure preserves the terminal admin refusal and surfaces cleanup failure`, async () => {
-      let readFailures: (() => number) | undefined;
-      const log = console.log;
-      const events: string[] = [];
-      console.log = line => { events.push(String(line)); };
-      try {
-        const { f, response, landed } = await raced({
-          request: f => send(f, operations.find(operation => operation.name === 'backup')!),
-          change: f => f.sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]),
-          fault: f => {
-            if (fault === 'read') {
-              const failing = failingStatement(f.env.MYCO_DB, 'storage.backupObjectRegistered');
-              readFailures = failing.failures;
-              f.env.MYCO_DB = failing.store;
-            } else f.bucket.delete = async () => { throw new Error('fixture cleanup delete failure'); };
-          },
-        });
-        try {
-          expect(landed).toBe(true);
-          if (fault === 'read') expect(readFailures!()).toBeGreaterThan(0);
-          expect(response.status).toBe(403);
-          expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
-          expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);
-          expect(events.map(line => JSON.parse(line) as { kind: string })).toContainEqual(expect.objectContaining({ kind: 'backup_publication_cleanup_failed' }));
-        } finally { f.sqlite.close(); }
-      } finally { console.log = log; }
+  it('a terminal backup refusal retains unpublished bytes under their existing upload owner', async () => {
+    const { f, response, landed } = await raced({
+      request: f => send(f, operations.find(operation => operation.name === 'backup')!),
+      change: f => f.sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]),
     });
-  }
+    try {
+      expect(landed).toBe(true);
+      expect(response.status).toBe(403);
+      expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
+      expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);
+      expect([...f.bucket.objects.keys()]).not.toEqual([]);
+      expect(f.sqlite.query('SELECT key FROM backup_publications').all()).not.toEqual([]);
+    } finally { f.sqlite.close(); }
+  });
 
   for (const change of ['demotion', 'revocation'] as const) {
     it(`ordinary dispatch refuses ${change} instead of using cached admin timeout and ceiling`, async () => {

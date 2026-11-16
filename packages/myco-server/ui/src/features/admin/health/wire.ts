@@ -279,6 +279,7 @@ export type RecoveryStatus = RecoveryProducerStatus | RecoveryUnsupported;
 
 /** `GET /api/recovery/exports` on a Deployment that runs a producer. */
 export interface RecoveryProducerStatus {
+  rewind?: string;
   supported: true;
   attempt: number | null;
   stage: string;
@@ -294,6 +295,7 @@ export interface RecoveryProducerStatus {
 
 /** `GET /api/recovery/exports` on a Deployment that runs no producer: said plainly, beside the schedule. */
 export interface RecoveryUnsupported {
+  rewind?: string;
   supported: false;
   reason: string;
   schedule: RecoverySchedule | { unreadable: string };

@@ -1,6 +1,6 @@
 import { HARNESS_STOP_FEATURE } from '@goondocks/myco-shared/run-protocol';
-import { LAST_PUBLICATION_MARK } from './db/schema-vNEXT-publication-mark.js';
-export const SERVER_SCHEMA_VERSION = LAST_PUBLICATION_MARK;
+import { LAST_REWIND } from './db/schema-vNEXT-rewind.js';
+export const SERVER_SCHEMA_VERSION = LAST_REWIND;
 /** How long a member token lives before it must be refreshed. */
 export { MEMBER_TOKEN_TTL_MS } from '@goondocks/myco-shared/member-protocol';
 /** How long an unrefreshed credential lineage stays renewable. */
@@ -169,3 +169,6 @@ export const TRANSCRIPT_PARSE_ADAPTER = 'transcript-parse';
 
 /** The agent every member-recorded spore carries; seeded by the schema. */
 export const USER_AGENT_ID = 'user';
+
+/** Stored objects outlive every database point in the maximum D1 Time Travel window. */
+export const D1_REWIND_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;

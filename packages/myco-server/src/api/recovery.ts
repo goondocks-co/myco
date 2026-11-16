@@ -1,3 +1,4 @@
+import { rewindAvailability } from '../core/rewind.js';
 import { issueRecoveryForget } from '../db/recovery/forget-commands.js';
 import { forbiddenToMember } from '../auth/roles.js';
 /**
@@ -25,8 +26,9 @@ import { databaseReadStatus } from '../read/meta.js';
  * operator backup holding this Deployment's objects. That hold defers deletion while it is open, so storage grows by
  * what deletion would have freed until the operator's artifact completes or it gives the attempt up.
  */
-const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport, schedule: ScheduleReport): Response => ok({
+const answer = (status: RecoveryProducerStatus, operatorHold: OperatorHoldReport, schedule: ScheduleReport, target: ServerEnv['platform']['name']): Response => ok({
   supported: true,
+  rewind: rewindAvailability(target),
   ...status,
   recoverable: false,
   usable: status.form === 'artifact'
@@ -48,6 +50,7 @@ type ScheduleReport = RecoverySchedule | ({ unreadable: string; database: Awaite
 /** `GET /api/recovery/exports` on a Deployment that runs no producer: that it runs none, beside the schedule. */
 export interface RecoveryUnsupportedAnswer {
   supported: false;
+  rewind: string;
   reason: string;
   schedule: ScheduleReport;
 }
@@ -131,7 +134,7 @@ export async function handleStartRecoveryExport(env: ServerEnv, ctx: OwnerContex
     await env.wake?.().catch(() => undefined);
   }
   const status = (admitted as { status: RecoveryProducerStatus }).status;
-  return answer(status, await operatorHoldOf(env), await scheduleOf(env, ctx.now, status));
+  return answer(status, await operatorHoldOf(env), await scheduleOf(env, ctx.now, status), env.platform.name);
 }
 
 /**
@@ -169,9 +172,9 @@ export async function handleForgetUnsettledExport(env: ServerEnv, ctx: OwnerCont
 export async function handleRecoveryExportStatus(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   // A Deployment with no producer is a fact the status reports, not a request refused: the schedule says the same.
   if (env.recovery === undefined) {
-    const unsupported: RecoveryUnsupportedAnswer = { supported: false, reason: 'this server cannot make automatic backups', schedule: await scheduleOf(env, ctx.now) };
+    const unsupported: RecoveryUnsupportedAnswer = { supported: false, rewind: rewindAvailability(env.platform.name), reason: 'this server cannot make automatic backups', schedule: await scheduleOf(env, ctx.now) };
     return ok(unsupported);
   }
   const status = await env.recovery.status();
-  return answer(status, await operatorHoldOf(env), await scheduleOf(env, ctx.now, status));
+  return answer(status, await operatorHoldOf(env), await scheduleOf(env, ctx.now, status), env.platform.name);
 }

@@ -206,9 +206,10 @@ describe('automatic recovery on Health', () => {
     cleanup();
 
     // A Deployment that runs no producer says so in a 200, and nothing about attempts or a schedule follows.
-    server({ '/api/recovery/exports': () => Response.json({ supported: false, reason: 'this Deployment runs no hosted recovery producer', schedule: { ...recoveryBase, supported: false, configured: false } }) });
+    server({ '/api/recovery/exports': () => Response.json({ supported: false, rewind: 'This self-hosted Deployment has no Time Travel. Recover from a verified backup.', reason: 'this Deployment runs no hosted recovery producer', schedule: { ...recoveryBase, supported: false, configured: false } }) });
     mount();
     expect((await screen.findByTestId('recovery-unavailable')).textContent).toContain('Automatic recovery doesn’t run on this server');
+    expect(screen.getByTestId('recovery-rewind').textContent).toContain('no Time Travel. Recover from a verified backup');
     for (const id of ['recovery-cadence', 'recovery-latest', 'recovery-available', 'recovery-unreadable']) expect(screen.queryByTestId(id)).toBeNull();
   });
 

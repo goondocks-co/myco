@@ -190,13 +190,13 @@ myco server rollback --target cloudflare
 
 Bare rollback selects the version observed serving before the latest admitted update attempt, including a code-only update. If that earlier version could not be proved (including older operator records), it refuses and asks for `--version <id>`; `wrangler deployments list` lists the versions. After a failed or unacknowledged update, it uses that attempt's observed prior version. It checks the current deployment and refuses if that prior version is still serving or the current version cannot be proved. Repeating create clears the saved rollback target.
 
-This rolls back the Worker, **not the database or blobs**. For a schema rollback, use the exact database restore command printed by the update while its bookmark remains within Time Travel retention, then return to the compatible Worker version:
+This rolls back the Worker, **not the database or blobs**. The update also prints a database-only Time Travel command. It does not pause writers or reset external state and is not a safe Myco rewind procedure. `myco server rewind --target cloudflare --to <time>` currently refuses without changing anything. Recover from a verified full backup into fresh resources when you need a supported recovery operation. A database restored separately also requires a compatible Worker version:
 
 ```bash
 myco server rollback --target cloudflare --account-id <account-id> --version <worker-version-before-update>
 ```
 
-A database restore discards writes after its bookmark and does not restore R2 objects. Keep the restore output, including its undo bookmark. Choose full recovery into fresh resources when the database and blobs need to be recovered together.
+A database restore discards writes after its bookmark and does not restore R2 objects. Hosted object deletion retains released bytes for at least 30 days; this cannot recover objects deleted before the retention policy was installed. See [hosted rewind safety](architecture/hosted-rewind.md) for the remaining boundary. Keep the restore output, including its undo bookmark. Choose full recovery into fresh resources when the database and blobs need to be recovered together.
 
 ## Custom-domain requests blocked before Myco
 

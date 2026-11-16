@@ -90,6 +90,8 @@ export interface ListedObject { key: string; uploaded: Date }
 export interface BlobListing { objects: ListedObject[]; truncated: boolean }
 
 export interface BlobStore {
+  /** Minimum time the release journal retains bytes after their registration is removed. */
+  readonly releaseRetention?: 'd1-time-travel';
   head(key: string): Promise<StoredObject | null>;
   /** Proves an existing publication is crash-stable; absence answers false and storage errors throw. */
   ensureDurable?(key: string): Promise<boolean>;

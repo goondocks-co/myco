@@ -7,15 +7,15 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { createProject } from '@myco-server-worker/db/storage/projects.js';
 import type { BlobListOptions, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
+import { BLOB_RESERVATION_TTL_MS, D1_REWIND_RETENTION_MS } from '@myco-server-worker/constants.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { DRAIN_PAGE, drainObjectReleases, objectReleaseBacklogged, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
 import { acquireRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { OBJECT_RECONCILE_PASS_MS, OBJECT_WALK_QUARANTINE_MS, reconcileStoredObjects } from '@myco-server-worker/db/storage/object-reconciliation.js';
-import { RELEASE_PAGE, recordObservedCandidates } from '@myco-server-worker/db/storage/release-queue.js';
+import { RELEASE_PAGE, releaseAgedOrphans, recordObservedCandidates } from '@myco-server-worker/db/storage/release-queue.js';
 import { readDeploymentStorageUsage } from '@myco-server-worker/db/storage/usage.js';
 import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
-import { memoryBlobStore, type MemoryBlobStore } from './helpers/fixtures.js';
+import { recordingLimiter, memoryBlobStore, type MemoryBlobStore } from './helpers/fixtures.js';
 import { withDocumentStores } from './helpers/document-stores.js';
 
 const NOW = 1_800_000_000_000;
@@ -321,7 +321,7 @@ describe('a database owns only what landed after it claimed the store', () => {
     expect(due).toEqual([{ at: NOW + QUARANTINE }]);
     const report = await drainObjectReleases(env(db, blobs), NOW + QUARANTINE - 1);
     expect(report.deleted).toBe(0);
-    expect(await objectReleaseBacklogged(db, NOW + QUARANTINE - 1, report)).toBe(false);
+    expect(await objectReleaseBacklogged(env(db, blobs), NOW + QUARANTINE - 1, report)).toBe(false);
     expect(blobs.deletes).toEqual([]);
   }));
 });
@@ -334,9 +334,9 @@ describe('the drain owes its backlog', () => {
     const blobs = memoryBlobStore();
     await journalRows(db, DRAIN_PAGE + 2);
     let report = await drainObjectReleases(env(db, blobs), NOW);
-    expect(await objectReleaseBacklogged(db, NOW, report)).toBe(true);
+    expect(await objectReleaseBacklogged(env(db, blobs), NOW, report)).toBe(true);
     report = await drainObjectReleases(env(db, blobs), NOW);
-    expect(await objectReleaseBacklogged(db, NOW, report)).toBe(false);
+    expect(await objectReleaseBacklogged(env(db, blobs), NOW, report)).toBe(false);
   }));
 
   it('does not spin on a failed delete: it waits for that key and the next wake', () => withDocumentStores(async (db) => {
@@ -345,7 +345,7 @@ describe('the drain owes its backlog', () => {
     blobs.delete = async () => { throw new Error('store unavailable'); };
     const report = await drainObjectReleases(env(db, blobs), NOW);
     expect(report.unacknowledged).toBeGreaterThan(0);
-    expect(await objectReleaseBacklogged(db, NOW, report)).toBe(false);
+    expect(await objectReleaseBacklogged(env(db, blobs), NOW, report)).toBe(false);
   }));
 
   it('does not report candidates it may not decide while a hold is open', () => withDocumentStores(async (db) => {
@@ -354,7 +354,7 @@ describe('the drain owes its backlog', () => {
     await db.batch(recordObservedCandidates(db, [{ projectId: 'project', key: key(1), generation: generation(1) }], NOW - 1));
     expect(await acquireRecoveryHold(db, 'hold-token', NOW)).toBe(true);
     const report = await drainObjectReleases(env(db, blobs), NOW);
-    expect(await objectReleaseBacklogged(db, NOW, report)).toBe(false);
+    expect(await objectReleaseBacklogged(env(db, blobs), NOW, report)).toBe(false);
   }));
 
   it('a waiting candidate inside the upload grace never holds up the candidates behind it', () => withDocumentStores(async (db) => {
@@ -372,3 +372,22 @@ describe('the drain owes its backlog', () => {
     expect(waiting).toEqual({ n: DRAIN_PAGE + 2, due: NOW - 1_000 + BLOB_RESERVATION_TTL_MS });
   }));
 });
+
+
+it('hosted released bytes survive the rewind window and a failed delete remains retryable', () => withDocumentStores(async (db) => {
+  const bucket = memoryBlobStore();
+  seeded(bucket, objectOf(1));
+  await register(db, 1);
+  const hosted = serverEnvFromBindings({ MYCO_DB: db, BUCKET: bucket, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
+  await releaseAgedOrphans(db, [{ projectId: 'project', key: key(1), generation: generation(1) }], NOW, AGED.getTime());
+  const retained = await drainObjectReleases(hosted, NOW + D1_REWIND_RETENTION_MS - 1);
+  expect(await bucket.head(objectOf(1))).not.toBeNull();
+  expect(await objectReleaseBacklogged(hosted, NOW + D1_REWIND_RETENTION_MS - 1, retained)).toBe(false);
+  const remove = bucket.delete.bind(bucket);
+  bucket.delete = async () => { throw new Error('bucket unavailable'); };
+  await drainObjectReleases(hosted, NOW + D1_REWIND_RETENTION_MS);
+  expect(await bucket.head(objectOf(1))).not.toBeNull();
+  bucket.delete = remove;
+  await drainObjectReleases(hosted, NOW + D1_REWIND_RETENTION_MS + 60 * 60 * 1000);
+  expect(await bucket.head(objectOf(1))).toBeNull();
+}));

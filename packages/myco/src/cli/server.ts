@@ -1,3 +1,4 @@
+import { refuseRewind } from '../server/rewind.js';
 import { recoveryCredentialLines } from '../server/recovery-secret-report.js';
 import { cloudflareWrappingKeyLine } from '../server/cloudflare-wrapping-key.js';
 import { localBudgetStatus, cloudflareBudgetStatus, operatorBudgetLine } from '../server/budget-status.js';
@@ -86,6 +87,9 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
                                           Return the Worker to an earlier version. Defaults to the
                                           version observed serving before the latest admitted update attempt.
                                           Requires --version when no earlier version is proved.
+  rewind --target local|cloudflare --to <time>
+                                          Refuses without changing anything: coordinated pause and
+                                          reset are not available yet. Use a verified backup restore.
   materialize --from <staging> --to <dir>
                                           Materialize a myco-recovery/3 staging into a verified
                                           recovery artifact. Local only; reads the staging read-only.
@@ -288,6 +292,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
 
   try {
     if (flags.get('target') === 'compose') fail(composeRetiredMessage(retiredComposeBundle()));
+    if (command === 'rewind') refuseRewind({ target: target(), to: flags.get('to') });
     if (command === 'rotate' || command === 'adopt') fail(`myco server ${command} is retired. Use myco server create --target local.`);
     if (command === 'setup-owner' && target() === 'cloudflare') {
       const result = await (deps.cloudflareOwner ?? setupCloudflareOwner)(cloudflareOptions());

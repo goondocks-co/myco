@@ -1,5 +1,5 @@
 import { MemberWriteRefused } from '../auth/member-write-refusal.js';
-import { beginBackupPublication, publishBackup, abandonBackupPublication, backupObjectRegistered } from '../db/storage/backup-publication.js';
+import { beginBackupPublication, publishBackup, abandonBackupPublication } from '../db/storage/backup-publication.js';
 import type { BackupIndexRow } from './backup.js';
 import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
 /**
@@ -20,7 +20,7 @@ import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
  * candidates stay recorded, and a decision after the hold judges them against the rows as they stand then. Unregistered upload bytes are never in a snapshot, so their
  * journal is not held.
  */
-import type { BlobStore, RelationalStore, ServerEnv } from './adapters.js';
+import type { BlobStore, ContentStore, RelationalStore, ServerEnv } from './adapters.js';
 import { BLOB_REFERENCES, referencedBlobValue, type BlobRef } from './blob-references.js';
 import { within } from './recovery-inventory.js';
 import { continueBackupRetention, decideBackupCandidates } from './backup-retention.js';
@@ -55,10 +55,8 @@ export async function publishBackupObject(db: RelationalStore, blobs: BlobStore,
     return row;
   } catch (error) {
     try {
-      if (error instanceof MemberWriteRefused && settled) {
-        // Terminal refusal permits discarding settled private bytes only while no backup registers their key.
-        if (!await backupObjectRegistered(db,key)) await deleteStoredObject(blobs,key);
-      } else {
+      // A terminal refusal leaves the publication or settlement intent for the clock-owned drain.
+      if (!(error instanceof MemberWriteRefused && settled)) {
         await abandonBackupPublication(db,key,Date.now());
         await settleObjectIntent(db,key,Date.now(),settled);
       }
@@ -109,7 +107,7 @@ interface DrainReport {
 /**
  * One bounded pass of the only store deleter:
  * 1. walk one page of the object store and consume a page of expired upload authorities, journaling what no owner holds;
- * 2. delete a page of journaled objects due now, removing each journal row only after the store acknowledged its delete;
+ * 2. delete a page of journaled objects past the store's retention window and due now, removing each journal row only after the store acknowledged its delete;
  *    a failed delete moves only its own key to a later attempt, so the key behind it is reached;
  * 3. with no hold open, decide a page of recorded release candidates through the same statements a release runs,
  *    asking the retention owner which backups the policy in force lets go of, and continuing a retention pass that ran out of pages.
@@ -132,7 +130,7 @@ export async function drainObjectReleases(
     emit({ kind: 'object_store_reconcile_failed', error_class: classify(error,env.platform?.classifyError) });
   }
   report.expired = await drainAuthorities(db,now,DRAIN_PAGE);
-  const journal = await dueObjectReleases(db,now,DRAIN_PAGE);
+  const journal = await dueObjectReleases(env,now,DRAIN_PAGE);
   let consecutiveFailures=0;
   for (const { physical, attempts } of journal) {
     const issuedAt=clock();
@@ -163,9 +161,9 @@ export async function drainObjectReleases(
  * Whether the drain has more than one pass took: expired authorities, journal rows due now, or candidates due with no
  * hold open. A failed delete answers no: its key waits for its own retry and the next wake.
  */
-export async function objectReleaseBacklogged(db: RelationalStore, now: number, report: DrainReport): Promise<boolean> {
+export async function objectReleaseBacklogged(env: ContentStore, now: number, report: DrainReport): Promise<boolean> {
   if (report.unacknowledged > 0) return false;
-  const [due, work, retention] = await Promise.all([releaseCandidatesDue(db,now,1),releaseWorkDue(db,now),retentionBacklogged(db)]);
+  const [due, work, retention] = await Promise.all([releaseCandidatesDue(env.db,now,1),releaseWorkDue(env,now),retentionBacklogged(env.db)]);
   return work || (!due.held && (due.blobs.length > 0 || due.backups.length > 0 || retention));
 }
 

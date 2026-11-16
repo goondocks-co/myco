@@ -221,6 +221,7 @@ function RecoveryCard() {
   return (
     <Card className="flex flex-col gap-s3" data-health-recovery="">
       <h3 className="t-h3 text-ink">Automatic recovery</h3>
+      {answer?.rewind !== undefined && <p className="t-body text-muted" data-testid="recovery-rewind">{answer.rewind}</p>}
       {recovery.isPending && <LoadingState label="Reading automatic recovery" count={1} />}
       {unsupportedHere && (
         <p className="t-body text-muted" data-testid="recovery-unavailable">{RECOVERY_UNAVAILABLE_WORDS}</p>

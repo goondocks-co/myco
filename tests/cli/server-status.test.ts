@@ -7,7 +7,7 @@ import path from 'node:path';
 import { run } from '@myco/cli/server.js';
 import { cloudflareCredentialSource, deploymentRecordPath, readDeploymentRecord, writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { THIN_LEARNING_ADMISSION_SQL } from '@myco-server-worker/db/thin-learning-admission.js';
-import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
+import { D1_REWIND_RETENTION_MS, SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 import { getPluginVersion } from '@myco/version.js';
 import { VECTOR_METADATA_FIELDS } from '@myco/server/vector-config.js';
 import type { CommandRunner, RunOptions } from '@myco/server/runner.js';
@@ -528,4 +528,29 @@ Private debug: ${PRIVATE_TOKEN}`;
     expect(text).toContain('No new recovery bookmark recorded');
     expect(count('d1 migrations')).toBe(0);
   });
+});
+
+
+it('rewind refuses without invoking Wrangler, including when --yes is supplied', async () => {
+  try { await run(['rewind', '--target', 'cloudflare', '--to', new Date().toISOString(), '--yes'], { runner }); }
+  catch (error) { if (!(error instanceof Error) || error.message !== 'fixture exit') throw error; }
+  expect(errors.join('\n')).toContain('Safe rewind is unavailable');
+  expect(errors.join('\n')).toContain('nothing changed');
+  expect(errors.join('\n')).toContain('myco server restore --target cloudflare');
+  expect(calls).toEqual([]);
+});
+
+
+it.each([
+  { target: 'cloudflare', to: '2026-02-30T00:00:00Z', reason: 'use ISO 8601 with an explicit zone' },
+  { target: 'cloudflare', to: new Date(Date.now() + 86_400_000).toISOString(), reason: 'is after now' },
+  { target: 'cloudflare', to: new Date(Date.now() - D1_REWIND_RETENTION_MS - 86_400_000).toISOString(), reason: 'maximum 30-day window' },
+  { target: 'local', to: new Date().toISOString(), reason: 'no Time Travel' },
+])('rewind names its refusal for $reason', async ({ target, to, reason }) => {
+  try { await run(['rewind', '--target', target, '--to', to], { runner }); }
+  catch (error) { if (!(error instanceof Error) || error.message !== 'fixture exit') throw error; }
+  expect(errors.join('\n')).toContain(reason);
+  expect(errors.join('\n')).toContain('nothing changed');
+  expect(errors.join('\n')).toContain('myco server');
+  expect(calls).toEqual([]);
 });
