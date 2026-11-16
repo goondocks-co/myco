@@ -32,7 +32,7 @@ import { shipSession, type Candidate } from '@myco/member/import.js';
 import { resolveDeploymentUpstream } from '@myco/mcp/deployment-upstream.js';
 import { probeWorkerAdmission } from '@myco/runner/loop.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
-import { registerTestMember, runHook } from './helpers/hooks.js';
+import { registerTestMember, runHookWithHookRows as runHook } from './helpers/hooks.js';
 
 const PROJECT = 'proj_same';
 const SESSION = 'sess_same';
@@ -111,7 +111,7 @@ describe('Deployment and Project member routing', () => {
     const rig = await pair();
     for (const entry of rig.entries) {
       const started = performance.now();
-      const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: entry.root, prompt: entry.serverUrl }, { fetch: rig.fetch, symbiont: 'copilot' });
+      const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: entry.root, prompt: entry.serverUrl }, { fetch: rig.fetch, symbiont: 'windsurf' });
       expect(performance.now() - started).toBeLessThan(1000);
       expect(hook.stderr).not.toContain('error:');
       expect(hook.starts.some((args) => args.includes(entry.serverUrl))).toBe(true);
@@ -218,7 +218,7 @@ describe('Deployment and Project member routing', () => {
     recordDefaultDeployment(B, { mycoHome });
     fs.unlinkSync(deploymentPath(A, mycoHome));
     expect(() => memberTranscriptRoutingKey('registry', rig.entries[0].root, mycoHome, process.env)).toThrow('Explicit Project binding');
-    const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: rig.entries[0].root, prompt: 'held for A' }, { symbiont: 'copilot', fetch: rig.fetch });
+    const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: rig.entries[0].root, prompt: 'held for A' }, { symbiont: 'windsurf', fetch: rig.fetch });
     expect(hook.stderr).toContain('binding');
     expect(hook.stderr).toContain('unavailable');
     expect(rig.calls).toHaveLength(0);
@@ -263,7 +263,7 @@ describe('Deployment and Project member routing', () => {
       cacheMachineSettings(entry.serverUrl, { leaves }, mycoHome);
       recordDefaultDeployment(entry.serverUrl, { mycoHome, replace: index !== 0 });
       const before = rig.calls.length;
-      const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: root, prompt: entry.serverUrl }, { symbiont: 'copilot', fetch: rig.fetch });
+      const hook = await runHook('user-prompt-submit', { session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: root, prompt: entry.serverUrl }, { symbiont: 'windsurf', fetch: rig.fetch });
       expect(hook.stderr).not.toContain('error:');
       expect(rig.calls.length).toBe(before);
       requestJoin(root, rootKey, entry.serverUrl, mycoHome, Date.now());

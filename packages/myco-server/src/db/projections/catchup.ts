@@ -2,7 +2,7 @@ import { emit } from '../../telemetry.js';
 import type { BlobStore, JobBudget, RelationalStore } from '../../core/adapters.js';
 import { commit, read, readSet, write, type Bound } from '../index.js';
 import { KPI_CATCHUP } from '../insights/kpi-catchup.js';
-import { PUBLICATION_REOPEN_CATCHUP } from '../documents/reopen.js';
+import { PUBLICATION_REOPEN_CATCHUP, seedParserReopen } from '../documents/reopen.js';
 import { PUBLICATION_VERSION_CATCHUP } from '../documents/rebuild.js';
 import { PUBLICATION_PIN_CATCHUP } from '../documents/pin-schema.js';
 import { PUBLICATION_OWNERSHIP_CATCHUP } from '../documents/metadata-catchup.js';
@@ -148,9 +148,10 @@ export async function catchUpProjections(
   { budget = PROJECTION_CATCHUP_BUDGET, clock = Date.now, blobs }: { budget?: Readonly<JobBudget>; clock?: () => number; blobs?: BlobStore } = {},
 ): Promise<{ changed: number; more: boolean; failures?:readonly {projection:string;phase:string}[] }> {
   const deadline = clock() + budget.wallMs;
+  await commit(db, seedParserReopen());
   let [rows] = await readSet(db, pending.bind());
   let changed = 0;
-  let calls = 1;
+  let calls = 2;
   let longestPageMs = 0;
   const deferred = Symbol('projection_page_deferred');
   const skipped=new Set<string>();

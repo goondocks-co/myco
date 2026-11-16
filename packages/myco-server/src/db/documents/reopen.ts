@@ -1,10 +1,12 @@
-import { write } from '../index.js';
+import { write, type Bound } from '../index.js';
 import type { CatchupFamily } from '../projections/family.js';
 import { reset } from './rebuild.js';
+import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { PARSERS } from '../../ingest/parsers/registry.js';
 
 export const PUBLICATION_REOPEN_PHASE = 'publicationReopenAdmissionsV1';
-function reopenAdmissions(revision: number) {
-  const eligible = `d.state='live' AND p.state='failed' AND p.failure IN ('event_refused','record_too_large')
+function reopenAdmissions(revision: number, failure = "p.failure IN ('event_refused','record_too_large')", prompt?: string) {
+  const eligible = `d.state='live' AND p.state='failed' AND ${failure}
     AND p.reopen_revision<${revision}
     AND NOT EXISTS(SELECT 1 FROM session_tombstones t WHERE (t.project_id,t.session_id)=(p.project_id,p.session_id))`;
   const source = {
@@ -27,16 +29,30 @@ function reopenAdmissions(revision: number) {
       write<[keys: string]>({name:`publication.armReopened${revision}`,sql:`UPDATE session_documents SET due_at=0
         WHERE (project_id,session_id,generation) IN (SELECT project_id,session_id,generation FROM (${selected}))`}),
       write<[keys: string]>({name:`publication.reopenAdmissions${revision}`,sql:`UPDATE transcript_publication AS p
-        SET ${reset('p')},reopen_revision=${revision}
+        SET ${reset('p')},${prompt === undefined ? '' : `prompt_scheme=${prompt},`}reopen_revision=${revision}
         WHERE (p.project_id,p.transcript_id,p.generation) IN (SELECT project_id,transcript_id,generation FROM (${selected}))`}),
     ],
   };
 }
 
+export const PARSER_REOPEN_PHASE = 'publicationParsersV1';
+const agents = Object.keys(PARSERS).map(agent => `'${agent.replaceAll("'", "''")}'`).join(',');
+const available = `p.failure='parser_absent' AND EXISTS(SELECT 1 FROM transcripts t
+  WHERE (t.project_id,t.transcript_id)=(p.project_id,p.transcript_id) AND t.agent IN (${agents}))`;
+const PARSER_REOPEN_REVISION = 2;
+const policy = publicationPolicy('t.prompt_identity_scheme', 't.agent');
+const parserPhase = reopenAdmissions(PARSER_REOPEN_REVISION, available, `(SELECT ${policy.prompt} FROM transcripts t
+  WHERE (t.project_id,t.transcript_id)=(p.project_id,p.transcript_id))`);
+const seedParserPhase = write<[]>({ name: 'publication.seedParserReopen', sql: `INSERT INTO projection_catchup(projection,phase,done)
+  VALUES('publication_reopen','${PARSER_REOPEN_PHASE}',0) ON CONFLICT DO NOTHING` });
+
+/** New parser admission uses the existing one-publication catch-up pages. */
+export const seedParserReopen = (): Bound => seedParserPhase.bind();
+
 /** A publication gets one retry per admission revision, even if publishing moves its parser-version key forward. */
 export const PUBLICATION_REOPEN_CATCHUP = {
   projection: 'publication_reopen',
-  phases: { [PUBLICATION_REOPEN_PHASE]: reopenAdmissions(1) },
+  phases: { [PUBLICATION_REOPEN_PHASE]: reopenAdmissions(1), [PARSER_REOPEN_PHASE]: parserPhase },
 } as const satisfies CatchupFamily;
 
 /** Seeds one bounded retry of stopped publications; subsequent admission fixes declare a new revision and phase. */

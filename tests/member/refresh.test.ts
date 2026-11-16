@@ -24,7 +24,7 @@ import { promptContextLogPrefix } from '@myco/member/context-diagnostics.js';
 import { type FetchLike } from '@myco/member/transport.js';
 import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
-import { recordingFetch, registerTestMember, runHook } from './helpers/hooks.js';
+import { recordingFetch, registerTestMember, runHookWithHookRows as runHook } from './helpers/hooks.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SERVER_URL = 'https://member-test.invalid';
@@ -68,7 +68,7 @@ const transcriptFile = (): string => {
 /** A hook's own lines, without the member helper's progress lines (the helper runs inside `runHook` in these tests). */
 const hookLines = (stderr: string): string => stderr.split('\n').filter((line) => !line.startsWith('[myco] helper:') && !line.startsWith(promptContextLogPrefix(SERVER_URL, PROJECT))).join('\n').trim();
 const prompt = (fetchImpl: FetchLike, text: string) =>
-  runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { helpers: 'run', fetch: fetchImpl, symbiont: 'copilot' });
+  runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: text }, { helpers: 'run', fetch: fetchImpl, symbiont: 'windsurf' });
 
 const budget = () => ({ connectTimeoutMs: 2_000, requestTimeoutMs: 10_000 });
 
@@ -105,9 +105,9 @@ describe('member token rotation', () => {
     process.env[ENV_PROJECT] = PROJECT;
     const spy = recordingFetch(rig.fetch);
 
-    const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+    const out = await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'windsurf' });
     // A credential from the environment delivers at the turn's end, in the hook.
-    await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+    await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'windsurf' });
 
     expect(hookLines(out.stderr)).toBe('');
     expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
@@ -485,9 +485,9 @@ describe('a credential minted not to rotate (#1420)', () => {
       process.env[ENV_PROJECT] = PROJECT;
       const spy = recordingFetch(rig.fetch);
 
-      await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+      await runHook('user-prompt-submit', { session_id: session, hook_event_name: 'UserPromptSubmit', transcript_path: transcriptFile(), prompt: 'hello' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'windsurf' });
       // A credential from the environment delivers at the turn's end, in the hook.
-      const out = await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'copilot' });
+      const out = await runHook('stop', { session_id: session, hook_event_name: 'Stop', transcript_path: transcriptFile(), last_assistant_message: 'done' }, { helpers: 'run', fetch: spy.fetch, credential: 'env', symbiont: 'windsurf' });
 
       expect({ ageMs, delivered: rig.rows("events WHERE kind='prompt'"), refreshes: refreshCalls(spy), sends: eventCalls(spy) > 0, refused: out.stderr.includes('member token refused'), rotation: /rotat|renew/.test(out.stderr) })
         .toEqual({ ageMs, delivered, refreshes: 0, sends: true, refused: delivered === 0, rotation: false });

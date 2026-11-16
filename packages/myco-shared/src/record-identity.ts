@@ -191,7 +191,8 @@ interface RecordRequestBase {
   offset: number;
 }
 export type RecordIdRequest = RecordRequestBase & (
-  | { kind: 'response' | 'tool-call' }
+  | { kind: 'response'; replyPromptId?: string }
+  | { kind: 'tool-call' }
   | { kind: 'plan'; tag: string; coordinate: readonly (string | number)[]; legacyPosition?: number }
 );
 
@@ -205,6 +206,10 @@ export function canonicalRecordId<R>(hash: PromptIdHasher<R>, request: RecordIdR
   hash=observedIdentity(hash,observe);
   const { source } = request;
   if (!isRecordIdScheme(request.scheme)) throw new RecordSourceInvalid();
+  if (request.kind === 'response' && request.replyPromptId !== undefined) {
+    if (!keyString(request.replyPromptId) || !keyString(request.sessionId) || !keyString(request.agent)) throw new RecordSourceInvalid();
+    return hash('prompt-reply-v1', request.sessionId, request.agent, request.replyPromptId);
+  }
   if (request.scheme === LEGACY_RECORD_ID_SCHEME) {
     if (request.kind === 'plan') {
       if (!index(request.legacyPosition)) throw new RecordSourceInvalid();

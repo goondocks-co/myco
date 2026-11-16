@@ -23,7 +23,7 @@ export const copilotAdapter: SymbiontAdapter = {
   findTranscript: (sessionId) => findTranscriptFor('copilot', sessionId),
 
   parseTurns: (content) => parseCopilotEventLog(content),
-  promptForTool: copilotPromptForTool,
+  promptForHook: copilotPromptForHook,
 };
 
 const COPILOT_EVENT_TYPES = {
@@ -127,26 +127,25 @@ function* copilotEvents(content: string): Generator<{ event: CopilotEvent; offse
   }
 }
 
-/** A tool hook names its prompt through the assistant request's originatingMessageId. */
-function copilotPromptForTool(content: string, input: { sessionId: string; raw: Record<string, unknown> }): PromptIdRequest | undefined {
+/** Native message keys name the prompt of a tool request or a delegation. Records arrive newest first. */
+function copilotPromptForHook(records: Iterable<{ value: Record<string, unknown>; offset: number }>, input: { sessionId: string; raw: Record<string, unknown>; kind: 'tool' | 'subagent' }): PromptIdRequest | undefined {
   const toolKey = input.raw.toolCallId ?? input.raw.tool_call_id;
-  if (typeof toolKey !== 'string' || toolKey === '') return undefined;
-  const messages = new Map<string, number>();
+  if (input.kind === 'tool' && (typeof toolKey !== 'string' || toolKey === '')) return undefined;
   let origin: string | undefined;
-  for (const { event, offset } of copilotEvents(content)) {
+  for (const { value, offset } of records) {
+    const event = value as unknown as CopilotEvent;
     const data = event.data ?? {};
-    if (event.type === COPILOT_EVENT_TYPES.USER_MESSAGE && !isSourcedUserMessage(data)
-      && typeof data.content === 'string' && data.content.trim() !== '' && typeof data.messageId === 'string') {
-      messages.set(data.messageId, offset);
+    if (event.type === COPILOT_EVENT_TYPES.ASSISTANT_MESSAGE && Array.isArray(data.toolRequests)
+      && data.toolRequests.some(call => call !== null && typeof call === 'object' && call.toolCallId === toolKey)
+      && typeof data.originatingMessageId === 'string' && data.originatingMessageId !== '') {
+      if (origin !== undefined && origin !== data.originatingMessageId) throw new RecordSourceInvalid();
+      origin = data.originatingMessageId;
     }
-    if (event.type !== COPILOT_EVENT_TYPES.ASSISTANT_MESSAGE || !Array.isArray(data.toolRequests)
-      || !data.toolRequests.some(call => call !== null && typeof call === 'object' && call.toolCallId === toolKey)) continue;
-    if (typeof data.originatingMessageId !== 'string' || data.originatingMessageId === '') continue;
-    if (origin !== undefined && origin !== data.originatingMessageId) throw new RecordSourceInvalid();
-    origin = data.originatingMessageId;
+    if (event.type === COPILOT_EVENT_TYPES.USER_MESSAGE && !isSourcedUserMessage(data)
+      && typeof data.content === 'string' && data.content.trim() !== '' && typeof data.messageId === 'string'
+      && (input.kind === 'subagent' || data.messageId === origin)) {
+      return { scheme: 'member-transcript-v1', sessionId: input.sessionId, dedupeKey: data.messageId, position: offset };
+    }
   }
-  const position = origin === undefined ? undefined : messages.get(origin);
-  return origin === undefined || position === undefined ? undefined : {
-    scheme: 'member-transcript-v1', sessionId: input.sessionId, dedupeKey: origin, position,
-  };
+  return undefined;
 }

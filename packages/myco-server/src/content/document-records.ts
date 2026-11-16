@@ -19,6 +19,7 @@ const TOOL_SUMMARY_CHARS = 200;
 interface RecordOrigin {
   src?: readonly [string, number, number];
   ev?: string;
+  replySnapshot?: boolean;
   received_at: number;
   /** Source order of a parsed tool call and its outcome, for merging later outcomes. */
   call?: OutcomeSource | null;
@@ -59,7 +60,7 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
       prompt_key_hash: str(p.promptKeyHash),
     };
   }
-  if (k === 'reply') return { k, id: String(p.responseId), prompt_id: str(p.promptId), ...origin, text: str(p.text) };
+  if (k === 'reply') return { k, id: String(p.responseId), prompt_id: str(p.promptId), ...origin, text: str(p.text), ...(at.replySnapshot === true ? { reply_snapshot: true } : {}) };
   if (k === 'plan') {
     return {
       k, id: at.ev ?? String(p.planKey), plan_key: String(p.planKey), prompt_id: str(p.promptId), ...origin, title: str(p.title), content: str(p.content),
@@ -84,9 +85,12 @@ export function documentRecord(kind: string, payload: Record<string, unknown>, c
 
 /**
  * A record arriving under an id the document already holds. A tool call merges its call and outcome by source order;
- * any other record keeps the version first published.
+ * a reply snapshot advances by byte position within its transcript, and other records keep their first version.
  */
 export function mergeRecord(held: DocRecord, incoming: DocRecord): DocRecord {
+  if (held.k === 'reply' && incoming.k === 'reply' && held.reply_snapshot === true && incoming.reply_snapshot === true
+    && held.prompt_id === incoming.prompt_id && held.src !== undefined && incoming.src !== undefined
+    && held.src[0] === incoming.src[0] && incoming.src[1] > held.src[1]) return incoming;
   if (held.k !== 'tool' || incoming.k !== 'tool') return held;
   const assembly = (record: DocRecord): ToolAssembly => ({
     values: record, call: (record.call_source ?? null) as OutcomeSource | null, outcome: record.outcome_source as OutcomeSource,

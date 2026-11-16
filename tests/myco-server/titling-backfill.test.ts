@@ -301,7 +301,7 @@ describe('the imported-session backfill', () => {
     r.session('open', { imported: false });
     r.sqlite.run(`UPDATE sessions SET ended_at = NULL WHERE session_id = 'open'`);
     const expected: Record<string, string | null> = {
-      unsupported: 'capture_stopped', failed: 'capture_stopped', 'at-end': 'no_material',
+      unsupported: 'capture_unsupported', failed: 'capture_stopped', 'at-end': 'no_material',
       capture: 'capture_pending', silent: 'no_material', imported: 'imported', waiting: 'waiting', 'requested-import': 'waiting',
       flight: 'in_progress', 'stopped-in-flight': 'in_progress', stopped: 'stopped', titled: null, open: null, absent: null,
     };

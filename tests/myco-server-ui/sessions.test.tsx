@@ -751,8 +751,12 @@ describe('the session reading page', () => {
     cleanup();
     server(base({ '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - HOUR }, { untitled: 'capture_stopped' }) }));
     mount('/p/x/sessions/s1?about=1');
-    expect(await screen.findByText(/^Untitled: transcript processing is unavailable or stopped\. Check the session transcript/)).toBeTruthy();
+    expect(await screen.findByText(/^Untitled: Myco stopped reading this session’s transcript/)).toBeTruthy();
     expect(screen.queryByText(/transcript is still being processed/)).toBeNull();
+    cleanup();
+    server(base({ '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - HOUR }, { untitled: 'capture_unsupported' }) }));
+    mount('/p/x/sessions/s1?about=1');
+    expect(await screen.findByText(/^Untitled: Myco does not read this agent’s transcripts/)).toBeTruthy();
   });
 
   it('keeps an admin’s delete, end and new title in the ⋯ menu, each behind a confirmation, and shows a member none of them', async () => {

@@ -2025,6 +2025,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "promptRecallToolDelivery": true,
       "promptSubmitInjection": false,
       "turnRowSource": "transcript",
+      "subagentRowSource": "hook",
       "transcriptFidelity": "full",
       "canopyReadTools": [
         {

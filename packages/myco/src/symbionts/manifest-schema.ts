@@ -616,8 +616,8 @@ const CapabilitiesSchema = z.object({
    *    the tool, response and subagent hooks ship rows keyed to the id it
    *    minted. The Deployment parses no transcript for this symbiont.
    *  - 'transcript': the Deployment's parser for this symbiont is the only
-   *    writer of its prompts, responses, tool calls and subagent starts. The
-   *    hooks register the session, ship the transcript delta and plan files,
+   *    writer of its prompts and responses. Tool and delegation capture use
+   *    their own producer declarations. The hooks register the session, ship the transcript delta and plan files,
    *    and inject; the prompt hook still mints an id and returns it for a
    *    runtime that stamps its own transcript lines.
    *
@@ -628,6 +628,8 @@ const CapabilitiesSchema = z.object({
    * this equal to the presence of a server parser.
    */
   turnRowSource: z.enum(['hook', 'transcript']).default('hook'),
+  /** Delegation starts use this producer where the transcript does not carry them. */
+  subagentRowSource: z.enum(['hook', 'transcript']).optional(),
   /**
    * What this symbiont's transcript carries, as the Deployment's parser
    * declares it. `no_tool_results` names a format with no tool calls in it,

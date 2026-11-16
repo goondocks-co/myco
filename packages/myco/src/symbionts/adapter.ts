@@ -86,8 +86,8 @@ export interface SymbiontAdapter {
    */
   parseTurns(content: string): TranscriptTurn[];
 
-  /** A tool hook's prompt, named only by explicit native transcript references. */
-  promptForTool?(content: string, input: { sessionId: string; raw: Record<string, unknown> }): PromptIdRequest | undefined;
+  /** Native records newest first, naming the canonical prompt of a hook. */
+  promptForHook?(records: Iterable<{ value: Record<string, unknown>; offset: number }>, input: { sessionId: string; raw: Record<string, unknown>; kind: 'tool' | 'subagent' }): PromptIdRequest | undefined;
 
 }
 

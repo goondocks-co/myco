@@ -13,7 +13,7 @@ import path from 'node:path';
 import { ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_SERVER_URL, parseCredentialFlag, resolveCredential, resolveMemberProjectRoot } from '@myco/member/credential.js';
 import { mintMemberToken } from '@myco-server-worker/auth/tokens.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
-import { registerTestMember, recordingFetch, runHook } from './helpers/hooks.js';
+import { registerTestMember, recordingFetch, runHookWithHookRows as runHook } from './helpers/hooks.js';
 
 const ENV_KEYS = ['MYCO_HOME', ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT] as const;
 const saved: Record<string, string | undefined> = {};
@@ -140,16 +140,16 @@ describe('credential source', () => {
     process.env[ENV_PROJECT] = 'proj_1';
     const rig = await memberRig();
     const { fetch, requests } = recordingFetch(rig.fetch);
-    const result = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { helpers: 'run', fetch, credential: 'registry', symbiont: 'copilot' });
+    const result = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { helpers: 'run', fetch, credential: 'registry', symbiont: 'windsurf' });
     expect(requests).toEqual([]);
     expect(result.stderr).toContain('no registry entry');
     expect(rig.rows('events')).toBe(0);
     // The same hooks declared `env` capture for the env URL, and the turn's end delivers there — the source is the
     // command's to declare. A credential from the environment ships in the hook that ends the turn, never before.
-    const envRun = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { helpers: 'run', fetch, credential: 'env', symbiont: 'copilot' });
+    const envRun = await runHook('post-tool-use', { session_id: 'sess-relocated', tool_name: 'Read', tool_input: { file_path: '/a' } }, { helpers: 'run', fetch, credential: 'env', symbiont: 'windsurf' });
     expect(requests).toEqual([]);
     expect(envRun.stderr).not.toContain('no registry entry');
-    await runHook('stop', { session_id: 'sess-relocated', last_assistant_message: 'done' }, { helpers: 'run', fetch, credential: 'env', symbiont: 'copilot' });
+    await runHook('stop', { session_id: 'sess-relocated', last_assistant_message: 'done' }, { helpers: 'run', fetch, credential: 'env', symbiont: 'windsurf' });
     expect(requests.map((r) => r.path)).toContain('/events');
   });
 });

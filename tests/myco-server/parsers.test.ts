@@ -563,3 +563,14 @@ for (const agent of ['copilot', 'antigravity']) {
     expect(events).toEqual(await parser!.parse({ ...input, lines }));
   });
 }
+
+it('Antigravity replaces a mid-turn reply snapshot when the final answer arrives', async () => {
+  const lines = linesOf(FIXTURE_FOR.antigravity!);
+  const input = { transcriptId: 'orchard', sessionId: SESSION, now: NOW, recordScheme: 'source-record-v1' as const, scheme: 'member-transcript-v1' as const };
+  const state = {};
+  const first = await PARSERS.antigravity.parse({ ...input, state, lines: lines.slice(0, 3), terminal: 'turn_end' });
+  const promptId = first.find(row => row.kind === 'prompt')!.payload.promptId as string;
+  const last = await PARSERS.antigravity.parse({ ...input, state, openPromptId: promptId, lines: lines.slice(3), terminal: 'complete_file' });
+  const replies = new Map([...first, ...last].filter(row => row.kind === 'response').map(row => [row.payload.responseId, row.payload.text]));
+  expect([...replies.values()]).toEqual(['The orchard has pears.']);
+});

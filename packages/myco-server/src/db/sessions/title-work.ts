@@ -5,7 +5,7 @@ import { jsonKeys } from '../ddl.js';
 import { commitNamed, first, read, readSet, rows, write } from '../index.js';
 import type { CatchupFamily } from '../projections/family.js';
 import { notTombstonedSql, titleRunInFlightSql } from '../session-read-model.js';
-import { capturePendingSql, captureStoppedSql } from './capture-progress.js';
+import { capturePendingSql, captureStoppedSql, captureUnsupportedSql } from './capture-progress.js';
 import { sessionMaterialReadySql } from './material.js';
 
 /** How long a titling run may take. The task definition says the same (`title-summary.yaml`); this is the bound the claim's in-flight window is computed from. */
@@ -206,8 +206,9 @@ export async function freshTitleOwed(db: RelationalStore, freshAfter: number, im
 }
 
 /** Why an ended session carries no title yet, in the order a reader can act on it. */
-export type UntitledReason = 'capture_pending' | 'capture_stopped' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
+export type UntitledReason = 'capture_pending' | 'capture_unsupported' | 'capture_stopped' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
 const untitled = read<[project: string, session: string], { reason: UntitledReason | null }>({ name: 'titleWork.untitledReason', sql: `SELECT CASE WHEN s.title IS NOT NULL OR s.ended_at IS NULL THEN NULL
+    WHEN ${captureUnsupportedSql('s')} THEN 'capture_unsupported'
     WHEN ${captureStoppedSql('s')} THEN 'capture_stopped'
     WHEN ${capturePendingSql('s')} THEN 'capture_pending'
     WHEN NOT EXISTS (SELECT 1 FROM session_documents d WHERE d.project_id=s.project_id AND d.session_id=s.session_id AND d.state='live' AND d.user_prompts>0) THEN 'no_material'

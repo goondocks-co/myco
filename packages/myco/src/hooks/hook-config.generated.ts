@@ -34,6 +34,7 @@ export interface HookCapabilities {
   promptSubmitInjection: boolean;
   /** Which side writes this symbiont's turn rows; see the manifest schema. */
   turnRowSource: 'hook' | 'transcript';
+  subagentRowSource?: 'hook' | 'transcript';
   /** What the transcript carries, as the Deployment's parser declares it; see the manifest schema. */
   transcriptFidelity: 'full' | 'no_tool_results';
 }
@@ -867,6 +868,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "promptRecallToolDelivery": true,
       "promptSubmitInjection": false,
       "turnRowSource": "transcript",
+      "subagentRowSource": "hook",
       "transcriptFidelity": "full"
     },
     "promptIdentity": {

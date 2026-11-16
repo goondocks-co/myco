@@ -52,6 +52,7 @@ registration:
       SubagentStart: flat
 capabilities:
   turnRowSource: transcript
+  subagentRowSource: hook
   transcriptFidelity: full
   promptSubmitInjection: false
   promptRecallToolDelivery: true

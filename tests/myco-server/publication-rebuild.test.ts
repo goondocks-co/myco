@@ -1,11 +1,13 @@
 import { expect, test } from 'bun:test';
-import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
+import { catchUpPhase, catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { publicationRebuildProgress } from '@myco-server-worker/db/documents/rebuild.js';
 import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { PUBLICATION_REOPEN_PHASE } from '@myco-server-worker/db/documents/reopen.js';
 import { PARSER_VERSION } from '@myco-server-worker/constants.js';
-import { withDocumentStores, captureDocumentTranscript } from './helpers/document-stores.js';
-import { memoryBlobStore } from './helpers/fixtures.js';
+import { withDocumentStores, captureDocumentTranscript, captureDocumentSession } from './helpers/document-stores.js';
+import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
+import type { TranscriptParser } from '@myco-server-worker/ingest/parsers/index.js';
+import { memoryBlobStore, readFixtureRecords } from './helpers/fixtures.js';
 import { limits, MIN, one, reply, user } from './helpers/document-publication.js';
 
 test('version rebuild swaps the generation without losing stored records, identities or blobs', async()=>{
@@ -102,5 +104,54 @@ test('an admission revision retries stopped transcripts once without rebuilding 
     expect(await catchUpPhase(db,PUBLICATION_REOPEN_PHASE),target).toBe(0);
     await publishDocuments(env,at+22*MIN,limits());
     expect(await one(db,"SELECT state,failure,diagnostic FROM transcript_publication WHERE session_id='refused'"),target).toEqual(stopped);
+  });
+});
+
+
+test('a stored transcript is read once after its parser becomes available', async () => {
+  await withDocumentStores(async (db, target) => {
+    const blobs = memoryBlobStore(), at = Date.now() - 60 * MIN;
+    const text = [
+      { type: 'user.message', id: 'user', data: { messageId: 'submission', content: 'retained question' } },
+      { type: 'assistant.message', id: 'reply', data: { originatingMessageId: 'submission', content: 'retained answer' } },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n';
+    const parsers = PARSERS as Record<string, TranscriptParser>;
+    const parser = parsers.copilot!;
+    const member = await captureDocumentSession(db, 'project', 'fixture-member');
+    await db.prepare(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,first_received_at,last_received_at,token_id,prompt_identity_scheme)
+      VALUES('project','tx_10000000000000000000000000000001','catch-up','machine','copilot',?1,?1,?2,'hook-mint-v1')`).bind(at, member.tokenId).run();
+    const env = await captureDocumentTranscript(db, blobs, 'catch-up', 'tx_10000000000000000000000000000001', text, at, 0, 'copilot');
+    try {
+      delete parsers.copilot;
+      await publishDocuments(env, at + 20 * MIN, limits());
+    } finally { parsers.copilot = parser; }
+    expect(await one(db, "SELECT state,failure FROM transcript_publication WHERE session_id='catch-up'"), target)
+      .toEqual({ state: 'failed', failure: 'parser_absent' });
+    await db.prepare("UPDATE transcript_publication SET prompt_scheme='hook-mint-v1' WHERE session_id='catch-up'").run();
+    await catchUpProjections(db, { blobs, budget: { calls: 500, wallMs: 60_000 } });
+    await publishDocuments(env, at + 21 * MIN, limits());
+    expect(await one(db, "SELECT prompt_identity_scheme FROM transcripts WHERE session_id='catch-up'"), target)
+      .toEqual({ prompt_identity_scheme: 'hook-mint-v1' });
+    const rows = await readFixtureRecords(env, 'project', 'catch-up');
+    expect(rows.filter(row => row.k === 'prompt' || row.k === 'reply').map(row => row.text), target).toEqual(['retained question', 'retained answer']);
+    await catchUpProjections(db, { blobs, budget: { calls: 500, wallMs: 60_000 } });
+    await publishDocuments(env, at + 22 * MIN, limits());
+    expect(await readFixtureRecords(env, 'project', 'catch-up'), target).toEqual(rows);
+  });
+});
+
+test('a later reply snapshot replaces a narration already published for the same turn', async () => {
+  await withDocumentStores(async (db, target) => {
+    const blobs = memoryBlobStore(), at = Date.now() - 60 * MIN, id = 'tx_20000000000000000000000000000001';
+    const line = (step_index: number, type: string, content: string) => JSON.stringify({ step_index, type, content }) + '\n';
+    const first = line(0, 'USER_INPUT', 'retained question') + line(1, 'PLANNER_RESPONSE', 'Inspecting the orchard.');
+    const env = await captureDocumentTranscript(db, blobs, 'snapshot', id, first, at, 0, 'antigravity');
+    await publishDocuments(env, at + 20 * MIN, limits());
+    expect((await readFixtureRecords(env, 'project', 'snapshot')).filter(row => row.k === 'reply').map(row => row.text), target)
+      .toEqual(['Inspecting the orchard.']);
+    await captureDocumentTranscript(db, blobs, 'snapshot', id, line(2, 'PLANNER_RESPONSE', 'The orchard has pears.'), at + 21 * MIN, Buffer.byteLength(first), 'antigravity');
+    await publishDocuments(env, at + 40 * MIN, limits());
+    expect((await readFixtureRecords(env, 'project', 'snapshot')).filter(row => row.k === 'reply').map(row => row.text), target)
+      .toEqual(['The orchard has pears.']);
   });
 });

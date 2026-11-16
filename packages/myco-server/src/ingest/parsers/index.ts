@@ -170,7 +170,8 @@ export function optionalRecordSource(input: ParserInput, agent: string, request:
 }
 
 type RecordCoordinates = { offset: number } & (
-  | { kind: 'response' | 'tool-call' }
+  | { kind: 'response'; replyPromptId?: string }
+  | { kind: 'tool-call' }
   | { kind: 'plan'; tag: string; coordinate: readonly (string | number)[]; legacyPosition: number }
 );
 type RecordFacts = RecordCoordinates & { source: ReplySource };
@@ -219,6 +220,7 @@ export function parserContinuation(input: ParserInput): {
 
 /** A kind and a payload the catalogue admits, named by the byte offset that produced it. */
 export interface DerivedEvent {
+  replySnapshot?: boolean;
   identity?: readonly string[];
   sourceEnd?: number;
   outcomeOffset?: number;

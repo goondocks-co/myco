@@ -738,7 +738,14 @@ describe('member hooks through the worker: hook-source agents', () => {
       await parseAll();
       expect(await texts('prompt')).toEqual(['Inspect the orchard.']);
       expect(await texts('reply')).toEqual(['The orchard has pears.']);
-      expect((await readFixtureRecords(rig.env.serverEnv, 'proj_1')).filter(row => row.k === 'tool')).toHaveLength(1);
+      const rows = await readFixtureRecords(rig.env.serverEnv, 'proj_1');
+      const promptId = rows.find(row => row.k === 'prompt')!.id;
+      expect(rows.filter(row => row.k === 'tool').map(row => row.prompt_id)).toEqual([promptId]);
+      if (agent === 'copilot') {
+        await hook('subagent-start', { agent_id: 'orchard-agent', agent_type: 'Explorer' });
+        const start = rig.env.sqlite.query("SELECT payload FROM events WHERE kind='subagent.start'").get() as { payload: string };
+        expect(JSON.parse(start.payload)).toMatchObject({ parentPromptId: promptId, agentType: 'Explorer' });
+      }
     });
   }
 });

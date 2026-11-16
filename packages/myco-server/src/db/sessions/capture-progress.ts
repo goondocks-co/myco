@@ -8,9 +8,13 @@ const frontiers = (alias: string): string => `FROM transcripts t
   LEFT JOIN transcript_publication p ON p.project_id=t.project_id AND p.transcript_id=t.transcript_id AND p.generation=d.generation
   WHERE t.project_id=${alias}.project_id AND t.session_id=${alias}.session_id`;
 
-/** A stopped or unsupported transcript cannot promise further processing. */
+/** An agent whose transcript has no registered reader. */
+export const captureUnsupportedSql = (alias: string): string => `EXISTS (SELECT 1 ${frontiers(alias)}
+  AND (t.agent IS NULL OR t.agent NOT IN (${PARSED_AGENTS})))`;
+
+/** A supported transcript whose reading stopped on a failure. */
 export const captureStoppedSql = (alias: string): string => `EXISTS (SELECT 1 ${frontiers(alias)}
-  AND (t.agent IS NULL OR t.agent NOT IN (${PARSED_AGENTS}) OR p.state='failed'))`;
+  AND t.agent IN (${PARSED_AGENTS}) AND p.state='failed')`;
 
 /** Bytes a supported parser still has to publish, or member events still waiting for publication. */
 export const capturePendingSql = (alias: string): string => `(EXISTS (SELECT 1 ${frontiers(alias)}

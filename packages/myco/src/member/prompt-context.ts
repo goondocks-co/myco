@@ -138,7 +138,7 @@ function consumePromptRecall(run: PromptRenderRun, state: SessionState, options:
     held.stage = 'delivered';
     const answer = held.answer;
     const ask = held.request;
-    const rendered = ask.promptId === undefined && options.delivery === 'tool' ? toolPromptIdentity(run) : undefined;
+    const rendered = ask.promptId === undefined && options.delivery === 'tool' ? hookPromptIdentity(run, 'tool') : undefined;
     const events = ask.identity !== undefined && answer.context.length > 0
       && (answer.receiptId !== undefined || answer.answerId !== undefined || answer.sessionRecord !== undefined)
       ? [contextDeliveredEvent(run.ctx, { receiptId: answer.receiptId, answerId: answer.answerId, sessionRecord: answer.sessionRecord,
@@ -155,19 +155,59 @@ function consumePromptRecall(run: PromptRenderRun, state: SessionState, options:
   return { events: [] };
 }
 
-/** Resolve a late render from the tool's native source before recording its delivery. */
-function toolPromptIdentity(run: PromptRenderRun): { renderedIn: string; renderedScheme: PromptIdScheme } | undefined {
-  if (!featureAdvertised(run.credential, run.spool.mycoHome, PROMPT_SCHEME_FEATURE)) return undefined;
-  const adapter = new SymbiontRegistry().getAdapter(run.agent);
-  if (adapter?.promptForTool === undefined) return undefined;
-  const transcript = run.input.transcriptPath ?? adapter.findTranscript(run.sessionId);
-  if (transcript === null || transcript === undefined) return undefined;
-  assertMemberTranscriptDestination(transcript, run.credential, run.spool.mycoHome);
-  let content: string;
-  try { content = fs.readFileSync(transcript, 'utf8'); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
-  const request = adapter.promptForTool(content, { sessionId: run.sessionId, raw: run.input.raw });
-  return request === undefined ? undefined : { renderedIn: canonicalPromptId(deriveId, request), renderedScheme: request.scheme };
+/** Maximum native transcript bytes a hook reads to resolve a prompt link. */
+export const HOOK_PROMPT_LOOKBACK_BYTES = 1024 * 1024;
+const HOOK_PROMPT_READ_BYTES = 64 * 1024;
+
+/** Complete JSONL records newest first, stopping reads when the caller finds its source key. */
+function* recentRecords(file: string): Generator<{ value: Record<string, unknown>; offset: number }> {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const floor = Math.max(0, size - HOOK_PROMPT_LOOKBACK_BYTES);
+    let end = size;
+    let tail = Buffer.alloc(0);
+    while (end > floor) {
+      const start = Math.max(floor, end - HOOK_PROMPT_READ_BYTES);
+      const chunk = Buffer.alloc(end - start);
+      const read = fs.readSync(fd, chunk, 0, chunk.length, start);
+      if (read !== chunk.length) throw new Error('transcript changed during prompt lookup');
+      const bytes = Buffer.concat([chunk, tail]);
+      let right = bytes.length;
+      for (let i = bytes.length - 1; i >= 0; i--) {
+        if (bytes[i] !== 10) continue;
+        const line = bytes.subarray(i + 1, right).toString('utf8');
+        right = i;
+        let value: unknown;
+        try { value = JSON.parse(line); } catch { continue; }
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) yield { value: value as Record<string, unknown>, offset: start + i + 1 };
+      }
+      tail = bytes.subarray(0, right);
+      end = start;
+    }
+    if (floor === 0 && tail.length > 0) {
+      let value: unknown;
+      try { value = JSON.parse(tail.toString('utf8')); } catch { return; }
+      if (value !== null && typeof value === 'object' && !Array.isArray(value)) yield { value: value as Record<string, unknown>, offset: 0 };
+    }
+  } finally { fs.closeSync(fd); }
+}
+
+/** Resolve a native source link; a failed lookup leaves capture and memory delivery unscoped. */
+export function hookPromptIdentity(run: PromptRenderRun, kind: 'tool' | 'subagent'): { renderedIn: string; renderedScheme: PromptIdScheme } | undefined {
+  try {
+    if (!featureAdvertised(run.credential, run.spool.mycoHome, PROMPT_SCHEME_FEATURE)) return undefined;
+    const adapter = new SymbiontRegistry().getAdapter(run.agent);
+    if (adapter?.promptForHook === undefined) return undefined;
+    const transcript = run.input.transcriptPath ?? adapter.findTranscript(run.sessionId);
+    if (transcript === null || transcript === undefined) return undefined;
+    assertMemberTranscriptDestination(transcript, run.credential, run.spool.mycoHome);
+    const request = adapter.promptForHook(recentRecords(transcript), { sessionId: run.sessionId, raw: run.input.raw, kind });
+    return request === undefined ? undefined : { renderedIn: canonicalPromptId(deriveId, request), renderedScheme: request.scheme };
+  } catch (error) {
+    process.stderr.write(`[myco] prompt link unavailable: ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
+    return undefined;
+  }
 }
 
 /** A tool hook reads only this session's current held answer and never waits for it. */

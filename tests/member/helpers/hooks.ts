@@ -145,3 +145,14 @@ export function recordingFetch(inner: FetchLike): { fetch: FetchLike; requests: 
   };
   return { fetch, requests };
 }
+
+/** Generic hook-row fixtures use Windsurf's native input fields. */
+export function runHookWithHookRows(name: HookName, raw: Record<string, unknown>, opts: RunHookOptions): Promise<HookRunResult> {
+  return runHook(name, opts.symbiont !== 'windsurf' ? raw : {
+    ...raw, trajectory_id: raw.trajectory_id ?? raw.session_id,
+    agent_action_name: raw.agent_action_name ?? raw.tool_name,
+    tool_info: { ...(raw.tool_input as Record<string, unknown> | undefined),
+      user_prompt: raw.prompt, response: raw.last_assistant_message, transcript_path: raw.transcript_path,
+      mcp_result: raw.tool_response, ...(raw.tool_info as Record<string, unknown> | undefined) },
+  }, opts);
+}

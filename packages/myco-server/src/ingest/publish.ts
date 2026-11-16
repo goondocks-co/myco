@@ -380,6 +380,7 @@ class SessionPublication {
           const known = typeof admitted.payload.toolName === 'string' && admitted.payload.toolName !== 'unknown';
           return documentRecord(admitted.kind, admitted.payload, admitted.createdAt, {
             src: [t.transcript_id, event.offset, event.sourceEnd ?? window.to],
+            replySnapshot: event.replySnapshot,
             received_at: receipts.get(event.offset) ?? t.last_received_at,
             call: known ? { ordinal: 0, offset: event.callOffset ?? event.offset, origin: 'reported' } : null,
             outcome: { ordinal: 0, offset: event.outcomeOffset ?? event.offset, origin: event.outcomeOrigin ?? 'reported' },

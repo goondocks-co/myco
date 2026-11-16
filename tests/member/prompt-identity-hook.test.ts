@@ -319,3 +319,26 @@ it('Copilot delivery names the parsed prompt through native tool and originating
   expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedIn: promptId, renderedScheme: 'member-transcript-v1' })]);
   expect(parsed.find(event => event.kind === 'tool.failure')!.payload.promptId).toBe(promptId);
 });
+
+it.each(['ambiguous', 'outside the lookup bound'])('%s native prompt lookup still delivers unscoped memory', async reason => {
+  const sessionId = 'copilot-unscoped-' + reason.replaceAll(' ', '-');
+  const tx = transcript(sessionId);
+  fs.writeFileSync(tx, [
+    { type: 'user.message', data: { messageId: 'one', content: 'inspect orchard' } },
+    ...['one', 'two'].map(originatingMessageId => ({ type: 'assistant.message', data: {
+      originatingMessageId, toolRequests: [{ toolCallId: 'ambiguous' }],
+    } })),
+  ].map(row => JSON.stringify(row)).join('\n') + '\n');
+  if (reason === 'outside the lookup bound') {
+    const { HOOK_PROMPT_LOOKBACK_BYTES } = await import('@myco/member/prompt-context.js');
+    fs.appendFileSync(tx, JSON.stringify({ type: 'padding', text: 'x'.repeat(HOOK_PROMPT_LOOKBACK_BYTES) }) + '\n');
+  }
+  const served = serving('turn,prompt-identity,prompt-scheme');
+  const opts = { helpers: 'run' as const, fetch: served.fetch, symbiont: 'copilot' };
+  await runHook('session-start', { session_id: sessionId, transcript_path: tx }, opts);
+  await runHook('user-prompt-submit', { session_id: sessionId, prompt: 'inspect orchard' }, opts);
+  const result = await runHook('post-tool-use', { session_id: sessionId, transcript_path: tx, toolCallId: 'ambiguous', tool_name: 'view' }, opts);
+  expect(result.stdout).toContain('Recalled for: inspect orchard');
+  if (reason === 'ambiguous') expect(result.stderr).toContain('prompt link unavailable');
+  expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedScopeReason: 'transcript_only' })]);
+});

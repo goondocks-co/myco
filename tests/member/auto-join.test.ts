@@ -38,7 +38,7 @@ import { autoJoinHold } from '@myco/member/auto-join-hook.js';
 import {  } from '@myco-server-worker/ingest/parse.js';
 import { run as runMemberCli } from '@myco/cli/member.js';
 import { memberRig, tempMycoHome, TEST_MACHINE_ID, type MemberRig } from './helpers/server.js';
-import { recordingFetch, runHelperHere, runHook } from './helpers/hooks.js';
+import { recordingFetch, runHelperHere, runHookWithHookRows as runHook } from './helpers/hooks.js';
 import { loadManifests, resolvePackageRoot } from '@myco/symbionts/detect.js';
 import { SymbiontInstaller } from '@myco/symbionts/installer.js';
 import { recordProvision } from '@myco/symbionts/member-provision-record.js';
@@ -578,7 +578,7 @@ describe('held capture reaches the project however the repository is connected',
     const root = repository(path.join(base, 'Repos'), 'widget', 'https://github.com/acme/widget.git');
     const file = tx(root, 'sess-h', [{ type: 'user', message: { role: 'user', content: 'x' } }]);
     const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
-      runHook(name, { session_id: 'sess-h', cwd: root, transcript_path: file, ...raw }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn, symbiont: 'copilot' });
+      runHook(name, { session_id: 'sess-h', cwd: root, transcript_path: file, ...raw }, { helpers: 'run', fetch: rig.fetch, helperSpawn: spawn, symbiont: 'windsurf' });
     await hook('session-start', { hook_event_name: 'SessionStart' });
     await hook('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'held prompt' });
     expect((await join(['--root', root]))[0]).toMatchObject({ result: 'joined' });
@@ -796,13 +796,13 @@ describe('the pending spool', () => {
     const sessionId = 'sess-receipt';
     const promptId = mintId();
     const held = pendingSpool(repo, { mycoHome, now: at })!;
-    appendPending(repo, sessionId, [promptEvent({ agent: 'copilot', sessionId, stage: held.stagerFor(sessionId), now: () => at },
+    appendPending(repo, sessionId, [promptEvent({ agent: 'windsurf', sessionId, stage: held.stagerFor(sessionId), now: () => at },
       { promptId, text: 'held prompt' })], (state) => { state.promptId = promptId; }, { mycoHome, now: at });
     writeRegistryEntry({ version: REGISTRY_VERSION, projectId: 'proj_1', serverUrl: SERVER_URL, token: rig.token,
       root, machineId: TEST_MACHINE_ID, joinedAt: at, updatedAt: at }, { mycoHome });
 
     await runHook('post-tool-use', { session_id: sessionId, hook_event_name: 'PostToolUse', cwd: root,
-      tool_name: 'Read', tool_input: { file_path: '/x' } }, { fetch: rig.fetch, helpers: 'record', symbiont: 'copilot' });
+      tool_name: 'Read', tool_input: { file_path: '/x' } }, { fetch: rig.fetch, helpers: 'record', symbiont: 'windsurf' });
     const live = new MemberSpool({ projectId: 'proj_1', serverUrl: SERVER_URL }, { mycoHome });
     expect(live.readRecords(sessionId).map((record) => record?.kind)).toEqual(['tool.use']);
     expect(live.readRecords(sessionId)[0]?.payload).toMatchObject({ promptId });

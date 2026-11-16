@@ -75,6 +75,7 @@ interface HookConfigEntry {
   promptRecallToolDelivery: boolean;
   promptSubmitInjection: boolean;
     turnRowSource: 'hook' | 'transcript';
+    subagentRowSource?: 'hook' | 'transcript';
     transcriptFidelity: 'full' | 'no_tool_results';
   };
   transcriptDiscovery?: unknown;
@@ -189,6 +190,7 @@ function hookConfigEntryFor(manifest: SymbiontManifest): HookConfigEntry {
       promptRecallToolDelivery: manifest.capabilities?.promptRecallToolDelivery === true,
       promptSubmitInjection: manifest.capabilities?.promptSubmitInjection !== false,
       turnRowSource: manifest.capabilities?.turnRowSource ?? 'hook',
+      ...(manifest.capabilities?.subagentRowSource === undefined ? {} : { subagentRowSource: manifest.capabilities.subagentRowSource }),
       transcriptFidelity: manifest.capabilities?.transcriptFidelity ?? 'full',
     },
     promptIdentity: promptIdentityFor(manifest),
@@ -348,6 +350,7 @@ export interface HookCapabilities {
   promptSubmitInjection: boolean;
   /** Which side writes this symbiont's turn rows; see the manifest schema. */
   turnRowSource: 'hook' | 'transcript';
+  subagentRowSource?: 'hook' | 'transcript';
   /** What the transcript carries, as the Deployment's parser declares it; see the manifest schema. */
   transcriptFidelity: 'full' | 'no_tool_results';
 }

@@ -1,3 +1,4 @@
+import { cleanAntigravityUserPrompt, isAntigravityUserInput } from '@goondocks/myco-shared/antigravity-parser';
 import type { SymbiontAdapter } from './adapter.js';
 import { AntigravityJsonlParser } from './parsers/antigravity-jsonl.js';
 import { findTranscriptFor } from './transcript-discovery.js';
@@ -20,4 +21,16 @@ export const antigravityAdapter: SymbiontAdapter = {
   findTranscript: (conversationId) => findTranscriptFor('antigravity', conversationId),
 
   parseTurns: (content) => antigravityParser.parseTurns(content),
+  promptForHook(records, input) {
+    const step = input.raw.stepIdx;
+    if (input.kind !== 'tool' || typeof step !== 'number' || !Number.isSafeInteger(step)) return undefined;
+    for (const { value: record, offset } of records) {
+      const key = record.step_index;
+      if (typeof key === 'number' && Number.isSafeInteger(key) && key >= 0 && key < step
+        && isAntigravityUserInput(record) && cleanAntigravityUserPrompt(typeof record.content === 'string' ? record.content : '') !== '') {
+        return { scheme: 'member-transcript-v1', sessionId: input.sessionId, dedupeKey: String(key), position: offset };
+      }
+    }
+    return undefined;
+  },
 };

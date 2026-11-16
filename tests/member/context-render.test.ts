@@ -508,10 +508,13 @@ describe('Deployment feature scope', () => {
     expect(readDeploymentFeatures({ serverUrl, projectId: 'proj_1' }, mycoHome)).toEqual(['turn']);
     expect(readDeploymentFeatures({ serverUrl: 'https://other.invalid', projectId: 'proj_foreign' }, mycoHome)).toEqual([]);
   });
-  it('a corrupt feature cache does not block a hook-owned prompt and response', async () => {
+  it.each(['corrupt JSON', 'version mismatch', 'unreadable path'])('%s does not block a hook-owned prompt and response', async damage => {
     advertise('proj_1', ['turn'], 1);
     advertise('proj_new', [], 2);
-    fs.writeFileSync(deploymentFeaturesPath(serverUrl, mycoHome), 'invalid', { mode: 0o600 });
+    const file = deploymentFeaturesPath(serverUrl, mycoHome);
+    fs.rmSync(file, { force: true });
+    if (damage === 'unreadable path') fs.mkdirSync(file);
+    else fs.writeFileSync(file, damage === 'corrupt JSON' ? 'invalid' : JSON.stringify({ version: -1 }), { mode: 0o600 });
     const sessionId = 'feature-cache-capture';
     const raw = { trajectory_id: sessionId, tool_info: { user_prompt: 'save prompt', response: 'save response', transcript_path: transcript(sessionId) }, cwd: process.cwd() };
     const fetch = async () => Response.json({ persisted: true, context: '' });
@@ -708,4 +711,28 @@ describe('prompts a harness writes only to its transcript', () => {
     await publishFixture(rig.env);
     expect(await readFixtureRecords(rig.env.serverEnv, 'proj_1', 'sess-agy')).toEqual(captured);
   });
+});
+
+it('the member helper ships a final retained plugin turn without another plugin callback', async () => {
+  const { snippetModule } = await import('../support/plugin-snippet.js');
+  const route = spool().routing!;
+  const { prepareMemberTranscriptScope } = await import('@myco/member/transcript-routing.js');
+  const key = prepareMemberTranscriptScope(route, mycoHome);
+  const claim = path.join(mycoHome, 'member', 'claims', key, 'cline-final-inbox.lock');
+  fs.mkdirSync(path.dirname(claim), { recursive: true });
+  fs.writeFileSync(claim, `unverified-writer ${Date.now()}`, { mode: 0o600 });
+  const wakes: Record<string, unknown>[] = [];
+  const subject = snippetModule({ ...process.env, MYCO_HOME: mycoHome }, [], [], (_bin, args, options) => {
+    if (args[1] === 'stop') wakes.push(JSON.parse((options as { input: string }).input));
+    return { status: 0, stdout: '{}', stderr: '' };
+  }, key, Date.now, fs, () => 0, 'cline');
+  subject.MycoClinePlugin.setup({}, { session: { sessionId: 'final-inbox' }, workspaceInfo: { rootPath: process.cwd() } });
+  const snapshot = { agentId: 'final-agent', conversationId: 'conv_final-inbox' };
+  await subject.MycoClinePlugin.hooks.beforeModel({ snapshot, request: { messages: [{ id: 'source-1', role: 'user', content: [{ type: 'text', text: 'final prompt' }] }] } });
+  await subject.MycoClinePlugin.hooks.afterModel({ snapshot, assistantMessage: { id: 'reply-1', content: [{ type: 'text', text: 'final reply' }] } });
+  expect(wakes).toHaveLength(2);
+  await runHook('stop', wakes.at(-1)!, { helpers: 'run', fetch: rig.fetch, symbiont: 'cline' });
+  await publishFixture(rig.env);
+  expect((await readFixtureRecords(rig.env.serverEnv, 'proj_1', 'final-inbox')).filter(row => row.k === 'prompt' || row.k === 'reply').map(row => row.text))
+    .toEqual(['final prompt', 'final reply']);
 });
