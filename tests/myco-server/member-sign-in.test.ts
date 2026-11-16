@@ -53,12 +53,12 @@ describe('member sign-in', () => {
     expect(e.executed.filter((sql) => /UPDATE members/.test(sql))).toEqual([]);
 
     const linked = await worker.fetch(await post(e.db, '/auth/link', '9001', { key, confirm: true, memberId: 'mem_machine_3' }), env);
-    expect({ status: linked.status, body: await linked.json() }).toEqual({ status: 200, body: { linked: true, member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } } });
+    expect({ status: linked.status, body: await linked.json() }).toEqual({ status: 200, body: { linked: true, member: { id: 'mem_machine_2', label: 'octocat', role: 'admin' } } });
     expect(e.sqlite.query(`SELECT id FROM members WHERE github_id = '9001'`).all()).toEqual([{ id: 'mem_machine_2' }]);
 
     expect((await worker.fetch(await get(e.db, '/api/projects', '9001'), env)).status).toBe(200);
     const me = await worker.fetch(await get(e.db, '/auth/me', '9001'), env);
-    expect(await jsonBody(me)).toMatchObject({ sub: '9001', login: 'octocat', owner: false, member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } });
+    expect(await jsonBody(me)).toMatchObject({ sub: '9001', login: 'octocat', owner: false, member: { id: 'mem_machine_2', label: 'octocat', role: 'admin' } });
   });
 
   it('is flat: two linked members see the same projects', async () => {
@@ -151,7 +151,7 @@ describe('bootstrap, then admin (#1448)', () => {
     fresh(e);
     const key = await mintLink(e, 'mem_machine_2', 'machine_2');
     const bound = await worker.fetch(await post(e.db, '/auth/link', '9001', { key, confirm: true }), env);
-    expect({ status: bound.status, body: await bound.json() }).toEqual({ status: 200, body: { linked: true, member: { id: 'mem_machine_2', label: 'machine_2', role: 'admin' } } });
+    expect({ status: bound.status, body: await bound.json() }).toEqual({ status: 200, body: { linked: true, member: { id: 'mem_machine_2', label: 'octocat', role: 'admin' } } });
     expect((await worker.fetch(await get(e.db, '/api/projects', '9001'), env)).status).toBe(200);
   });
 
@@ -167,7 +167,7 @@ describe('bootstrap, then admin (#1448)', () => {
     expect(keyRows(e)).toBe(0);
     expect(linked(e)).toEqual([{ id: PRINCIPAL.id, github_id: LINKED_SUB }]);
     expect((await worker.fetch(await get(e.db, '/api/projects', LINKED_SUB), env)).status).toBe(200);
-    expect(await jsonBody(await worker.fetch(await get(e.db, '/auth/me', LINKED_SUB), env))).toMatchObject({ sub: LINKED_SUB, login: 'octocat', owner: false, member: PRINCIPAL });
+    expect(await jsonBody(await worker.fetch(await get(e.db, '/auth/me', LINKED_SUB), env))).toMatchObject({ sub: LINKED_SUB, login: 'octocat', owner: false, member: { ...PRINCIPAL, label: 'octocat' } });
   });
 
   it('refuses a key minted during bootstrap once bootstrap is over, in the preview and at confirmation, binding nothing', async () => {

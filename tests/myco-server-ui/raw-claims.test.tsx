@@ -144,10 +144,12 @@ describe('owner raw claims', () => {
 });
 
 describe('explicit initial ownership', () => {
+  // Sign-in names a member labelled only by an id after their login before any page reads members, so a label that still
+  // names nobody here is one whose naming write failed: the viewer reads as "You", never by id or a login the server lacks.
   it.each([
-    { label: null, login: 'Ada', name: 'Ada' },
+    { label: null, login: 'Ada', name: 'You' },
     { label: OWNER, login: '', name: 'You' },
-  ])('uses the signed-in person name for a sole-admin proposal with label $label', async ({ label, login, name }) => {
+  ])('names the signed-in sole admin "You" in the proposal while their label is $label', async ({ label, login, name }) => {
     const { requests } = deployment({ owner: false, viewerLabel: label, login, ownership: () => Response.json({ ownerMemberId: null, revision: 'owner-r1', candidates: [
       { memberId: OWNER, label, role: 'admin', roleRevision: 'ada-r1' },
     ], proposalMemberId: OWNER }) });

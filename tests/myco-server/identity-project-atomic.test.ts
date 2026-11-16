@@ -81,7 +81,8 @@ describe('identity and Project atomic writes', () => {
       const now = Date.now();
       const memberId = operation === 'link' ? 'mem_machine_2' : 'mem_machine_1';
       const githubId = operation === 'link' ? '770001' : '583231';
-      r.sqlite.query('UPDATE members SET label=NULL WHERE id=?').run(memberId);
+      // Labelled only by its own id, the member names nobody, so every surface attempts the naming write.
+      r.sqlite.query('UPDATE members SET label=id WHERE id=?').run(memberId);
       r.sqlite.run("CREATE TRIGGER fail_login BEFORE INSERT ON schema_meta WHEN NEW.key LIKE 'github_login:%' BEGIN SELECT RAISE(ABORT,'D1_ERROR: private-storage-detail'); END");
       const output: string[] = [];
       const log = spyOn(console, 'log').mockImplementation(line => { output.push(String(line)); });
@@ -98,12 +99,13 @@ describe('identity and Project atomic writes', () => {
         } else if (operation === 'me') {
           const response = await request('/auth/me');
           expect(response.status).toBe(200);
-          expect(await response.json()).toMatchObject({ member: { id: memberId, label: null } });
+          expect(await response.json()).toMatchObject({ member: { id: memberId, label: memberId } });
         } else if (operation === 'link') {
           const key = (await issueIdentityLinkAuthority(r.db, memberId, now, { issuedBy: 'mem_machine_1' }))!;
           const response = await request('/auth/link', { key: key.key, confirm: true });
           expect(response.status).toBe(200);
-          expect(await response.json()).toMatchObject({ linked: true, member: { id: memberId, label: null } });
+          expect(await response.json()).toMatchObject({ linked: true, member: { id: memberId, label: memberId } });
+          expect(r.sqlite.query('SELECT github_id FROM members WHERE id=?').get(memberId)).toEqual({ github_id: githubId });
         } else {
           const start = await request('/auth/device/start', { machineId: 'courtesy', machineName: 'Laptop', os: 'linux' });
           const grant = await start.json() as { user_code: string; device_code: string };
@@ -113,7 +115,7 @@ describe('identity and Project atomic writes', () => {
         const events = output.map(line => JSON.parse(line)).filter(event => event.kind === 'member_naming_failed');
         expect(events).toEqual([{ kind: 'member_naming_failed', memberId, error_class: 'db', error_reason: 'Unknown:db' }]);
         expect(JSON.stringify(events)).not.toContain('private-storage-detail');
-        expect(r.sqlite.query('SELECT label FROM members WHERE id=?').get(memberId)).toEqual({ label: null });
+        expect(r.sqlite.query('SELECT label FROM members WHERE id=?').get(memberId)).toEqual({ label: memberId });
         expect(await memberNamingFailures(r.db)).toMatchObject({ hasMore: false, members: [{ memberId, errorClass: 'db', failures: 1, lastFailedAt: expect.any(Number) }] });
         r.sqlite.run('DROP TRIGGER fail_login');
         expect(await tryNameMemberFromLogin(r.db, memberId, githubId, 'octocat', env.platform.classifyError)).toBe('octocat');

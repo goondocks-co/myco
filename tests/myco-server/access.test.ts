@@ -279,7 +279,7 @@ describe('the Deployment keeps a linked admin (#1448)', () => {
     }
     expect(writes.sort()).toEqual([
       'src/db/identity/link.ts: github_id=?2',
-      'src/db/identity/member-naming.ts: label = ?',
+      'src/db/identity/member-naming.ts: label = ?1',
       'src/db/identity/member-revocation.ts: revoked_at=?2,revoked_by=?3',
       'src/db/identity/member-standing.ts: github_id = ?1',
       'src/db/identity/ownership.ts: role=?1,role_revision=role_revision+1,revoked_at=NULL,revoked_by=NULL',
