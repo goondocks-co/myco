@@ -353,9 +353,9 @@ it('a tool hook retains the native request key when transcript lines have not ar
     { session_id: sessionId, transcript_path: tx, ...raw }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
   await hook('session-start', {});
   await hook('user-prompt-submit', { prompt: 'inspect orchard' });
-  const rendered = await hook('post-tool-use', { toolCallId: 'late-orchard-call', tool_name: 'view' });
+  const rendered = await hook('post-tool-use', { tool_use_id: 'late-orchard-call', tool_name: 'view' });
   expect(rendered.stdout).toContain('Recalled for: inspect orchard');
   expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedScopeReason: 'transcript_only', renderedToolCallKey: 'late-orchard-call' })]);
-  await hook('post-tool-use', { toolCallId: 'late-orchard-call', tool_name: 'view' });
+  await hook('post-tool-use', { tool_use_id: 'late-orchard-call', tool_name: 'view' });
   expect(delivered(sessionId)).toHaveLength(1);
 });
