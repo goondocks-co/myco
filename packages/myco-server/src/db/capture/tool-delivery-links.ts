@@ -1,15 +1,14 @@
-import { assertion, write, type Bound } from '../index.js';
+import { write, type Bound } from '../index.js';
 import { jsonPages } from '../json-pages.js';
 
 const TABLES = ['spore_injections', 'prompt_context_answers', 'session_injections'] as const;
 export type DeliveryTable = (typeof TABLES)[number];
 type LinkParams = [project: string, session: string, links: string];
 
-const consistent = assertion<LinkParams>({ name: 'contextLinks.consistent', sql: `SELECT CASE WHEN NOT EXISTS (
-  SELECT 1 FROM json_each(?3) j JOIN tool_prompt_links l ON l.project_id=?1 AND l.session_id=?2 AND l.tool_call_id=json_extract(j.value,'$[0]')
-  WHERE l.prompt_id<>json_extract(j.value,'$[1]')) THEN 1 ELSE json_extract('[]','$[tool_prompt_conflict]') END` });
 const retain = write<LinkParams>({ name: 'contextLinks.retain', sql: `INSERT INTO tool_prompt_links(project_id,session_id,tool_call_id,prompt_id)
-  SELECT ?1,?2,json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?3) WHERE true ON CONFLICT DO NOTHING` });
+  SELECT ?1,?2,json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?3) WHERE true
+  ON CONFLICT(project_id,session_id,tool_call_id) DO UPDATE SET prompt_id=excluded.prompt_id
+    WHERE tool_prompt_links.prompt_id<>excluded.prompt_id` });
 
 const resolutions = TABLES.map(table => write<LinkParams>({ name: `contextLinks.resolve.${table.replaceAll('_', '')}`, sql: `
   UPDATE ${table} AS r SET delivered_prompt_id=l.prompt_id,delivered_scope_reason=NULL
@@ -26,7 +25,7 @@ export function resolveToolDeliveries(project: string, session: string, toolCall
 /** Publish exact native request-to-prompt evidence and place previously delivered context atomically. */
 export function toolPromptLinkStatements(project: string, session: string, links: ReadonlyMap<string, string>): Bound[] {
   return jsonPages([...links]).flatMap(page => [
-    consistent.bind(project, session, JSON.stringify(page)), retain.bind(project, session, JSON.stringify(page)),
+    retain.bind(project, session, JSON.stringify(page)),
     ...resolveToolDeliveries(project, session, page.map(([key]) => key)),
   ]);
 }

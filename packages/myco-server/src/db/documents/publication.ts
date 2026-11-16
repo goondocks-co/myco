@@ -66,7 +66,7 @@ export function publicationGuard(held: PublicationObservation): Bound[] {
 const published = write<[string, string, number]>({ name: 'publication.advancePublishedRevision', sql: `UPDATE session_documents
   SET published_revision=published_revision+1 WHERE project_id=?1 AND session_id=?2 AND generation=?3 AND state='live'` });
 
-/** Every committed live chunk layout advances the session's published revision. */
+/** Every committed live chunk layout advances its published revision and the sessions heartbeat mark. */
 export function publishedDocument(project: string, session: string, generation: number): Bound {
   return published.bind(project, session, generation);
 }

@@ -304,7 +304,7 @@ it('Copilot delivery names the parsed prompt through native tool and originating
     { type: 'tool.execution_start', data: { toolCallId: 'orchard-call', toolName: 'view', arguments: { path: 'orchard.txt' } } },
   ];
   fs.writeFileSync(tx, records.map(record => JSON.stringify(record)).join('\n') + '\n');
-  const served = serving('turn,prompt-identity,prompt-scheme,context-tool-link');
+  const served = serving('turn,prompt-identity,prompt-scheme');
   const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) => runHook(name,
     { session_id: sessionId, transcript_path: tx, ...raw }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
   await hook('session-start', {});
@@ -348,7 +348,7 @@ it('a tool hook retains the native request key when transcript lines have not ar
   const sessionId = 'copilot-delayed-transcript';
   const tx = transcript(sessionId);
   fs.writeFileSync(tx, '');
-  const served = serving('turn,prompt-identity,prompt-scheme,context-tool-link');
+  const served = serving('turn,prompt-identity,prompt-scheme');
   const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) => runHook(name,
     { session_id: sessionId, transcript_path: tx, ...raw }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
   await hook('session-start', {});

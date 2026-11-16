@@ -1,4 +1,4 @@
-import { canonicalPromptId, PROMPT_SCHEME_FEATURE, TOOL_DELIVERY_FEATURE, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { canonicalPromptId, PROMPT_SCHEME_FEATURE, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
 import { SymbiontRegistry } from '../symbionts/registry.js';
 import { assertMemberTranscriptDestination } from './transcript-routing.js';
 import fs from 'node:fs';
@@ -140,7 +140,6 @@ function consumePromptRecall(run: PromptRenderRun, state: SessionState, options:
     const ask = held.request;
     const rendered = ask.promptId === undefined && options.delivery === 'tool' ? hookPromptIdentity(run, 'tool') : undefined;
     const toolCallKey = rendered === undefined && ask.promptId === undefined && options.delivery === 'tool'
-      && featureAdvertised(run.credential, run.spool.mycoHome, TOOL_DELIVERY_FEATURE)
       ? new SymbiontRegistry().getAdapter(run.agent)?.toolCallKeyForHook?.(run.input.raw) : undefined;
     const events = ask.identity !== undefined && answer.context.length > 0
       && (answer.receiptId !== undefined || answer.answerId !== undefined || answer.sessionRecord !== undefined)
