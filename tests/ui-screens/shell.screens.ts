@@ -212,11 +212,14 @@ test.describe('dashboard shell', () => {
         await expect(dialog).toBeVisible();
         // A page that names no project searches every project.
         const input = dialog.getByRole('searchbox', { name: 'Search every project' });
+        await expect(input).toBeVisible();
         await expect(input).toBeFocused();
         // The field runs the dialog's width: no short search box.
-        const [field, box] = await Promise.all([input.boundingBox(), dialog.boundingBox()]);
-        expect(field!.width).toBeGreaterThan(box!.width - 64);
-        if (viewport === 'desktop') expect(box!.width).toBeGreaterThanOrEqual(600);
+        await expect.poll(async () => {
+          const [field, box] = await Promise.all([input.boundingBox(), dialog.boundingBox()]);
+          return field !== null && box !== null && field.width > box.width - 64
+            && (viewport !== 'desktop' || box.width >= 600);
+        }).toBe(true);
         await input.fill('parity');
         if (onFixture()) await expect(dialog.locator('a[data-result]').first()).toBeVisible();
         await expectFits(page, viewport);

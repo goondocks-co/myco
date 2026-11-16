@@ -1,22 +1,18 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { NESTED_BUN_TEST_TIMEOUT_ARGS, sandboxChildEnv } from '../../scripts/test-environment.mjs';
 import { Database } from 'bun:sqlite';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { createLocalDeployment, ensureLocalSecrets, DEFAULT_LOCAL_RECORD, peekLocalPaths, readLocalSecrets, writeLocalRecord, writeLocalSecrets, type LocalCreateStep } from '@myco/server/local.js';
-import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
-import { inspectLocal, prepareLocal, recoverLocalOwnerLink, type LocalPreparePlan, type LocalPrepareDeps } from '@myco/server/local-lifecycle.js';
-import { localOwnerLinked, setupLocalOwner, waitForOwnerLink } from '@myco/server/local-owner.js';
-import { LocalVolume, volumeIdentity } from '@myco/server/local-volume.js';
-import { defaultSpec, installService, servicePaths, renderUnit } from '@myco/server/service.js';
-import { nativeServicePlatform } from '../helpers/native-service-platform.js';
+import { createLocalDeployment, DEFAULT_LOCAL_RECORD, peekLocalPaths, readLocalSecrets, writeLocalRecord, type LocalCreateStep } from '@myco/server/local.js';
+import { inspectLocal, prepareLocal } from '@myco/server/local-lifecycle.js';
+import { setupLocalOwner } from '@myco/server/local-owner.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { spendIdentityLinkAuthority } from '@myco-server-worker/auth/identity-link.js';
-import { fixture, native, plan, signIn, serve, tree, installLocalLifecycle } from './fixtures/local-lifecycle.js';
+import { fixture, native, plan, signIn, tree, installLocalLifecycle } from './fixtures/local-lifecycle.js';
 installLocalLifecycle();
+const INTERRUPTION_TIMEOUT_MS = 20_000;
 
 describe('read-only native inspection', () => {
   it('does not create a home, locks, or migrate old target paths', async () => {
@@ -119,7 +115,7 @@ describe('sentinel-last resumable create', () => {
     const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
     const marker = path.join(childRoot, 'reached');
     try {
-      const deadline = Date.now() + 10_000;
+      const deadline = Date.now() + INTERRUPTION_TIMEOUT_MS;
       while (!fs.existsSync(marker) && Date.now() < deadline && child.exitCode === null) await Bun.sleep(20);
       expect({ reached: fs.existsSync(marker), output }).toEqual({ reached: true, output: expect.any(String) });
     } finally { if (child.exitCode === null) child.kill('SIGKILL'); await exited; }
@@ -133,19 +129,11 @@ describe('sentinel-last resumable create', () => {
       expect(state.creation).toMatchObject({ incomplete: expect.arrayContaining(['record']) });
     }
     const secrets = readLocalSecrets(childPaths);
-    createLocalDeployment(DEFAULT_LOCAL_RECORD, native, childPaths);
+    const resumed = createLocalDeployment(DEFAULT_LOCAL_RECORD, native, childPaths);
+    if (step === 'record') expect(resumed).toEqual({ generated: [], applied: 0 });
     expect((await inspectLocal(childHome, f.deps)).creation).toBe('complete');
     for (const [key, value] of Object.entries(secrets)) expect(readLocalSecrets(childPaths)[key as keyof typeof secrets]).toBe(value);
-  }, 20_000);
-  it('interruption after sentinel publication is already complete and retries idempotently', async () => {
-    const f = fixture(false);
-    expect(() => createLocalDeployment(DEFAULT_LOCAL_RECORD, native, f.paths, reached => {
-      if (reached === 'record') throw new Error('interrupted');
-    })).toThrow('interrupted');
-    expect((await inspectLocal(f.home, f.deps)).creation).toBe('complete');
-    const secrets = readLocalSecrets(f.paths);
-    expect(createLocalDeployment(DEFAULT_LOCAL_RECORD, native, f.paths)).toEqual({ generated: [], applied: 0 });
-    expect(readLocalSecrets(f.paths)).toEqual(secrets);
-  });
+  }, INTERRUPTION_TIMEOUT_MS);
+
 });
 

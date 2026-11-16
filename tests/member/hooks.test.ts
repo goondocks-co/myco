@@ -15,7 +15,7 @@ import { publishFixtureDocuments } from '../myco-server/helpers/fixtures.js';
 import { promptIdFor } from '@myco-server-worker/ingest/parsers/index.js';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { HOOK_CONFIG } from '@myco/hooks/hook-config.generated.js';
@@ -44,15 +44,22 @@ let mycoHome: string;
 let rig: MemberRig;
 let fetchSpy: ReturnType<typeof recordingFetch>;
 const savedHome = process.env.MYCO_HOME;
+const checkout = process.cwd();
 
 beforeEach(async () => {
   mycoHome = tempMycoHome();
   process.env.MYCO_HOME = mycoHome;
+  const root = path.join(mycoHome, 'repo');
+  fs.mkdirSync(root);
+  execFileSync('git', ['init', '-q', root]);
+  execFileSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture', '--allow-empty']);
+  process.chdir(root);
   rig = await memberRig();
   registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
   fetchSpy = recordingFetch(rig.fetch);
 });
 afterEach(() => {
+  process.chdir(checkout);
   process.env.MYCO_HOME = savedHome;
 });
 
@@ -114,7 +121,6 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
     expect((await texts('prompt'))).toEqual(['hello']);
     expect((await texts('reply'))).toEqual(['The answer.']);
     expect((await readFixtureRecords(rig.env.serverEnv,'proj_1')).filter(row=>row.k==='tool')).toHaveLength(1);
-    expect(await texts('prompt')).toHaveLength(1);
 
     await run('session-end', { hook_event_name: 'SessionEnd', transcript_path: tx });
     const sessionRow = rig.env.sqlite.query('SELECT origin_path, ended_at FROM sessions WHERE session_id = ?').get(session) as { origin_path: string; ended_at: number | null };
@@ -210,41 +216,38 @@ describe('member hooks through the worker: claude-code, transcript-first', () =>
   });
 
   it('captures a plan file from the write the transcript records, re-sends an edit made outside the turn at the next Stop, and keeps a status set on the Deployment', async () => {
-    // The hook resolves its credential for the process's own project root, so the plan file sits in this checkout's plan directory for the test's duration.
     const root = resolveWorktreeRoot(process.cwd()) ?? resolveMemberProjectRoot(process.cwd());
     const file = path.join(root, '.claude/plans', `feature-${session}-${process.pid}.md`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const cleanup = () => { try { fs.unlinkSync(file); } catch {} };
-    try {
-      const lines = [
-        { type: 'user', uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'write the plan' } },
-        // An Edit record carries only a diff, so the file is read from disk at Stop.
-        { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: file, old_string: '', new_string: '# Feature' } }] } },
-        { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' } },
-      ];
-      const tx = transcript(lines);
-      await run('session-start', { transcript_path: tx, cwd: root });
-      fs.writeFileSync(file, '# Feature\n\n- [ ] step\n');
-      await run('stop', { transcript_path: tx, last_assistant_message: 'done', cwd: root });
-      const key = deriveId('plan', 'proj_1', `.claude/plans/${path.basename(file)}`);
-      const row = () => rig.env.sqlite.query('SELECT plan_key, title, content, status, origin_path, prompt_id FROM plans').get() as Record<string, unknown>;
-      // The parse derives the turn's prompt id; the member names none on the file.
-      expect(row()).toEqual({ plan_key: key, title: 'Feature', content: '# Feature\n\n- [ ] step\n', status: 'active', origin_path: `.claude/plans/${path.basename(file)}`, prompt_id: null });
-      expect(memberKinds()).toEqual(['session.start', 'plan', 'transcript.segment']);
-      // The same content again is not re-sent; a status set on the Deployment survives the next write.
-      await run('stop', { transcript_path: tx, last_assistant_message: 'done', cwd: root });
-      expect(rig.rows('plans')).toBe(1);
-      expect(memberKinds().filter((k) => k === 'plan')).toHaveLength(1);
-      rig.env.sqlite.run(`UPDATE plans SET status = 'completed' WHERE plan_key = ?`, [key]);
-      // An edit outside the hooks lands at Stop through the backstop; a write outside the plan dirs never becomes a plan.
-      fs.writeFileSync(file, '# Feature\n\n- [x] step\n- [ ] more\n');
-      const elsewhere = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-notes-')), 'notes.md');
-      fs.writeFileSync(elsewhere, '# Not a plan');
-      fs.appendFileSync(tx, JSON.stringify({ type: 'assistant', uuid: 'a3', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Write', input: { file_path: elsewhere, content: '# Not a plan' } }] } }) + '\n');
-      await run('stop', { transcript_path: tx, last_assistant_message: 'done', cwd: root });
-      expect(row()).toMatchObject({ content: '# Feature\n\n- [x] step\n- [ ] more\n', status: 'completed' });
-      expect(rig.rows('plans')).toBe(1);
-    } finally { cleanup(); }
+    const lines = [
+      { type: 'user', uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'write the plan' } },
+      // An Edit record carries only a diff, so the file is read from disk at Stop.
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: file, old_string: '', new_string: '# Feature' } }] } },
+      { type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' } },
+    ];
+    const tx = transcript(lines);
+    await run('session-start', { transcript_path: tx, cwd: root });
+    fs.writeFileSync(file, '# Feature\n\n- [ ] step\n');
+    await run('stop', { transcript_path: tx, last_assistant_message: 'done', cwd: root });
+    const key = deriveId('plan', 'proj_1', `.claude/plans/${path.basename(file)}`);
+    const row = () => rig.env.sqlite.query('SELECT plan_key, title, content, status, origin_path, prompt_id FROM plans').get() as Record<string, unknown>;
+    // The parse derives the turn's prompt id; the member names none on the file.
+    expect(row()).toEqual({ plan_key: key, title: 'Feature', content: '# Feature\n\n- [ ] step\n', status: 'active', origin_path: `.claude/plans/${path.basename(file)}`, prompt_id: null });
+    expect(memberKinds()).toEqual(['session.start', 'plan', 'transcript.segment']);
+    // The same content again is not re-sent; a status set on the Deployment survives the next write.
+    await run('stop', { transcript_path: tx, last_assistant_message: 'done', cwd: root });
+    expect(rig.rows('plans')).toBe(1);
+    expect(memberKinds().filter((k) => k === 'plan')).toHaveLength(1);
+    rig.env.sqlite.run(`UPDATE plans SET status = 'completed' WHERE plan_key = ?`, [key]);
+    // An edit outside the hooks lands at Stop through the backstop; a write outside the plan dirs never becomes a plan.
+    fs.writeFileSync(file, '# Feature\n\n- [x] step\n- [ ] more\n');
+    const elsewhere = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-notes-')), 'notes.md');
+    fs.writeFileSync(elsewhere, '# Not a plan');
+    fs.appendFileSync(tx, JSON.stringify({ type: 'assistant', uuid: 'a3', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Write', input: { file_path: elsewhere, content: '# Not a plan' } }] } }) + '\n');
+    await run('stop', { transcript_path: tx, last_assistant_message: 'done', cwd: root });
+    expect(row()).toMatchObject({ content: '# Feature\n\n- [x] step\n- [ ] more\n', status: 'completed' });
+    expect(rig.rows('plans')).toBe(1);
+
   });
 
   it('captures pasted plans from their native submission once and excludes injected context', async () => {
@@ -537,7 +540,7 @@ describe('member hooks through the worker: the session that launched this one', 
   it.each(['value', 'properties'])('rejects hostile baggage in bounded parse time: %s', (shape) => {
     const PARSE_BUDGET_MS = 1_000;
     const CHILD_TIMEOUT_MS = 5_000;
-    const modulePath = path.resolve('packages/myco/src/member/session-lineage.ts');
+    const modulePath = Bun.resolveSync('@myco/member/session-lineage.js', import.meta.dir);
     const script = `
       import { launchParentSession } from ${JSON.stringify(modulePath)};
       const carriers = [1, 2, 4].map(scale =>
@@ -599,24 +602,23 @@ describe('member hooks through the worker: retention and plan files', () => {
     const root = resolveWorktreeRoot(process.cwd()) ?? resolveMemberProjectRoot(process.cwd());
     const file = path.join(root, '.claude/plans', `sub-${session}-${process.pid}.md`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    try {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-subplan-'));
-      const tx = path.join(dir, `${session}.jsonl`);
-      fs.writeFileSync(tx, JSON.stringify({ type: 'user', uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'delegate the plan' } }) + '\n');
-      const sibling = path.join(dir, session, 'subagents', 'agent-plan.jsonl');
-      fs.mkdirSync(path.dirname(sibling), { recursive: true });
-      fs.writeFileSync(sibling, JSON.stringify({ type: 'assistant', uuid: 'sa1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Write', input: { file_path: file, content: '# Delegated' } }] } }) + '\n');
-      fs.writeFileSync(file, '# Delegated\n\n- [ ] by a subagent\n');
-      await run('session-start', { transcript_path: tx, cwd: root });
-      await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
-      expect(rig.env.sqlite.query('SELECT title, content FROM plans').get()).toEqual({ title: 'Delegated', content: '# Delegated\n\n- [ ] by a subagent\n' });
-      const state = readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session);
-      expect(state.siblings[sibling].parsedSize).toBe(fs.statSync(sibling).size);
-      // A second Stop reads neither transcript again and ships no second plan.
-      const before = captured();
-      await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
-      expect(captured()).toBe(before);
-    } finally { try { fs.unlinkSync(file); } catch {} }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-member-subplan-'));
+    const tx = path.join(dir, `${session}.jsonl`);
+    fs.writeFileSync(tx, JSON.stringify({ type: 'user', uuid: 'u1', promptId: 'p1', message: { role: 'user', content: 'delegate the plan' } }) + '\n');
+    const sibling = path.join(dir, session, 'subagents', 'agent-plan.jsonl');
+    fs.mkdirSync(path.dirname(sibling), { recursive: true });
+    fs.writeFileSync(sibling, JSON.stringify({ type: 'assistant', uuid: 'sa1', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Write', input: { file_path: file, content: '# Delegated' } }] } }) + '\n');
+    fs.writeFileSync(file, '# Delegated\n\n- [ ] by a subagent\n');
+    await run('session-start', { transcript_path: tx, cwd: root });
+    await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
+    expect(rig.env.sqlite.query('SELECT title, content FROM plans').get()).toEqual({ title: 'Delegated', content: '# Delegated\n\n- [ ] by a subagent\n' });
+    const state = readSessionState(new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, { mycoHome }).dir, session);
+    expect(state.siblings[sibling].parsedSize).toBe(fs.statSync(sibling).size);
+    // A second Stop reads neither transcript again and ships no second plan.
+    const before = captured();
+    await run('stop', { transcript_path: tx, last_assistant_message: '', cwd: root });
+    expect(captured()).toBe(before);
+
   });
 
   it('says so when a plan file the turn wrote cannot be read at Stop, and reads a record torn across two reads whole', async () => {
@@ -789,11 +791,10 @@ it('captures every plan in a multi-file patch at the live hook without a transcr
   const root = resolveMemberProjectRoot(process.cwd());
   const files = ['one', 'two'].map(name => path.join(root, '.opencode/plans', `live-${process.pid}-${name}.md`));
   fs.mkdirSync(path.dirname(files[0]!), { recursive: true });
-  try {
-    for (const [index, file] of files.entries()) fs.writeFileSync(file, `# Live ${index}\n`);
-    const patchText = '*** Begin Patch\n' + files.map(file => `*** Add File: ${file}\n+# plan`).join('\n') + '\n*** End Patch';
-    await run('post-tool-use', { tool_name: 'apply_patch', tool_input: { patchText }, cwd: root }, undefined, 'opencode');
-    const plans = rig.env.sqlite.query('SELECT origin_path FROM plans ORDER BY origin_path').all() as Array<{ origin_path: string }>;
-    expect(plans.map(plan => plan.origin_path)).toEqual(files.map(file => path.relative(root, file).split(path.sep).join('/')).sort());
-  } finally { for (const file of files) fs.rmSync(file, { force: true }); }
+  for (const [index, file] of files.entries()) fs.writeFileSync(file, `# Live ${index}\n`);
+  const patchText = '*** Begin Patch\n' + files.map(file => `*** Add File: ${file}\n+# plan`).join('\n') + '\n*** End Patch';
+  await run('post-tool-use', { tool_name: 'apply_patch', tool_input: { patchText }, cwd: root }, undefined, 'opencode');
+  const plans = rig.env.sqlite.query('SELECT origin_path FROM plans ORDER BY origin_path').all() as Array<{ origin_path: string }>;
+  expect(plans.map(plan => plan.origin_path)).toEqual(files.map(file => path.relative(root, file).split(path.sep).join('/')).sort());
+
 });

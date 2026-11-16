@@ -12,8 +12,9 @@ import { pendingSpool, appendPending, flushPending } from '@myco/member/pending.
 import { transcriptPointerFor, shipSessionTranscripts } from '@myco/member/transcript.js';
 import { memberTranscriptRoutingKey, assertMemberTranscriptDestination } from '@myco/member/transcript-routing.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, jest } from 'bun:test';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
@@ -40,8 +41,10 @@ const A = 'https://a.routing.invalid';
 const B = 'https://b.routing.invalid';
 let mycoHome: string;
 let priorHome: string | undefined;
+const priorTemporary = process.env.MYCO_TEMPORARY_FOLDERS;
 beforeEach(() => { priorHome = process.env.MYCO_HOME; mycoHome = tempMycoHome(); process.env.MYCO_HOME = mycoHome; });
 afterEach(() => { if (priorHome === undefined) delete process.env.MYCO_HOME; else process.env.MYCO_HOME = priorHome; });
+afterEach(() => { if (priorTemporary === undefined) delete process.env.MYCO_TEMPORARY_FOLDERS; else process.env.MYCO_TEMPORARY_FOLDERS = priorTemporary; });
 
 async function pair(now: number = Date.now()) {
   const a = await memberRig({ projectId: PROJECT, now });
@@ -78,14 +81,21 @@ describe('Deployment and Project member routing', () => {
     const entry = rig.entries[0];
     const spool = new MemberSpool(entry, { mycoHome });
     spool.append(SESSION, promptEvent({ sessionId: SESSION, agent: 'claude-code', stage: spool.stagerFor(SESSION) }, { promptId: mintId(), text: 'waiting for sign-in' }));
+    const entered = Promise.withResolvers<void>();
     const fetch: FetchLike = (input, init) => new URL(new Request(input, init).url).pathname === '/events'
       ? new Promise((_resolve, reject) => {
         const abort = () => reject(init?.signal?.reason);
         if (init?.signal?.aborted) abort();
         else init?.signal?.addEventListener('abort', abort, { once: true });
+        entered.resolve();
       }) : rig.fetch(input, init);
-    const result = await runDrain(['--all'], { mycoHome, fetch, signInCapture: { serverUrl: A }, stdout: () => {}, stderr: () => {} });
-    expect(result[0]?.endedBy).toBe('deferred');
+    jest.useFakeTimers();
+    try {
+      const draining = runDrain(['--all'], { mycoHome, fetch, signInCapture: { serverUrl: A }, stdout: () => {}, stderr: () => {} });
+      await entered.promise;
+      jest.advanceTimersToNextTimer();
+      expect((await draining)[0]?.endedBy).toBe('deferred');
+    } finally { jest.useRealTimers(); }
     expect(spool.readLatch()).toBeNull();
     expect(spool.readRecords(SESSION)).toHaveLength(1);
     rig.calls.length = 0;
@@ -250,7 +260,8 @@ describe('Deployment and Project member routing', () => {
 
   it('joins two pinned pending repositories to their own memberships after a default change', async () => {
     const rig = await pair();
-    const base = removeWhenTestsEnd(fs.mkdtempSync(path.join(process.cwd(), 'target', 'routing-pending-')));
+    const base = removeWhenTestsEnd(fs.mkdtempSync(path.join(os.tmpdir(), 'myco-routing-pending-')));
+    process.env.MYCO_TEMPORARY_FOLDERS = path.join(base, 'temporary');
     const roots = [path.join(base, 'a'), path.join(base, 'b')];
     markSweepDone(mycoHome, Date.now());
     for (const [index, entry] of rig.entries.entries()) {
