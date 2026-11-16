@@ -148,9 +148,9 @@ describe('the dispatched read verbs in a fresh joined checkout', () => {
 
   it('doctor, config get, logs and --help run as the member', async () => {
     const m = machine(true);
-    const doctor = await cli(m, 'doctor');
+    const doctor = await cli(m, 'doctor', '--all');
     expect(doctor.stdout).toContain('myco doctor (member)');
-    expect(doctor.stdout).toMatch(/Project access\s+.*ok.*answers, and serves this machine's credential \d+ tools/);
+    expect(doctor.stdout).toMatch(/Project access: ok .*answers, and serves this machine's credential \d+ tools/);
     expect(doctor.stdout).not.toMatch(/Vault|Database|Daemon|Grove/);
     const config = await cli(m, 'config', 'get', 'instructions.template');
     expect({ status: config.status, stdout: config.stdout.trim(), stderr: config.stderr }).toEqual({ status: 0, stdout: 'Answer from the Deployment.', stderr: '' });

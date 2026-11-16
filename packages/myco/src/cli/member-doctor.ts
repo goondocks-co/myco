@@ -179,7 +179,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
     authenticated = tools.ok;
     checks.push(tools.ok
       ? row('Project access', 'ok', `${deployment.serverUrl} answers, and serves this machine's credential ${tools.value.length} tools.`)
-      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Restore access to this repository's Myco connection.`));
+      : row('Project access', 'fail', `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Restore access to this repository's Myco connection.`, `${deployment.serverUrl} ${tools.error.code === 'unauthorized' ? 'refused' : 'could not serve'} this machine's tool list (${terminalText(tools.error.code)}): ${terminalText(tools.error.message)}. Check the address and connection, then run \`myco login ${deployment.serverUrl}\`.`));
   }
 
   // Read after the Deployment was asked: its read renews a credential whose window is open.
@@ -188,8 +188,8 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
     const membership = after.entry;
     const expired = membership.expiresAt !== undefined && membership.expiresAt <= (deps.now ?? Date.now)();
     checks.push(membership.refreshTerminal === true
-      ? row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`)
-      : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Start a new agent session after restoring access.`));
+      ? row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`, `the Deployment will not renew this credential. Run \`myco login ${membership.serverUrl}\`; if refused, ask an administrator for an invitation for your existing member.`)
+      : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Start a new agent session after restoring access.`, expired && !authenticated ? `${membership.serverUrl}: sign-in has expired. Run \`myco login ${membership.serverUrl}\`.` : undefined));
   }
 
   const packageRoot = deps.packageRoot ?? resolvePackageRoot();
@@ -246,7 +246,7 @@ export async function homeReport(home: string, deps: MemberDoctorDeps = {}): Pro
   for (const membership of listing.memberships) {
     checks.push(row('Membership', 'ok', `${membership.serverUrl}${selected?.serverUrl === deploymentUrl(membership.serverUrl) ? ' (default for new repositories)' : ''}; machine ${membership.machineId}, joined ${iso(membership.joinedAt)}.`));
     const state = membership.refreshTerminal === true ? 'refused renewal' : membership.expiresAt !== undefined && membership.expiresAt <= now ? 'expired' : membership.expiresAt === undefined ? 'expiry unknown' : 'locally unexpired';
-    checks.push(row('Credential', state === 'locally unexpired' ? 'not-checked' : membership.refreshTerminal === true ? 'fail' : 'warn', `${membership.serverUrl}: ${state}; expires ${iso(membership.expiresAt)} (local record; authentication not checked)${membership.refreshTerminal === true ? ` — ${REJOIN_HINT}` : ` — run \`myco login ${membership.serverUrl}\``}.`));
+    checks.push(row('Credential', state === 'locally unexpired' ? 'not-checked' : membership.refreshTerminal === true ? 'fail' : 'warn', `${membership.serverUrl}: ${state}; expires ${iso(membership.expiresAt)} (local record; authentication not checked)${membership.refreshTerminal === true ? ` — ${REJOIN_HINT}; run \`myco login ${membership.serverUrl}\`` : ` — run \`myco login ${membership.serverUrl}\``}.`));
     const healthy = await new ServerClient(membership, deps.fetch ?? globalThis.fetch).health({
       connectTimeoutMs: HOME_HEALTH_TIMEOUT_MS,
       requestTimeoutMs: Math.min(deps.requestTimeoutMs ?? HOME_HEALTH_TIMEOUT_MS, HOME_HEALTH_TIMEOUT_MS),

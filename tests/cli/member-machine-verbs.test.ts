@@ -244,7 +244,7 @@ describe('a joined member with no 1.4 vault', () => {
     expect(ran.stdout).toMatch(/Project access: ok .*answers, and serves this machine's credential \d+ tools/);
     expect(ran.stdout).toMatch(/Credential: ok .*expires/);
     expect(ran.stdout).toMatch(/Capture backlog: ok .*0 event/);
-    expect(ran.stdout).toContain('Capture: FAIL');
+    expect(ran.stdout).toMatch(/Capture: FAIL No agent on this machine captures sessions\./);
     expect(ran.stdout).toContain('no harness on this machine captures for the member');
     expect(ran.stdout).not.toMatch(/Vault|Database|Daemon|Grove/);
     expect(legacyArtifacts()).toEqual([]);
@@ -257,9 +257,9 @@ describe('a joined member with no 1.4 vault', () => {
 
     const ran = await verb('doctor', ['--all'], rig.fetch);
 
-    expect(ran.stdout).toContain('Capture: not checked');
+    expect(ran.stdout).toMatch(/Capture: not checked (?:claude-code|codex)'s capture is connected; execution not checked\./);
     expect(ran.stdout).toMatch(/Claude Code's global hooks .* are connected/);
-    expect(ran.stdout).toContain('Member MCP resolution: ok');
+    expect(ran.stdout).toMatch(/Member MCP resolution: ok claude-code's tools are configured; runtime access not checked\./);
     expect(ran.stdout).toMatch(/Claude Code's global tools are configured for https:\/\/member-test.invalid, Project proj_1, over http; runtime reach was not checked/);
     expect(ran.stdout).not.toMatch(/Capture: FAIL/);
   });
@@ -400,9 +400,9 @@ describe('a joined member with no 1.4 vault', () => {
 
     const ran = await verb('doctor', ['--all'], rig.fetch);
 
-    expect(ran.stdout).toContain('Capture: WARN');
+    expect(ran.stdout).toMatch(/Capture: WARN Claude Code still uses Myco 1\.4 capture\./);
     expect(ran.stdout).toMatch(/Claude Code's global hooks .* are Myco's 1\.4 capture, not the member's/);
-    expect(ran.stdout).toContain('Capture: FAIL');
+    expect(ran.stdout).toMatch(/Capture: FAIL No agent on this machine captures sessions\./);
     expect(ran.stdout).toContain('no harness on this machine captures for the member');
     expect(ran.stdout).not.toContain('captures for the member from');
   });
@@ -415,13 +415,13 @@ describe('a joined member with no 1.4 vault', () => {
     fs.writeFileSync(plugin, '// myco:plugin-marker\nexport const MycoPlugin = async () => ({});\n');
 
     const legacy = await verb('doctor', ['--all'], rig.fetch);
-    expect(legacy.stdout).toContain('Capture: WARN');
+    expect(legacy.stdout).toMatch(/Capture: WARN OpenCode still uses Myco 1\.4 capture\./);
     expect(legacy.stdout).toMatch(/OpenCode's global hooks .* are Myco's 1\.4 capture, not the member's/);
     expect(legacy.stdout).not.toContain('OpenCode captures for the member');
 
     fs.writeFileSync(plugin, '// myco:plugin-marker\n// myco:member-plugin\nexport const MycoPlugin = async () => ({});\n');
     const member = await verb('doctor', ['--all'], rig.fetch);
-    expect(member.stdout).toContain('Capture: not checked');
+    expect(member.stdout).toMatch(/Capture: not checked opencode's capture is connected; execution not checked\./);
     expect(member.stdout).toMatch(/OpenCode's global hooks .* are connected/);
   });
 
@@ -437,7 +437,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     const ran = await verb('doctor', ['--all'], rig.fetch);
 
-    expect(ran.stdout).toContain('Capture: not checked');
+    expect(ran.stdout).toMatch(/Capture: not checked (?:claude-code|codex)'s capture is connected; execution not checked\./);
     expect(ran.stdout).toMatch(/Codex's global hooks .* are connected/);
   });
 
@@ -450,7 +450,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     const missing = await verb('doctor', ['--all'], rig.fetch);
     expect(missing.stdout).toContain(`run ${program}, which is missing, so they capture nothing. Check this executable and its access permissions.`);
-    expect(missing.stdout).toContain('Capture: FAIL');
+    expect(missing.stdout).toMatch(/Capture: FAIL No agent on this machine captures sessions\./);
     expect(missing.stdout).toContain('no harness on this machine captures for the member');
 
     fs.mkdirSync(path.dirname(program), { recursive: true });
@@ -460,7 +460,7 @@ describe('a joined member with no 1.4 vault', () => {
 
     fs.chmodSync(program, 0o755);
     const runnable = await verb('doctor', ['--all'], rig.fetch);
-    expect(runnable.stdout).toContain('Capture: not checked');
+    expect(runnable.stdout).toMatch(/Capture: not checked claude-code's capture is connected; execution not checked\./);
     expect(runnable.stdout).toMatch(/Claude Code's global hooks .* are connected/);
     for (const report of [missing, inert, runnable]) {
       expect(report.stdout).not.toMatch(/run `?myco doctor/i);

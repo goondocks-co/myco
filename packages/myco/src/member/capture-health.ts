@@ -1,6 +1,8 @@
 import fs from 'node:fs';
-import { recordSessionLoss } from './capture-loss.js';
-import { pointersOf, updateSessionState } from './session-state.js';
+import { attemptCaptureLossRecording, CaptureLossLedger } from './capture-loss.js';
+import { withFileLockSync } from '../utils/lifecycle-lock.js';
+import { ensurePrivateFile } from './store.js';
+import { bufferLockPath, pointersOf, readSessionStateResultUnlocked, writeSessionStateUnlocked } from './session-state.js';
 import type { MemberSpool as ObservedSpool } from './capture-observations.js';
 import type { MemberSpool } from './spool.js';
 
@@ -42,11 +44,19 @@ export function captureQueue(spool: ObservedSpool) {
 }
 
 /** The pointer's receipt makes repeated delivery passes count one degraded transcript. */
-export function recordTranscriptUnavailable(spool: MemberSpool, sessionId: string, transcriptId: string, now: number): void {
-  updateSessionState(spool.dir, sessionId, state => {
-    const pointer = pointersOf(state).find(pointer => pointer.transcriptId === transcriptId);
-    if (pointer === undefined || pointer.unavailableAt !== undefined) return;
-    recordSessionLoss(state, transcriptId, 'transcript', now);
-    pointer.unavailableAt = now;
-  }, now);
+export function recordTranscriptUnavailable(spool: MemberSpool, loss: { sessionId: string; transcriptId: string; at: number; error: unknown }): void {
+  attemptCaptureLossRecording(spool.dir, () => {
+    const lock = bufferLockPath(spool.dir, loss.sessionId);
+    ensurePrivateFile(lock);
+    withFileLockSync(lock, () => {
+      const read = readSessionStateResultUnlocked(spool.dir, loss.sessionId);
+      if (!read.ok) throw new Error(`Transcript loss receipt unavailable (${read.reason})`);
+      const pointer = pointersOf(read.state).find(pointer => pointer.transcriptId === loss.transcriptId);
+      if (pointer === undefined || pointer.unavailableAt !== undefined) return;
+      if ((loss.error as NodeJS.ErrnoException)?.code === 'ENOENT' && pointer.parsedSize <= pointer.nextOffset) return;
+      if (!new CaptureLossLedger(spool.dir, () => loss.at).record([{ key: loss.transcriptId, kind: 'transcript', at: loss.at }])) return;
+      pointer.unavailableAt = loss.at;
+      writeSessionStateUnlocked(spool.dir, loss.sessionId, read.state, loss.at);
+    }, { wait: false });
+  });
 }

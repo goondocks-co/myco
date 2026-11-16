@@ -126,7 +126,7 @@ export function markBehindTranscripts(spool: MemberSpool, now: number = Date.now
     if (spool.hasTranscriptBacklog(sessionId)) for (const pointer of pointers) {
       if (pointer.refused !== undefined || pointer.unavailableAt !== undefined) continue;
       try { fs.accessSync(pointer.path, fs.constants.R_OK); }
-      catch { recordTranscriptUnavailable(spool, sessionId, pointer.transcriptId, now); }
+      catch (error) { recordTranscriptUnavailable(spool, { sessionId, transcriptId: pointer.transcriptId, at: now, error }); }
     }
     if (!pointers.some(pointerBehind)) continue;
     spool.markTranscriptBacklog(sessionId);

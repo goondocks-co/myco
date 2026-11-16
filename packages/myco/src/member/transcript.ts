@@ -412,8 +412,8 @@ export async function shipTranscriptSegments(
   let reminted = false;
   for (;;) {
     let size: number;
-    try { size = fs.statSync(pointer.path).size; } catch {
-      recordTranscriptUnavailable(spool, sessionId, pointer.transcriptId, now());
+    try { size = fs.statSync(pointer.path).size; } catch (error) {
+      recordTranscriptUnavailable(spool, { sessionId, transcriptId: pointer.transcriptId, at: now(), error });
       return { shipped, endedBy: 'absent' };
     }
     if (pointer.nextOffset >= size) return { shipped, endedBy: 'done' };
@@ -434,7 +434,7 @@ export async function shipTranscriptSegments(
     let bytes: Uint8Array;
     try { bytes = readSlice(pointer.path, offset, length); }
     catch (error) {
-      recordTranscriptUnavailable(spool, sessionId, pointer.transcriptId, now());
+      recordTranscriptUnavailable(spool, { sessionId, transcriptId: pointer.transcriptId, at: now(), error });
       throw error;
     }
     if (bytes.byteLength === 0) return { shipped, endedBy: 'done' };

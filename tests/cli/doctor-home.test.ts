@@ -68,6 +68,15 @@ describe('home doctor', () => {
   const output = async (args: string[] = []) => {
     const lines: string[] = [];
     const ok = await runMemberVerb('doctor', args, { ...deps, renew: false, stdout: line => lines.push(line) });
+    if (lines[0]?.startsWith('myco doctor')) {
+      const heading = lines[0].match(/\((\d+) failed, (\d+) warnings?\)/);
+      const counts = { FAIL: 0, WARN: 0 };
+      for (const line of lines) {
+        const match = args.includes('--all') ? line.match(/^  \S.*?: (FAIL|WARN) /) : line.match(/^  (FAIL|WARN) /);
+        if (match) counts[match[1] as 'FAIL' | 'WARN'] += 1;
+      }
+      expect([counts.FAIL, counts.WARN]).toEqual(heading ? [Number(heading[1]), Number(heading[2])] : [0, 0]);
+    }
     return { ok, text: lines.join('\n'), lines };
   };
   const connectedHome = () => {
@@ -89,9 +98,11 @@ describe('home doctor', () => {
     expect(compact.text).toContain('6 agents connected');
     expect(compact.text).toContain('tools configured for 6 agents');
     expect(compact.text).toContain('nothing waiting to deliver');
-    expect(compact.lines).toHaveLength(8);
+    expect(compact.lines).toHaveLength(9);
     const summary = compact.lines.findIndex(line => line.startsWith('  Also checked:'));
     expect(compact.lines[summary]).toContain('Myco connection');
+    expect(compact.lines[summary]).not.toContain('Sign-in');
+    expect(compact.text).toContain('Not verified: Sign-in');
     expect(compact.lines.findIndex(line => line.startsWith('  Capture waiting:'))).toBeLessThan(summary);
     expect(compact.lines.findIndex(line => line.startsWith('  Capture losses:'))).toBeLessThan(summary);
     expect(compact.text).not.toContain('ok Capture');
@@ -157,12 +168,13 @@ describe('home doctor', () => {
     const [root] = connectedHome();
     const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
     updateSessionState(spool.dir, 'missing-transcript', state => {
-      state.transcript = { path: path.join(scratch, 'gone.jsonl'), transcriptId: 'missing', inode: 1, nextOffset: 0, parsedSize: 0 };
+      state.transcript = { path: path.join(scratch, 'gone.jsonl'), transcriptId: 'missing', inode: 1, nextOffset: 0, parsedSize: 4 };
     }, now);
     spool.markTranscriptBacklog('missing-transcript');
     await runDrain([], { ...deps, cwd: root, stdout: () => {} });
     await runDrain([], { ...deps, cwd: root, stdout: () => {} });
-    new CaptureLossLedger(spool.dir).record([
+    new CaptureLossLedger(spool.dir, () => now).record([{ kind: 'payload', key: 'future-clock', at: now + 400 * 86400_000 }]);
+    new CaptureLossLedger(spool.dir, () => now).record([
       { kind: 'payload', key: 'recent', at: now }, { kind: 'plan', key: 'old', at: now - 10 * 86400_000 },
       { kind: 'record', key: 'damage', at: now },
     ]);
@@ -172,7 +184,21 @@ describe('home doctor', () => {
     expect(result.text).toContain('last 7 UTC days (including today)');
     expect(result.text).toContain(`most recent ${new Date(now).toISOString()}`);
     expect(result.text).not.toContain('1 lost plan');
+    expect(result.text).toContain('Recorded history cannot be repaired by a command');
+    expect(result.text).toContain('clear after 7 UTC days');
+    expect(result.text).not.toContain('myco member provision --refresh');
     expect((await output(['--all'])).text).toContain(`Affected repositories or Projects: ${root}`);
+  });
+
+  it('keeps previous-build loss totals as a detail note without raising attention', async () => {
+    const [root] = connectedHome();
+    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    fs.writeFileSync(path.join(spool.dir, 'capture-losses.json'), JSON.stringify({ version: 1, payloads: 3, plans: 0, records: 1, recent: [], lastAt: now - 200 * 86400_000 }), { mode: 0o600 });
+    const compact = await output();
+    expect(compact.ok).toBe(true);
+    expect(compact.text).toContain('nothing needs attention');
+    expect(compact.text).not.toContain('earlier losses');
+    expect((await output(['--all'])).text).toContain('Historical note: 4 earlier losses have no dates');
   });
 
   it('reports a fresh machine outside a repository without opening a local vault', async () => {

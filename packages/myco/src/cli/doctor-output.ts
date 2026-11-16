@@ -34,8 +34,9 @@ function shortDetail(check: DoctorCheck): string {
 /** Details retain every check; the default lists attention and healthy totals by kind. */
 export function doctorOutput(checks: readonly DoctorCheck[], options: { all: boolean }): string[] {
   const visible = checks.filter(check => check.name !== 'Capture backlog');
-  const failed = visible.filter(check => check.status === 'fail').length;
-  const warned = visible.filter(check => check.status === 'warn').length;
+  const shown = options.all ? checks : visible;
+  const failed = shown.filter(check => check.status === 'fail').length;
+  const warned = shown.filter(check => check.status === 'warn').length;
   const unchecked = checks.filter(check => check.status === 'not-checked').length;
   const lines = [`myco doctor (member): ${failed + warned === 0 ? 'nothing needs attention' : `${failed + warned} ${failed + warned === 1 ? 'check needs' : 'checks need'} attention (${failed} failed, ${warned} ${warned === 1 ? 'warning' : 'warnings'})`}`];
   if (options.all) {
@@ -65,12 +66,15 @@ export function doctorOutput(checks: readonly DoctorCheck[], options: { all: boo
     const problemAreas = new Set(visible.filter(attention).map(check => names[check.name] ?? check.name));
     for (const check of visible.filter(check => attention(check) && !['Capture waiting', 'Capture losses'].includes(check.name))) lines.push(`  ${label(check)} ${names[check.name] ?? check.name}: ${oneLine(shortDetail(check))}`);
     const singleAreas: string[] = [];
+    const unverifiedAreas: string[] = [];
     for (const [name, items] of groups) {
       if (problemAreas.has(name)) continue;
-      if (items.length === 1) singleAreas.push(name);
+      if (items.some(check => check.status !== 'ok')) unverifiedAreas.push(name);
+      else if (items.length === 1) singleAreas.push(name);
       else lines.push(`  ${name}: ${items.length} ${items.every(check => check.status === 'ok') ? 'checked' : 'reported; see --all'}`);
     }
     if (singleAreas.length > 0) lines.push(`  Also checked: ${singleAreas.join(', ')}`);
+    if (unverifiedAreas.length > 0) lines.push(`  Not verified: ${unverifiedAreas.join(', ')}`);
     lines.push(`  ${unchecked} checks not verified at runtime; use myco doctor --all for every check and detail.`);
   }
   return lines;

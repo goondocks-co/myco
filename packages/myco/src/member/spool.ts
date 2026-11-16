@@ -732,40 +732,6 @@ export class MemberSpool {
     }, { create: options.createLock, readIfMissing: options.createLock === false });
   }
 
-  /** The spool as a report reads it: a directory nothing could read carries `readable: false`, and a session whose own file could not be read carries a null depth. */
-  readSpool(): { readable: boolean; sessions: Array<{ sessionId: string; unacknowledged: number | null }> } {
-    if (!this.reachable(this.dir)) return { readable: false, sessions: [] };
-    let names: string[];
-    try {
-      names = fs.readdirSync(this.dir).filter((name) => name.endsWith('.jsonl'));
-    } catch (err) {
-      // A spool a member has not written yet is empty, not unreadable — and
-      // absence is the directory's own, so a link to nothing, or a directory
-      // the listing lost, is a spool that could not be read.
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT' && pathIsAbsent(this.dir)) return { readable: true, sessions: [] };
-      return { readable: false, sessions: [] };
-    }
-    const refusedLog = path.basename(REFUSED_LOG_FILE, '.jsonl');
-    const sessions = names
-      .map((name) => path.basename(name, '.jsonl'))
-      .filter((sessionId) => sessionId !== refusedLog)
-      .map((sessionId) => {
-        const read = this.readRecordsOrNull(sessionId);
-        if (!read.readable) return { sessionId, unacknowledged: null };
-        // The count is records against the acknowledged mark, so a state the
-        // report cannot use leaves it unknown rather than counting from zero.
-        let state: SessionStateRead;
-        try {
-          state = readSessionStateResult(this.dir, sessionId, { createLock: this.createReadLocks });
-        } catch {
-          return { sessionId, unacknowledged: null };
-        }
-        if (!state.ok) return { sessionId, unacknowledged: state.reason === 'missing' ? read.records.length : null };
-        return { sessionId, unacknowledged: Math.max(0, read.records.length - state.state.highWater) };
-      });
-    return { readable: true, sessions };
-  }
-
   /** Un-acknowledged records in the session's spool. */
   depth(sessionId: string): number {
     const records = this.readRecords(sessionId);

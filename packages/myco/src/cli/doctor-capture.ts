@@ -29,6 +29,7 @@ export function captureHealthChecks(home: string, entries: readonly RegistryEntr
   let undated = 0;
   const totals = { payloads: 0, plans: 0, records: 0, transcripts: 0, refusals: 0 };
   const locations: string[] = [];
+  const drainCommands = new Set<string>();
   const lossLocations: string[] = [];
   const errors: string[] = listing.issues.map(issue => issue.reason);
   for (const destination of destinations.values()) {
@@ -40,7 +41,10 @@ export function captureHealthChecks(home: string, entries: readonly RegistryEntr
       transcriptSessions += queue.transcripts;
       oldest = Math.min(oldest, queue.oldestAt ?? Infinity);
       readable &&= queue.readable;
-      if (queue.sessions > 0 || !queue.readable) locations.push(location(destination));
+      if (queue.sessions > 0 || !queue.readable) {
+        locations.push(location(destination));
+        drainCommands.add(roots.has(routingKey(destination)) ? '`myco member drain` from an affected repository' : `\`myco member drain --server ${destination.serverUrl} --project ${destination.projectId}\``);
+      }
       try {
         const loss = new CaptureLossLedger(spool.dir).recent(now);
         for (const field of CAPTURE_LOSS_FIELDS) {
@@ -68,7 +72,7 @@ export function captureHealthChecks(home: string, entries: readonly RegistryEntr
   }
   const age = Number.isFinite(oldest) ? `${Math.max(0, Math.floor((now - oldest) / 60_000))} minutes ago` : 'unknown';
   const waiting = sessions === 0 && readable ? 'nothing waiting to deliver'
-    : `${readable ? '' : 'at least '}${sessions} sessions waiting (${eventSessions} with events, ${transcriptSessions} with transcripts); oldest activity ${age}${readable ? '' : '; some capture could not be checked'}`;
+    : `${readable ? '' : 'at least '}${sessions} ${sessions === 1 ? 'session' : 'sessions'} waiting (${eventSessions} with events, ${transcriptSessions} with transcripts); oldest activity ${age}${readable ? '' : '; some capture could not be checked'}`;
   const lossLabels = { payloads: 'lost payload', plans: 'lost plan', records: 'damaged record', transcripts: 'unavailable transcript', refusals: 'delivery refusal' };
   const kinds = (Object.keys(totals) as Array<keyof typeof totals>).filter(kind => totals[kind] > 0).map(kind => `${totals[kind]} ${lossLabels[kind]}${totals[kind] === 1 ? '' : 's'}`);
   const refusalWords: string[] = [];
@@ -81,6 +85,7 @@ export function captureHealthChecks(home: string, entries: readonly RegistryEntr
       lastAt = Math.max(lastAt, record.lastAt);
     } catch { lossesReadable = false; }
   }
+  const refusedCommands = refusalWords.length > 0;
   const misses = listMissingMembershipsResult(home);
   lossesReadable &&= misses.readable && misses.unavailableRecords === 0;
   const activeMisses = misses.records.filter(record => now - record.lastAt <= MISSING_MEMBERSHIP_RETENTION_MS);
@@ -90,13 +95,23 @@ export function captureHealthChecks(home: string, entries: readonly RegistryEntr
     lastAt = activeMisses.reduce((last, record) => Math.max(last, record.lastAt), lastAt);
     refusalWords.push(`${count} requests without a repository connection since ${observationInstant(first)}`);
   }
-  const lossWords = `${kinds.length ? kinds.join(', ') : 'no recorded losses or delivery refusals'} in the last ${CAPTURE_LOSS_DAYS} UTC days (including today)${refusalWords.length ? `; ${refusalWords.join('; ')}` : ''}${lastAt ? `; most recent ${observationInstant(lastAt)}` : ''}${undated ? `; ${undated} earlier losses have no dates` : ''}${lossesReadable ? '' : '; some loss records could not be read'}`;
+  const lossWords = `${kinds.length ? kinds.join(', ') : 'no recorded losses or delivery refusals'} in the last ${CAPTURE_LOSS_DAYS} UTC days (including today)${refusalWords.length ? `; ${refusalWords.join('; ')}` : ''}${lastAt ? `; most recent ${observationInstant(lastAt)}` : ''}${lossesReadable ? '' : '; some loss records could not be read'}`;
+  const historical = totals.payloads + totals.plans + totals.records > 0;
+  const advice = [
+    ...(historical ? [`Recorded history cannot be repaired by a command; these counts clear after ${CAPTURE_LOSS_DAYS} UTC days.`] : []),
+    ...(kinds.length ? ['Inspect `myco logs` from a connected repository; `myco doctor --all` lists destinations and local log files.'] : []),
+    ...(totals.transcripts > 0 ? ['Check transcript file access; readable bytes can be delivered on a later pass.'] : []),
+    ...(refusedCommands ? ['For refused capture commands, run `myco member provision --refresh`.'] : []),
+    ...(activeMisses.length ? ['Connect missing repositories with `myco member join`.'] : []),
+    ...(!lossesReadable ? ['Review the loss records named by `myco doctor --all`; delivery continues if accounting fails.'] : []),
+  ].join(' ');
+  const drain = drainCommands.size ? ` Run ${[...drainCommands].join('; ')}.` : '';
   return [
     { name: 'Capture waiting', status: sessions > 0 || !readable ? 'warn' : 'ok', fixable: false,
-      detail: `${waiting}.${locations.length ? ` Repositories or Projects: ${locations.join(', ')}.` : ''}${errors.length ? ` ${errors.join('; ')}.` : ''}${sessions > 0 || !readable ? ' Run `myco member drain` from the affected repository.' : ''}`,
-      summary: `${waiting}.${sessions > 0 || !readable ? ' Run `myco member drain` from the affected repository; `myco doctor --all` lists it.' : ''}` },
-    { name: 'Capture losses', status: kinds.length || refusalWords.length || undated || !lossesReadable ? 'warn' : 'ok', fixable: false,
-      detail: `${lossWords}. ${lossLocations.length ? ` Affected repositories or Projects: ${[...new Set(lossLocations)].join(', ')}.` : ''} Refusal counts use the retained delivery log; one delivery may also have a recorded payload loss.${errors.length ? ` ${errors.join('; ')}.` : ''}`,
-      summary: `${lossWords}.${kinds.length || refusalWords.length || undated || !lossesReadable ? ' Use `myco doctor --all` to locate affected repositories, then `myco logs` there; use `myco member provision --refresh` for refused capture, and check transcript file access.' : ''}` },
+      detail: `${waiting}.${locations.length ? ` Repositories or Projects: ${locations.join(', ')}.` : ''}${errors.length ? ` ${errors.join('; ')}.` : ''}${drain}`,
+      summary: `${waiting}.${drain}${drain ? ' Use \`myco doctor --all\` to locate queued capture.' : ''}` },
+    { name: 'Capture losses', status: kinds.length || refusalWords.length || !lossesReadable ? 'warn' : 'ok', fixable: false,
+      detail: `${lossWords}.${undated ? ` Historical note: ${undated} earlier losses have no dates; they do not indicate a current problem.` : ''}${lossLocations.length ? ` Affected repositories or Projects: ${[...new Set(lossLocations)].join(', ')}.` : ''} Refusal counts use the retained delivery log; one delivery may also have a recorded payload loss. Local logs: ${home}/logs/helper.log and each destination's refused.jsonl.${errors.length ? ` ${errors.join('; ')}.` : ''} ${advice}`.trim(),
+      summary: `${lossWords}.${advice ? ` ${advice}` : ''}` },
   ];
 }

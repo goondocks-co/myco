@@ -1,3 +1,4 @@
+import { observeSpool } from './spool-observations.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { MemberSpool as DeliverySpool, REFUSED_LOG_FILE, STATE_FILE_SUFFIX, type RefusedEntry } from './spool.js';
@@ -31,6 +32,8 @@ function isRefusedEntry(value: unknown): value is RefusedEntry {
 
 /** Read-only observations share the delivery spool's path and lock admission. */
 export class MemberSpool extends DeliverySpool {
+  readSpool() { return observeSpool(this, { createReadLocks: this.createReadLocks }); }
+
   /** Strict identity evidence includes fully delivered sessions and refuses incomplete reads. */
   readSessionRoutes(): Array<{ sessionId: string; agent: string }> {
     assertMemberPathContained(this.dir, this.mycoHome);

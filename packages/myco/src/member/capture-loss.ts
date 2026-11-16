@@ -20,11 +20,34 @@ export const CAPTURE_LOSS_FIELDS = ['payloads', 'plans', 'records', 'transcripts
 const validCaptureLossTotals = (value: CaptureLossTotals): boolean => value !== null && typeof value === 'object' && CAPTURE_LOSS_FIELDS.every((field) => Number.isSafeInteger(value[field]) && value[field] >= 0);
 const addCount = (previous: number, added: number): number => Math.min(Number.MAX_SAFE_INTEGER, previous + added);
 const emptyTotals = (): CaptureLossTotals => ({ payloads: 0, plans: 0, records: 0, transcripts: 0 });
+const addTotals = (target: CaptureLossTotals, source: CaptureLossTotals, previous?: CaptureLossTotals): void => {
+  for (const field of CAPTURE_LOSS_FIELDS) target[field] = addCount(target[field], Math.max(0, source[field] - (previous?.[field] ?? 0)));
+};
+const dayTotals = (counts: Losses, day: number, at: number): DatedLosses => {
+  let bucket = counts.days!.find(entry => entry.day === day);
+  if (!bucket) counts.days!.push(bucket = { ...emptyTotals(), day, lastAt: at });
+  bucket.lastAt = Math.max(bucket.lastAt, at);
+  return bucket;
+};
 const validDays = (days: DatedLosses[] | undefined): boolean => days === undefined || Array.isArray(days) && days.every(day => validCaptureLossTotals(day) && Number.isSafeInteger(day.day) && Number.isFinite(day.lastAt));
+
+const recordingFailures = new Set<string>();
+
+/** Accounting failure is reported once per process and never escapes into delivery. */
+export function attemptCaptureLossRecording(scope: string, record: () => void): boolean {
+  try { record(); return true; }
+  catch (error) {
+    if (!recordingFailures.has(scope)) {
+      recordingFailures.add(scope);
+      try { process.stderr.write(`[myco] capture loss accounting unavailable: ${error instanceof Error ? error.message : String(error)}; delivery continues\n`); } catch { /* stderr may also be unavailable */ }
+    }
+    return false;
+  }
+}
 
 /** Bounded project accounting, independent of session-state retirement and refusal-log rotation. */
 export class CaptureLossLedger {
-  constructor(private readonly dir: string) {}
+  constructor(private readonly dir: string, private readonly now: () => number = Date.now) {}
 
   read(): Losses {
     const file = path.join(this.dir, CAPTURE_LOSS_FILE);
@@ -47,9 +70,9 @@ export class CaptureLossLedger {
     return value;
   }
 
-  record(losses: readonly CaptureLoss[]): void {
-    if (losses.length === 0) return;
-    this.mutate((counts) => {
+  record(losses: readonly CaptureLoss[]): boolean {
+    if (losses.length === 0) return true;
+    return attemptCaptureLossRecording(this.dir, () => this.mutate((counts) => {
       let changed = false;
       for (const loss of losses) {
         const count = loss.count ?? 1;
@@ -60,18 +83,15 @@ export class CaptureLossLedger {
         const field: keyof CaptureLossTotals = `${loss.kind}s`;
         const day = Math.floor(loss.at / CAPTURE_LOSS_DAY_MS);
         if (!Number.isSafeInteger(day) || !Number.isFinite(loss.at) || Number.isNaN(new Date(loss.at).getTime())) throw new Error('Invalid capture loss time');
-        const bucket = counts.days!.find(entry => entry.day === day);
-        const dated = bucket ?? { day, lastAt: loss.at, payloads: 0, plans: 0, records: 0, transcripts: 0 };
+        const dated = dayTotals(counts, day, loss.at);
         dated[field] = addCount(dated[field], count);
-        dated.lastAt = Math.max(dated.lastAt, loss.at);
-        if (!bucket) counts.days!.push(dated);
         counts[field] = addCount(counts[field], count);
         counts.lastAt = Math.max(counts.lastAt ?? loss.at, loss.at);
         counts.recent.push(key);
         changed = true;
       }
       return changed;
-    });
+    }));
   }
 
   private mutate(change: (counts: Losses) => boolean): void {
@@ -85,12 +105,12 @@ export class CaptureLossLedger {
       }
       counts.undated ??= emptyTotals();
       if (!change(counts)) return;
-      const latestDay = Math.max(...counts.days.map(entry => entry.day));
-      counts.days = counts.days.filter(entry => entry.day > latestDay - RETAIN_LOSS_DAYS);
+      const today = Math.floor(this.now() / CAPTURE_LOSS_DAY_MS);
+      counts.days = counts.days.filter(entry => entry.day > today - RETAIN_LOSS_DAYS && entry.day <= today);
       counts.recent = counts.recent.slice(-MAX_RECENT_CAPTURE_LOSSES);
       if (counts.imports) counts.imports = counts.imports.slice(-MAX_RECENT_CAPTURE_LOSSES);
       writePrivateFileAtomic(path.join(this.dir, CAPTURE_LOSS_FILE), JSON.stringify(counts));
-    });
+    }, { wait: false });
   }
 
   /** Import a held ledger before its repository's migration removes it. */
@@ -102,19 +122,12 @@ export class CaptureLossLedger {
       const previous = counts.imports?.find((entry) => entry.key === key);
       if (CAPTURE_LOSS_FIELDS.every((field) => source[field] <= (previous?.[field] ?? 0))) return false;
       const dated = source.days !== undefined && (previous === undefined || previous.days !== undefined);
-      for (const field of CAPTURE_LOSS_FIELDS) {
-        const added = Math.max(0, source[field] - (previous?.[field] ?? 0));
-        counts[field] = addCount(counts[field], added);
-        const undated = dated ? Math.max(0, (source.undated?.[field] ?? 0) - (previous?.undated?.[field] ?? 0)) : added;
-        counts.undated![field] = addCount(counts.undated![field], undated);
-      }
+      addTotals(counts, source, previous);
+      addTotals(counts.undated!, dated ? source.undated ?? emptyTotals() : source, dated ? previous?.undated : previous);
       if (dated) for (const day of source.days!) {
         const prior = previous?.days?.find(entry => entry[0] === day.day);
-        const held = counts.days!.find(entry => entry.day === day.day);
-        const merged = held ?? { ...emptyTotals(), day: day.day, lastAt: day.lastAt };
+        const merged = dayTotals(counts, day.day, day.lastAt);
         for (const [index, field] of CAPTURE_LOSS_FIELDS.entries()) merged[field] = addCount(merged[field], Math.max(0, day[field] - (prior?.[index + 1] ?? 0)));
-        merged.lastAt = Math.max(merged.lastAt, day.lastAt);
-        if (!held) counts.days!.push(merged);
       }
       counts.imports = [...(counts.imports ?? []).filter((entry) => entry.key !== key), {
         key, ...Object.fromEntries(CAPTURE_LOSS_FIELDS.map(field => [field, Math.max(previous?.[field] ?? 0, source[field])])) as CaptureLossTotals,

@@ -1,3 +1,4 @@
+import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { CaptureLossLedger } from '@myco/member/capture-observations.js';
 import { describe, expect, it, spyOn } from 'bun:test';
 import fs from 'node:fs';
@@ -10,13 +11,65 @@ import { MemberSpool } from '@myco/member/spool.js';
 import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';
 import { registerTestMember } from './helpers/hooks.js';
-import { runStatus } from '@myco/cli/member.js';
+import { runDrain, runStatus } from '@myco/cli/member.js';
 import { CAPTURE_LOSS_FILE, MAX_RECENT_CAPTURE_LOSSES, recordSessionLoss } from '@myco/member/capture-loss.js';
 import { updateSessionState, retireSessionFiles, readSessionState } from '@myco/member/session-state.js';
 
 const TEXT = 'durable capture '.repeat(25_000);
 
 describe('payload loss disposition', () => {
+  it('delivers another session while missing-transcript accounting has a damaged ledger', async () => {
+    const mycoHome = tempMycoHome();
+    const rig = await memberRig();
+    const root = path.join(tempMycoHome(), 'repository');
+    fs.mkdirSync(root);
+    registerTestMember({ root, serverUrl: 'https://s', token: rig.token, projectId: 'proj_1', mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
+    const ctx = { agent: 'claude-code', sessionId: 'events', stage: spool.stagerFor('events') };
+    spool.appendAndRecord('events', [sessionStartEvent(ctx, {}), promptEvent(ctx, { promptId: mintId(), text: 'deliver despite bookkeeping failure' })]);
+    updateSessionState(spool.dir, 'gone', state => {
+      state.agent = 'claude-code';
+      state.transcript = { path: path.join(root, 'gone.jsonl'), transcriptId: 'missing', inode: 1, nextOffset: 0, parsedSize: 4 };
+    });
+    spool.markTranscriptBacklog('gone');
+    fs.writeFileSync(path.join(spool.dir, CAPTURE_LOSS_FILE), '{"version":1,', { mode: 0o600 });
+    const errors: string[] = [];
+    const stderr = spyOn(process.stderr, 'write').mockImplementation(chunk => { errors.push(String(chunk)); return true; });
+    try {
+      await runDrain([], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {} });
+      await runDrain([], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {} });
+    } finally { stderr.mockRestore(); }
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+    expect(spool.depth('events')).toBe(0);
+    expect(errors.filter(line => line.includes('capture loss accounting unavailable'))).toHaveLength(1);
+  });
+
+  it('does not count delivered primary, continuation or subagent files removed before a drain as losses', async () => {
+    const mycoHome = tempMycoHome();
+    const rig = await memberRig();
+    const root = path.join(tempMycoHome(), 'repository');
+    fs.mkdirSync(root);
+    registerTestMember({ root, serverUrl: 'https://s', token: rig.token, projectId: 'proj_1', mycoHome });
+    const spool = new MemberSpool({ projectId: 'proj_1', serverUrl: 'https://s' }, { mycoHome });
+    const gone = { path: path.join(root, 'deleted.jsonl'), transcriptId: 'done', inode: 1, nextOffset: 4, parsedSize: 4 };
+    const active = path.join(root, 'active.jsonl');
+    fs.writeFileSync(active, 'abc\nmore\n');
+    updateSessionState(spool.dir, 'done', state => { state.agent = 'claude-code'; state.transcript = gone; });
+    spool.markTranscriptBacklog('done');
+    const ctx = { agent: 'claude-code', sessionId: 'active', stage: spool.stagerFor('active') };
+    spool.appendAndRecord('active', [sessionStartEvent(ctx, {})]);
+    updateSessionState(spool.dir, 'active', state => {
+      state.agent = 'claude-code';
+      state.transcript = { ...transcriptPointerFor(active, 'machine_1')!, parsedSize: 9 };
+      state.continuations = { old: { ...gone, transcriptId: 'continuation' } };
+      state.siblings = { child: { ...gone, transcriptId: 'subagent' } };
+    });
+    spool.markTranscriptBacklog('active');
+    await runDrain([], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {} });
+    expect(readSessionState(spool.dir, 'active').transcript?.nextOffset).toBe(9);
+    expect(new CaptureLossLedger(spool.dir).read().transcripts).toBe(0);
+  });
+
   it('confirms deletion across retries, sends blob_absent, delivers the tail and reports one visible loss', async () => {
     const mycoHome = tempMycoHome();
     const rig = await memberRig();
@@ -128,14 +181,15 @@ describe('payload loss disposition', () => {
     const live = new CaptureLossLedger(path.join(home, 'member', 'buffer', 'project'));
     fs.mkdirSync(path.join(home, 'member', 'pending', 'held'), { recursive: true });
     fs.mkdirSync(path.join(home, 'member', 'buffer', 'project'), { recursive: true });
-    held.record([{ key: 'first', kind: 'plan', at: 1 }]);
+    const now = Date.now();
+    held.record([{ key: 'first', kind: 'plan', at: now }]);
     live.transferFrom(path.join(home, 'member', 'pending', 'held'), 'held-generation');
     expect(live.read().plans).toBe(1);
-    held.record([{ key: 'second', kind: 'plan', at: 2 }]);
+    held.record([{ key: 'second', kind: 'plan', at: now + 1 }]);
     live.transferFrom(path.join(home, 'member', 'pending', 'held'), 'held-generation');
     live.transferFrom(path.join(home, 'member', 'pending', 'held'), 'held-generation');
     expect(live.read().plans).toBe(2);
-    expect(live.recent(2)).toMatchObject({ plans: 2, lastAt: 2 });
+    expect(live.recent(now + 1)).toMatchObject({ plans: 2, lastAt: now + 1 });
   });
 
   it('keeps the held record after a crash immediately following journal replacement', async () => {

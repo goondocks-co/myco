@@ -333,7 +333,9 @@ function sharedLease(flockApi: FlockApi, fd: number, lockPath: string, wait = fa
   return { acquired: true, lock: { release, update: refuseSharedUpdate, path: lockPath, pid: process.pid } };
 }
 
-function winWithFileLockSync<T>(lockPath: string, fn: () => T, create: boolean, readIfMissing: boolean): T {
+function winWithFileLockSync<T>(lockPath: string, fn: () => T, options: FileLockOptions): T {
+  const create = options.create !== false;
+  const readIfMissing = options.readIfMissing === true;
   const k = loadKernel32();
   if (create) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   let handle: bigint;
@@ -344,7 +346,7 @@ function winWithFileLockSync<T>(lockPath: string, fn: () => T, create: boolean, 
   }
   try {
     const ov = winOverlapped();
-    if (k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, ptr(ov)) === 0) {
+    if (k.LockFileEx(handle, WIN_LOCKFILE_EXCLUSIVE_LOCK | (options.wait === false ? WIN_LOCKFILE_FAIL_IMMEDIATELY : 0), 0, 1, 0, ptr(ov)) === 0) {
       throw new Error(`winWithFileLockSync: LockFileEx failed on ${lockPath} (GetLastError ${k.GetLastError()})`);
     }
     return fn();
@@ -494,9 +496,11 @@ export const LifecycleLock = {
  * the daemon's buffer-append usage this is acceptable on the hot
  * path.
  */
-export function withFileLockSync<T>(lockPath: string, fn: () => T, options: { create?: boolean; readIfMissing?: boolean } = {}): T {
+interface FileLockOptions { create?: boolean; readIfMissing?: boolean; wait?: boolean }
+
+export function withFileLockSync<T>(lockPath: string, fn: () => T, options: FileLockOptions = {}): T {
   const create = options.create !== false;
-  if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn, create, options.readIfMissing === true);
+  if (process.platform === 'win32') return winWithFileLockSync(lockPath, fn, options);
   const flockApi = loadFlock();
   if (create) fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   for (let attempt = 0; ; attempt++) {
@@ -508,7 +512,7 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T, options: { cr
     }
     let held = false;
     try {
-      if (flockApi.flock(fd, LOCK_EX) !== 0) {
+      if (flockApi.flock(fd, LOCK_EX | (options.wait === false ? LOCK_NB : 0)) !== 0) {
         throw new Error(`withFileLockSync: flock(LOCK_EX) failed on ${lockPath}`);
       }
       held = true;
