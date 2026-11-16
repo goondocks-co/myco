@@ -1,41 +1,44 @@
 import { useState } from 'react';
 import { dateTimeWords } from '@goondocks/myco-shared/time-words';
 import { Button, ConfirmDialog, Textarea } from '../../design';
-import { useMembers } from '../../hooks/use-access';
 import { useChangeSpore, type SporeChange } from '../../hooks/use-knowledge';
 import { ApiError } from '../../lib/api';
+import { useMemberNames } from '../admin/members';
 import type { SporeArticleAnswer, SporeResolutionFields } from './wire';
-import { authorName, DEFAULT_SPORE_STATUS, RETIRED_SPORE_STATUS } from './words';
+import { DEFAULT_SPORE_STATUS, RETIRED_SPORE_STATUS } from './words';
 
-/** Who made a change of status, as the reader names them: a member by name, Myco's run, an access key, or no one named. */
-function changedBy(verb: 'Retired' | 'Restored', change: SporeResolutionFields, members: ReadonlyArray<{ id: string; label: string | null }> | undefined): string {
+/** Who made a change of status, as the words after its verb: a member by name, Myco's run, an access key, or null when no one is named. */
+function changedBy(change: SporeResolutionFields, nameOf: (id: string | null) => string | null): string | null {
   switch (change.authorKind) {
-    case 'member': return `${verb} by ${(change.author === null ? null : authorName(change.author, members)) ?? 'a member'}`;
-    case 'run': return `${verb} by Myco in one of its runs`;
-    case 'grant': return `${verb} with an access key`;
-    default: return verb;
+    case 'member': return `by ${nameOf(change.author) ?? 'a member'}`;
+    case 'run': return 'by Myco in one of its runs';
+    case 'grant': return 'with an access key';
+    default: return null;
   }
 }
 
 /** A retired spore says so first: who retired it, when, and why. */
 export function RetiredNote({ change, now }: { change: SporeResolutionFields | null; now: number }) {
-  const members = useMembers();
+  const nameOf = useMemberNames();
   const retired = change !== null && change.action === RETIRED_SPORE_STATUS;
+  const by = retired ? changedBy(change, nameOf) : null;
   return (
     <div role="note" className="flex flex-col gap-s1 rounded-card border border-line bg-surface-2 px-s4 py-s3" data-spore-retired="">
       <p className="t-small font-medium text-ink">
-        {retired ? `${changedBy('Retired', change, members.data?.members)}, ${dateTimeWords(change.createdAt, now)}.` : 'This spore was retired.'}
+        {retired ? `${by === null ? 'Retired' : `Retired ${by}`}, ${dateTimeWords(change.createdAt, now)}.` : 'This spore was retired.'}
       </p>
       {retired && change.reason !== null && change.reason.trim() !== '' && <p className="t-small text-ink-2" data-spore-retired-reason="">Why: {change.reason}</p>}
     </div>
   );
 }
 
-/** Who restored a current spore and when, for its facts; null when its newest change was not a restore. */
+/** Who restored a current spore and when, as the value of its Restored fact ("by Ada, Nov 15, 16:21"); null when its newest change was not a restore. */
 export function useRestoredWords(change: SporeResolutionFields | null, now: number): string | null {
-  const members = useMembers();
+  const nameOf = useMemberNames();
   if (change === null || change.action !== 'restore') return null;
-  return `${changedBy('Restored', change, members.data?.members)}, ${dateTimeWords(change.createdAt, now)}`;
+  const by = changedBy(change, nameOf);
+  const when = dateTimeWords(change.createdAt, now);
+  return by === null ? when : `${by}, ${when}`;
 }
 
 /** Why a change was refused, in the reader's words. */

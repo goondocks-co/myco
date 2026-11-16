@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { REJOIN_FOR_ADMIN } from '@goondocks/myco-shared/member-protocol';
-import { Card, ConfirmDialog, EmptyState, ErrorState, HealthDot, LoadingState, MoreMenu, ReadState, ShowMore, type HealthTone, type MoreMenuItem } from '../../../design';
+import { Card, ConfirmDialog, Disclosure, EmptyState, ErrorState, HealthDot, LoadingState, MoreMenu, ReadState, ShowMore, type HealthTone, type MoreMenuItem } from '../../../design';
 import { refusalText, useAccessActions } from '../../../hooks/use-access';
 import { scopeOf, useMe } from '../../../hooks/use-me';
 import { useProjects } from '../../../hooks/use-projects';
@@ -44,7 +44,9 @@ export interface MachineListProps {
  * Machines, one row each: its name, whose it is and where it stands, what it
  * last reported when it runs Myco's work, and a ⋯ menu with Rename (an admin's
  * on every machine, a member's on their own), its settings (on the viewer's
- * own), what it wrote, and Stop behind a confirm.
+ * own), what it wrote, and Stop behind a confirm. Machines stopped or expired
+ * are former machines: below the live ones, closed until asked for, and with no
+ * settings, which they would never read.
  */
 export function MachineList({ machines, viewerId, nameOf, showOwner, showUpdates = false, paging, empty }: MachineListProps) {
   const answered = useWorkerFleet();
@@ -55,48 +57,63 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, showUpdates
   const machinePermission = scopeOf(me.data, 'machines');
   const settingsPermission = scopeOf(me.data, 'machineSettings');
   const admin = machinePermission.scope === 'all';
-  // The viewer's own machine names them by the login they signed in with where their label is only their id.
-  const viewerName = me.data?.login !== undefined && me.data.login !== '' ? me.data.login : 'You';
   const stop = useAccessActions().stopMachine;
   const [settingsFor, setSettingsFor] = useState<{ id: string; name: string } | null>(null);
   const [renaming, setRenaming] = useState<RenameTarget | null>(null);
   const [activityFor, setActivityFor] = useState<ActivityTarget | null>(null);
   const [stopping, setStopping] = useState<Machine | null>(null);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [formerOpen, setFormerOpen] = useState(false);
   const projectName = (id: string) => projects.data?.projects.find((p) => p.projectId === id)?.name ?? null;
 
   if (paging.isPending) return <LoadingState label="Reading the machines" count={2} />;
   if (paging.error != null && machines.length === 0) return <ErrorState error={paging.error} onRetry={paging.retry} />;
   if (machines.length === 0) return <EmptyState title={empty} />;
 
+  const item = (machine: Machine) => {
+    // A former machine can never read a setting again, so it offers none: a change made there would wait forever.
+    const settable = machine.standing === 'allowed' && settingsPermission.scope !== 'none' && machine.memberId === viewerId;
+    return (
+      <MachineItem
+        key={machine.key}
+        machine={machine}
+        owner={showOwner ? nameOf(machine.memberId) ?? (machine.memberId === viewerId ? 'You' : 'A teammate') : null}
+        stoppedBy={nameOf(machine.stoppedBy)}
+        fleet={fleet}
+        projectName={projectName}
+        ownSettings={showUpdates && settable}
+        actions={[
+          ...(machinePermission.scope !== 'none' && canRename(machine, viewerId, admin)
+            ? [{ label: 'Rename', onSelect: () => setRenaming({ id: machine.machineId!, name: machine.name, named: machine.named }) }]
+            : []),
+          ...(settable && machine.machineId !== null
+            ? [{ label: 'Its settings', onSelect: () => setSettingsFor({ id: machine.machineId!, name: machine.name }) }]
+            : []),
+          ...(machine.machineId === null ? [] : [{ label: 'What it wrote', onSelect: () => setActivityFor({ name: machine.name, machineId: machine.machineId!, bytesWritten: machine.bytesWritten }) }]),
+          ...(machine.liveCredentialCount > 0 && machine.machineId !== null && machine.canStop ? [{ label: 'Stop', tone: 'danger' as const, onSelect: () => { setStopError(null); stop.reset(); setStopping(machine); } }] : []),
+        ]}
+      />
+    );
+  };
+  // A machine allowed to write is live; one stopped or expired is a former machine, listed below behind its own control.
+  const live = machines.filter((machine) => machine.standing === 'allowed');
+  const former = machines.filter((machine) => machine.standing !== 'allowed');
+
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-s3">
       {paging.error != null && <ReadState data={machines} pending={false} error={paging.error} onRetry={paging.retry} label="machines">{() => null}</ReadState>}
-      <Card padding="flush">
-        <ul aria-label="Machines" className="flex flex-col divide-y divide-line">
-          {machines.map((machine) => (
-            <MachineItem
-              key={machine.key}
-              machine={machine}
-              owner={showOwner ? nameOf(machine.memberId) ?? (machine.memberId === viewerId ? viewerName : 'A teammate') : null}
-              stoppedBy={nameOf(machine.stoppedBy)}
-              fleet={fleet}
-              projectName={projectName}
-              ownSettings={showUpdates && settingsPermission.scope !== 'none' && machine.memberId === viewerId}
-              actions={[
-                ...(machinePermission.scope !== 'none' && canRename(machine, viewerId, admin)
-                  ? [{ label: 'Rename', onSelect: () => setRenaming({ id: machine.machineId!, name: machine.name, named: machine.named }) }]
-                  : []),
-                ...(settingsPermission.scope !== 'none' && machine.memberId === viewerId && machine.machineId !== null
-                  ? [{ label: 'Its settings', onSelect: () => setSettingsFor({ id: machine.machineId!, name: machine.name }) }]
-                  : []),
-                ...(machine.machineId === null ? [] : [{ label: 'What it wrote', onSelect: () => setActivityFor({ name: machine.name, machineId: machine.machineId!, bytesWritten: machine.bytesWritten }) }]),
-                ...(machine.liveCredentialCount > 0 && machine.machineId !== null && machine.canStop ? [{ label: 'Stop', tone: 'danger' as const, onSelect: () => { setStopError(null); stop.reset(); setStopping(machine); } }] : []),
-              ]}
-            />
-          ))}
-        </ul>
-      </Card>
+      {live.length > 0 && (
+        <Card padding="flush">
+          <ul aria-label="Machines" className="flex flex-col divide-y divide-line">{live.map(item)}</ul>
+        </Card>
+      )}
+      {former.length > 0 && (
+        <Disclosure summary={`${formerOpen ? 'Hide' : 'Show'} former machines (${former.length.toLocaleString()})`} onOpenChange={setFormerOpen}>
+          <Card padding="flush">
+            <ul aria-label="Former machines" className="flex flex-col divide-y divide-line">{former.map(item)}</ul>
+          </Card>
+        </Disclosure>
+      )}
       {(paging.hasMore || paging.isFetchingMore) && (
         <ShowMore shown={machines.length} noun="machines" hasMore={paging.hasMore} pending={paging.isFetchingMore} onMore={paging.more} />
       )}

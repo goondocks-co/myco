@@ -17,6 +17,7 @@ import { AppearanceProvider } from '../../packages/myco-server/ui/src/providers/
 import { forgetProject } from '../../packages/myco-server/ui/src/lib/project-memory';
 import { sporeAuthor, sporeHeadline, sporeTags, typeFacetRows, windowSince } from '../../packages/myco-server/ui/src/features/knowledge/words';
 import { rawIdsIn } from '../helpers/raw-ids';
+import { dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -394,17 +395,19 @@ describe('a spore’s article', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
-  it('lets an admin retire a current spore only with a reason, then restore it, and shows a member neither', async () => {
+  it('lets an admin retire a current spore only with a reason, then restore it, names who did each to the viewer it was, and shows another member neither', async () => {
     const path = `/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
-    const by = { author: ADMIN.member.id, authorKind: 'member', newSporeId: null, createdAt: NOW - MINUTE };
+    const mine = { author: ADMIN.member.id, authorKind: 'member' };
+    const by = { ...mine, newSporeId: null, createdAt: NOW - MINUTE };
     const states = {
-      active: () => article({ status: 'active', revision: 0 }, { supersededBy: [], supersedes: [], resolution: null }),
-      retired: () => article({ status: 'obsolete', revision: 1 }, { supersededBy: [], supersedes: [], resolution: { ...by, action: 'obsolete', reason: 'The cache was removed' } }),
-      restored: () => article({ status: 'active', revision: 2 }, { supersededBy: [], supersedes: [], resolution: { ...by, action: 'restore', reason: null } }),
+      active: () => article({ ...mine, status: 'active', revision: 0 }, { supersededBy: [], supersedes: [], resolution: null }),
+      retired: () => article({ ...mine, status: 'obsolete', revision: 1 }, { supersededBy: [], supersedes: [], resolution: { ...by, action: 'obsolete', reason: 'The cache was removed' } }),
+      restored: () => article({ ...mine, status: 'active', revision: 2 }, { supersededBy: [], supersedes: [], resolution: { ...by, action: 'restore', reason: null } }),
     };
     let state: keyof typeof states = 'active';
     const sent: Array<[string, unknown]> = [];
-    const routes = base({ [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer });
+    const unnamed = { members: MEMBERS.members.map((m) => m.id === ADMIN.member.id ? { ...m, label: m.id } : m) };
+    const routes = base({ [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer, '/api/members': () => Response.json(unnamed) });
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
       if (init?.method === 'POST') {
@@ -431,7 +434,8 @@ describe('a spore’s article', () => {
     await waitFor(() => expect(document.querySelector('[data-spore-status]')?.textContent).toBe('Retired'));
     expect(sent).toEqual([[`${path}/retire`, { reason: 'The cache was removed', revision: 0 }]]);
     const note = document.querySelector('[data-spore-retired]')!;
-    expect(note.textContent).toContain('Retired by Ada');
+    expect(note.textContent).toContain(`Retired by ada, ${dateTimeWords(NOW - MINUTE, NOW)}.`);
+    expect(document.querySelector('[data-spore-author]')?.textContent).toBe('Saved by ada.');
     expect(note.textContent).toContain('Why: The cache was removed');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Restore' }));
@@ -440,15 +444,18 @@ describe('a spore’s article', () => {
     expect(sent[1]).toEqual([`${path}/restore`, { revision: 1 }]);
     const facts = document.querySelector('[data-facts]') as HTMLElement;
     expect(facts.textContent).toContain('StatusCurrent');
-    expect(facts.textContent).toContain('Restored by Ada');
+    expect([...facts.querySelectorAll('dt')].find((dt) => dt.textContent === 'Restored')?.nextElementSibling?.textContent).toBe(`by ada, ${dateTimeWords(NOW - MINUTE, NOW)}`);
     expect(document.querySelector('[data-spore-retired]')).toBeNull();
     expect(rawIdsInPage()).toEqual([]);
 
     cleanup();
-    state = 'active';
-    routes['/auth/me'] = () => Response.json(dashboardMe({ ...ADMIN, member: { ...ADMIN.member, role: 'member' as const } }));
+    state = 'retired';
+    routes['/auth/me'] = () => Response.json(dashboardMe({ sub: '2', login: 'lin', member: { id: 'mem_Hn5pC0dJfA9sEu', label: 'Lin', role: 'member' as const } }));
     mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     await screen.findByRole('heading', { level: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(document.querySelector('[data-spore-retired]')?.textContent).toContain(`Retired by a member, ${dateTimeWords(NOW - MINUTE, NOW)}.`);
+    expect(document.querySelector('[data-spore-author]')?.textContent).toBe('Saved by a member.');
     expect(document.querySelector('[data-spore-change]')).toBeNull();
   });
 

@@ -6,8 +6,7 @@
  */
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import type { FilterDefinition, SelectOption, Tone } from '../../design';
-import { memberLabel } from '../../lib/member-name';
-import { count, MYCO_MEMBER_ID, sporeTypeWord } from '../today/words';
+import { count, sporeTypeWord } from '../today/words';
 import { dayWords } from '@goondocks/myco-shared/time-words';
 
 export { count, dayHeading, sporeTypeWord } from '../today/words';
@@ -153,13 +152,6 @@ export function sporeAuthor(spore: { author: string | null; authorKind?: 'run' |
 
 /** How a spore imported from Myco 1.4 reads where its writer is named. */
 export const IMPORTED_AUTHOR_WORDS = 'Imported from Myco 1.4';
-
-/** A member who wrote a spore, by name: Myco for its own account, else their label when it names them, else null. */
-export function authorName(memberId: string, members: ReadonlyArray<{ id: string; label: string | null }> | undefined): string | null {
-  if (memberId === MYCO_MEMBER_ID) return 'Myco';
-  const member = members?.find((m) => m.id === memberId);
-  return member === undefined ? null : memberLabel(member);
-}
 
 /** The plan statuses in the order the board lays out its columns. */
 export const PLAN_COLUMNS = ['in_progress', 'active', 'completed', 'abandoned'] as const;

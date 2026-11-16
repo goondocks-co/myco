@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { ActionLink, Breadcrumbs, Button, Card, CopyButton, ErrorState, FactRow, FactsPanel, LoadingState, Progress, Select, StatusChip, TypeChip } from '../../design';
-import { useMembers } from '../../hooks/use-access';
 import { planPagePath, usePlan } from '../../hooks/use-knowledge';
 import { useMe } from '../../hooks/use-me';
 import { useSession, useSetPlanStatus } from '../../hooks/use-sessions';
@@ -11,9 +10,10 @@ import { sessionHeadingText } from '../../lib/session-text';
 import { NotFound } from '../../pages/NotFound';
 import { KNOWLEDGE_SUFFIX, PLANS_SUFFIX, projectPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
+import { useMemberNames } from '../admin/members';
 import { TextOrBlob } from '../sessions/StoredText';
 import type { PlanFields } from './wire';
-import { authorName, PLAN_COLUMNS, planStateWord, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
+import { PLAN_COLUMNS, planStateWord, planStatusTone, planStatusWord, planTitle, progressParts, progressWords, supersedingTitle, type PlanStatus } from './words';
 import { agoWords, dateTimeWords } from '@goondocks/myco-shared/time-words';
 
 export interface PlanPageProps {
@@ -43,8 +43,7 @@ function Reading({ plan, projectId, projectName, now }: { plan: PlanFields; proj
   const parts = progressParts(plan.progress);
   const me = useMe();
   const canSetStatus = me.data?.membership.state === 'active';
-  const members = useMembers();
-  const setBy = plan.updatedBy === null ? null : authorName(plan.updatedBy, members.data?.members);
+  const setBy = useMemberNames()(plan.updatedBy);
   return (
     <article data-plan-page="" className="flex w-full flex-col gap-s5">
       <div className="flex flex-wrap items-center justify-between gap-s3">

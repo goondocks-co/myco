@@ -5,6 +5,7 @@
  */
 import { dashboardMe } from '../helpers/dashboard-permissions';
 import { afterEach, describe, expect, it } from 'bun:test';
+import { MACHINE_SETTINGS_CONTROLS } from '@goondocks/myco-shared/setup-guidance';
 import { INVITE_CONTROLS, MEMBER_KEEPS_MACHINES, REJOIN_FOR_ADMIN, REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -421,11 +422,12 @@ describe('machines', () => {
     expect(machines.textContent).not.toMatch(/\bwriting\b/);
   });
 
-  it('offers no Stop for an expired machine', async () => {
+  it('lists an expired machine as a former one, closed until asked for, and offers it no Stop', async () => {
     accessServer({ member: [credential({ expiresAt: 1, live: false })] });
     mount('/people');
-    const machines = await screen.findByRole('list', { name: 'Machines' });
-    await waitFor(() => expect(machines.textContent).toContain('expired'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Show former machines (1)' }));
+    const machines = await screen.findByRole('list', { name: 'Former machines' });
+    expect(machines.textContent).toContain('expired');
     expect(await menuItems(within(machines).getByRole('button', { name: 'More for Ada’s MacBook' }))).not.toContain('Stop');
   });
 
@@ -539,18 +541,6 @@ describe('machines', () => {
     expect(rows[0]).toContain('Session started');
     expect(rows[1]).toContain('Prompt');
     expect(rawIdsIn(dialog)).toEqual([]);
-  });
-
-  it('says a machine the Deployment ended on replay was used from two places, not who stopped it', async () => {
-    accessServer({ member: [credential({ revokedAt: NOW_MS - 1_000, revokedBy: 'lineage-replay', live: false })] });
-    mount('/people');
-    expect(await screen.findByText(/stopped: used from two places/)).toBeTruthy();
-  });
-
-  it('names who stopped a machine, by name', async () => {
-    accessServer({ member: [credential({ revokedAt: NOW_MS - 1_000, revokedBy: LIN, live: false })] });
-    mount('/people');
-    expect(await screen.findByText(/stopped by Lin/)).toBeTruthy();
   });
 
   it('shows what the machine last reported as a worker, in its own words', async () => {
@@ -694,6 +684,22 @@ it('shows reported update preferences separately from waiting changes and confir
   updates = await screen.findByRole('region', { name: 'Updates for Ada’s MacBook' });
   expect(await within(updates).findByText('Release channel: beta · last reported by this machine')).toBeTruthy();
   expect(within(updates).queryByText(/Waiting for this machine/)).toBeNull();
+});
+
+it('lists former machines on My machines below the live ones, closed and counted, each saying why, and offers them no settings', async () => {
+  const read: string[] = [];
+  const old = (id: string, over: Record<string, unknown>) => credential({ id: `mt_${id}aaaaaaaaaa`, lineageRoot: `mt_${id}aaaaaaaaaa`, machineId: `ada_${id}`, expiresAt: 1, live: false, ...over });
+  accessServer({ member: [credential(), old('old1', { runtimeLabel: 'Ada’s old laptop' }), old('old2', { runtimeLabel: 'Ada’s old desk', revokedAt: 1, revokedBy: LIN }), old('old3', { runtimeLabel: 'Ada’s copy', revokedAt: 1, revokedBy: 'lineage-replay' })] },
+    Object.fromEntries(['ada_5a2d54af', 'ada_old1', 'ada_old2', 'ada_old3'].map((m) => [`/api/machines/${m}/settings`, () => { read.push(m); return Response.json({ leaves: [{ leaf: 'update.automatic', effective: null, nextEffective: null, application: 'unreported' }] }); }])));
+  mount('/me/machines');
+  expect(await within(await screen.findByRole('region', { name: 'Updates for Ada’s MacBook' })).findByText('Automatic updates: Not reported')).toBeTruthy();
+  expect(screen.queryByRole('list', { name: 'Former machines' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Show former machines (3)' }));
+  const former = await screen.findByRole('list', { name: 'Former machines' });
+  expect(former.textContent).toMatch(/^Ada’s old laptopexpired · first signed in .+Ada’s old deskstopped by Lin · .+Ada’s copystopped: used from two places · /);
+  expect(within(former).queryByRole('combobox')).toBeNull();
+  expect(await menuItems(within(former).getByRole('button', { name: 'More for Ada’s old laptop' }))).not.toContain(MACHINE_SETTINGS_CONTROLS.action);
+  expect(read).toEqual(['ada_5a2d54af']);
 });
 
 it('offers no update controls for an admin’s own or another member’s machine on People & machines', async () => {
