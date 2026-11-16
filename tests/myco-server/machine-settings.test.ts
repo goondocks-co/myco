@@ -130,13 +130,13 @@ describe('a machine\'s settings', () => {
     for (const bad of ['plans', [''], ['a', 'a'], ['bad\npath'], Array.from({ length: 17 }, (_, i) => `p${i}`), ['x'.repeat(257)]]) {
       expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', bad, 'mem_a', NOW)).toMatchObject({ applied: false, reason: 'invalid_value' });
     }
-    expect(await setMachineLeaf(e.db, 'm_a', 'update.channel', 'beta', 'mem_a', NOW)).toEqual({ applied: false, reason: 'unknown_leaf' });
+    expect(await setMachineLeaf(e.db, 'm_a', 'update.unknown', 'beta', 'mem_a', NOW)).toEqual({ applied: false, reason: 'unknown_leaf' });
     expect(await setMachineLeaf(e.db, 'm_nobody', 'capture.plan_dirs', ['plans'], 'mem_a', NOW)).toEqual({ applied: false, reason: 'absent' });
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', ['docs/plans', '~/notes', '/abs/plans'], 'mem_a', NOW)).toEqual({ applied: true });
-    expect(await readMachineSettings(e.db, 'm_a')).toMatchObject([{ leaf: 'capture.plan_dirs', configured: true, value: ['docs/plans', '~/notes', '/abs/plans'], updatedAt: NOW, updatedBy: 'mem_a' }, ...DEFAULT_ROWS]);
+    expect(await readMachineSettings(e.db, 'm_a')).toEqual(expect.arrayContaining([expect.objectContaining({ leaf: 'capture.plan_dirs', configured: true, value: ['docs/plans', '~/notes', '/abs/plans'], updatedAt: NOW, updatedBy: 'mem_a' }), ...DEFAULT_ROWS.map(row => expect.objectContaining(row))]));
     expect(await setMachineLeaf(e.db, 'm_a', 'capture.plan_dirs', [], 'mem_a', NOW + 1)).toEqual({ applied: true });
     expect(e.sqlite.query(`SELECT COUNT(*) AS n FROM machine_settings`).get()).toEqual({ n: 0 });
-    expect(await readMachineSettings(e.db, 'm_a')).toMatchObject([{ leaf: 'capture.plan_dirs', configured: false, value: [], updatedAt: null, updatedBy: null }, ...DEFAULT_ROWS]);
+    expect(await readMachineSettings(e.db, 'm_a')).toEqual(expect.arrayContaining([expect.objectContaining({ leaf: 'capture.plan_dirs', configured: false, value: [], updatedAt: null, updatedBy: null }), ...DEFAULT_ROWS.map(row => expect.objectContaining(row))]));
   });
 
   it('are answered to the member that claims the machine, and to nobody asking from a machine it does not claim', async () => {

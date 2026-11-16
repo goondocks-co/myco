@@ -1136,7 +1136,8 @@ Four blocks hold dynamic children the schema cannot enumerate — `agent.tasks`,
 | `maintenance.auto_optimize_interval_hours` | REPLACE | Deployment | Core | Schedule for the above: 1–720 hours, counted from the last run's start | #1276 |
 | `maintenance.auto_integrity_check` | REPLACE | Deployment | Core | Turns `database-integrity-check` on, with the same unset, invalid and upgrade behavior as `maintenance.auto_optimize` | #1276 |
 | `maintenance.auto_integrity_check_interval_hours` | REPLACE | Deployment | Core | Schedule for the above: 1–8760 hours, counted from the last run's start | #1276 |
-| `update.channel` | REPLACE | Member | M | myco update uses the machine’s recorded release channel (#1734); no YAML channel is managed | #1170 |
+| `update.automatic` | KEEP | Member | M | My machines shows the machine’s last reported automatic-update preference and delivers requested changes through `machine_settings`; `myco update --automatic on\|off` uses the same local writer | #1170 |
+| `update.channel` | REPLACE | Member | M | My machines shows the machine’s last reported channel and holds a requested change in `machine_settings` until that machine applies and reports it; the updater reads the persisted preference before its install marker; `myco config set update.channel` changes it locally | #1170 |
 | `skills.enabled` | DROP | — | — | Skills ship with Myco; no generated-skill lifecycle or admission gate. Generated-skill tables and routes retire in schema step 86 (#1170). | settings audit |
 | `skills.confidence_threshold` | DROP | — | — | Skills ship with Myco; no generated-skill lifecycle or admission gate. Generated-skill tables and routes retire in schema step 86 (#1170). | settings audit |
 | `skills.usage_stale_days` | DROP | — | — | Skills ship with Myco; no generated-skill lifecycle or admission gate. Generated-skill tables and routes retire in schema step 86 (#1170). | settings audit |

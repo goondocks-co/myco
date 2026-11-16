@@ -1,3 +1,7 @@
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { setUpdatePreferences } from '@myco/member/automatic-update-state.js';
+import { effectiveUpdateChannel } from '@myco/upgrade/check-cache.js';
+import fs from 'node:fs';
 import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from '../support/fenced-fs.mjs';
 import path from 'node:path';
@@ -21,12 +25,12 @@ const temporary: string[] = [];
 afterAll(() => { for (const dir of temporary) rmSync(dir, { recursive: true, force: true }); });
 const scratch = () => { const dir = mkdtempSync(path.join(tmpdir(), 'myco-machine-contract-')); temporary.push(dir); return dir; };
 
-async function rig(target: DeploymentTarget) {
+async function rig(target: DeploymentTarget, clock: () => number = Date.now) {
   const fixture = sqliteEnv();
   const env = target === 'cloudflare'
     ? serverEnvFromBindings({ ...fixture.env, ...OWNER_ENV }, fixture.deferred)
     : serverEnvFromBunConfig({ sqlite: fixture.sqlite, blobDir: path.join(scratch(), 'blobs'), ...OWNER_ENV });
-  const server = createServer({ now: Date.now, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
+  const server = createServer({ now: clock, sourceOf: () => '1.2.3.4', fetchImpl: fetch });
   const request = (request: Request) => server.handleRequest(request, env);
   fixture.sqlite.run(`INSERT INTO machine_claims(machine_id, member_id, claimed_at) VALUES ('machine_1', 'mem_machine_1', 1)`);
   const { token } = await issueMemberToken(env.db, { machineId: 'machine_1', memberId: 'mem_machine_1' }, Date.now());
@@ -34,7 +38,7 @@ async function rig(target: DeploymentTarget) {
   const rows = async () => {
     const response = await request(await asOwner(fixture.db, '/api/machines/machine_1/settings'));
     expect(response.status).toBe(200);
-    return ((await response.json()) as { leaves: MachineLeaf[] }).leaves;
+    return ((await response.json()) as { leaves: MachineLeaf[] }).leaves.filter(row => row.leaf.startsWith('capture.'));
   };
   const sync = async () => {
     const response = await request(memberPost(token, {}, '/members/settings', machineSettingsHeaders('https://s', home)));
@@ -182,7 +186,8 @@ describe('machine settings effective contract', () => {
       const legacyMachine = (await legacy.json() as { machine: unknown }).machine;
       expect(legacyMachine).toEqual({ leaves: { 'capture.plan_dirs': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} } });
       cacheMachineSettings('https://old', legacyMachine, r.home);
-      expect(machineSettingsHeaders('https://old', r.home)).toEqual({ [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE });
+      expect(machineSettingsHeaders('https://old', r.home)).toMatchObject({ [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE });
+      expect(machineSettingsHeaders('https://old', r.home)[MACHINE_SETTINGS_REVISION_HEADER]).toBeUndefined();
       await r.sync();
       const revision = (await r.rows())[0]!.revision;
       await r.request(memberPost(r.token, {}, '/members/settings', { [MACHINE_SETTINGS_REVISION_HEADER]: revision }));
@@ -318,4 +323,31 @@ describe('machine settings effective contract', () => {
       expect((r.sqlite.query(`SELECT value FROM machine_settings WHERE machine_id = 'machine_1' AND leaf = 'capture.plan_dirs'`).get() as { value: string }).value).toBe('{bad');
     });
   }
+});
+
+it('consumes only the confirmed request and never replays it after local receipts are lost', async () => {
+  const serverNow = Date.now() + 1_000;
+  const r = await rig('bun', () => serverNow);
+  writeInstallMarker(r.home, { channel: 'alpha', source: 'curl', bin: path.join(r.home, 'bin', 'myco') });
+  expect((await r.set('capture.plan_dirs', ['plans'])).status).toBe(200);
+  await r.sync(); await r.sync();
+  const capture = await r.rows();
+  expect(capture.every(row => row.application === 'applied')).toBe(true);
+  expect((await r.set('update.channel', 'beta')).status).toBe(200);
+  expect(await r.rows()).toEqual(capture);
+  expect(await r.sync()).toMatchObject({ serverNow, updateRequests: { 'update.channel': { savedAt: serverNow } } });
+  expect(await r.rows()).toEqual(capture);
+  expect(effectiveUpdateChannel(r.home)).toBe('beta');
+  expect((await r.set('update.channel', 'stable')).status).toBe(200);
+  expect(await r.rows()).toEqual(capture);
+  expect(await r.sync()).toMatchObject({ updateRequests: { 'update.channel': { value: 'stable' } } });
+  expect(effectiveUpdateChannel(r.home)).toBe('stable');
+  expect(await r.sync()).toHaveProperty('updateRequests', {});
+  expect(await r.rows()).toEqual(capture);
+  expect((await r.set('update.channel', null, true)).status).toBe(200);
+  expect(await r.rows()).toEqual(capture);
+  setUpdatePreferences(r.home, { channel: 'alpha' });
+  fs.writeFileSync(path.join(r.home, 'install-update.json'), JSON.stringify({ automaticUpdates: true }));
+  expect(await r.sync()).toHaveProperty('updateRequests', {});
+  expect(effectiveUpdateChannel(r.home)).toBe('alpha');
 });

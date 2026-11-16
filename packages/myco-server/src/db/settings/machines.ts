@@ -1,3 +1,4 @@
+import { MACHINE_UPDATE_LEAVES } from '@goondocks/myco-shared/member-protocol';
 import type { RelationalStore } from '../../core/adapters.js';
 import { commit, first, read, rows, write } from '../index.js';
 
@@ -31,7 +32,7 @@ export async function putMachineLeaf(db: RelationalStore, input: { machine: stri
 
 /** Whether the leaf still holds exactly the text the repair read. */
 const held = (machine: string, leaf: string, text: string) => `EXISTS (SELECT 1 FROM machine_settings WHERE machine_id=${machine} AND leaf=${leaf} AND value=${text})`;
-const bumpRevision = write<[machine: string, leaf: string, actor: string], { machine_id: string }>({ name: 'machineSettings.bumpOnReset', sql: `UPDATE machine_claims SET settings_revision=settings_revision+CASE WHEN EXISTS(SELECT 1 FROM machine_settings WHERE machine_id=?1 AND leaf=?2) THEN 0 ELSE 1 END
+const bumpRevision = write<[machine: string, leaf: string, actor: string], { machine_id: string }>({ name: 'machineSettings.bumpOnReset', sql: `UPDATE machine_claims SET settings_revision=settings_revision+CASE WHEN ?2 IN (${MACHINE_UPDATE_LEAVES.map(leaf => `'${leaf}'`).join(',')}) OR EXISTS(SELECT 1 FROM machine_settings WHERE machine_id=?1 AND leaf=?2) THEN 0 ELSE 1 END
   WHERE machine_id=?1 AND ${claimedBy('?1', '?3')} RETURNING machine_id` });
 const bumpRepaired = write<[machine: string, leaf: string, actor: string, invalid: string], { machine_id: string }>({ name: 'machineSettings.bumpOnRepair', sql: `UPDATE machine_claims SET settings_revision=settings_revision+CASE WHEN EXISTS(SELECT 1 FROM machine_settings WHERE machine_id=?1 AND leaf=?2) THEN 0 ELSE 1 END
   WHERE machine_id=?1 AND ${claimedBy('?1', '?3')} AND ${held('?1', '?2', '?4')} RETURNING machine_id` });
@@ -65,7 +66,7 @@ export const noteMachineContract = (db: RelationalStore, machine: string, member
 
 const dropSnapshots = write<[machine: string, member: string, order: number]>({ name: 'machineSettings.dropSnapshots', sql: `DELETE FROM machine_settings_snapshots WHERE machine_id=?1
   AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id=?1 AND member_id=?2 AND settings_report_order<?3)` });
-const clearCache = write<[machine: string, member: string, order: number]>({ name: 'machineSettings.clearCache', sql: `UPDATE machine_claims SET settings_cached_revision=NULL,settings_cached_values=NULL,settings_report_order=?3
+const clearCache = write<[machine: string, member: string, order: number]>({ name: 'machineSettings.clearCache', sql: `UPDATE machine_claims SET settings_cached_revision=NULL,settings_cached_values=json_object('$updates',json_extract(settings_cached_values,'$.\"$updates\"')),settings_report_order=?3
   WHERE machine_id=?1 AND member_id=?2 AND settings_report_order<?3` });
 
 /** A machine reported its cache gone: forget what it holds and what it applied, in report order. */
@@ -77,7 +78,7 @@ const acknowledge = write<[machine: string, member: string, revision: string, or
       CASE WHEN settings_cached_revision=?3 THEN settings_cached_values ELSE NULL END) AS leaves
     FROM machine_claims WHERE machine_id=?1 AND member_id=?2)
   UPDATE machine_claims SET settings_cached_revision=CASE WHEN (SELECT leaves FROM reported) IS NULL THEN NULL ELSE ?3 END,
-    settings_cached_values=(SELECT leaves FROM reported),settings_report_order=?4
+    settings_cached_values=json_set(COALESCE((SELECT leaves FROM reported),'{}'),'$.\"$updates\"',json_extract(settings_cached_values,'$.\"$updates\"')),settings_report_order=?4
   WHERE machine_id=?1 AND member_id=?2 AND (settings_report_order<?4 OR (settings_report_order=?4 AND settings_cached_revision=?3))` });
 export const acknowledgeMachineRevision = (db: RelationalStore, input: { machine: string; member: string; revision: string; order: number }) =>
   commit(db, acknowledge.bind(input.machine, input.member, input.revision, input.order));
@@ -108,3 +109,21 @@ export async function writeMachineRoots(db: RelationalStore, input: { machine: s
   const written = previous === null ? insertRoots.bind(machine, leaf, value, now, actor) : updateRoots.bind(machine, leaf, value, now, actor, previous);
   return (await first(db, written)) !== null;
 }
+
+const reportUpdates = write<[machine: string, member: string, report: string, order: number]>({ name: 'machineSettings.reportUpdates', sql: `UPDATE machine_claims
+  SET settings_cached_values=json_set(COALESCE(settings_cached_values,'{}'),'$."$updates"',json(?3))
+  WHERE machine_id=?1 AND ${claimedBy('?1', '?2')}
+    AND COALESCE(json_extract(settings_cached_values,'$."$updates".order'),-1)<?4` });
+
+const consumeUpdate = write<[machine: string, member: string, report: string, order: number, leaf: string]>({ name: 'machineSettings.consumeUpdate', sql: `DELETE FROM machine_settings
+  WHERE machine_id=?1 AND leaf=?5 AND ${claimedBy('?1', '?2')}
+    AND json_extract(CASE WHEN json_valid(value) THEN value ELSE '{}' END,'$.id')=json_extract(?3,'$.requests."'||?5||'".id')
+    AND json_type(?3,'$.values."'||?5||'"') IS NOT NULL
+    AND EXISTS (SELECT 1 FROM machine_claims WHERE machine_id=?1 AND member_id=?2
+      AND json_extract(settings_cached_values,'$."$updates".order')=?4
+      AND json_extract(settings_cached_values,'$."$updates".requests."'||?5||'".id')=json_extract(?3,'$.requests."'||?5||'".id'))` });
+
+/** Keep an ordered report and consume only the requests that the accepted report confirms. */
+export const reportMachineUpdates = (db: RelationalStore, input: { machine: string; member: string; report: string; order: number }) =>
+  commit(db, reportUpdates.bind(input.machine, input.member, input.report, input.order),
+    ...MACHINE_UPDATE_LEAVES.map(leaf => consumeUpdate.bind(input.machine, input.member, input.report, input.order, leaf)));

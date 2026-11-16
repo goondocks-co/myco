@@ -3,7 +3,8 @@ import path from 'node:path';
 import { atomicWriteFileSync } from '@myco/utils/atomic-write.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import type { BinaryUpdateOutcome } from '@myco/upgrade/guarded-binary.js';
-import { writeAutomaticUpdatePreference } from '@myco/install/managed-binary.js';
+import { AUTOMATIC_UPDATE_PREFERENCE_FILE, writeUpdatePreferences } from '../../scripts/install-marker.mjs';
+import { MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS, validMachineUpdateValue, machineUpdateRequests, type MachineUpdateRequests } from '@goondocks/myco-shared/member-protocol';
 
 export const AUTOMATIC_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 export const AUTOMATIC_UPDATE_CLOCK_SKEW_MS = 5 * 60 * 1_000;
@@ -16,13 +17,87 @@ const PREFERENCE_WAIT_MS = 15_000;
 
 /** Save the installation preference and make an enabled check due under the helper's lease. */
 export function setAutomaticUpdates(home: string, enabled: boolean, waitMs = PREFERENCE_WAIT_MS): void {
+  setUpdatePreferences(home, { automaticUpdates: enabled }, waitMs);
+}
+
+/** Apply update preferences under the automatic check's lease and make its next check due. */
+export function setUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string }, waitMs = PREFERENCE_WAIT_MS, clock: () => number = Date.now): void {
+  changeUpdatePreferences(home, preferences, waitMs, clock);
+}
+
+interface StoredUpdatePreferences {
+  machineRequests?: Record<string, unknown>;
+  changedAt?: Record<string, number>;
+}
+
+function storedUpdatePreferences(home: string): StoredUpdatePreferences {
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8'));
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid installation update preferences');
+    return value as StoredUpdatePreferences;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+/** Receipts name requests this installation has applied or superseded with a later local command. */
+export function readAppliedUpdateRequests(home: string, deployment: string): MachineUpdateRequests {
+  return machineUpdateRequests(storedUpdatePreferences(home).machineRequests?.[deployment]);
+}
+
+type RemotePreferences = { deployment: string; requests: MachineUpdateRequests; clockOffsetMs: number };
+
+/** Apply pending preferences together, publishing their receipts atomically with their local values. */
+export function applyMachineUpdateRequests(home: string, remote: RemotePreferences): void {
+  for (const leaf of MACHINE_UPDATE_LEAVES) {
+    const request = remote.requests[leaf];
+    if (request !== undefined && !validMachineUpdateValue(leaf, request.value)) throw new Error(`Invalid ${leaf} request`);
+  }
+  if (Object.keys(remote.requests).length === 0) return;
+  changeUpdatePreferences(home, { machineUpdate: remote }, 0);
+}
+
+/**
+ * Compare local changes in the answer's server clock. The answer's network transit time and machine clock jumps
+ * between the local command and this settings read remain inexact.
+ */
+function pendingUpdatePreferences(home: string, remote: RemotePreferences): { automaticUpdates?: boolean; channel?: string; machineUpdate: Pick<RemotePreferences, 'deployment' | 'requests'> } | null {
+  const stored = storedUpdatePreferences(home);
+  const applied = machineUpdateRequests(stored.machineRequests?.[remote.deployment]);
+  const pending = Object.fromEntries(MACHINE_UPDATE_LEAVES.flatMap(leaf => {
+    const request = remote.requests[leaf];
+    return request === undefined || applied[leaf]?.id === request.id ? [] : [[leaf, request]];
+  })) as MachineUpdateRequests;
+  if (Object.keys(pending).length === 0) return null;
+  const apply = (leaf: keyof MachineUpdateRequests) => {
+    const changedAt = stored.changedAt?.[leaf];
+    return pending[leaf] !== undefined && (pending[leaf]!.savedAt ?? 0) >= (changedAt === undefined ? 0 : changedAt + remote.clockOffsetMs);
+  };
+  return {
+    ...(!apply('update.automatic') ? {} : { automaticUpdates: pending['update.automatic']!.value as boolean }),
+    ...(!apply('update.channel') ? {} : { channel: pending['update.channel']!.value as string }),
+    machineUpdate: { deployment: remote.deployment, requests: pending },
+  };
+}
+
+function changeUpdatePreferences(home: string, preferences: { automaticUpdates?: boolean; channel?: string; machineUpdate?: RemotePreferences }, waitMs: number, clock: () => number = Date.now): void {
+  if (preferences.channel !== undefined && !RELEASE_CHANNELS.includes(preferences.channel as typeof RELEASE_CHANNELS[number])) throw new Error(`Invalid release channel; use ${RELEASE_CHANNELS.join(', ')}`);
+  if (preferences.machineUpdate !== undefined && pendingUpdatePreferences(home, preferences.machineUpdate) === null) return;
   const acquired = LifecycleLock.acquire(`${statePath(home)}.lock`, {
-    command: 'myco update --automatic', wait: true, timeoutMs: waitMs,
+    command: 'myco update preferences', wait: true, timeoutMs: waitMs,
   });
   if (!acquired.acquired) throw new Error('An automatic update is running; try again when it finishes.');
   try {
-    if (enabled) fs.rmSync(statePath(home), { force: true });
-    writeAutomaticUpdatePreference(home, enabled);
+    const selected = preferences.machineUpdate === undefined ? preferences : pendingUpdatePreferences(home, preferences.machineUpdate);
+    if (selected === null) return;
+    const now = clock();
+    const changedAt = preferences.machineUpdate === undefined ? {
+      ...(selected.automaticUpdates === undefined ? {} : { 'update.automatic': now }),
+      ...(selected.channel === undefined ? {} : { 'update.channel': now }),
+    } : undefined;
+    if (selected.automaticUpdates !== undefined || selected.channel !== undefined) fs.rmSync(statePath(home), { force: true });
+    writeUpdatePreferences(home, { ...selected, ...(changedAt === undefined ? {} : { changedAt }) }, (file, text) => atomicWriteFileSync(file, text, { durable: true, mode: 0o600 }));
   } finally { acquired.lock.release(); }
 }
 

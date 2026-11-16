@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import semver from 'semver';
 import { atomicWriteFileSync } from '../utils/atomic-write.js';
-import { readInstallMarker } from '../install/managed-binary.js';
+import { readInstallMarker, readUpdateChannelPreference } from '../install/marker-reader.js';
 import { DEFAULT_RELEASE_CHANNEL, RELEASE_CHANNELS, type ReleaseChannel } from '../constants/update.js';
 import YAML from 'yaml';
 import { resolveMycoHome } from '../paths/home.js';
@@ -12,6 +12,8 @@ const MACHINE_CONFIG_FILENAME = 'config.yaml';
 
 /** Installed channels come from the marker; unmarked homes use their own machine config. */
 export function effectiveUpdateChannel(home = resolveMycoHome()): ReleaseChannel {
+  const preference = readUpdateChannelPreference(home);
+  if (preference.channel !== null) return preference.channel;
   const marker = readInstallMarker(home, true);
   if (marker) return marker.channel;
   const file = path.join(home, MACHINE_CONFIG_FILENAME);

@@ -1,3 +1,4 @@
+import type { MachineUpdateReport } from '@goondocks/myco-shared/member-protocol';
 import type { WorkerPrincipal } from './core/worker-lease.js';
 import type { RunnerAuth } from './auth/runners.js';
 import type { OutboundFetch } from './core/adapters.js';
@@ -64,13 +65,14 @@ export interface RouteContext {
   machineSettingsRevision?: string;
   machineSettingsOrder?: number;
   machineSettingsInvalidated?: boolean;
+  machineUpdateReport?: MachineUpdateReport;
 }
 
 /** An authenticated member request with no default Project. */
-export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'body' | 'now' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated'>;
+export type UnboundMemberContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'body' | 'now' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated' | 'machineUpdateReport'>;
 
 /** A request answered on the presented credential alone: that credential, and the body. */
-export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime' | 'body' | 'now' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated'>;
+export type CredentialContext = Pick<RouteContext, 'memberId' | 'machineId' | 'tokenId' | 'expiresAt' | 'lineageRoot' | 'lineageStartedAt' | 'runtime' | 'body' | 'now' | 'clock' | 'machineSettingsFeature' | 'machineSettingsRevision' | 'machineSettingsOrder' | 'machineSettingsInvalidated' | 'machineUpdateReport'>;
 
 /**
  * Context for a Deployment-scoped route: a worker's claim, lease and end.

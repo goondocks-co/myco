@@ -9,6 +9,7 @@ import type { WorkerRow, WorkerStatus } from '../../../lib/api';
 import { machineOfWorker, type Machine } from '../machines';
 import { agentsWords, lastClaimWords, workerState, workerKindWords } from '../workers';
 import { ActivityDialog, type ActivityTarget } from './ActivityDialog';
+import { MachineUpdates } from './MachineUpdates';
 import { MachineSettingsDialog } from './MachineSettingsDialog';
 import { canRename } from './rename';
 import { RenameMachineDialog, type RenameTarget } from './RenameMachineDialog';
@@ -32,6 +33,7 @@ export interface MachineListProps {
   nameOf: (memberId: string | null | undefined) => string | null;
   /** Names each machine's member; left out where every machine is the viewer's. */
   showOwner: boolean;
+  showUpdates?: boolean;
   /** The paging of canonical machine summaries. */
   paging: { isPending: boolean; error: unknown; hasMore: boolean; isFetchingMore: boolean; more: () => void; retry: () => void };
   /** What the list says when there is no machine. */
@@ -44,7 +46,7 @@ export interface MachineListProps {
  * on every machine, a member's on their own), its settings (on the viewer's
  * own), what it wrote, and Stop behind a confirm.
  */
-export function MachineList({ machines, viewerId, nameOf, showOwner, paging, empty }: MachineListProps) {
+export function MachineList({ machines, viewerId, nameOf, showOwner, showUpdates = false, paging, empty }: MachineListProps) {
   const answered = useWorkerFleet();
   // A server that could not read its own record answers an empty fleet, which says nothing: it is unknown, not empty.
   const fleet = answered?.available === true ? answered : undefined;
@@ -80,6 +82,7 @@ export function MachineList({ machines, viewerId, nameOf, showOwner, paging, emp
               stoppedBy={nameOf(machine.stoppedBy)}
               fleet={fleet}
               projectName={projectName}
+              ownSettings={showUpdates && settingsPermission.scope !== 'none' && machine.memberId === viewerId}
               actions={[
                 ...(machinePermission.scope !== 'none' && canRename(machine, viewerId, admin)
                   ? [{ label: 'Rename', onSelect: () => setRenaming({ id: machine.machineId!, name: machine.name, named: machine.named }) }]
@@ -127,9 +130,10 @@ interface MachineItemProps {
   fleet: WorkerStatus | undefined;
   projectName: (projectId: string) => string | null;
   actions: MoreMenuItem[];
+  ownSettings: boolean;
 }
 
-function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }: MachineItemProps) {
+function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions, ownSettings }: MachineItemProps) {
   const now = Date.now();
   const workers: WorkerRow[] = fleet === undefined ? [] : (fleet.fleet ?? []).filter((worker) => machineOfWorker([machine], worker) !== undefined);
   const lines = workers.map((worker) => ({ worker, ...workerState(worker, now, projectName) }));
@@ -151,6 +155,7 @@ function MachineItem({ machine, owner, stoppedBy, fleet, projectName, actions }:
         {lines.length === 0 && machine.standing === 'allowed' && (
           <span className="t-small text-muted" data-worker-line="">{fleet === undefined ? FLEET_WORDS.unavailable : FLEET_WORDS.absent}</span>
         )}
+        {ownSettings && machine.machineId !== null && <MachineUpdates machineId={machine.machineId} name={machine.name} />}
         {machine.liveCredentialCount > 0 && !machine.canStop && <span className="t-small text-muted">{machine.stopReason ?? 'Stopping this machine is unavailable.'}</span>}
       </div>
       <MoreMenu label={`More for ${machine.name}`} items={actions} />

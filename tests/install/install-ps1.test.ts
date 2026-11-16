@@ -7,6 +7,15 @@ import { beforeGa, PWSH, release, removeInstallRoot, select } from './install-ps
 afterAll(() => removeInstallRoot());
 
 describe('the Windows installer', () => {
+  it.skipIf(PWSH === '' || process.platform === 'win32')('records an explicit repeat-install channel and keeps a failed recording nonfatal', () => {
+    for (const refreshFailure of [false, true]) {
+      const run = select([release('2.0.0')], { current: '2.0.0-beta.2', channel: 'stable', install: '2.0.0', refreshFailure });
+      expect(run.status).toBe(0);
+      expect(fs.readFileSync(path.join(run.mycoHome, 'commands.log'), 'utf8')).toBe('config set update.channel stable\n');
+      expect(run.out.includes('Could not record the release channel. Run: myco config set update.channel stable')).toBe(refreshFailure);
+    }
+  });
+
   it.skipIf(PWSH === '' || process.platform === 'win32')('replaces npm-origin 1.4 and 2.x alphas through the native installer', () => {
     for (const current of ['1.4.9', '2.0.0-alpha.12']) {
       const run = select(beforeGa, { current, npmOrigin: true, evidence: 'slot', replace: current.startsWith('1.'), install: '2.0.0-beta.2', channel: 'alpha' });

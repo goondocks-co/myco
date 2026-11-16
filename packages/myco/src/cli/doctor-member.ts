@@ -3,7 +3,7 @@ import { readInstallation, SOURCE_BUILD_REASON } from '@myco/install/installatio
 import { isDevelopmentVersion } from '../../scripts/release-policy.mjs';
 import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { readAutomaticUpdate, automaticUpdateWords } from '@myco/member/automatic-update-state.js';
-import { readAutomaticUpdatePreference } from '@myco/install/marker-reader.js';
+import { readAutomaticUpdatePreference, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
 import { installedBinaryPath } from '@myco/runtime/binary-resolution.js';
 import { readBinaryVersion, LIVE_MEMBER_VERSION_TIMEOUT_MS } from '@myco/runtime/binary-version.js';
 import { selfExec } from '@myco/runtime/self-exec.js';
@@ -429,6 +429,11 @@ export function checkAutomaticUpdate(mycoHome: string): DoctorCheck {
   if (preference.error !== undefined) return {
     name: 'Automatic update', status: 'warn', fixable: false,
     detail: `on (default); could not read the automatic update setting: ${preference.error}`,
+  };
+  const channel = readUpdateChannelPreference(mycoHome);
+  if (channel.error !== undefined) return {
+    name: 'Automatic update', status: 'warn', fixable: false,
+    detail: `using the install marker’s channel; could not read the release channel setting: ${channel.error}`,
   };
   const offDetail = 'off; run myco update --automatic on to turn automatic updates on';
   const unreadableCheck = (detail: string): DoctorCheck => ({

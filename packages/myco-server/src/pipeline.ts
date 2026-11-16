@@ -1,3 +1,4 @@
+import { MACHINE_UPDATE_HEADER, machineUpdateReport, type MachineUpdateReport } from '@goondocks/myco-shared/member-protocol';
 import { CARD_TASK } from '@goondocks/myco-shared/turn-card';
 import { CARD_WRITE_BOUND } from './core/turn-card-prompt.js';
 import { sessions_projectExists as projectExists } from './read/catalog/sessions.js';
@@ -312,11 +313,18 @@ function failed(env: ServerEnv, auth: MemberAuth, route: MemberRoute, err: unkno
   return unavailableFor(route);
 }
 
-function machineContractHeaders(request: Request): { machineSettingsFeature?: true; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: true } {
+function machineContractHeaders(request: Request): { machineSettingsFeature?: true; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: true; machineUpdateReport?: MachineUpdateReport } {
   if (request.headers.get(MACHINE_SETTINGS_HEADER) !== MACHINE_SETTINGS_FEATURE) return {};
   const revision = request.headers.get(MACHINE_SETTINGS_REVISION_HEADER);
   const order = request.headers.get(MACHINE_SETTINGS_ORDER_HEADER);
+  let updateReport: MachineUpdateReport | null = null;
+  const updateHeader = request.headers.get(MACHINE_UPDATE_HEADER);
+  if (updateHeader !== null) {
+    try { updateReport = machineUpdateReport(JSON.parse(updateHeader)); }
+    catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+  }
   return {
+    ...(updateReport === null ? {} : { machineUpdateReport: updateReport }),
     machineSettingsFeature: true,
     ...(isMachineSettingsRevision(revision) ? { machineSettingsRevision: revision } : {}),
     ...(order !== null && /^[0-9]+$/.test(order) && Number.isSafeInteger(Number(order)) ? { machineSettingsOrder: Number(order) } : {}),
@@ -734,7 +742,7 @@ export function createServer(deps: ServerDeps) {
       // The two routes that admit a lapsed credential act on it directly: a refresh is fenced by `TOKEN_LIVE`, and a self-revocation is the ending itself.
       return await route.credential(route.admitsLapsed === true ? env : credentialWrites(env, auth), {
         memberId: auth.memberId, machineId, tokenId: auth.tokenId, expiresAt: auth.expiresAt,
-        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, ...machineContractHeaders(request), body: body.text, now,
+        lineageRoot: auth.lineageRoot, lineageStartedAt: auth.lineageStartedAt, runtime: auth.runtime, ...machineContractHeaders(request), body: body.text, now, clock: deps.now,
       });
     } catch (err) {
       return failed(env, auth, route, err);

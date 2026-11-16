@@ -38,6 +38,7 @@ export function MyMachinesPage() {
           viewerId={viewerId}
           nameOf={nameOf}
           showOwner={false}
+          showUpdates
           paging={machines}
           empty="None of your machines has signed in yet."
         />

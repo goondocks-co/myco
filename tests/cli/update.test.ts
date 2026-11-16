@@ -466,3 +466,75 @@ it('updates npm-origin 2.x alphas through GitHub resolution and guarded adoption
   expect(fs.readFileSync(binary, 'utf8')).toBe(target);
   expect(output.join('\n')).toContain(`from 2.0.0-alpha.12 to ${target}`);
 });
+
+it('applies dashboard update settings to the next updater check and retains a later local command', async () => {
+  const { cacheMachineSettings, machineSettingsHeaders } = await import('@myco/member/machine-settings.js');
+  const { updateBinary } = await import('@myco/upgrade/guarded-binary.js');
+  const { run: config } = await import('@myco/cli/member-config.js');
+  const { MACHINE_UPDATE_HEADER } = await import('@goondocks/myco-shared/member-protocol');
+  const mycoHome = path.join(home, '.myco');
+  fs.mkdirSync(mycoHome, { recursive: true });
+  writeInstallMarker(mycoHome, { channel: 'alpha', source: 'curl', bin: path.join(mycoHome, 'bin', 'myco') });
+  const updateRequests = {
+    'update.channel': { id: crypto.randomUUID(), value: 'beta' },
+    'update.automatic': { id: crypto.randomUUID(), value: false },
+  };
+  const answer = { leaves: {}, updateRequests };
+  cacheMachineSettings('https://settings.example', answer, mycoHome);
+  const channels: string[] = [];
+  const check = () => updateBinary('automatic', {}, {
+    home: mycoHome, currentVersion: '2.0.0-alpha.1', cwd: home,
+    resolveRefs: async channel => { channels.push(channel); return null; },
+  });
+  expect(await check()).toMatchObject({ kind: 'skipped', reason: 'automatic updates are turned off' });
+  await run(['--automatic', 'on'], { home: mycoHome });
+  expect(await check()).toMatchObject({ kind: 'already-current' });
+  expect(channels).toEqual(['beta']);
+  expect(await config(['set', 'update.channel', 'stable'], 'registry', { mycoHome })).toBe(true);
+  const { machineSettingsPath } = await import('@myco/member/registry.js');
+  fs.rmSync(machineSettingsPath('https://settings.example', mycoHome));
+  cacheMachineSettings('https://settings.example', answer, mycoHome);
+  expect(await check()).toMatchObject({ kind: 'already-current' });
+  expect(channels).toEqual(['beta', 'stable']);
+  expect(JSON.parse(machineSettingsHeaders('https://settings.example', mycoHome)[MACHINE_UPDATE_HEADER]!)).toMatchObject({ values: { 'update.channel': 'stable', 'update.automatic': true } });
+});
+
+it('keeps later local commands when older dashboard preferences are still waiting', async () => {
+  const { cacheMachineSettings, machineSettingsHeaders } = await import('@myco/member/machine-settings.js');
+  const { run: config } = await import('@myco/cli/member-config.js');
+  const { effectiveUpdateChannel } = await import('@myco/upgrade/check-cache.js');
+  const { automaticUpdatesEnabled } = await import('@myco/install/marker-reader.js');
+  const { MACHINE_UPDATE_HEADER } = await import('@goondocks/myco-shared/member-protocol');
+  const requests = {
+    'update.channel': { id: crypto.randomUUID(), value: 'beta', savedAt: Date.now() - 1 },
+    'update.automatic': { id: crypto.randomUUID(), value: true, savedAt: Date.now() - 1 },
+  };
+  await run(['--automatic', 'off'], { home });
+  expect(await config(['set', 'update.channel', 'stable'], 'registry', { mycoHome: home })).toBe(true);
+  cacheMachineSettings('https://settings.example', { leaves: {}, updateRequests: requests }, home);
+  expect(effectiveUpdateChannel(home)).toBe('stable');
+  expect(automaticUpdatesEnabled(home)).toBe(false);
+  expect(JSON.parse(machineSettingsHeaders('https://settings.example', home)[MACHINE_UPDATE_HEADER]!)).toMatchObject({
+    values: { 'update.channel': 'stable', 'update.automatic': false }, requests,
+  });
+});
+
+it('checks the marker channel when the installation preferences are damaged and reports their error', async () => {
+  const { updateBinary } = await import('@myco/upgrade/guarded-binary.js');
+  const { readUpdateChannelPreference } = await import('@myco/install/marker-reader.js');
+  fs.writeFileSync(path.join(home, 'install-update.json'), '{');
+  let selected: string | null = null;
+  expect(await updateBinary('manual', {}, { home, cwd: home, currentVersion: '2.0.0-alpha.1',
+    resolveRefs: async channel => { selected = channel; return null; },
+  })).toMatchObject({ kind: 'already-current' });
+  expect(selected).toBe('alpha');
+  expect(readUpdateChannelPreference(home)).toMatchObject({ channel: null, error: expect.any(String) });
+});
+
+it('repairs a non-object preference file through the local channel command', async () => {
+  const { run: config } = await import('@myco/cli/member-config.js');
+  const { readUpdateChannelPreference } = await import('@myco/install/marker-reader.js');
+  fs.writeFileSync(path.join(home, 'install-update.json'), 'null');
+  expect(await config(['set', 'update.channel', 'stable'], 'registry', { mycoHome: home })).toBe(true);
+  expect(readUpdateChannelPreference(home)).toEqual({ channel: 'stable' });
+});

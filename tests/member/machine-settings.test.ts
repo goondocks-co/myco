@@ -1,3 +1,8 @@
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
+import { writeInstallMarker } from '@myco/install/managed-binary.js';
+import { effectiveUpdateChannel } from '@myco/upgrade/check-cache.js';
+import { setUpdatePreferences } from '@myco/member/automatic-update-state.js';
+import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
 /**
  * The settings a Deployment holds for this machine, as the machine caches them (#1393): one file per Deployment,
  * beside its membership, never read as a membership, and never cleared by an answer that carries none.
@@ -8,18 +13,19 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { cacheMachineSettings, machinePlanDirs, beginMachineSettingsRequest, machineSettingsHeaders, forgetConnectRoot } from '@myco/member/machine-settings.js';
-import { MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, MACHINE_SETTINGS_ORDER_HEADER } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_UPDATE_HEADER, MACHINE_SETTINGS_FEATURE, MACHINE_SETTINGS_REVISION_HEADER, MACHINE_SETTINGS_INVALIDATED_HEADER, MACHINE_SETTINGS_ORDER_HEADER } from '@goondocks/myco-shared/member-protocol';
 import { listDeploymentMemberships, machineSettingsPath } from '@myco/member/registry.js';
 import { tempMycoHome } from './helpers/server.js';
 
 const revision = (counter: number) => `m${counter}-${'a'.repeat(64)}`;
 
-function runMachineChild(home: string, script: string): string {
+function runMachineChild(home: string, script: string, options: { quiet?: boolean } = {}): string {
   const child = spawnSync(process.execPath, ['-e', script], {
     cwd: process.cwd(), encoding: 'utf8',
     env: { ...process.env, HOME: home, CODEX_HOME: path.join(home, 'codex'), CLAUDE_CONFIG_DIR: path.join(home, 'claude'), MYCO_HOME: home },
   });
   expect(child.status).toBe(0);
+  if (options.quiet) expect(child.stderr).toBe('');
   return child.stdout.trim();
 }
 
@@ -253,4 +259,70 @@ describe('the machine settings cache', () => {
     cacheMachineSettings('https://one.example', { leaves: { 'capture.plan_dirs': ['/', '~', '~/', '.', '../up', 'docs/plans', '~/notes'] } }, home);
     expect(machinePlanDirs('https://one.example', home)).toEqual(['docs/plans', '~/notes']);
   });
+});
+
+it('caches capture settings while an updater holds its lock, reports once, and retries the update later', () => {
+  const home = tempMycoHome();
+  const server = 'https://locked.example';
+  const held = LifecycleLock.acquire(path.join(home, 'member', 'keep-current.json.lock'), { command: 'fixture updater' });
+  expect(held.acquired).toBe(true);
+  if (!held.acquired) return;
+  const warning = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  const answer = { leaves: { 'capture.plan_dirs': ['~/plans'] }, updateRequests: { 'update.channel': { id: crypto.randomUUID(), value: 'beta' } } };
+  try {
+    expect(cacheMachineSettings(server, answer, home)).toBe(true);
+    expect(cacheMachineSettings(server, answer, home)).toBe(true);
+    expect(machinePlanDirs(server, home)).toEqual(['~/plans']);
+    expect(warning.mock.calls.filter(([line]) => String(line).includes('update settings unavailable'))).toHaveLength(1);
+  } finally { held.lock.release(); warning.mockRestore(); }
+  expect(cacheMachineSettings(server, answer, home)).toBe(true);
+  expect(effectiveUpdateChannel(home)).toBe('beta');
+});
+
+it('keeps capture settings when damaged installation preferences prevent an update request', () => {
+  const home = tempMycoHome();
+  const server = 'https://damaged.example';
+  writeInstallMarker(home, { channel: 'alpha', source: 'curl', bin: path.join(home, 'bin', 'myco') });
+  fs.writeFileSync(path.join(home, 'install-update.json'), '{');
+  const warning = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  try {
+    const answer = { leaves: { 'capture.plan_dirs': ['~/plans'] }, updateRequests: { 'update.channel': { id: crypto.randomUUID(), value: 'beta' } } };
+    expect(machineSettingsHeaders(server, home)[MACHINE_UPDATE_HEADER]).toBeDefined();
+    expect(cacheMachineSettings(server, answer, home)).toBe(true);
+    expect(machinePlanDirs(server, home)).toEqual(['~/plans']);
+    expect(effectiveUpdateChannel(home)).toBe('alpha');
+    expect(warning.mock.calls.filter(([line]) => String(line).includes('update settings unavailable'))).toHaveLength(1);
+  } finally { warning.mockRestore(); }
+});
+
+it('quietly reports unreadable preferences across fresh processes when no request is pending', () => {
+  const home = tempMycoHome();
+  fs.writeFileSync(path.join(home, 'install-update.json'), '{');
+  const source = import.meta.resolve('@myco/member/machine-settings.js');
+  const script = `import { machineSettingsHeaders, cacheMachineSettings } from ${JSON.stringify(source)};
+    machineSettingsHeaders('https://quiet.example', ${JSON.stringify(home)});
+    cacheMachineSettings('https://quiet.example', { leaves: {} }, ${JSON.stringify(home)});`;
+  for (let read = 0; read < 3; read++) runMachineChild(home, script, { quiet: true });
+});
+
+const HOUR_MS = 60 * 60 * 1_000;
+for (const skew of [-HOUR_MS, HOUR_MS]) it(`orders dashboard requests around local commands with the machine clock ${skew / HOUR_MS} hour from the server`, () => {
+  const serverCommandAt = 24 * HOUR_MS;
+  const machineCommandAt = serverCommandAt + skew;
+  for (const requestAfterCommand of [false, true]) {
+    const home = tempMycoHome();
+    const server = 'https://clock.example';
+    setUpdatePreferences(home, { channel: 'stable', automaticUpdates: false }, undefined, () => machineCommandAt);
+    const savedAt = serverCommandAt + (requestAfterCommand ? 100 : -100);
+    const requests = {
+      'update.channel': { id: crypto.randomUUID(), value: 'beta', savedAt },
+      'update.automatic': { id: crypto.randomUUID(), value: true, savedAt },
+    };
+    cacheMachineSettings(server, { leaves: {}, updateRequests: requests, serverNow: serverCommandAt + 1_000 }, home, undefined, () => machineCommandAt + 1_000);
+    expect(effectiveUpdateChannel(home)).toBe(requestAfterCommand ? 'beta' : 'stable');
+    expect(automaticUpdatesEnabled(home)).toBe(requestAfterCommand);
+    expect(JSON.parse(machineSettingsHeaders(server, home)[MACHINE_UPDATE_HEADER]!)).toMatchObject({
+      requests, values: { 'update.channel': requestAfterCommand ? 'beta' : 'stable', 'update.automatic': requestAfterCommand },
+    });
+  }
 });

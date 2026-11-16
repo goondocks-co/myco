@@ -71,6 +71,45 @@ export const MACHINE_SETTINGS_REVISION_HEADER = 'x-myco-machine-settings-revisio
 export const MACHINE_SETTINGS_ORDER_HEADER = 'x-myco-machine-settings-order';
 export const MACHINE_SETTINGS_INVALIDATED_HEADER = 'x-myco-machine-settings-invalidated';
 
+/** Update preferences travel with machine settings; only explicit reports confirm their local value. */
+export const MACHINE_UPDATE_HEADER = 'x-myco-machine-update-settings';
+export const RELEASE_CHANNELS = ['stable', 'beta', 'alpha'] as const;
+export type MachineUpdateLeaf = 'update.automatic' | 'update.channel';
+export const MACHINE_UPDATE_LEAVES: readonly MachineUpdateLeaf[] = ['update.automatic', 'update.channel'];
+export interface MachineUpdateRequest { id: string; value: boolean | string; savedAt?: number }
+export type MachineUpdateRequests = Partial<Record<MachineUpdateLeaf, MachineUpdateRequest>>;
+export interface MachineUpdateReport { order: number; values: Partial<Record<MachineUpdateLeaf, boolean | string>>; requests: MachineUpdateRequests }
+export interface MachineSettingsBlock {
+  leaves: Record<string, unknown>;
+  feature?: typeof MACHINE_SETTINGS_FEATURE;
+  revision?: string;
+  updateRequests?: MachineUpdateRequests;
+  serverNow?: number;
+}
+export const validMachineUpdateValue = (leaf: MachineUpdateLeaf, value: unknown): value is boolean | string =>
+  leaf === 'update.automatic' ? typeof value === 'boolean' : typeof value === 'string' && RELEASE_CHANNELS.includes(value as typeof RELEASE_CHANNELS[number]);
+
+export function machineUpdateRequests(value: unknown): MachineUpdateRequests {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(MACHINE_UPDATE_LEAVES.flatMap(leaf => {
+    const request = (value as Record<string, unknown>)[leaf];
+    if (typeof request !== 'object' || request === null) return [];
+    const { id, value: requested, savedAt } = request as Record<string, unknown>;
+    return typeof id === 'string' && /^[a-f0-9-]{36}$/.test(id) && validMachineUpdateValue(leaf, requested) ? [[leaf, { id, value: requested, ...(typeof savedAt === 'number' && Number.isSafeInteger(savedAt) && savedAt >= 0 ? { savedAt } : {}) }]] : [];
+  }));
+}
+
+export function machineUpdateReport(value: unknown): MachineUpdateReport | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const report = value as Record<string, unknown>;
+  if (typeof report.order !== 'number' || !Number.isSafeInteger(report.order) || report.order < 0 || typeof report.values !== 'object' || report.values === null) return null;
+  const values = Object.fromEntries(MACHINE_UPDATE_LEAVES.flatMap(leaf => {
+    const actual = (report.values as Record<string, unknown>)[leaf];
+    return validMachineUpdateValue(leaf, actual) ? [[leaf, actual]] : [];
+  }));
+  return { order: report.order, values, requests: machineUpdateRequests(report.requests) };
+}
+
 /** A machine revision binds its stored counter to the SHA-256 of the resolved leaves. */
 export function parseMachineSettingsRevision(value: unknown): { counter: number; fingerprint: string } | null {
   if (typeof value !== 'string') return null;

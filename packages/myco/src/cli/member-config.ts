@@ -1,36 +1,29 @@
+import { effectiveUpdateChannel } from '@myco/upgrade/check-cache.js';
+import { automaticUpdatesEnabled } from '@myco/install/marker-reader.js';
+import { setUpdatePreferences } from '@myco/member/automatic-update-state.js';
+import { MACHINE_SETTING_SPECS, MACHINE_UPDATE_LEAVES, RELEASE_CHANNELS } from '@goondocks/myco-shared/member-protocol';
 /**
- * `myco config` for a joined project.
- *
- * Two tiers (docs/architecture/myco-2.0.md §7.8). **Deployment Settings** are
- * read from the Deployment over the member credential (`POST /members/settings`,
- * the same leaves the dashboard's Settings page reads, each URL value without
- * its userinfo, query and fragment); provider credentials live in the
- * Deployment's secret store and never reach that answer. They are
- * written in the dashboard, not here. **Machine Settings** (`MACHINE_SETTING_LEAVES`)
- * are held by the Deployment for this machine and set on the dashboard (#1393):
- * `get` reads them from the same answer, and `set` names the dashboard. The other
- * **Member Settings** have no owner the 2.0 member reads yet, so `get` says so and
- * `set` refuses rather than writing a value nothing honours; the 1.4 tiers are
- * never written from here.
+ * `myco config` reads Deployment settings and this machine's settings. A release channel is also set locally;
+ * capture settings are edited on My machines. Other Member leaves have no active reader and refuse writes.
  */
 import { machineSettingsLocation } from '@goondocks/myco-shared/setup-guidance';
 import { machineBlockOf } from '../member/machine-settings.js';
 import { withoutCredentialFlag } from '../mcp/deployment-upstream.js';
 import type { CredentialSource } from '../member/constants.js';
-import { membershipProblem, openDeployment, type DeploymentHandle, type MemberVerbDeps } from './deployment-reader.js';
+import { homeOf, membershipProblem, openDeployment, type DeploymentHandle, type MemberVerbDeps } from './deployment-reader.js';
 
 /** The §7.8 leaves whose tier is Member; `tests/cli/member-config.test.ts` holds this equal to the ledger. */
 export const MEMBER_TIER_LEAVES = [
   'capture.plan_dirs', 'capture.auto_join_roots', 'capture.connect_roots',
-  'symbionts', 'update.channel',
+  'symbionts', 'update.channel', 'update.automatic',
   'appearance.theme', 'appearance.mode', 'appearance.font', 'appearance.density',
 ] as const;
 
 /**
- * The Member leaves a machine honours today: held by the Deployment per machine, set on the dashboard (My machines ›
- * Its settings), and cached by the machine at each session start (`member/machine-settings.ts`).
+ * The Member leaves this machine honours. My machines edits capture folders and requests installation preferences;
+ * the member caches capture folders and applies update requests when it reads its settings.
  */
-export const MACHINE_SETTING_LEAVES: readonly string[] = ['capture.plan_dirs', 'capture.auto_join_roots', 'capture.connect_roots'];
+export const MACHINE_SETTING_LEAVES: readonly string[] = [...Object.keys(MACHINE_SETTING_SPECS), ...MACHINE_UPDATE_LEAVES];
 
 /** The machine leaf written by connecting a repository, never set directly. */
 const CONNECT_ROOTS_LEAF = 'capture.connect_roots';
@@ -45,7 +38,7 @@ export const SETTINGS_READ_PATH = '/members/settings';
 export const isMemberLeaf = (leaf: string): boolean =>
   MEMBER_TIER_LEAVES.some((member) => leaf === member || leaf.startsWith(`${member}.`));
 
-const USAGE = 'Usage: myco config get [<leaf>]\n       myco config set <leaf> <value>   (refused for a joined project: see below)';
+const USAGE = 'Usage: myco config get [<leaf>]\n       myco config set update.channel <stable|beta|alpha>\nOther machine and Deployment settings are edited on the dashboard.';
 
 export interface SettingsLeaf {
   leaf: string;
@@ -90,6 +83,12 @@ export async function run(args: readonly string[], source: CredentialSource, dep
 
   if (sub === 'set') {
     if (leaf === undefined || rest.length !== 1) { err(USAGE); return false; }
+    if (leaf === 'update.channel') {
+      if (!RELEASE_CHANNELS.includes(rest[0] as typeof RELEASE_CHANNELS[number])) { err(`myco config: update.channel was not saved; use ${RELEASE_CHANNELS.join(', ')}. Next call: myco config set update.channel stable`); return false; }
+      setUpdatePreferences(homeOf(deps), { channel: rest[0] });
+      out(`Release channel is ${rest[0]}.`);
+      return true;
+    }
     if (leaf === CONNECT_ROOTS_LEAF) {
       const deployment = await openDeployment(source, deps);
       err(`myco config: ${leaf} is set by connecting a repository from "Needs you"${deployment === null ? '' : ` on ${deployment.serverUrl}`}, or with \`myco member join\` in it; nothing sets it directly. Nothing was changed.`);
@@ -120,6 +119,10 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   if (answered === null) return false;
   const { leaves, machine } = answered;
 
+  if (leaf === 'update.channel' || leaf === 'update.automatic') {
+    out(render(leaf === 'update.channel' ? effectiveUpdateChannel(homeOf(deps)) : automaticUpdatesEnabled(homeOf(deps))));
+    return true;
+  }
   if (leaf !== undefined && MACHINE_SETTING_LEAVES.includes(leaf)) {
     out(machine === null ? '(this credential names no machine of its own)' : render(machine.leaves[leaf] ?? []));
     return true;
@@ -139,7 +142,7 @@ export async function run(args: readonly string[], source: CredentialSource, dep
   for (const l of leaves) out(`${l.leaf} = ${l.configured ? JSON.stringify(l.value) : '(default)'}${standing(l)}`);
   out('');
   out(`=== Machine Settings (this machine; set in ${machineSettingsLocation(deployment.serverUrl)}) ===`);
-  for (const machineLeaf of MACHINE_SETTING_LEAVES) out(`  ${machineLeaf} = ${machine === null ? '(no machine of its own)' : JSON.stringify(machine.leaves[machineLeaf] ?? [])}`);
+  for (const machineLeaf of MACHINE_SETTING_LEAVES) out(`  ${machineLeaf} = ${machine === null ? '(no machine of its own)' : JSON.stringify(machineLeaf === 'update.channel' ? effectiveUpdateChannel(homeOf(deps)) : machineLeaf === 'update.automatic' ? automaticUpdatesEnabled(homeOf(deps)) : machine.leaves[machineLeaf] ?? [])}`);
   out('');
   out(`=== Member Settings (this machine) ===`);
   out(`Not read by the 2.0 member yet (${MEMBER_SETTINGS_ISSUE}); these leaves have no effect for a joined project:`);

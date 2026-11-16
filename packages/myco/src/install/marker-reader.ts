@@ -59,3 +59,18 @@ export function readInstallMarker(dir: string, strict = false): InstallMarker | 
     return null;
   }
 }
+
+/** Missing or unreadable channel preferences leave the installation's channel in effect. */
+export function readUpdateChannelPreference(home: string): { channel: ReleaseChannel | null; error?: string } {
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8'));
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid installation update preferences');
+    const channel = (value as Record<string, unknown>).channel;
+    if (channel === undefined) return { channel: null };
+    if (!RELEASE_CHANNELS.includes(channel as ReleaseChannel)) throw new Error(`Invalid release channel; use ${RELEASE_CHANNELS.join(', ')}`);
+    return { channel: channel as ReleaseChannel };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { channel: null };
+    return { channel: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
