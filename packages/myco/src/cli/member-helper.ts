@@ -19,6 +19,11 @@ import { updateBinary, binaryUpdatePath, type BinaryUpdateDeps } from '@myco/upg
 import { refreshMemberSetup, MEMBER_REFRESH_TIMEOUT_MS } from '@myco/member/refresh-setup.js';
 import { readProvisionRecord } from '@myco/member/provision-record.js';
 import { keepCurrent, reportHarnesses } from '@myco/cli/member-keep-current.js';
+import { syncMachineSettings } from '../member/machine-settings-sync.js';
+import { routingEntry } from '../member/routing.js';
+import { MemberSpool } from '../member/spool.js';
+import { deadlineBudget } from '../member/budget.js';
+import { terminalText } from '../utils/terminal-text.js';
 
 export { helperPass } from '../member/helper-pass.js';
 
@@ -122,6 +127,14 @@ async function helperPasses(projectId: string, serverUrl: string | undefined, my
           process.stderr.write(`[myco] keep-current failed: ${error instanceof Error ? error.message : String(error)}\n`);
         }
         const delivered = await pass(deadline, options);
+        try {
+          const entry = serverUrl === undefined ? null : routingEntry({ projectId, serverUrl }, mycoHome);
+          if (entry !== null && new MemberSpool(entry, { mycoHome }).shouldDial(now(), options.force)) {
+            await syncMachineSettings(entry, { mycoHome, fetch: deps.fetch ?? globalThis.fetch, budget: deadlineBudget(deadline), now });
+          }
+        } catch (error) {
+          process.stderr.write(`[myco] member: machine settings exchange failed: ${terminalText(error instanceof Error ? error.message : String(error))}\n`);
+        }
         try { await reportHarnesses(repaired, mycoHome, deadline, deps); } catch (error) {
           process.stderr.write(`[myco] harness report failed: ${error instanceof Error ? error.message : String(error)}\n`);
         }

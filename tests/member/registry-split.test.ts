@@ -167,7 +167,7 @@ describe('a v1 entry still captures', () => {
     const result = await runHook('post-tool-use', { session_id: 'sess-v1', tool_name: 'Read', tool_input: { file_path: '/a' } }, { helpers: 'run', fetch, credential: 'registry', symbiont: 'windsurf' });
 
     expect(result.stderr).not.toContain('no registry entry');
-    expect(requests.map((r) => r.path)).toEqual(['/events']);
+    expect(new Set(requests.map((r) => r.path))).toEqual(new Set(['/events', '/members/settings']));
     expect(rig.rows('events')).toBe(1);
     // And the upgrade happened on the way through, once.
     expect(fs.readdirSync(deploymentsDir(mycoHome)).filter((f) => f.endsWith('.json'))).toHaveLength(1);

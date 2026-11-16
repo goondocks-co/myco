@@ -7,7 +7,7 @@
  * and that is not an instruction to forget what this machine was told before.
  */
 import fs from 'node:fs';
-import { MACHINE_UPDATE_HEADER, machineUpdateRequests, type MachineSettingsBlock } from '@goondocks/myco-shared/member-protocol';
+import { MACHINE_UPDATE_HEADER, machineUpdateRequests, type MachineSettingsBlock, type MachineUpdateReport } from '@goondocks/myco-shared/member-protocol';
 import { readAutomaticUpdatePreference, readInstallMarker, readUpdateChannelPreference } from '@myco/install/marker-reader.js';
 import { applyMachineUpdateRequests, readAppliedUpdateRequests } from './automatic-update-state.js';
 import { withFileLockSync } from '@myco/utils/lifecycle-lock.js';
@@ -16,6 +16,8 @@ import { deploymentKeyFor, deploymentsDir, machineSettingsPath } from './registr
 import { ensureMemberDir, ensurePrivateFile, readPrivateJson, writePrivateFileAtomic } from './store.js';
 import { CONNECT_TIMEOUT_CAP_MS } from './constants.js';
 import { ServerClient, type FetchLike } from './transport.js';
+import type { RequestBudget } from './budget.js';
+import { terminalText } from '@myco/utils/terminal-text.js';
 import { assertDeploymentTokenPair } from './token-pairing.js';
 
 /** The leaf naming the folders this machine's agents write plans to, beyond the ones each agent's manifest names. */
@@ -208,22 +210,20 @@ export function machineSettingsHeaders(serverUrl: string, mycoHome: string): Rec
   return withMachineSettings(serverUrl, mycoHome, (file, order) => {
     const read = fs.existsSync(file) ? readPrivateJson<unknown>(file) : null;
     const block = read?.ok ? machineBlockOf(read.value) : null;
-    let updateReport: Record<string, string> = {};
-    try {
-      updateReport = { [MACHINE_UPDATE_HEADER]: JSON.stringify({
-        order: nextMachineAnswerOrder(order), requests: readAppliedUpdateRequests(mycoHome, deploymentKeyFor(serverUrl)),
-        values: reportedUpdateValues(mycoHome),
-      }) };
-    } catch {
-      updateReport = { [MACHINE_UPDATE_HEADER]: JSON.stringify({ order: nextMachineAnswerOrder(order), requests: {}, values: {} }) };
-    }
     return {
       [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE,
-      ...updateReport,
+      [MACHINE_UPDATE_HEADER]: JSON.stringify({ order: nextMachineAnswerOrder(order), ...machineUpdateState(serverUrl, mycoHome) }),
       ...(block?.revision !== undefined ? { [MACHINE_SETTINGS_REVISION_HEADER]: block.revision, [MACHINE_SETTINGS_ORDER_HEADER]: String(block.cachedOrder ?? order.received) } : {}),
       ...(block?.invalidated === true ? { [MACHINE_SETTINGS_INVALIDATED_HEADER]: '1', [MACHINE_SETTINGS_ORDER_HEADER]: String(block.cachedOrder ?? order.received) } : {}),
     };
   });
+}
+
+/** Values and receipts whose local authority is readable; an unreadable preference confirms nothing. */
+export function machineUpdateState(serverUrl: string, mycoHome: string): Omit<MachineUpdateReport, 'order'> {
+  try {
+    return { requests: readAppliedUpdateRequests(mycoHome, deploymentKeyFor(serverUrl)), values: reportedUpdateValues(mycoHome) };
+  } catch { return { requests: {}, values: {} }; }
 }
 
 /** Report only values whose local authority is readable. */
@@ -241,12 +241,11 @@ function reportedUpdateValues(home: string): Record<string, boolean | string> {
 export const SETTINGS_READ_PATH = '/members/settings';
 
 /**
- * Ask `serverUrl` for this machine's settings and cache them: what a sign-in, a join and a cutover do, so a machine
- * follows its settings from its first session. A Deployment that does not answer leaves the cache as it was: the
- * next session start asks again.
+ * Ask `serverUrl` for this machine's settings and cache them during sign-in, join, cutover and helper delivery.
+ * A Deployment that does not answer leaves the cache as it was; the next settings read retries.
  */
 export async function seedMachineSettings(
-  record: { serverUrl: string; token: string }, opts: { mycoHome: string; fetch?: FetchLike },
+  record: { serverUrl: string; token: string }, opts: { mycoHome: string; fetch?: FetchLike; budget?: RequestBudget },
 ): Promise<boolean> {
   try { assertDeploymentTokenPair(record, opts.mycoHome); }
   catch (error) {
@@ -258,11 +257,15 @@ export async function seedMachineSettings(
     const requestOrder = beginMachineSettingsRequest(record.serverUrl, opts.mycoHome);
     const raw = await client.request('POST', SETTINGS_READ_PATH, {
       body: '{}', headers: { 'content-type': 'application/json', ...machineSettingsHeaders(record.serverUrl, opts.mycoHome) }, scope: 'deployment',
-      budget: { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: SEED_TIMEOUT_MS },
+      budget: opts.budget ?? { connectTimeoutMs: CONNECT_TIMEOUT_CAP_MS, requestTimeoutMs: SEED_TIMEOUT_MS },
     });
-    if (raw.kind !== 'response' || raw.status !== 200 || raw.json === null) return false;
+    if (raw.kind !== 'response' || raw.status !== 200 || raw.json === null) {
+      const reason = raw.kind === 'response' ? `HTTP ${raw.status}` : raw.kind === 'timeout' ? `timeout reading ${raw.phase}` : raw.detail;
+      throw new Error(reason);
+    }
     return cacheMachineSettings(record.serverUrl, raw.json.machine, opts.mycoHome, requestOrder);
-  } catch {
+  } catch (error) {
+    process.stderr.write(`[myco] member: machine settings not fetched (${terminalText(error instanceof Error ? error.message : String(error))}); the next settings read retries.\n`);
     return false;
   }
 }
