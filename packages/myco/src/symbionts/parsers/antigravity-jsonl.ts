@@ -7,7 +7,8 @@ import type { TranscriptTurn } from '../adapter.js';
  *   { step_index, source, type, status, created_at, content?, tool_calls?, thinking? }
  *
  * Types handled:
- *   - `USER_INPUT`        → opens a new turn; `content` wraps the prompt in
+ *   - `USER_INPUT`        → opens a new turn, unless its `source` is `SYSTEM_SDK`
+ *                           (context a hook injected); `content` wraps the prompt in
  *                           `<USER_REQUEST>` plus `<ADDITIONAL_METADATA>` and
  *                           `<USER_SETTINGS_CHANGE>` envelopes that this
  *                           parser strips via {@link cleanAntigravityUserPrompt}.
@@ -33,6 +34,8 @@ export class AntigravityJsonlParser implements TranscriptParser {
       const type = entry.type as string | undefined;
       const timestamp = (entry.created_at as string) ?? '';
 
+      // A step the harness records for injected context (Myco's own session block arrives this way) is not the person's prompt.
+      if (type === 'USER_INPUT' && entry.source === 'SYSTEM_SDK') continue;
       if (type === 'USER_INPUT') {
         const rawContent = typeof entry.content === 'string' ? entry.content : '';
         const promptText = cleanAntigravityUserPrompt(rawContent);
