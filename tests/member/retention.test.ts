@@ -1,3 +1,4 @@
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { deploymentKeyFor } from '@myco/member/registry.js';
 /**
  * Retention keeps unacknowledged journals and their payloads deliverable at
@@ -169,7 +170,18 @@ describe('spool retention', () => {
     fs.unlinkSync(path.join(spool.dir, `${sessionId}.jsonl`));
 
     const client = new ServerClient({ serverUrl: 'https://s', token: rig.token, projectId: 'proj_1' }, rig.fetch);
-    const report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    const lock = LifecycleLock.acquire(path.join(spool.dir, '.capture-losses.lock'));
+    if (!lock.acquired) throw new Error('fixture ledger lock unavailable');
+    let report;
+    try {
+      report = await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+      applySpoolRetention(spool);
+      expect(fs.existsSync(archived)).toBe(true);
+      expect(stderrLines.some(line => line.includes('counted as capture loss'))).toBe(false);
+    } finally { lock.lock.release(); }
+    const replayed = spool.readRecords(sessionId).map(record => record?.eventId);
+    await drainBacklog(spool, client, unboundedBudget(), { force: true, machineId: 'machine_1' });
+    expect(spool.readRecords(sessionId).map(record => record?.eventId)).toEqual(replayed);
     expect(report.sessions[0].events?.acked).toBe(2);
     expect(rig.rows('events')).toBe(2);
     applySpoolRetention(spool);

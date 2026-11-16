@@ -43,20 +43,22 @@ export function captureQueue(spool: ObservedSpool) {
     oldestAt: dates.length ? dates.reduce((oldest, at) => Math.min(oldest, at), Infinity) : undefined };
 }
 
-/** The pointer's receipt makes repeated delivery passes count one degraded transcript. */
-export function recordTranscriptUnavailable(spool: MemberSpool, loss: { sessionId: string; transcriptId: string; at: number; error: unknown }): void {
-  attemptCaptureLossRecording(spool.dir, () => {
+/** Count an unavailable transcript once; false leaves accounting queued for another delivery pass. */
+export function recordTranscriptUnavailable(spool: MemberSpool, loss: { sessionId: string; transcriptId: string; at: number; error: unknown }): boolean {
+  const recorded = attemptCaptureLossRecording(spool.dir, () => {
     const lock = bufferLockPath(spool.dir, loss.sessionId);
     ensurePrivateFile(lock);
-    withFileLockSync(lock, () => {
+    return withFileLockSync(lock, () => {
       const read = readSessionStateResultUnlocked(spool.dir, loss.sessionId);
       if (!read.ok) throw new Error(`Transcript loss receipt unavailable (${read.reason})`);
       const pointer = pointersOf(read.state).find(pointer => pointer.transcriptId === loss.transcriptId);
       if (pointer === undefined || pointer.unavailableAt !== undefined) return;
       if ((loss.error as NodeJS.ErrnoException)?.code === 'ENOENT' && pointer.parsedSize <= pointer.nextOffset) return;
-      if (!new CaptureLossLedger(spool.dir, () => loss.at).record([{ key: loss.transcriptId, kind: 'transcript', at: loss.at }])) return;
+      if (!new CaptureLossLedger(spool.dir, () => loss.at).record([{ key: loss.transcriptId, kind: 'transcript', at: loss.at }])) return false;
       pointer.unavailableAt = loss.at;
       writeSessionStateUnlocked(spool.dir, loss.sessionId, read.state, loss.at);
     }, { wait: false });
   });
+  if (!recorded) attemptCaptureLossRecording(spool.dir, () => spool.markTranscriptBacklog(loss.sessionId));
+  return recorded;
 }

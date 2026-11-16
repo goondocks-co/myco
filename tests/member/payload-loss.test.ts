@@ -1,3 +1,4 @@
+import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { CaptureLossLedger } from '@myco/member/capture-observations.js';
 import { describe, expect, it, spyOn } from 'bun:test';
@@ -18,7 +19,7 @@ import { updateSessionState, retireSessionFiles, readSessionState } from '@myco/
 const TEXT = 'durable capture '.repeat(25_000);
 
 describe('payload loss disposition', () => {
-  it('delivers another session while missing-transcript accounting has a damaged ledger', async () => {
+  it.each(['damaged ledger', 'busy lock'])('delivers on both passes and retries transcript accounting after a %s clears', async failure => {
     const mycoHome = tempMycoHome();
     const rig = await memberRig();
     const root = path.join(tempMycoHome(), 'repository');
@@ -32,14 +33,24 @@ describe('payload loss disposition', () => {
       state.transcript = { path: path.join(root, 'gone.jsonl'), transcriptId: 'missing', inode: 1, nextOffset: 0, parsedSize: 4 };
     });
     spool.markTranscriptBacklog('gone');
-    fs.writeFileSync(path.join(spool.dir, CAPTURE_LOSS_FILE), '{"version":1,', { mode: 0o600 });
+    const ledger = path.join(spool.dir, CAPTURE_LOSS_FILE);
+    const lock = failure === 'busy lock' ? LifecycleLock.acquire(path.join(spool.dir, '.capture-losses.lock')) : null;
+    if (lock && !lock.acquired) throw new Error('fixture ledger lock unavailable');
+    if (!lock) fs.writeFileSync(ledger, '{"version":1,', { mode: 0o600 });
     const errors: string[] = [];
     const stderr = spyOn(process.stderr, 'write').mockImplementation(chunk => { errors.push(String(chunk)); return true; });
     try {
       await runDrain([], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {} });
+      expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+      expect(spool.hasTranscriptBacklog('gone')).toBe(true);
+      if (lock?.acquired) lock.lock.release();
+      else fs.unlinkSync(ledger);
+      spool.append('events', promptEvent(ctx, { promptId: mintId(), text: 'delivered after accounting recovers' }));
       await runDrain([], { mycoHome, cwd: root, fetch: rig.fetch, stdout: () => {} });
-    } finally { stderr.mockRestore(); }
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
+      expect(new CaptureLossLedger(spool.dir).read().transcripts).toBe(1);
+      expect(spool.hasTranscriptBacklog('gone')).toBe(false);
+    } finally { stderr.mockRestore(); if (lock?.acquired) lock.lock.release(); }
+    expect(rig.rows("events WHERE kind='prompt'")).toBe(2);
     expect(spool.depth('events')).toBe(0);
     expect(errors.filter(line => line.includes('capture loss accounting unavailable'))).toHaveLength(1);
   });

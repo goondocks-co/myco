@@ -18,8 +18,11 @@ type ImportedLosses = CaptureLossTotals & { key: string; days?: ImportedDay[]; u
 interface Losses extends CaptureLossTotals { version: 1; recent: string[]; lastAt?: number; imports?: ImportedLosses[]; days?: DatedLosses[]; undated?: CaptureLossTotals }
 export const CAPTURE_LOSS_FIELDS = ['payloads', 'plans', 'records', 'transcripts'] as const;
 const validCaptureLossTotals = (value: CaptureLossTotals): boolean => value !== null && typeof value === 'object' && CAPTURE_LOSS_FIELDS.every((field) => Number.isSafeInteger(value[field]) && value[field] >= 0);
+const validOptionalTotals = (value: CaptureLossTotals | undefined): boolean => value === undefined || validCaptureLossTotals(value);
 const addCount = (previous: number, added: number): number => Math.min(Number.MAX_SAFE_INTEGER, previous + added);
 const emptyTotals = (): CaptureLossTotals => ({ payloads: 0, plans: 0, records: 0, transcripts: 0 });
+const lossKey = (value: string): string => crypto.createHash('sha256').update(value).digest('hex');
+const maxTotals = (source: CaptureLossTotals, previous?: CaptureLossTotals): CaptureLossTotals => Object.fromEntries(CAPTURE_LOSS_FIELDS.map(field => [field, Math.max(previous?.[field] ?? 0, source[field])])) as CaptureLossTotals;
 const addTotals = (target: CaptureLossTotals, source: CaptureLossTotals, previous?: CaptureLossTotals): void => {
   for (const field of CAPTURE_LOSS_FIELDS) target[field] = addCount(target[field], Math.max(0, source[field] - (previous?.[field] ?? 0)));
 };
@@ -34,8 +37,8 @@ const validDays = (days: DatedLosses[] | undefined): boolean => days === undefin
 const recordingFailures = new Set<string>();
 
 /** Accounting failure is reported once per process and never escapes into delivery. */
-export function attemptCaptureLossRecording(scope: string, record: () => void): boolean {
-  try { record(); return true; }
+export function attemptCaptureLossRecording(scope: string, record: () => boolean | void): boolean {
+  try { return record() !== false; }
   catch (error) {
     if (!recordingFailures.has(scope)) {
       recordingFailures.add(scope);
@@ -65,8 +68,8 @@ export class CaptureLossLedger {
     if (value?.version !== 1 || !validCaptureLossTotals(value) || !Array.isArray(value.recent)
       || value.recent.some((key) => typeof key !== 'string')
       || !validDays(value.days)
-      || (value.undated !== undefined && !validCaptureLossTotals(value.undated))
-      || (value.imports !== undefined && (!Array.isArray(value.imports) || value.imports.some((entry) => !entry || typeof entry.key !== 'string' || !validCaptureLossTotals(entry) || entry.days !== undefined && (!Array.isArray(entry.days) || entry.days.some(day => !Array.isArray(day) || day.length !== CAPTURE_LOSS_FIELDS.length + 1 || day.some(n => !Number.isSafeInteger(n)))) || entry.undated !== undefined && !validCaptureLossTotals(entry.undated))))) throw new Error('Capture loss counts could not be read');
+      || !validOptionalTotals(value.undated)
+      || (value.imports !== undefined && (!Array.isArray(value.imports) || value.imports.some((entry) => !entry || typeof entry.key !== 'string' || !validCaptureLossTotals(entry) || entry.days !== undefined && (!Array.isArray(entry.days) || entry.days.some(day => !Array.isArray(day) || day.length !== CAPTURE_LOSS_FIELDS.length + 1 || day.some(n => !Number.isSafeInteger(n)))) || !validOptionalTotals(entry.undated))))) throw new Error('Capture loss counts could not be read');
     return value;
   }
 
@@ -78,7 +81,7 @@ export class CaptureLossLedger {
         const count = loss.count ?? 1;
         if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid capture loss count');
         if (count === 0) continue;
-        const key = crypto.createHash('sha256').update(`${loss.kind}:${loss.key}`).digest('hex');
+        const key = lossKey(`${loss.kind}:${loss.key}`);
         if (counts.recent.includes(key)) continue;
         const field: keyof CaptureLossTotals = `${loss.kind}s`;
         const day = Math.floor(loss.at / CAPTURE_LOSS_DAY_MS);
@@ -100,7 +103,7 @@ export class CaptureLossLedger {
     withFileLockSync(lock, () => {
       const counts = this.read();
       if (counts.days === undefined) {
-        counts.undated = { payloads: counts.payloads, plans: counts.plans, records: counts.records, transcripts: counts.transcripts };
+        counts.undated = maxTotals(counts);
         counts.days = [];
       }
       counts.undated ??= emptyTotals();
@@ -117,7 +120,7 @@ export class CaptureLossLedger {
   transferFrom(sourceDir: string, stableIdentity: string): void {
     const source = new CaptureLossLedger(sourceDir).read();
     if (CAPTURE_LOSS_FIELDS.every((field) => source[field] === 0)) return;
-    const key = crypto.createHash('sha256').update(stableIdentity).digest('hex');
+    const key = lossKey(stableIdentity);
     this.mutate((counts) => {
       const previous = counts.imports?.find((entry) => entry.key === key);
       if (CAPTURE_LOSS_FIELDS.every((field) => source[field] <= (previous?.[field] ?? 0))) return false;
@@ -130,7 +133,7 @@ export class CaptureLossLedger {
         for (const [index, field] of CAPTURE_LOSS_FIELDS.entries()) merged[field] = addCount(merged[field], Math.max(0, day[field] - (prior?.[index + 1] ?? 0)));
       }
       counts.imports = [...(counts.imports ?? []).filter((entry) => entry.key !== key), {
-        key, ...Object.fromEntries(CAPTURE_LOSS_FIELDS.map(field => [field, Math.max(previous?.[field] ?? 0, source[field])])) as CaptureLossTotals,
+        key, ...maxTotals(source, previous),
         days: source.days?.map(day => [day.day, day.payloads, day.plans, day.records, day.transcripts]),
         undated: source.undated && CAPTURE_LOSS_FIELDS.some(field => source.undated![field] > 0) ? source.undated : undefined,
       }];

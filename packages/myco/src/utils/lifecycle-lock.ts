@@ -483,10 +483,10 @@ export const LifecycleLock = {
 };
 
 /**
- * Run `fn` while holding an exclusive blocking flock on `lockPath`.
+ * Run `fn` while holding an exclusive flock on `lockPath`.
  *
  * Distinct primitive from `LifecycleLock.acquire`: this one BLOCKS
- * waiting for the lock (no LOCK_NB) and releases as soon as `fn`
+ * waiting for the lock unless `wait: false`, and releases as soon as `fn`
  * returns. With `create: false` and `readIfMissing: true`, an absent companion
  * permits an unlocked read; callback errors still propagate. Used for short-lived critical sections — typically
  * sub-millisecond — where contention is rare and the caller wants

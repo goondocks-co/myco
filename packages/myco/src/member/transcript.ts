@@ -290,6 +290,7 @@ export function transcriptHeadHash(filePath: string): string | null {
 
 export interface ShipResult {
   shipped: number;
+  lossPending?: boolean;
   /**
    * `rejected`: refused for good, and recorded on the pointer. `refused`: refused for now; the same bytes are sent
    * again later. `ordered`: nothing sent, the session's start is still waiting in its journal, and a transcript never
@@ -413,8 +414,8 @@ export async function shipTranscriptSegments(
   for (;;) {
     let size: number;
     try { size = fs.statSync(pointer.path).size; } catch (error) {
-      recordTranscriptUnavailable(spool, { sessionId, transcriptId: pointer.transcriptId, at: now(), error });
-      return { shipped, endedBy: 'absent' };
+      const recorded = recordTranscriptUnavailable(spool, { sessionId, transcriptId: pointer.transcriptId, at: now(), error });
+      return { shipped, endedBy: 'absent', lossPending: !recorded };
     }
     if (pointer.nextOffset >= size) return { shipped, endedBy: 'done' };
     if (opts.until !== undefined && now() >= opts.until) return { shipped, endedBy: 'budget' };
@@ -520,7 +521,7 @@ export async function shipTranscriptSegments(
  *
  * The session's transcript backlog mark follows the outcome: cleared once
  * every transcript is acknowledged to its end, refused for good, or gone from
- * disk; set otherwise, so a pass that could not finish leaves the session for
+ * disk with no pending loss accounting; set otherwise, so a pass that could not finish leaves the session for
  * the backlog to reach from another hook. A transient refusal also sets when a
  * backlog walk may try again (`deferAfterRefusal`).
  */
@@ -536,6 +537,7 @@ export async function shipSessionTranscripts(
     return { shipped: 0, endedBy: 'ordered' };
   }
   let shipped = 0;
+  let lossPending = false;
   let refusedForNow = false;
   let held = false;
   const state = readSessionState(spool.dir, ctx.sessionId);
@@ -545,6 +547,7 @@ export async function shipSessionTranscripts(
     const primary = slot.role !== 'subagent';
     const result = await shipTranscriptSegments(ctx, spool, client, budget, { ...opts, slot, turnEnds: primary ? opts.turnEnds : undefined, holdTail: slot.role === 'primary' && opts.holdTail === true });
     shipped += result.shipped;
+    lossPending ||= result.lossPending === true;
     if (result.endedBy === 'refused') { refusedForNow = true; continue; }
     if (result.endedBy === 'held') { held = true; continue; }
     if (result.endedBy !== 'done' && result.endedBy !== 'absent' && result.endedBy !== 'rejected') {
@@ -562,7 +565,8 @@ export async function shipSessionTranscripts(
     deferAfterRefusal(spool.dir, ctx.sessionId, 'transcriptRetry', now());
     return { shipped, endedBy: 'refused' };
   }
-  spool.clearTranscriptBacklog(ctx.sessionId);
+  if (lossPending) spool.markTranscriptBacklog(ctx.sessionId);
+  else spool.clearTranscriptBacklog(ctx.sessionId);
   if (state.transcriptRetry !== undefined) clearRefusalRetry(spool.dir, ctx.sessionId, 'transcriptRetry', now());
   return { shipped, endedBy: 'done' };
 }

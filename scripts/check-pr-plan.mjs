@@ -56,7 +56,7 @@ export const CONSUMERS = [
     name: 'member doctor CLI consumers',
     ci: 'tests (node): member CLI doctor dispatch and entry contracts',
     when: { paths: ['packages/myco/src/cli/member-doctor.ts', 'packages/myco/src/cli/doctor-member.ts', 'packages/myco/src/cli/doctor-output.ts', 'packages/myco/src/cli/doctor-capture.ts'] },
-    tests: ['tests/cli/member-reads-dispatch.test.ts', 'tests/cli/runtime-redirect.test.ts', 'tests/cli/retired-verbs.test.ts', 'tests/entries/windows-arm64-entry.test.ts', 'tests/member/repository-ownership.test.ts'],
+    tests: ['tests/cli/doctor-home.test.ts', 'tests/cli/member-machine-verbs.test.ts', 'tests/cli/member-reads-dispatch.test.ts', 'tests/cli/runtime-redirect.test.ts', 'tests/cli/retired-verbs.test.ts', 'tests/entries/windows-arm64-entry.test.ts', 'tests/member/repository-ownership.test.ts'],
   },
   {
     name: 'compiled sign-in',
