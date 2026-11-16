@@ -97,7 +97,7 @@ const FINAL_SHAPE_BY_PROTOCOL: Record<number, { memberKinds: readonly string[]; 
     kinds: {
       'attachment': { required: ['attachmentId', 'blob'], enums: {} },
       'compaction.post': { required: [], enums: {}, atMostOne: ['summary', 'blob'] },
-      'context.delivered': { required: [], enums: {
+      'context.delivered': { sourceKeys: ['renderedToolCallKey'], required: [], enums: {
         renderedScheme: ['claude-v1', 'codex-turn-v1', 'hook-mint-v1', 'legacy-v1', 'member-transcript-v1', 'offset-v1', 'stamp-or-offset-v1'],
         renderedScopeReason: ['absent_key', 'scheme', 'steering', 'transcript_only'], sessionRecord: ['plan-nudge'] },
         pairs: [{ fields: ['receiptId', 'answerId', 'sessionRecord'], rule: 'at-least-one' }, { fields: ['renderedIn', 'renderedScopeReason'], rule: 'exactly-one' }] },
@@ -129,7 +129,8 @@ function finalShape(): unknown {
       .filter(([field]) => !(field === 'resultReason' && (spec.name === 'tool.failure' || spec.name === 'tool.use')))
       .flatMap(([field, f]) => (f.bound.type === 'enum' ? [[field, [...f.bound.values].sort()] as const] : []))
       .sort(([a], [b]) => a.localeCompare(b)));
-    return [spec.name, { required, enums, ...(spec.exactlyOne ? { exactlyOne: [...spec.exactlyOne] } : {}), ...(spec.atMostOne ? { atMostOne: [...spec.atMostOne] } : {}), ...(spec.pairs ? { pairs: spec.pairs.map((p) => ({ fields: [...p.fields], rule: p.rule })) } : {}) }];
+    const sourceKeys = Object.entries(spec.fields).filter(([, field]) => field.bound.type === 'sourceKey').map(([name]) => name).sort();
+    return [spec.name, { ...(sourceKeys.length ? { sourceKeys } : {}), required, enums, ...(spec.exactlyOne ? { exactlyOne: [...spec.exactlyOne] } : {}), ...(spec.atMostOne ? { atMostOne: [...spec.atMostOne] } : {}), ...(spec.pairs ? { pairs: spec.pairs.map((p) => ({ fields: [...p.fields], rule: p.rule })) } : {}) }];
   }));
   const launchParent = kindSpec('session.start')?.fields.launchParentSessionId;
   const featureFields = {

@@ -600,6 +600,7 @@ describe('versioned schema steps', () => {
     writerRows.set('session_statistics', { session_id: 'grammar-session', open_session: 0, occurred_day: 0, prompts: 0, tool_calls: 0 });
     writerRows.set('session_attachment_counts', { session_id: 'grammar-session', n: 0 });
     writerRows.set('project_session_days', { day: 0, n: 0 });
+    writerRows.set('context_delivery_anchors', { session_id: 'grammar-session', kind: 'spore_injections', record_id: 'r', tool_call_id: 'call' });
     writerRows.set('context_placements', { session_id: 'grammar-session', kind: 'receipt', record_id: 'r', created_at: 0, state: 'selected' });
     writerRows.set('context_placement_days', { day: 0, state: 'selected', n: 0 });
     writerRows.set('task_runtime', { task: 'title-summary', origin: 'manual' });
@@ -687,6 +688,7 @@ describe('versioned schema steps', () => {
       checked.push(t);
     }
     expect(checked.sort()).toEqual([
+      'context_delivery_anchors', 'tool_prompt_links',
       'publication_dependencies','session_lifecycle_facts','session_title_work','session_statistics','session_attachment_counts','context_placement_days','session_user_prompt_firsts','document_locator_repair',
       'document_owners','document_continuations','document_plan_keys','document_metadata_ready','document_metadata_progress',
       'document_transcript_pins','document_group_pins','document_pin_totals','document_failure_contributions','document_failure_totals','document_rebuild_receipts',

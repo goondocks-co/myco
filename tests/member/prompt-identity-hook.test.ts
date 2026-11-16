@@ -317,6 +317,7 @@ it('Copilot delivery names the parsed prompt through native tool and originating
   const parsed = await PARSERS.copilot.parse({ lines, sessionId, transcriptId: 'copilot-source', now: Date.now(), recordScheme: 'source-record-v1', scheme: 'member-transcript-v1' });
   const promptId = parsed.find(event => event.kind === 'prompt')!.payload.promptId;
   expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedIn: promptId, renderedScheme: 'member-transcript-v1' })]);
+  expect(delivered(sessionId)[0]?.renderedToolCallKey).toBeUndefined();
   expect(parsed.find(event => event.kind === 'tool.failure')!.payload.promptId).toBe(promptId);
 });
 
@@ -341,4 +342,20 @@ it.each(['ambiguous', 'outside the lookup bound'])('%s native prompt lookup stil
   expect(result.stdout).toContain('Recalled for: inspect orchard');
   if (reason === 'ambiguous') expect(result.stderr).toContain('prompt link unavailable');
   expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedScopeReason: 'transcript_only' })]);
+});
+
+it('a tool hook retains the native request key when transcript lines have not arrived', async () => {
+  const sessionId = 'copilot-delayed-transcript';
+  const tx = transcript(sessionId);
+  fs.writeFileSync(tx, '');
+  const served = serving('turn,prompt-identity,prompt-scheme');
+  const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) => runHook(name,
+    { session_id: sessionId, transcript_path: tx, ...raw }, { helpers: 'run', fetch: served.fetch, symbiont: 'copilot' });
+  await hook('session-start', {});
+  await hook('user-prompt-submit', { prompt: 'inspect orchard' });
+  const rendered = await hook('post-tool-use', { toolCallId: 'late-orchard-call', tool_name: 'view' });
+  expect(rendered.stdout).toContain('Recalled for: inspect orchard');
+  expect(delivered(sessionId)).toEqual([expect.objectContaining({ renderedScopeReason: 'transcript_only', renderedToolCallKey: 'late-orchard-call' })]);
+  await hook('post-tool-use', { toolCallId: 'late-orchard-call', tool_name: 'view' });
+  expect(delivered(sessionId)).toHaveLength(1);
 });

@@ -339,7 +339,7 @@ export function turnEvent(ctx: EnvelopeContext, opts: { phase: TurnPhase; prompt
  * it, and the prompt it reached, or why that prompt has no name. An advertised kind: build it only for a Deployment
  * that names the `prompt-identity` feature.
  */
-export function contextDeliveredEvent(ctx: EnvelopeContext, facts: { receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; renderedIn?: string; renderedScheme?: PromptIdScheme; renderedScopeReason?: PromptScopeReason }): OutboundEvent {
+export function contextDeliveredEvent(ctx: EnvelopeContext, facts: { receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord; renderedIn?: string; renderedScheme?: PromptIdScheme; renderedToolCallKey?: string; renderedScopeReason?: PromptScopeReason }): OutboundEvent {
   return envelope(ctx, CONTEXT_DELIVERED_KIND, { ...facts });
 }
 

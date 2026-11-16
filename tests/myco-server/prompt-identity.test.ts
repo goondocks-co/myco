@@ -1,3 +1,7 @@
+import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
+import { catchUpPhase } from '@myco-server-worker/db/projections/catchup.js';
+import { sha256HexOf, utf8 } from '@myco-server-worker/hash.js';
+import { OWNER_ENV, asOwner } from './helpers/owner.js';
 /**
  * What the Deployment records of a prompt's identity: how an ask named its prompt, the rows it wrote and names back,
  * and where a delivery says the context reached the agent.
@@ -21,7 +25,7 @@ import { RECEIPT_COLLISIONS_META_KEY } from '@myco-server-worker/db/schema.js';
 import { failingStatement } from './helpers/store-faults.js';
 import { applySchemaSteps } from './helpers/migrate.js';
 import { sqliteD1 } from './helpers/d1.js';
-import { envelope, memberHeaders, sqliteEnv, uuid } from './helpers/fixtures.js';
+import { blobPost, envelope, memberHeaders, publishFixtureDocuments, sqliteEnv, uuid } from './helpers/fixtures.js';
 import { semanticRecall } from './helpers/semantic-recall.js';
 import { schemaSqlite } from './helpers/schema-template.js';
 
@@ -234,13 +238,13 @@ describe('a delivery', () => {
 
 describe('what outlives the answers', () => {
   const DAY = 86_400_000;
-  async function served(opts: { db?: (db: RelationalStore) => RelationalStore; text?: string; planNudge?: boolean } = {}) {
+  async function served(opts: { db?: (db: RelationalStore) => RelationalStore; text?: string; planNudge?: boolean; transcriptOnly?: boolean } = {}) {
     const m = await member();
     m.e.sqlite.run(`INSERT INTO sessions (project_id, session_id, machine_id, created_by_token_id, first_received_at, last_received_at) VALUES ('proj_1', ?, 'machine_1', ?, 1, 1)`, [SESSION, m.ctx.tokenId]);
     for (const id of ['a', 'b', 'c']) m.e.sqlite.run(`INSERT INTO spores (project_id, id, agent_id, observation_type, status, content, importance, created_at, embedded) VALUES ('proj_1', ?, 'agent_1', 'decision', 'active', ?, 5, 1, 0)`, [id, `selector fact ${id}`]);
     const db = opts.db?.(m.e.db) ?? m.e.db;
     const answer = await composePromptContext(db, { projectId: 'proj_1' }, { ...ON, planNudge: opts.planNudge ?? false }, true,
-      { sessionId: SESSION, admission: sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, SESSION), text: opts.text ?? PROMPT, now: NOW, promptId: uuid(1), scopeReason: null, askProtocol: 'v1', askedAt: NOW },
+      { sessionId: SESSION, admission: sessionWriteAdmission({ projectId: 'proj_1', machineId: 'machine_1' }, SESSION), text: opts.text ?? PROMPT, now: NOW, promptId: opts.transcriptOnly ? undefined : uuid(1), scopeReason: opts.transcriptOnly ? 'transcript_only' : null, askProtocol: 'v1', askedAt: NOW },
       semanticRecall(m.e.db, { projectId: 'proj_1' }));
     const deliver = (n: number, payload: Record<string, unknown>) =>
       ingestEvent(m.e.db, m.ctx, envelope({ eventId: uuid(300 + n), sessionId: SESSION, kind: 'context.delivered', createdAt: NOW, payload }));
@@ -258,6 +262,64 @@ describe('what outlives the answers', () => {
     };
     return { ...m, answer, deliver, sessionLevel, prune, catalogPrompt };
   }
+
+  async function nativeDelivery() {
+    const s = await served({ transcriptOnly: true });
+    const read = async (path: string) => {
+      const response = await worker.fetch(await asOwner(s.e.db, path), { ...s.e.env, ...OWNER_ENV });
+      expect(response.status).toBe(200);
+      return response.json() as Promise<any>;
+    };
+    const path = `/api/projects/proj_1/sessions/${SESSION}`;
+    const transcript = [
+      ...['first', 'second'].map((messageId, i) => ({ type: 'user.message', timestamp: new Date(NOW - 1000 + i).toISOString(), data: { messageId, content: messageId } })),
+      { type: 'assistant.message', data: { originatingMessageId: 'second', toolRequests: [{ toolCallId: 'native-call', name: 'view', arguments: {} }] } },
+    ].map(row => JSON.stringify(row)).join('\n') + '\n';
+    const ship = async () => {
+      const bytes = utf8(transcript), key = await sha256HexOf(bytes);
+      expect(await (await worker.fetch(blobPost(s.token, key, bytes), s.e.env)).json()).toMatchObject({ stored: true });
+      expect(await ingestEvent(s.e.db, s.ctx, envelope({ kind: 'transcript.segment', sessionId: SESSION,
+        payload: { transcriptId: 'tx_' + '1'.repeat(32), baseOffset: 0, length: bytes.length, blob: key, agent: 'copilot' } }), s.e.serverEnv)).toMatchObject({ persisted: true });
+    };
+    const deliver = () => s.deliver(1, { receiptId: s.answer.receiptId, answerId: s.answer.answerId,
+      renderedToolCallKey: 'native-call', renderedScopeReason: 'transcript_only' });
+    const turns = async () => (await read(path + '/turns?origins=user&order=asc')).rows as { promptId: string }[];
+    return { ...s, ship, deliver, turns, turn: (id: string) => read(path + '/turns/' + id),
+      mark: async () => (await read('/api/work/now')).marks.sessions,
+      kpis: async () => { const k = await readKpis(s.e.db, { window: null, now: NOW }); if (k.state !== 'ready') throw new Error('KPIs building'); return k.deliveries; } };
+  }
+
+  it('places rendered spores by their tool after transcript publication and moves the session heartbeat mark', async () => {
+    const s = await nativeDelivery();
+    await s.deliver();
+    expect(await s.kpis()).toEqual({ placed: 0, unplaced: 1 });
+    await s.ship();
+    const mark = await s.mark();
+    await publishFixtureDocuments(s.e.serverEnv, NOW);
+    expect(await s.mark()).not.toBe(mark);
+    const turns = await s.turns();
+    expect((await s.turn(turns[1]!.promptId)).injection.sporeIds.sort()).toEqual(['a', 'b', 'c']);
+    expect(await s.kpis()).toEqual({ placed: 1, unplaced: 0 });
+  });
+
+  it('updates a tool link when a rebuilt parser changes attribution and keeps an already resolved delivery', async () => {
+    const s = await nativeDelivery();
+    await s.deliver(); await s.ship();
+    const parse = PARSERS.copilot.parse.bind(PARSERS.copilot);
+    const prior = spyOn(PARSERS.copilot, 'parse').mockImplementation(input => parse({ ...input, lines: input.lines.map(line =>
+      line.value.type === 'assistant.message' ? { ...line, value: { ...line.value, data: { originatingMessageId: 'first',
+        toolRequests: [{ toolCallId: 'native-call', name: 'view', arguments: {} }] } } } : line) }));
+    try { await publishFixtureDocuments(s.e.serverEnv, NOW); } finally { prior.mockRestore(); }
+    const turns = await s.turns();
+    s.e.sqlite.run('UPDATE transcript_publication SET parser_version=parser_version-1');
+    s.e.sqlite.run("UPDATE projection_catchup SET done=0,after_key='[]',frontier=NULL WHERE phase='publicationRebuildV6'");
+    await catchUpPhase(s.e.db, 'publicationRebuildV6');
+    await publishFixtureDocuments(s.e.serverEnv, NOW);
+    const link = s.e.sqlite.query('SELECT prompt_id FROM tool_prompt_links').get();
+    expect(link).toEqual({ prompt_id: turns[1]!.promptId });
+    expect((await s.turn(turns[0]!.promptId)).injection.sporeIds.sort()).toEqual(['a', 'b', 'c']);
+    expect(await s.kpis()).toEqual({ placed: 1, unplaced: 0 });
+  });
 
   it('credits a prompt delivered only the plan nudge after its answer is pruned, from a member that names only the answer', async () => {
     const s = await served({ text: 'let us write the implementation plan for the selector', planNudge: true });

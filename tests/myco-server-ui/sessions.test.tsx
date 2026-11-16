@@ -1,3 +1,4 @@
+import { TICK_MS, RUNNING_TICK_MS } from '../../packages/myco-server/ui/src/lib/live';
 import { encodeCard } from '@goondocks/myco-shared/turn-card';
 import { emptyInjectionCounts } from '@myco-server-worker/core/injection.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
@@ -1285,6 +1286,34 @@ describe('the session reading page', () => {
     expect(within(about).getByText('Read × 3')).toBeTruthy();
     expect(within(about).getByText('Not recorded, including sub-agents')).toBeTruthy();
     expect(within(about).getByText('Wall time')).toBeTruthy();
+  });
+
+  it('shows delivered spores when publication advances after the session was first read', async () => {
+    let published = false, beats = 0;
+    const interval = globalThis.setInterval;
+    globalThis.setInterval = ((handler: TimerHandler, ms?: number, ...args: unknown[]) =>
+      interval(handler, ms === TICK_MS || ms === RUNNING_TICK_MS ? 20 : ms, ...args)) as typeof setInterval;
+    try {
+      server(routes({
+        ...Object.fromEntries(['attachments', 'responses', 'plans', 'children', 'answers'].map(collection =>
+          [`/api/projects/x/sessions/s1/turns/${P1}?collection=${collection}`, () => page([])])),
+        '/api/work/now': () => Response.json({ running: [], waiting: [], needsYou: [], runningTotal: 0, runningHasMore: false, unavailable: [],
+          projects: { read: 1, total: 1, hasMore: false, cursor: null }, marks: { runs: 'r', sessions: ++beats > 1 && published ? 's2' : 's1', knowledge: 'k', recovery: 'b', fleet: 'f', attention: 'a' } }),
+        '/api/projects/x/sessions/s1': () => detail({ publishedRevision: published ? 2 : 1 }),
+        '/api/projects/x/sessions/s1/turns?origins=user&limit=200&order=desc': () => page([turn()]),
+        [`/api/projects/x/sessions/s1/turns/${P1}`]: () => Response.json({
+          prompt: { promptId: P1, origin: 'user', text: 'Inspect the orchard', blobKey: null, createdAt: NOW },
+          responses: [], attachments: [], plans: [], children: [],
+          injection: published ? { sporeIds: ['orchard-memory'], planIds: [], createdAt: NOW, plans: [],
+            spores: [{ id: 'orchard-memory', observationType: 'gotcha', preview: 'Retain delivery evidence.' }] } : null,
+        }),
+      }));
+      mount('/p/x/sessions/s1');
+      await screen.findByText('Inspect the orchard');
+      expect(screen.queryByText(/Myco added 1 spore to this prompt/)).toBeNull();
+      published = true;
+      expect(await screen.findByText(/Myco added 1 spore to this prompt/)).toBeTruthy();
+    } finally { globalThis.setInterval = interval; }
   });
 
   it('explains an empty match set once', async () => {

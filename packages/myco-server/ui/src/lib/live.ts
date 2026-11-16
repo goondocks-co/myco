@@ -7,7 +7,7 @@
  *   whose rows-read ceilings are tested. It is read every `TICK_MS`, every `RUNNING_TICK_MS` while something runs,
  *   and never while the tab is hidden. `hooks/use-live.tsx` runs it.
  * - **`follows`**: a page's other reads re-read only when the heartbeat's marks they follow move — `runs` when a run
- *   starts, finishes, queues or fails, `sessions` when capture arrives, `knowledge` when a spore is written, edited,
+ *   starts, finishes, queues or fails, `sessions` when capture arrives or transcript publication changes, `knowledge` when a spore is written, edited,
  *   retired or deleted or a plan changes, `recovery` when a backup attempt starts, advances or settles, `fleet` when a
  *   runner's state changes, `attention` when a notice no other mark covers appears or clears. A page never polls a window of history by the clock. `until`
  *   adds the instant the answer goes stale by time alone (a live session falling quiet), so it is read again then

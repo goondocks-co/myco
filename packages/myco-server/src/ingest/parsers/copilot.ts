@@ -21,13 +21,15 @@ export const copilotParser: TranscriptParser = {
       const source = optionalRecordSource(input, this.agent, { kind: 'tool-call', record, call, role: 'call' });
       const name = str(call.name);
       if (source === undefined || !('key' in source) || name === undefined) return;
+      const toolCallId = await recordId(input, this.agent, { kind: 'tool-call', source, offset: at.offset });
+      if (at.promptId !== undefined) input.toolPrompts?.set(toolCallId, at.promptId);
       const prior = pending.get(source.key);
       if (prior !== undefined) {
         if (prior.promptId !== undefined && at.promptId !== undefined && prior.promptId !== at.promptId) throw new RecordSourceInvalid();
         prior.promptId ??= at.promptId;
         return;
       }
-      pending.set(source.key, { toolCallId: await recordId(input, this.agent, { kind: 'tool-call', source, offset: at.offset }),
+      pending.set(source.key, { toolCallId,
         toolName: name.slice(0, 64), input: call.arguments ?? {}, ...at });
     };
     for (const { value, offset, undatedAt } of input.lines) {

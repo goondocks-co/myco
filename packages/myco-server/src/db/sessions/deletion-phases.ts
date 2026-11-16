@@ -6,7 +6,7 @@ import { read, write, type Bound, type Statement } from '../index.js';
 
 /** The tables a session's derived rows live in, each carrying `session_id` itself. */
 export const DERIVED_TABLES = [
-  'learning_sessions', 'event_refs',
+  'learning_sessions', 'event_refs', 'context_delivery_anchors', 'tool_prompt_links',
   ...DOCUMENT_SESSION_TABLES,
   'archive_bundles', 'raw_archive_refs', 'registered_content_proofs', 'storage_cleanup_queue', 'content_scan_checkpoints',
   'transcripts', 'attachments', 'plans', 'spore_injections', 'session_served_items', 'prompt_context_answers', 'session_injections', 'prompt_identity_conflicts',
@@ -57,6 +57,8 @@ const SPECS: ReadonlyArray<readonly [table: string, spec: PhaseSpec]> = [
   // What the session was served follows its receipts, so the catch-up cannot add a member back from a receipt still held.
   ['session_served_items', { key: ['project_id', 'session_id', 'kind', 'item_id'] }],
   ['prompt_context_answers', { key: ['project_id', 'session_id', 'id'] }],
+  ['context_delivery_anchors', { key: ['project_id', 'session_id', 'kind', 'record_id'] }],
+  ['tool_prompt_links', { key: ['project_id', 'session_id', 'tool_call_id'] }],
   ['session_injections', { key: ['project_id', 'session_id', 'kind'] }],
   ['prompt_identity_conflicts', { key: ['project_id', 'session_id', 'prompt_id', 'source_key', 'source_thread', 'source_record'] }],
   ['extraction_acks', { key: ['project_id', 'ack_id'] }],

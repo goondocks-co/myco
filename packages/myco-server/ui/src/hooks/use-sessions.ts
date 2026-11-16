@@ -12,6 +12,8 @@ export interface SessionRow {
   createdByTokenId: string;
   firstReceivedAt: number;
   lastReceivedAt: number;
+  /** Committed document changes after capture was received; absent on older Deployments. */
+  publishedRevision?: number;
   agent: string | null;
   branch: string | null;
   startedAt: number | null;

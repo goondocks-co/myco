@@ -22,6 +22,7 @@ const TRANSCRIPT_ID_GRAMMAR = new RegExp(`^(tx_[0-9a-f]{32}|${ID_GRAMMAR.source.
 
 export type Bound =
   | { type: 'id' }
+  | { type: 'sourceKey' }
   | { type: 'transcriptId' }
   | { type: 'sessionId' }
   | { type: 'blobKey' }
@@ -221,6 +222,7 @@ export const KINDS: readonly KindSpec[] = [
       answerId: id('served'),
       sessionRecord: { bound: { type: 'enum', values: DELIVERED_SESSION_RECORDS } },
       renderedIn: promptRef(),
+      renderedToolCallKey: { bound: { type: 'sourceKey' } },
       renderedScopeReason: { bound: { type: 'enum', values: PROMPT_SCOPE_REASONS } },
       /** The scheme `renderedIn` is derived by, as a hook names it (`hookScheme`); sent only to a Deployment that names `prompt-scheme`. */
       renderedScheme: { bound: { type: 'enum', values: HOOK_NAMED_SCHEMES } },
@@ -280,6 +282,9 @@ function boundViolation(field: string, value: unknown, bound: Bound, now: number
       return typeof value === 'string' && value !== '' && value.length <= MAX_ID_CHARS ? null : refusal(`${field} must be a non-empty string of at most ${MAX_ID_CHARS} characters`, 'invalid_field');
     case 'blobKey':
       return typeof value === 'string' && BLOB_KEY_GRAMMAR.test(value) ? null : refusal(`${field} must be a lowercase hex sha256`, 'invalid_field');
+    case 'sourceKey':
+      return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_CHARS && !value.includes('\0')
+        ? null : refusal(`${field} must be a non-empty native key of at most ${MAX_ID_CHARS} characters with no NUL`, 'invalid_field');
     case 'string':
       return typeof value === 'string' && value.length <= bound.max ? null : refusal(`${field} must be a string of at most ${bound.max} characters`, 'invalid_field');
     case 'enum':
