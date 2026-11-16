@@ -79,12 +79,11 @@ const TRANSCRIPTS_CONTINUE: readonly ShipResult['endedBy'][] = ['done', 'absent'
 export const TAIL_IDLE_MS = 15 * 60_000;
 
 /**
- * Whether a session's transcript is to be held at its last turn-end mark: the Deployment is told of turn ends by the
- * transcript alone (it does not take `turn`), and the session is live, so the bytes past its last mark belong to a
- * turn under way. Once the session has ended, or its hooks have gone quiet, every byte ships.
+ * A newly discovered transcript waits for its first end hook. A Deployment that learns turn ends from the
+ * transcript alone also holds bytes past the last end mark. Once hooks go quiet or the session ends, every byte ships.
  */
 export function holdsTranscriptTail(spool: MemberSpool, state: SessionState, now: number, serverUrl: string, takesTurns = featureAdvertised({ serverUrl, projectId: spool.projectId }, spool.mycoHome, 'turn')): boolean {
-  if (takesTurns) return false;
+  if (takesTurns && state.transcript?.awaitingTurnEnd !== true) return false;
   if (state.endedAt !== undefined || state.hookAt === undefined) return false;
   return now - state.hookAt < TAIL_IDLE_MS;
 }

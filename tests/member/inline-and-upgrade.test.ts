@@ -8,7 +8,7 @@
  * - G4h, upgrade directions: a journal this build writes holds only events an older build can read (its protocol
  *   stamp on every line, turn-end marks kept apart), and a journal an older build wrote delivers whole here.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +23,7 @@ import { ServerClient } from './helpers/env-client.js';
 import type { DetachedSpawn } from '@myco/runtime/spawn-detached.js';
 import { helperPaths, runHelper } from '@myco/member/helper.js';
 import { helperPass } from '@myco/member/helper-pass.js';
+import { TAIL_IDLE_MS } from '@myco/member/backlog.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { updateProjectContext } from '@myco/member/context-cache.js';
 import { memberRig, tempMycoHome, type MemberRig } from './helpers/server.js';
@@ -44,6 +45,7 @@ beforeEach(async () => {
 /** Directories a test made, removed after it. */
 const scratch: string[] = [];
 afterEach(() => {
+  setSystemTime();
   for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
   for (const key of [ENV_SERVER_URL, ENV_MEMBER_TOKEN, ENV_PROJECT, ENV_JOIN_CODE]) {
     if (savedEnv[key] === undefined) delete process.env[key]; else process.env[key] = savedEnv[key];
@@ -82,6 +84,68 @@ async function expectCaptured(sessionId: string, prompts = ['hi']): Promise<void
     expect(page?.tools.total).toBe(1);
   }
 }
+
+describe('a transcript whose harness disappears', () => {
+  for (const agent of ['copilot', 'claude-code']) it(`${agent}: recovers a first turn without an end hook after its tail goes idle`, async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const sessionId = `sess-crashed-${agent}`, tx = transcript(sessionId);
+    fs.writeFileSync(tx, '');
+    let clock = Date.now();
+    const spy = recordingFetch(rig.fetch);
+    const opts = { fetch: spy.fetch, symbiont: agent, now: () => clock };
+    const input = { session_id: sessionId, transcript_path: tx };
+    const add = (...rows: unknown[]) => fs.appendFileSync(tx, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+    await runHook('session-start', { ...input, cwd: process.cwd() }, opts);
+    add(agent === 'copilot'
+      ? { type: 'user.message', id: 'user', data: { messageId: 'message', content: 'Inspect the orchard' } }
+      : { type: 'user', uuid: 'user', promptId: 'message', message: { role: 'user', content: 'Inspect the orchard' } });
+    await runHook('user-prompt-submit', { ...input, prompt: 'Inspect the orchard', prompt_id: 'message' }, opts);
+    for (const [i, name] of ['Read', 'Bash'].entries()) {
+      const id = `call-${i}`, args = { path: 'orchard.txt' }, result = 'Pear trees';
+      add(...(agent === 'copilot' ? [
+        { type: 'assistant.message', id: `request-${i}`, data: { originatingMessageId: 'message', content: '', toolRequests: [{ toolCallId: id, name, arguments: args }] } },
+        { type: 'tool.execution_complete', data: { toolCallId: id, success: true, result: { content: result } } },
+      ] : [
+        { type: 'assistant', uuid: `request-${i}`, message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: args }] } },
+        { type: 'user', uuid: `result-${i}`, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: result }] } },
+      ]));
+      await runHook('post-tool-use', { ...input, tool_name: name, tool_use_id: id, toolCallId: id, tool_input: args, tool_response: result }, opts);
+    }
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' };
+    const pass = async () => runHelper({ ...route, mycoHome, now: () => clock, lingerMs: 0, noSuccessor: true,
+      pass: helperPass(route, mycoHome, { fetch: spy.fetch, now: () => clock }) });
+    await pass();
+    expect(spy.requests.filter(request => request.path.startsWith('/blobs/'))).toEqual([]);
+    clock += TAIL_IDLE_MS + 1;
+    setSystemTime(new Date(clock));
+    await pass();
+    await publishFixture(rig.env);
+    const rows = await readFixtureRecords(rig.env.serverEnv, 'proj_1', sessionId);
+    const prompts = rows.filter(row => row.k === 'prompt');
+    expect(prompts.map(row => row.text)).toEqual(['Inspect the orchard']);
+    const page = await documentTurnDetail(rig.env.serverEnv, { projectId: 'proj_1' }, sessionId, prompts[0]!.id);
+    expect(page?.tools.byTool.map(tool => tool.toolName)).toEqual(['Bash', 'Read']);
+    expect(page?.tools.total).toBe(2);
+  });
+
+  it('ships a normal turn at its end and never uploads those bytes again', async () => {
+    registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: 'proj_1', expiresAt: rig.expiresAt });
+    const sessionId = 'sess-normal-delivery', tx = transcript(sessionId);
+    const spy = recordingFetch(rig.fetch), opts = { fetch: spy.fetch, symbiont: 'copilot' };
+    const input = { session_id: sessionId, transcript_path: tx };
+    await runHook('session-start', { ...input, cwd: process.cwd() }, opts);
+    await runHook('user-prompt-submit', { ...input, prompt: 'hi' }, opts);
+    expect(spy.requests.filter(request => request.path.startsWith('/blobs/'))).toEqual([]);
+    await runHook('stop', input, { ...opts, argv: ['--ship', 'inline'], helperSpawn: noStart });
+    await expectCaptured(sessionId);
+    const uploaded = spy.requests.filter(request => request.path.startsWith('/blobs/'));
+    expect(uploaded).toHaveLength(1);
+    const route = { projectId: 'proj_1', serverUrl: 'https://member-test.invalid' }, now = () => Date.now() + TAIL_IDLE_MS + 1;
+    await runHelper({ ...route, mycoHome, now, lingerMs: 0, noSuccessor: true, pass: helperPass(route, mycoHome, { fetch: spy.fetch, now }) });
+    expect(spy.requests.filter(request => request.path.startsWith('/blobs/'))).toEqual(uploaded);
+    await expectCaptured(sessionId);
+  });
+});
 
 
 describe('a sandbox (G4g)', () => {

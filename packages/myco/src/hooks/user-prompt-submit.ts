@@ -113,7 +113,7 @@ export async function main(opts: HookMainOptions = {}) {
     });
     if (decision.action === 'drop') {
       process.stderr.write(`[myco] user-prompt-submit: dropped (${decision.reason ?? 'rule'})\n`);
-      return { events: [], response };
+      return { events: [], response, ignored: true };
     }
     const text = decision.action === 'rewrite' ? decision.prompt : rawPrompt;
     if (decision.action === 'rewrite') {

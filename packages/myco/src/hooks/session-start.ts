@@ -36,7 +36,7 @@ export async function main(opts: HookMainOptions = {}) {
     const decision = evaluateSessionCaptureRules(agent, { transcriptPath, transcriptMeta: transcriptMeta ?? undefined });
     if (decision.action === 'drop') {
       process.stderr.write(`[myco] session-start: dropped (${decision.reason ?? 'rule'})\n`);
-      return { events: [] };
+      return { events: [], ignored: true };
     }
 
     // The branch and the commit, read from git's own files; the remote is the helper's to ask git for, with the block.
