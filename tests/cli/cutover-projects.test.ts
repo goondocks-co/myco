@@ -569,7 +569,7 @@ describe('cutover project destinations and receipts', () => {
     fs.mkdirSync(path.dirname(transcript), { recursive: true });
     fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', cwd: gone, sessionId: id, message: { content: 'ambiguous transcript' }, timestamp: '2026-08-01T10:00:00Z' })}\n`);
     const old = new Date(Date.now() - 3 * 60 * 60_000); fs.utimesSync(transcript, old, old);
-    const result = await m.run([], { fetch: fetchBoth, agents: [] });
+    const result = await m.run(['--import-transcripts'], { fetch: fetchBoth, agents: [] });
     expect(result.err).toEqual([]); expect(result.ok).toBe(true);
     expect(result.out.join('\n')).toContain(gone);
     for (const server of [m.rig, personal]) expect(server.env.sqlite.query('SELECT session_id FROM sessions WHERE session_id=?').all(id)).toEqual([]);
@@ -585,8 +585,14 @@ describe('cutover project destinations and receipts', () => {
     fs.mkdirSync(path.dirname(transcript), { recursive: true });
     fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', cwd: m.root, sessionId: id, message: { content: 'retained mapped transcript' }, timestamp: '2026-08-01T10:00:00Z' })}\n`);
     const old = new Date(Date.now() - 3 * 60 * 60_000); fs.utimesSync(transcript, old, old);
-    const result = await m.run(['--map', `${m.root}=${replacement}`, '--route', `${PROJECT}=${SERVER}`], { fetch: fetchBoth, agents: [] });
+    const first = await m.run(['--route', `${PROJECT}=${SERVER}`], { fetch: fetchBoth, agents: [] });
+    expect(first.ok).toBe(true);
+    expect(m.rig.env.sqlite.query('SELECT session_id FROM transcripts').all()).toEqual([]);
+    expect(first.out.join('\n')).toContain('Importing earlier agent transcripts is optional');
+    expect(m.rig.env.sqlite.query('SELECT session_id FROM sessions WHERE session_id=?').all(id)).toEqual([]);
+    const result = await m.run(['--import-transcripts', '--map', `${m.root}=${replacement}`, '--route', `${PROJECT}=${SERVER}`], { fetch: fetchBoth, agents: [] });
     expect(result.err).toEqual([]); expect(result.ok).toBe(true);
+    expect(result.out.join('\n')).toContain('Optional import requested: earlier agent transcripts');
     expect(m.rig.env.sqlite.query('SELECT session_id FROM sessions WHERE session_id=?').all(id)).toEqual([{ session_id: id }]);
     expect(readCutoverState(m.mycoHome).migrations![m.vault].projects[PROJECT].transcripts?.state).toBe('complete');
   });

@@ -179,6 +179,10 @@ describe('myco cutover', () => {
 
   it('moves capture to 2.0 in place, takes 1.4 out for good, keeps the vault as it was, and brings its history; again changes nothing', async () => {
     fs.writeFileSync(path.join(m.legacyHome, 'config.yaml'), 'capture:\n  plan_dirs: [custom-plans]\n');
+    const transcript = path.join(m.home, '.claude', 'projects', `-${rootSlug(m.root)}`, '00000000-0000-4000-8000-000000000001.jsonl');
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', cwd: m.root, sessionId: '00000000-0000-4000-8000-000000000001', message: { content: 'old raw content'.repeat(400) }, timestamp: '2026-08-01T10:00:00Z' })}\n`);
+    const settled = new Date(Date.now() - 3 * 60 * 60_000); fs.utimesSync(transcript, settled, settled);
     const vaultBytes = sha(m.vault);
     const settingsBytes = fs.readFileSync(settingsFile(), 'utf8');
     fs.chmodSync(settingsFile(), 0o600);
@@ -222,6 +226,7 @@ describe('myco cutover', () => {
     const sqlite = m.rig.env.sqlite;
     expect(sqlite.query(`SELECT title FROM sessions WHERE project_id = ?`).all(PROJECT)).toEqual([{ title: 'A 1.4 session' }]);
     expect(sqlite.query(`SELECT id FROM spores WHERE project_id = ?`).all(PROJECT)).toEqual([{ id: 'gotcha-1' }]);
+    expect(sqlite.query('SELECT session_id FROM transcripts').all()).toEqual([]);
 
     const tables = ['sessions', 'session_prompts', 'spores', 'events', 'transcripts'];
     const snapshot = () => Object.fromEntries(tables.map((t) => [t, m.rig.rows(t)]));
@@ -763,7 +768,7 @@ describe('myco cutover', () => {
       if (transcriptPlan && interrupted) { controller.abort(); throw new DOMException('stopped', 'AbortError'); }
       return transcriptPlan ? new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }) : m.rig.fetch(input, init);
     };
-    const result = await m.run([], { fetch: refusing, signal: controller.signal });
+    const result = await m.run(['--import-transcripts'], { fetch: refusing, signal: controller.signal });
     expect(result.ok).toBe(false);
     if (interrupted) {
       expect(result.out.some((line) => line.startsWith('9.'))).toBe(false);

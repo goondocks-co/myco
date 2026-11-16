@@ -8,6 +8,7 @@ import { legacyRealpath } from '@myco/member/legacy-sources.js';
 
 export type LegacyDestination = { kind: 'destination' | 'moved'; serverUrl: string } | { kind: 'skip' | 'undecided' };
 export interface LegacyPlacementOptions {
+  importTranscripts?: boolean;
   serverUrl?: string;
   routes?: ReadonlyMap<string, string>;
   skips?: ReadonlySet<string>;
@@ -46,7 +47,7 @@ export function planLegacyProjects(home: string, vaults: readonly { vault: strin
     if (skip) return { ...project, destination: { kind: 'skip' } as LegacyDestination };
     const completed = receipt !== undefined && previous !== undefined && receipt.digest === vaultDigests.get(vault)
       ? completedLegacyDestination(receipt, previous) : null;
-    if (completed !== null && (route === undefined || deploymentUrl(route) === completed)) return { ...project, destination: { kind: 'moved', serverUrl: completed } as LegacyDestination };
+    if (!options.importTranscripts && completed !== null && (route === undefined || deploymentUrl(route) === completed)) return { ...project, destination: { kind: 'moved', serverUrl: completed } as LegacyDestination };
     const binding = root === null ? null : readRegistryEntryResult(root, home);
     if (binding?.status === 'unavailable') refuse(projectId, `${projectId}: the binding at ${root} is unreadable; restore it before cutover`, 'unavailable');
     const foreignProject = binding?.status === 'present' && binding.entry.projectId !== projectId;

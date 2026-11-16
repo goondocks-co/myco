@@ -3,6 +3,7 @@ import type { LegacyMigrationState } from '@myco/member/legacy-migration.js';
 import { LEGACY_AGENT_DEFERRAL } from '@goondocks/myco-shared/setup-guidance';
 
 export const legacyMovedNotice = (name: string, state: 'archived' | 'deleted'): string => `${name} has been moved; its project is ${state} on the Deployment.`;
+export const LEGACY_TRANSCRIPTS_NOT_IMPORTED = 'Earlier agent transcripts were not imported. Optional: myco cutover --import-transcripts.';
 export const LEGACY_DESTINATION_HINT = 'Some Myco 1.4 data has no destination yet; run myco setup --cutover to preview the handover.';
 
 export function legacyConfirmationHint(confirmation: LegacyMigrationState['confirmation'], projects: LegacyMigrationState['confirmationProjects'] = []): string | null {
@@ -29,7 +30,7 @@ export function legacyCaptureGuidance(migration: LegacyMigrationState) {
     : migration.state === 'unmoved' || migration.state === 'changed' || migration.legacyOwnsCapture === true
       ? LEGACY_AGENT_DEFERRAL : null;
   return {
-    notice: migration.terminalProjects?.map(project => legacyMovedNotice(project.name, project.state)).join(' ') ?? null,
+    notice: [migration.transcriptsNotImported ? LEGACY_TRANSCRIPTS_NOT_IMPORTED : null, ...(migration.terminalProjects?.map(project => legacyMovedNotice(project.name, project.state)) ?? [])].filter(Boolean).join(' ') || null,
     status: migration.state === 'unavailable' ? 'unavailable' as const : deferral === null ? 'ready' as const : 'deferred' as const,
     hint,
     deferral,

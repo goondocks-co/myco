@@ -13,8 +13,7 @@ import { legacyInterruption } from './fixtures/legacy-interruption.js';
 const BOUNDARIES = [
   'consent', 'destinations', 'action:1:0', 'action:1:1', 'action:1:2', 'action:3:0', 'action:3:1',
   'stopped-source:0', 'action:6:0', 'stopped-source:1', 'action:6:1', 'stopped-source:final', 'quiescent',
-  'handover', 'copy', 'vault:proj_legacy_a', 'transcripts:proj_legacy_a', 'vault:proj_legacy_b',
-  'transcripts:proj_legacy_b', 'settings:https://legacy-a.invalid', 'settings:https://legacy-b.invalid',
+  'handover', 'copy', 'vault:proj_legacy_a', 'vault:proj_legacy_b', 'settings:https://legacy-a.invalid', 'settings:https://legacy-b.invalid',
 ] as const;
 
 const repo = fileURLToPath(new globalThis.URL('../../', import.meta.url));

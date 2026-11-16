@@ -28,8 +28,8 @@ import { ServerClient } from '@myco/member/transport.js';
  *   6. stop and remove the 1.4 daemon units, found by reading the unit files,
  *      and ask each 1.4 home's own running daemon to exit;
  *   7. copy every 1.4 vault and verify the copy;
- *   8. import from the copies (`myco import --legacy`), then the agents'
- *      transcripts;
+ *   8. import from the copies (`myco import --legacy`), then optionally import
+ *      the agents' transcripts with --import-transcripts;
  *   9. cache the settings the Deployment holds for this machine, and name the
  *      plan folders 1.4 watched, which are set on the dashboard, never carried.
  *
@@ -87,16 +87,18 @@ if another installation holds anything it would take. Then it backs up each
 agent settings file it changes, connects every folder a 1.4 project names,
 points the agents 2.0 captures at 2.0, removes 1.4 from every other agent,
 hands the agents' settings to 2.0, stops the 1.4 service, copies each 1.4
-vault and checks the copy, and brings the vaults' history and your agents'
-transcripts to the Deployment. The 1.4 vaults are left where they are; no
-data is deleted. Safe to run again: it finishes what an earlier run left.
+vault and checks the copy, and brings the vaults' history to the Deployment.
+Importing earlier agent transcripts is optional; use --import-transcripts.
+The 1.4 vaults are left where they are; no data is deleted. Safe to run again: it finishes what an earlier run left.
 
 Options:
   --legacy-home <dir>  A Myco 1.4 home to cut over (default: ~/.myco, and this
                        home when it holds 1.4 vaults); repeat for several
+  --import-transcripts Import earlier agent transcripts (optional)
   --map <dir>=<root>   Import transcripts recorded in <dir> (or, with a
                        trailing *, in every sibling directory named like it)
-                       into the project connected at <root>; repeat for several
+                       into the project connected at <root>; repeat for several.
+                       Requires --import-transcripts
   --route <id>=<url>   Route one 1.4 project to a signed-in Deployment; repeat
   --skip <id>          Skip one 1.4 project's history; keep its spool; repeat
   --server <url>       Fallback for projects with no repository binding
@@ -111,6 +113,7 @@ interface Parsed {
   error?: string;
   help?: true;
   dismissEarlierCopies?: true;
+  importTranscripts?: boolean;
   legacyHomes: string[];
   mappings: DirectoryMapping[];
   serverUrl?: string;
@@ -129,6 +132,9 @@ export function parseArgs(args: readonly string[]): Parsed {
         return { ...parsed, help: true };
       case '--dismiss-earlier-copies':
         parsed.dismissEarlierCopies = true;
+        break;
+      case '--import-transcripts':
+        parsed.importTranscripts = true;
         break;
       case '--dry-run':
         parsed.dryRun = true;
@@ -160,7 +166,8 @@ export function parseArgs(args: readonly string[]): Parsed {
         return { ...parsed, error: `unknown option ${arg}` };
     }
   }
-  if (parsed.dismissEarlierCopies && (parsed.dryRun || parsed.routes.size > 0 || parsed.skips.size > 0 || parsed.serverUrl !== undefined || parsed.mappings.length > 0)) return { ...parsed, error: '--dismiss-earlier-copies accepts only --legacy-home alongside it' };
+  if (parsed.dismissEarlierCopies && (parsed.importTranscripts || parsed.dryRun || parsed.routes.size > 0 || parsed.skips.size > 0 || parsed.serverUrl !== undefined || parsed.mappings.length > 0)) return { ...parsed, error: '--dismiss-earlier-copies accepts only --legacy-home alongside it' };
+  if (parsed.mappings.length > 0 && !parsed.importTranscripts) return { ...parsed, error: '--map requires --import-transcripts; no transcripts were imported. Run myco cutover --import-transcripts --map <dir>=<root>.' };
   return parsed;
 }
 
@@ -272,6 +279,7 @@ function backupAction(file: string, backup: CutoverBackup, mycoHome: string): Ac
 const removalOutcome = (f: LegacyFinding): string => `remove ${f.file} :: ${f.location.kind} :: ${(f.serversPath ?? []).join('/')} :: ${f.subject}`;
 
 export interface CutoverOptions {
+  importTranscripts?: boolean;
   routes?: ReadonlyMap<string, string>;
   skips?: ReadonlySet<string>;
   legacyHomes?: readonly string[];
@@ -813,7 +821,10 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
       if (copies.size !== vaults.length) { problem('not every vault has a verified copy; nothing was imported'); return false; }
 
       // 8. The imports.
-      step(8, 'Bring each project\'s 1.4 history and transcripts to its Deployment');
+      step(8, 'Bring each project\'s 1.4 history to its Deployment');
+      out(cutover.options.importTranscripts
+        ? '   Optional import requested: earlier agent transcripts from the configured harness homes for each routed project, including --map directories, will be imported.'
+        : '   Importing earlier agent transcripts is optional; use myco cutover --import-transcripts.');
       const importedProjects = new Map<string, LegacyImportReport['projects']>();
       const imported = await withImportInterrupt(deps.signal, async (signal) => {
         const importDeps = { fetch: deps.fetch, now: deps.now, mycoHome, machineId, sleep: deps.sleep, signal, pace: deps.pace ?? IMPORT_PACE_PER_MINUTE };
@@ -837,7 +848,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             return membership === undefined ? 'sign-in-required' as const : legacyDestinationEnd(new ServerClient({ ...membership, projectId: project.projectId }, deps.fetch));
           };
           if (!resumedVault) {
-            const legacy: LegacyImportReport = await runLegacyImport({ sources: [copies.get(project.vault)!], project: project.projectId, serverUrl: dest.serverUrl, dryRun: dry }, { ...importDeps, progress: (l) => out(`   ${l}`) });
+            const legacy: LegacyImportReport = await runLegacyImport({ sources: [copies.get(project.vault)!], project: project.projectId, serverUrl: dest.serverUrl, dryRun: dry, includeTranscripts: cutover.options.importTranscripts === true }, { ...importDeps, progress: (l) => out(`   ${l}`) });
             for (const line of legacyReportLines(legacy, dry, { policySummary: false })) out(`   ${line}`);
             importedProjects.set(dest.serverUrl, [...(importedProjects.get(dest.serverUrl) ?? []), ...legacy.projects]);
             const complete = legacy.refused === undefined && legacy.projects.length > 0 && legacy.projects.every(legacyProjectImportComplete);
@@ -854,7 +865,11 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
             deleted = legacy.deleted;
           } else {
             deleted = readLegacyVault(copies.get(project.vault)!).filter(source => source.projectId === project.projectId).flatMap(source => legacyDeletedSessionIds(source, machineId));
-            out(`   vault history for ${project.projectId} is confirmed; only the transcript pass remains`);
+            out(`   vault history for ${project.projectId} is confirmed`);
+          }
+          if (!cutover.options.importTranscripts) {
+            if (receipt?.transcripts?.state === 'partial') problem(`${project.projectId}: an earlier transcript import did not finish; run myco cutover --import-transcripts to resume it`);
+            continue;
           }
           if (resumedVault) {
             const endedBy = await destinationEnd();
@@ -891,7 +906,7 @@ function prepareCutover(cutover: CutoverPlan, deps: CutoverDeps) {
           for (const line of reportLines(transcripts, false)) out(`   ${line}`);
           if (!transcriptsComplete) {
             const why = transcripts.projects.filter((p) => p.endedBy !== undefined).map((p) => `${p.projectId}: ${p.stoppedBy ?? transcripts.stoppedBy ?? STOPPED_WORDS[p.endedBy!] ?? p.endedBy}`);
-            problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.stoppedBy || transcripts.refused || 'no reason given'}); run the cutover again to finish it`);
+            problem(`the transcript import stopped before it finished (${why.join('; ') || transcripts.stoppedBy || transcripts.refused || 'no reason given'}); run myco cutover --import-transcripts again to finish it`);
           }
         }
         return !signal.aborted;

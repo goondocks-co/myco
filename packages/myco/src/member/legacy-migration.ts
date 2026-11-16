@@ -52,7 +52,7 @@ export type LegacyMigrationState = (
   | { state: 'unavailable'; file: string; detail: string }
   | { state: 'changed'; warning: string }
   | { state: 'none' | 'unmoved' | 'needs-destination' | 'handover-pending' | 'partial' | 'moved' }
-) & { legacyOwnsCapture?: true; confirmation?: LegacyConfirmation; confirmationProjects?: { name: string; confirmation: LegacyConfirmation }[]; ignoredLineage?: number; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
+) & { legacyOwnsCapture?: true; confirmation?: LegacyConfirmation; confirmationProjects?: { name: string; confirmation: LegacyConfirmation }[]; ignoredLineage?: number; transcriptsNotImported?: true; terminalProjects?: { name: string; state: 'archived' | 'deleted' }[] };
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -150,14 +150,19 @@ export function terminalLegacyTranscript(pass: MigrationPass | undefined): boole
   return pass?.state === 'none' && ['project_archived', 'project_deleted'].includes(pass.endedBy ?? '');
 }
 
+function legacyDestinationPasses(project: MigrationProjectReceipt) {
+  const destination = project.destination;
+  return destination !== undefined && 'key' in destination ? project.destinations?.[destination.key] ?? project : project;
+}
+
 /** Completion belongs to the recorded source and destination, independently of live Project state. */
 export function completedLegacyDestination(receipt: MigrationReceipt, project: MigrationProjectReceipt): string | null {
   const destination = project.destination;
   if (destination === undefined || !('serverUrl' in destination)) return null;
   const delivered = project.destinations?.[destination.key];
-  const passes = delivered ?? project;
+  const passes = legacyDestinationPasses(project);
   if ((delivered !== undefined && (delivered.serverUrl !== destination.serverUrl || delivered.digest !== receipt.digest))
-    || !completedLegacyVault(passes.vault) || !['complete', 'none'].includes(passes.transcripts?.state ?? '')
+    || !completedLegacyVault(passes.vault) || (passes.transcripts !== undefined && !['complete', 'none'].includes(passes.transcripts.state))
     || (passes.transcripts?.endedBy !== undefined && !terminalLegacyTranscript(passes.transcripts)) || (passes.transcripts?.failures?.length ?? 0) > 0) return null;
   return destination.serverUrl;
 }
@@ -230,6 +235,7 @@ export function legacyMigrationState(home: string, opts: { homeDir?: string; hom
       && Object.values(receipt.projects).every(project => project.evidence?.kind === 'deployment')));
     if ((!states.some((s) => s.handover !== undefined) && !confirmed) || sources.units.length > 0 || sources.registrations.length > 0) return observed({ state: 'handover-pending' });
     const projects = held.flatMap(({ selected }) => Object.values(selected?.receipt.projects ?? {}));
+    const transcriptsNotImported = projects.some(project => project.destination !== undefined && 'serverUrl' in project.destination && legacyDestinationPasses(project).transcripts === undefined);
     const ignoredLineage = projects.reduce((sum, project) => sum + (project.evidence?.ignoredLineage ?? 0), 0);
     const names = projects.some(project => terminalLegacyTranscript(project.transcripts)) ? legacyProjectNames(held.flatMap(({ vault, selected }) => Object.entries(selected?.receipt.projects ?? {}).map(([projectId, project]) => ({ vault: vault.path, projectId, root: project.root })))) : new Map<string, string>();
     const terminalProjects = held.flatMap(({ selected }) => {
@@ -240,7 +246,7 @@ export function legacyMigrationState(home: string, opts: { homeDir?: string; hom
         state: project.transcripts!.endedBy === 'project_archived' ? 'archived' as const : 'deleted' as const,
       }));
     });
-    return { state: partial ? 'partial' : 'moved', ...(ignoredLineage > 0 ? { ignoredLineage } : {}),
+    return { state: partial ? 'partial' : 'moved', ...(transcriptsNotImported ? { transcriptsNotImported: true } : {}), ...(ignoredLineage > 0 ? { ignoredLineage } : {}),
       ...(terminalProjects.length > 0 ? { terminalProjects } : {}) };
   } catch (error) {
     const file = error instanceof LegacyMigrationUnreadable ? error.file : error instanceof Error && 'path' in error ? String(error.path) : home;
