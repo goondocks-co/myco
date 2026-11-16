@@ -1,9 +1,9 @@
 /**
- * Nothing of the application is painted before the session is known.
+ * The session gate shows visible progress before protected content mounts.
  *
  * The shell is a static bundle served ahead of the Worker, so the sign-in
  * redirect is the client's to make: until `GET /auth/me` answers, the document
- * holds a blank surface and no data request has left the browser; then exactly
+ * shows sign-in progress and only the session request has left the browser; then exactly
  * one of the sign-in page, the not-a-member page, or the application.
  */
 import { dashboardMe } from '../helpers/dashboard-permissions';
@@ -70,12 +70,13 @@ describe('the auth gate', () => {
   });
 
   for (const path of ['/', '/projects', '/p/proj_1/sessions']) {
-    it(`paints only the splash on ${path} while the session is unknown, and asks for nothing but /auth/me`, async () => {
+    it(`shows sign-in progress on ${path} while the session is unknown, and asks for nothing but /auth/me`, async () => {
       const { asked } = server({ '/auth/me': never, '/api/projects': () => Response.json(dashboardMe({ projects: [] })) });
       mount(path);
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(screen.getByLabelText('Loading')).toBeTruthy();
       expect(screen.queryByRole('navigation')).toBeNull();
+      expect(screen.getByText('Checking your sign-in…')).toBeTruthy();
       expect(screen.queryByRole('main')).toBeNull();
       expect(screen.queryByRole('heading')).toBeNull();
       expect(screen.queryByText('Sign in with GitHub')).toBeNull();
@@ -93,12 +94,15 @@ describe('the auth gate', () => {
     expect(asked).toEqual(['/auth/me']);
   });
 
-  it('a server that does not answer the session gets the unreachable state after the retries, not the application', async () => {
-    const { asked } = server({ '/auth/me': () => new Response(null, { status: 503 }) });
+  it('shows a restarting message on the first failed session read and recovers without a reload', async () => {
+    let reachable = false;
+    server({ '/auth/me': () => reachable ? Response.json(dashboardMe(ME)) : new Response(null, { status: 503 }), '/api/projects': () => Response.json({ projects: [] }) });
     mount('/projects');
-    expect(await screen.findByText('This server is not answering')).toBeTruthy();
+    expect(await screen.findByText('Myco is restarting or unreachable')).toBeTruthy();
     expect(screen.queryByRole('navigation')).toBeNull();
-    expect(asked).toEqual(['/auth/me', '/auth/me', '/auth/me']);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    reachable = true;
+    expect(await screen.findByRole('heading', { name: 'Projects', level: 1 }, { timeout: 4_000 })).toBeTruthy();
   });
 
   it('a session that ends while the dashboard is open hands the view back to the gate, asking /auth/me once more and no more', async () => {

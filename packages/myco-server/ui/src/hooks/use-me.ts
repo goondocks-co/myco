@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
-import { fetchJson } from '../lib/api';
+import { ApiError, fetchJson, SignedOutError } from '../lib/api';
 import { ME_KEY } from '../lib/query-client';
 import { live } from '../lib/live';
 
@@ -44,9 +44,12 @@ export function scopeOf(me: Me | undefined, key: 'machines' | 'machineSettings' 
   return { scope: 'none', reason: 'This permission is unavailable. Refresh the page.' };
 }
 
-/** `enabled: false` leaves the session unasked, for a page that shows the same thing to everyone. */
-export function useMe(options: { enabled?: boolean } = {}) {
-  return useQuery({ queryKey: [...ME_KEY], queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), enabled: options.enabled ?? true, ...live('still') });
+/** The gate owns automatic recovery; every other observer shares its session read. */
+export function useMe(options: { enabled?: boolean; recover?: true } = {}) {
+  const fresh = options.recover
+    ? live<Me>({ whileFailed: error => !(error instanceof SignedOutError) && !(error instanceof ApiError && error.code === 'sign_in_unconfigured') })
+    : live('still');
+  return useQuery({ queryKey: [...ME_KEY], queryFn: ({ signal }) => fetchJson<Me>('/auth/me', signal), enabled: options.enabled ?? true, ...fresh });
 }
 
 /** Whether the Deployment permits ordinary administration for this viewer. */
