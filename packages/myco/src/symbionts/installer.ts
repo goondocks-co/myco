@@ -742,6 +742,8 @@ export class SymbiontInstaller {
   private readMcpFile(filePath: string, toml: boolean): Record<string, unknown> | null {
     const raw = this.readMemberFile(filePath);
     if (raw === null) return null;
+    // An agent may create its configuration file empty (Antigravity does); an empty file is an empty configuration, not a damaged one.
+    if (raw.trim() === '') return {};
     try {
       const parsed: unknown = toml ? structuredClone(parseToml(raw)) : JSON.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new SyntaxError('expected a configuration object');

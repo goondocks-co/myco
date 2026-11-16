@@ -126,9 +126,12 @@ it('does not enroll absent harnesses from configuration directories alone', () =
   } finally { process.env.PATH = previousPath; }
 });
 
-it('removes a Myco-only Copilot hooks file completely', async () => {
+it('connects through a configuration file the agent left empty, and removes a Myco-only Copilot hooks file completely', async () => {
   const deps = { cwd: scratch, mycoHome, env: {}, stdout: () => {}, stderr: () => {} };
+  fs.mkdirSync(path.join(home, '.copilot'), { recursive: true });
+  fs.writeFileSync(path.join(home, targets[0]!.mcp), '');
   await memberCli(['provision', 'copilot', '--server', 'https://myco.example'], deps);
+  expect(read(targets[0]!.mcp).mcpServers.myco).toBeDefined();
   expect(fs.existsSync(path.join(home, targets[0]!.hooks))).toBe(true);
   await memberCli(['provision', '--remove', 'copilot'], deps);
   expect(fs.existsSync(path.join(home, targets[0]!.hooks))).toBe(false);
