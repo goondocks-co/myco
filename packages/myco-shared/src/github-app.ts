@@ -43,7 +43,7 @@ export function githubAppAccess(options: { clientId: string; privateKey: string;
       let response: Response;
       try {
         response = await options.fetchImpl('https://api.github.com/app', {
-          redirect: 'error', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
           headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${unsigned}.${base64url(new Uint8Array(signature))}`, 'x-github-api-version': '2022-11-28', 'user-agent': 'Myco' },
         });
       } catch { throw new GitHubAppError('GitHub App verification could not reach GitHub. Check connectivity and run the import again.'); }

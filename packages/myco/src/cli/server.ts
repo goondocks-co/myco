@@ -136,7 +136,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   backup-credential --target cloudflare   Add or rotate the backup access key using a hidden prompt or
                                           piped stdin. Checks access before saving it on the server.
   github-app --existing --client-id <id> --client-secret-stdin --url <url> [--target local|cloudflare]
-                                          Recover sign-in with an existing App and --private-key-file <pem>.
+                                          Install or rotate sign-in credentials with an existing App.
+                                          Repository-key setup follows separately; sign-in needs no App key.
   github-app --url <https://…> [--org <name>] [--app-name <text>] [--target local|cloudflare]
                                           --name is an alias for --app-name.
                                           Native setup requires a stopped server. Stop a foreground run
@@ -632,15 +633,18 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       if (keyFile === 'true' || keyFile === '') fail('App key was not saved: --private-key-file needs a path. Next: myco server github-app --url <url> --private-key-file <downloaded.pem>.');
       const target = resolveSignInTarget(flags.get('target'));
       if (target.kind === 'local') requireNativeDeps();
-      const privateKeyPem = keyFile === undefined ? (flags.has('private-key-stdin') ? await (deps.readSecret ?? readSignInSecret)() : undefined) : nodeFs.readFileSync(keyFile, 'utf8');
-      if (keyFile !== undefined) console.log(`Downloaded private key remains at ${keyFile}; remove it after confirming dashboard status.`);
+      const readPrivateKey = keyFile === undefined ? (flags.has('private-key-stdin') ? () => (deps.readSecret ?? readSignInSecret)() : undefined) : async () => {
+        const pem = nodeFs.readFileSync(keyFile, 'utf8');
+        console.log(`Downloaded private key remains at ${keyFile}; remove it after confirming dashboard status.`);
+        return pem;
+      };
       const clientSecret = existing ? await (deps.readSecret ?? readSignInSecret)() : undefined;
       if (target.kind === 'cloudflare') for (const line of credentialLines) report(line);
       const result = await registerGitHubApp({
         url: url!,
         org: flags.get('org'),
         name: flags.get('app-name') ?? flags.get('name'),
-        privateKeyPem,
+        readPrivateKey,
         existing: existing ? { clientId: clientId!, clientSecret: clientSecret! } : undefined,
         target,
         runner: deps.runner,
@@ -650,11 +654,12 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       });
       console.log(`\nGitHub App:  ${result.app.name} (${result.app.htmlUrl})`);
       console.log(`Client ID:   ${result.app.clientId}`);
-      console.log(`Owner: ${existing || result.repositoryAccess !== undefined ? 'not checked' : result.app.ownerLogin ?? 'not reported by GitHub'}`);
+      console.log(`Owner: ${existing || !result.signInInstalled ? 'not checked' : result.app.ownerLogin ?? 'not reported by GitHub'}`);
       console.log(`Callback:    ${result.callbackUrl}${existing ? ' must be listed in the app' : ''}`);
-      if (result.repositoryAccess !== 'instructions') console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
+      if (result.signInInstalled || result.repositoryAccess !== 'instructions') console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
       if (result.verified.ok) console.log(`Sign-in:     ${new URL(url!).origin} sends sign-in to GitHub with client ${result.app.clientId}; sign in once to confirm.`);
       else if (result.verified.pendingStart) console.log(`Next:        ${result.verified.reason}`);
+      else if (result.verified.notChecked) console.log(result.verified.reason);
       else fail(`Installed, but sign-in did not verify: ${result.verified.reason}`);
       return;
     }

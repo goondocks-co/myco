@@ -225,7 +225,7 @@ describe('new owner journeys (a) and (b)', () => {
     closers.push(server.close);
     const deps = { ...base(), ...server.deps, ask: async () => 'yes' };
     expect(await run(['--create', target, ...(target === 'local' ? ['--port', '8787', '--serve', 'service'] : ['--account-id', ACCOUNT, '--url', HOSTED_URL]), '--no-agents', '--no-runner'], deps)).toBe(2);
-    expect(errors.at(-1)).toBe(`myco setup: ${target === 'local' ? 'Run myco server create --target local first. ' : ''}Use myco server github-app --target ${target} --url ${address} --existing --client-id <id> --client-secret-stdin --private-key-file <downloaded.pem> with its regenerated secret and App private key, then run myco setup again.`);
+    expect(errors.at(-1)).toBe(`myco setup: ${target === 'local' ? 'Run myco server create --target local first. ' : ''}Use myco server github-app --target ${target} --url ${address} --existing --client-id <id> --client-secret-stdin with its regenerated secret, then run myco setup again.`);
     expect(server.github.calls).toHaveLength(0);
   });
 

@@ -29,6 +29,7 @@ export const HEAVY_AND_SCALE_SUITES = [
   'tests/myco-server/embedding-vector-pages.test.ts',
   'tests/myco-server/events-read-budget-runtime.test.ts',
   'tests/myco-server/extraction-coverage-budget.test.ts',
+  'tests/myco-server/github-app-workerd.test.ts',
   'tests/myco-server/injection-served-cost.test.ts',
   'tests/myco-server/injection-snapshot-budget-runtime.test.ts',
   'tests/myco-server/legacy-history-budget.test.ts',

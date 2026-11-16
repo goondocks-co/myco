@@ -246,7 +246,7 @@ async function signInOptions(ctx: Context): Promise<RegisterOptions> {
   await consent(ctx, 'signin', { url: answers.url, owner, name }, `Register a GitHub sign-in app named ${JSON.stringify(name)}, owned by ${owner}?`);
   if (!ctx.yes && !hasPendingSignIn(signInTarget(ctx), answers.url) && await confirm(ctx.ask, 'Do you already have a GitHub sign-in app for this address?', '--yes to register a new app')) {
     const createFirst = isLocal(ctx) && fact(ctx, 'deployment.create')?.state !== 'complete' ? 'Run myco server create --target local first. ' : '';
-    throw new Error(`${createFirst}Use myco server github-app --target ${answers.target} --url ${answers.url} --existing --client-id <id> --client-secret-stdin --private-key-file <downloaded.pem> with its regenerated secret and App private key, then run myco setup again.`);
+    throw new Error(`${createFirst}Use myco server github-app --target ${answers.target} --url ${answers.url} --existing --client-id <id> --client-secret-stdin with its regenerated secret, then run myco setup again.`);
   }
   return {
     ...ctx.deps.github, url: answers.url, name, org: answers.org, runner: ctx.deps.cloudflare?.runner,

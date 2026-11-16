@@ -77,7 +77,7 @@ describe('the manifest', () => {
 });
 
 /** A fake GitHub: converts one code into one app, records every request. */
-function fakeGitHub(app: Partial<{ name: string; owner: { login: string } | null }> = {}) {
+function fakeGitHub(app: Partial<{ name: string; owner: { login: string } | null; pem: string | undefined }> = {}) {
   const requests: { url: string; method: string }[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -93,12 +93,13 @@ function fakeGitHub(app: Partial<{ name: string; owner: { login: string } | null
 }
 
 describe('the conversion', () => {
-  it('posts the code to GitHub and reads the credentials, retaining the normalized key and discarding the webhook secret', async () => {
+  it('posts the code to GitHub and reads the credentials, retaining the downloaded key and discarding the webhook secret', async () => {
     const gh = fakeGitHub();
     const app = await convertManifestCode('good', gh.fetchImpl);
-    expect(app).toEqual({ clientId: 'Iv1.deadbeef', clientSecret: 's3cr3t', privateKey: APP_KEY, slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', ownerLogin: 'goondocks-co' });
+    expect(app).toEqual({ clientId: 'Iv1.deadbeef', clientSecret: 's3cr3t', privateKeyPem: APP_PEM, slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', ownerLogin: 'goondocks-co' });
     expect(gh.requests).toEqual([{ url: 'https://api.github.com/app-manifests/good/conversions', method: 'POST' }]);
     await expect(convertManifestCode('stale', gh.fetchImpl)).rejects.toThrow(RegistrationRefused);
+    expect(await convertManifestCode('good', fakeGitHub({ pem: undefined }).fetchImpl)).toMatchObject({ clientId: 'Iv1.deadbeef', clientSecret: 's3cr3t' });
   });
 });
 
@@ -213,8 +214,8 @@ describe('the whole flow on a loopback listener', () => {
     expect(back.status).toBe(200);
     const result = await pending;
     await expect(fetch(pageUrl)).rejects.toThrow();
-    expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true } });
-    expect(calls.map((c) => c.args.slice(0, 4))).toEqual([['--no-install', 'wrangler', '--version'], ['--no-install', 'wrangler', 'secret', 'bulk']]);
+    expect(result).toEqual({ app: { slug: 'myco-myco-example-co', htmlUrl: 'https://github.com/apps/myco-myco-example-co', name: 'Myco (myco.example.co)', clientId: 'Iv1.deadbeef', ownerLogin: 'goondocks-co' }, callbackUrl: `${URL_}/auth/callback`, verified: { ok: true }, signInInstalled: true, repositoryAccess: 'installed' });
+    expect(Object.assign({}, ...calls.filter(call => call.args.includes('bulk')).map(call => JSON.parse(call.options!.input!)))).toEqual({ GITHUB_CLIENT_ID: 'Iv1.deadbeef', GITHUB_CLIENT_SECRET: 's3cr3t', GITHUB_APP_PRIVATE_KEY: APP_KEY });
     for (const call of calls) expect({ args: call.args.join(' '), cwd: call.options?.cwd }).toEqual({ args: call.args.join(' '), cwd: dirname(deploymentRecordPath(home)) });
     expect(calls[1]!.options?.env?.WRANGLER_LOG).toBe('log');
     expect(JSON.parse(readFileSync(join(home, 'server', 'cloudflare', 'record.json'), 'utf8')).url).toBe(URL_);

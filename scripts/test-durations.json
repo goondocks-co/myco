@@ -464,6 +464,7 @@
     "tests/myco-server/fleet-correction.test.ts": 159,
     "tests/myco-server/foreign-lineage-authority.test.ts": 1309,
     "tests/myco-server/gates.test.ts": 29836,
+    "tests/myco-server/github-app-workerd.test.ts": 2000,
     "tests/myco-server/github-app.test.ts": 1500,
     "tests/myco-server/github-refs.test.ts": 7,
     "tests/myco-server/grant-writes.test.ts": 447,

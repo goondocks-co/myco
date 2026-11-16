@@ -118,7 +118,7 @@ A home holding `server/` or a Cloudflare operator record refuses purge unless yo
 
 ## Extend or replace the GitHub App key
 
-An already configured `myco server github-app --target local|cloudflare --url <address>` extends the existing sign-in App. It never registers a replacement or changes its client secret. Follow the command’s instructions:
+An already configured `myco server github-app --target local|cloudflare --url <address>` extends the existing sign-in App. To install or rotate a sign-in pair, explicitly use `--existing --client-id <id> --client-secret-stdin`; this installs the supplied pair even when sign-in is already configured. Fresh registration and explicit credential installation finish sign-in before attempting repository-key setup. An absent, invalid or unverifiable key leaves sign-in installed and prints the command to finish repository access. Follow the command’s instructions:
 
 1. In GitHub → Settings → Developer settings → GitHub Apps (or the owning organization’s settings), open the App whose Client ID matches this Deployment. Under Permissions & events, set repository Contents, Pull requests and Metadata to Read-only and save. Leave account permissions and the callback unchanged.
 2. Approve the additional permissions for existing installations under Settings → Applications → Installed GitHub Apps → Configure.
@@ -137,7 +137,7 @@ An already configured `myco server github-app --target local|cloudflare --url <a
 
 Cloudflare stores `GITHUB_APP_PRIVATE_KEY` as a Worker secret, installed through the existing secret-bulk stdin route. Native stores the same single-line base64 PKCS#8 value in owner-only `server/local/secrets.env`; its private `.bak` can retain the prior key after rotation. An interrupted command holds the key only in its protected pending journal (0600 inside the target’s 0700 directory). No key is stored in the database or sent to members or runners. A native runner sharing the server’s OS user can read that user’s secret files; use separate OS users when that boundary is needed.
 
-The App key is replaceable, not recovery material: backups do not require it, and restore does not accept it. After restore, generate a new key in GitHub and run the import again. Sign-in works without the key. Existing Project repository tokens and release reads continue working independently during this preparation step.
+The App key is replaceable, not recovery material: backups do not require it, and restore ignores it if present in `--secrets-from`. After restore, generate a new key in GitHub and run the import again. Sign-in works without the key. Existing Project repository tokens and release reads continue working independently during this preparation step.
 
 ## Back up and restore
 
