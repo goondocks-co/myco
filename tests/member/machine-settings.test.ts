@@ -321,8 +321,10 @@ for (const skew of [-HOUR_MS, HOUR_MS]) it(`orders dashboard requests around loc
     cacheMachineSettings(server, { leaves: {}, updateRequests: requests, serverNow: serverCommandAt + 1_000 }, home, undefined, () => machineCommandAt + 1_000);
     expect(effectiveUpdateChannel(home)).toBe(requestAfterCommand ? 'beta' : 'stable');
     expect(automaticUpdatesEnabled(home)).toBe(requestAfterCommand);
-    expect(JSON.parse(machineSettingsHeaders(server, home)[MACHINE_UPDATE_HEADER]!)).toMatchObject({
+    const report = JSON.parse(machineSettingsHeaders(server, home)[MACHINE_UPDATE_HEADER]!);
+    expect(report).toMatchObject({
       requests, values: { 'update.channel': requestAfterCommand ? 'beta' : 'stable', 'update.automatic': requestAfterCommand },
     });
+    expect(JSON.parse(machineSettingsHeaders(server, home)[MACHINE_UPDATE_HEADER]!)).toEqual(report);
   }
 });

@@ -4,6 +4,8 @@ import { SERVER_SCHEMA_VERSION } from '@myco-server-worker/constants.js';
 export function authRow(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schema_version: String(SERVER_SCHEMA_VERSION),
+    machine_settings_revision: null, machine_settings_order: null, machine_update_order: null,
+    machine_update_pending: 0, machine_settings_supported: null,
     id: 'mt_1', member_id: 'mem_1', machine_id: 'machine_1',
     expires_at: 2_000, revoked_at: null,
     lineage_root: 'mt_1', lineage_started_at: 1_000, predecessor_id: null, first_used_at: null,

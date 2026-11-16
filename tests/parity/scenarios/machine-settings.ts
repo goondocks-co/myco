@@ -6,6 +6,7 @@ import { machinePlanDirs, seedMachineSettings, cacheMachineSettings } from '@myc
 import { machineSettingsPath, writeDeploymentMembership } from '@myco/member/registry.js';
 import { memberHeadersFor, type ParityScenario, type ParityTarget } from '../harness.ts';
 import { browser, deviceMachine, person, stopMember } from '../clients/identity.ts';
+import { machineMember } from '../clients/machine.ts';
 
 const LEAF = 'capture.plan_dirs';
 /** Every other leaf a machine holds, at its default: the folders it captures repositories under, and none told to connect. */
@@ -127,6 +128,34 @@ export const machineSettings: ParityScenario = {
       expect({ here: machinePlanDirs(target.url, home), there: machinePlanDirs(elsewhere, home) })
         .toEqual({ here: ['~/notes/plans', 'docs/plans'], there: ['~/other-deployment'] });
       expect(fs.existsSync(machineSettingsPath(target.url, home))).toBe(true);
+
+      const member = machineMember(target, mine, home);
+      const automaticWrite = (value: boolean) => fetch(`${target.url}${updates}/update.automatic`, { method: 'PUT', headers: owner, body: JSON.stringify({ value }) });
+      const automatic = async () => (await readUpdates()).find(row => row.leaf === 'update.automatic');
+      await member.pass();
+      expect(member.paths()).toEqual(['/events']);
+      await member.pass(0);
+      expect(member.paths()).toEqual([]);
+      expect((await put(owner, MACHINE_ID, ['docs/delivery-plans'])).status).toBe(200);
+      await member.pass();
+      expect(machinePlanDirs(target.url, home)).toEqual(['docs/delivery-plans']);
+      expect((await automaticWrite(false)).status).toBe(200);
+      expect(await automatic()).toMatchObject({ application: 'pending' });
+      await member.pass();
+      expect(member.automatic()).toBe(false);
+      expect(member.paths()).toEqual(['/events', '/members/settings']);
+      expect(await automatic()).toMatchObject({ application: 'applied', effective: false });
+      expect((await automaticWrite(true)).status).toBe(200);
+      await member.pass(2);
+      expect(member.automatic()).toBe(true);
+      expect(member.paths()).toEqual(['/events', '/events']);
+      expect(await automatic()).toMatchObject({ application: 'applied', effective: true });
+      expect((await automaticWrite(false)).status).toBe(200);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      member.localAutomatic(true);
+      await member.pass();
+      expect(member.automatic()).toBe(true);
+      expect(await automatic()).toMatchObject({ application: 'applied', effective: true });
 
       // The default resets a leaf: it reads as not configured.
       expect((await put(owner, MACHINE_ID, [])).status).toBe(200);

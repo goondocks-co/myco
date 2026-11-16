@@ -14,7 +14,8 @@ import type { RelationalStore } from './adapters.js';
 import { leafRuleViolation, type LeafSpec } from './settings.js';
 import {
   acknowledgeMachineRevision, clearMachineLeaf, invalidateMachineCache, noteMachineContract, publishMachineSnapshot, putMachineLeaf,
-  reportMachineUpdates, readClaimant, readMachineClaimed, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots,
+  reportMachineUpdates, readClaimant, readMachineLeaf, readMachineRows, repairMachineLeaf, writeMachineRoots,
+  type MachineSettingRow,
 } from '../db/settings/machines.js';
 
 /**
@@ -59,7 +60,10 @@ export async function machineAccess(db: RelationalStore, actorId: string, machin
 
 /** Stored values and the revision their member last confirmed, read in one database snapshot. */
 export async function readMachineSettings(db: RelationalStore, machineId: string): Promise<MachineLeaf[]> {
-  const results = await readMachineRows(db, machineId);
+  return resolveMachineSettings(await readMachineRows(db, machineId));
+}
+
+async function resolveMachineSettings(results: MachineSettingRow[]): Promise<MachineLeaf[]> {
   const stored = new Map(results.filter((row) => row.leaf !== null).map((row) => [row.leaf, row]));
   const claim = results[0];
   const resolvedSettings = MACHINE_LEAVES.map((leaf) => {
@@ -183,30 +187,48 @@ export async function resetMachineLeaf(db: RelationalStore, machineId: string, l
  * and null for any other: a credential that joined no machine (a run's) is told nothing about any.
  */
 export async function machineBlockFor(
-  db: RelationalStore, memberId: string, machineId: string, support: { machineSettingsFeature?: boolean; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: boolean; machineUpdateReport?: MachineUpdateReport; clock?: () => number } = {},
+  db: RelationalStore, memberId: string, machineId: string, support: { machineSettingsFeature?: boolean; machineSettingsRevision?: string; machineSettingsOrder?: number; machineSettingsInvalidated?: boolean; machineUpdateReport?: MachineUpdateReport; clock?: () => number; answer?: 'changes' } = {},
 ): Promise<MachineSettingsBlock | null> {
-  if (!await readMachineClaimed(db, machineId, memberId)) return null;
-  if (support.machineSettingsFeature === true) await noteMachineContract(db, machineId, memberId);
+  let snapshot = await readMachineRows(db, machineId);
+  const claim = snapshot[0];
+  if (claim?.member_id !== memberId) return null;
+  let changed = false;
+  if (support.machineSettingsFeature === true && claim.settings_contract_supported !== 1) {
+    await noteMachineContract(db, machineId, memberId); changed = true;
+  }
   const reportOrder = support.machineSettingsOrder;
   const ordered = support.machineSettingsFeature === true && reportOrder !== undefined && Number.isSafeInteger(reportOrder) && reportOrder >= 0;
-  if (ordered && support.machineSettingsInvalidated === true) {
+  if (ordered && reportOrder > claim.settings_report_order && support.machineSettingsInvalidated === true) {
     await invalidateMachineCache(db, { machine: machineId, member: memberId, order: reportOrder });
-  } else if (ordered && isMachineSettingsRevision(support.machineSettingsRevision)) {
+    changed = true;
+  } else if (ordered && reportOrder > claim.settings_report_order && isMachineSettingsRevision(support.machineSettingsRevision)) {
     await acknowledgeMachineRevision(db, { machine: machineId, member: memberId, revision: support.machineSettingsRevision, order: reportOrder });
+    changed = true;
   }
-  if (support.machineUpdateReport !== undefined) await reportMachineUpdates(db, { machine: machineId, member: memberId, report: JSON.stringify(support.machineUpdateReport), order: support.machineUpdateReport.order });
+  if (support.machineUpdateReport !== undefined) {
+    const previous = claim.settings_cached_values === null ? null : machineUpdateReport(JSON.parse(claim.settings_cached_values)?.['$updates']);
+    if (support.machineUpdateReport.order > (previous?.order ?? -1)) {
+      await reportMachineUpdates(db, { machine: machineId, member: memberId, report: JSON.stringify(support.machineUpdateReport), order: support.machineUpdateReport.order });
+      changed = true;
+    }
+  }
+  if (changed) snapshot = await readMachineRows(db, machineId);
   for (let attempt = 0; attempt < MACHINE_SETTINGS_SNAPSHOT_ATTEMPTS; attempt += 1) {
-    const settings = await readMachineSettings(db, machineId);
+    if (snapshot[0]?.member_id !== memberId) return null;
+    const settings = await resolveMachineSettings(snapshot);
     const leaves = Object.fromEntries(settings.filter(leaf => MACHINE_LEAVES.includes(leaf.leaf)).map((leaf) => [leaf.leaf, leaf.nextEffective]));
     if (support.machineSettingsFeature !== true) return { leaves };
     const revision = settings[0]!.revision;
+    if (support.answer === 'changes' && revision === support.machineSettingsRevision && !settings.some(leaf => leaf.requestId !== undefined)) return null;
     const counter = parseMachineSettingsRevision(revision)!.counter;
-    if (await publishMachineSnapshot(db, { machine: machineId, member: memberId, revision, leaves: JSON.stringify(leaves), counter, keep: MACHINE_SETTINGS_SNAPSHOT_LIMIT })) {
+    if ((support.answer === 'changes' && revision === snapshot[0]?.settings_cached_revision)
+      || await publishMachineSnapshot(db, { machine: machineId, member: memberId, revision, leaves: JSON.stringify(leaves), counter, keep: MACHINE_SETTINGS_SNAPSHOT_LIMIT })) {
       const updates = support.machineUpdateReport === undefined ? {} : machineUpdateRequests(Object.fromEntries(
         settings.filter(row => row.requestId !== undefined).map(row => [row.leaf, { id: row.requestId, value: row.value, savedAt: row.updatedAt ?? 0 }]),
       ));
-      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates, serverNow: (support.clock ?? Date.now)() }) };
+      return { leaves, feature: MACHINE_SETTINGS_FEATURE, revision, ...(snapshot[0]?.settings_cached_revision === revision ? { cacheConfirmed: true as const } : {}), ...(support.machineUpdateReport === undefined ? {} : { updateRequests: updates, serverNow: (support.clock ?? Date.now)() }) };
     }
+    snapshot = await readMachineRows(db, machineId);
   }
   throw new Error('Machine settings changed while preparing their revision.');
 }

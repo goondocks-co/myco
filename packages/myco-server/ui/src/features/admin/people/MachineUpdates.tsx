@@ -48,7 +48,7 @@ export function MachineUpdates({ machineId, name }: { machineId: string; name: s
           onValueChange={selected => save.mutate({ leaf, value: leaf === 'update.automatic' ? selected === 'true' : selected })}
         />
         {stored.state === 'invalid' && <p role="alert" className="t-small text-bad">{stored.reason}</p>}
-        {stored.application === 'pending' && <p className="t-small text-muted">Waiting for this machine: {title.toLowerCase()} → {words(leaf, stored.nextEffective)}. It applies this when it next reads its settings and reports back.</p>}
+        {stored.application === 'pending' && <p className="t-small text-muted">Waiting for this machine: {title.toLowerCase()} → {words(leaf, stored.nextEffective)}. It checks and reports settings during agent activity. An idle or offline machine waits until activity resumes.</p>}
       </div>;
     })}
     {save.error && <p role="alert" className="t-small text-bad">Update setting was not saved: {save.error.message}</p>}

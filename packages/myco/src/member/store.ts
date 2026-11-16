@@ -227,15 +227,19 @@ export type PrivateRead<T> =
   | { ok: false; reason: 'missing' | 'unreadable' | 'loose-mode' | 'malformed'; detail?: string };
 
 /** Read and parse a private JSON file; a loose mode, an unreachable file or a parse failure reads as refused, never as data. `missing` is absence alone: every other errno is `unreadable`, so a file that is there and cannot be opened never reads as one that is not. */
-export function readPrivateJson<T>(file: string): PrivateRead<T> {
+export function readPrivateJson<T>(file: string, options?: { entry: 'owned-file' }): PrivateRead<T> {
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(file);
+    stat = options?.entry === 'owned-file' ? fs.lstatSync(file) : fs.statSync(file);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== 'ENOENT') return { ok: false, reason: 'unreadable', detail: code };
     // `stat` follows a link, so its ENOENT is the target's, not the entry's.
     return pathIsAbsent(file) ? { ok: false, reason: 'missing' } : { ok: false, reason: 'unreadable', detail: code };
+  }
+  if (options?.entry === 'owned-file') {
+    if (!stat.isFile()) return { ok: false, reason: 'unreadable', detail: 'not a regular file' };
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return { ok: false, reason: 'unreadable', detail: 'foreign-owner' };
   }
   if (!isPrivateMode(stat.mode)) return { ok: false, reason: 'loose-mode', detail: (stat.mode & 0o777).toString(8) };
   let raw: string;

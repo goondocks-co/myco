@@ -98,8 +98,10 @@ describe('member tokens', () => {
     const digest = await sha256Hex(mintMemberToken());
     expect(await authenticateServerMemberToken(fakeDb(authRow()), digest, 1_000))
       .toEqual({ memberId: 'mem_1', tokenId: 'mt_1', machineId: 'machine_1', expiresAt: 2_000, lineageRoot: 'mt_1', lineageStartedAt: 1_000, predecessorId: null, firstUsedAt: null, runtime: { runtimeLabel: null, runtimeKind: null }, rotates: true });
-    expect(await authenticateServerMemberToken(fakeDb(authRow({ predecessor_id: 'mt_0', lineage_root: 'mt_0', lineage_started_at: 500, first_used_at: 900 })), digest, 1_000))
-      .toMatchObject({ predecessorId: 'mt_0', lineageRoot: 'mt_0', lineageStartedAt: 500, firstUsedAt: 900 });
+    expect(await authenticateServerMemberToken(fakeDb(authRow({ predecessor_id: 'mt_0', lineage_root: 'mt_0', lineage_started_at: 500, first_used_at: 900,
+        machine_settings_revision: 7, machine_settings_order: 14, machine_update_order: 13, machine_update_pending: 1, machine_settings_supported: 1 })), digest, 1_000))
+      .toMatchObject({ predecessorId: 'mt_0', lineageRoot: 'mt_0', lineageStartedAt: 500, firstUsedAt: 900,
+        machineSettings: { revision: 7, order: 14, updateOrder: 13, pending: true, supported: true } });
   });
 
   it('rejects expired, revoked, unknown, and lineage-less tokens', async () => {

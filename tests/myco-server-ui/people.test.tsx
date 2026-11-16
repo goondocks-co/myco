@@ -234,13 +234,17 @@ describe('My machines', () => {
   ];
 
   it('lists a member only their own machines, with their settings and Stop, and asks no admin route', async () => {
-    const asked = deployment(me(LIN, LIN, 'member'), MINE);
+    const update = { leaf: 'update.automatic', effective: false, nextEffective: true, application: 'pending' };
+    const asked = deployment(me(LIN, LIN, 'member'), MINE, { '/api/machines/lin_77aa00bb/settings': () => Response.json({ leaves: [update] }) });
     mount('/me/machines');
     expect(await screen.findByRole('heading', { level: 1, name: 'My machines' })).toBeTruthy();
     const machines = await screen.findByRole('list', { name: 'Machines' });
     await waitFor(() => expect(within(machines).getAllByRole('listitem')).toHaveLength(1));
     expect(machines.textContent).toContain('Lin’s build box');
     expect(machines.textContent).toMatch(/^Lin’s build boxallowed to write · first signed in/);
+    expect(await screen.findByText('Automatic updates: Off · last reported by this machine')).toBeTruthy();
+    expect(screen.getByText(/Waiting for this machine: automatic updates → On/).textContent).toContain('An idle or offline machine waits until activity resumes.');
+    expect(screen.queryByText('Automatic updates: On · last reported by this machine')).toBeNull();
     fireEvent.keyDown(within(machines).getByRole('button', { name: 'More for Lin’s build box' }), { key: 'Enter' });
     expect(within(await screen.findByRole('menu')).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['Rename', MACHINE_SETTINGS_CONTROLS.action, 'What it wrote', 'Stop']);
     expect(screen.queryByRole('button', { name: INVITE_CONTROLS.button })).toBeNull();

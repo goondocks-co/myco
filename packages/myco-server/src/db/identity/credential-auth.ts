@@ -1,8 +1,14 @@
+import { MACHINE_UPDATE_LEAVES } from '@goondocks/myco-shared/member-protocol';
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet, write, type Bound } from '../index.js';
 
 export interface AuthRow {
   schema_version: string;
+  machine_settings_revision: number | null;
+  machine_settings_order: number | null;
+  machine_update_order: number | null;
+  machine_update_pending: number;
+  machine_settings_supported: number | null;
   id: string | null;
   member_id: string | null;
   machine_id: string | null;
@@ -25,10 +31,15 @@ const authentication = read<[digest: string], AuthRow>({ name: 'credentialAuth.a
   `SELECT s.value AS schema_version,
                      t.id, t.member_id, t.machine_id, t.expires_at, t.revoked_at,
                      t.lineage_root, t.lineage_started_at, t.predecessor_id, t.first_used_at,
-                     t.runtime_label, t.runtime_kind, t.rotates, m.id AS member_live
+                     t.runtime_label, t.runtime_kind, t.rotates, m.id AS member_live,
+                     c.settings_revision AS machine_settings_revision, c.settings_report_order AS machine_settings_order,
+                     c.settings_contract_supported AS machine_settings_supported,
+                     CASE WHEN json_valid(c.settings_cached_values) THEN json_extract(c.settings_cached_values,'$."$updates".order') END AS machine_update_order,
+                     EXISTS(SELECT 1 FROM machine_settings WHERE machine_id=c.machine_id AND leaf IN (${MACHINE_UPDATE_LEAVES.map(leaf => `'${leaf}'`).join(',')})) AS machine_update_pending
                 FROM schema_meta s
                 LEFT JOIN member_credentials t ON t.token_hash = ?1
                 LEFT JOIN members m ON m.id = t.member_id AND m.revoked_at IS NULL
+                LEFT JOIN machine_claims c ON c.machine_id = t.machine_id AND c.member_id = t.member_id
                WHERE s.key = 'version'` });
 const replay = read<[digest: string], ReplayRow>({ name: 'credentialAuth.replay', sql:
   `SELECT p.id, p.member_id, p.lineage_root, p.machine_id, p.issued_at, s.id AS successor_id, s.first_used_at
