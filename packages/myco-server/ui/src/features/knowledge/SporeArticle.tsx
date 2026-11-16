@@ -1,5 +1,4 @@
 import { ActionLink, Breadcrumbs, Card, CopyButton, ErrorState, FactRow, FactsPanel, ItemLink, LoadingState, Markdown, StatusChip, TypeChip } from '../../design';
-import { useMembers } from '../../hooks/use-access';
 import { useIsAdmin } from '../../hooks/use-me';
 import { useSporeArticle, useSporeNeighbours } from '../../hooks/use-knowledge';
 import { useSession } from '../../hooks/use-sessions';
@@ -11,8 +10,9 @@ import { NotFound } from '../../pages/NotFound';
 import { KNOWLEDGE_SUFFIX, projectPath, runPath } from '../../routes/nav';
 import { PageScope } from '../../routes/scope';
 import type { SporeArticleAnswer } from './wire';
+import { useMemberNames } from '../admin/members';
 import { RetiredNote, SporeStatusControl, useRestoredWords } from './SporeRetirement';
-import { authorName, dayHeading, DEFAULT_SPORE_STATUS, IMPORTED_AUTHOR_WORDS, RETIRED_SPORE_STATUS, sporeAuthor, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTags, sporeTypeWord } from './words';
+import { dayHeading, DEFAULT_SPORE_STATUS, IMPORTED_AUTHOR_WORDS, RETIRED_SPORE_STATUS, sporeAuthor, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTags, sporeTypeWord } from './words';
 import { dateTimeWords, dayWords } from '@goondocks/myco-shared/time-words';
 
 /** The top of the importance scale a writer assigns on. */
@@ -161,7 +161,7 @@ function Neighbours({ projectId, ids, label, now }: { projectId: string; ids: re
 function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projectId: string; now: number }) {
   const { spore } = answer;
   const author = sporeAuthor(spore);
-  const members = useMembers();
+  const nameOf = useMemberNames();
   return (
     <Card className="flex flex-col gap-s3" data-spore-origin="">
       <h2 className="t-h3 text-ink">Where it came from</h2>
@@ -176,10 +176,7 @@ function Origin({ answer, projectId, now }: { answer: SporeArticleAnswer; projec
       )}
       {author.kind === 'member' && (
         <p className="t-small text-ink-2" data-spore-author="member">
-          {(() => {
-            const name = authorName(author.memberId, members.data?.members);
-            return name === null ? 'Saved by a member.' : `Saved by ${name}.`;
-          })()}
+          Saved by {nameOf(author.memberId) ?? 'a member'}.
         </p>
       )}
       {author.kind === 'imported' && <p className="t-small text-ink-2" data-spore-author="imported">{IMPORTED_AUTHOR_WORDS}.</p>}
