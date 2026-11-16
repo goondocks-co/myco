@@ -1042,6 +1042,12 @@ main() {
   mv -f "$MARKER_FILE" "$MYCO_HOME_DIR/install.json"
   MARKER_FILE=""
 
+  if [ "$CHANNEL_EXPLICIT" = 1 ] && [ "$LEGACY_INSTALL" = 0 ]; then
+    if ! run_bounded 30 env MYCO_HOME="$MYCO_HOME_DIR" "${BIN_DIR}/myco" config set update.channel "$CHANNEL"; then
+      warn "Could not record the release channel. Run: myco config set update.channel ${CHANNEL}"
+    fi
+  fi
+
   myco_setup_path "${BIN_DIR}/myco"
 
   echo ""

@@ -19,12 +19,13 @@ import { tempMycoHome } from './helpers/server.js';
 
 const revision = (counter: number) => `m${counter}-${'a'.repeat(64)}`;
 
-function runMachineChild(home: string, script: string): string {
+function runMachineChild(home: string, script: string, options: { quiet?: boolean } = {}): string {
   const child = spawnSync(process.execPath, ['-e', script], {
     cwd: process.cwd(), encoding: 'utf8',
     env: { ...process.env, HOME: home, CODEX_HOME: path.join(home, 'codex'), CLAUDE_CONFIG_DIR: path.join(home, 'claude'), MYCO_HOME: home },
   });
   expect(child.status).toBe(0);
+  if (options.quiet) expect(child.stderr).toBe('');
   return child.stdout.trim();
 }
 
@@ -292,6 +293,16 @@ it('keeps capture settings when damaged installation preferences prevent an upda
     expect(effectiveUpdateChannel(home)).toBe('alpha');
     expect(warning.mock.calls.filter(([line]) => String(line).includes('update settings unavailable'))).toHaveLength(1);
   } finally { warning.mockRestore(); }
+});
+
+it('quietly reports unreadable preferences across fresh processes when no request is pending', () => {
+  const home = tempMycoHome();
+  fs.writeFileSync(path.join(home, 'install-update.json'), '{');
+  const source = import.meta.resolve('@myco/member/machine-settings.js');
+  const script = `import { machineSettingsHeaders, cacheMachineSettings } from ${JSON.stringify(source)};
+    machineSettingsHeaders('https://quiet.example', ${JSON.stringify(home)});
+    cacheMachineSettings('https://quiet.example', { leaves: {} }, ${JSON.stringify(home)});`;
+  for (let read = 0; read < 3; read++) runMachineChild(home, script, { quiet: true });
 });
 
 const HOUR_MS = 60 * 60 * 1_000;

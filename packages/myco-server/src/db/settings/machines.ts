@@ -32,7 +32,7 @@ export async function putMachineLeaf(db: RelationalStore, input: { machine: stri
 
 /** Whether the leaf still holds exactly the text the repair read. */
 const held = (machine: string, leaf: string, text: string) => `EXISTS (SELECT 1 FROM machine_settings WHERE machine_id=${machine} AND leaf=${leaf} AND value=${text})`;
-const bumpRevision = write<[machine: string, leaf: string, actor: string], { machine_id: string }>({ name: 'machineSettings.bumpOnReset', sql: `UPDATE machine_claims SET settings_revision=settings_revision+CASE WHEN EXISTS(SELECT 1 FROM machine_settings WHERE machine_id=?1 AND leaf=?2) THEN 0 ELSE 1 END
+const bumpRevision = write<[machine: string, leaf: string, actor: string], { machine_id: string }>({ name: 'machineSettings.bumpOnReset', sql: `UPDATE machine_claims SET settings_revision=settings_revision+CASE WHEN ?2 IN (${MACHINE_UPDATE_LEAVES.map(leaf => `'${leaf}'`).join(',')}) OR EXISTS(SELECT 1 FROM machine_settings WHERE machine_id=?1 AND leaf=?2) THEN 0 ELSE 1 END
   WHERE machine_id=?1 AND ${claimedBy('?1', '?3')} RETURNING machine_id` });
 const bumpRepaired = write<[machine: string, leaf: string, actor: string, invalid: string], { machine_id: string }>({ name: 'machineSettings.bumpOnRepair', sql: `UPDATE machine_claims SET settings_revision=settings_revision+CASE WHEN EXISTS(SELECT 1 FROM machine_settings WHERE machine_id=?1 AND leaf=?2) THEN 0 ELSE 1 END
   WHERE machine_id=?1 AND ${claimedBy('?1', '?3')} AND ${held('?1', '?2', '?4')} RETURNING machine_id` });

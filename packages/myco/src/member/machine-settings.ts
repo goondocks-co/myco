@@ -214,8 +214,7 @@ export function machineSettingsHeaders(serverUrl: string, mycoHome: string): Rec
         order: nextMachineAnswerOrder(order), requests: readAppliedUpdateRequests(mycoHome, deploymentKeyFor(serverUrl)),
         values: reportedUpdateValues(mycoHome),
       }) };
-    } catch (error) {
-      updateSettingsProblem(file, error);
+    } catch {
       updateReport = { [MACHINE_UPDATE_HEADER]: JSON.stringify({ order: nextMachineAnswerOrder(order), requests: {}, values: {} }) };
     }
     return {

@@ -41,7 +41,7 @@ To use another channel for one update:
 myco update --channel beta
 ```
 
-This does not change the recorded channel. An explicit channel on a repeat install does.
+This does not change the recorded channel. An explicit channel on a repeat install changes both the install record and the machine's channel preference, so the updater follows that choice and an older waiting dashboard request cannot override it.
 
 Re-running the installer without `--channel` installs from the channel recorded at install; the updater then follows the chosen channel and never downgrades.
 

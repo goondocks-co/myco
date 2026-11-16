@@ -530,3 +530,11 @@ it('checks the marker channel when the installation preferences are damaged and 
   expect(selected).toBe('alpha');
   expect(readUpdateChannelPreference(home)).toMatchObject({ channel: null, error: expect.any(String) });
 });
+
+it('repairs a non-object preference file through the local channel command', async () => {
+  const { run: config } = await import('@myco/cli/member-config.js');
+  const { readUpdateChannelPreference } = await import('@myco/install/marker-reader.js');
+  fs.writeFileSync(path.join(home, 'install-update.json'), 'null');
+  expect(await config(['set', 'update.channel', 'stable'], 'registry', { mycoHome: home })).toBe(true);
+  expect(readUpdateChannelPreference(home)).toEqual({ channel: 'stable' });
+});

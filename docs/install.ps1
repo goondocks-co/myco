@@ -532,6 +532,14 @@ try {
 }
 
 Write-Host ""
+if ($ChannelExplicit -and -not $LegacyInstall) {
+    try {
+        $result = Invoke-MycoCommand $Exe "config set update.channel $Channel" $MycoHome 30000
+        if ($result.ExitCode -ne 0) { throw 'Channel command failed.' }
+    } catch {
+        Write-Warning "Could not record the release channel. Run: myco config set update.channel $Channel"
+    }
+}
 Write-Host "Myco $Version installed to $Exe" -ForegroundColor Green
 if ($LegacyInstall) {
     Write-Host "  Myco 1.4 was updated; its existing service and capture configuration were preserved."

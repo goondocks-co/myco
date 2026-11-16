@@ -34,8 +34,11 @@ export function writeAutomaticUpdatePreference(home, enabled, publish = atomicTe
 export function writeUpdatePreferences(home, patch, publish = atomicText) {
   let previous = {};
   try { previous = JSON.parse(fs.readFileSync(path.join(home, AUTOMATIC_UPDATE_PREFERENCE_FILE), 'utf8')); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) throw new Error('Invalid installation update preferences');
+  catch (error) { if (error.code !== 'ENOENT' && (patch.machineUpdate !== undefined || !(error instanceof SyntaxError))) throw error; }
+  if (!previous || typeof previous !== 'object' || Array.isArray(previous)) {
+    if (patch.machineUpdate !== undefined) throw new Error('Invalid installation update preferences');
+    previous = {};
+  }
   const { machineUpdate, changedAt, ...preferences } = patch;
   const machineRequests = machineUpdate === undefined ? previous.machineRequests : {
     ...previous.machineRequests,

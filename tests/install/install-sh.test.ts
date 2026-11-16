@@ -228,6 +228,17 @@ function legacyHome(opts: { binary: boolean }): { home: string; vault: string; b
 }
 
 describe('the Myco 2.0 installer', () => {
+  it.skipIf(!HAS_CC)('records an explicit repeat-install channel through the installed command and keeps a failed recording nonfatal', () => {
+    const home = freshHome();
+    const from = (dir: string) => ({ MYCO_INSTALL_FROM: dir, MYCO_INSTALL_VERSION: '2.0.0-beta.2' });
+    expect(install(home, from(sources.recording), ['--channel', 'alpha']).status).toBe(0);
+    expect(install(home, from(sources.recording), ['--channel', 'beta']).status).toBe(0);
+    expect(fs.readFileSync(path.join(home, '.myco', 'commands.log'), 'utf8')).toBe('config set update.channel alpha\nconfig set update.channel beta\n');
+    const failed = install(home, from(sources.refusing), ['--channel', 'beta']);
+    expect(failed.status).toBe(0);
+    expect(failed.out).toContain('Could not record the release channel. Run: myco config set update.channel beta');
+  });
+
   it('fixture tools resolve executable files even when the shell has a builtin', () => {
     for (const name of fs.readdirSync(offlineTools).filter(name => name !== 'curl')) {
       const resolved = fs.realpathSync(path.join(offlineTools, name));

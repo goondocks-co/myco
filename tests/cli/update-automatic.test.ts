@@ -94,6 +94,12 @@ it('keeps a saved preference when another marker publication updates the install
   expect(readInstallMarker(home, true)?.channel).toBe('beta');
 });
 
+it('repairs damaged installation preferences through the automatic-update command', async () => {
+  fs.writeFileSync(preferenceFile(), '{');
+  await run(['--automatic', 'on'], deps());
+  expect(readAutomaticUpdatePreference(home)).toEqual({ enabled: true });
+});
+
 for (const flags of [
   ['--automatic', 'maybe'], ['--automatic'],
   ['--automatic', 'off', '2.0.0-alpha.1'], ['--automatic', 'on', '--target-version', '2.0.0-alpha.1'],
