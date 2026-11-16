@@ -11,6 +11,8 @@ myco member status
 
 Doctor checks this machine's memberships, server reachability, agent setup, delivery and runner records. From a connected repository it also checks authenticated project access. A local credential that has not expired is not proof the server still accepts it. The default report leads with the attention count, summarizes connected repositories and agents, and shows capture waiting and recent capture losses before the other checks. Only passed areas appear under **Also checked**. **Not verified** and the closing count name checks that could not verify runtime behavior. Use `myco doctor --all` for every check, including configuration paths, context and Myco home; its **not checked** rows say what remains unverified.
 
+Capture waiting is normal while a session is open. Doctor warns when events remain beyond the helper's two-minute deadline and short linger while their Deployment answers, or when undelivered transcripts have been quiet for two hours (the default session idle-close period). Ended sessions get the existing 15-minute tail allowance. The helper follows agent activity and exits after a short linger; it is not a resident uploader. A warning names the affected repository and its drain command. Requests from unconnected folders are informational: `--all` shows retained counts and the three busiest folders, without suggesting that those requests were lost capture.
+
 Setup status reports observed progress without changing it or contacting the server. It is useful after an interrupted setup. Neither status command repairs an installation; follow the action named by each row.
 
 ## Read the status rows

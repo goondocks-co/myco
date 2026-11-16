@@ -44,6 +44,8 @@ export interface DoctorCheck {
   detail: string;
   /** Compact outcome for the default report. */
   summary?: string;
+  /** Informational observations shown only in the detailed report. */
+  detailOnly?: boolean;
   /** Agents whose global tools configuration this check verified. */
   toolsAgents?: readonly string[];
   /** Absent where a check has only one way to fail, which its name already says. */

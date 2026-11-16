@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from '../support/fenced-fs.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,9 @@ import { RUN_DIRECTORY_MANIFEST } from '@myco/runner/run-directory.js';
 import { stubClaudeSource } from '../helpers/stub-claude-source.js';
 import { processAlive } from '../support/process-alive.js';
 import { removeWhenTestsEnd } from '../support/remove-when-tests-end.js';
+
+const cleanups = new Set<() => Promise<void>>();
+afterEach(async () => { for (const cleanup of cleanups) await cleanup(); });
 
 const BOUND_MS = 30_000;
 async function bounded<T>(work: Promise<T>): Promise<T> {
@@ -44,10 +47,12 @@ function fixture(id: 'claude-code' | 'opencode' | 'codex') {
   ]) : removeWhenTestsEnd(mkdtempSync(join(tmpdir(), 'myco-source-harness-bin-')));
   const pidFile = join(bin, 'pids.json');
   const helperReady = join(bin, 'helper.pid');
-  const helper = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(`${helperReady}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${helperReady}.tmp`)}, ${JSON.stringify(helperReady)}); setInterval(() => {}, 1000);`;
+  const parentGuard = `try { process.kill(${process.pid}, 0); } catch { process.exit(0); }`;
+  const helper = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(${JSON.stringify(`${helperReady}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${helperReady}.tmp`)}, ${JSON.stringify(helperReady)}); setInterval(() => { ${parentGuard} }, 1000);`;
   const ownership = `
 const { spawn } = require('node:child_process');
 process.on('SIGTERM', () => {});
+fs.writeFileSync(${JSON.stringify(`${pidFile}.leader`)}, String(process.pid));
 const helper = spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: ['ignore', 'inherit', 'inherit'] });
 const ready = setInterval(() => {
   if (!fs.existsSync(${JSON.stringify(helperReady)})) return;
@@ -55,11 +60,11 @@ const ready = setInterval(() => {
   fs.writeFileSync(${JSON.stringify(`${pidFile}.part`)}, JSON.stringify([process.pid, helper.pid]));
   fs.renameSync(${JSON.stringify(`${pidFile}.part`)}, ${JSON.stringify(pidFile)});
 }, 10);
-setInterval(() => {}, 1000);
+setInterval(() => { ${parentGuard} }, 1000);
 `;
   if (id === 'claude-code') {
     const executable = join(bin, 'claude');
-    writeFileSync(executable, readFileSync(executable, 'utf8').replace("const fs = require('node:fs');", `const fs = require('node:fs');\n${ownership}`).replace('process.exit(0);', 'return;'), { mode: 0o755 });
+    writeFileSync(executable, readFileSync(executable, 'utf8').replace('process.exit(0);', 'return;').replace("const fs = require('node:fs');", `const fs = require('node:fs');\n${ownership}`), { mode: 0o755 });
   } else {
     writeFileSync(join(bin, id), `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -76,12 +81,22 @@ else require('node:readline').createInterface({ input: process.stdin }).on('line
 `, { mode: 0o755 });
   }
   const pids = (): number[] => existsSync(pidFile) ? JSON.parse(readFileSync(pidFile, 'utf8')) as number[] : [];
-  return { spec, bin, repo, pids, ready: () => until(() => pids().length === 2), cleanup: async () => {
-    for (const pid of [...pids(), ...(existsSync(helperReady) ? [Number(readFileSync(helperReady, 'utf8'))] : [])]) {
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath ?? ''}`;
+  const cleanup = async () => {
+    const receipts = [helperReady, `${helperReady}.tmp`, `${pidFile}.leader`];
+    for (const pid of new Set([...pids(), ...receipts.filter(existsSync).map(file => Number(readFileSync(file, 'utf8')))])) {
+      if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
       try { process.kill(pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
-    await server.stop(true);
-  } };
+    try { await server.stop(true); } finally {
+      cleanups.delete(cleanup);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  };
+  cleanups.add(cleanup);
+  return { spec, bin, repo, pids, ready: () => until(() => pids().length === 2) };
 }
 
 describe('source containment with run process ownership', () => {
@@ -89,8 +104,6 @@ describe('source containment with run process ownership', () => {
     for (const ending of ['return', 'abort', 'consumer exception'] as const) {
       it(`${id} keeps the allocation owned until source-mode ${ending} stops its group`, async () => {
         const f = fixture(id);
-        const previousPath = process.env.PATH;
-        process.env.PATH = `${f.bin}:${previousPath ?? ''}`;
         const stopping = new AbortController();
         const iterator = driverFor(id)!.run(f.spec, stopping.signal)[Symbol.asyncIterator]();
         try {
@@ -118,9 +131,6 @@ describe('source containment with run process ownership', () => {
         } finally {
           stopping.abort();
           await bounded(iterator.return!());
-          await f.cleanup();
-          if (previousPath === undefined) delete process.env.PATH;
-          else process.env.PATH = previousPath;
         }
       }, BOUND_MS * 3);
     }
@@ -128,8 +138,6 @@ describe('source containment with run process ownership', () => {
 
   it('disposes the source SDK and resolves exit without starting its line consumer', async () => {
     const f = fixture('claude-code');
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${f.bin}:${previousPath ?? ''}`;
     const stopping = new AbortController();
     const started = await startClaudeSource(f.spec, runGrant(f.spec, harnessById('claude-code')!), process.env, stopping.signal);
     try {
@@ -140,16 +148,11 @@ describe('source containment with run process ownership', () => {
     } finally {
       stopping.abort();
       await started.dispose();
-      await f.cleanup();
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
     }
   }, BOUND_MS * 3);
 
   it('releases its abort listener when SDK construction refuses ownership', async () => {
     const f = fixture('claude-code');
-    const previousPath = process.env.PATH;
-    process.env.PATH = `${f.bin}:${previousPath ?? ''}`;
     const stopping = new AbortController();
     const removed = spyOn(stopping.signal, 'removeEventListener');
     const manifest = join(f.spec.scratchDir, RUN_DIRECTORY_MANIFEST);
@@ -161,9 +164,6 @@ describe('source containment with run process ownership', () => {
     } finally {
       stopping.abort();
       removed.mockRestore();
-      await f.cleanup();
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
     }
   });
 });
