@@ -53,6 +53,12 @@ export const CONSUMERS = [
     tests: ['tests/member/**', 'tests/hooks/**', 'tests/symbionts/**'],
   },
   {
+    name: 'dashboard consumers',
+    ci: 'tests (dom): tests/myco-server-ui render the dashboard through App, which reaches a changed component through layers no direct import shows',
+    when: { paths: ['packages/myco-server/ui/src/**'] },
+    tests: ['tests/myco-server-ui/**'],
+  },
+  {
     name: 'member doctor CLI consumers',
     ci: 'tests (node): member CLI doctor dispatch and entry contracts',
     when: { paths: ['packages/myco/src/cli/member-doctor.ts', 'packages/myco/src/cli/doctor-member.ts', 'packages/myco/src/cli/doctor-output.ts', 'packages/myco/src/cli/doctor-capture.ts'] },
