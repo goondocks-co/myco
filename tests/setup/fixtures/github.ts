@@ -13,6 +13,8 @@ export const SETUP_APP: RegisteredApp = {
   slug: 'setup-fixture', htmlUrl: 'https://github.com/apps/setup-fixture',
   name: 'Myco (setup.invalid)', ownerLogin: 'setup-owner',
 };
+const { privateKey: _key, ...convertedApp } = SETUP_APP;
+export const CONVERTED_APP: RegisteredApp = { ...convertedApp, privateKeyPem: APP_PEM };
 export const SETUP_IDENTITIES = {
   owner: { id: 900000000001, login: 'setup-owner' },
   teammate: { id: 770001, login: 'setup-teammate' },

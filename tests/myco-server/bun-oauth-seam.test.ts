@@ -13,7 +13,7 @@ import { convertManifestCode } from '@myco/server/github-app.js';
 import { seededSqlite } from './helpers/d1.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { SESSION_SECRET } from './helpers/owner.js';
-import { fakeGitHub, SETUP_APP, SETUP_IDENTITIES } from '../setup/fixtures/github.js';
+import { CONVERTED_APP, fakeGitHub, SETUP_APP, SETUP_IDENTITIES } from '../setup/fixtures/github.js';
 
 const roots: string[] = [];
 const handlers: BunHandler[] = [];
@@ -105,7 +105,7 @@ describe('native server OAuth fetch seam', () => {
 
   it('shares the fake with the existing registration seam and rejects unknown requests', async () => {
     const github = fakeGitHub();
-    expect(await convertManifestCode('setup-conversion', github.registrationFetch)).toEqual(SETUP_APP);
+    expect(await convertManifestCode('setup-conversion', github.registrationFetch)).toEqual(CONVERTED_APP);
     await expect(github.fetchImpl('https://unconfigured.invalid')).rejects.toThrow('unexpected request');
   });
 });
