@@ -11,4 +11,3 @@ export function cleanAntigravityUserPrompt(raw: string): string {
     .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '')
     .trim();
 }
-

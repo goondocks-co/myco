@@ -191,4 +191,3 @@ it('keeps equal human inputs separated by replies as separate submissions', () =
   ]);
   expect(parser.parseTurns(rows)).toEqual(parser.parseTurns(rows));
 });
-
