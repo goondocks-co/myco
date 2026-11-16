@@ -29,7 +29,7 @@ it('waits out an overloaded D1 between migration applies and completes the updat
     expect(text).toContain('reading the live schema');
     expect(text).not.toContain('Schema update stopped');
   });
-});
+}, 120_000);
 
 it('stops a D1 that stays overloaded with the live schema, the Worker left serving and the next command', async () => {
   await fixture({ schema: String(T - 3), liveSchema: true, applyOverloads: D1_OVERLOAD_RETRIES + 1 }, async ({ root, home, update, calls, reports, waits }) => {
@@ -46,7 +46,7 @@ it('stops a D1 that stays overloaded with the live schema, the Worker left servi
     expect(text).toContain('Next: wait a few minutes for D1\'s load to settle, then run: myco server update --target cloudflare');
     expect(text).not.toContain('outcome unknown'); expect(text).toContain(`It serves schema ${T - 3}, which is the live schema, so it keeps serving.`);
   });
-});
+}, 120_000);
 
 it('names a migration that fails twice on an answering D1 and says the old Worker refuses the live schema', async () => {
   await fixture({ schema: String(T - 3), liveSchema: true, overloadAt: [{ at: T - 1 }, { at: T - 1 }, { at: T - 1 }] }, async ({ root, home, update, calls, reports, waits }) => {

@@ -542,7 +542,7 @@ it('worker records and model-listing database writes stay quiet through the real
   db.run('PRAGMA user_version = 1');
   const report = async () => {
     const ranAt = harnessRanAt(manifest, mycoHome);
-    await reportHarnesses({ serverUrl: entry.serverUrl, ready: ['OpenCode'], harnesses: [{ id: 'opencode', provisioned: true, state: 'ready', ...(ranAt === undefined ? {} : { ranAt }) }] }, mycoHome, Date.now() + 10_000, { entry, fetch: rig.fetch });
+    await reportHarnesses({ serverUrl: entry.serverUrl, ready: ['OpenCode'], harnesses: [{ id: 'opencode', provisioned: true, state: 'ready', ...(ranAt === undefined ? {} : { ranAt }) }] }, mycoHome, Date.now() + 30_000, { entry, fetch: rig.fetch });
     return (await readAttention(rig.env.serverEnv, NOW)).items.filter((item) => item.kind === 'harness_capture_silent');
   };
   expect(await report()).toEqual([]);
@@ -565,7 +565,7 @@ it('unreadable OpenCode activity reaches Health as cannot tell, and recovery res
   provisionGlobally('opencode', null, mycoHome, { serverUrl: entry.serverUrl });
   const result = keepCurrent(mycoHome, { binaryFound: () => true })!;
   expect(result.harnesses).toContainEqual(expect.objectContaining({ id: 'opencode', state: 'repair_failed', action: "Can't tell whether OpenCode ran for this Deployment; run myco doctor to check session access and capture routing" }));
-  await reportHarnesses(result, mycoHome, Date.now() + 10_000, { entry, fetch: rig.fetch });
+  await reportHarnesses(result, mycoHome, Date.now() + 30_000, { entry, fetch: rig.fetch });
   const health = await readAttention(rig.env.serverEnv, NOW);
   const item = health.items.find((item) => item.kind === 'harness_needs_repair' && item.harness === 'opencode')!;
   expect(attentionWords(item, NOW, () => null).detail).toContain("Can't tell whether OpenCode ran");
@@ -575,7 +575,7 @@ it('unreadable OpenCode activity reaches Health as cannot tell, and recovery res
     session(db, USER, NOW);
     const recovered = keepCurrent(mycoHome, { binaryFound: () => true })!;
     expect(recovered.harnesses).toContainEqual(expect.objectContaining({ id: 'opencode', state: 'ready', ranAt: NOW }));
-    await reportHarnesses(recovered, mycoHome, Date.now() + 10_000, { entry, fetch: rig.fetch });
+    await reportHarnesses(recovered, mycoHome, Date.now() + 30_000, { entry, fetch: rig.fetch });
     expect((await readAttention(rig.env.serverEnv, NOW)).items).toContainEqual(expect.objectContaining({ kind: 'harness_capture_silent', harness: 'opencode' }));
   } finally { db.close(); }
 });

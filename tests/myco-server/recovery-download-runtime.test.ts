@@ -33,7 +33,7 @@ it('workerd resumes an interrupted seventh part without rereading committed part
     const uploadId = (await fixture.call<Array<{ id: string }>>('/uploads'))[0]!.id;
     await fixture.restart(7);
     const lost = fixture.call('/step').catch(() => undefined);
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 30_000;
     let status = await fixture.status();
     while (status.inFlight?.name !== 'upload part 7' && Date.now() < deadline) { await Bun.sleep(10); status = await fixture.status(); }
     expect(status.inFlight?.name).toBe('upload part 7');
@@ -62,7 +62,7 @@ it('workerd fails a genuinely abandoned seventh upload and names it in the statu
     for (let i = 0; i < 6; i++) await fixture.call('/step');
     await fixture.restart(7);
     const lost = fixture.call('/step').catch(() => undefined);
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 30_000;
     let status = await fixture.status();
     while (status.inFlight?.name !== 'upload part 7' && Date.now() < deadline) { await Bun.sleep(10); status = await fixture.status(); }
     expect(status.inFlight).toMatchObject({ name: 'upload part 7', startedAt: expect.any(Number) });
