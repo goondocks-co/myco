@@ -46,6 +46,13 @@ export const CONSUMERS = [
     tests: ['tests/server/local-lifecycle-inspection.test.ts', 'tests/server/local-lifecycle-prepare.test.ts', 'tests/server/local-lifecycle-preserve.test.ts'],
   },
   {
+    name: 'harness configuration',
+    ci: 'tests (node, full run): tests/member, tests/hooks and tests/symbionts run hooks through each harness\'s generated configuration',
+    when: { paths: ['packages/myco/src/symbionts/manifests/**', 'packages/myco/src/symbionts/templates/**', 'packages/myco/src/symbionts/manifest-schema.ts',
+      'packages/myco/src/symbionts/manifests.generated.ts', 'packages/myco/src/hooks/hook-config.generated.ts', 'packages/myco/scripts/gen-hook-config.ts'] },
+    tests: ['tests/member/**', 'tests/hooks/**', 'tests/symbionts/**'],
+  },
+  {
     name: 'compiled sign-in',
     ci: 'hook startup (linux-x64, linux-arm64): Check compiled sign-in exits',
     when: { paths: CLI_AND_HOOKS },
