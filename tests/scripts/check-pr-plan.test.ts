@@ -24,7 +24,7 @@ const IMAGE_BUILD = 'self-hosted image build, boot and persistence (CI only: it 
 
 test.each([
   [['packages/myco-shared/release-channels.json'], [], ['installer and source install', 'self-hosted image inputs (build inputs only)', 'dashboard screens'], [IMAGE_BUILD]],
-  [[under('packages/myco/src/cli')], [], ['compiled sign-in', 'compiled hook startup on this machine'], ['hook startup on Linux (CI only: it runs on Linux)',
+  [[under('packages/myco/src/cli'), under('packages/myco/src/symbionts/manifests')], [], ['harness configuration', 'compiled sign-in', 'compiled hook startup on this machine'], ['hook startup on Linux (CI only: it runs on Linux)',
     'hook startup on Windows (CI only: it runs on Windows)', 'Windows ARM64 smoke (CI only: it runs on Windows ARM64)']],
   [[under('packages/myco-server/src/core')], [], ['self-hosted image inputs (build inputs only)', 'native Deployment lifecycle'], [IMAGE_BUILD]],
   [['docs/install.ps1', 'docs/a.md'], [], ['installer and source install', 'docs site'], ['installer under Windows PowerShell 5.1 (CI only: it runs on Windows PowerShell 5.1)']],
