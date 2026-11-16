@@ -136,14 +136,17 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   backup-credential --target cloudflare   Add or rotate the backup access key using a hidden prompt or
                                           piped stdin. Checks access before saving it on the server.
   github-app --existing --client-id <id> --client-secret-stdin --url <url> [--target local|cloudflare]
-                                          Install an app you already own after regenerating its secret.
+                                          Recover sign-in with an existing App and --private-key-file <pem>.
   github-app --url <https://…> [--org <name>] [--app-name <text>] [--target local|cloudflare]
                                           --name is an alias for --app-name.
                                           Native setup requires a stopped server. Stop a foreground run
                                           with Ctrl-C, or use server uninstall to stop its service.
                                           Start it again after setup to use the new sign-in credentials.
-                                          Register the dashboard's sign-in app on GitHub (one click
-                                          there) and install its credentials on the Deployment.
+                                          Register a new App for sign-in and read-only repository access,
+                                          or extend the configured sign-in App without replacing it.
+                                          --private-key-file <pem> or --private-key-stdin imports a generated
+                                          App key after verifying its identity and required read permissions.
+                                          Lost key: generate a new key in GitHub and run the import again.
   github-app --discard-pending [--target local|cloudflare]
                                           Print the saved app URL, then discard its unfinished registration.
                                           Delete or reuse that app on GitHub before registering another.
@@ -610,7 +613,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
 
     if (command === 'github-app') {
       if (flags.has('discard-pending')) {
-        if (['existing', 'client-id', 'client-secret', 'client-secret-stdin', 'org', 'name', 'app-name'].some((key) => flags.has(key))) fail('--discard-pending cannot be combined with app registration or credentials. Run myco server github-app --discard-pending --target <target> on its own.');
+        if (['existing', 'client-id', 'client-secret', 'client-secret-stdin', 'private-key-file', 'private-key-stdin', 'org', 'name', 'app-name'].some((key) => flags.has(key))) fail('--discard-pending cannot be combined with app registration or credentials. Run myco server github-app --discard-pending --target <target> on its own.');
         await discardSignInPending(resolveSignInTarget(flags.get('target')), (line) => console.log(line));
         return;
       }
@@ -622,14 +625,22 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       if (!existing && (clientId !== undefined || flags.has('client-secret-stdin'))) fail('--client-id and --client-secret-stdin require --existing.');
       if (flags.has('client-secret')) fail('pipe the regenerated secret to --client-secret-stdin; do not pass --client-secret.');
       if (existing && flags.has('org')) fail('--org applies to registering a new app; omit it with --existing.');
+      if (flags.has('private-key')) fail('App key was not saved: use --private-key-file <downloaded.pem> or --private-key-stdin; never pass key bytes in argv.');
+      if (flags.has('private-key-file') && flags.has('private-key-stdin')) fail('App key was not saved: choose --private-key-file <downloaded.pem> or --private-key-stdin.');
+      if (flags.has('private-key-stdin') && flags.has('client-secret-stdin')) fail('App key was not saved: stdin cannot hold two credentials. Use --private-key-file <downloaded.pem> with --client-secret-stdin.');
+      const keyFile = flags.get('private-key-file');
+      if (keyFile === 'true' || keyFile === '') fail('App key was not saved: --private-key-file needs a path. Next: myco server github-app --url <url> --private-key-file <downloaded.pem>.');
       const target = resolveSignInTarget(flags.get('target'));
       if (target.kind === 'local') requireNativeDeps();
+      const privateKeyPem = keyFile === undefined ? (flags.has('private-key-stdin') ? await (deps.readSecret ?? readSignInSecret)() : undefined) : nodeFs.readFileSync(keyFile, 'utf8');
+      if (keyFile !== undefined) console.log(`Downloaded private key remains at ${keyFile}; remove it after confirming dashboard status.`);
       const clientSecret = existing ? await (deps.readSecret ?? readSignInSecret)() : undefined;
       if (target.kind === 'cloudflare') for (const line of credentialLines) report(line);
       const result = await registerGitHubApp({
         url: url!,
         org: flags.get('org'),
         name: flags.get('app-name') ?? flags.get('name'),
+        privateKeyPem,
         existing: existing ? { clientId: clientId!, clientSecret: clientSecret! } : undefined,
         target,
         runner: deps.runner,
@@ -638,9 +649,10 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
         log: (line) => console.log(line),
       });
       console.log(`\nGitHub App:  ${result.app.name} (${result.app.htmlUrl})`);
-      console.log(`Owner: ${existing ? 'not checked' : result.app.ownerLogin ?? 'not reported by GitHub'}`);
+      console.log(`Client ID:   ${result.app.clientId}`);
+      console.log(`Owner: ${existing || result.repositoryAccess !== undefined ? 'not checked' : result.app.ownerLogin ?? 'not reported by GitHub'}`);
       console.log(`Callback:    ${result.callbackUrl}${existing ? ' must be listed in the app' : ''}`);
-      console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
+      if (result.repositoryAccess !== 'instructions') console.log(`Installed:   ${target.kind === 'cloudflare' ? `Worker ${target.record.workerName}` : target.paths.root}`);
       if (result.verified.ok) console.log(`Sign-in:     ${new URL(url!).origin} sends sign-in to GitHub with client ${result.app.clientId}; sign in once to confirm.`);
       else if (result.verified.pendingStart) console.log(`Next:        ${result.verified.reason}`);
       else fail(`Installed, but sign-in did not verify: ${result.verified.reason}`);
@@ -663,7 +675,7 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
 
 /** Read one piped secret without terminal echo or command-line exposure. */
 async function readSignInSecret(): Promise<string> {
-  if (process.stdin.isTTY) throw new RegistrationRefused('pipe the regenerated GitHub secret to --client-secret-stdin.');
+  if (process.stdin.isTTY) throw new RegistrationRefused('pipe the credential to --client-secret-stdin or the PEM to --private-key-stdin; use --private-key-file <downloaded.pem> for a downloaded key.');
   let value = '';
   for await (const chunk of process.stdin) value += String(chunk);
   return value.replace(/\r?\n$/, '');

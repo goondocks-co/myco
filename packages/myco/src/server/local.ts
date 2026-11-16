@@ -147,9 +147,10 @@ export function assertRecordServable(record: LocalDeploymentRecord): void {
 // Secrets
 // ---------------------------------------------------------------------------
 
-/** The secret names a locally-run Deployment holds, in the order the file lists them: the credentials a recovery needs. */
+/** Required native recovery material. */
 export const LOCAL_SECRET_NAMES = RECOVERY_CREDENTIAL_NAMES;
-export type LocalSecretName = typeof LOCAL_SECRET_NAMES[number];
+const LOCAL_INFRASTRUCTURE_SECRET_NAMES = [...LOCAL_SECRET_NAMES, 'GITHUB_APP_PRIVATE_KEY'] as const;
+export type LocalSecretName = typeof LOCAL_INFRASTRUCTURE_SECRET_NAMES[number];
 
 /** The two a Deployment generates for itself; the sign-in pair is installed later. */
 const GENERATED: readonly LocalSecretName[] = ['SECRET_WRAP_KEY', 'SESSION_SECRET'];
@@ -170,7 +171,7 @@ function localSecretEntry(line: string): [LocalSecretName, string] | undefined {
   const at = trimmed.indexOf('=');
   if (at < 1) return undefined;
   const name = trimmed.slice(0, at) as LocalSecretName;
-  return (LOCAL_SECRET_NAMES as readonly string[]).includes(name) ? [name, trimmed.slice(at + 1)] : undefined;
+  return (LOCAL_INFRASTRUCTURE_SECRET_NAMES as readonly string[]).includes(name) ? [name, trimmed.slice(at + 1)] : undefined;
 }
 
 export function readLocalSecrets(paths: Pick<LocalDeploymentPaths, 'secretsFile'> = resolveLocalPaths()): Partial<Record<LocalSecretName, string>> {
@@ -204,12 +205,13 @@ export function writeLocalSecrets(values: Partial<Record<LocalSecretName, string
 export interface LocalSignInCredentials {
   clientId: string;
   clientSecret: string;
+  privateKey?: string;
 }
 
-/** Holds a stopped volume throughout registration and installs only the sign-in pair. */
+/** Holds a stopped volume throughout registration and installs App infrastructure credentials. */
 export function configureLocalSignIn<T>(
   paths: LocalDeploymentPaths,
-  configure: (install: (credentials: LocalSignInCredentials) => void) => Promise<T>,
+  configure: (install: (credentials: LocalSignInCredentials) => void, current: Partial<Record<LocalSecretName, string>>) => Promise<T>,
   origin?: string,
 ): Promise<T> {
   return new LocalVolume(paths).exclusive(async () => {
@@ -223,13 +225,14 @@ export function configureLocalSignIn<T>(
     if (GENERATED.some((name) => !secrets[name])) throw new Error('native Deployment storage and session keys must be configured before sign-in setup');
     let active = true;
     try {
-      return await configure(({ clientId, clientSecret }) => {
+      return await configure(({ clientId, clientSecret, privateKey }) => {
         if (!active) throw new Error('native sign-in setup no longer holds the volume');
         if ([clientId, clientSecret].some((value) => !value || value.trim() !== value || /[\r\n]/.test(value))) {
           throw new Error('GitHub sign-in credentials must be nonempty single-line values');
         }
-        writeSecrets({ ...secrets, GITHUB_CLIENT_ID: clientId, GITHUB_CLIENT_SECRET: clientSecret }, paths);
-      });
+        if (privateKey !== undefined && !/^[A-Za-z0-9+/]+=*$/.test(privateKey)) throw new Error('GitHub App key must be single-line base64 PKCS#8; run myco server github-app --private-key-file <downloaded.pem> to import it.');
+        writeSecrets({ GITHUB_CLIENT_ID: clientId, GITHUB_CLIENT_SECRET: clientSecret, ...(privateKey === undefined ? {} : { GITHUB_APP_PRIVATE_KEY: privateKey }) }, paths);
+      }, secrets);
     } finally { active = false; }
   });
 }

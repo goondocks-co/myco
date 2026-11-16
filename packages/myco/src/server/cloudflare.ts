@@ -905,11 +905,10 @@ export const cloudflareSchemaUpdateSchema = z.object({
 });
 export type CloudflareSchemaUpdate = z.infer<typeof cloudflareSchemaUpdateSchema>;
 
-/** The Worker's sign-in secrets, named as the Worker reads them. */
-export interface WorkerSecrets {
-  GITHUB_CLIENT_ID: string;
-  GITHUB_CLIENT_SECRET: string;
-}
+/** A complete sign-in pair, optionally with its App key, or an independent key rotation. */
+export type WorkerSecrets =
+  | { GITHUB_CLIENT_ID: string; GITHUB_CLIENT_SECRET: string; GITHUB_APP_PRIVATE_KEY?: string }
+  | { GITHUB_APP_PRIVATE_KEY: string; GITHUB_CLIENT_ID?: never; GITHUB_CLIENT_SECRET?: never };
 
 export interface WorkerSecretTarget {
   accountId: string;

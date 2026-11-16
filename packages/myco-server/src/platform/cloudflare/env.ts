@@ -269,6 +269,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     secrets: {
       GITHUB_CLIENT_ID: bindings.GITHUB_CLIENT_ID,
       GITHUB_CLIENT_SECRET: bindings.GITHUB_CLIENT_SECRET,
+      GITHUB_APP_PRIVATE_KEY: bindings.GITHUB_APP_PRIVATE_KEY,
       SESSION_SECRET: bindings.SESSION_SECRET,
     },
   };

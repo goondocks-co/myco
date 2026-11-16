@@ -464,6 +464,7 @@
     "tests/myco-server/fleet-correction.test.ts": 159,
     "tests/myco-server/foreign-lineage-authority.test.ts": 1309,
     "tests/myco-server/gates.test.ts": 29836,
+    "tests/myco-server/github-app.test.ts": 1500,
     "tests/myco-server/github-refs.test.ts": 7,
     "tests/myco-server/grant-writes.test.ts": 447,
     "tests/myco-server/grants.test.ts": 677,
@@ -963,6 +964,7 @@
     "tests/myco-server/completion.test.ts": 4000
   },
   "parity": {
+    "github app: keyless sign-in and admin-only setup status": 500,
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
     "Codex recording: custom call and array result through segment upload and wake": 7000,
     "schema upgrade: a Deployment populated by its users upgrades from the previous schema with every record, refusal and write unchanged": 125000,

@@ -133,6 +133,7 @@ const base = (extra: Record<string, (init?: RequestInit) => Response | Promise<R
   '/auth/me': () => Response.json(dashboardMe(ME)),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
+  '/api/github-app': () => Response.json({ state: 'key_absent' }),
   '/api/settings': () => Response.json(leaves({ 'cortex.digest.inject_on_session_start': { value: true, updatedBy: ADA, updatedAt: NOW - 2 * 3_600_000 } })),
   '/api/secrets': () => Response.json(secrets(true)),
   '/api/titling-backfill': () => Response.json(TITLING),
@@ -1099,6 +1100,22 @@ describe('Title imported sessions', () => {
 });
 
 describe('Sign-in and access', () => {
+  it('shows App setup, missing reads and a successful explicit recheck', async () => {
+    let state: unknown = { state: 'key_absent' };
+    server(base({ '/api/github-app': () => Response.json(state) }));
+    mount('/settings/access');
+    await screen.findByText('Check whether repository access is set up.');
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await screen.findByText(/App private key is absent/);
+    expect(screen.getByText(/myco server github-app/).textContent).toContain('--url');
+    state = { state: 'permissions_missing', app: { slug: 'myco-app' }, missing: ['pull_requests must be read-only (currently absent)'] };
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await screen.findByText('App permissions need changes: pull_requests must be read-only (currently absent).');
+    state = { state: 'ready', app: { slug: 'myco-app' }, missing: [] };
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await screen.findByText('Repository access is set up for myco-app.');
+  });
+
   it('counts the people who can sign in, never Myco, and leads to People & machines, My machines and each live project\'s access keys', async () => {
     server(base());
     mount('/settings/access');

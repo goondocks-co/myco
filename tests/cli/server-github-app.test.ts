@@ -5,7 +5,7 @@ import path from 'node:path';
 import { run } from '@myco/cli/server.js';
 import { writeDeploymentRecord } from '@myco/server/cloudflare.js';
 import { resolveSignInTarget, signInPendingPath, writeSignInPending } from '@myco/server/github-app.js';
-import { SETUP_APP } from '../setup/fixtures/github.js';
+import { APP_PEM, APP_KEY, APP_RESPONSE, SETUP_APP } from '../setup/fixtures/github.js';
 import type { CommandRunner } from '@myco/server/runner.js';
 
 const URL_ = 'https://signin.invalid';
@@ -51,6 +51,7 @@ const runner: CommandRunner = { async run(_command, args, options) {
 } };
 async function drive(args: string[], secret = SECRET) {
   const fetchImpl: typeof fetch = Object.assign(async (input: RequestInfo | URL) => {
+    if (String(input) === 'https://api.github.com/app') return Response.json({ ...APP_RESPONSE, client_id: 'existing-client' });
     expect(String(input)).toBe(`${URL_}/auth/login`);
     return installed ? new Response(null, { status: 302, headers: { location: `https://github.com/login/oauth/authorize?client_id=existing-client&redirect_uri=${encodeURIComponent(`${URL_}/auth/callback`)}` } })
       : Response.json({ error: 'sign_in_unconfigured' }, { status: 401 });
@@ -64,9 +65,11 @@ async function drive(args: string[], secret = SECRET) {
 }
 
 it('dispatches --existing to the sign-in operation and never prints its secret', async () => {
-  const output = await drive(['--existing', '--client-id', 'existing-client', '--client-secret-stdin']);
+  const keyFile = path.join(root, 'app.pem');
+  fs.writeFileSync(keyFile, APP_PEM);
+  const output = await drive(['--existing', '--client-id', 'existing-client', '--client-secret-stdin', '--private-key-file', keyFile]);
   expect(reads).toBe(1);
-  expect(installs).toEqual([{ GITHUB_CLIENT_ID: 'existing-client', GITHUB_CLIENT_SECRET: SECRET }]);
+  expect(installs).toEqual([{ GITHUB_CLIENT_ID: 'existing-client', GITHUB_CLIENT_SECRET: SECRET, GITHUB_APP_PRIVATE_KEY: APP_KEY }]);
   expect(output).toContain('Owner: not checked');
   expect(output).toContain(`${URL_}/auth/callback must be listed in the app`);
   expect(output).toContain('sends sign-in to GitHub with client existing-client; sign in once to confirm');

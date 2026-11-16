@@ -88,6 +88,7 @@
   "session:admin GET /api/backups/{backupId}/artifact",
   "session:admin GET /api/diagnostics",
   "session:admin GET /api/enrollment",
+  "session:admin GET /api/github-app",
   "session:admin GET /api/maintenance",
   "session:admin GET /api/projects/{projectId}/grants",
   "session:admin GET /api/projects/{projectId}/release-provenance",

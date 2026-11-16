@@ -57,7 +57,7 @@ myco server setup-owner --target local
 myco server install --target local
 ```
 
-`create` prepares storage and generates keys. `github-app` opens GitHub to register the dashboard's sign-in app; confirm there and return to the terminal. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in. Run `create` before `install`; a home without a created Deployment is refused with `create` as the next step.
+`create` prepares storage and generates keys. `github-app` opens GitHub to register one public App for dashboard sign-in and read-only repository access; confirm there and return to the terminal. It requests Contents, Pull requests and Metadata read permissions, with webhook delivery disabled. `setup-owner` prints a private account-link URL. `install` starts the server and runs it whenever you log in. Run `create` before `install`; a home without a created Deployment is refused with `create` as the next step.
 
 After the server starts, open the private link, sign in with GitHub, check the account and choose **Connect this account**, then **Open Projects**. The link expires after 15 minutes. Keep it private: whoever uses it can become the administrator.
 
@@ -115,6 +115,29 @@ To watch a local server in this terminal, use `myco server run --target local`. 
 `myco remove` unregisters this home's member integrations and worker/runner services while preserving data. `--purge` deletes only the named 2.0 entries: `member/`, `skills/`, `bin/`, `install.json`, `runtime.command`, `runtime.home`, `logs/`, `runner/`, `worker/`, `installer-audit/`, `setup.json` and `last-update-check.json`. It preserves 1.4 files, their cutover receipt, `backups/cutover-*` and unknown entries, prints what remains, and removes the home directory only when empty. The confirmation lists each deletion. Purging a custom home requires a valid `install.json`; the default `~/.myco` home is also admitted. A membership alone does not authorize deleting generic directories such as `bin/` or `logs/`. The home is checked again after confirmation and deletion uses its unchanged canonical path. Purge refuses the user home, its ancestors, filesystem roots, the current directory and symlinked homes.
 
 A home holding `server/` or a Cloudflare operator record refuses purge unless you also pass `--allow-deployment-loss`. Back up the Deployment first; the override admits deletion of `server/`, including its data and operator records. An installed native Deployment service blocks purge even with the override: run `myco server uninstall --target local` first. After `myco cutover` reports the move complete, check retained 1.4 backups before deleting legacy files by hand. In every other migration state, run `myco cutover --dry-run` and keep those files.
+
+## Extend or replace the GitHub App key
+
+An already configured `myco server github-app --target local|cloudflare --url <address>` extends the existing sign-in App. It never registers a replacement or changes its client secret. Follow the command’s instructions:
+
+1. In GitHub → Settings → Developer settings → GitHub Apps (or the owning organization’s settings), open the App whose Client ID matches this Deployment. Under Permissions & events, set repository Contents, Pull requests and Metadata to Read-only and save. Leave account permissions and the callback unchanged.
+2. Approve the additional permissions for existing installations under Settings → Applications → Installed GitHub Apps → Configure.
+3. Under the App’s General page → Private keys, generate a key. Import the downloaded file:
+
+   ```sh
+   myco server github-app --target cloudflare --url <address> --private-key-file <downloaded.pem>
+   # For native, stop its service, import with --target local, then start it:
+   myco server uninstall --target local
+   myco server github-app --target local --url <address> --private-key-file <downloaded.pem>
+   myco server install --target local
+   ```
+
+   Piped PEM input uses `--private-key-stdin`; key bytes never belong in command arguments. The command signs an App JWT with the existing Client ID and checks `GET /app` for matching identity and all three reads before storing anything. A wrong key or missing permission leaves sign-in untouched. An interrupted or unacknowledged write can be replayed by rerunning without a key input; an unfinished import remains in the private operator journal until completion or `--discard-pending`.
+4. In dashboard Settings → Sign-in and access → GitHub App, press **Check again**. It reports key absent, repository access ready, missing permissions by name, or a verification failure. Verify browser sign-in before changing Project repository access. Remove the downloaded PEM after a successful check; the command leaves it on disk and names its path. After verifying a rotated key, delete the old key in GitHub.
+
+Cloudflare stores `GITHUB_APP_PRIVATE_KEY` as a Worker secret, installed through the existing secret-bulk stdin route. Native stores the same single-line base64 PKCS#8 value in owner-only `server/local/secrets.env`; its private `.bak` can retain the prior key after rotation. An interrupted command holds the key only in its protected pending journal (0600 inside the target’s 0700 directory). No key is stored in the database or sent to members or runners. A native runner sharing the server’s OS user can read that user’s secret files; use separate OS users when that boundary is needed.
+
+The App key is replaceable, not recovery material: backups do not require it, and restore does not accept it. After restore, generate a new key in GitHub and run the import again. Sign-in works without the key. Existing Project repository tokens and release reads continue working independently during this preparation step.
 
 ## Back up and restore
 
