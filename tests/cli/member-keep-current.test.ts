@@ -567,11 +567,11 @@ for (const agent of ['claude-code', 'codex']) it(`keeps ${agent}'s tools held by
   const priorChecks = setupChecks(home);
   expect(priorChecks.some(check => check.detail.includes('use other.myco.example'))).toBe(true);
   expect(priorChecks.some(check => check.status === 'warn' && check.detail.includes('this is'))).toBe(true);
-  expect(priorChecks.map(check => check.detail).join(' ')).not.toContain('member provision');
+  expect(priorChecks.map(check => check.detail).join(' ')).toContain('myco member provision --refresh');
   const initialStatus: string[] = [];
   await setup(['--status'], { mycoHome: home, cwd: agentHome, agents: () => [agent], stdout: line => initialStatus.push(line), stderr: line => { throw new Error(line); } });
   expect(initialStatus.join('\n')).toContain('use other.myco.example');
-  expect(initialStatus.join('\n')).not.toContain('member provision');
+  expect(initialStatus.join('\n')).toContain('myco member provision --refresh');
   expect(readProvisionRecord(home)?.version).toBe('old');
   const before = harnessFiles().map(file => [file, fs.readFileSync(file, 'utf8'), fs.statSync(file).mtimeMs]);
   const stderr = spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -694,11 +694,11 @@ it('doctor and status check missing skills and old versions even when tools use 
   const checks = setupChecks(home);
   expect(checks.some(check => check.status === 'warn' && check.detail.includes('skills are missing'))).toBe(true);
   expect(checks.some(check => check.status === 'warn' && check.detail.includes('this is'))).toBe(true);
-  expect(checks.map(check => check.detail).join(' ')).not.toContain('member provision');
+  expect(checks.map(check => check.detail).join(' ')).toContain('myco member provision --refresh');
   const lines: string[] = [];
   await setup(['--status', '--json'], { mycoHome: home, cwd: agentHome, agents: () => ['claude-code'], stdout: line => lines.push(line), stderr: line => { throw new Error(line); } });
   const status = JSON.parse(lines.join('\n')).observations.find((fact: { id: string }) => fact.id === 'machine.agents');
-  expect(status.detail).not.toContain('member provision');
+  expect(status.detail).toContain('myco member provision --refresh');
   expect(status).toMatchObject({ state: 'incomplete', informational: false, detail: expect.stringContaining('skills are missing') });
   expect(keepCurrent(home, { binaryFound: () => true })?.harnesses[0].state).toBe('held_elsewhere');
   expect(fs.existsSync(path.join(folder, skill))).toBe(true);

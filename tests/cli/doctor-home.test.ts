@@ -8,6 +8,11 @@ import { readVaultContent } from '@myco/member/legacy-backup.js';
 import { legacyMigrationState } from '@myco/member/legacy-migration.js';
 import { runMemberVerb } from '@myco/cli/member-dispatch.js';
 import { helpText, MEMBER_USAGE } from '@myco/cli/help.js';
+import { runDrain, runProvision } from '@myco/cli/member.js';
+import { MemberSpool } from '@myco/member/spool.js';
+import { CaptureLossLedger } from '@myco/member/capture-loss.js';
+import { promptEvent, mintId } from '@myco/member/envelope.js';
+import { updateSessionState } from '@myco/member/session-state.js';
 import { formatCheck } from '@myco/cli/doctor-member.js';
 import { optOut } from '@myco/cli/member-auto-join.js';
 import { recordDefaultDeployment } from '@myco/member/default-deployment.js';
@@ -16,7 +21,7 @@ import { logoutDeployment } from '@myco/member/logout.js';
 import { clearLeft, markLeft, rootKeyFor } from '@myco/member/auto-join.js';
 import { recordProvision } from '@myco/symbionts/member-provision-record.js';
 import { getPluginVersion } from '@myco/version.js';
-import { writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
+import { readRegistryEntry, writeDeploymentMembership, writeRegistryEntry } from '@myco/member/registry.js';
 import { recordRefusedHook, REFUSED_HOOK_RETENTION_MS } from '@myco/member/refused-hooks.js';
 import { newRunnerBearer, runnerRecordPath } from '@myco/runner/runner-registry.js';
 import { installWorkerService } from '@myco/runner/service.js';
@@ -50,16 +55,152 @@ afterEach(() => {
   else process.env.HOME = savedHome;
   fs.rmSync(scratch, { recursive: true, force: true });
 });
-function join(serverUrl: string, root?: string) {
-  const membership = { serverUrl, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt: now + 1000 };
+function join(serverUrl: string, root?: string, projectId = serverUrl === work ? 'proj_work' : 'proj_home') {
+  const membership = { serverUrl, token: 'A'.repeat(43), machineId: 'machine-one', joinedAt: 1, updatedAt: 1, expiresAt: now + 7 * 86400_000 };
   if (root) {
     fs.mkdirSync(root, { recursive: true });
-    writeRegistryEntry({ ...membership, version: 2, root, projectId: serverUrl === work ? 'proj_work' : 'proj_home' }, { mycoHome: home });
+    writeRegistryEntry({ ...membership, version: 2, root, projectId }, { mycoHome: home });
   } else writeDeploymentMembership(membership, { mycoHome: home });
 }
 const report = async () => (await homeReport(home, deps)).map(check => check.detail).join('\n');
 
 describe('home doctor', () => {
+  const output = async (args: string[] = []) => {
+    const lines: string[] = [];
+    const ok = await runMemberVerb('doctor', args, { ...deps, renew: false, stdout: line => lines.push(line) });
+    if (lines[0]?.startsWith('myco doctor')) {
+      const heading = lines[0].match(/\((\d+) failed, (\d+) warnings?\)/);
+      const counts = { FAIL: 0, WARN: 0 };
+      for (const line of lines) {
+        const match = args.includes('--all') ? line.match(/^  \S.*?: (FAIL|WARN) /) : line.match(/^  (FAIL|WARN) /);
+        if (match) counts[match[1] as 'FAIL' | 'WARN'] += 1;
+      }
+      expect([counts.FAIL, counts.WARN]).toEqual(heading ? [Number(heading[1]), Number(heading[2])] : [0, 0]);
+    }
+    return { ok, text: lines.join('\n'), lines };
+  };
+  const connectedHome = () => {
+    const roots = Array.from({ length: 15 }, (_, index) => path.join(scratch, `repository-${index + 1}`));
+    for (const [index, root] of roots.entries()) join(personal, root, `proj_repo_${index + 1}`);
+    const binary = path.join(home, 'bin', 'myco');
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    runProvision(['--server', personal], { mycoHome: home, cwd: scratch, agents: () => ['claude-code', 'codex', 'cursor', 'opencode', 'antigravity', 'windsurf'], stdout: () => {} });
+    return roots;
+  };
+
+  it('summarizes fifteen healthy repositories and six agents, with every item available under --all', async () => {
+    const roots = connectedHome();
+    const compact = await output();
+    expect(compact.ok).toBe(true);
+    expect(compact.text).toContain('nothing needs attention');
+    expect(compact.text).toContain('15 repositories connected');
+    expect(compact.text).toContain('6 agents connected');
+    expect(compact.text).toContain('tools configured for 6 agents');
+    expect(compact.text).toContain('nothing waiting to deliver');
+    expect(compact.lines).toHaveLength(9);
+    const summary = compact.lines.findIndex(line => line.startsWith('  Also checked:'));
+    expect(compact.lines[summary]).toContain('Myco connection');
+    expect(compact.lines[summary]).not.toContain('Sign-in');
+    expect(compact.text).toContain('Not verified: Sign-in');
+    expect(compact.lines.findIndex(line => line.startsWith('  Capture waiting:'))).toBeLessThan(summary);
+    expect(compact.lines.findIndex(line => line.startsWith('  Capture losses:'))).toBeLessThan(summary);
+    expect(compact.text).not.toContain('ok Capture');
+    expect(compact.lines.at(-1)).toBe('  7 checks not verified at runtime; use myco doctor --all for every check and detail.');
+    expect(compact.text).not.toContain('\x1b');
+    expect(compact.text).not.toContain(roots[0]);
+    const all = await output(['--all']);
+    for (const root of roots) expect(all.text).toContain(root);
+    expect(all.text).toContain('capture execution not checked');
+    expect(all.ok).toBe(true);
+    deps.cwd = roots[0];
+    deps.env = { ...process.env, MYCO_HOME: home };
+    deps.fetch = async (_input, init) => {
+      if (!init?.body) return Response.json({ ok: true });
+      const request = JSON.parse(String(init.body));
+      if (request.id === undefined) return new Response(null, { status: 202 });
+      return Response.json({ jsonrpc: '2.0', id: request.id, result: request.method === 'initialize'
+        ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } } : { tools: [] } });
+    };
+    expect((await output()).text).toContain('tools configured for 6 agents');
+    const detail = (await output(['--all'])).text;
+    expect(detail).toContain('config:');
+    expect(detail).toContain('Myco home:');
+    expect(detail).not.toContain('…');
+    expect((await output(['--fix'])).ok).toBe(false);
+  });
+
+  it('lists only the repository needing attention among fifteen and preserves warning and failure outcomes', async () => {
+    const roots = connectedHome();
+    markLeft(rootKeyFor(roots[3], home), home, now, { repository: { root: roots[3] } });
+    const warning = await output();
+    expect(warning.ok).toBe(true);
+    expect(warning.text).toContain('1 check needs attention');
+    expect(warning.text).toContain(roots[3]);
+    expect(warning.text).toContain('myco member join');
+    expect(warning.text).not.toContain(roots[2]);
+    deps.fetch = async () => { throw new Error('offline'); };
+    const failed = await output();
+    expect(failed.ok).toBe(false);
+    expect(failed.text).toContain('FAIL Deployment:');
+    expect(failed.lines.find(line => line.startsWith('  Also checked:'))).not.toContain('Deployment');
+  });
+
+  it('counts sessions with events and transcripts once, including transcript-only sessions', async () => {
+    const [root, alias] = connectedHome();
+    writeRegistryEntry({ ...readRegistryEntry(root, home)!, root: alias }, { mycoHome: home });
+    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    const transcript = path.join(scratch, 'transcript.jsonl');
+    fs.writeFileSync(transcript, 'waiting transcript');
+    fs.utimesSync(transcript, new Date(now - 120_000), new Date(now - 120_000));
+    for (const sessionId of ['both', 'transcript-only']) updateSessionState(spool.dir, sessionId, state => {
+      state.transcript = { path: transcript, transcriptId: sessionId, inode: 1, nextOffset: 0, parsedSize: 0 };
+    }, now);
+    spool.append('both', promptEvent({ agent: 'claude-code', sessionId: 'both', now: () => now - 180_000 }, { promptId: mintId(), text: 'waiting event' }));
+    const result = await output();
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('2 sessions waiting (1 with events, 2 with transcripts); oldest activity 3 minutes ago');
+    expect(result.text).toContain('myco member drain');
+    expect((await output(['--all'])).text).toContain('proj_repo_1 (2 connected repositories:');
+  });
+
+  it('reports recent loss kinds and dates without counting old losses as recent', async () => {
+    const [root] = connectedHome();
+    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    updateSessionState(spool.dir, 'missing-transcript', state => {
+      state.transcript = { path: path.join(scratch, 'gone.jsonl'), transcriptId: 'missing', inode: 1, nextOffset: 0, parsedSize: 4 };
+    }, now);
+    spool.markTranscriptBacklog('missing-transcript');
+    await runDrain([], { ...deps, cwd: root, stdout: () => {} });
+    await runDrain([], { ...deps, cwd: root, stdout: () => {} });
+    new CaptureLossLedger(spool.dir, () => now).record([{ kind: 'payload', key: 'future-clock', at: now + 400 * 86400_000 }]);
+    new CaptureLossLedger(spool.dir, () => now).record([
+      { kind: 'payload', key: 'recent', at: now }, { kind: 'plan', key: 'old', at: now - 10 * 86400_000 },
+      { kind: 'record', key: 'damage', at: now },
+    ]);
+    const result = await output();
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('1 lost payload, 1 damaged record, 1 unavailable transcript');
+    expect(result.text).toContain('last 7 UTC days (including today)');
+    expect(result.text).toContain(`most recent ${new Date(now).toISOString()}`);
+    expect(result.text).not.toContain('1 lost plan');
+    expect(result.text).toContain('Recorded history cannot be repaired by a command');
+    expect(result.text).toContain('clear after 7 UTC days');
+    expect(result.text).not.toContain('myco member provision --refresh');
+    expect((await output(['--all'])).text).toContain(`Affected repositories or Projects: ${root}`);
+  });
+
+  it('keeps previous-build loss totals as a detail note without raising attention', async () => {
+    const [root] = connectedHome();
+    const spool = new MemberSpool(readRegistryEntry(root, home)!, { mycoHome: home });
+    fs.writeFileSync(path.join(spool.dir, 'capture-losses.json'), JSON.stringify({ version: 1, payloads: 3, plans: 0, records: 1, recent: [], lastAt: now - 200 * 86400_000 }), { mode: 0o600 });
+    const compact = await output();
+    expect(compact.ok).toBe(true);
+    expect(compact.text).toContain('nothing needs attention');
+    expect(compact.text).not.toContain('earlier losses');
+    expect((await output(['--all'])).text).toContain('Historical note: 4 earlier losses have no dates');
+  });
+
   it('reports a fresh machine outside a repository without opening a local vault', async () => {
     expect(useHomeDoctor(home)).toBe(true);
     const lines: string[] = [];
@@ -373,9 +514,9 @@ describe('home doctor', () => {
   it('prints machine facts once alongside repository access checks', async () => {
     join(personal, scratch);
     const lines: string[] = [];
-    await runMemberVerb('doctor', [], { ...deps, stdout: line => lines.push(line), requestTimeoutMs: 20 });
-    expect(lines.filter(line => line.includes('Membership ') && line.includes(personal))).toHaveLength(1);
-    expect(lines.filter(line => line.includes('Credential '))).toHaveLength(1);
+    await runMemberVerb('doctor', ['--all'], { ...deps, stdout: line => lines.push(line), requestTimeoutMs: 20 });
+    expect(lines.filter(line => line.includes('Membership:') && line.includes(personal))).toHaveLength(1);
+    expect(lines.filter(line => line.includes('Credential:'))).toHaveLength(1);
     expect(lines.filter(line => line.includes('Capture backlog'))).toHaveLength(1);
     expect(lines.some(line => line.includes('Spool '))).toBe(false);
   });

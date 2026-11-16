@@ -61,7 +61,8 @@ import {
 import { LEGACY_RECONCILIATION_VERSION, LegacyLedger, type ContentSource } from './legacy-ledger.js';
 import { normalizePlanPath } from './plan-files.js';
 import { deploymentUrl, listDeploymentMemberships, type DeploymentMembership } from './registry.js';
-import { MemberSpool, spoolDirFor, type RefusedEntry } from './spool.js';
+import { spoolDirFor, type RefusedEntry } from './spool.js';
+import { MemberSpool } from './capture-observations.js';
 import { watchingFeatures } from './prefetch.js';
 import { ServerClient, type FetchLike, type Outcome } from './transport.js';
 import { REFUSAL_SUBJECT } from './constants.js';

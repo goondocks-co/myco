@@ -19,7 +19,8 @@ import { MEMBER_PROTOCOL, OFFLINE_BACKOFF_INITIAL_MS, OFFLINE_BACKOFF_MAX_MS, PR
 import { mintId, promptEvent, toolFailureEvent, sessionStartEvent, type MemberEnvelope, type EnvelopeContext } from '@myco/member/envelope.js';
 import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
 import { drainBacklog } from '@myco/member/backlog.js';
-import { MemberSpool, WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
+import { WIRE_FIELDS, toWire, type SpoolRecord } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { shipTranscriptSegments } from '@myco/member/transcript.js';
 import { type FetchLike } from '@myco/member/transport.js';
 import { ServerClient } from './helpers/env-client.js';

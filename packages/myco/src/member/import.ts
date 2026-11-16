@@ -47,7 +47,7 @@ import { unboundedBudget, type HookBudget } from './budget.js';
 import { resolveMemberProjectRoot } from './credential.js';
 import { sessionEndEvent, sessionStartEvent, type EnvelopeContext } from './envelope.js';
 import { deploymentUrl, listRegistryEntries, readRegistryEntryResult, type RegistryEntry } from './registry.js';
-import { MemberSpool } from './spool.js';
+import { MemberSpool } from './capture-observations.js';
 import { legacySessionsToLeaveOut } from './legacy-ledger.js';
 import { readSessionState } from './session-state.js';
 import { shipTranscriptSegments, transcriptHeadHash, transcriptPointerFor } from './transcript.js';

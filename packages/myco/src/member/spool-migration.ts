@@ -1,3 +1,4 @@
+import { observeSpool } from './spool-observations.js';
 /** Moves capture written by project-only member spools into a pinned Deployment spool. */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -117,7 +118,7 @@ function readAssignment(dir: string): MemberRoutingIdentity | null {
 
 function legacyCounts(dir: string, mycoHome: string): Pick<LegacySpoolMigrationReport, 'sessions' | 'records'> {
   const source = new MemberSpool(null, { dir, mycoHome, initialize: false });
-  const read = source.readSpool();
+  const read = observeSpool(source);
   if (!read.readable || read.sessions.some((session) => session.unacknowledged === null)) throw new MigrationHold('Legacy spool is unreadable');
   const sessions = new Set([...read.sessions.map((session) => session.sessionId), ...source.stateSessionIds(), ...source.transcriptBacklogIds()]);
   return { sessions: sessions.size, records: read.sessions.reduce((count, session) => count + session.unacknowledged!, 0) };
@@ -762,7 +763,7 @@ export function listLegacySpools(mycoHome: string = resolveMycoHome()): LegacySp
     catch (error) { return { ...reportFor(projectId, null), status: 'held' as const, reason: (error as Error).message }; }
     const hold = readRoutingHold(dir);
     const source = new MemberSpool(null, { dir, mycoHome, initialize: false });
-    const sessions = source.readSpool();
+    const sessions = observeSpool(source);
     let sidecarError: string | null = null;
     let sidecarHolds: string[] = [];
     let ignoredSidecars: string[] = [];

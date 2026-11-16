@@ -12,7 +12,7 @@ import { mintId, promptEvent } from '@myco/member/envelope.js';
 import { removeRegistryEntry, writeRegistryEntry, type RegistryEntry } from '@myco/member/registry.js';
 import { assignLegacySpoolDestination, migrateLegacySpool, pinLegacySpoolDestination, pinLegacySpoolDestinationForProject, legacySpoolDir, LEGACY_MIGRATION_FILE, listLegacySpools, listRetiredLegacySpoolDirs, LEGACY_SPOOL_RETIRE_GRACE_MS } from '@myco/member/spool-migration.js';
 import { bufferLockPath, readSessionState, updateSessionState, type SessionState } from '@myco/member/session-state.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { unboundedBudget } from '@myco/member/budget.js';
 import { behindTranscriptPaths, pruneDeliveredSessionState, prunePluginTranscripts } from '@myco/member/retention.js';

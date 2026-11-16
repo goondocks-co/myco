@@ -9,7 +9,7 @@ import { unboundedBudget } from '@myco/member/budget.js';
 import { mintId, promptEvent, toolUseEvent, type EnvelopeContext } from '@myco/member/envelope.js';
 import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import { drainBacklog } from '@myco/member/backlog.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { type FetchLike } from '@myco/member/transport.js';
 import { ServerClient } from './helpers/env-client.js';
 import { memberRig, tempMycoHome } from './helpers/server.js';

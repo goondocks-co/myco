@@ -1,3 +1,4 @@
+import { recordTranscriptUnavailable } from './capture-health.js';
 /**
  * The project's backlog: what sessions other than the caller's captured and the
  * Deployment has not acknowledged — their spooled events, and the transcript
@@ -117,15 +118,22 @@ function newestSession(spool: MemberSpool, ids: readonly string[]): string | nul
   return newest;
 }
 
-/** Mark every session whose state holds a transcript pointer behind its file; returns how many were marked. */
-export function markBehindTranscripts(spool: MemberSpool): number {
-  let marked = 0;
+/** Mark undelivered transcripts and retain sessions whose loss accounting needs another pass. */
+function markBehindTranscripts(spool: MemberSpool, now: number): Set<string> {
+  const pending = new Set<string>();
   for (const sessionId of spool.stateSessionIds()) {
-    if (!pointersOf(readSessionState(spool.dir, sessionId)).some(pointerBehind)) continue;
+    const pointers = pointersOf(readSessionState(spool.dir, sessionId));
+    if (spool.hasTranscriptBacklog(sessionId)) for (const pointer of pointers) {
+      if (pointer.refused !== undefined || pointer.unavailableAt !== undefined) continue;
+      try { fs.accessSync(pointer.path, fs.constants.R_OK); }
+      catch (error) {
+        if (!recordTranscriptUnavailable(spool, { sessionId, transcriptId: pointer.transcriptId, at: now, error })) pending.add(sessionId);
+      }
+    }
+    if (!pointers.some(pointerBehind)) continue;
     spool.markTranscriptBacklog(sessionId);
-    marked += 1;
   }
-  return marked;
+  return pending;
 }
 
 /**
@@ -228,7 +236,7 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
   if (!budget.drains) return report;
   recoverArchivedQuarantine(spool, now(), () => canStartRequest(budget, now()));
   // A transcript grows without a hook of its session: every walk reads each session's pointers against its files.
-  markBehindTranscripts(spool);
+  const pendingLosses = markBehindTranscripts(spool, now());
   const spooled = new Set(spool.sessionIds());
   const ids = walkOrder(spool, [...new Set([...spooled, ...spool.transcriptBacklogIds()])].filter((id) => id !== opts.exclude), opts.newestFirst === true);
   let takesTurns: boolean | undefined;
@@ -256,9 +264,9 @@ export async function drainBacklog(spool: MemberSpool, client: ServerClient, bud
       const marks = spool.pendingTurnEnds(sessionId);
       if (!spool.hasTranscriptBacklog(sessionId)) { consumeSatisfiedTurnEnds(spool, sessionId, marks); continue; }
       const state = readSessionState(spool.dir, sessionId);
-      // Every transcript acknowledged to its end, or gone from disk: nothing is left to deliver.
+      // No bytes remain to deliver; pending loss accounting keeps the backlog mark.
       if (!pointersOf(state).some(pointerBehind)) {
-        spool.clearTranscriptBacklog(sessionId);
+        if (!pendingLosses.has(sessionId)) spool.clearTranscriptBacklog(sessionId);
         consumeSatisfiedTurnEnds(spool, sessionId, marks);
         continue;
       }

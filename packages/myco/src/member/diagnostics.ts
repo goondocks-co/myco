@@ -21,7 +21,8 @@ import type { BufferedDestinationIssue } from './routing.js';
 import { REGISTRY_VERSION, type RegistryEntry } from './registry.js';
 import { getPluginVersion } from '../version.js';
 import type { MissingMembershipRecord } from './no-membership.js';
-import { MemberSpool, type RefusedEntry } from './spool.js';
+import { type RefusedEntry } from './spool.js';
+import { MemberSpool } from './capture-observations.js';
 import { MEMBER_PROTOCOL, isMemberCode, type MemberCode } from './constants.js';
 import { ID_GRAMMAR, MAX_ID_CHARS, isMemberKind } from '@goondocks/myco-shared/member-protocol';
 

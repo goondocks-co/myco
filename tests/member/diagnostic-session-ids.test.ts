@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import { listBufferSessionIds } from '@myco/member/buffer.js';
 import { promptEvent } from '@myco/member/envelope.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { tempMycoHome } from './helpers/server.js';
 
 const homes: string[] = [];

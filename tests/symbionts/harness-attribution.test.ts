@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { deploymentHarnessRanAt } from '@myco/symbionts/harness-attribution.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { updateSessionState } from '@myco/member/session-state.js';
 import { writeRegistryEntry, REGISTRY_VERSION, removeDeploymentForLogout, membershipTokenDigest, readDeploymentMembership, logoutBindings, withRegistryLock, registryEntryPath, deploymentPath } from '@myco/member/registry.js';
 import { updateProjectContext } from '@myco/member/context-cache.js';

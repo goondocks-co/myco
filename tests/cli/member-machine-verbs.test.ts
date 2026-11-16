@@ -109,7 +109,7 @@ describe('a joined member with no 1.4 vault', () => {
   it('uses member handlers outside a joined root when no 1.4 vault remains unmoved', async () => {
     const rig = await memberRig();
     for (const name of ['logs', 'config'] as const) expect((await verb(name, ['get'], rig.fetch)).answered).not.toBeNull();
-    const doctor = await verb('doctor', [], rig.fetch);
+    const doctor = await verb('doctor', ['--all'], rig.fetch);
     expect(doctor.answered).not.toBeNull();
     expect(doctor.stdout).toContain('myco doctor (member)');
     expect(legacyArtifacts()).toEqual([]);
@@ -236,15 +236,16 @@ describe('a joined member with no 1.4 vault', () => {
     const rig = await memberRig();
     join(rig);
 
-    const ran = await verb('doctor', [], rig.fetch);
+    const ran = await verb('doctor', ['--all'], rig.fetch);
 
     expect(ran.answered).toBe(false);
     expect(ran.stdout).toContain('myco doctor (member)');
-    expect(ran.stdout).toMatch(/Membership\s+.*ok.*https:\/\/member-test\.invalid/);
-    expect(ran.stdout).toMatch(/Project access\s+.*ok.*answers, and serves this machine's credential \d+ tools/);
-    expect(ran.stdout).toMatch(/Credential\s+.*ok.*expires/);
-    expect(ran.stdout).toMatch(/Capture backlog\s+.*ok.*0 event/);
-    expect(ran.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
+    expect(ran.stdout).toMatch(/Membership: ok .*https:\/\/member-test\.invalid/);
+    expect(ran.stdout).toMatch(/Project access: ok .*answers, and serves this machine's credential \d+ tools/);
+    expect(ran.stdout).toMatch(/Credential: ok .*expires/);
+    expect(ran.stdout).toMatch(/Capture backlog: ok .*0 event/);
+    expect(ran.stdout).toMatch(/Capture: FAIL No agent on this machine captures sessions\./);
+    expect(ran.stdout).toContain('no harness on this machine captures for the member');
     expect(ran.stdout).not.toMatch(/Vault|Database|Daemon|Grove/);
     expect(legacyArtifacts()).toEqual([]);
   });
@@ -254,11 +255,13 @@ describe('a joined member with no 1.4 vault', () => {
     join(rig);
     expect(runProvision(['claude-code', '--root', checkout], { cwd: checkout, mycoHome, stdout: () => {}, stderr: () => {} })).toBe(true);
 
-    const ran = await verb('doctor', [], rig.fetch);
+    const ran = await verb('doctor', ['--all'], rig.fetch);
 
-    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are connected/);
-    expect(ran.stdout).toMatch(/Member MCP resolution\s*.*ok.*Claude Code's global tools are configured for https:\/\/member-test.invalid, Project proj_1, over http; runtime reach was not checked/);
-    expect(ran.stdout).not.toMatch(/Capture\s+.*FAIL/);
+    expect(ran.stdout).toMatch(/Capture: not checked (?:claude-code|codex)'s capture is connected; execution not checked\./);
+    expect(ran.stdout).toMatch(/Claude Code's global hooks .* are connected/);
+    expect(ran.stdout).toMatch(/Member MCP resolution: ok claude-code's tools are configured; runtime access not checked\./);
+    expect(ran.stdout).toMatch(/Claude Code's global tools are configured for https:\/\/member-test.invalid, Project proj_1, over http; runtime reach was not checked/);
+    expect(ran.stdout).not.toMatch(/Capture: FAIL/);
   });
 
   it('doctor and config name a membership whose entry cannot be read, never reach the credential resolver, and record no missed capture', async () => {
@@ -268,9 +271,9 @@ describe('a joined member with no 1.4 vault', () => {
     fs.writeFileSync(entry, '{ not json');
     const spy = recordingFetch(rig.fetch);
 
-    const doctor = await verb('doctor', [], spy.fetch);
+    const doctor = await verb('doctor', ['--all'], spy.fetch);
     expect(doctor.answered).toBe(false);
-    expect(doctor.stdout).toMatch(new RegExp(`Membership\\s+.*FAIL.*this project's membership could not be read: ${entry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    expect(doctor.stdout).toMatch(new RegExp(`Membership: FAIL .*this project's membership could not be read: ${entry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
     const config = await verb('config', ['get'], spy.fetch);
     expect(config.answered).toBe(false);
     expect(config.stderr).toContain(`myco config: this project's membership could not be read: ${entry}`);
@@ -285,10 +288,10 @@ describe('a joined member with no 1.4 vault', () => {
     join(rig);
     const down: FetchLike = async () => { throw new Error('connect ECONNREFUSED'); };
 
-    const ran = await verb('doctor', [], down);
+    const ran = await verb('doctor', ['--all'], down);
 
     expect(ran.answered).toBe(false);
-    expect(ran.stdout).toMatch(/Deployment\s+.*FAIL.*https:\/\/member-test\.invalid is unreachable or did not answer its health route/);
+    expect(ran.stdout).toMatch(/Deployment: FAIL .*https:\/\/member-test\.invalid is unreachable or did not answer its health route/);
     expect(legacyArtifacts()).toEqual([]);
   });
 
@@ -297,12 +300,12 @@ describe('a joined member with no 1.4 vault', () => {
     join(rig);
     const spy = recordingFetch(rig.fetch);
 
-    const ran = await verb('doctor', [], spy.fetch);
+    const ran = await verb('doctor', ['--all'], spy.fetch);
 
     expect(spy.requests[0].path).toBe('/tokens/refresh');
     expect(readRegistryEntry(checkout, mycoHome)!.token).not.toBe(rig.token);
-    expect(ran.stdout).toMatch(/Deployment\s+.*ok/);
-    expect(ran.stdout).toMatch(/Credential\s+.*ok/);
+    expect(ran.stdout).toMatch(/Deployment: ok/);
+    expect(ran.stdout).toMatch(/Credential: ok/);
   });
 
   it('doctor fails the credential by name, with the recovery, once the Deployment refuses it for good', async () => {
@@ -310,11 +313,11 @@ describe('a joined member with no 1.4 vault', () => {
     join(rig);
     rig.env.sqlite.query('UPDATE member_credentials SET revoked_at = ? WHERE id = ?').run(Date.now(), rig.tokenId);
 
-    const ran = await verb('doctor', [], rig.fetch);
+    const ran = await verb('doctor', ['--all'], rig.fetch);
 
     expect(ran.answered).toBe(false);
-    expect(ran.stdout).toMatch(/Project access\s+.*FAIL.*refused this machine's tool list \(unauthorized\)/);
-    expect(ran.stdout).toMatch(/Credential\s+.*FAIL.*the Deployment will not renew this credential/);
+    expect(ran.stdout).toMatch(/Project access: FAIL .*refused this machine's tool list \(unauthorized\)/);
+    expect(ran.stdout).toMatch(/Credential: FAIL .*the Deployment will not renew this credential/);
     expect(ran.stdout).toContain(REJOIN_HINT);
   });
 
@@ -395,10 +398,12 @@ describe('a joined member with no 1.4 vault', () => {
       hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'myco-run hook session-start' }] }] },
     });
 
-    const ran = await verb('doctor', [], rig.fetch);
+    const ran = await verb('doctor', ['--all'], rig.fetch);
 
-    expect(ran.stdout).toMatch(/Capture\s+.*!!.*Claude Code's global hooks .* are Myco's 1\.4 capture, not the member's/);
-    expect(ran.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
+    expect(ran.stdout).toMatch(/Capture: WARN Claude Code still uses Myco 1\.4 capture\./);
+    expect(ran.stdout).toMatch(/Claude Code's global hooks .* are Myco's 1\.4 capture, not the member's/);
+    expect(ran.stdout).toMatch(/Capture: FAIL No agent on this machine captures sessions\./);
+    expect(ran.stdout).toContain('no harness on this machine captures for the member');
     expect(ran.stdout).not.toContain('captures for the member from');
   });
 
@@ -409,13 +414,15 @@ describe('a joined member with no 1.4 vault', () => {
     fs.mkdirSync(path.dirname(plugin), { recursive: true });
     fs.writeFileSync(plugin, '// myco:plugin-marker\nexport const MycoPlugin = async () => ({});\n');
 
-    const legacy = await verb('doctor', [], rig.fetch);
-    expect(legacy.stdout).toMatch(/Capture\s+.*!!.*OpenCode's global hooks .* are Myco's 1\.4 capture, not the member's/);
+    const legacy = await verb('doctor', ['--all'], rig.fetch);
+    expect(legacy.stdout).toMatch(/Capture: WARN OpenCode still uses Myco 1\.4 capture\./);
+    expect(legacy.stdout).toMatch(/OpenCode's global hooks .* are Myco's 1\.4 capture, not the member's/);
     expect(legacy.stdout).not.toContain('OpenCode captures for the member');
 
     fs.writeFileSync(plugin, '// myco:plugin-marker\n// myco:member-plugin\nexport const MycoPlugin = async () => ({});\n');
-    const member = await verb('doctor', [], rig.fetch);
-    expect(member.stdout).toMatch(/Capture\s+.*not checked.*OpenCode's global hooks .* are connected/);
+    const member = await verb('doctor', ['--all'], rig.fetch);
+    expect(member.stdout).toMatch(/Capture: not checked opencode's capture is connected; execution not checked\./);
+    expect(member.stdout).toMatch(/OpenCode's global hooks .* are connected/);
   });
 
   it('doctor reads Codex member hooks from a hooks.json that carries a TOML footer', async () => {
@@ -428,9 +435,10 @@ describe('a joined member with no 1.4 vault', () => {
     fs.mkdirSync(path.join(userHome, '.codex'), { recursive: true });
     fs.writeFileSync(path.join(userHome, '.codex', 'hooks.json'), `${JSON.stringify(hooks, null, 2)}\n\n[features]\ncodex_hooks = true\n`);
 
-    const ran = await verb('doctor', [], rig.fetch);
+    const ran = await verb('doctor', ['--all'], rig.fetch);
 
-    expect(ran.stdout).toMatch(/Capture\s+.*not checked.*Codex's global hooks .* are connected/);
+    expect(ran.stdout).toMatch(/Capture: not checked (?:claude-code|codex)'s capture is connected; execution not checked\./);
+    expect(ran.stdout).toMatch(/Codex's global hooks .* are connected/);
   });
 
   it('doctor names a member hook whose program is missing or not executable, and counts it as no capture', async () => {
@@ -440,18 +448,20 @@ describe('a joined member with no 1.4 vault', () => {
     const member = (event: string) => ({ hooks: [{ type: 'command', command: `${program} hook ${event} --symbiont claude-code --credential registry --myco-managed` }] });
     writeClaudeSettings({ hooks: { SessionStart: [member('session-start')], Stop: [member('stop')] } });
 
-    const missing = await verb('doctor', [], rig.fetch);
+    const missing = await verb('doctor', ['--all'], rig.fetch);
     expect(missing.stdout).toContain(`run ${program}, which is missing, so they capture nothing. Check this executable and its access permissions.`);
-    expect(missing.stdout).toMatch(/Capture\s+.*FAIL.*no harness on this machine captures for the member/);
+    expect(missing.stdout).toMatch(/Capture: FAIL No agent on this machine captures sessions\./);
+    expect(missing.stdout).toContain('no harness on this machine captures for the member');
 
     fs.mkdirSync(path.dirname(program), { recursive: true });
     fs.writeFileSync(program, '#!/bin/sh\n', { mode: 0o644 });
-    const inert = await verb('doctor', [], rig.fetch);
+    const inert = await verb('doctor', ['--all'], rig.fetch);
     expect(inert.stdout).toContain(`run ${program}, which is not executable, so they capture nothing. Check this executable and its access permissions.`);
 
     fs.chmodSync(program, 0o755);
-    const runnable = await verb('doctor', [], rig.fetch);
-    expect(runnable.stdout).toMatch(/Capture\s+.*not checked.*Claude Code's global hooks .* are connected/);
+    const runnable = await verb('doctor', ['--all'], rig.fetch);
+    expect(runnable.stdout).toMatch(/Capture: not checked claude-code's capture is connected; execution not checked\./);
+    expect(runnable.stdout).toMatch(/Claude Code's global hooks .* are connected/);
     for (const report of [missing, inert, runnable]) {
       expect(report.stdout).not.toMatch(/run `?myco doctor/i);
       expect(report.stdout).not.toContain('..');

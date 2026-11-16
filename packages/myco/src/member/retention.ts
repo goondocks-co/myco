@@ -50,6 +50,7 @@ interface ArchiveReplay {
   replayedAt: number;
   eventIds: string[];
   lostRecords: number;
+  counted?: boolean;
 }
 
 const ARCHIVE_REPLAY_SUFFIX = '.replayed.json';
@@ -79,7 +80,8 @@ function archiveReplayOf(file: string): ArchiveReplay | null {
   return value !== null && typeof value === 'object' && typeof value.sessionId === 'string'
     && typeof value.replayedAt === 'number' && Number.isFinite(value.replayedAt)
     && Array.isArray(value.eventIds) && value.eventIds.every((id) => typeof id === 'string')
-    && Number.isSafeInteger(value.lostRecords) && value.lostRecords >= 0 ? value : null;
+    && Number.isSafeInteger(value.lostRecords) && value.lostRecords >= 0
+    && (value.counted === undefined || typeof value.counted === 'boolean') ? value : null;
 }
 
 function archiveRecord(line: unknown): line is SpoolRecord {
@@ -94,25 +96,12 @@ function archiveRecord(line: unknown): line is SpoolRecord {
       && Number.isSafeInteger(record._blobSource.size) && record._blobSource.size >= 0));
 }
 
-function archiveNames(spool: MemberSpool): string[] {
+function quarantineNames(spool: MemberSpool, suffix: string): string[] {
   const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
   try {
     assertMemberPathContained(dir, spool.mycoHome);
     return fs.readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
-      .map((entry) => entry.name);
-  } catch (error) {
-    if (!pathIsAbsent(dir)) archiveWarning(dir, error instanceof Error ? error.message : String(error));
-    return [];
-  }
-}
-
-function replayMarkerNames(spool: MemberSpool): string[] {
-  const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
-  try {
-    assertMemberPathContained(dir, spool.mycoHome);
-    return fs.readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(ARCHIVE_REPLAY_SUFFIX))
+      .filter((entry) => entry.isFile() && entry.name.endsWith(suffix))
       .map((entry) => entry.name);
   } catch (error) {
     if (!pathIsAbsent(dir)) archiveWarning(dir, error instanceof Error ? error.message : String(error));
@@ -172,34 +161,49 @@ function classifyArchivedRecords(spool: MemberSpool, file: string, base: string)
   return { sessionId, records, damaged };
 }
 
+function archiveMatches(marker: ArchiveReplay | null, archive: ReturnType<typeof classifyArchivedRecords>): marker is ArchiveReplay {
+  return marker !== null && marker.sessionId === archive.sessionId && marker.lostRecords === archive.damaged.length
+    && marker.eventIds.length === archive.records.length && archive.records.every((record, index) => record.eventId === marker.eventIds[index]);
+}
+
+function recordArchiveLoss(spool: MemberSpool, file: string, damaged: string[], at: number): boolean {
+  const recorded = new CaptureLossLedger(spool.dir).record(damaged.map(key => ({ key, kind: 'record', at })));
+  if (damaged.length > 0 && recorded) archiveWarning(file, `${damaged.length} damaged record(s) counted as capture loss`);
+  return recorded;
+}
+
 /** Replay quarantine journals through ordinary delivery while retaining each archive until its replay is acknowledged. */
 export function recoverArchivedQuarantine(spool: MemberSpool, now: number = Date.now(), canRecover: () => boolean = () => true): number {
   if (!canRecover()) return 0;
-  if (archiveNames(spool).length === 0) return 0;
+  if (quarantineNames(spool, '.jsonl').length === 0) return 0;
   return withArchiveLease(spool, () => recoverArchivedQuarantineUnlocked(spool, now, canRecover));
 }
 
 function recoverArchivedQuarantineUnlocked(spool: MemberSpool, now: number, canRecover: () => boolean): number {
   const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
   let recovered = 0;
-  for (const name of archiveNames(spool)) {
+  for (const name of quarantineNames(spool, '.jsonl')) {
     if (!canRecover()) break;
     const base = name.slice(0, -'.jsonl'.length);
     const file = path.join(dir, name);
     const markerFile = path.join(dir, `${base}${ARCHIVE_REPLAY_SUFFIX}`);
     try {
-      const { sessionId, records, damaged } = classifyArchivedRecords(spool, file, base);
-      if (damaged.length > 0) archiveWarning(file, `${damaged.length} damaged record(s) counted as capture loss`);
+      const archive = classifyArchivedRecords(spool, file, base);
+      const { sessionId, records, damaged } = archive;
       const marker = archiveReplayOf(markerFile);
       const eventIds = records.map((record) => record.eventId);
-      if (marker?.sessionId === sessionId && eventIds.length === marker.eventIds.length
-          && eventIds.every((id, i) => id === marker.eventIds[i]) && marker.lostRecords === damaged.length) {
+      if (archiveMatches(marker, archive)) {
+        if (marker.counted === false && recordArchiveLoss(spool, file, damaged, marker.replayedAt)) {
+          marker.counted = true;
+          writePrivateFileAtomic(markerFile, JSON.stringify(marker));
+        }
         const live = liveArchiveRecords(spool, sessionId);
-        if (live !== null && eventIds.every((id) => live.some((record) => record?.eventId === id))) continue;
         if (live !== null) {
+          const liveIds = new Set(live.map(record => record?.eventId));
+          if (eventIds.every(id => liveIds.has(id))) continue;
           const state = readSessionState(spool.dir, sessionId);
           if ((state.lastAccountedAt ?? state.lastAckAt ?? 0) >= marker.replayedAt
-              && eventIds.every((id) => !live.some((record) => record?.eventId === id))) continue;
+              && eventIds.every(id => !liveIds.has(id))) continue;
         }
       }
       const events: OutboundEvent[] = records.map((record) => {
@@ -214,8 +218,8 @@ function recoverArchivedQuarantineUnlocked(spool: MemberSpool, now: number, canR
         return { envelope, blobSource: archiveBytes.status === 'missing' ? original : candidate };
       });
       if (events.length > 0 && !spool.prependRecovered(sessionId, events, now)) continue;
-      new CaptureLossLedger(spool.dir).record(damaged.map((key) => ({ key, kind: 'record', at: now })));
-      writePrivateFileAtomic(markerFile, JSON.stringify({ sessionId, replayedAt: now, eventIds, lostRecords: damaged.length } satisfies ArchiveReplay));
+      const counted = recordArchiveLoss(spool, file, damaged, now);
+      writePrivateFileAtomic(markerFile, JSON.stringify({ sessionId, replayedAt: now, eventIds, lostRecords: damaged.length, counted } satisfies ArchiveReplay));
       recovered += 1;
     } catch (error) {
       archiveWarning(file, error instanceof Error ? error.message : String(error));
@@ -226,27 +230,26 @@ function recoverArchivedQuarantineUnlocked(spool: MemberSpool, now: number, canR
 
 /** Delete only archives whose replayed records have all passed the live journal's acknowledgement mark. */
 export function cleanAcknowledgedQuarantine(spool: MemberSpool): number {
-  if (replayMarkerNames(spool).length === 0) return 0;
+  if (quarantineNames(spool, ARCHIVE_REPLAY_SUFFIX).length === 0) return 0;
   return withArchiveLease(spool, () => cleanAcknowledgedQuarantineUnlocked(spool));
 }
 
 function cleanAcknowledgedQuarantineUnlocked(spool: MemberSpool): number {
   const dir = path.join(spool.dir, BUFFER_QUARANTINE_DIRNAME);
   let cleaned = 0;
-  for (const name of replayMarkerNames(spool)) {
+  for (const name of quarantineNames(spool, ARCHIVE_REPLAY_SUFFIX)) {
     const base = name.slice(0, -ARCHIVE_REPLAY_SUFFIX.length);
     const file = path.join(dir, `${base}.jsonl`);
     const markerFile = path.join(dir, name);
     const marker = archiveReplayOf(markerFile);
-    if (marker === null) continue;
+    if (marker === null || marker.counted === false) continue;
     try {
       assertMemberPathContained(file, spool.mycoHome);
       const blobDir = path.join(dir, 'blobs', base);
       assertMemberPathContained(blobDir, spool.mycoHome);
       if (!pathIsAbsent(file)) {
         const archived = classifyArchivedRecords(spool, file, base);
-        if (archived.damaged.length !== marker.lostRecords || archived.records.length !== marker.eventIds.length
-            || archived.records.some((record, index) => record.eventId !== marker.eventIds[index])) continue;
+        if (!archiveMatches(marker, archived)) continue;
       }
       if (marker.eventIds.length > 0) {
         const live = liveArchiveRecords(spool, marker.sessionId);

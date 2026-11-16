@@ -32,6 +32,8 @@ export interface TranscriptPointer {
   awaitingTurnEnd?: true;
   /** The code the Deployment refused this transcript with for good, when it has; nothing ships under this identity again. */
   refused?: string;
+  /** The first failed local read counted as degraded capture. */
+  unavailableAt?: number;
 }
 
 /**
@@ -343,8 +345,7 @@ function trimTracked(state: SessionState): void {
 /** Write the state atomically (0600). Callers hold the buffer lock, or run inside a callback that already does. */
 export function writeSessionStateUnlocked(spoolDir: string, sessionId: string, state: SessionState, now: number = Date.now()): void {
   if (state.pendingLosses !== undefined) {
-    new CaptureLossLedger(spoolDir).record(state.pendingLosses);
-    delete state.pendingLosses;
+    if (new CaptureLossLedger(spoolDir, () => now).record(state.pendingLosses)) delete state.pendingLosses;
   }
   const previous = readSessionStateResultUnlocked(spoolDir, sessionId);
   const prior = previous.ok ? previous.state.transcript : undefined;

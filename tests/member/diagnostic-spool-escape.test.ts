@@ -12,7 +12,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { deploymentKeyFor } from '@myco/member/registry.js';
-import { MemberSpool, OFFLINE_LATCH_FILE, REFUSED_LOG_FILE } from '@myco/member/spool.js';
+import { OFFLINE_LATCH_FILE, REFUSED_LOG_FILE } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { tempMycoHome } from './helpers/server.js';
 
 let mycoHome: string;

@@ -42,6 +42,10 @@ export interface DoctorCheck {
   name: string;
   status: import('../member/diagnostics.js').CheckFacts['status'];
   detail: string;
+  /** Compact outcome for the default report. */
+  summary?: string;
+  /** Agents whose global tools configuration this check verified. */
+  toolsAgents?: readonly string[];
   /** Absent where a check has only one way to fail, which its name already says. */
   reason?: DoctorReason;
   /** The symbiont a check names, where it names one. */
@@ -130,6 +134,7 @@ export function checkMemberMcpResolution(
       name: 'Member MCP resolution',
       status: 'warn',
       detail: `this project's membership lives in ${home}, but the machine pin (${path.join(defaultMycoHome(homeDir), 'runtime.home')}) does not name it; an MCP server started outside ${root} resolves the default home and finds no membership. Run \`MYCO_HOME=${home} myco member join\` again to pin the machine.`,
+      summary: `This repository's Myco home is not selected for your agents. Run \`MYCO_HOME=${home} myco member join\` from this repository.`,
       reason: 'home_pin_missing',
       scope: 'global',
       fixable: false,

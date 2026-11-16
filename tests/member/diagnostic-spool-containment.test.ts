@@ -12,7 +12,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { deploymentKeyFor } from '@myco/member/registry.js';
-import { MemberSpool, spoolDirFor } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
+import { spoolDirFor } from '@myco/member/spool.js';
 import { isProjectId } from '@myco/member/constants.js';
 import {
   listRegistryEntriesResult, readRegistryEntryResult, registryEntryPath, writeRegistryEntry, type RegistryEntry,

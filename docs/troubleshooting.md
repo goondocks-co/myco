@@ -4,11 +4,12 @@ Start with these commands. Run the last one from the repository whose capture yo
 
 ```bash
 myco doctor
+myco doctor --all
 myco setup --status
 myco member status
 ```
 
-Doctor checks this machine's memberships, server reachability, agent setup, delivery and runner records. From a connected repository it also checks authenticated project access. A local credential that has not expired is not proof the server still accepts it. Rows marked **not-checked** say what remains unverified.
+Doctor checks this machine's memberships, server reachability, agent setup, delivery and runner records. From a connected repository it also checks authenticated project access. A local credential that has not expired is not proof the server still accepts it. The default report leads with the attention count, summarizes connected repositories and agents, and shows capture waiting and recent capture losses before the other checks. Only passed areas appear under **Also checked**. **Not verified** and the closing count name checks that could not verify runtime behavior. Use `myco doctor --all` for every check, including configuration paths, context and Myco home; its **not checked** rows say what remains unverified.
 
 Setup status reports observed progress without changing it or contacting the server. It is useful after an interrupted setup. Neither status command repairs an installation; follow the action named by each row.
 
@@ -16,14 +17,14 @@ Setup status reports observed progress without changing it or contacting the ser
 
 | Doctor row | What to check |
 |---|---|
-| Membership / Memberships / Credential | The address, member sign-in and whether the credential can renew. Sign in again if it has ended. |
+| Myco connection / Sign-in (`Membership`, `Memberships`, `Credential` under `--all`) | The address, member sign-in and whether the credential can renew. Sign in again if it has ended. |
 | Default Myco | Which server new repositories join. If none is selected, choose with `myco login <address> --default`; this approves the machine again. |
 | Deployment / Project access | Whether the server answers, and whether this repository's credential reaches its tools. |
 | Repository / Repositories | Where each connected folder sends its sessions, or why it is left unconnected. |
-| Setup / Capture | Whether agent hooks, skills and tool entries are current, and whether capture actually ran. |
-| Capture backlog / Refusals | Queued delivery, a delivery hold-off or events the server refused. |
+| Agent setup / Capture (`Setup` under `--all`) | Whether agent hooks, skills and tool entries are current, and whether capture actually ran. |
+| Capture waiting / Capture losses (`Capture backlog`, `Refusals` under `--all`) | Sessions with events or transcripts awaiting delivery, their oldest activity, and recent recorded losses or refusals. Counts cover seven UTC calendar days including today; earlier undated totals appear only as historical notes under `--all`. |
 | Runner / Runner service / Runner offer | Registration, service state and which agents the runner last offered. |
-| Migration / Myco 1.4 | Whether old history and capture have handed over. Follow [Moving from Myco 1.4](upgrade.md#upgrading-from-myco-14). |
+| Earlier history / Myco 1.4 (`Migration` under `--all`) | Whether old history and capture have handed over. Follow [Moving from Myco 1.4](upgrade.md#upgrading-from-myco-14). |
 
 In setup status, **Deployment creation** describes the operator record or local volume, **Owner account** describes owner linking, and **Serving** describes the local serving process. Hosted owner linking remains unchecked in status because its operator login can renew credentials. **Signed in** and **Sign-in credential** describe local records, **Agent hooks** describes provisioning, and **Repository** describes routing. **Deployment** and **GitHub sign-in** need `--check-remote` for fresh network checks. **Runner**, **Runner service** and **Runner agents** describe the separate runner journey. **Capture** groups backlogs, hold-offs and refusals. Resume owner setup with `myco setup --create cloudflare` or `myco setup --create local`, a join with `myco setup --join <address>`, or a runner with `myco setup --runner <address>`. Bare `myco setup` resumes saved choices and observes progress again.
 
@@ -83,7 +84,9 @@ Capture waits on the machine when the server is offline. Member status shows que
 myco member drain
 ```
 
-Use `myco member drain --all` for every connected repository on the machine. If events are refused, read `myco logs` and resolve the named refusal. Repeating a terminal refusal unchanged will not fix it.
+Use `myco member drain --all` for every connected repository on the machine. For a retained destination that no repository currently connects to, use the exact `myco member drain --server <address> --project <id>` command Doctor names. If events are refused, read `myco logs` and resolve the named refusal. Repeating a terminal refusal unchanged will not fix it.
+
+Recorded payload, plan and damaged-record losses describe history: provisioning or draining cannot recover those missing bytes. Their dated counts clear from Doctor after seven UTC days. Inspect `myco logs` from a connected repository, or use `myco doctor --all` to locate the retained destination's local logs. An unavailable transcript can resume delivery when its file becomes readable. Loss accounting failures are reported locally and do not stop delivery.
 
 For a bug report, `myco member export` emits delivery and connection diagnostics without tokens or captured content. Review the output before sharing it.
 

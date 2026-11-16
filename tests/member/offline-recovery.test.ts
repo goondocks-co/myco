@@ -27,7 +27,7 @@ import { recordJoinAnswer } from '@myco/member/join-code.js';
 import { refreshDue, refreshMembership } from '@myco/member/refresh.js';
 import { readRegistryEntry, writeDeploymentMembership } from '@myco/member/registry.js';
 import { emptySessionState, readSessionState, updateSessionState } from '@myco/member/session-state.js';
-import { MemberSpool } from '@myco/member/spool.js';
+import { MemberSpool } from '@myco/member/capture-observations.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { ServerClient } from './helpers/env-client.js';
 import { mintId, promptEvent } from '@myco/member/envelope.js';
