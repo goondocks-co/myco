@@ -188,7 +188,7 @@ export async function projectReport(source: CredentialSource, deps: MemberDoctor
     const membership = after.entry;
     const expired = membership.expiresAt !== undefined && membership.expiresAt <= (deps.now ?? Date.now)();
     checks.push(membership.refreshTerminal === true
-      ? row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`, `the Deployment will not renew this credential. Run \`myco login ${membership.serverUrl}\`; if refused, ask an administrator for an invitation for your existing member.`)
+      ? row('Credential', 'fail', `the Deployment will not renew this credential — ${REJOIN_HINT}.`, `the Deployment will not renew this credential. Run \`myco login ${membership.serverUrl}\`; if refused, ${REJOIN_HINT}.`)
       : row('Credential', authenticated ? 'ok' : expired ? 'warn' : 'not-checked', `${membership.serverUrl}: ${authenticated ? 'authenticated' : 'authentication not checked'}; expires ${iso(membership.expiresAt)}${expired ? ' (expired)' : ''}. Start a new agent session after restoring access.`, expired && !authenticated ? `${membership.serverUrl}: sign-in has expired. Run \`myco login ${membership.serverUrl}\`.` : undefined));
   }
 
