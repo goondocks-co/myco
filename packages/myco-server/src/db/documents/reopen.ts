@@ -1,7 +1,7 @@
 import { write, type Bound } from '../index.js';
 import type { CatchupFamily } from '../projections/family.js';
 import { reset } from './rebuild.js';
-import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { publicationPolicy } from './publication-policy.js';
 import { PARSERS } from '../../ingest/parsers/registry.js';
 
 export const PUBLICATION_REOPEN_PHASE = 'publicationReopenAdmissionsV1';

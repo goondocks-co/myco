@@ -1,5 +1,5 @@
 import type { RelationalStore } from '../../core/adapters.js';
-import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { publicationPolicy } from './publication-policy.js';
 import { assertion, commitNamed, first, read, readSet, refusalCode, refused, rows, write } from '../index.js';
 import { reset, retainedStart } from './rebuild.js';
 

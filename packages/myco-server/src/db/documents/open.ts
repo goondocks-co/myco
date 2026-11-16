@@ -1,6 +1,6 @@
 import type { RelationalStore } from '../../core/adapters.js';
 import { read, readSet } from '../index.js';
-import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { publicationPolicy } from './publication-policy.js';
 import { dependencyTranslationPending } from './dependencies.js';
 
 export interface DocumentRow {

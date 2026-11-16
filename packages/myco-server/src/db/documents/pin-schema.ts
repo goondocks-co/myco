@@ -1,7 +1,7 @@
 import { PROJECT_ID_GRAMMAR } from '../project-id.js';
 import { assertion, write } from '../index.js';
 import { pinDecision } from './pins.js';
-import { publicationPolicy } from '../../ingest/publication-policy.js';
+import { publicationPolicy } from './publication-policy.js';
 import { jsonKeys } from '../ddl.js';
 import type { CatchupFamily } from '../projections/family.js';
 

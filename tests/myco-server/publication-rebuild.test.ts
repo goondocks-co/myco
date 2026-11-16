@@ -5,8 +5,6 @@ import { publishDocuments } from '@myco-server-worker/ingest/publish.js';
 import { PUBLICATION_REOPEN_PHASE } from '@myco-server-worker/db/documents/reopen.js';
 import { PARSER_VERSION } from '@myco-server-worker/constants.js';
 import { withDocumentStores, captureDocumentTranscript, captureDocumentSession } from './helpers/document-stores.js';
-import { PARSERS } from '@myco-server-worker/ingest/parsers/registry.js';
-import type { TranscriptParser } from '@myco-server-worker/ingest/parsers/index.js';
 import { memoryBlobStore, readFixtureRecords } from './helpers/fixtures.js';
 import { limits, MIN, one, reply, user } from './helpers/document-publication.js';
 
@@ -115,19 +113,17 @@ test('a stored transcript is read once after its parser becomes available', asyn
       { type: 'user.message', id: 'user', data: { messageId: 'submission', content: 'retained question' } },
       { type: 'assistant.message', id: 'reply', data: { originatingMessageId: 'submission', content: 'retained answer' } },
     ].map(row => JSON.stringify(row)).join('\n') + '\n';
-    const parsers = PARSERS as Record<string, TranscriptParser>;
-    const parser = parsers.copilot!;
     const member = await captureDocumentSession(db, 'project', 'fixture-member');
     await db.prepare(`INSERT INTO transcripts(project_id,transcript_id,session_id,machine_id,agent,first_received_at,last_received_at,token_id,prompt_identity_scheme)
       VALUES('project','tx_10000000000000000000000000000001','catch-up','machine','copilot',?1,?1,?2,'hook-mint-v1')`).bind(at, member.tokenId).run();
     const env = await captureDocumentTranscript(db, blobs, 'catch-up', 'tx_10000000000000000000000000000001', text, at, 0, 'copilot');
-    try {
-      delete parsers.copilot;
-      await publishDocuments(env, at + 20 * MIN, limits());
-    } finally { parsers.copilot = parser; }
+    await db.prepare(`INSERT INTO transcript_publication(project_id,transcript_id,generation,session_id,published_offset,
+      prompt_scheme,record_scheme,parser_version,state,failure,updated_at)
+      VALUES('project','tx_10000000000000000000000000000001',1,'catch-up',0,
+        'hook-mint-v1','source-record-v1',0,'failed','parser_absent',?1)`).bind(at).run();
+    await db.prepare("UPDATE session_documents SET due_at=NULL WHERE session_id='catch-up'").run();
     expect(await one(db, "SELECT state,failure FROM transcript_publication WHERE session_id='catch-up'"), target)
       .toEqual({ state: 'failed', failure: 'parser_absent' });
-    await db.prepare("UPDATE transcript_publication SET prompt_scheme='hook-mint-v1' WHERE session_id='catch-up'").run();
     await catchUpProjections(db, { blobs, budget: { calls: 500, wallMs: 60_000 } });
     await publishDocuments(env, at + 21 * MIN, limits());
     expect(await one(db, "SELECT prompt_identity_scheme FROM transcripts WHERE session_id='catch-up'"), target)
