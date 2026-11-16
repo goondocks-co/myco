@@ -748,6 +748,11 @@ describe('the session reading page', () => {
     expect((await screen.findByText(/^Nothing yet/)).textContent).toBe('Nothing yet. Myco hasn’t learned anything from this session.');
     expect(screen.getByRole('heading', { level: 1, hidden: true }).textContent).toBe('Untitled session');
     expect(screen.getByText(/^Untitled: Myco stopped trying/)).toBeTruthy();
+    cleanup();
+    server(base({ '/api/projects/x/sessions/s1': () => detail({ endedAt: NOW - HOUR }, { untitled: 'capture_stopped' }) }));
+    mount('/p/x/sessions/s1?about=1');
+    expect(await screen.findByText(/^Untitled: transcript processing is unavailable or stopped\. Check the session transcript/)).toBeTruthy();
+    expect(screen.queryByText(/transcript is still being processed/)).toBeNull();
   });
 
   it('keeps an admin’s delete, end and new title in the ⋯ menu, each behind a confirmation, and shows a member none of them', async () => {

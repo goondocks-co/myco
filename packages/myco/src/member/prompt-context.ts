@@ -1,9 +1,12 @@
+import { canonicalPromptId, PROMPT_SCHEME_FEATURE, type PromptIdScheme } from '@goondocks/myco-shared/prompt-identity';
+import { SymbiontRegistry } from '../symbionts/registry.js';
+import { assertMemberTranscriptDestination } from './transcript-routing.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { terminalText } from '../utils/terminal-text.js';
-import { contextDeliveredEvent, type OutboundEvent } from './envelope.js';
+import { contextDeliveredEvent, deriveId, type OutboundEvent } from './envelope.js';
 import { canStartRequest, subRequestBudget, type HookBudget } from './budget.js';
-import { type ContextAskRequest } from './context-cache.js';
+import { featureAdvertised, type ContextAskRequest } from './context-cache.js';
 import type { HookRun, HookClaim } from './capture.js';
 import type { HookResponse } from '../hooks/response.js';
 import { readSessionState, updateSessionState, sessionStatePath, type SessionState } from './session-state.js';
@@ -135,10 +138,11 @@ function consumePromptRecall(run: PromptRenderRun, state: SessionState, options:
     held.stage = 'delivered';
     const answer = held.answer;
     const ask = held.request;
+    const rendered = ask.promptId === undefined && options.delivery === 'tool' ? toolPromptIdentity(run) : undefined;
     const events = ask.identity !== undefined && answer.context.length > 0
       && (answer.receiptId !== undefined || answer.answerId !== undefined || answer.sessionRecord !== undefined)
       ? [contextDeliveredEvent(run.ctx, { receiptId: answer.receiptId, answerId: answer.answerId, sessionRecord: answer.sessionRecord,
-        ...(ask.promptId !== undefined ? { renderedIn: ask.promptId, renderedScheme: ask.promptScheme } : { renderedScopeReason: ask.scopeReason }) })] : [];
+        ...(rendered ?? (ask.promptId !== undefined ? { renderedIn: ask.promptId, renderedScheme: ask.promptScheme } : { renderedScopeReason: ask.scopeReason })) })] : [];
     held.deliveryEventId = events[0]?.envelope.eventId;
     held.answer = { ...answer, context: '' };
     held.request.text = '';
@@ -149,6 +153,21 @@ function consumePromptRecall(run: PromptRenderRun, state: SessionState, options:
   }
   if (held.stage === 'discarded') log(run, options.id, held, 'discarded');
   return { events: [] };
+}
+
+/** Resolve a late render from the tool's native source before recording its delivery. */
+function toolPromptIdentity(run: PromptRenderRun): { renderedIn: string; renderedScheme: PromptIdScheme } | undefined {
+  if (!featureAdvertised(run.credential, run.spool.mycoHome, PROMPT_SCHEME_FEATURE)) return undefined;
+  const adapter = new SymbiontRegistry().getAdapter(run.agent);
+  if (adapter?.promptForTool === undefined) return undefined;
+  const transcript = run.input.transcriptPath ?? adapter.findTranscript(run.sessionId);
+  if (transcript === null || transcript === undefined) return undefined;
+  assertMemberTranscriptDestination(transcript, run.credential, run.spool.mycoHome);
+  let content: string;
+  try { content = fs.readFileSync(transcript, 'utf8'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
+  const request = adapter.promptForTool(content, { sessionId: run.sessionId, raw: run.input.raw });
+  return request === undefined ? undefined : { renderedIn: canonicalPromptId(deriveId, request), renderedScheme: request.scheme };
 }
 
 /** A tool hook reads only this session's current held answer and never waits for it. */

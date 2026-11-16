@@ -51,6 +51,8 @@ registration:
       PostToolUseFailure: flat
       SubagentStart: flat
 capabilities:
+  turnRowSource: transcript
+  transcriptFidelity: full
   promptSubmitInjection: false
   promptRecallToolDelivery: true
   preToolUseInjection: false
@@ -118,13 +120,46 @@ capabilities:
       pathField: path
 
 hooks:
-  # Single-event turn-end: `Stop` carries both the inline response and the
-  # transcript path. The daemon's stop dispatcher runs both phases in
-  # sequence for this single event — matching pre-refactor behavior.
+  # Stop ships the transcript boundary from which the Deployment derives the reply.
   Stop:
     phases: [response, transcript]
 
-# How this agent's prompts are named: the prompt hook mints the id for the rows it writes (`hook-owned`, from
-# `capabilities.turnRowSource`).
+# Prompts are named by the user messageId referenced by assistant requests.
 promptIdentity:
-  scheme: hook-mint-v1
+  kind: transcript-only
+  scheme: member-transcript-v1
+  evidence: tests/fixtures/prompt-identity/copilot-user-prompt-submit.json
+
+recordIdentity:
+  scheme: source-record-v1
+  schemes:
+    legacy-session-v1:
+      response:
+        key:
+          from: record
+          path: id
+        withinRecord: record-text
+        evidence: tests/fixtures/record-identity-evidence.json
+      tool-call:
+        key:
+          from: call
+          path: toolCallId
+        resultKey:
+          from: result
+          path: toolCallId
+        evidence: tests/fixtures/record-identity-evidence.json
+    source-record-v1:
+      response:
+        key:
+          from: record
+          path: id
+        withinRecord: record-text
+        evidence: tests/fixtures/record-identity-evidence.json
+      tool-call:
+        key:
+          from: call
+          path: toolCallId
+        resultKey:
+          from: result
+          path: toolCallId
+        evidence: tests/fixtures/record-identity-evidence.json

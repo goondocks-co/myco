@@ -1,0 +1,7 @@
+{"type":"user.message","id":"human-1","data":{"content":"Inspect the orchard.","messageId":"submission-1"},"timestamp":"2026-06-01T12:00:00Z"}
+{"type":"assistant.message","id":"message-1","data":{"content":"","toolRequests":[{"toolCallId":"call-1","name":"view","arguments":{"path":"orchard.txt"}}],"originatingMessageId":"submission-1"},"timestamp":"2026-06-01T12:00:00Z"}
+{"type":"tool.execution_start","data":{"toolCallId":"call-1","toolName":"view","arguments":{"path":"orchard.txt"}},"timestamp":"2026-06-01T12:00:00Z"}
+{"type":"user.message","data":{"source":"skill-context","content":"Injected context"},"timestamp":"2026-06-01T12:00:00Z"}
+{"type":"tool.execution_complete","data":{"toolCallId":"call-1","success":true,"result":{"content":"Pear trees"}},"timestamp":"2026-06-01T12:00:00Z"}
+{"type":"assistant.message","id":"message-2","data":{"content":"The orchard has pears.","originatingMessageId":"submission-1"},"timestamp":"2026-06-01T12:00:00Z"}
+{"type":"assistant.turn_end","timestamp":"2026-06-01T12:00:00Z"}

@@ -20,8 +20,6 @@ hookFields:
 hookInput:
   workspaceFromStdin: workspacePaths
 capture:
-  # Prompts are read from the transcript; PreInvocation prompt memory is not wired.
-  promptsFromTranscript: true
   # One brain dir per conversation, under whichever surface produced it.
   transcriptDiscovery:
     roots:
@@ -53,6 +51,8 @@ registration:
   retiredGlobalSkillsTargets:
     - ~/.gemini/antigravity/skills
 capabilities:
+  turnRowSource: transcript
+  transcriptFidelity: no_tool_results
   sessionStartInjection: true
   sessionStartOnce: true
   subagentStartInjection: false
@@ -154,7 +154,21 @@ runner:
       provider: { kind: unavailable }
       tokenScope: unverified
 
-# How this agent's prompts are named: the member reads them from the harness transcript by position.
+# Prompts are named by their explicit source step_index.
 promptIdentity:
   kind: transcript-only
   scheme: member-transcript-v1
+
+recordIdentity:
+  scheme: source-record-v1
+  schemes:
+    legacy-session-v1:
+      response:
+        position: true
+        withinRecord: record-text
+        evidence: tests/fixtures/record-identity-evidence.json
+    source-record-v1:
+      response:
+        position: true
+        withinRecord: record-text
+        evidence: tests/fixtures/record-identity-evidence.json

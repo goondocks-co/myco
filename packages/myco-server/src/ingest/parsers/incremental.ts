@@ -46,6 +46,7 @@ export function withParserContinuation(parser: TranscriptParser): TranscriptPars
         // A reply is one prompt's: a line naming another prompt than the reply held starts its own.
         const promptId = typeof event.payload.promptId === 'string' ? event.payload.promptId : undefined;
         if (state.reply !== undefined && state.reply.promptId !== promptId) await flushReply();
+        if (parser.replyAggregation === 'last') delete state.reply;
 
         const bytes = textBytes(part.text);
         if (state.reply !== undefined && (state.reply.chars + REPLY_SEPARATOR.length + part.text.length > bound.chars

@@ -59,8 +59,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
           "brain/{sessionId}/.system_generated/logs/transcript.jsonl"
         ],
         "retention": "harness"
-      },
-      "promptsFromTranscript": true
+      }
     },
     "registration": {
       "hooksTarget": ".agents/hooks.json",
@@ -96,8 +95,8 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
       "promptSubmitInjection": true,
-      "turnRowSource": "hook",
-      "transcriptFidelity": "full",
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "no_tool_results",
       "canopyReadTools": [],
       "pathBearingTools": [
         {
@@ -344,6 +343,25 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
     "promptIdentity": {
       "kind": "transcript-only",
       "scheme": "member-transcript-v1"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "position": true,
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {
@@ -2006,7 +2024,7 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
       "promptSubmitInjection": false,
-      "turnRowSource": "hook",
+      "turnRowSource": "transcript",
       "transcriptFidelity": "full",
       "canopyReadTools": [
         {
@@ -2224,7 +2242,56 @@ export const BUNDLED_MANIFESTS: readonly SymbiontManifest[] = [
       }
     },
     "promptIdentity": {
-      "scheme": "hook-mint-v1"
+      "kind": "transcript-only",
+      "scheme": "member-transcript-v1",
+      "evidence": "tests/fixtures/prompt-identity/copilot-user-prompt-submit.json"
+    },
+    "recordIdentity": {
+      "scheme": "source-record-v1",
+      "schemes": {
+        "legacy-session-v1": {
+          "response": {
+            "key": {
+              "from": "record",
+              "path": "id"
+            },
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "toolCallId"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "toolCallId"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        },
+        "source-record-v1": {
+          "response": {
+            "key": {
+              "from": "record",
+              "path": "id"
+            },
+            "withinRecord": "record-text",
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          },
+          "tool-call": {
+            "key": {
+              "from": "call",
+              "path": "toolCallId"
+            },
+            "resultKey": {
+              "from": "result",
+              "path": "toolCallId"
+            },
+            "evidence": "tests/fixtures/record-identity-evidence.json"
+          }
+        }
+      }
     }
   },
   {

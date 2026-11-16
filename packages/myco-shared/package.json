@@ -15,6 +15,7 @@
     "./budget-status": { "import": "./dist/budget-status.js", "types": "./dist/budget-status.d.ts" },
     "./report-order": { "import": "./dist/report-order.js", "types": "./dist/report-order.d.ts" },
     "./json": { "import": "./dist/json.js", "types": "./dist/json.d.ts" },
+    "./antigravity-parser": { "import": "./dist/antigravity-parser.js", "types": "./dist/antigravity-parser.d.ts" },
     "./prompt-text": { "import": "./dist/prompt-text.js", "types": "./dist/prompt-text.d.ts" },
     "./search-types": {
       "import": "./dist/search-types.js",

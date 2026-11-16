@@ -105,7 +105,7 @@ describe('immutable record identity pin', () => {
       for (const [agent, expected] of [['first', SOURCE], ['second', LEGACY], ['unknown', LEGACY], [null, LEGACY]] as const) {
         expect(sqlite.query(`SELECT ${recordSchemeSql('?1', '?2', declarations)} AS pin`).get(agent, LEGACY)).toEqual({ pin: expected });
       }
-      expect(sqlite.query(`SELECT ${recordSchemeSql('?1', '?2')} AS pin`).get('copilot', LEGACY)).toEqual({ pin: LEGACY });
+      expect(sqlite.query(`SELECT ${recordSchemeSql('?1', '?2')} AS pin`).get('unknown', LEGACY)).toEqual({ pin: LEGACY });
       for (const bad of [
         { first: { ...declaration, scheme: 'unknown-v1' } },
         { "unsafe'agent": declaration },

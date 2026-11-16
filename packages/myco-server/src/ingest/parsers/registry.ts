@@ -14,6 +14,8 @@ import { clineParser } from './cline.js';
 import { codexParser } from './codex.js';
 import { cursorParser } from './cursor.js';
 import { opencodeParser } from './opencode.js';
+import { copilotParser } from './copilot.js';
+import { antigravityParser } from './antigravity.js';
 import { piParser } from './pi.js';
 import type { TranscriptParser } from './index.js';
 import { boundDerivedEvents, boundPendingInputs } from './bounds.js';
@@ -36,7 +38,7 @@ const bounded = (parser: TranscriptParser): TranscriptParser => ({
 });
 
 export const PARSERS: Readonly<Record<string, TranscriptParser>> = Object.fromEntries(
-  [claudeCodeParser, clineParser, codexParser, cursorParser, opencodeParser, piParser]
+  [claudeCodeParser, clineParser, codexParser, cursorParser, opencodeParser, piParser, copilotParser, antigravityParser]
     .map((parser) => [parser.agent, bounded(withParserContinuation(parser))]),
 );
 

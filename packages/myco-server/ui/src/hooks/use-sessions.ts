@@ -50,11 +50,12 @@ export interface SessionCounts {
 }
 
 /** Why an ended session has no title yet; the server's reason, in its own vocabulary. */
-export type UntitledReason = 'capture_pending' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
+export type UntitledReason = 'capture_pending' | 'capture_stopped' | 'no_material' | 'in_progress' | 'stopped' | 'imported' | 'waiting';
 
 /** Each untitled reason in the reader's words. */
 export const UNTITLED_REASON_TEXT: Record<UntitledReason, string> = {
   capture_pending: 'Untitled: the transcript is still being processed',
+  capture_stopped: 'Untitled: transcript processing is unavailable or stopped. Check the session transcript',
   no_material: 'Untitled: nothing was typed in this session to title',
   in_progress: 'Untitled: a title is being written',
   stopped: 'Untitled: Myco stopped trying to title it on its own. An admin can ask again from the session’s menu',

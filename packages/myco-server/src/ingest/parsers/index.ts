@@ -254,6 +254,8 @@ interface Continuation {
 export interface TranscriptParser {
   agent: string;
   fidelity: Fidelity;
+  /** A format whose prose snapshots replace earlier narration within the same turn. */
+  replyAggregation?: 'last';
   /** Declared by an agent that continues a conversation under a new id; absent for one that does not. */
   continuation?: Continuation;
   /** A vendor record that explicitly closes the assistant turn. */

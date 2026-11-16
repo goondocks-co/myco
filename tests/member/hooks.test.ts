@@ -722,20 +722,25 @@ describe('member hooks through the worker: hook-source agents', () => {
     expect(JSON.parse(failure!.payload)).toMatchObject({ toolName: 'run_command', success: false, errorMessage: 'exit status 1' });
   });
 
-  it('copilot, which the Deployment does not parse, still ships its turn rows from the hooks', async () => {
-    const tx = transcript([{ type: 'user', message: { role: 'user', content: 'x' } }]);
-    const copilot = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
-      runHook(name, { session_id: session, transcript_path: tx, cwd: '/repo', ...raw }, { helpers: 'run', fetch: fetchSpy.fetch, symbiont: 'copilot' });
-    await copilot('session-start', { hook_event_name: 'SessionStart' });
-    await copilot('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'hello' });
-    await copilot('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' }, tool_response: 'contents' });
-    await copilot('stop', { hook_event_name: 'Stop', last_assistant_message: 'The answer.' });
-    expect(rig.rows("events WHERE kind='prompt'")).toBe(1);
-    expect(rig.rows("events WHERE kind IN ('tool.use','tool.failure')")).toBe(1);
-    expect(rig.rows("events WHERE kind='response'")).toBe(1);
-    const promptId = (rig.env.sqlite.query(`SELECT json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE kind='prompt'`).get() as { prompt_id: string }).prompt_id;
-    expect((rig.env.sqlite.query(`SELECT json_extract(payload,'$.promptId') AS prompt_id FROM events WHERE kind IN ('tool.use','tool.failure')`).get() as { prompt_id: string }).prompt_id).toBe(promptId);
-  });
+  for (const agent of ['copilot', 'antigravity']) {
+    it(`${agent}: hooks and repeated transcript publication produce one prompt, tool and reply`, async () => {
+      const tx = transcript(fs.readFileSync(path.join(FIXTURES, `${agent}-parse-basic.jsonl`), 'utf8').trim().split('\n').map(line => JSON.parse(line)));
+      const hook = (name: Parameters<typeof runHook>[0], raw: Record<string, unknown>) =>
+        runHook(name, { session_id: session, conversationId: session, transcript_path: tx, transcriptPath: tx, cwd: '/repo', ...raw },
+          { helpers: 'run', fetch: fetchSpy.fetch, symbiont: agent });
+      await hook('session-start', { hook_event_name: 'SessionStart' });
+      await hook('user-prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'Inspect the orchard.' });
+      await hook('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'view', tool_input: { path: 'orchard.txt' }, tool_response: 'Pear trees',
+        stepIdx: 3, toolCall: { name: 'read_file', args: { Path: 'orchard.txt' } } });
+      await hook('stop', { hook_event_name: 'Stop', last_assistant_message: 'The orchard has pears.' });
+      await parseAll();
+      await hook('stop', { hook_event_name: 'Stop', last_assistant_message: 'The orchard has pears.' });
+      await parseAll();
+      expect(await texts('prompt')).toEqual(['Inspect the orchard.']);
+      expect(await texts('reply')).toEqual(['The orchard has pears.']);
+      expect((await readFixtureRecords(rig.env.serverEnv, 'proj_1')).filter(row => row.k === 'tool')).toHaveLength(1);
+    });
+  }
 });
 
 describe('a hook command that names no harness, or no credential source (#1561)', () => {

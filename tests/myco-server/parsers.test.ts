@@ -32,6 +32,8 @@ const FIXTURE_FOR: Record<string, string> = {
   cursor: 'cursor-parse-basic.jsonl',
   opencode: 'opencode-parse-basic.jsonl',
   pi: 'pi-parse-basic.jsonl',
+  copilot: 'copilot-parse-basic.jsonl',
+  antigravity: 'antigravity-parse-basic.jsonl',
 };
 
 const SESSION = 's1';
@@ -81,6 +83,8 @@ describe('parser registry', () => {
     cursor: { prompt: 2, response: 2 },
     opencode: { prompt: 1, response: 1, 'tool.use': 1, 'tool.failure': 1 },
     pi: { prompt: 1, response: 1, 'tool.use': 1 },
+    copilot: { prompt: 1, response: 1, 'tool.use': 1 },
+    antigravity: { prompt: 1, response: 1 },
   };
 
 
@@ -542,3 +546,20 @@ it('plugin parsers preserve canonical prompt origins and distinguish legacy huma
     expect(only(events, 'prompt').map(row => row.payload.origin)).toEqual(['user', 'system', 'agent_dispatch', 'hook_injected', 'unknown', 'user', 'user', 'unknown']);
   }
 });
+
+for (const agent of ['copilot', 'antigravity']) {
+  it(`${agent}: resumes a turn without turning injected context into a prompt or duplicating the reply`, async () => {
+    const parser = parserFor(agent);
+    expect(parser).not.toBeNull();
+    const lines = linesOf(FIXTURE_FOR[agent]!);
+    const input = { transcriptId: 'orchard', sessionId: SESSION, now: NOW, recordScheme: 'source-record-v1' as const, scheme: 'member-transcript-v1' as const };
+    const state = {};
+    const first = await parser!.parse({ ...input, state, lines: lines.slice(0, 3) });
+    const promptId = first.find(event => event.kind === 'prompt')!.payload.promptId as string;
+    const rest = await parser!.parse({ ...input, state: JSON.parse(JSON.stringify(state)), openPromptId: promptId, lines: lines.slice(3), terminal: 'complete_file' });
+    const events = [...first, ...rest];
+    expect(only(events, 'prompt').map(event => event.payload.text)).toEqual(['Inspect the orchard.']);
+    expect(only(events, 'response').map(event => event.payload)).toEqual([expect.objectContaining({ promptId, text: 'The orchard has pears.' })]);
+    expect(events).toEqual(await parser!.parse({ ...input, lines }));
+  });
+}

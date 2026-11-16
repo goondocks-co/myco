@@ -153,6 +153,8 @@ describe('the hook path itself, end to end', () => {
         verb,
         {
           session_id: SESSION, prompt: 'add a retry', transcript_path: transcript, cwd: home,
+          trajectory_id: SESSION, agent_action_name: 'post_mcp_tool_use',
+          tool_info: { user_prompt: 'add a retry', response: 'done', transcript_path: transcript, mcp_result: 'ok' },
           // What each turn-row hook needs to have something to write.
           tool_name: 'Read', tool_input: { file_path: 'a.ts' }, tool_response: 'ok',
           last_assistant_message: 'done', agent_id: 'sub_1', agent_type: 'general',
@@ -176,7 +178,7 @@ describe('the hook path itself, end to end', () => {
   });
 
   it('writes the prompt for an agent whose hooks still carry its turn rows', async () => {
-    const { posted } = await runFor('copilot');
+    const { posted } = await runFor('windsurf');
     expect(posted).toContain('prompt');
   });
 
@@ -209,7 +211,7 @@ describe('the hook path itself, end to end', () => {
     // would look identical to one being read everywhere.
     const seen: string[] = [];
     for (const verb of ['user-prompt-submit', 'stop', 'post-tool-use'] as const) {
-      seen.push(...(await runFor('copilot', verb)).posted);
+      seen.push(...(await runFor('windsurf', verb)).posted);
     }
     expect(seen.length).toBeGreaterThan(2);
   });

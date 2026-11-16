@@ -1067,5 +1067,124 @@
       "session-1",
       "123"
     ]
+  },
+  {
+    "agent": "copilot",
+    "kind": "response",
+    "label": "native-record",
+    "facts": {
+      "record": {
+        "id": "assistant-1"
+      },
+      "block": 0
+    },
+    "offset": 123,
+    "source": {
+      "key": "assistant-1",
+      "block": 0
+    },
+    "sourceId": "df482e1d-a7d8-517f-a383-1533c55b077d",
+    "legacyId": "46ac81ec-47dc-50af-8894-f65f9125e997",
+    "parts": [
+      "source-response-v1",
+      "session-1",
+      "copilot",
+      "",
+      "assistant-1",
+      "0"
+    ],
+    "legacyParts": [
+      "response",
+      "session-1",
+      "123"
+    ]
+  },
+  {
+    "agent": "copilot",
+    "kind": "tool-call",
+    "label": "native-record",
+    "facts": {
+      "call": {
+        "toolCallId": "call-1"
+      },
+      "role": "call",
+      "block": 0
+    },
+    "offset": 123,
+    "source": {
+      "key": "call-1",
+      "block": 0
+    },
+    "sourceId": "b9136452-540d-5213-8166-79d77a3dc84b",
+    "legacyId": "b9136452-540d-5213-8166-79d77a3dc84b",
+    "parts": [
+      "tool-call",
+      "session-1",
+      "call-1"
+    ],
+    "legacyParts": [
+      "tool-call",
+      "session-1",
+      "call-1"
+    ]
+  },
+  {
+    "agent": "copilot",
+    "kind": "tool-call",
+    "label": "native-record",
+    "facts": {
+      "result": {
+        "toolCallId": "call-1"
+      },
+      "role": "result",
+      "block": 0
+    },
+    "offset": 123,
+    "source": {
+      "key": "call-1",
+      "block": 0
+    },
+    "sourceId": "b9136452-540d-5213-8166-79d77a3dc84b",
+    "legacyId": "b9136452-540d-5213-8166-79d77a3dc84b",
+    "parts": [
+      "tool-call",
+      "session-1",
+      "call-1"
+    ],
+    "legacyParts": [
+      "tool-call",
+      "session-1",
+      "call-1"
+    ]
+  },
+  {
+    "agent": "antigravity",
+    "kind": "response",
+    "label": "native-record",
+    "facts": {
+      "record": {
+        "step_index": 4
+      },
+      "block": 0
+    },
+    "offset": 123,
+    "source": {
+      "position": true,
+      "block": 0
+    },
+    "sourceId": "6bbd6077-5dbc-5a4c-849c-156d09254c3f",
+    "legacyId": "46ac81ec-47dc-50af-8894-f65f9125e997",
+    "parts": [
+      "source-position-v1",
+      "transcript-1",
+      "response",
+      "123",
+      "0"
+    ],
+    "legacyParts": [
+      "response",
+      "session-1",
+      "123"
+    ]
   }
 ]

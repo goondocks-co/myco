@@ -115,8 +115,8 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "postToolUseInjection": false,
       "promptRecallToolDelivery": false,
       "promptSubmitInjection": true,
-      "turnRowSource": "hook",
-      "transcriptFidelity": "full"
+      "turnRowSource": "transcript",
+      "transcriptFidelity": "no_tool_results"
     },
     "promptIdentity": {
       "kind": "transcript-only",
@@ -136,8 +136,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     },
     "hookResponse": {
       "format": "antigravity-inject-steps"
-    },
-    "promptsFromTranscript": true
+    }
   },
   "claude-code": {
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
@@ -867,12 +866,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "postToolUseInjection": false,
       "promptRecallToolDelivery": true,
       "promptSubmitInjection": false,
-      "turnRowSource": "hook",
+      "turnRowSource": "transcript",
       "transcriptFidelity": "full"
     },
     "promptIdentity": {
-      "kind": "hook-owned",
-      "scheme": "hook-mint-v1"
+      "kind": "transcript-only",
+      "scheme": "member-transcript-v1"
     },
     "transcriptDiscovery": {
       "roots": [
