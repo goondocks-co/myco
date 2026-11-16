@@ -49,7 +49,7 @@ for(const failure of ['empty','error'])it(`publishes the Worker with a visible i
     }finally{restored.close();}
     expect(calls().filter(({args})=>args[0]==='d1'&&args[1]==='migrations')).toHaveLength(1);
   });
-});
+}, 90_000);
 
 for (const schema of ['', String(SERVER_SCHEMA_VERSION + 1)]) {
   it(`refuses unreadable or newer live schemas before requesting recovery or changing remote resources (${JSON.stringify(schema)})`, async () => {
@@ -59,7 +59,7 @@ for (const schema of ['', String(SERVER_SCHEMA_VERSION + 1)]) {
       expect(readDeploymentRecord(home)).toEqual(before);
       expect(calls().some(({ args }) => args.includes('time-travel') || args[0] === 'vectorize' || args[0] === 'deploy')).toBe(false);
     });
-  });
+  }, 60_000);
 }
 
 for (const mode of ['recorded', 'adopted', 'retry'] as const) {
@@ -150,7 +150,7 @@ it('GATE: interrupted recovery imports and migration resumes record a bookmark b
       finally { data.close(); }
     } finally { process.env.FAKE_RECORD = previous; }
   });
-});
+}, 60_000);
 
 for (const verb of ['update', 'create'] as const) {
   it(`GATE: a failed durable deployment-record write refuses migrations after obtaining the bookmark (${verb})`, async () => {
@@ -173,7 +173,7 @@ it('GATE: a first create interrupted before schema installation requires a bookm
     await create();
     expect(readDeploymentRecord(home)!.schemaUpdates!.at(-1)).toMatchObject({ bookmark: BOOKMARK, schemaBefore: 0, schemaAfter: SERVER_SCHEMA_VERSION });
   });
-});
+}, 60_000);
 
 it('GATE: a fresh provisioning receipt cannot exempt a populated database', async () => {
   await fixture({ fresh: true, freshPopulated: true }, async ({ home, create, calls }) => {

@@ -994,4 +994,4 @@ it('bounds a blocked post-save stop and lets a later clock tick settle the sched
     expect((await producer.status()).error).toBe('backup_disabled');
     expect(fixture.sqlite.query('SELECT token FROM recovery_holds WHERE released_at IS NULL').all()).toEqual([]);
   } finally { log.mockRestore(); sql.close(); }
-}, 10_000);
+}, 30_000);

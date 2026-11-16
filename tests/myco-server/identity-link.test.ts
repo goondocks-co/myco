@@ -6,7 +6,7 @@
  * Nothing here takes a member id from a caller — the authority names it.
  */
 import { describe, expect, it } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
 import {
   IDENTITY_LINK_KEY_PATTERN, IDENTITY_LINK_TTL_MS,
   issueIdentityLinkAuthority, memberByGithubId, previewIdentityLinkAuthority, spendIdentityLinkAuthority,
@@ -15,7 +15,7 @@ import {
 import type { PreparedStatement, RelationalStore } from '@myco-server-worker/core/adapters.js';
 import { sqliteRelationalStore } from '@myco-server-worker/platform/bun/sqlite.js';
 import { IDENTITY_LINK_RETENTION_MS, reclaimFinishedAuthorities } from '@myco-server-worker/db/identity/authority-retention.js';
-import { migrateAndSeed } from './helpers/d1.js';
+import { seededSqlite } from './helpers/d1.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -23,7 +23,7 @@ const NOW = 1_800_000_000_000;
 const ADMIN = 'mem_machine_1';
 
 function rig() {
-  const sqlite = migrateAndSeed(new Database(':memory:'));
+  const sqlite = seededSqlite();
   return { sqlite, db: sqliteRelationalStore(sqlite) };
 }
 

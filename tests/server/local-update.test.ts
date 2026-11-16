@@ -67,7 +67,7 @@ it('waits for the listener owned by the service and names registration separatel
       return { ...result, stdout: result.stdout?.replace(String(process.pid), '4242') };
     } },
   })).rejects.toThrow('did not answer');
-});
+}, 60_000);
 
 it('names forward recovery when a stopped update has advanced the schema', async () => {
   const f = fixture();

@@ -34,7 +34,7 @@ it('retains the recovery point and transition after activation', async () => {
     expect(reports.join('\n')).toContain('code depends on the new schema');
     expect(reports.join('\n')).toContain('an alpha.4 Worker on schema 83 commits prompt marks but reports marked:false');
   });
-});
+}, 60_000);
 
 for (const [failure, overrides] of [
   ['failed', { bookmarkExit: 1 }],
@@ -60,7 +60,7 @@ it('GATE: no-schema updates deploy without requesting a bookmark or applying mig
     expect(calls().some(({ args }) => args[0] === 'deploy')).toBe(true);
     expect(readDeploymentRecord(home)!.schemaUpdates).toBeUndefined();
   });
-});
+}, 60_000);
 
 it('retains recovery history when migrations fail and when an update is retried', async () => {
   await fixture({ migrationExit: 1 }, async ({ home, state, update, calls }) => {

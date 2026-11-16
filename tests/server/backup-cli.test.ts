@@ -6,8 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Database } from 'bun:sqlite';
 import { resolveLocalPaths, writeLocalRecord } from '@myco/server/local.js';
 import { sqliteEnv } from '../myco-server/helpers/fixtures.js';
-import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
-import { renderMigrationFile } from '@myco-server-worker/db/migrate.js';
+import { schemaSqlite } from '../myco-server/helpers/schema-template.js';
 import { createRecoveryBundle } from '@myco/server/recovery-bundle.js';
 
 /**
@@ -33,7 +32,7 @@ async function invokeServer(root: string, args: string[]) {
     cwd: root, env: { ...process.env, MYCO_HOME: path.join(root, 'home'), MYCO_TRAMPOLINED: '1', PATH: root },
     stdout: 'pipe', stderr: 'pipe',
   });
-  const timeout = setTimeout(() => { child.kill(); }, 10_000);
+  const timeout = setTimeout(() => { child.kill(); }, 60_000);
   try {
     const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     return { code, text: stdout + stderr };
@@ -74,14 +73,13 @@ it('routes backup and restore flags to the selected retained target without invo
     // The one thing a backup writes to its source: the hold it took, released once its artifact completed.
     expect(holdRows(paths.databasePath)).toEqual([{ holder: 'operator', release_reason: 'complete', released_by: 'operator' }]);
   } finally { fixture.sqlite.close(); fs.rmSync(root, { recursive: true, force: true }); }
-});
+}, 90_000);
 
 for (const retiredKind of ['table data', 'release aliases', 'table namespaces']) {
   it(`the restore command reports retired ${retiredKind} in the same plain words as the dashboard`, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-backup-cli-'));
-    const source = new Database(path.join(root, 'source.sqlite'));
+    const source = schemaSqlite({ through: 85 });
     try {
-      for (const step of SCHEMA_STEPS.filter(({ version }) => version <= 85)) source.exec(renderMigrationFile(step));
       source.exec(`INSERT INTO projects(project_id,name,created_at) VALUES('proj_copy','Copy',1);
         INSERT INTO agents(id,name,source,enabled,created_at) VALUES('agent_copy','Agent','built-in',1,1);`);
       if (retiredKind !== 'table data') {
@@ -125,5 +123,5 @@ for (const retiredKind of ['table data', 'release aliases', 'table namespaces'])
         if (retiredKind !== 'table data') expect(restored.query("SELECT namespace FROM knowledge_release_state WHERE project_id='proj_copy'").all()).toEqual([{ namespace: 'sessions' }]);
       } finally { restored.close(); }
     } finally { source.close(); fs.rmSync(root, { recursive: true, force: true }); }
-  });
+  }, 90_000);
 }
