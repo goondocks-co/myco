@@ -24,22 +24,18 @@ import { agoWords, dayWords, isInstant } from '@goondocks/myco-shared/time-words
 export const PEOPLE_ANCHORS = { people: 'people', invitations: 'invitations', machines: 'machines', runs: 'runs' } as const;
 
 /**
- * A person's name on this page: their label when it names them; for the
- * viewer, the GitHub login they signed in with; else "A teammate". Never an id.
+ * A person's name on this page: the name the server gives them (a label, else
+ * their GitHub login); else "You" for the viewer and "A teammate" for anyone
+ * else. Never an id.
  */
-export function personName(member: Pick<MemberRow, 'id' | 'label' | 'system'>, viewerId: string | null, viewerLogin: string | null = null): string {
-  const named = memberName(member);
-  if (named !== null) return named;
-  if (member.id === viewerId) return viewerLogin !== null && viewerLogin !== '' ? viewerLogin : 'You';
-  return 'A teammate';
+export function personName(member: Pick<MemberRow, 'id' | 'label' | 'system'>, viewerId: string | null): string {
+  return memberName(member) ?? (member.id === viewerId ? 'You' : 'A teammate');
 }
 
 /** `personName` with the signed-in viewer filled in. */
 export function usePersonName(): (member: Pick<MemberRow, 'id' | 'label' | 'system'>) => string {
-  const me = useMe();
-  const viewerId = me.data?.member?.id ?? null;
-  const login = me.data?.login ?? null;
-  return (member) => personName(member, viewerId, login);
+  const viewerId = useMe().data?.member?.id ?? null;
+  return (member) => personName(member, viewerId);
 }
 
 /**

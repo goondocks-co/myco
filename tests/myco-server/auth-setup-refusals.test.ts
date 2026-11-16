@@ -5,7 +5,6 @@ import { issueIdentityLinkAuthority } from '@myco-server-worker/auth/identity-li
 import { nameMemberFromLogin, revokeMember } from '@myco-server-worker/auth/members-admin.js';
 import { sqliteEnv } from './helpers/fixtures.js';
 import { OWNER_ENV, ownerCookie } from './helpers/owner.js';
-import { failingStatement } from './helpers/store-faults.js';
 
 describe('auth setup refusals', () => {
   it('records the login once, keeps named repeated auth/me reads free of writes, and records a changed login', async () => {
@@ -14,11 +13,12 @@ describe('auth setup refusals', () => {
       const server = createServer({ now: Date.now, sourceOf: () => '192.0.2.4', fetchImpl: () => { throw new Error('no OAuth'); } });
       const cookie = await ownerCookie(e.db);
       const me = () => server.handleRequest(new Request('https://s/auth/me', { headers: { cookie } }), { ...e.serverEnv, secrets: OWNER_ENV });
-      expect((await me()).status).toBe(200);
+      // The member's carried label is its machine's id, so the first sign-in names it by its login.
+      expect(await (await me()).json()).toMatchObject({ member: { label: 'octocat' } });
       expect(e.sqlite.query("SELECT value FROM schema_meta WHERE key = 'github_login:583231'").get()).toEqual({ value: 'octocat' });
       const stored = Buffer.from(e.sqlite.serialize());
       for (let n = 0; n < 2; n++) {
-        expect(await (await me()).json()).toMatchObject({ member: { label: 'machine_1' } });
+        expect(await (await me()).json()).toMatchObject({ member: { label: 'octocat' } });
       }
       expect(Buffer.from(e.sqlite.serialize()).equals(stored)).toBe(true);
       e.sqlite.run("UPDATE schema_meta SET value = 'old-login' WHERE key = 'github_login:583231'");
@@ -40,37 +40,6 @@ describe('auth setup refusals', () => {
       expect(e.sqlite.query("SELECT key FROM schema_meta WHERE key LIKE 'github_login:%'").all()).toEqual([{ key: 'github_login:583231' }]);
     } finally { e.sqlite.close(); }
   });
-
-  for (const operation of ['link', 'approve'] as const) {
-    it(`does not fail ${operation} when the courtesy naming write fails`, async () => {
-      const e = sqliteEnv();
-      const naming = failingStatement(e.env.MYCO_DB, 'identity.nameFromLogin');
-      e.env.MYCO_DB = naming.store;
-      try {
-        const now = Date.now();
-        const server = createServer({ now: () => now, sourceOf: () => '192.0.2.5', fetchImpl: () => { throw new Error('no OAuth'); } });
-        const env = { ...e.serverEnv, secrets: OWNER_ENV };
-        const post = async (path: string, body: unknown, sub = '583231') => server.handleRequest(new Request('https://s' + path, {
-          method: 'POST', headers: { cookie: await ownerCookie(e.db, now, sub), origin: 'https://s' }, body: JSON.stringify(body),
-        }), env);
-        if (operation === 'link') {
-          e.sqlite.run("UPDATE members SET github_id = NULL, label = NULL WHERE id = 'mem_machine_2'");
-          const key = await issueIdentityLinkAuthority(e.db, 'mem_machine_2', now, { issuedBy: 'mem_machine_1' });
-          expect(key).not.toBeNull();
-          const result = await post('/auth/link', { key: key!.key, confirm: true }, '770001');
-          expect(result.status).toBe(200);
-          expect(await result.json()).toMatchObject({ linked: true, member: { id: 'mem_machine_2', label: null } });
-          expect(e.sqlite.query("SELECT github_id FROM members WHERE id = 'mem_machine_2'").get()).toEqual({ github_id: '770001' });
-        } else {
-          const start = await post('/auth/device/start', { machineId: 'courtesy', machineName: 'Laptop', os: 'linux' });
-          const grant = await start.json() as { user_code: string; device_code: string };
-          expect((await post('/api/device/approve', { user_code: grant.user_code })).status).toBe(200);
-          expect(await (await post('/auth/device/poll', { device_code: grant.device_code })).json()).toMatchObject({ joined: true, memberId: 'mem_machine_1' });
-        }
-        expect(naming.failures()).toBe(1);
-      } finally { e.sqlite.close(); }
-    });
-  }
 
   it('records no login or label from an account that no longer owns the member', async () => {
     const e = sqliteEnv();

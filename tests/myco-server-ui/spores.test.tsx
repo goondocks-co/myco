@@ -395,7 +395,7 @@ describe('a spore’s article', () => {
     expect(rawIdsInPage()).toEqual([]);
   });
 
-  it('lets an admin retire a current spore only with a reason, then restore it, names who did each to the viewer it was, and shows another member neither', async () => {
+  it('lets an admin retire a current spore only with a reason, then restore it, and names who did each to every member by the name the members list gives', async () => {
     const path = `/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
     const mine = { author: ADMIN.member.id, authorKind: 'member' };
     const by = { ...mine, newSporeId: null, createdAt: NOW - MINUTE };
@@ -406,8 +406,9 @@ describe('a spore’s article', () => {
     };
     let state: keyof typeof states = 'active';
     const sent: Array<[string, unknown]> = [];
-    const unnamed = { members: MEMBERS.members.map((m) => m.id === ADMIN.member.id ? { ...m, label: m.id } : m) };
-    const routes = base({ [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer, '/api/members': () => Response.json(unnamed) });
+    // The server names a member who joined with only their id by the GitHub login they sign in with.
+    const named = { members: MEMBERS.members.map((m) => m.id === ADMIN.member.id ? { ...m, label: 'ada' } : m) };
+    const routes = base({ [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer, '/api/members': () => Response.json(named) });
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'https://s');
       if (init?.method === 'POST') {
@@ -454,8 +455,8 @@ describe('a spore’s article', () => {
     mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     await screen.findByRole('heading', { level: 1 });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(document.querySelector('[data-spore-retired]')?.textContent).toContain(`Retired by a member, ${dateTimeWords(NOW - MINUTE, NOW)}.`);
-    expect(document.querySelector('[data-spore-author]')?.textContent).toBe('Saved by a member.');
+    expect(document.querySelector('[data-spore-retired]')?.textContent).toContain(`Retired by ada, ${dateTimeWords(NOW - MINUTE, NOW)}.`);
+    expect(document.querySelector('[data-spore-author]')?.textContent).toBe('Saved by ada.');
     expect(document.querySelector('[data-spore-change]')).toBeNull();
   });
 

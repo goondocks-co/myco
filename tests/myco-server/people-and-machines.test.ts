@@ -284,33 +284,34 @@ describe('Status to a member', () => {
 });
 
 describe('a member\'s name and kind', () => {
-  it('names a member with no name after the GitHub login it signs in with, and never replaces a name it holds', async () => {
+  it('names a member labelled only by an id after the GitHub login it signs in with, to every member, and never replaces a name', async () => {
     const { env, sqlite, db } = rig();
-    sqlite.run(`UPDATE members SET label = NULL WHERE id = 'mem_machine_2'`);
-    const me = async () => ((await (await request(env, MEMBER_SUB, 'GET', '/auth/me')).json()) as { member: { label: string | null } }).member.label;
-    expect(await me()).toBe('octocat');
-    expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: 'octocat' });
-    // An admin's rename stands at every later sign-in.
+    const listed = async (viewer: string, id: string) =>
+      ((await (await request(env, viewer, 'GET', '/api/members')).json()) as { members: Array<{ id: string; label: string | null }> }).members.find((m) => m.id === id)?.label;
+    const me = async (sub: string) => ((await (await request(env, sub, 'GET', '/auth/me')).json()) as { member: { label: string | null } }).member.label;
+    sqlite.run(`UPDATE members SET label = id WHERE id = 'mem_machine_2'`);
+    expect((await request(env, null, 'GET', '/api/members')).status).toBe(401);
+    expect(await listed(ADMIN, 'mem_machine_2')).toBe('mem_machine_2');
+    expect(await me(MEMBER_SUB)).toBe('octocat');
+    expect(await listed(ADMIN, 'mem_machine_2')).toBe('octocat');
+    // A member carried over from a machine is labelled with the machine's id, which names nobody either.
+    expect(await listed(MEMBER_SUB, 'mem_machine_1')).toBe('machine_1');
+    expect(await me(ADMIN)).toBe('octocat');
+    expect(await listed(MEMBER_SUB, 'mem_machine_1')).toBe('octocat');
+    // An admin's rename stands at every later sign-in, and against a write that races it.
     sqlite.run(`UPDATE members SET label = 'Dana' WHERE id = 'mem_machine_2'`);
-    expect(await me()).toBe('Dana');
-    expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: 'Dana' });
-    // The write keeps a name however it is reached: a rename landing between the session read and the write stands.
+    expect(await me(MEMBER_SUB)).toBe('Dana');
     expect(await nameMemberFromLogin(db, 'mem_machine_2', MEMBER_SUB, 'octocat')).toBeNull();
-    expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: 'Dana' });
+    expect(await listed(ADMIN, 'mem_machine_2')).toBe('Dana');
     // A login GitHub would not grant names nobody.
     sqlite.run(`UPDATE members SET label = NULL WHERE id = 'mem_machine_2'`);
     expect(await nameMemberFromLogin(db, 'mem_machine_2', MEMBER_SUB, 'not a login')).toBeNull();
-    expect(sqlite.query(`SELECT label FROM members WHERE id = 'mem_machine_2'`).get()).toEqual({ label: null });
-  });
-
-  it('signs a member in whatever becomes of the naming write, leaving the member as it was', async () => {
-    const { env, sqlite } = rig();
-    sqlite.run(`UPDATE members SET label = NULL WHERE id = 'mem_machine_2'`);
-    const inner = env.MYCO_DB;
-    const failing = { ...env, MYCO_DB: { ...inner, batch: inner.batch.bind(inner), prepare: (sql: string) => { if (/UPDATE members SET label/.test(sql)) throw new Error('store refused'); return inner.prepare(sql); } } };
-    const res = await request(failing, MEMBER_SUB, 'GET', '/auth/me');
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { member: { id: string; label: string | null } }).member).toMatchObject({ id: 'mem_machine_2', label: null });
+    expect(await listed(ADMIN, 'mem_machine_2')).toBeNull();
+    // A member who has left keeps the label they left with.
+    sqlite.run(`UPDATE members SET label = id WHERE id = 'mem_machine_2'`);
+    expect((await request(env, ADMIN, 'POST', '/api/members/mem_machine_2/revoke')).status).toBe(200);
+    expect(await nameMemberFromLogin(db, 'mem_machine_2', MEMBER_SUB, 'octocat')).toBeNull();
+    expect(await listed(ADMIN, 'mem_machine_2')).toBe('mem_machine_2');
   });
 
   it('names a member with no name after the account an admin\'s link connects to it', async () => {

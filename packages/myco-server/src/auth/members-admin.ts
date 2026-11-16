@@ -90,8 +90,9 @@ export async function everyMember(db: RelationalStore, nowMs: number): Promise<M
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
 /**
- * Record the linked account's GitHub login and name a member with no name or only the first-owner placeholder.
- * A name an admin gave is never replaced. Answers the name written, or null when nothing was.
+ * Record the linked account's GitHub login and name after it a member whose label names nobody: none, its own id in
+ * either shape, or the first-owner placeholder (`namesNobodySql`). Every member then reads that login as this member's name. A name
+ * someone gave is never replaced. Answers the name written, or null when nothing was.
  */
 export async function nameMemberFromLogin(db: RelationalStore, memberId: string, githubId: string, login: string): Promise<string | null> {
   if (!GITHUB_LOGIN.test(login)) return null;
