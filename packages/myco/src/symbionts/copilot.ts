@@ -151,8 +151,12 @@ function copilotPromptForHook(records: Iterable<{ value: Record<string, unknown>
   return undefined;
 }
 
-/** The hook payload names the exact native request independently of transcript publication. */
+/**
+ * The hook payload names the exact native request independently of transcript publication. Copilot CLI sends it as
+ * `tool_use_id` to a hook registered under a PascalCase event and as `toolCallId` under a camelCase one; its hooks
+ * reference documents neither.
+ */
 function copilotToolCallKey(raw: Record<string, unknown>): string | undefined {
-  const key = raw.toolCallId ?? raw.tool_call_id;
+  const key = raw.tool_use_id ?? raw.toolCallId ?? raw.tool_call_id;
   return typeof key === 'string' && key !== '' ? key : undefined;
 }
