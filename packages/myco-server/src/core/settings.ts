@@ -8,7 +8,7 @@ import { persistSettings, readEveryLeaf, readLeafValues, readSettingStates, read
 import { DEFAULT_OFF_CAPABILITIES, enabledCapabilitiesRead, projectWorkEnabled, readCapabilities, readCapabilityOn, readRetiredCapabilities, type EnabledCapability } from '../db/settings/admission.js';
 import type { EmbeddingSwitch } from './embedding/switch-store.js';
 import type { RelationalStore } from './adapters.js';
-import { captureFolderRefusal, planFolderRefusal, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
+import { folderRule, ROOT_KEY_PATTERN } from '@goondocks/myco-shared/member-protocol';
 import { INSTRUCTIONS_TEMPLATE_MAX_BYTES, IMPORT_MAX_SESSIONS_MAX, IMPORT_WINDOW_DAYS_MAX } from '../constants.js';
 import { CONFIGURABLE_PROFILE_HARNESSES, PROFILE_HARNESSES, REASONING_TIERS, isReasoningTier, modelRefusal, effortRefusal, type ReasoningTier } from '@goondocks/myco-shared/execution-profile';
 import { TASK_EXECUTION_PROFILES, admissionForTask, OUTCOME_TASKS, RETAINED_TASKS, TITLING_TASK, EXTRACTION_TASK } from './task-catalogue.js';
@@ -82,9 +82,9 @@ export type LeafSpec =
   | { readonly type: 'credential-source' }
   /**
    * A list of paths, without control characters: plan folders, each absolute, `~/`, or relative to wherever it is
-   * resolved (`planFolderRefusal`); or, with `folders: 'capture'`, capture folders (`captureFolderRefusal`).
+   * resolved; capture folders require rooted paths; prompt-file roots require ~/ descendants.
    */
-  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number; readonly folders?: 'capture' }
+  | { readonly type: 'path-list'; readonly maxItems: number; readonly maxChars: number; readonly folders?: 'capture' | 'prompt-files' }
   /** Repository keys, each naming the project it connects to or `''` for none chosen: what a machine may join. */
   | { readonly type: 'root-map'; readonly maxItems: number };
 
@@ -335,8 +335,8 @@ function taskOverridesViolation(value: unknown, previous?: unknown): string | nu
 /** A schedule count: a whole number of 0 or more that SQL binds exactly. */
 export const isScheduleCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 
-function pathListViolation(spec: { maxItems: number; maxChars: number; folders?: 'capture' }, value: unknown): string | null {
-  const refusal = spec.folders === 'capture' ? captureFolderRefusal : planFolderRefusal;
+function pathListViolation(spec: { maxItems: number; maxChars: number; folders?: 'capture' | 'prompt-files' }, value: unknown): string | null {
+  const refusal = folderRule(spec.folders);
   if (!Array.isArray(value)) return 'expected a list of paths';
   if (value.length > spec.maxItems) return `expected at most ${spec.maxItems} paths`;
   for (const entry of value) {

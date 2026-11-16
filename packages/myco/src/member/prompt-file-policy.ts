@@ -6,7 +6,8 @@ export const PROMPT_FILE_READER_VERB = 'read-prompt-files';
 export interface PromptFileInput {
   text: string;
   cwd: string;
-  projectRoot: string;
+  projectRoot?: string;
+  roots?: string[];
   deadline: number;
   env?: NodeJS.ProcessEnv;
 }

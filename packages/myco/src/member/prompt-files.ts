@@ -14,21 +14,23 @@ function readerCommand(): SelfExec {
   return { path: self.path, args: [...self.args, 'member', PROMPT_FILE_READER_VERB] };
 }
 
-/** Selection-only text; the reader's process is killed at the hook's deadline, including blocked filesystem work. */
-export async function promptSelectionText(input: PromptFileInput, reader: SelfExec = readerCommand()): Promise<string> {
+/** Selection-only text; optional file work runs in a reader with a native process timeout. */
+export async function promptSelectionText(input: PromptFileInput, reader?: SelfExec): Promise<string> {
   const text = input.text.slice(0, PROMPT_ASK_MAX_CHARS);
   const references = promptFileReferences(text);
   const room = Math.min(PROMPT_FILE_CONTEXT_CHARS, PROMPT_ASK_MAX_CHARS - text.length);
   const wait = Math.min(PROMPT_FILE_READ_BUDGET_MS, input.deadline - Date.now());
   if (references.length === 0 || room <= 0 || wait <= 0) return text;
+  const command = reader ?? readerCommand();
   const env = input.env ?? process.env;
-  const readEnv = Object.fromEntries(['HOME', 'USERPROFILE', 'XDG_STATE_HOME', 'MYCO_TEMPORARY_FOLDERS', 'TMPDIR'].flatMap(key => env[key] === undefined ? [] : [[key, env[key]]]));
+  const readEnv = Object.fromEntries(['HOME', 'USERPROFILE', 'MYCO_TEMPORARY_FOLDERS', 'TMPDIR', 'MYCO_PROJECT_ROOT', 'MYCO_VAULT_DIR'].flatMap(key => env[key] === undefined ? [] : [[key, env[key]]]));
   try {
-    const result = spawnSync(reader.path, reader.args, {
-      cwd: input.cwd, windowsHide: true, encoding: 'utf8',
-      input: JSON.stringify({ text, cwd: input.cwd, projectRoot: input.projectRoot, env: readEnv, references, deadline: Date.now() + wait }),
+    const result = spawnSync(command.path, command.args, {
+      cwd: input.cwd, windowsHide: true,
+      input: JSON.stringify({ text, cwd: input.cwd, projectRoot: input.projectRoot, roots: input.roots, env: readEnv, references, deadline: Date.now() + wait }),
       timeout: wait, killSignal: 'SIGKILL', maxBuffer: PROMPT_FILE_CONTEXT_CHARS * UTF8_BYTES_PER_CHAR,
     });
-    return text + (result.stdout ?? '').slice(0, room);
+    const addition = new TextDecoder('utf-8', { fatal: true }).decode(result.stdout ?? undefined, { stream: true });
+    return text + addition.slice(0, room);
   } catch { return text; }
 }

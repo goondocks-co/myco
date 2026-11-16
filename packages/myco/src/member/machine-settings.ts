@@ -159,10 +159,19 @@ export function cacheMachineSettings(serverUrl: string, answered: unknown, mycoH
   return withMachineSettings(serverUrl, mycoHome, (_file, _order, _cached, cache) => cache(block, requestOrder, receivedAt));
 }
 
-/** The extra plan folders `serverUrl` holds for this machine, read from the home `mycoHome` names: `~/`, absolute, or relative to each project root. */
+function machineFolders(leaf: 'capture.plan_dirs' | 'capture.prompt_file_roots', serverUrl: string, mycoHome: string): string[] {
+  const leaves = readCachedMachineSettings(machineSettingsPath(serverUrl, mycoHome))?.leaves;
+  return resolveMachineSetting(leaf, leaves?.[leaf] ?? MACHINE_SETTING_SPECS[leaf].default).effective as string[];
+}
+
+/** Extra plan folders from this machine's last settings answer. */
 export function machinePlanDirs(serverUrl: string, mycoHome: string): string[] {
-  const dirs = readCachedMachineSettings(machineSettingsPath(serverUrl, mycoHome))?.leaves[PLAN_DIRS_LEAF];
-  return resolveMachineSetting(PLAN_DIRS_LEAF, dirs ?? MACHINE_SETTING_SPECS[PLAN_DIRS_LEAF].default).effective as string[];
+  return machineFolders('capture.plan_dirs', serverUrl, mycoHome);
+}
+
+/** Explicitly approved prompt-file folders from this machine's last settings answer. */
+export function machinePromptFileRoots(serverUrl: string, mycoHome: string): string[] {
+  return machineFolders('capture.prompt_file_roots', serverUrl, mycoHome);
 }
 
 /** The folders this machine captures repositories under without being asked. */

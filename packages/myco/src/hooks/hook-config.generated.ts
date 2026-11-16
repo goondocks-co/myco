@@ -69,6 +69,15 @@ export interface HookConfigEntry {
   promptIdentity: PromptIdentityDeclaration;
 }
 
+const hookPart8 = (): HookConfigEntry["hookResponse"] => ({
+  "format": "json",
+  "fieldNames": {
+    "additionalContext": "additionalContext",
+    "promptId": "promptId",
+    "recallPending": "recallPending"
+  }
+});
+
 const capabilityDefaults: HookCapabilities = {
   "preToolUseInjection": false,
   "sessionStartInjection": true,
@@ -81,7 +90,13 @@ const capabilityDefaults: HookCapabilities = {
   "transcriptFidelity": "full"
 };
 const fieldDefaults = {
-  "prompt": "prompt"
+  "sessionId": "session_id",
+  "transcriptPath": "transcript_path",
+  "lastResponse": "last_assistant_message",
+  "prompt": "prompt",
+  "toolName": "tool_name",
+  "toolInput": "tool_input",
+  "toolOutput": "tool_output"
 } satisfies Partial<HookConfigEntry['hookFields']>;
 type HookFieldOverrides = Omit<HookConfigEntry['hookFields'], keyof typeof fieldDefaults> & Partial<HookConfigEntry['hookFields']>;
 const withHookCapabilities = (overrides: Partial<HookCapabilities>): HookCapabilities => ({ ...capabilityDefaults, ...overrides });
@@ -95,7 +110,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "hookFields": withHookFields({
       "sessionId": "conversationId",
       "transcriptPath": "transcriptPath",
-      "lastResponse": "last_assistant_message",
       "toolName": "toolCall.name",
       "toolInput": "toolCall.args",
       "toolOutput": [
@@ -138,11 +152,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "pluginRootEnvVar": "CLAUDE_PLUGIN_ROOT",
     "configDir": ".claude",
     "hookFields": withHookFields({
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
       "toolOutput": [
         "tool_output",
         "tool_response"
@@ -411,12 +420,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "pluginRootEnvVar": "CLINE_PLUGIN_ROOT",
     "configDir": ".cline",
     "hookFields": withHookFields({
-      "sessionId": "conversationId",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
-      "toolOutput": "tool_output"
+      "sessionId": "conversationId"
     }),
     "hookEvents": {},
     "planDirs": [],
@@ -436,14 +440,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "member"
     },
-    "hookResponse": {
-      "format": "json",
-      "fieldNames": {
-        "additionalContext": "additionalContext",
-        "promptId": "promptId",
-        "recallPending": "recallPending"
-      }
-    },
+    "hookResponse": hookPart8(),
     "captureRules": [
       {
         "event": "user_prompt",
@@ -479,11 +476,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "pluginRootEnvVar": "CODEX_PLUGIN_ROOT",
     "configDir": ".codex",
     "hookFields": withHookFields({
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
       "toolOutput": [
         "tool_output",
         "tool_response"
@@ -764,10 +756,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
         "conversation_id",
         "session_id"
       ],
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
       "toolOutput": [
         "tool_output",
         "tool_response"
@@ -834,11 +822,6 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
     "pluginRootEnvVar": "OPENCODE_PLUGIN_ROOT",
     "configDir": ".opencode",
     "hookFields": withHookFields({
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
       "toolOutput": [
         "tool_output",
         "tool_response"
@@ -864,24 +847,12 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "member"
     },
-    "hookResponse": {
-      "format": "json",
-      "fieldNames": {
-        "additionalContext": "additionalContext",
-        "promptId": "promptId",
-        "recallPending": "recallPending"
-      }
-    }
+    "hookResponse": hookPart8()
   },
   "pi": {
     "pluginRootEnvVar": "PI_PLUGIN_ROOT",
     "configDir": ".pi",
     "hookFields": withHookFields({
-      "sessionId": "session_id",
-      "transcriptPath": "transcript_path",
-      "lastResponse": "last_assistant_message",
-      "toolName": "tool_name",
-      "toolInput": "tool_input",
       "toolOutput": [
         "tool_output",
         "tool_response"
@@ -908,14 +879,7 @@ export const HOOK_CONFIG: Readonly<Record<string, HookConfigEntry>> = {
       "transcriptCwdPath": "cwd",
       "retention": "harness"
     },
-    "hookResponse": {
-      "format": "json",
-      "fieldNames": {
-        "additionalContext": "additionalContext",
-        "promptId": "promptId",
-        "recallPending": "recallPending"
-      }
-    }
+    "hookResponse": hookPart8()
   },
   "windsurf": {
     "pluginRootEnvVar": "WINDSURF_PLUGIN_ROOT",

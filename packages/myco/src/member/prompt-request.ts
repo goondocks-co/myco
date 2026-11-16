@@ -10,10 +10,14 @@ import { ensureMemberDir, ensurePrivateFile, readPrivateJson, writePrivateFileAt
 import { classifyEventAnswer, ServerClient, type Outcome } from './transport.js';
 import type { MemberSpool } from './spool.js';
 import { readSessionState } from './session-state.js';
+import { promptFileReferences } from '@goondocks/myco-shared/prompt-file-references';
+import { promptSelectionText } from './prompt-files.js';
+import { machinePromptFileRoots } from './machine-settings.js';
 
 export interface PromptRequestRun {
   spool: MemberSpool; mycoHome: string; client: ServerClient;
   now: () => number; budget: HookBudget; capMs: number; sessionId: string; force?: boolean;
+  env?: NodeJS.ProcessEnv;
 }
 interface Retry { id: string; at: number; backoff: number }
 export interface PromptAnswer { context: string; receiptId?: string; answerId?: string; sessionRecord?: DeliveredSessionRecord }
@@ -58,9 +62,13 @@ export async function requestPromptContext(run: PromptRequestRun, ask: Extract<C
   let outcome: Outcome | undefined;
   try {
     spool.assertClientDestination(client);
+    const text = ask.promptFiles === undefined || promptFileReferences(ask.text).length === 0 ? ask.text : await promptSelectionText({
+      ...ask.promptFiles, text: ask.text, roots: machinePromptFileRoots(serverUrl, mycoHome),
+      deadline: Math.min(run.budget.deadline, Date.now() + budget.requestTimeoutMs), env: run.env,
+    });
     outcome = classifyEventAnswer(await client.request('POST', '/context/prompt', {
         body: JSON.stringify({ sessionId: run.sessionId, promptId: ask.promptId, promptScheme: ask.promptScheme, scopeReason: ask.scopeReason,
-          identity: ask.identity, at: ask.at, text: ask.text, agent: ask.agent,
+          identity: ask.identity, at: ask.at, text, agent: ask.agent,
           rendered: Object.values(readSessionState(spool.dir, run.sessionId).promptRecall?.asks ?? {}).flatMap(held =>
             held.stage === 'delivered' && held.answer?.receiptId !== undefined ? [held.answer.receiptId] : []) }), headers: { 'content-type': 'application/json' },
         budget,

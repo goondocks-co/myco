@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { captureFolderRefusal, planFolderRefusal } from '@goondocks/myco-shared/member-protocol';
+import { captureFolderRefusal, planFolderRefusal, promptFileRootRefusal } from '@goondocks/myco-shared/member-protocol';
 import { Button, Dialog, DialogContent, DialogFooter, IconButton, Input } from '../../../design';
 import { ApiError, fetchJson, putJson } from '../../../lib/api';
 import type { EffectiveSetting } from '@goondocks/myco-shared/settings-contract';
@@ -44,6 +44,15 @@ interface FolderField {
 
 const FIELDS: readonly FolderField[] = [
   {
+    leaf: 'capture.prompt_file_roots',
+    title: 'Extra prompt file folders',
+    note: 'Myco may send openings of prose files named in prompts here to the Deployment and embedding provider to choose memory. Use ~/ followed by a folder. Project and temporary folders already qualify. No extra folders are approved by default.',
+    none: 'None: only project and temporary folders.',
+    addLabel: 'Prompt file folder to add',
+    placeholder: '~/tasks',
+    refusal: promptFileRootRefusal,
+  },
+  {
     leaf: AUTO_JOIN_ROOTS_LEAF,
     title: 'Folders it captures',
     note: 'A repository in one of these folders is captured as soon as an agent works in it, in the project that holds its remote or a new one. A repository anywhere else waits in Needs you until it’s connected.',
@@ -64,9 +73,7 @@ const FIELDS: readonly FolderField[] = [
 ];
 
 /**
- * One machine's settings, offered to the member it belongs to: the folders whose repositories it captures on its own,
- * and the extra folders its agents write plans to, beside each agent's own. The machine reads a change at its next
- * session start.
+ * One machine's capture and prompt-file permissions, offered to its member and applied at the next session start.
  */
 export function MachineSettingsDialog({ machine, onClose }: { machine: { id: string; name: string } | null; onClose: () => void }) {
   return (

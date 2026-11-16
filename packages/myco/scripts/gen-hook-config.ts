@@ -41,6 +41,7 @@ import { hookNameInCommand } from '../src/member/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
+const SHARED_HOOK_PART_MIN_CHARS = 80;
 const MANIFESTS_DIR = path.resolve(PACKAGE_ROOT, 'src/symbionts/manifests');
 const TEMPLATES_DIR = path.resolve(PACKAGE_ROOT, 'src/symbionts/templates');
 const OUTPUT_PATH = path.resolve(PACKAGE_ROOT, 'src/hooks/hook-config.generated.ts');
@@ -318,17 +319,32 @@ export function renderHookConfigSources(): HookConfigSources {
     const records = Object.values(entries).map(entry => entry[section] as Record<string, unknown>);
     return [section, Object.fromEntries(Object.keys(records[0]!).flatMap(key => {
       const values = records.map(record => record[key]);
-      if (!values.every((value): value is string | boolean => typeof value === 'string' || typeof value === 'boolean')) return [];
-      const counts = values.reduce((held, value) => held.set(value, (held.get(value) ?? 0) + 1), new Map<string | boolean, number>());
+      if (values.some(value => value === undefined)) return [];
+      const scalars = values.filter((value): value is string | boolean => typeof value === 'string' || typeof value === 'boolean');
+      if (scalars.length === 0) return [];
+      const counts = scalars.reduce((held, value) => held.set(value, (held.get(value) ?? 0) + 1), new Map<string | boolean, number>());
       return [[key, [...counts].sort((a, b) => b[1] - a[1])[0]![0]]];
     }))];
   }));
+  const repeated = new Map<string, { key: string; value: unknown; count: number; name: string }>();
+  for (const entry of Object.values(entries)) for (const [key, value] of Object.entries(entry)) {
+    if (sections.includes(key as typeof sections[number]) || key === 'hookEvents' || value === null || typeof value !== 'object') continue;
+    const json = JSON.stringify(value);
+    if (json.length < SHARED_HOOK_PART_MIN_CHARS) continue;
+    const id = key + ':' + json;
+    const held = repeated.get(id);
+    if (held !== undefined) held.count++;
+    else repeated.set(id, { key, value, count: 1, name: `hookPart${repeated.size}` });
+  }
+  const parts = new Map([...repeated].filter(([, part]) => part.count > 1));
+  const factories = [...parts.values()].map(part => `const ${part.name} = (): HookConfigEntry[${JSON.stringify(part.key)}] => (${JSON.stringify(part.value, null, 2)});`).join('\n');
   const body = '{\n' + Object.entries(entries).map(([name, entry]) => {
     const fields = Object.entries(entry).map(([key, value]) => {
       const shared = defaults[key];
       const events = key === 'hookEvents' ? '{' + Object.entries(value as Record<string, HookEventEntry>).map(([name, event]) =>
         `${JSON.stringify(name)}: hookEvent(${JSON.stringify(event.hook)}${event.timeout === undefined ? '' : ', ' + event.timeout})`).join(', ') + '}' : undefined;
-      const rendered = events ?? (shared === undefined ? JSON.stringify(value, null, 2)
+      const part = parts.get(key + ':' + JSON.stringify(value));
+      const rendered = part !== undefined ? `${part.name}()` : events ?? (shared === undefined ? JSON.stringify(value, null, 2)
         : `withHook${key === 'capabilities' ? 'Capabilities' : 'Fields'}(${JSON.stringify(Object.fromEntries(
           Object.entries(value).filter(([field, held]) => held !== shared[field]),
         ), null, 2)})`);
@@ -406,6 +422,8 @@ export interface HookConfigEntry {
   /** How this symbiont's prompts are named; see the manifest schema's \`promptIdentity\`. */
   promptIdentity: PromptIdentityDeclaration;
 }
+
+${factories}
 
 const capabilityDefaults: HookCapabilities = ${JSON.stringify(defaults.capabilities, null, 2)};
 const fieldDefaults = ${JSON.stringify(defaults.hookFields, null, 2)} satisfies Partial<HookConfigEntry['hookFields']>;

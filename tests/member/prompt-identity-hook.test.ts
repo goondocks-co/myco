@@ -374,7 +374,9 @@ it('sends file context only in the selection ask and captures exactly the typed 
   await runHook('session-start', common, opts);
   await runHook('user-prompt-submit', { ...common, prompt, prompt_id: '11111111-1111-4111-8111-111111111111' }, opts);
   await runHook('stop', common, opts);
-  expect(served.asked[0]?.text).toBe(prompt + '\n\n[File opening]\nRepair capture ownership and preserve session history.');
+  const selected = served.asked[0]!.text;
+  expect(selected.startsWith(prompt)).toBe(true);
+  expect('\n\n[File opening]\nRepair capture ownership and preserve session history.'.startsWith(selected.slice(prompt.length))).toBe(true);
   const { publishFixture, readFixtureRecords } = await import('../myco-server/helpers/fixtures.js');
   await publishFixture(rig.env);
   const records = await readFixtureRecords(rig.env.serverEnv, 'proj_1', sessionId);

@@ -1,85 +1,91 @@
 # File references in prompt recall
 
-The member asks for memory with the typed prompt followed by opening text from
-explicit local file references. This is selection input only. A prompt carrying
-its own task keeps that text first, even when it also names files.
+Myco reads only plainly named task prose, only in approved locations, to choose
+memory. Typed text remains first. Openings are optional selection input and
+never enter persisted asks, captured prompt rows or transcripts.
 
 ## Recognizing references
 
-The shared prompt parser recognizes absolute paths (including Windows drive
-paths), `~/` paths, `./` and `../` paths, paths with directory separators, and
-bare filenames with an extension. Quotes and backticks allow spaces. `@path`
-mentions and Markdown link destinations use the same rule. A final period or
-colon is punctuation. References are considered in appearance order; aliases
-of the same resolved filename are read once. Bare extensionless prose words,
-URLs, bare email addresses, globs, shell variables and attachment ids are not paths.
-An extensionless file can be named with `./`, `@`, or quotes.
+Only names ending in `.md`, `.markdown`, `.mdx`, `.txt`, `.rst` or `.adoc`
+(case insensitive) are references. This applies to bare names, prose paths,
+quoted paths, Markdown destinations and `@` mentions alike. Quotes and backticks
+allow spaces; a final period or colon is punctuation. Relative paths use the
+hook's working directory; `~/` names a path under the machine's home.
+References are processed in appearance order and resolved filenames only once.
 
-The titling material builder uses this parser to match a stored tool read to
-its prompt. It reads the captured opening, never the member's filesystem.
+URLs, email addresses, shell variables, globs, attachment ids and tokens with
+other suffixes are not references. They start no reader process. A non-prose
+asset's filename remains part of the typed prompt but its bytes are never read.
+Separate attachment-only payload fields are unsupported until verified.
 
-## Local read policy
+Titling has a different authority: it matches tool reads already captured.
+Its existing boundary matcher is retained, including extensionless filenames,
+and the prose parser additionally recognizes mentions such as `@docs/task.md`.
+Titling never opens the member's files.
 
-Only an explicitly referenced regular file can contribute. Relative names use
-the hook's working directory. Allowed roots are:
+## Approved locations
 
-- The session's connected project root, or its working directory when no root
-  is held by the credential.
-- The machine's temporary folders, including `MYCO_TEMPORARY_FOLDERS` when set.
-- A named non-hidden directory directly under the member's home, or its
-  `XDG_STATE_HOME` (default `.local/state`). A file directly in home is excluded.
-  Naming a file grants no recursive scan or reads of adjacent files.
+A prose file must be under the session's credential project root, a machine
+temporary folder, or an extra root approved through the machine setting
+`capture.prompt_file_roots`. The default is an empty list. My machines offers
+“Extra prompt file folders”; the existing machine settings writer validates the
+list, and the member caches it at session start.
 
-The reader resolves the allowed root and rejects any symbolic link below it,
-including links to other allowed directories. Home work roots themselves must
-be physical descendants of home. The capture scratchpad exclusion applies to
-both lexical and physical file paths through the capture policy's shared
-predicate. Credential names, key files, `.env` files and private state such as
-`.git`, `.ssh` and `.myco` are excluded. No directory enumeration occurs.
+Extra roots use `~/subfolder` syntax. Absolute paths are refused: the Deployment
+cannot verify an absolute path against another machine's home. The home itself,
+its ancestors, filesystem roots and `..` segments are refused on save and
+ignored if found in cached data. A physical root that aliases the home or an
+ancestor is also refused. There is no blanket permission for home work folders
+or XDG state. With no credential root, the cwd is usable only when auto-join's
+`isSafeProjectRoot` admits it; otherwise nothing is opened.
 
-Known image, PDF, archive, media, font, executable and database suffixes are
-excluded before opening. The opening must be valid UTF-8 without binary control
-bytes; a PDF signature is also rejected. Unsupported encodings and ambiguous
-binary content contribute no opening. The filename remains in the typed prompt.
+Only regular files with one hard link qualify. Symlinks below roots are refused,
+including links into other approved directories. Approved home roots must be
+physical descendants of home. The canonical capture scratchpad exclusion also
+applies through temporary-folder aliases. Private path components and names
+containing secret, credential, password, token or key are refused. Binary
+suffixes, invalid UTF-8, binary control bytes and PDF signatures are refused.
+Nothing is enumerated, and no adjacent file is read.
 
-## Bounds and storage
+## Bounds, requests and storage
 
-One isolated reader process performs a single opening read per qualifying file, at most 16 KiB and contributes
-at most 4,096 characters. All added headings and text share an 8,192-character
-cap. The entire ask remains within the existing 16,384-character limit, with
-the typed prompt taking priority. The Deployment's embedding adapter independently
-limits provider input to its first 8,000 characters. Reader startup and all file work share 50 ms, clipped to the
-hook's remaining deadline. Expiry, missing files and read failures silently
-leave the original ask, plus any earlier completed openings. The native process timeout kills the reader and closes its pipes at expiry; a blocked filesystem
-operation cannot hold the hook's event loop open. Completed openings arrive as bounded UTF-8 on
-private pipes, without membership credentials in the request. The compiled
-member dispatches this private read operation before loading the CLI or native
-Deployment assets. This is one deadline timer, with no polling or recurring job.
+The reader performs one opening read per qualifying file, at most 16 KiB,
+keeping 4,096 characters. All additions share an 8,192-character cap. The ask
+retains its existing 16,384-character limit with typed text taking priority;
+the embedding adapter separately clips provider input to 8,000 characters.
+The initial ten-file sample had openings no larger than 3,004 bytes; those
+measurements establish coverage, not an optimal cap.
 
-The observed memory-quality sample showed useful recall for 7 of 9 prompts
-carrying tasks, and no useful items for the sampled pointer-only afternoon.
-Those measurements motivate including opening text; they do not measure an
-optimal cap. The caps above are a conservative initial bound: enough to reach
-past a task's preamble while leaving space for mixed prompts and multiple files.
+Openings exist only in memory at the HTTP send boundary. A queued ask contains
+typed text and cwd/project-root metadata. A helper obtains the current approved
+roots, reads openings and constructs its request body without replacing the
+stored text. Killing a hook or helper, or ending a session, leaves no file
+opening in pending recall state. A helper that never sends reads nothing.
 
-The member's private pending recall state holds the augmented request until
-request settlement/delivery discards it, as it holds prompt asks today. The
-capture event and transcript remain the typed text. The Deployment embeds the
-augmented ask and stores its bounded text's hash, selected memory ids and plan
-snapshots in the receipt. Answer diagnostics store identities, times, counts,
-skips and classified errors. Neither store saves the ask text. Route telemetry
-and member diagnostics contain no ask body. Session pages read the captured
-prompt and the selected memory records, so they show no appended opening as
-person-authored text. The embedding provider receives the augmented input.
+One separate reader process isolates optional filesystem work from the hook or
+helper. A promise timeout alone does not release Bun's blocked filesystem work.
+Startup and reads share 50 ms, clipped to the request's remaining deadline;
+missing, refused, failed or late reads leave the original ask and any earlier
+completed openings. The native timeout kills an ordinarily blocked reader;
+uninterruptible kernel I/O on a hard-mounted share was not measured. No polling
+or recurring job is added. There is no reader process when the parser finds no
+prose reference. A macOS arm64 compiled-hook measurement over 15 runs per case took 32.0 ms
+median without a reference, 47.2 ms with one prose file and 44.6 ms with one
+refused prose file. Each made one memory request; all 15 valid openings were
+used, and no refused opening was sent. The no-reference case starts no reader.
+A separate stalled-reader probe terminated at 52.9 ms. These are measurements,
+not test timing thresholds.
+
+The Deployment receives the augmented text and sends it to the embedding
+provider. Receipts hold its hash, selected memory ids and plan snapshots;
+diagnostics hold identities, times, counts and classified errors, not the ask
+body. Session pages use captured typed prompts. File prose can also contribute
+to the existing plan-intent nudge because it is part of selection input.
 
 ## Harness evidence
 
-The manifests, generated hook field mappings, hook templates and captured
-prompt-hook fixtures declare no verified attachment-path field. Claude Code
-and Codex supply `prompt`; Copilot and Cline map `prompt`; Windsurf maps
-`tool_info.user_prompt`; Pi's extension and OpenCode's plugin explicitly pass
-prompt text. Memory-capable hooks use the same member reader. Windsurf currently
-captures its prompt without asking for memory. Cursor and Antigravity currently
-wire no prompt-memory hook. Textual `@path` mentions are supported wherever
-present in a prompt. Separate attachment-only payload fields are unsupported
-until their path shape is verified and declared; no field names are guessed.
+Claude Code and Codex supply `prompt`; Copilot and Cline map `prompt`; Pi and
+OpenCode explicitly forward prompt text. Memory-capable hooks use the same send
+path. Windsurf currently captures its prompt without asking for memory. Cursor
+and Antigravity currently wire no prompt-memory hook. No attachment-path field
+was verified in the manifests, hook mappings, templates or captured fixtures.

@@ -1,4 +1,6 @@
-/** Explicit local path tokens in prose, quotes, Markdown links, or @mentions, in appearance order. */
+export const PROMPT_PROSE_EXTENSION = /\.(?:md|markdown|mdx|txt|rst|adoc)$/i;
+
+/** Local prose file tokens in prose, quotes, Markdown links, or @mentions, in appearance order. */
 export function promptFileReferences(text: string): string[] {
   const tokens = text.matchAll(/(?:^|[\s([<{=])(?:@?`([^`\n]+)`|@?"([^"\n]+)"|@?'([^'\n]+)'|([^\s`"'<>()[\]{},;!?]+))/g);
   const paths: string[] = [];
@@ -8,8 +10,7 @@ export function promptFileReferences(text: string): string[] {
     const named = raw.replace(/^@/, '').replace(/[.:]+$/, '');
     const pathLike = /^(?:[A-Za-z]:[\\/]|[~./\\])/.test(named) || /[\\/]/.test(named);
     if (!named || /(?:^[a-z][a-z0-9+.-]*:\/\/|[?*|$]|^--)/i.test(named) || (named.includes('@') && !pathLike && !quoted && !raw.startsWith('@'))) continue;
-    if (pathLike
-      || /\.[\p{L}][\p{L}\p{N}_-]*$/u.test(named) || quoted || raw.startsWith('@')) paths.push(named);
+    if (PROMPT_PROSE_EXTENSION.test(named)) paths.push(named);
   }
   return paths;
 }

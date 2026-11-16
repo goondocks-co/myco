@@ -19,6 +19,7 @@ const clip = (text: string, limit: number) => {
 
 const READ_TOOLS = new Set(['read', 'read_file', 'readfile', 'file_read', 'read_text_file']);
 const PATH_FIELDS = ['file_path', 'path', 'filePath', 'target_file'] as const;
+const pathBoundary = (char: string | undefined) => char === undefined || /[\s`"'()[\]{},;!?]/.test(char);
 
 /** A read-type tool contributes an excerpt for a bounded prompt path matching its full path or a path-segment suffix. */
 function fileRead(record: DocRecord, prompt: string): boolean {
@@ -29,7 +30,14 @@ function fileRead(record: DocRecord, prompt: string): boolean {
   return PATH_FIELDS.some(field => {
     const path = (input as Record<string, unknown>)[field];
     if (typeof path !== 'string' || path.length === 0) return false;
-    return promptReferencesFile(prompt, path);
+    if (promptReferencesFile(prompt, path)) return true;
+    const suffixes = [path, ...Array.from(path.matchAll(/[\\/]/g), match => path.slice(match.index + 1)).filter(Boolean)];
+    return suffixes.some(named => {
+      for (let at = prompt.indexOf(named); at >= 0; at = prompt.indexOf(named, at + 1)) {
+        if (pathBoundary(prompt[at - 1]) && pathBoundary(prompt[at + named.length])) return true;
+      }
+      return false;
+    });
   });
 }
 
