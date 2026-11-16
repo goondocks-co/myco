@@ -15,7 +15,7 @@ import { createServer } from '@myco-server-worker/pipeline.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 import { serverEnvFromBunConfig } from '@myco-server-worker/platform/bun/env.js';
 import { issueMemberToken } from './helpers/member-token.js';
-import { cacheMachineSettings, machineSettingsHeaders, machinePlanDirs, machineAutoJoinLeaves, seedMachineSettings, forgetConnectRoot } from '@myco/member/machine-settings.js';
+import { cacheMachineSettings, machineSettingsHeaders, machinePlanDirs, machinePromptFileRoots, machineAutoJoinLeaves, seedMachineSettings, forgetConnectRoot } from '@myco/member/machine-settings.js';
 import { writeDeploymentMembership } from '@myco/member/registry.js';
 import { asOwner, asOwnerPut, OWNER_ENV } from './helpers/owner.js';
 import { memberPost, sqliteEnv } from './helpers/fixtures.js';
@@ -59,6 +59,7 @@ interface BehaviorCase {
 }
 const CASES: Readonly<Record<string, BehaviorCase>> = {
   'capture.plan_dirs': { valid: ['docs/plans'], invalid: ['/', 'docs/plans'], consume: (home) => machinePlanDirs('https://s', home) },
+  'capture.prompt_file_roots': { valid: ['~/tasks'], invalid: ['/', '~/tasks'], consume: (home) => machinePromptFileRoots('https://s', home) },
   'capture.auto_join_roots': { valid: ['~/Work'], invalid: ['/', '~/Work'], consume: (home) => machineAutoJoinLeaves('https://s', home).autoJoinRoots },
   'capture.connect_roots': { valid: { [ROOT_KEY]: 'proj_1' }, invalid: { [ROOT_KEY]: 'proj_1', broken: 7 }, consume: (home) => machineAutoJoinLeaves('https://s', home).connectRoots },
 };
@@ -184,7 +185,7 @@ describe('machine settings effective contract', () => {
       const r = await rig(target);
       const legacy = await r.request(memberPost(r.token, {}, '/members/settings'));
       const legacyMachine = (await legacy.json() as { machine: unknown }).machine;
-      expect(legacyMachine).toEqual({ leaves: { 'capture.plan_dirs': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} } });
+      expect(legacyMachine).toEqual({ leaves: { 'capture.plan_dirs': [], 'capture.prompt_file_roots': [], 'capture.auto_join_roots': ['~/Repos'], 'capture.connect_roots': {} } });
       cacheMachineSettings('https://old', legacyMachine, r.home);
       expect(machineSettingsHeaders('https://old', r.home)).toMatchObject({ [MACHINE_SETTINGS_HEADER]: MACHINE_SETTINGS_FEATURE });
       expect(machineSettingsHeaders('https://old', r.home)[MACHINE_SETTINGS_REVISION_HEADER]).toBeUndefined();

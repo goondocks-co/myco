@@ -19,12 +19,12 @@ import { runHelperVerb } from '@myco/cli/member-helper.js';
 import { mintId, promptEvent, sessionStartEvent } from '@myco/member/envelope.js';
 import { MEMBER_INLINE_TEXT_MAX_BYTES } from '@myco/member/constants.js';
 import { helperPaths } from '@myco/member/helper.js';
-import { readSessionState, updateSessionState } from '@myco/member/session-state.js';
+import { updateSessionState } from '@myco/member/session-state.js';
 import { MemberSpool } from '@myco/member/spool.js';
 import { transcriptPointerFor } from '@myco/member/transcript.js';
 import { LifecycleLock } from '@myco/utils/lifecycle-lock.js';
 import { memberRig, TEST_MACHINE_ID, tempMycoHome } from './helpers/server.js';
-import { registerTestMember, runHook } from './helpers/hooks.js';
+import { registerTestMember } from './helpers/hooks.js';
 
 const PROJECT = 'proj_1';
 const SESSION = 'sess-killed';
@@ -156,52 +156,4 @@ describe.skipIf(process.platform === 'win32')('a helper killed mid-request (G4b)
       }
     }, 120_000);
   }
-
-  it('keeps file openings out of persisted recall when its helper is killed during the request', async () => {
-    const rig = await memberRig();
-    const root = scratch('myco-killed-prompt-');
-    const opening = 'PROSE_OPENING_ONLY_FOR_SELECTION';
-    fs.writeFileSync(path.join(root, 'task.md'), opening);
-    const prompt = 'Read task.md and repair capture.';
-    let notify = () => {};
-    let release = () => {};
-    const arrived = new Promise<void>(resolve => { notify = resolve; });
-    const held = new Promise<void>(resolve => { release = resolve; });
-    let sent = '';
-    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
-      if (new URL(request.url).pathname !== '/context/prompt') return rig.fetch(request);
-      sent = (await request.json() as { text: string }).text;
-      notify();
-      await held;
-      return Response.json({ persisted: true, context: '', skipped: [] });
-    } });
-    let child: ReturnType<typeof spawn> | undefined;
-    try {
-      const serverUrl = `http://127.0.0.1:${server.port}`;
-      registerTestMember({ mycoHome, token: rig.token, tokenId: rig.tokenId, projectId: PROJECT, root, serverUrl });
-      const tx = path.join(root, 'session.jsonl');
-      fs.writeFileSync(tx, JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n');
-      const common = { session_id: SESSION, cwd: root, transcript_path: tx };
-      await runHook('session-start', common, { fetch, helpers: 'run' });
-      await runHook('user-prompt-submit', { ...common, prompt }, { fetch, helpers: 'record' });
-      const spool = new MemberSpool({ projectId: PROJECT, serverUrl }, { mycoHome });
-      const recall = readSessionState(spool.dir, SESSION).promptRecall!;
-      expect(recall).toBeDefined();
-      expect(recall.asks[recall.current]?.request.text).toBe(prompt);
-      child = spawn(process.execPath, [CLI, 'member', 'helper', '--project', PROJECT, '--server', serverUrl, '--home', mycoHome], { cwd: root, env: { ...process.env, MYCO_HOME: mycoHome }, stdio: 'ignore' });
-      const exited = new Promise<void>(resolve => child!.on('exit', () => resolve()));
-      expect(await Promise.race([arrived.then(() => true), sleep(60_000).then(() => false)])).toBe(true);
-      expect(sent.startsWith(prompt)).toBe(true);
-      child.kill('SIGKILL');
-      await exited;
-      release();
-      await runHook('stop', common, { fetch, helpers: 'record' });
-      await runHook('session-end', common, { fetch, helpers: 'record' });
-      expect(JSON.stringify(readSessionState(spool.dir, SESSION))).not.toContain(opening);
-    } finally {
-      child?.kill('SIGKILL'); release(); server.stop(true); rig.env.sqlite.close();
-      for (const dir of scratchDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-    }
-  }, 90_000);
-
 });

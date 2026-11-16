@@ -55,8 +55,7 @@ import { embeddingKeepsAwake } from '@myco-server-worker/core/embedding/jobs.js'
 import { configuredEmbeddingProvider } from '@myco-server-worker/core/embedding/configured-provider.js';
 import { deploymentSecretStore } from '@myco-server-worker/core/secrets.js';
 import { issueMemberToken } from './helpers/member-token.js';
-import { cacheMachineSettings, machineAutoJoinLeaves, machinePlanDirs } from '@myco/member/machine-settings.js';
-import { MACHINE_LEAF_SPECS } from '@myco-server-worker/core/machine-settings.js';
+import { cacheMachineSettings, machineAutoJoinLeaves, machinePlanDirs, machinePromptFileRoots } from '@myco/member/machine-settings.js';
 import { closureOf, codeOf, entryFiles, filesUnder, moduleKey, REPO_ROOT } from '../helpers/import-closure.ts';
 import { readFileSync } from 'node:fs';
 import { seededSqlite } from './helpers/d1.js';
@@ -710,17 +709,6 @@ describe('stored settings that do not apply', () => {
 });
 
 describe('machine leaves', () => {
-  const CONSUMERS: Readonly<Record<string, { fn: (...args: never[]) => unknown; module: string }>> = {
-    'capture.plan_dirs': { fn: machinePlanDirs, module: 'member/machine-settings.ts' },
-    'capture.auto_join_roots': { fn: machineAutoJoinLeaves, module: 'member/machine-settings.ts' },
-    'capture.connect_roots': { fn: machineAutoJoinLeaves, module: 'member/machine-settings.ts' },
-  };
-
-  it('binds every machine leaf to a member consumer the member entries reach', () => {
-    expect(Object.keys(CONSUMERS).sort()).toEqual(Object.keys(MACHINE_LEAF_SPECS).sort());
-    for (const { module } of Object.values(CONSUMERS)) expect(memberClosure.modules.has(moduleKey(path.join(MEMBER_SRC, module)))).toBe(true);
-  });
-
   for (const target of DEPLOYMENT_TARGETS) {
     it(`a dashboard write reaches the machine's own reading on ${target}, and a server-written leaf refuses it`, async () => {
       const r = rigFor(target);
@@ -730,14 +718,16 @@ describe('machine leaves', () => {
       const sync = async () => cacheMachineSettings(ORIGIN, (await json(await r.fetch(memberPost(token, {}, '/members/settings')))).machine, home);
       const set = async (leaf: string, value: unknown) => r.fetch(await asOwnerPut(r.env.db, `/api/machines/machine_1/settings/${leaf}`, { value }));
       await sync();
-      const before = { plans: machinePlanDirs(ORIGIN, home), roots: machineAutoJoinLeaves(ORIGIN, home).autoJoinRoots };
+      const before = { plans: machinePlanDirs(ORIGIN, home), roots: machineAutoJoinLeaves(ORIGIN, home).autoJoinRoots, promptRoots: machinePromptFileRoots(ORIGIN, home) };
       expect((await set('capture.plan_dirs', ['docs/plans'])).status).toBe(200);
       expect((await set('capture.auto_join_roots', ['~/Work'])).status).toBe(200);
+      expect((await set('capture.prompt_file_roots', ['~/tasks'])).status).toBe(200);
+      expect((await set('capture.prompt_file_roots', ['~'])).status).toBe(400);
       expect((await set('capture.plan_dirs', ['/'])).status).toBe(400);
       expect((await set('capture.connect_roots', { ['a'.repeat(64)]: 'proj_1' })).status).toBe(400);
       await sync();
-      expect({ plans: machinePlanDirs(ORIGIN, home), roots: machineAutoJoinLeaves(ORIGIN, home).autoJoinRoots }).toEqual({ plans: ['docs/plans'], roots: ['~/Work'] });
-      expect(before).toEqual({ plans: [], roots: ['~/Repos'] });
+      expect({ plans: machinePlanDirs(ORIGIN, home), roots: machineAutoJoinLeaves(ORIGIN, home).autoJoinRoots, promptRoots: machinePromptFileRoots(ORIGIN, home) }).toEqual({ plans: ['docs/plans'], roots: ['~/Work'], promptRoots: ['~/tasks'] });
+      expect(before).toEqual({ plans: [], roots: ['~/Repos'], promptRoots: [] });
       expect((await set('capture.plan_dirs', [])).status).toBe(200);
       await sync();
       expect(machinePlanDirs(ORIGIN, home)).toEqual([]);

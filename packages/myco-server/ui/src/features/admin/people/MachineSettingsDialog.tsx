@@ -46,7 +46,7 @@ const FIELDS: readonly FolderField[] = [
   {
     leaf: 'capture.prompt_file_roots',
     title: 'Extra prompt file folders',
-    note: 'Myco may send openings of prose files named in prompts here to the Deployment and embedding provider to choose memory. Use ~/ followed by a folder. Project and temporary folders already qualify. No extra folders are approved by default.',
+    note: 'Myco may send openings of prose files named in prompts here to your Myco server and AI provider to choose memory. Use ~/ followed by a folder. Project and temporary folders already qualify. No extra folders are approved by default.',
     none: 'None: only project and temporary folders.',
     addLabel: 'Prompt file folder to add',
     placeholder: '~/tasks',

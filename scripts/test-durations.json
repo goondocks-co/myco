@@ -964,7 +964,8 @@
     "tests/utils/windows-atomic-replace.test.ts": 52,
     "tests/myco-server/learning-window-migration.test.ts": 25000,
     "tests/myco-server/completion.test.ts": 4000,
-    "tests/member/prompt-files.test.ts": 750
+    "tests/member/prompt-files.test.ts": 750,
+    "tests/member/prompt-files-killed.test.ts": 2000
   },
   "parity": {
     "github app: keyless sign-in and admin-only setup status": 500,
