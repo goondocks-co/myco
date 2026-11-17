@@ -53,11 +53,12 @@ function fileRoot(file: string, input: PromptFileInput, env: NodeJS.ProcessEnv):
   return undefined;
 }
 
-/** One bounded opening read; physical aliases below the admitted root carry no permission. */
+/** One bounded opening read; a root that is physically home or above it, and physical aliases below the admitted root, carry no permission. */
 async function opening(file: string, policy: FileRoot, env: NodeJS.ProcessEnv, active: () => boolean): Promise<string | undefined> {
   const { root, home } = policy;
-  const physicalRoot = await fs.realpath(root);
-  if (home !== undefined && !samePath(physicalRoot, path.resolve(await fs.realpath(home), path.relative(home, root)))) return undefined;
+  const [physicalRoot, physicalHome] = await Promise.all([fs.realpath(root), fs.realpath(path.resolve(env.HOME ?? env.USERPROFILE ?? os.homedir()))]);
+  if (broadRoot(physicalRoot, physicalHome)) return undefined;
+  if (home !== undefined && !samePath(physicalRoot, path.resolve(physicalHome, path.relative(home, root)))) return undefined;
   if (!active()) return undefined;
   const physical = await fs.realpath(file);
   if (!active() || !samePath(physical, path.resolve(physicalRoot, path.relative(root, file))) || isAgentScratchDirectory(file, env)) return undefined;

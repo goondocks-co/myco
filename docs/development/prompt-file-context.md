@@ -42,7 +42,8 @@ declares in `MYCO_PROJECT_ROOT`; a file in the working directory outside that
 root is not read. With neither, the cwd is usable only when auto-join's
 `isSafeProjectRoot` admits it on its own merits; otherwise nothing is opened.
 A temporary folder that is the home, an ancestor of it or a filesystem root is
-not a root.
+not a root, and neither is any root that resolves to one of those through a
+link.
 
 Only regular files with one hard link qualify. Symlinks below roots are refused,
 including links into other approved directories. Approved home roots must be

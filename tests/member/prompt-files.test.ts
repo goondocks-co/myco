@@ -105,7 +105,7 @@ it('refuses unapproved personal roots, non-prose files, private names, hard link
   expect(await ask('Read @notes/plan.md.', { projectRoot: undefined, env: { ...env, MYCO_PROJECT_ROOT: root } })).toContain('Approved plan');
 });
 
-it('refuses secrets under a prose name, a declared root that is not the working directory, and broad temporary roots', async () => {
+it('refuses secrets under a prose name, a declared root that is not the working directory, and temporary roots that are or lead to home', async () => {
   const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----\n';
   for (const file of ['id_rsa.txt', 'id_ed25519.md', '.netrc.txt', 'pgpass.txt', 'passwd.txt', 'creds.md']) write(path.join(root, file), 'PRIVATE');
   for (const [file, text] of [['deploy.txt', pem], ['aws.txt', 'aws_access_key_id = AKIAABCDEFGHIJKLMNOP'], ['notes.md', 'Setup\npassword: hunter2hunter2\n'],
@@ -125,6 +125,10 @@ it('refuses secrets under a prose name, a declared root that is not the working 
   for (const broad of [home, path.dirname(home), path.parse(home).root]) {
     expect(await ask(personal, { env: { ...env, MYCO_TEMPORARY_FOLDERS: broad } })).toBe(personal);
   }
+  const alias = path.join(dir, 'scratch-alias');
+  fs.symlinkSync(home, alias);
+  const aliased = `Read ${path.join(alias, 'Documents', 'notes.md')}.`;
+  expect(await ask(aliased, { env: { ...env, MYCO_TEMPORARY_FOLDERS: alias } })).toBe(aliased);
 });
 
 it('preserves the typed prompt through the spawned reader, with only a prefix-preserving append', async () => {
