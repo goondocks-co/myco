@@ -3,11 +3,13 @@ import { useMutation,useQuery,useQueryClient } from '@tanstack/react-query';
 import { Button,ConfirmDialog,ItemLink } from '../../design';
 import { ApiError,fetchJson,postJson } from '../../lib/api';
 import { live } from '../../lib/live';
+import { sporeStatusWord } from './words';
 import { projectPath } from '../../routes/nav';
 
 interface UndoView {
   unit:{id:string;kind:string;undoneAt:number|null;undoneBy:string|null;undoneLabel:string|null};
   restore:{id:string;label:string}[];retire:{id:string;label:string}[];
+  leave?:{id:string;label:string;status:string|null}[];
   blocker:{code:string;message:string;laterNoteId?:string|null}|null;
 }
 const segment=encodeURIComponent;
@@ -38,12 +40,13 @@ export function CurationUndo({projectId,sporeId}:{projectId:string;sporeId:strin
   return <>
     <Button size="sm" variant="secondary" onClick={()=>{change.reset();setOpen(true);}}>Undo curation</Button>
     <ConfirmDialog open={open} onOpenChange={next=>{if(!change.isPending)setOpen(next);}}
-      title="Undo this curation?" description="The original notes become current again with their original guidance and dates. The notes written by this curation are retired. All of it changes together."
+      title="Undo this curation?" description="Restore the listed original notes with their guidance and dates. Retire only the notes listed for retirement. Other notes stay as they are. All changes happen together."
       confirmLabel="Undo curation" tone="primary" pending={change.isPending} confirmDisabled={curation.blocker!==null}
       error={errorWords(change.error)??curation.blocker?.message??null} onConfirm={()=>change.mutate(curation.unit.id)}>
       <div className="flex flex-col gap-s4" data-curation-undo-plan="">
         <section><h3 className="t-small font-medium">Original notes to restore</h3>{list(curation.restore)}</section>
         {curation.retire.length>0&&<section><h3 className="t-small font-medium">Notes to retire</h3>{list(curation.retire)}</section>}
+        {(curation.leave?.length??0)>0&&<section><h3 className="t-small font-medium">Notes left as they are</h3><ul className="flex flex-col gap-s2">{curation.leave!.map(note=><li key={note.id}><ItemLink to={projectPath(projectId,`/spores/${segment(note.id)}`)}>{note.label}</ItemLink><span className="t-small text-muted"> — {note.status===null?'No longer held':sporeStatusWord(note.status)}</span></li>)}</ul></section>}
         {curation.blocker?.laterNoteId!=null&&<ItemLink to={projectPath(projectId,`/spores/${segment(curation.blocker.laterNoteId)}`)}>Open the later curation →</ItemLink>}
       </div>
     </ConfirmDialog>

@@ -48,11 +48,22 @@ export const sporeCuration: ParityScenario = {
       const undoPath='/api/projects/'+target.projectId+'/curation/'+run.id+'/undo';
       const undoPreview=await owner(target,'/api/projects/'+target.projectId+'/spores/'+result.notes[0]!.id+'/curation');
       expect(undoPreview).toMatchObject({status:200,body:{curation:{unit:{id:run.id},blocker:null}}});
+      const absorbed=await mcp(target,'myco_spores',{op:'save',type:'gotcha',content:'Later knowledge absorbed by the first output.',agent_line:'When delivery stalls, retain the original knowledge.'});
+      expect(await mcp(target,'myco_spores',{op:'consolidate',id:absorbed.id,new_spore_id:result.notes[0]!.id,reason:'Same situation.'})).toMatchObject({status:'consolidated'});
+      expect(await owner(target,undoPath,{method:'POST',body:'{}'})).toMatchObject({status:409,body:{error:'curation_incoming_resolution',noteId:absorbed.id,message:expect.stringContaining('was later merged into')}});
+      const incoming=(await owner(target,'/api/projects/'+target.projectId+'/spores/'+absorbed.id+'/curation')).body.curation;
+      expect(incoming).toMatchObject({restore:[{id:absorbed.id}],retire:[],leave:[{id:result.notes[0]!.id,status:'active'}]});
+      expect(await owner(target,'/api/projects/'+target.projectId+'/curation/'+incoming.unit.id+'/undo',{method:'POST',body:'{}'})).toMatchObject({status:200,body:{ok:true}});
+      expect(await mcp(target,'myco_spores',{op:'get',id:absorbed.id})).toMatchObject({status:'active',superseded_by:[]});
+      expect(await mcp(target,'myco_spores',{op:'get',id:result.notes[0]!.id})).toMatchObject({status:'active'});
       const denied=await fetch(target.url+undoPath,{method:'POST',headers:{...target.memberHeaders(),origin:target.url,'content-type':'application/json'},body:'{}'});
       expect(denied.status).toBe(401);
       expect(await owner(target,undoPath,{method:'POST',body:'{}'})).toMatchObject({status:200,body:{ok:true}});
       for(const id of sources)expect(await mcp(target,'myco_spores',{op:'get',id})).toMatchObject({status:'active',superseded_by:[],resolution:{action:'restore',reason:expect.stringContaining('Curation undone by')}});
-      for(const {id} of result.notes)expect(await mcp(target,'myco_spores',{op:'get',id})).toMatchObject({status:'obsolete',predecessors:sources});
+      for(const {id} of result.notes){
+        const read=await mcp(target,'myco_spores',{op:'get',id});expect(read.status).toBe('obsolete');
+        expect((read.predecessors as string[]).sort()).toEqual([...sources,...(id===result.notes[0]!.id?[absorbed.id as string]:[])].sort());
+      }
       expect(await owner(target,undoPath,{method:'POST',body:'{}'})).toMatchObject({status:409,body:{message:expect.stringContaining('already undone')}});
     }); } finally { provider?.stop(); }
   },

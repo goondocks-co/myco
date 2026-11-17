@@ -88,7 +88,7 @@ const HYDRATE = [
       s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, ${sporeLearnedAtSql('s', 'se')} AS learned_at,
       (SELECT json_group_array(target) FROM (
         SELECT e.new_spore_id AS target FROM resolution_events e WHERE e.project_id=s.project_id AND e.spore_id=s.id
-          AND e.action=CASE s.status WHEN 'superseded' THEN 'supersede' WHEN 'consolidated' THEN 'consolidate' END AND e.new_spore_id IS NOT NULL AND ${currentCurationEdgeSql('e.project_id','e.spore_id','e.new_spore_id','e.action')}
+          AND e.action=CASE s.status WHEN 'superseded' THEN 'supersede' WHEN 'consolidated' THEN 'consolidate' END AND e.new_spore_id IS NOT NULL AND ${currentCurationEdgeSql('e.project_id','e.spore_id','e.id')}
           GROUP BY e.new_spore_id ORDER BY MAX(e.created_at) DESC,MAX(e.id) DESC LIMIT ${SPORE_SUCCESSOR_LIMIT})) AS successor_id, ${NO_TURN}
     FROM ${IDS} CROSS JOIN spores s ON s.project_id = d.project_id AND s.id = d.source_key ${sessionOf('s.session_id')}
     WHERE d.kind = 'spore' AND ${currentStatus('spore', 's.status')} AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 's.status', session: 's.session_id', created: 's.created_at', liveSession: null })}` }),

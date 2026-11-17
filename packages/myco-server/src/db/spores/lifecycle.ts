@@ -3,7 +3,7 @@ import type { ResolutionAction, SporeInsert, SporeProvenance, SporeRow, SporeSta
 import type { ReadScope } from '../../read/scope.js';
 import { assertion, commitNamed, refusalCode, refusalDetail, write } from '../index.js';
 import { importAdmittedAssertion, importRefused, sporeInsertWrite } from './records.js';
-import { curationMergeHistory } from './curation-history.js';
+import { curationMergeHistory, curationResolutionHistory } from './curation-history.js';
 
 /**
  * Moving a spore out of the active set (one resolution or one consolidation) or a retired spore back into it (one restore), each one commit.
@@ -111,6 +111,8 @@ export async function resolveSpore(db: RelationalStore, scope: ReadScope, reques
         event.newSporeId, imported ? 0 : 1),
       event: insertEvent.bind(scope.projectId, event.id, event.agentId, event.sporeId, event.action, event.newSporeId, event.reason, event.sessionId,
         event.author, event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt),
+      history: !imported && event.newSporeId!==null && (event.action==='consolidate'||event.action==='supersede')
+        ?curationResolutionHistory({project:scope.projectId,event:event.id,source:event.sporeId,target:event.newSporeId,status,now}):[],
       move: moveSource.bind(status, now, scope.projectId, event.sporeId),
     });
     return true;
@@ -202,12 +204,13 @@ function staleSourceFrom(detail: string, sources: readonly SporeSource[]): Stale
  */
 export async function consolidateSpores(db: RelationalStore, scope: ReadScope, request: ConsolidationRequest): Promise<ConsolidationOutcome> {
   const { wisdom, sources, event, now, authority } = request;
-  const encoded = JSON.stringify(sources.map(source => ({ id: source.id, revision: source.revision ?? null, event: crypto.randomUUID() })));
+  const resolutions=sources.map(source=>({id:source.id,revision:source.revision??null,event:crypto.randomUUID()}));
+  const encoded = JSON.stringify(resolutions);
   try {
     const committed = await commitNamed(db, {
       admitted: sourcesCurrent.bind(scope.projectId, encoded, grantOf(authority)),
       wisdom: sporeInsertWrite(scope, wisdom),
-      history: curationMergeHistory({ project: scope.projectId, target: wisdom.id, sources: sources.map(source=>source.id), now }),
+      history: curationMergeHistory({ project: scope.projectId, target: wisdom.id, sources:resolutions, now }),
       events: insertSourceEvents.bind(scope.projectId, encoded, event.agentId, wisdom.id, event.reason, event.sessionId, event.author,
         event.provenance?.kind ?? null, event.provenance?.ref ?? null, event.createdAt),
       moved: moveSources.bind(now, scope.projectId, encoded),

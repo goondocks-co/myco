@@ -532,7 +532,7 @@ it('an admin sees the whole undo plan on a source page and confirms once, then s
   mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
   fireEvent.click(await screen.findByRole('button',{name:'Undo curation'}));
   const dialog=await screen.findByRole('dialog');
-  expect(dialog.textContent).toContain('All of it changes together.');
+  expect(dialog.textContent).toContain('All changes happen together.');
   expect(within(dialog).getByRole('link',{name:'The original situation.'}).getAttribute('href')).toBe(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
   expect(within(dialog).getByRole('link',{name:'The combined situation.'})).toBeTruthy();
   fireEvent.click(within(dialog).getByRole('button',{name:'Undo curation'}));
@@ -540,6 +540,22 @@ it('an admin sees the whole undo plan on a source page and confirms once, then s
   expect(await screen.findByText('Curation undone by Ada. Original notes restored.')).toBeTruthy();
   expect(requested.filter(path=>path.endsWith('/undo'))).toHaveLength(1);
   expect(rawIdsInPage()).toEqual([]);
+});
+
+it.each([{kind:'merge',status:'obsolete',word:'Retired'},{kind:'resolution',status:'active',word:'Current'}])('leaves a $word target out of retirement for a $kind undo',async({kind,status,word})=>{
+  const path=`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`;
+  const label='The existing replacement guidance.';
+  server(base({
+    [path]:()=>article({status,sessionId:null},{supersededBy:[],supersedes:[]}),
+    [path+'/curation']:()=>Response.json({curation:{unit:{id:'one-operation',kind,undoneAt:null,undoneBy:null,undoneLabel:null},
+      restore:[{id:'original-note',label:'The original guidance.'}],retire:[],leave:[{id:'gotcha-1a2b3c4d',label,status}],blocker:null}}),
+  }));
+  mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);fireEvent.click(await screen.findByRole('button',{name:'Undo curation'}));
+  const dialog=await screen.findByRole('dialog');
+  expect(dialog.textContent).toContain('Retire only the notes listed for retirement. Other notes stay as they are.');
+  expect(within(dialog).queryByRole('heading',{name:'Notes to retire'})).toBeNull();
+  expect(within(dialog).getByRole('heading',{name:'Notes left as they are'})).toBeTruthy();
+  expect(within(dialog).getByRole('link',{name:label})).toBeTruthy();expect(dialog.textContent).toContain('— '+word);
 });
 
 it('a member sees lineage but no undo control or history request',async()=>{

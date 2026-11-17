@@ -17,6 +17,10 @@ export const sameSporeStateSql = (expected: string, actual: string): string => `
   SELECT 1 FROM json_each(${expected}) held WHERE json_type(${actual},'$."'||held.key||'"') IS NULL
     OR json_extract(${actual},'$."'||held.key||'"') IS NOT held.value) AND NOT EXISTS (
   SELECT 1 FROM json_each(${actual}) current WHERE json_type(${expected},'$."'||current.key||'"') IS NULL))`;
+export const KNOWLEDGE_FIELDS = ['content','observationType','agentLine','context','tags','importance','filePath','properties','contentHash','status'] as const;
+export const sporeKnowledgeSql = (row:string,status:string=`${row}.status`):string => `json_object(${STATE_FIELDS.filter(([key])=>KNOWLEDGE_FIELDS.some(held=>held===key)).flatMap(([key,column])=>[`'${key}'`,key==='status'?status:`${row}.${column}`]).join(',')})`;
+export const knowledgeStateSql = (snapshot: string): string => `json_object(${KNOWLEDGE_FIELDS.flatMap(key=>[`'${key}'`,`json_extract(${snapshot},'$.${key}')`]).join(',')})`;
+export const completeKnowledgeSql = (snapshot: string): string => `(${KNOWLEDGE_FIELDS.map(key=>`json_type(${snapshot},'$.${key}') IS NOT NULL`).join(' AND ')})`;
 const writtenState = (value: string): string => state(key => {
   if (key === 'status') return "'active'";
   if (key === 'revision') return '0';
@@ -25,11 +29,13 @@ const writtenState = (value: string): string => state(key => {
 });
 
 const heldSource = sporeStateSql('s');
-const legacyRevision = `(SELECT COUNT(*) FROM resolution_events history INDEXED BY idx_resolution_events_spore
-  WHERE history.project_id=e.project_id AND history.spore_id=e.spore_id)`;
-const originalSource = `json_set(${heldSource},'$.status','active','$.revision',MAX(0,${legacyRevision}-1),'$.updatedAt',NULL)`;
+const originalSource = `json_set(${heldSource},'$.status','active','$.revision',NULL,'$.updatedAt',NULL)`;
 const sourceAt = (role: string, revision: string, at: string) =>
   `json_set(${heldSource},'$.status',CASE WHEN ${role}='retired' THEN 'obsolete' ELSE 'consolidated' END,'$.revision',${revision},'$.updatedAt',${at})`;
+
+const untrackedEventSql=(event:string):string=>`NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=${event}.project_id AND owner.spore_id=${event}.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=${event}.id))`;
 
 /** Indexed successor links name legacy merge units; checked answers name multi-output units. */
 export const CURATION_HISTORY_BACKFILL: readonly string[] = [
@@ -54,20 +60,23 @@ export const CURATION_HISTORY_BACKFILL: readonly string[] = [
       json_each(a.answer,'$.notes') n WHERE u.kind='answer'
     ON CONFLICT(project_id,unit_id,spore_id) DO NOTHING`,
   `INSERT INTO spore_curation_units(project_id,id,kind,created_at,member_count,unavailable)
-    SELECT s.project_id,s.id,'legacy',s.created_at,1+(SELECT COUNT(DISTINCT e.spore_id) FROM resolution_events e INDEXED BY idx_resolution_events_successor WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate'),CASE WHEN s.observed_at IS NOT NULL THEN 'answer_history_missing'
-      WHEN s.status='active' AND s.revision=0 AND s.updated_at IS NOT NULL AND s.updated_at<>s.created_at THEN 'legacy_note_changed'
+    SELECT s.project_id,s.id,'legacy',s.created_at,1+(SELECT COUNT(DISTINCT e.spore_id) FROM resolution_events e INDEXED BY idx_resolution_events_successor WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND ${untrackedEventSql('e')}),CASE WHEN s.observed_at IS NOT NULL THEN 'answer_history_missing'
+      WHEN (SELECT MIN(e.created_at) FROM resolution_events e INDEXED BY idx_resolution_events_successor
+        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND ${untrackedEventSql('e')})>s.created_at THEN 'legacy_existing_target'
+      WHEN EXISTS(SELECT 1 FROM resolution_events e INDEXED BY idx_resolution_events_successor
+        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND ${untrackedEventSql('e')} AND e.created_at<>s.created_at) THEN 'legacy_multiple_merges'
       WHEN EXISTS(SELECT 1 FROM resolution_events e INDEXED BY idx_resolution_events_successor
         JOIN resolution_events other INDEXED BY idx_resolution_events_spore ON other.project_id=e.project_id AND other.spore_id=e.spore_id
-        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate'
+        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND ${untrackedEventSql('e')}
           AND other.action='consolidate' AND other.new_spore_id IS NOT s.id) THEN 'legacy_lineage_conflict' END
     FROM spores s WHERE EXISTS(SELECT 1 FROM resolution_events e INDEXED BY idx_resolution_events_successor
-      WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate')
+      WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND ${untrackedEventSql('e')})
       AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members m WHERE m.project_id=s.project_id AND m.spore_id=s.id AND m.role='output')
     ON CONFLICT(project_id,id) DO NOTHING`,
   `INSERT INTO spore_curation_units(project_id,id,kind,created_at,member_count,unavailable)
-    SELECT s.project_id,e.new_spore_id,'legacy',MIN(e.created_at),COUNT(DISTINCT s.id)+1,'output_missing'
+    SELECT s.project_id,e.new_spore_id,'legacy',MIN(e.created_at),COUNT(DISTINCT s.id)+1,CASE WHEN COUNT(DISTINCT e.created_at)>1 THEN 'legacy_multiple_merges' ELSE 'output_missing' END
     FROM spores s CROSS JOIN resolution_events e INDEXED BY idx_resolution_events_spore ON e.project_id=s.project_id AND e.spore_id=s.id
-    WHERE e.action='consolidate' AND e.new_spore_id IS NOT NULL
+    WHERE e.action='consolidate' AND ${untrackedEventSql('e')} AND e.new_spore_id IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM spores target WHERE target.project_id=e.project_id AND target.id=e.new_spore_id)
     GROUP BY s.project_id,e.new_spore_id ON CONFLICT(project_id,id) DO NOTHING`,
   `INSERT INTO spore_curation_unit_members(project_id,unit_id,spore_id,role,before_json,after_json)
@@ -75,19 +84,24 @@ export const CURATION_HISTORY_BACKFILL: readonly string[] = [
     FROM spore_curation_units u LEFT JOIN spores s ON s.project_id=u.project_id AND s.id=u.id WHERE u.kind='legacy'
     ON CONFLICT(project_id,unit_id,spore_id) DO NOTHING`,
   `INSERT INTO spore_curation_unit_members(project_id,unit_id,spore_id,role,before_json,after_json)
-    SELECT u.project_id,u.id,e.spore_id,'source',${originalSource},${sourceAt("'source'", legacyRevision, 's.updated_at')}
+    SELECT u.project_id,u.id,e.spore_id,'source',${originalSource},${sourceAt("'source'", 's.revision', 's.updated_at')}
     FROM spore_curation_units u JOIN resolution_events e INDEXED BY idx_resolution_events_successor ON e.project_id=u.project_id AND e.new_spore_id=u.id
-      LEFT JOIN spores s ON s.project_id=e.project_id AND s.id=e.spore_id WHERE u.kind='legacy' AND e.action='consolidate'
+      LEFT JOIN spores s ON s.project_id=e.project_id AND s.id=e.spore_id WHERE u.kind='legacy' AND e.action='consolidate' AND ${untrackedEventSql('e')}
     ON CONFLICT(project_id,unit_id,spore_id) DO NOTHING`,
-  `UPDATE spore_curation_unit_members AS child SET before_json=(SELECT parent.after_json FROM spore_curation_unit_members parent
-      WHERE parent.project_id=child.project_id AND parent.spore_id=child.spore_id AND parent.role='output')
-    WHERE child.role<>'output' AND json_extract(child.before_json,'$.updatedAt') IS NULL
-      AND EXISTS(SELECT 1 FROM spore_curation_unit_members parent WHERE parent.project_id=child.project_id AND parent.spore_id=child.spore_id
-        AND parent.role='output' AND ${sameSporeStateSql("json_remove(child.before_json,'$.updatedAt')", "json_remove(parent.after_json,'$.updatedAt')")})`,
+  `UPDATE spore_curation_unit_members AS m SET event_ids=(SELECT json_group_array(e.id)
+    FROM resolution_events e INDEXED BY idx_resolution_events_spore CROSS JOIN spore_curation_units u
+      ON u.project_id=m.project_id AND u.id=m.unit_id
+    WHERE e.project_id=m.project_id AND e.spore_id=m.spore_id AND (
+      (u.kind='resolution' AND e.id=u.id) OR
+      (u.kind='answer' AND e.author=u.source_run_id AND (
+        (m.role='retired' AND e.action='obsolete') OR (e.action='consolidate' AND EXISTS(
+          SELECT 1 FROM spore_curation_unit_members o WHERE o.project_id=u.project_id AND o.unit_id=u.id AND o.spore_id=e.new_spore_id AND o.role='output')))) OR
+      (u.kind IN ('merge','legacy') AND e.action='consolidate' AND e.new_spore_id=u.id AND e.created_at=u.created_at)))
+    WHERE m.role IN ('source','retired') AND m.event_ids='[]'`,
 ];
 
-/** An undone creator unit no longer replaces its restored source through this edge. */
-export const currentCurationEdgeSql = (project: string, source: string, target: string, action: string): string => `(${action}<>'consolidate' OR NOT EXISTS (
-  SELECT 1 FROM spore_curation_unit_members o JOIN spore_curation_units u ON u.project_id=o.project_id AND u.id=o.unit_id
-  WHERE o.project_id=${project} AND o.spore_id=${target} AND o.role='output' AND u.undone_at IS NOT NULL
-    AND EXISTS(SELECT 1 FROM spore_curation_unit_members m WHERE m.project_id=u.project_id AND m.unit_id=u.id AND m.spore_id=${source} AND m.role='source')))`;
+/** Canonical resolution ids bind each edge to the operation that can undo it. */
+export const currentCurationEdgeSql = (project: string, source: string, event: string): string => `NOT EXISTS (
+  SELECT 1 FROM spore_curation_unit_members m INDEXED BY idx_curation_unit_note CROSS JOIN spore_curation_units u ON u.project_id=m.project_id AND u.id=m.unit_id
+  WHERE m.project_id=${project} AND m.spore_id=${source} AND u.undone_at IS NOT NULL
+    AND EXISTS(SELECT 1 FROM json_each(m.event_ids) e WHERE e.value=${event}))`;

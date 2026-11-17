@@ -5,7 +5,8 @@ CREATE TABLE IF NOT EXISTS spore_curation_units(project_id TEXT NOT NULL CHECK (
       undone_at INTEGER,undone_by TEXT,undone_label TEXT,PRIMARY KEY(project_id,id));
 
 CREATE TABLE IF NOT EXISTS spore_curation_unit_members(project_id TEXT NOT NULL CHECK (project_id NOT GLOB '*[^A-Za-z0-9._-]*' AND length(project_id) BETWEEN 1 AND 64 AND project_id NOT IN ('.', '..')),unit_id TEXT NOT NULL,spore_id TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('source','retired','output')),before_json TEXT CHECK(before_json IS NULL OR json_valid(before_json)),
+      role TEXT NOT NULL CHECK(role IN ('source','retired','output','target')),before_json TEXT CHECK(before_json IS NULL OR json_valid(before_json)),
+      event_ids TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(event_ids)),
       after_json TEXT NOT NULL CHECK(json_valid(after_json)),PRIMARY KEY(project_id,unit_id,spore_id),
       FOREIGN KEY(project_id,unit_id) REFERENCES spore_curation_units(project_id,id) ON DELETE CASCADE);
 
@@ -37,21 +38,36 @@ INSERT INTO spore_curation_unit_members(project_id,unit_id,spore_id,role,before_
     ON CONFLICT(project_id,unit_id,spore_id) DO NOTHING;
 
 INSERT INTO spore_curation_units(project_id,id,kind,created_at,member_count,unavailable)
-    SELECT s.project_id,s.id,'legacy',s.created_at,1+(SELECT COUNT(DISTINCT e.spore_id) FROM resolution_events e INDEXED BY idx_resolution_events_successor WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate'),CASE WHEN s.observed_at IS NOT NULL THEN 'answer_history_missing'
-      WHEN s.status='active' AND s.revision=0 AND s.updated_at IS NOT NULL AND s.updated_at<>s.created_at THEN 'legacy_note_changed'
+    SELECT s.project_id,s.id,'legacy',s.created_at,1+(SELECT COUNT(DISTINCT e.spore_id) FROM resolution_events e INDEXED BY idx_resolution_events_successor WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=e.project_id AND owner.spore_id=e.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=e.id))),CASE WHEN s.observed_at IS NOT NULL THEN 'answer_history_missing'
+      WHEN (SELECT MIN(e.created_at) FROM resolution_events e INDEXED BY idx_resolution_events_successor
+        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=e.project_id AND owner.spore_id=e.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=e.id)))>s.created_at THEN 'legacy_existing_target'
+      WHEN EXISTS(SELECT 1 FROM resolution_events e INDEXED BY idx_resolution_events_successor
+        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=e.project_id AND owner.spore_id=e.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=e.id)) AND e.created_at<>s.created_at) THEN 'legacy_multiple_merges'
       WHEN EXISTS(SELECT 1 FROM resolution_events e INDEXED BY idx_resolution_events_successor
         JOIN resolution_events other INDEXED BY idx_resolution_events_spore ON other.project_id=e.project_id AND other.spore_id=e.spore_id
-        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate'
+        WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=e.project_id AND owner.spore_id=e.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=e.id))
           AND other.action='consolidate' AND other.new_spore_id IS NOT s.id) THEN 'legacy_lineage_conflict' END
     FROM spores s WHERE EXISTS(SELECT 1 FROM resolution_events e INDEXED BY idx_resolution_events_successor
-      WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate')
+      WHERE e.project_id=s.project_id AND e.new_spore_id=s.id AND e.action='consolidate' AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=e.project_id AND owner.spore_id=e.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=e.id)))
       AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members m WHERE m.project_id=s.project_id AND m.spore_id=s.id AND m.role='output')
     ON CONFLICT(project_id,id) DO NOTHING;
 
 INSERT INTO spore_curation_units(project_id,id,kind,created_at,member_count,unavailable)
-    SELECT s.project_id,e.new_spore_id,'legacy',MIN(e.created_at),COUNT(DISTINCT s.id)+1,'output_missing'
+    SELECT s.project_id,e.new_spore_id,'legacy',MIN(e.created_at),COUNT(DISTINCT s.id)+1,CASE WHEN COUNT(DISTINCT e.created_at)>1 THEN 'legacy_multiple_merges' ELSE 'output_missing' END
     FROM spores s CROSS JOIN resolution_events e INDEXED BY idx_resolution_events_spore ON e.project_id=s.project_id AND e.spore_id=s.id
-    WHERE e.action='consolidate' AND e.new_spore_id IS NOT NULL
+    WHERE e.action='consolidate' AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=e.project_id AND owner.spore_id=e.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=e.id)) AND e.new_spore_id IS NOT NULL
       AND NOT EXISTS(SELECT 1 FROM spores target WHERE target.project_id=e.project_id AND target.id=e.new_spore_id)
     GROUP BY s.project_id,e.new_spore_id ON CONFLICT(project_id,id) DO NOTHING;
 
@@ -61,20 +77,22 @@ INSERT INTO spore_curation_unit_members(project_id,unit_id,spore_id,role,before_
     ON CONFLICT(project_id,unit_id,spore_id) DO NOTHING;
 
 INSERT INTO spore_curation_unit_members(project_id,unit_id,spore_id,role,before_json,after_json)
-    SELECT u.project_id,u.id,e.spore_id,'source',json_set(json_object('id',s.id,'agentId',s.agent_id,'sessionId',s.session_id,'promptId',s.prompt_id,'observationType',s.observation_type,'status',s.status,'revision',s.revision,'content',s.content,'context',s.context,'importance',s.importance,'filePath',s.file_path,'tags',s.tags,'contentHash',s.content_hash,'properties',s.properties,'author',s.author,'provenanceKind',s.provenance_kind,'provenanceRef',s.provenance_ref,'agentLine',s.agent_line,'createdAt',s.created_at,'observedAt',s.observed_at,'updatedAt',s.updated_at),'$.status','active','$.revision',MAX(0,(SELECT COUNT(*) FROM resolution_events history INDEXED BY idx_resolution_events_spore
-  WHERE history.project_id=e.project_id AND history.spore_id=e.spore_id)-1),'$.updatedAt',NULL),json_set(json_object('id',s.id,'agentId',s.agent_id,'sessionId',s.session_id,'promptId',s.prompt_id,'observationType',s.observation_type,'status',s.status,'revision',s.revision,'content',s.content,'context',s.context,'importance',s.importance,'filePath',s.file_path,'tags',s.tags,'contentHash',s.content_hash,'properties',s.properties,'author',s.author,'provenanceKind',s.provenance_kind,'provenanceRef',s.provenance_ref,'agentLine',s.agent_line,'createdAt',s.created_at,'observedAt',s.observed_at,'updatedAt',s.updated_at),'$.status',CASE WHEN 'source'='retired' THEN 'obsolete' ELSE 'consolidated' END,'$.revision',(SELECT COUNT(*) FROM resolution_events history INDEXED BY idx_resolution_events_spore
-  WHERE history.project_id=e.project_id AND history.spore_id=e.spore_id),'$.updatedAt',s.updated_at)
+    SELECT u.project_id,u.id,e.spore_id,'source',json_set(json_object('id',s.id,'agentId',s.agent_id,'sessionId',s.session_id,'promptId',s.prompt_id,'observationType',s.observation_type,'status',s.status,'revision',s.revision,'content',s.content,'context',s.context,'importance',s.importance,'filePath',s.file_path,'tags',s.tags,'contentHash',s.content_hash,'properties',s.properties,'author',s.author,'provenanceKind',s.provenance_kind,'provenanceRef',s.provenance_ref,'agentLine',s.agent_line,'createdAt',s.created_at,'observedAt',s.observed_at,'updatedAt',s.updated_at),'$.status','active','$.revision',NULL,'$.updatedAt',NULL),json_set(json_object('id',s.id,'agentId',s.agent_id,'sessionId',s.session_id,'promptId',s.prompt_id,'observationType',s.observation_type,'status',s.status,'revision',s.revision,'content',s.content,'context',s.context,'importance',s.importance,'filePath',s.file_path,'tags',s.tags,'contentHash',s.content_hash,'properties',s.properties,'author',s.author,'provenanceKind',s.provenance_kind,'provenanceRef',s.provenance_ref,'agentLine',s.agent_line,'createdAt',s.created_at,'observedAt',s.observed_at,'updatedAt',s.updated_at),'$.status',CASE WHEN 'source'='retired' THEN 'obsolete' ELSE 'consolidated' END,'$.revision',s.revision,'$.updatedAt',s.updated_at)
     FROM spore_curation_units u JOIN resolution_events e INDEXED BY idx_resolution_events_successor ON e.project_id=u.project_id AND e.new_spore_id=u.id
-      LEFT JOIN spores s ON s.project_id=e.project_id AND s.id=e.spore_id WHERE u.kind='legacy' AND e.action='consolidate'
+      LEFT JOIN spores s ON s.project_id=e.project_id AND s.id=e.spore_id WHERE u.kind='legacy' AND e.action='consolidate' AND NOT EXISTS(SELECT 1 FROM spore_curation_unit_members owner INDEXED BY idx_curation_unit_note
+  WHERE owner.project_id=e.project_id AND owner.spore_id=e.spore_id
+    AND EXISTS(SELECT 1 FROM json_each(owner.event_ids) ids WHERE ids.value=e.id))
     ON CONFLICT(project_id,unit_id,spore_id) DO NOTHING;
 
-UPDATE spore_curation_unit_members AS child SET before_json=(SELECT parent.after_json FROM spore_curation_unit_members parent
-      WHERE parent.project_id=child.project_id AND parent.spore_id=child.spore_id AND parent.role='output')
-    WHERE child.role<>'output' AND json_extract(child.before_json,'$.updatedAt') IS NULL
-      AND EXISTS(SELECT 1 FROM spore_curation_unit_members parent WHERE parent.project_id=child.project_id AND parent.spore_id=child.spore_id
-        AND parent.role='output' AND (json_remove(child.before_json,'$.updatedAt') IS NOT NULL AND NOT EXISTS (
-  SELECT 1 FROM json_each(json_remove(child.before_json,'$.updatedAt')) held WHERE json_type(json_remove(parent.after_json,'$.updatedAt'),'$."'||held.key||'"') IS NULL
-    OR json_extract(json_remove(parent.after_json,'$.updatedAt'),'$."'||held.key||'"') IS NOT held.value) AND NOT EXISTS (
-  SELECT 1 FROM json_each(json_remove(parent.after_json,'$.updatedAt')) current WHERE json_type(json_remove(child.before_json,'$.updatedAt'),'$."'||current.key||'"') IS NULL)));
+UPDATE spore_curation_unit_members AS m SET event_ids=(SELECT json_group_array(e.id)
+    FROM resolution_events e INDEXED BY idx_resolution_events_spore CROSS JOIN spore_curation_units u
+      ON u.project_id=m.project_id AND u.id=m.unit_id
+    WHERE e.project_id=m.project_id AND e.spore_id=m.spore_id AND (
+      (u.kind='resolution' AND e.id=u.id) OR
+      (u.kind='answer' AND e.author=u.source_run_id AND (
+        (m.role='retired' AND e.action='obsolete') OR (e.action='consolidate' AND EXISTS(
+          SELECT 1 FROM spore_curation_unit_members o WHERE o.project_id=u.project_id AND o.unit_id=u.id AND o.spore_id=e.new_spore_id AND o.role='output')))) OR
+      (u.kind IN ('merge','legacy') AND e.action='consolidate' AND e.new_spore_id=u.id AND e.created_at=u.created_at)))
+    WHERE m.role IN ('source','retired') AND m.event_ids='[]';
 
 INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '825');

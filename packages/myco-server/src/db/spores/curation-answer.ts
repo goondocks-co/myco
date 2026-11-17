@@ -79,17 +79,17 @@ export async function commitCurationAnswer(db: RelationalStore, options: {
   const retired = new Map(checked.answer.retire.map(item => [item.id, item]));
   const changed = checked.members.filter(member => replaced.has(member.id) || retired.has(member.id));
   const outputs = checked.notes.map(note => ({ id: note.id, revision: 0 }));
-  const events = changed.flatMap(member => {
+  const resolutions = changed.flatMap(member => {
     const retiredNote = retired.get(member.id);
     const targets = replaced.get(member.id) ?? [null];
-    return targets.map(target => insertEvent.bind(project, crypto.randomUUID(), agent, member.id, target, target === null ? 'obsolete' : 'consolidate',
-      retiredNote === undefined ? checked.answer.reason : `${retiredNote.reason} Made unnecessary by ${(retiredNote.made_unnecessary_by.startsWith('new:') ? checked.notes[Number(retiredNote.made_unnecessary_by.slice(4))]!.id : retiredNote.made_unnecessary_by)}.`, run, now));
+    return targets.map(target=>({id:crypto.randomUUID(),source:member.id,target,action:target===null?'obsolete':'consolidate',
+      reason:retiredNote===undefined?checked.answer.reason:`${retiredNote.reason} Made unnecessary by ${(retiredNote.made_unnecessary_by.startsWith('new:') ? checked.notes[Number(retiredNote.made_unnecessary_by.slice(4))]!.id : retiredNote.made_unnecessary_by)}.`}));
   });
   await commitNamed(db, {
     admitted: admitted.bind(project, run, checked.group, encoded, submission),
     notes: dryRun ? [] : checked.notes.map(note => sporeInsertWrite({ projectId: project }, note)),
-    history: dryRun ? [] : curationAnswerHistory({ project, run, group: checked.group, now, answer: checked.answer, outputs: checked.notes.map(note=>note.id) }),
-    events: dryRun ? [] : events,
+    history: dryRun ? [] : curationAnswerHistory({ project, run, group: checked.group, now, answer: checked.answer, outputs: checked.notes.map(note=>note.id),events:resolutions }),
+    events: dryRun ? [] : resolutions.map(event=>insertEvent.bind(project,event.id,agent,event.source,event.target,event.action,event.reason,run,now)),
     considerations: dryRun ? [] : [
       considered.bind(project, encoded, 'reviewed', now),
       considered.bind(project, JSON.stringify(outputs), 'curated', now),

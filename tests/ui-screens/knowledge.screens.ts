@@ -296,7 +296,8 @@ test.describe('Knowledge', () => {
         const undo=page.getByRole('button',{name:'Undo curation',exact:true});
         if(role==='member'){await expect(undo).toHaveCount(0);continue;}
         await undo.click();const dialog=page.getByRole('dialog');
-        await expect(dialog).toContainText('All of it changes together.');
+        await expect(dialog).toContainText('Retire only the notes listed for retirement. Other notes stay as they are.');
+        await expect(dialog).toContainText('All changes happen together.');
         await expect(dialog.getByRole('heading',{name:'Original notes to restore'})).toBeVisible();
         await expect(dialog.getByRole('link',{name:'When curation combines distinct situations, keep their original guidance.'})).toBeVisible();
         await expect(dialog.getByRole('heading',{name:'Notes to retire'})).toBeVisible();
