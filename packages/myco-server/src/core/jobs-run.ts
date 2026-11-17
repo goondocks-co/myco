@@ -236,11 +236,21 @@ export async function runStaleSweep(env: ServerEnv, now: number): Promise<number
  * deciding to revoke, which the operator does.
  */
 export async function inviteExpiry(env: ServerEnv, now: number): Promise<number> {
-  const { reclaimed } = await reclaimFinishedAuthorities(env.db, now, JOB_BATCH);
   // A previous release serving during an update can store a key under a retired name; it is removed here, on this
-  // job's own schedule, in one bounded statement on the small sealed-credential table.
-  const removed = await deploymentSecretStore(env.db, env.wrappingKey).removeRetired(RETIRED_SECRET_REMOVER, now);
-  return reclaimed + removed.length;
+  // job's own schedule, in one bounded statement on the small sealed-credential table. Each phase runs whatever
+  // the other does, and a failure is raised only after both were attempted.
+  const phases = [
+    async () => (await reclaimFinishedAuthorities(env.db, now, JOB_BATCH)).reclaimed,
+    async () => (await deploymentSecretStore(env.db, env.wrappingKey).removeRetired(RETIRED_SECRET_REMOVER, now)).length,
+  ];
+  const failures: unknown[] = [];
+  let changed = 0;
+  for (const phase of phases) {
+    try { changed += await phase(); } catch (error) { failures.push(error); }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, 'Both housekeeping phases failed.');
+  return changed;
 }
 
 /** The actor a retired sealed credential's removal is recorded under. */

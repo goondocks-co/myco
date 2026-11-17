@@ -14,7 +14,7 @@ import { recordDispatch } from '@myco-server-worker/db/runs/claim.js';
 import { describe, expect, it } from 'bun:test';
 import worker from '@myco-server-worker/index.js';
 import { sqliteEnv } from './helpers/fixtures.js';
-import { changingAtStatement } from './helpers/store-faults.js';
+import { changingAtStatement, failingStatement } from './helpers/store-faults.js';
 import { asOwner, asOwnerPatch, asOwnerPost, OWNER_ENV } from './helpers/owner.js';
 import { catchUpProjections } from '@myco-server-worker/db/projections/catchup.js';
 import { OUTCOME_TASKS, RETAINED_TASKS, TASK_TIERS, TASK_WORDS, type RetainedTask } from '@myco-server-worker/core/task-catalogue.js';
@@ -376,7 +376,7 @@ describe('provider credentials through the surface', () => {
     for (const name of ['not_a_provider', 'github']) expect((await worker.fetch(await put(e.db, `/api/secrets/${name}`, { value: 'x' }), e.all)).status).toBe(404);
   });
 
-  it('removes rows a previous release wrote under retired names on the housekeeping schedule, keeps every provider key, and never makes the read depend on it', async () => {
+  it('removes rows a previous release wrote under retired names on the housekeeping schedule, keeps every provider key, never makes the read depend on it, and still removes them when the job\u2019s other work fails', async () => {
     const e = env();
     await worker.fetch(await put(e.db, '/api/secrets/openai', { value: 'sk-aaaaaaaaaaaaaaaaaaaa' }), e.all);
     for (const name of ['github', 'repository:proj_1:rev', 'release-provenance:proj_1:rev']) {
@@ -392,6 +392,10 @@ describe('provider credentials through the surface', () => {
     expect(await read()).toBe(200);
     e.sqlite.run('DROP TRIGGER refuse_secret_delete');
     await housekeeping();
+    expect(names()).toEqual([{ name: 'openai' }]);
+    e.sqlite.run("INSERT INTO deployment_secrets(name,ciphertext,iv,key_version,updated_at,updated_by) SELECT 'github',ciphertext,iv,key_version,updated_at,updated_by FROM deployment_secrets WHERE name='openai'");
+    const reclaim = failingStatement(e.db, 'identity.reclaimEnrollment');
+    await expect(inviteExpiry({ ...serverEnvFromBindings(e.all as never), db: reclaim.store }, Date.now())).rejects.toThrow();
     expect(names()).toEqual([{ name: 'openai' }]);
   });
 

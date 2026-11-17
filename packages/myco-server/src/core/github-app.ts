@@ -18,10 +18,13 @@ import { emit } from '../telemetry.js';
  * answer carries it: the scope revokes it on any exit unless the work returns it as a `HandedOver` answer, whose
  * receiver then owns revoking it.
  *
- * **What no code here can revoke**, each a read-only token for one repository alive for at most the hour GitHub gives
- * it: a token GitHub issued whose answer a request deadline cut before it reached the Deployment; a handed-over answer
- * the platform failed to send; and an answer a runner stopped waiting for that did not finish arriving within its
- * cleanup allowance.
+ * **Revocation is attempted, and confirmed only when GitHub accepts it.** A token can stay usable until it expires, at
+ * most the hour GitHub gives it, when: a request deadline cut GitHub's answer before the token reached the Deployment;
+ * the platform failed to send a handed-over answer; a runner stopped waiting for an answer that did not finish, or
+ * could not be read, within its cleanup allowance; GitHub refused or did not answer the one revoke attempt (logged,
+ * never retried); or the process holding the token stopped. The first three belong to this hand-over protocol, which
+ * keeps no record of an issued token on either side. Checkout and release tokens read one repository; discovery's
+ * token reads metadata only, for the repositories its installation was given.
  */
 
 /** Why repository access is refused, each named in the reader's words. */
