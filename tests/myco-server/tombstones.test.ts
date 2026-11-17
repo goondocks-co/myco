@@ -50,7 +50,7 @@ const MACHINE = 'machine_1';
 async function rig() {
   const { sqlite, serverEnv } = sqliteEnv();
   const issued = await issueMemberToken(serverEnv.db, { memberId: 'mem_machine_1', machineId: MACHINE }, NOW);
-  const env = { db: serverEnv.db, blobs: serverEnv.blobs };
+  const env = serverEnv;
   const ctx = { projectId: SCOPE.projectId, machineId: MACHINE, tokenId: issued.tokenId, bodyBytes: 10, now: NOW };
   const send = (over: Record<string, unknown>) => ingestEvent(env.db, ctx, envelope({ sessionId: SESSION, ...over }));
   return { sqlite, env, ctx, send };

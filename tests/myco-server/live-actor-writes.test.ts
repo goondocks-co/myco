@@ -10,6 +10,9 @@ import { wrappingKeyFromText } from '@myco-server-worker/platform/wrapping-key.j
 import { runTimeoutForTask } from '@myco-server-worker/core/task-catalogue.js';
 import { BACKUP_FORMAT } from '@myco-server-worker/core/backup.js';
 import { changingAt, storingCall } from './helpers/store-faults.js';
+import { D1_REWIND_RETENTION_MS } from '@myco-server-worker/constants.js';
+import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
+import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -215,7 +218,7 @@ describe('live authority at administrative writes', () => {
     });
   }
 
-  it('a terminal backup refusal retains unpublished bytes under their existing upload owner', async () => {
+  it('a terminal backup refusal retains owned bytes through the hosted hold, then frees them after a failed delete', async () => {
     const { f, response, landed } = await raced({
       request: f => send(f, operations.find(operation => operation.name === 'backup')!),
       change: f => f.sqlite.run("UPDATE members SET role='member' WHERE id=?", [ADMIN]),
@@ -225,8 +228,22 @@ describe('live authority at administrative writes', () => {
       expect(response.status).toBe(403);
       expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
       expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);
-      expect([...f.bucket.objects.keys()]).not.toEqual([]);
-      expect(f.sqlite.query('SELECT key FROM backup_publications').all()).not.toEqual([]);
+      const publication = f.sqlite.query<{ key: string; expires_at: number }, []>('SELECT key,expires_at FROM backup_publications').get()!;
+      expect(await f.bucket.head(publication.key)).not.toBeNull();
+      const hosted = serverEnvFromBindings(f.env);
+      const drain = (now: number) => drainObjectReleases(hosted, now, () => now);
+      await drain(publication.expires_at);
+      expect(f.sqlite.query('SELECT key FROM backup_publications').all()).toEqual([]);
+      expect(await f.bucket.head(publication.key)).not.toBeNull();
+      const remove = f.bucket.delete.bind(f.bucket);
+      f.bucket.delete = async () => { throw new Error('bucket unavailable'); };
+      const due = publication.expires_at + D1_REWIND_RETENTION_MS;
+      expect((await drain(due)).unacknowledged).toBeGreaterThan(0);
+      expect(await f.bucket.head(publication.key)).not.toBeNull();
+      f.bucket.delete = remove;
+      await drain(due + 60 * 60 * 1000);
+      expect(await f.bucket.head(publication.key)).toBeNull();
+      expect(f.sqlite.query('SELECT key FROM backup_publications').all()).toEqual([]);
     } finally { f.sqlite.close(); }
   });
 

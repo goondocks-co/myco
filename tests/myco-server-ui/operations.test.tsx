@@ -66,7 +66,7 @@ describe('backups on Health', () => {
   it('explains the hosted hold on deleted stored data', async () => {
     server({ '/api/status': () => Response.json({ ...STATUS, target: 'cloudflare' }) });
     mount();
-    expect((await screen.findByTestId('stored-data-hold')).textContent).toContain('Deleted stored data is kept for 30 days before it is removed.');
+    expect((await screen.findByTestId('stored-data-hold')).textContent).toContain('Deleted session data, attachments and backups are kept for 30 days before they are removed. Released full recovery copies are not kept.');
   });
 
   it('words a refused backup by its status, never the server\'s sentence, and gives the operator recovery path', async () => {

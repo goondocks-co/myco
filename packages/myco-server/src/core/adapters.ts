@@ -90,8 +90,6 @@ export interface ListedObject { key: string; uploaded: Date }
 export interface BlobListing { objects: ListedObject[]; truncated: boolean }
 
 export interface BlobStore {
-  /** Minimum time the release journal retains bytes after their registration is removed. */
-  readonly releaseRetention?: 'd1-time-travel';
   head(key: string): Promise<StoredObject | null>;
   /** Proves an existing publication is crash-stable; absence answers false and storage errors throw. */
   ensureDurable?(key: string): Promise<boolean>;
@@ -105,6 +103,9 @@ export interface BlobStore {
 
 /** Relational metadata and immutable content storage without request or runtime authority. */
 export interface ContentStore { db:RelationalStore;blobs:BlobStore }
+
+/** The platform's required retention policy for journaled physical objects. */
+export interface ObjectReleaseStore extends ContentStore { readonly releaseRetention: 'journal-due' | 'd1-time-travel' }
 
 // ---------------------------------------------------------------------------
 // Source identity and rate limiting
@@ -273,7 +274,7 @@ export interface JobBudget {
  * handlers that have no business seeing one, and welds the core's secret shape to
  * one target's binding shape.
  */
-export interface ServerEnv {
+export interface ServerEnv extends ObjectReleaseStore {
   completionProvider?: () => Promise<import('./completion/provider.js').CompletionProvider | null>;
   vectors?: VectorStore;
   embeddingProvider?: () => Promise<EmbeddingProvider | null>;
@@ -282,8 +283,6 @@ export interface ServerEnv {
   /** What the embedding policy resolves against: absent, the platform's target with no embedding binding of its own. */
   embeddingPlatform?: EmbeddingPlatform;
   platform: PlatformDescriptor;
-  db: RelationalStore;
-  blobs: BlobStore;
   sourceLimit: RateLimiter;
   tokenLimit: RateLimiter;
   secrets: OwnerBindings;

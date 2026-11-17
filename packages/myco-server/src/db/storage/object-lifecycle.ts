@@ -2,7 +2,7 @@ import { retainedReleaseDue } from './rewind-retention.js';
 import { objectJournalSql as journalSql } from './object-journal.js';
 import { clearStorageUsage, restartStorageUsage } from './usage.js';
 import { OBJECT_PUT_IN_FLIGHT_MS } from '../../constants.js';
-import type { ContentStore, RelationalStore } from '../../core/adapters.js';
+import type { ObjectReleaseStore, RelationalStore } from '../../core/adapters.js';
 import { blobObjectKeySql } from '../../core/blob-objects.js';
 import { assertion, commit, read, readSet, write } from '../index.js';
 import { resetObjectStoreWalk } from './object-reconciliation.js';
@@ -34,7 +34,7 @@ const releaseQuery = (expression: string, name: string) => read<[now: number, li
   sql: `SELECT physical,attempts FROM object_releases WHERE ${expression}<=?1 ORDER BY ${expression},physical LIMIT ?2` });
 const due = releaseQuery(EFFECTIVE_DUE, 'storage.dueObjectReleases');
 const retainedDue = releaseQuery(retainedReleaseDue, 'storage.dueRetainedObjectReleases');
-const dueIn = (retention?: 'd1-time-travel') => retention === undefined ? due : retainedDue;
+const dueIn = (retention: ObjectReleaseStore['releaseRetention']) => retention === 'd1-time-travel' ? retainedDue : due;
 const acknowledge = write<[physical: string], { physical: string }>({ name: 'storage.acknowledgeObjectRelease', sql:
   'DELETE FROM object_releases WHERE physical=? RETURNING physical' });
 const retireAcknowledged = write<[physical: string, issued: number, grace: number]>({ name: 'storage.retireAcknowledgedIntent', sql:
@@ -87,8 +87,8 @@ export async function reconcileObjectIntents(db: RelationalStore, now: number, l
 const authoritiesDue = read<[now: number], { due: number }>({ name: 'storage.expiredAuthoritiesDue', sql:
   `SELECT EXISTS(${expiredUploadsSql('?1','1')}) OR EXISTS(${expiredBackupsSql('?1','1')}) AS due` });
 /** Whether the drain's own steps have more than one pass took: expired authorities, or journal rows due now. */
-export async function releaseWorkDue({ db, blobs }: ContentStore, now: number): Promise<boolean> {
-  const [authorities, journal] = await readSet(db,authoritiesDue.bind(now),dueIn(blobs.releaseRetention).bind(now,1));
+export async function releaseWorkDue({ db, releaseRetention }: ObjectReleaseStore, now: number): Promise<boolean> {
+  const [authorities, journal] = await readSet(db,authoritiesDue.bind(now),dueIn(releaseRetention).bind(now,1));
   return authorities[0]?.due === 1 || journal.length > 0;
 }
 export async function drainAuthorities(db: RelationalStore, now: number, limit: number) {
@@ -96,8 +96,8 @@ export async function drainAuthorities(db: RelationalStore, now: number, limit: 
     journalBackups.bind(now,limit),consumeBackups.bind(now,limit));
   return uploads.results.length+backups.results.length;
 }
-export async function dueObjectReleases({ db, blobs }: ContentStore, now: number, limit: number) {
-  const [rows] = await readSet(db,dueIn(blobs.releaseRetention).bind(now,limit)); return rows;
+export async function dueObjectReleases({ db, releaseRetention }: ObjectReleaseStore, now: number, limit: number) {
+  const [rows] = await readSet(db,dueIn(releaseRetention).bind(now,limit)); return rows;
 }
 export async function acknowledgeRelease(db: RelationalStore, physical: string, issuedAt: number) {
   const [,removed]=await commit(db,retireAcknowledged.bind(physical,issuedAt,OBJECT_PUT_IN_FLIGHT_MS),acknowledge.bind(physical));

@@ -16,7 +16,7 @@ Paid Workers retain 30 days; Free retains 7. The limit is ten restores per ten m
 
 ## Object lifetime
 
-The Cloudflare blob adapter declares `releaseRetention: 'd1-time-travel'`. The object-release owner applies that policy both when draining and when deciding whether another immediate pass is due. Native stores retain their existing lifetime policy.
+The Cloudflare environment declares the required `releaseRetention: 'd1-time-travel'` policy. Content measurement carries it with the environment, independently of wrapped blob stores. The object-release owner applies that policy both when draining and when deciding whether another immediate pass is due. Native environments declare `journal-due`, retaining their existing lifetime policy.
 
 Every journaled physical object waits until the later of `object_releases.created_at + 30 days` and `retry_at`. A failed delete retains its journal row and retries without restarting the 30-day hold. An indexed due expression keeps held rows out of the active queue. `created_at` may already include another quarantine; the 30-day hold is additional. The NEXT_REWIND schema step adds `idx_object_releases_retained_due` only: no trigger, row rewrite, constraint change or retirement.
 

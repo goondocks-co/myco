@@ -104,7 +104,7 @@ test('a backup whose index write fails retains durable release ownership for the
       expect(await db.prepare('SELECT key FROM backup_publications WHERE key=?').bind(args[0]).first(), target).toEqual({ key: args[0] });
       const uploaded = await put(...args);
       const pending = await db.prepare('SELECT expires_at FROM backup_publications WHERE key=?').bind(args[0]).first<{ expires_at: number }>();
-      await drainObjectReleases({ db, blobs }, expire ? pending!.expires_at : Date.now());
+      await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, expire ? pending!.expires_at : Date.now());
       expect(blobs.objects.has(args[0]), target).toBe(!expire);
       return uploaded;
     };
@@ -112,14 +112,14 @@ test('a backup whose index write fails retains durable release ownership for the
     await expect(createBackup(db, blobs, { producer: 'test', now: Date.now() })).rejects.toThrow('index unavailable');
     expect(blobs.objects.size, target).toBe(1);
     expect(await db.prepare('SELECT COUNT(*) n FROM object_releases').first(), target).toEqual({ n: 1 });
-    await drainObjectReleases({ db, blobs }, Date.now());
+    await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, Date.now());
     expect(blobs.objects.size, target).toBe(0);
     expect(await db.prepare('SELECT COUNT(*) n FROM backups').first(), target).toEqual({ n: 0 });
     expect(await db.prepare('SELECT COUNT(*) n FROM backup_publications').first(), target).toEqual({ n: 0 });
     await db.prepare('DROP TRIGGER reject_backup').run();
     expire = true;
     await expect(createBackup(db, blobs, { producer: 'test', now: Date.now() })).rejects.toThrow();
-    await drainObjectReleases({ db, blobs }, Date.now());
+    await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, Date.now());
     expect(blobs.objects.size, target).toBe(0);
     expect(await db.prepare('SELECT COUNT(*) n FROM backup_publications').first(), target).toEqual({ n: 0 });
   });
@@ -302,7 +302,7 @@ test('release drain reads do not multiply by retained backup count', async()=>{
       await db.prepare(`INSERT OR IGNORE INTO backups(id,key,created_at,size_bytes,counts_json,schema_version,producer,pinned)
         SELECT 'backup-'||value,'backups/'||value,1,1,'{}',1,'test',0 FROM json_each(?)`).bind(JSON.stringify(Array.from({length:backups},(_,i)=>i))).run();
       const observed=observeRestoreStore(db);
-      const drained=await drainObjectReleases({db:observed.db,blobs:memoryBlobStore()},Date.now());
+      const drained=await drainObjectReleases({ releaseRetention: 'journal-due',db:observed.db,blobs:memoryBlobStore()},Date.now());
       expect(drained.deleted).toBeGreaterThan(0);
       expect(await db.prepare('SELECT COUNT(*) n FROM backups').first()).toEqual({n:backups});
       reads.push(observed.reads());

@@ -20,7 +20,7 @@ import { BLOB_RESERVATION_TTL_MS } from '../constants.js';
  * candidates stay recorded, and a decision after the hold judges them against the rows as they stand then. Unregistered upload bytes are never in a snapshot, so their
  * journal is not held.
  */
-import type { BlobStore, ContentStore, RelationalStore, ServerEnv } from './adapters.js';
+import type { BlobStore, ObjectReleaseStore, RelationalStore, ServerEnv } from './adapters.js';
 import { BLOB_REFERENCES, referencedBlobValue, type BlobRef } from './blob-references.js';
 import { within } from './recovery-inventory.js';
 import { continueBackupRetention, decideBackupCandidates } from './backup-retention.js';
@@ -116,7 +116,7 @@ interface DrainReport {
  * write will produce again, and a journal row is removed by its primary key.
  */
 export async function drainObjectReleases(
-  env: Pick<ServerEnv, 'db' | 'blobs'> & Partial<Pick<ServerEnv, 'platform'>>, now: number, clock: () => number = Date.now,
+  env: ObjectReleaseStore & Partial<Pick<ServerEnv, 'platform'>>, now: number, clock: () => number = Date.now,
 ): Promise<DrainReport> {
   const { db } = env;
   const report: DrainReport = { expired: 0, deleted: 0, decided: 0, unacknowledged: 0 };
@@ -161,7 +161,7 @@ export async function drainObjectReleases(
  * Whether the drain has more than one pass took: expired authorities, journal rows due now, or candidates due with no
  * hold open. A failed delete answers no: its key waits for its own retry and the next wake.
  */
-export async function objectReleaseBacklogged(env: ContentStore, now: number, report: DrainReport): Promise<boolean> {
+export async function objectReleaseBacklogged(env: ObjectReleaseStore, now: number, report: DrainReport): Promise<boolean> {
   if (report.unacknowledged > 0) return false;
   const [due, work, retention] = await Promise.all([releaseCandidatesDue(env.db,now,1),releaseWorkDue(env,now),retentionBacklogged(env.db)]);
   return work || (!due.held && (due.blobs.length > 0 || due.backups.length > 0 || retention));

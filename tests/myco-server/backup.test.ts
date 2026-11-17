@@ -438,13 +438,13 @@ describe('retention', () => {
     if (pruned.state !== 'pruned') throw new Error('backup retention failed');
     expect({ pruned: pruned.pruned, journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ pruned: 1, journal: [old.key], deleted: [] });
     expect((await listBackupPage(db)).backups.map((l) => l.id)).toEqual([fresh.id]);
-    expect((await drainObjectReleases({ db, blobs: bucket }, now)).deleted).toBe(1);
+    expect((await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: bucket }, now)).deleted).toBe(1);
     expect({ journal: journaled(sqlite), deleted: bucket.deletes }).toEqual({ journal: [], deleted: [old.key] });
 
     const again = await createBackup(db, bucket, { producer: 'test', now: now - 40 * DAY });
     expect(await pruneBackups(db, now)).toMatchObject({state:'pruned',pruned:1});
     const failing = { ...bucket, delete: async () => { throw new Error('store outage'); } };
-    expect(await drainObjectReleases({ db, blobs: failing }, now)).toEqual({ expired: 0, deleted: 0, decided: 0, unacknowledged: 1 });
+    expect(await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs: failing }, now)).toEqual({ expired: 0, deleted: 0, decided: 0, unacknowledged: 1 });
     expect({ journal: journaled(sqlite), stored: bucket.objects.has(again.key) }).toEqual({ journal: [again.key], stored: true });
   });
 

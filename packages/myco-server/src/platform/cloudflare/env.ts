@@ -88,7 +88,6 @@ export type _BlobStoreSatisfies = AssertAssignable<BlobStore, R2Bucket>;
 /** R2 acknowledges a PUT only after it has accepted the stored object. */
 function durableR2Bucket(bucket: BlobStore): BlobStore {
   return {
-    releaseRetention: 'd1-time-travel',
     head: (key) => bucket.head(key),
     ensureDurable: async (key) => (await bucket.head(key)) !== null,
     get: (key, options) => bucket.get(key, options),
@@ -262,6 +261,7 @@ export function serverEnvFromBindings(bindings: CloudflareBindings, deferred?: D
     afterResponse: deferred === undefined ? () => {} : (work) => deferred.waitUntil(work()),
     outbound,
     platform: cloudflarePlatform(bindings, embeddingRuntime),
+    releaseRetention: 'd1-time-travel',
     db: bindings.MYCO_DB,
     blobs: durableR2Bucket(bindings.BUCKET),
     sourceLimit: bindings.SOURCE_LIMIT,

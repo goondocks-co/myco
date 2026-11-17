@@ -176,13 +176,13 @@ for (const target of ['native', 'd1'] as const) {
           blobs.put = put;
           written = key;
           await reclaimVectorPages(db, 'p', NOW, NOW + OBJECT_PUT_IN_FLIGHT_MS);
-          await drainObjectReleases({ db, blobs }, NOW + 2 * OBJECT_PUT_IN_FLIGHT_MS);
+          await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, NOW + 2 * OBJECT_PUT_IN_FLIGHT_MS);
           return put(key, value, options);
         };
         expect((await reconcileHubness(context(db, blobs), 'p', NOW)).processed).toBe(0);
         expect(blobs.objects.has(written)).toBe(true);
         expect(await count(db, `object_releases WHERE physical='${written}'`)).toBe(1);
-        await drainObjectReleases({ db, blobs }, NOW + 3 * OBJECT_PUT_IN_FLIGHT_MS);
+        await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, NOW + 3 * OBJECT_PUT_IN_FLIGHT_MS);
         expect(blobs.objects.has(written)).toBe(false);
       });
     }, 120_000);
@@ -265,7 +265,7 @@ for (const target of ['native', 'd1'] as const) {
         await addSpores(db, ids(0, 60));
         await settle(db, refusingPuts());
         await reclaimVectorPages(db, 'p', NOW, NOW);
-        await drainObjectReleases({ db, blobs }, NOW + 2 * OBJECT_PUT_IN_FLIGHT_MS);
+        await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, NOW + 2 * OBJECT_PUT_IN_FLIGHT_MS);
         const put = blobs.put.bind(blobs);
         const get = blobs.get.bind(blobs);
         let written = '';
@@ -273,7 +273,7 @@ for (const target of ['native', 'd1'] as const) {
           blobs.put = put;
           written = key;
           await reclaimVectorPages(db, 'p', NOW, NOW + OBJECT_PUT_IN_FLIGHT_MS);
-          await drainObjectReleases({ db, blobs }, NOW + 2 * OBJECT_PUT_IN_FLIGHT_MS);
+          await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, NOW + 2 * OBJECT_PUT_IN_FLIGHT_MS);
           return put(key, value, options);
         };
         blobs.get = async () => { throw new Error('verification read interrupted'); };
@@ -281,7 +281,7 @@ for (const target of ['native', 'd1'] as const) {
         blobs.get = get;
         expect(await count(db, "object_releases WHERE physical='" + written + "'")).toBe(1);
         expect((await inlineBytes(db)).every((row) => row.vector !== '')).toBe(true);
-        await drainObjectReleases({ db, blobs }, NOW + 4 * OBJECT_PUT_IN_FLIGHT_MS);
+        await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, NOW + 4 * OBJECT_PUT_IN_FLIGHT_MS);
         expect(blobs.objects.has(written)).toBe(false);
       });
     }, 60_000);

@@ -110,7 +110,6 @@ export function measuredContentEnv<T extends { db: RelationalStore; blobs?: Blob
     original === undefined
       ? undefined
       : {
-          releaseRetention: original.releaseRetention,
           head: async (key) => {
             blob();
             return original.head(key);

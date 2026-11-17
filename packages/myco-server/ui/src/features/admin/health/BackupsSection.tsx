@@ -65,7 +65,7 @@ export function BackupsSection({ target }: { target?: string | null }) {
         <ExternalLink href={RECOVERY_PROCEDURE}>operator backup and recovery procedure</ExternalLink>.
       </p>
       {target === 'cloudflare' && <p className="max-w-measure t-small text-muted" data-testid="stored-data-hold">
-        Deleted stored data is kept for 30 days before it is removed.
+        Deleted session data, attachments and backups are kept for 30 days before they are removed. Released full recovery copies are not kept.
       </p>}
       {retention?.state === 'failed' && (
         <Card role="status" className="t-body text-warn" data-backup-retention-failed="">

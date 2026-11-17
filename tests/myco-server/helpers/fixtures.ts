@@ -188,7 +188,7 @@ export function sqliteEnv(opts: { onSql?: (sql: string, sqlite: Database) => voi
   // binding to inject a storage failure is reflected, as it would be in production.
   return {
     env: e,
-    get serverEnv() { return { ...serverEnvFromBindings(e, deferred), blobs: e.BUCKET as MemoryBlobStore }; },
+    get serverEnv() { return { ...serverEnvFromBindings(e, deferred), blobs: e.BUCKET as MemoryBlobStore, releaseRetention: 'journal-due' as const }; },
     db, sqlite, bucket, sourceKeys: source.keys, tokenKeys: token.keys, executed, deferred,
   };
 }
