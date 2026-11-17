@@ -40,7 +40,7 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
   const keptOpen = ending.data?.outcome === 'open';
 
   const items: MoreMenuItem[] = [
-    { label: 'Write a new title', icon: <PenLine aria-hidden className="size-s4" />, onSelect: () => setConfirming('retitle'), disabled: retitle.busy },
+    { label: 'Write a new title and summary', icon: <PenLine aria-hidden className="size-s4" />, onSelect: () => setConfirming('retitle'), disabled: retitle.busy },
     ...(open ? [{ label: 'End session', icon: <CircleStop aria-hidden className="size-s4" />, onSelect: () => setConfirming('end') }] : []),
     { label: 'Delete session', icon: <Trash2 aria-hidden className="size-s4" />, tone: 'danger', onSelect: () => setConfirming('delete') },
   ];
@@ -63,9 +63,9 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
       <ConfirmDialog
         open={confirming === 'retitle'}
         onOpenChange={close(retitle.pending, retitle.reset)}
-        title="Write a new title?"
+        title="Write a new title and summary?"
         description={`Myco reads “${heading}” again and writes its title and summary. This runs one of Myco’s tasks, which spends tokens with your model provider.`}
-        confirmLabel="Write a new title"
+        confirmLabel="Write a new title and summary"
         tone="primary"
         pending={retitle.pending}
         error={retitle.failed ? TITLING_OUTCOME_TEXT.error : null}

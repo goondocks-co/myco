@@ -784,15 +784,15 @@ describe('the session reading page', () => {
     };
 
     // The ask can be cancelled; a completed ask displays the saved title and summary.
-    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title' }));
-    let dialog = await screen.findByRole('dialog', { name: 'Write a new title?' });
+    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title and summary' }));
+    let dialog = await screen.findByRole('dialog', { name: 'Write a new title and summary?' });
     expect(dialog.textContent).toContain('Rename the card');
     expect(dialog.textContent).toContain('spends tokens');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(requested.some((p) => p.endsWith('/title'))).toBe(false);
-    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title' }));
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Write a new title?' })).getByRole('button', { name: 'Write a new title' }));
-    expect(screen.getByRole('dialog', { name: 'Write a new title?' })).toBeTruthy();
+    fireEvent.click(within(await openMenu()).getByRole('menuitem', { name: 'Write a new title and summary' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Write a new title and summary?' })).getByRole('button', { name: 'Write a new title and summary' }));
+    expect(screen.getByRole('dialog', { name: 'Write a new title and summary?' })).toBeTruthy();
     await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true));
     finishTitle();
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -839,9 +839,9 @@ describe('the session reading page', () => {
     server(routes({ '/api/projects/x/sessions/s1/title': () => Response.json({ outcome: 'error' }) }));
     mount('/p/x/sessions/s1');
     fireEvent.keyDown(await screen.findByRole('button', { name: 'Session actions' }), { key: 'Enter' });
-    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Write a new title' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Write a new title?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Write a new title' }));
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Write a new title and summary' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Write a new title and summary?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Write a new title and summary' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('The title and summary couldn’t be written. Wait a minute and ask again.');
   });
 
