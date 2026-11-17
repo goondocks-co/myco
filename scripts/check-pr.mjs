@@ -45,10 +45,9 @@ function cancelAll(reason) {
 const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 const PARITY = 'tests/parity/parity.test.ts';
 const CARRIER = 'packages/myco/src/server-ui-assets.generated.ts';
-const BUNDLE_STEP = 'The standalone dashboard matches its committed bundle without shared build artifacts';
-const bundleFix = 'npm run build:ui -w @goondocks/myco-server\nnpx tsx packages/myco/scripts/gen-ui-assets.ts\ngit add packages/myco/src/server-ui-assets.generated.ts\ngit commit';
+const BUNDLE_STEP = 'Build the standalone dashboard from source without shared build artifacts';
+const bundleFix = 'npm run build:ui';
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const checkRoot = path.join(root, 'target', 'check-pr');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-check-pr-'));
@@ -284,12 +283,7 @@ function stepEnv(copy, cwd) {
 }
 
 async function dashboard(copy) {
-  await run(npm, ['run', 'build:ui', '-w', '@goondocks/myco-server'], { cwd: copy });
-  await run(npx, ['tsx', 'packages/myco/scripts/gen-ui-assets.ts'], { cwd: copy });
-  const committed = execFileSync('git', ['show', `HEAD:${CARRIER}`], { maxBuffer: MAX_OUTPUT_BYTES });
-  if (!committed.equals(fs.readFileSync(path.join(copy, CARRIER)))) {
-    throw new Error(`${CARRIER} differs from the rebuilt dashboard at HEAD. Regenerate and commit it.`);
-  }
+  await run(npm, ['run', 'build:ui'], { cwd: copy });
 }
 
 async function generators(copy, steps) {
@@ -398,6 +392,8 @@ try {
   // Before any parallel work: every runner and type check reads the Worker bundle this writes.
   await check('worker bundle preparation', 'lint (prelint)', 'npx tsx packages/myco/scripts/gen-worker-bundle.ts',
     () => command(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']));
+  await check('dashboard preparation', 'lint (prelint)', bundleFix,
+    () => command(npm, ['run', 'build:ui']));
 
   // What runs: changed tests, the tests that import a changed file, PR-scope meta tests, and the consumer rows.
   const tracked = [...new Set(git(['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', 'packages', 'tests', 'scripts']).split('\0').filter(Boolean))];

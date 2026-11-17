@@ -34,6 +34,12 @@ export const CONSUMERS = [
     requires: ['pwsh', 'cc', 'shellcheck'],
   },
   {
+    name: 'test runner consumers',
+    ci: 'tests (node): tests/scripts exercise the runner and its tooling through subprocesses',
+    when: { paths: ['scripts/**'] },
+    tests: ['tests/scripts/**'],
+  },
+  {
     name: 'self-hosted image inputs (build inputs only)',
     ci: 'self-hosted-container: Build for both architectures',
     when: { paths: IMAGE },
@@ -55,7 +61,7 @@ export const CONSUMERS = [
   {
     name: 'dashboard consumers',
     ci: 'tests (dom): tests/myco-server-ui render the dashboard through App, which reaches a changed component through layers no direct import shows',
-    when: { paths: ['packages/myco-server/ui/src/**'] },
+    when: { paths: ['packages/myco-server/ui/src/**', 'packages/myco/scripts/gen-ui-assets.ts'] },
     tests: ['tests/myco-server-ui/**'],
   },
   {

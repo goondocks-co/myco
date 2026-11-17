@@ -7,40 +7,38 @@
  * green. The generator refuses to write one; this refuses to ship one that was
  * written before it did.
  *
- * Committed artifacts, so this reads what a release would carry rather than
- * what a local build happens to have produced.
+ * The test runner prepares the same source-built carrier the release embeds.
  */
 import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, statSync, utimesSync } from "../support/fenced-fs.mjs";
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 
-import { emitBundle, type UiBundle } from '@myco/../scripts/gen-ui-assets.js';
+import { emitBundle, prepareDashboard, type UiBundle } from '@myco/../scripts/gen-ui-assets.js';
 import { BUNDLED_SERVER_UI } from '@myco/server-ui-assets.generated.js';
+import { withStaticMap } from '@myco-server-worker/platform/bun/static.js';
 
-const BUNDLES: Array<[string, Readonly<Record<string, string>>]> = [
-  ['Deployment dashboard', BUNDLED_SERVER_UI],
-];
+const serve = (bundle: Readonly<Record<string, string>>) => withStaticMap(Object.fromEntries(Object.entries(bundle)
+  .map(([key, value]) => [key, new Uint8Array(Buffer.from(value, 'base64'))])), async () => new Response(null, { status: 401 }));
 
 describe('the dashboard a compiled binary carries', () => {
-  for (const [name, bundle] of BUNDLES) {
-    it(`embeds the ${name} with a shell and its assets`, () => {
-      const keys = Object.keys(bundle);
-      expect({ name, hasShell: keys.includes('index.html') }).toEqual({ name, hasShell: true });
-      // A shell alone is a page with no script; the build always produces both.
-      expect(keys.some((key) => key.startsWith('assets/') && key.endsWith('.js'))).toBe(true);
-      expect(bundle['index.html']!.length).toBeGreaterThan(0);
-    });
-
-    it(`stores every ${name} file as decodable base64 under a relative key`, () => {
-      for (const [key, value] of Object.entries(bundle)) {
-        expect({ key, leading: key.startsWith('/'), backslash: key.includes('\\') })
-          .toEqual({ key, leading: false, backslash: false });
-        expect(() => Buffer.from(value, 'base64')).not.toThrow();
-      }
-    });
-  }
+  it('embeds relative assets and serves the built shell and its script on a deep route', async () => {
+    expect(BUNDLED_SERVER_UI['index.html']!.length).toBeGreaterThan(0);
+    for (const [key, value] of Object.entries(BUNDLED_SERVER_UI)) {
+      expect({ key, leading: key.startsWith('/'), backslash: key.includes('\\') }).toEqual({ key, leading: false, backslash: false });
+      expect(() => Buffer.from(value, 'base64')).not.toThrow();
+    }
+    const handle = serve(BUNDLED_SERVER_UI);
+    const response = await handle(new Request('http://localhost/p/example/sessions'));
+    expect(response.status).toBe(200);
+    const shell = await response.text();
+    expect(shell).toContain('id="root"');
+    const script = /src="([^"]+\.js)"/.exec(shell)![1]!;
+    expect(script).toStartWith('/assets/');
+    const asset = await handle(new Request(new URL(script, 'http://localhost')));
+    expect(asset.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+    expect((await asset.text()).length).toBeGreaterThan(0);
+  });
 });
 
 /**
@@ -68,36 +66,29 @@ describe('the generator that embeds a dashboard', () => {
     origin: 'dist/',
   });
 
-  it('rebuilds the Deployment dashboard from changed source before embedding an incremental build', () => {
-    const root = scratch();
-    const member = join(root, 'packages', 'myco');
-    const server = join(root, 'packages', 'myco-server');
-    const scripts = JSON.parse(readFileSync(new URL('../../packages/myco/package.json', import.meta.url), 'utf8')).scripts;
-    mkdirSync(member, { recursive: true });
-    mkdirSync(join(server, 'dist'), { recursive: true });
-    writeFileSync(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
-    writeFileSync(join(member, 'package.json'), JSON.stringify({ name: '@goondocks/myco', scripts: {
-      'build:ui': scripts['build:ui'],
-    } }));
-    writeFileSync(join(server, 'package.json'), JSON.stringify({ name: '@goondocks/myco-server', scripts: { 'build:ui': 'node build.cjs' } }));
-    writeFileSync(join(server, 'build.cjs'), "require('node:fs').copyFileSync('source.html', 'dist/index.html');");
-    writeFileSync(join(server, 'source.html'), '<html>updated source</html>');
-    writeFileSync(join(server, 'dist', 'index.html'), '<html>previous build</html>');
-
-    const result = spawnSync('npm', ['run', 'build:ui', '-w', '@goondocks/myco'], {
-      cwd: root, encoding: 'utf8', timeout: 30_000, shell: process.platform === 'win32',
-    });
-    if (result.status !== 0) throw new Error(`UI build failed: ${result.error ?? result.stderr}`);
-    const bundle = bundleAt(server);
-    emitBundle(bundle);
-    const generated = readFileSync(bundle.outputPath, 'utf8');
-    expect(generated).toContain(Buffer.from('<html>updated source</html>').toString('base64'));
-    expect(generated).not.toContain(Buffer.from('<html>previous build</html>').toString('base64'));
-  });
-
   it('refuses an absent build instead of writing an empty map', () => {
     const bundle = bundleAt(scratch());
-    expect(() => emitBundle(bundle)).toThrow(/absent/);
+    expect(() => emitBundle(bundle)).toThrow('Run `npm run build:ui` from the repository root.');
+  });
+
+  it('reuses an unchanged build and serves changed source even when its timestamp is preserved', async () => {
+    const root = scratch();
+    const bundle = bundleAt(root);
+    const source = join(root, 'source.html');
+    const writeSource = (text: string) => { writeFileSync(source, text); utimesSync(source, 1, 1); };
+    const build = () => {
+      mkdirSync(bundle.uiDir, { recursive: true });
+      writeFileSync(join(bundle.uiDir, 'index.html'), readFileSync(source));
+    };
+    const prepare = () => prepareDashboard({ bundle, inputs: [source], build });
+    writeSource('<html>first</html>');
+    prepare();
+    prepareDashboard({ bundle, inputs: [source], build: () => { throw new Error('unchanged source rebuilt'); } });
+    writeSource('<html>second</html>');
+    prepare();
+    const assets = (await import(`${bundle.outputPath}?current`)).BUNDLED_TEST_UI as Record<string, string>;
+    const handle = serve(assets);
+    expect(await (await handle(new Request('http://localhost/'))).text()).toBe('<html>second</html>');
   });
 
   it('writes the files a present build holds, under their relative keys', () => {

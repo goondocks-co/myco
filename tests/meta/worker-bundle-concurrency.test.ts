@@ -10,18 +10,15 @@ test.skipIf(process.platform === 'win32')('concurrent bundle prerequisites keep 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myco-worker-concurrency-'));
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin);
-  const executable = path.join(bin, 'npx');
-  fs.writeFileSync(executable, `#!/usr/bin/env node
-const fs = require('node:fs');
-const path = require('node:path');
+  const executable = path.join(bin, 'fake-wrangler.mjs');
+  fs.writeFileSync(executable, `
+import fs from 'node:fs';
+import path from 'node:path';
 const args = process.argv.slice(2);
-const config = args[args.indexOf('-c') + 1];
-const out = args[args.indexOf('--outdir') + 1];
-const root = process.env.BUNDLE_PROBE_ROOT;
-const role = process.env.BUNDLE_PROBE_ROLE;
+const [config, out] = ['-c', '--outdir'].map(flag => args[args.indexOf(flag) + 1]);
+const { BUNDLE_PROBE_ROOT: root, BUNDLE_PROBE_ROLE: role } = process.env;
 fs.writeFileSync(path.join(root, role + '-ready'), config);
-if (role === 'atomic') { fs.writeFileSync(path.join(out, 'index.js'), 'export const bundleProbe = true;'); process.exit(0); }
-(async () => {
+if (role !== 'atomic') {
   const deadline = Date.now() + 15000;
   const barrier = path.join(root, role === 'first' ? 'second-ready' : 'release-second');
   while (!fs.existsSync(barrier)) {
@@ -30,10 +27,15 @@ if (role === 'atomic') { fs.writeFileSync(path.join(out, 'index.js'), 'export co
   }
   const text = fs.readFileSync(config, 'utf8');
   if (!text.includes('main = "src/index.ts"')) throw new Error('wrong bundle config');
-  fs.writeFileSync(path.join(out, 'index.js'), 'export const bundleProbe = true;');
-})().catch(error => { console.error(error.message); process.exitCode = 1; });
+}
+fs.writeFileSync(path.join(out, 'index.js'), 'export const bundleProbe = true;');
 `);
-  fs.chmodSync(executable, 0o755);
+  const preload = path.join(bin, 'wrangler-preload.mjs');
+  fs.writeFileSync(preload, `import cp from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+const run = cp.execFileSync;
+cp.execFileSync = (command, args, options) => run(command, args[0]?.endsWith('wrangler.js') ? [${JSON.stringify(executable)}, ...args.slice(1)] : args, options);
+syncBuiltinESMExports();`);
   const moduleUrl = pathToFileURL(path.join(REPO_ROOT, 'packages/myco/scripts/gen-worker-bundle.ts')).href;
   const run = (role: string) => new Promise<{ status: number | null; output: string }>((resolve, reject) => {
     const script = role === 'atomic' ? `
@@ -50,11 +52,11 @@ if (role === 'atomic') { fs.writeFileSync(path.join(out, 'index.js'), 'export co
       catch (error) { if (error.message !== 'injected output failure') throw error; }
       if (fs.readFileSync(output, 'utf8') !== 'previous complete module') throw new Error('published a partial module');
     ` : `import { emitWorkerBundle } from ${JSON.stringify(moduleUrl)}; emitWorkerBundle(process.argv[1], 'fixture');`;
-    const child = spawn('node', ['--import', 'tsx', '--input-type=module', '-e',
+    const child = spawn('node', ['--import', pathToFileURL(preload).href, '--import', 'tsx', '--input-type=module', '-e',
       script,
       path.join(root, `${role}.generated.ts`)], {
       cwd: REPO_ROOT,
-      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, BUNDLE_PROBE_ROOT: root, BUNDLE_PROBE_ROLE: role },
+      env: { ...process.env, BUNDLE_PROBE_ROOT: root, BUNDLE_PROBE_ROLE: role },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
