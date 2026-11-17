@@ -105,6 +105,28 @@ it('refuses unapproved personal roots, non-prose files, private names, hard link
   expect(await ask('Read @notes/plan.md.', { projectRoot: undefined, env: { ...env, MYCO_PROJECT_ROOT: root } })).toContain('Approved plan');
 });
 
+it('refuses secrets under a prose name, a declared root that is not the working directory, and broad temporary roots', async () => {
+  const pem = '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----\n';
+  for (const file of ['id_rsa.txt', 'id_ed25519.md', '.netrc.txt', 'pgpass.txt', 'passwd.txt', 'creds.md']) write(path.join(root, file), 'PRIVATE');
+  for (const [file, text] of [['deploy.txt', pem], ['aws.txt', 'aws_access_key_id = AKIAABCDEFGHIJKLMNOP'], ['notes.md', 'Setup\npassword: hunter2hunter2\n'],
+    ['ci.md', `token ghp_${'a'.repeat(36)}`]] as const) write(path.join(root, file), text);
+  const named = 'Read id_rsa.txt id_ed25519.md .netrc.txt pgpass.txt passwd.txt creds.md deploy.txt aws.txt notes.md ci.md.';
+  expect(await ask(named)).toBe(named);
+  write(path.join(root, 'plan.md'), 'The plan mentions a password policy in prose.');
+  expect(await ask('Read plan.md.')).toContain('password policy');
+
+  write(path.join(home, 'Documents', 'notes.md'), 'PRIVATE');
+  const elsewhere = 'Read notes.md.';
+  const documents = path.join(home, 'Documents');
+  expect(await ask(elsewhere, { cwd: documents, projectRoot: undefined, env: { ...env, MYCO_PROJECT_ROOT: root } })).toBe(elsewhere);
+  expect(await ask(elsewhere, { cwd: documents, projectRoot: undefined, env: { ...env, MYCO_VAULT_DIR: root } })).toBe(elsewhere);
+
+  const personal = 'Read ~/Documents/notes.md.';
+  for (const broad of [home, path.dirname(home), path.parse(home).root]) {
+    expect(await ask(personal, { env: { ...env, MYCO_TEMPORARY_FOLDERS: broad } })).toBe(personal);
+  }
+});
+
 it('preserves the typed prompt through the spawned reader, with only a prefix-preserving append', async () => {
   const opening = 'Task prose — café. 🌱';
   write(path.join(root, 'task.txt'), opening);
