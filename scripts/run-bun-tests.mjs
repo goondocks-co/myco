@@ -11,21 +11,30 @@ import { fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { SaxesParser } from 'saxes';
 import { parse as parseYaml } from 'yaml';
-import { DEFAULT_TEST_TIMEOUT_MS, groupByDuration, parseShard, selectGroup, selectShard } from './test-shards.mjs';
-import { BUILD_JOB_FILES, HEAVY_AND_SCALE_SUITES } from './ci-scopes.mjs';
-import { infrastructureRetrySummary, logHasUncarriedError, replaceFileSuites, retryableInfrastructureFaults } from './infrastructure-faults.mjs';
-import { nodeGroupBudget } from './node-test-durations.mjs';
-import { redactSecrets } from './redact-secrets.mjs';
-import { sandboxTestHome } from './test-environment.mjs';
-import { RUNNER_REMOVED_DASHBOARD_PACKAGES } from './ensure-deps.mjs';
-import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
-import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup, readTestProcessTable, readTestProcessCommands } from './test-process-tree.mjs';
 
-// ---------------------------------------------------------------------------
-// Per-run temp root
-// ---------------------------------------------------------------------------
-// The runner owns the root before loading test modules or starting subprocesses.
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Build preparation uses the caller's environment before test-harness modules load.
+for (const nodeArgs of [
+  ['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts'],
+  ['--import', 'tsx', 'packages/myco/scripts/gen-ui-assets.ts'],
+]) {
+  const generated = spawnSync(process.execPath, nodeArgs, { cwd: REPO, env: process.env, stdio: 'inherit' });
+  if (generated.error) throw generated.error;
+  if (generated.status !== 0) process.exit(generated.status ?? 1);
+}
+
+const { DEFAULT_TEST_TIMEOUT_MS, groupByDuration, parseShard, selectGroup, selectShard } = await import('./test-shards.mjs');
+const { BUILD_JOB_FILES, HEAVY_AND_SCALE_SUITES } = await import('./ci-scopes.mjs');
+const { infrastructureRetrySummary, logHasUncarriedError, replaceFileSuites, retryableInfrastructureFaults } = await import('./infrastructure-faults.mjs');
+const { nodeGroupBudget } = await import('./node-test-durations.mjs');
+const { redactSecrets } = await import('./redact-secrets.mjs');
+const { sandboxTestHome } = await import('./test-environment.mjs');
+const { RUNNER_REMOVED_DASHBOARD_PACKAGES } = await import('./ensure-deps.mjs');
+const { createTestTempRun, finishTestTempRun } = await import('./test-temp-root.mjs');
+const { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup, readTestProcessTable, readTestProcessCommands } = await import('./test-process-tree.mjs');
+
+// Test modules and test subprocesses share a root created after build preparation.
 const PARENT_TMPDIR = os.tmpdir();
 const tempRun = createTestTempRun();
 const RUN_ROOT = tempRun.root;
@@ -179,15 +188,6 @@ const WEDGE_RETRIES = Number(process.env.MYCO_RUNNER_WEDGE_RETRIES ?? 3);
 // 600s is more than twice the slowest of them.
 const GROUP_BUDGET_MS = Number(process.env.MYCO_RUNNER_GROUP_BUDGET_MS ?? 600000);
 
-// Test prerequisites share the run's temp root and leak gate.
-function prepareGeneratedModule(nodeArgs) {
-  const generated = spawnSync(process.execPath, nodeArgs, {
-    cwd: REPO, env: process.env, stdio: 'inherit',
-  });
-  if (generated.error) throw generated.error;
-  if (generated.status !== 0) process.exit(generated.status ?? 1);
-}
-prepareGeneratedModule(['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']);
 
 function resolveBunExecutable() {
   const extensions = process.platform === 'win32'
@@ -1657,8 +1657,6 @@ if (process.env.MYCO_RUNNER_DRY_RUN === '1') {
   console.log('[dry-run] OK — no file scheduled in more than one phase');
   process.exit(0);
 }
-
-prepareGeneratedModule(['--import', 'tsx', 'packages/myco/scripts/gen-ui-assets.ts']);
 
 const phaseReports = [];
 const NODE_PRELOAD = './tests/setup/sandbox-preload.ts';

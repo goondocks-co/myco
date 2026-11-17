@@ -491,14 +491,28 @@ describe('run-bun-tests guards', () => {
   }), RUN_BOUND_MS + 10_000);
 
   test('a test group reads EOF on stdin even when the runner\'s stdin stays open', () => withReportDir(async (reports) => {
+    const receipt = path.join(reports, 'preparation.jsonl'), preload = path.join(reports, 'preparation.mjs');
+    fs.writeFileSync(preload, `
+      import cp from 'node:child_process';
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const environment = env => Object.fromEntries(['HOME', 'PATH', 'TMPDIR', 'MYCO_HOME'].map(key => [key, env[key]]));
+      const caller = environment(process.env), spawn = cp.spawnSync;
+      cp.spawnSync = (command, args, options) => {
+        if (args?.[0] !== '--import' || args[1] !== 'tsx') return spawn(command, args, options);
+        fs.appendFileSync(${JSON.stringify(receipt)}, JSON.stringify({ caller, child: environment(options.env) }) + '\\n');
+        return { status: 0 };
+      };
+      syncBuiltinESMExports();
+    `);
     const { status, output } = await runRunner(STDIN_FIXTURE, {
-      MYCO_RUNNER_STDIN_FIXTURE: '1',
-      // A group that blocked on stdin is killed here and fails, rather than holding the test to its bound.
-      MYCO_RUNNER_GROUP_BUDGET_MS: '20000',
-      MYCO_RUNNER_HEARTBEAT_INTERVAL_MS: '1000',
-      MYCO_RUNNER_REPORT_DIR: reports,
+      MYCO_RUNNER_STDIN_FIXTURE: '1', MYCO_RUNNER_GROUP_BUDGET_MS: '20000', MYCO_RUNNER_REPORT_DIR: reports,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}`.trim(),
     });
     expect({ status, output }).toEqual({ status: 0, output: expect.stringContaining(' 1 pass') });
+    const children = fs.readFileSync(receipt, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(children.length).toBeGreaterThan(0);
+    for (const { caller, child } of children) expect(child).toEqual(caller);
   }), RUN_BOUND_MS + 10_000);
 
   test('samples, kills and fails a group that outlives its budget, leaving none of its processes', () => withReportDir(async (reports) => {
@@ -541,7 +555,7 @@ describe('run-bun-tests guards', () => {
 
 /** The temp directory a nested run is given, as every variable that names one on any platform. */
 function tempDirEnv(dir: string): Record<string, string> {
-  return { TMPDIR: dir, TEMP: dir, TMP: dir };
+  return { TMPDIR: dir, TEMP: dir, TMP: dir, NODE_DISABLE_COMPILE_CACHE: '1', TSX_DISABLE_CACHE: '1' };
 }
 
 /** A report directory and, beside it (the runner clears its report directory), a temp directory for a nested run. */
