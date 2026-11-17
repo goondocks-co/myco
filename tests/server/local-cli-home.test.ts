@@ -11,8 +11,8 @@ it('native CLI and guided setup keep the same non-default home', () => {
   const repo = fileURLToPath(new URL('../../', import.meta.url));
   try {
     const env = sandboxChildEnv(root, { MYCO_HOME: path.join(root, 'custom-myco') });
-    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', path.join(repo, 'tests/setup/sandbox-preload.ts'),
-      '--tsconfig-override', path.join(repo, 'tsconfig.json'), path.join(repo, 'tests/setup/fixtures/native_cli_home_test.ts')],
+    const child = spawnSync(process.execPath, ['test', ...NESTED_BUN_TEST_TIMEOUT_ARGS, '--preload', fileURLToPath(import.meta.resolve('../setup/sandbox-preload.ts')),
+      '--tsconfig-override', path.join(repo, 'tsconfig.json'), fileURLToPath(import.meta.resolve('../setup/fixtures/native_cli_home_test.ts'))],
     { env, cwd: root, encoding: 'utf8', timeout: 30_000 });
     expect({ status: child.status, stderr: child.stderr }).toMatchObject({ status: 0 });
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

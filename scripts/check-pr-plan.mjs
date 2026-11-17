@@ -55,7 +55,7 @@ export const CONSUMERS = [
   {
     name: 'dashboard consumers',
     ci: 'tests (dom): tests/myco-server-ui render the dashboard through App, which reaches a changed component through layers no direct import shows',
-    when: { paths: ['packages/myco-server/ui/src/**'] },
+    when: { paths: ['packages/myco-server/ui/src/**', 'packages/myco/scripts/gen-ui-assets.ts'] },
     tests: ['tests/myco-server-ui/**'],
   },
   {

@@ -19,6 +19,7 @@ import { redactSecrets } from './redact-secrets.mjs';
 import { sandboxTestHome } from './test-environment.mjs';
 import { RUNNER_REMOVED_DASHBOARD_PACKAGES } from './ensure-deps.mjs';
 import { createTestTempRun, finishTestTempRun } from './test-temp-root.mjs';
+import { reachesModule } from './pr-test-selection.mjs';
 import { registerTestProcess, stopRegisteredTestProcesses, stopTestProcessGroup, readTestProcessTable, readTestProcessCommands } from './test-process-tree.mjs';
 
 // ---------------------------------------------------------------------------
@@ -1653,6 +1654,15 @@ if (process.env.MYCO_RUNNER_DRY_RUN === '1') {
   }
   console.log('[dry-run] OK — no file scheduled in more than one phase');
   process.exit(0);
+}
+
+if (reachesModule({ root: REPO, entries: selected.flatMap(phase => sourceFiles(phase.args)),
+  target: 'packages/myco/src/server-ui-assets.generated.ts' })) {
+  const dashboard = spawnSync(process.execPath, ['--import', 'tsx', 'packages/myco/scripts/gen-ui-assets.ts'], {
+    cwd: REPO, env: process.env, stdio: 'inherit',
+  });
+  if (dashboard.error) throw dashboard.error;
+  if (dashboard.status !== 0) process.exit(dashboard.status ?? 1);
 }
 
 const phaseReports = [];
