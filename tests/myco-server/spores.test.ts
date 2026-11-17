@@ -249,11 +249,11 @@ describe('resolution', () => {
     expect(await listSupersedingSporeIds(db, OTHER, 'sp1')).toEqual([]);
   });
 
-  it('counts a consolidation as lineage only under its own action', async () => {
+  it('returns consolidation replacements as forward lineage', async () => {
     const { db } = store();
     for (const id of ['sp1', 'wisdom']) await insertSpore(db, SCOPE, spore(id));
     expect(await resolveSpore(db, SCOPE, { status: 'consolidated', event: event('re1', 'sp1', { action: 'consolidate', newSporeId: 'wisdom' }), now: NOW })).toBe(true);
-    expect(await listSupersedingSporeIds(db, SCOPE, 'sp1')).toEqual([]);
+    expect(await listSupersedingSporeIds(db, SCOPE, 'sp1')).toEqual(['wisdom']);
   });
 
   it('reads the same events backwards: what a replacement grew out of, by supersede and by consolidate alike', async () => {

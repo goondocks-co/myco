@@ -22,7 +22,6 @@ import {
 } from '@myco-server-worker/core/injection.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
-import { curationPrompt } from '@myco-server-worker/core/spore-curation.js';
 import {
   runRefusal,
   RUN_ACTION_MAX_CHARS,
@@ -226,7 +225,6 @@ it('routes run refusals through the mandatory what, actual and next-call helper,
     ].sort(),
   );
   for (const result of scopedBypasses(read)) expect(result).toEqual({ file: result.file, violations: [] });
-  expect(scope.helpers.get('core/spore-curation.ts')).toContain('completeCuration');
   for (const expression of [
     'false',
     'false as const',
@@ -287,7 +285,6 @@ it('routes run refusals through the mandatory what, actual and next-call helper,
   visit(writer);
   expect(bypasses(writer.getText(admission))).toEqual([]);
   expect(calls).toContain('runRefusal');
-  expect(calls).toContain('withCurationWrite');
   const exporters = admission.statements
     .filter(ts.isFunctionDeclaration)
     .filter((node) => node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword));
@@ -341,7 +338,7 @@ it('publishes the enforced numeric bounds, schemas and a valid example, and catc
   }
   expect(definitionOf('myco_spores')!.description).not.toContain(JSON.stringify(OPTIONAL_TEXT_BOUNDS));
   const curation = RUN_DEFINITIONS.find((item) => item.name === 'myco_run_curation')!;
-  expect(curation.inputSchema.properties.members!.maxItems).toBe(CURATION_CLUSTER_CAP);
+  expect(curation.inputSchema.properties.keep!.maxItems).toBe(CURATION_CLUSTER_CAP);
   const cards = RUN_DEFINITIONS.find((item) => item.name === 'myco_run_cards')!;
   expect(cards.description).toContain(String(CARD_MAX_CHARS));
   const spores = definitionOf('myco_spores')!;
@@ -375,7 +372,8 @@ it('publishes the enforced numeric bounds, schemas and a valid example, and catc
       expect(inventory.inputSchema.properties.max_chars!.maximum).toBe(window.sporeBodyChars);
       expect(inventory.inputSchema.properties.limit!.maximum).toBe(window.sporePage);
     }
-    const report = definitions.find((item) => item.name === 'myco_run')!;
+    const report = definitions.find((item) => item.name === 'myco_run');
+    if (report === undefined) continue;
     const example = report.inputSchema.examples![0]!;
     if (report.inputSchema.properties.action!.enum) expect(report.inputSchema.properties.action!.enum).toContain(example.action);
   }
@@ -404,7 +402,6 @@ it('gives learning, curation, seeding and spore tools the same measured drafting
   for (const text of [
     EXTRACTION_RULES,
     SEEDING_RULES,
-    curationPrompt(''),
     definitionOf('myco_spores')!.description,
     definitionOf('myco_spores')!.inputSchema.properties.agent_line!.description!,
   ])

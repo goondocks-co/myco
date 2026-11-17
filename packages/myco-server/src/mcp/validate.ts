@@ -55,6 +55,7 @@ function invalidInput(definition: ToolDefinition, message: string, op?: unknown)
 }
 
 export function validateInput(definition: ToolDefinition, input: ToolInput): void {
+  if (definition.handlerValidated?.includes('*')) return;
   const declared = new Set(Object.keys(definition.inputSchema.properties));
   const retired = Object.keys(input).find((key) => !declared.has(key) && definition.retiredArguments?.[key] !== undefined);
   if (retired !== undefined) {

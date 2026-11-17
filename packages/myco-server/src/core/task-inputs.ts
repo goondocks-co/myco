@@ -1,3 +1,4 @@
+import { CURATION_STAGE, buildCurationInput, curationPrompt } from './spore-curation.js';
 /**
  * The tasks whose prompt the server builds: the four run outcomes.
  *
@@ -19,7 +20,7 @@ import type { ServerEnv } from './adapters.js';
 import type { RepositoryCheckoutSpec } from '@goondocks/myco-shared/repository';
 import { buildMapInput, mapPrompt, MAP_RULES } from './canopy-input.js';
 import { buildSeedingInput, seedingPrompt, SEEDING_RULES } from './seeding-input.js';
-import { EXTRACTION_TASK, PLAN_CURATION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
+import { CURATION_TASK, EXTRACTION_TASK, PLAN_CURATION_TASK, SEEDING_TASK, TITLING_TASK } from './task-catalogue.js';
 import { buildPlanCurationInput, planCurationPrompt } from './plan-curation.js';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { EXTRACTION_RULES } from './extraction-rules.js';
@@ -76,6 +77,13 @@ interface TaskInputBuilder {
 }
 
 export const INPUT_BUILDERS: Readonly<Record<string, TaskInputBuilder>> = {
+  [CURATION_TASK]: {
+    build: async (env, projectId, now, options) => {
+      const key = typeof options.params?.group === 'string' ? options.params.group : (await CURATION_STAGE.head(env.db, projectId, now))?.key;
+      return key === undefined ? null : buildCurationInput(env, projectId, key);
+    },
+    template: () => ({ promptTemplate: curationPrompt('{{group.members}}'), standingRules: null, templateVariants: [] }),
+  },
   [EXTRACTION_TASK]: {
     build: (env, projectId, now, options) => buildHandStartLearning(env, projectId, now, options.params ?? {}, options.runId),
     template: () => ({ promptTemplate: learningPrompt('{{session.id}}', { cards: '{{slice.cards}}', more: false, handoff: null }), standingRules: EXTRACTION_RULES, templateVariants: [] }),

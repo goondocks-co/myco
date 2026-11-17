@@ -20,8 +20,8 @@ import {
   RUN_SPORE_ID_MAX_CHARS,
   RUN_SPORE_CURSOR_MAX_CHARS,
 } from '../core/run-tool-contract.js';
-import { CURATION_MATERIAL_BYTES, CURATION_SEARCH_LIMIT, CURATION_SEARCH_RESULTS } from '../core/spore-curation-contract.js';
-import { CURATION_CLUSTER_CAP, CURATION_REASON_CHARS, CURATION_COMPLETE_EXAMPLE } from '../core/spore-curation-contract.js';
+import { CURATION_ANSWER_BOUNDS, CURATION_ANSWER_EXAMPLE, CURATION_BODY_CHARS, CURATION_CLUSTER_CAP, CURATION_NEW_NOTES, CURATION_REASON_CHARS, CURATION_TYPES } from '../core/spore-curation-contract.js';
+import { AGENT_LINE_MAX_CHARS } from '../core/injection.js';
 import { CARD_WRITE_BOUND } from '../core/turn-card-prompt.js';
 import { PLAN_DECISIONS, PLAN_DECISION_EVIDENCE, PLAN_DECISION_EXAMPLE, PLAN_RESOLUTION_NOTE_CHARS } from '../core/plan-curation.js';
 /**
@@ -141,47 +141,41 @@ export const RUN_EXAMPLES: Record<RunTool, Record<string, unknown>> = {
     ],
   },
   myco_run_learning: { op: 'complete', handoff: 'No unresolved guidance.' },
-  myco_run_curation: JSON.parse(CURATION_COMPLETE_EXAMPLE) as Record<string, unknown>,
+  myco_run_curation: CURATION_ANSWER_EXAMPLE,
   myco_run_plans: PLAN_DECISION_EXAMPLE,
 };
 
 const definitions: readonly RunToolDefinition[] = [
   {
     name: 'myco_run_curation',
-    handlerValidated: ['decision', 'members', 'reason'],
-    inputRepair: `Correct the arguments and call myco_run_curation again with ids and revisions read whole by this run. Complete keep example: ${CURATION_COMPLETE_EXAMPLE} For resolved, omit members and retry any outstanding myco_spores refusal first, or choose keep with the read members.`,
-    description: `Use at most ${CURATION_SEARCH_LIMIT} searches, with up to ${CURATION_SEARCH_RESULTS} results each; whole material totals at most ${CURATION_MATERIAL_BYTES} UTF-8 bytes. Read at most ${CURATION_CLUSTER_CAP} seeded or searched spores whole. Complete keep with a members array of distinct {id,revision} objects: nonempty string ids and exact nonnegative safe integer revisions already read whole. Complete resolved after a successful lifecycle write and omit members. reason is nonempty text of at most ${CURATION_REASON_CHARS} characters. For resolved, an outstanding refused lifecycle write must be corrected first. Keep with the read members remains available and clears the refusal; retry invalid input once before reporting or choosing keep. Example: ${CURATION_COMPLETE_EXAMPLE}`,
+    handlerValidated: ['*'],
+    inputRepair: CURATION_ANSWER_BOUNDS,
+    description: `Submit the entire offered group in one answer. The server checks exact member ids and current revisions, then applies everything atomically; a dry run stores the checked answer without applying it. No reading or reporting tools are available. ${CURATION_ANSWER_BOUNDS}`,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object',
       properties: {
-        op: { type: 'string', enum: ['material', 'complete'] },
-        id: { type: 'string', description: 'For material: a seeded id or an id this run’s semantic searches returned.' },
-        decision: { type: 'string', enum: ['keep', 'resolved'] },
-        members: {
-          type: 'array',
-          maxItems: CURATION_CLUSTER_CAP,
-          description: `For keep: up to ${CURATION_CLUSTER_CAP} distinct {id,revision} objects, nonempty string id and exact nonnegative safe integer revision (at most ${Number.MAX_SAFE_INTEGER}) read whole by this run; [] if no group. For resolved: omit. Example: [{"id":"spore-a","revision":0}].`,
-          items: {
-            type: 'object',
-            properties: {
-              id: { type: 'string', minLength: 1 },
-              revision: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
-            },
-            required: ['id', 'revision'],
-          },
-        },
-        reason: {
-          type: 'string',
-          minLength: 1,
-          maxLength: CURATION_REASON_CHARS,
-          description: `Why the members stand or what was resolved: nonempty text of at most ${CURATION_REASON_CHARS} characters. Example: "Distinct applicability."`,
-        },
+        op: { type: 'string', enum: ['answer'] },
+        notes: { type: 'array', maxItems: CURATION_NEW_NOTES, items: {
+          type: 'object', properties: {
+            sources: { type: 'array', minItems: 1, maxItems: CURATION_CLUSTER_CAP, items: text() },
+            observation_type: { type: 'string', enum: [...CURATION_TYPES] },
+            agent_line: text(AGENT_LINE_MAX_CHARS),
+            content: text(CURATION_BODY_CHARS),
+          }, required: ['sources','observation_type','agent_line','content'],
+        } },
+        keep: { type: 'array', maxItems: CURATION_CLUSTER_CAP, items: text() },
+        retire: { type: 'array', maxItems: CURATION_CLUSTER_CAP, items: {
+          type: 'object', properties: { id: text(), reason: text(CURATION_REASON_CHARS), made_unnecessary_by: text() },
+          required: ['id','reason','made_unnecessary_by'],
+        } },
+        reason: text(CURATION_REASON_CHARS),
         [PROJECT_PIVOT]: project,
       },
-      required: ['op'],
+      required: ['op', 'notes', 'keep', 'retire', 'reason'],
     },
   },
+
   {
     name: 'myco_run_plans',
     handlerValidated: ['plan_id', 'evidence', 'superseded_by'],

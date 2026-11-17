@@ -1,9 +1,31 @@
-export const CURATION_CLUSTER_CAP = 12;
-export const CURATION_CONSOLIDATE_MIN = 3;
-export const CURATION_REASON_CHARS = 2048;
-export const CURATION_COMPLETE_EXAMPLE = '{"op":"complete","decision":"keep","members":[{"id":"spore-a","revision":0}],"reason":"Distinct applicability."}';
-export const CURATION_CONSOLIDATE_EXAMPLE = '{"op":"consolidate","source_spore_ids":[{"id":"spore-a","revision":0},{"id":"spore-b","revision":0},{"id":"spore-c","revision":0}],"observation_type":"wisdom","consolidated_content":"Preserve the named seam and its details.","agent_line":"When changing ownership, retain the component’s invariants.","reason":"Complementary guidance."}';
+import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
+import { AGENT_LINE_MAX_CHARS } from './injection.js';
 
+export const CURATION_CLUSTER_CAP = 12;
+export const CURATION_REASON_CHARS = 2048;
 export const CURATION_MATERIAL_BYTES = 32_000;
-export const CURATION_SEARCH_LIMIT = 6;
-export const CURATION_SEARCH_RESULTS = 8;
+export const CURATION_BODY_CHARS = 1500;
+export const CURATION_NEW_NOTES = 24;
+export const CURATION_ANSWER_ATTEMPTS = 2;
+export const CURATION_TYPES = OBSERVATION_TYPES;
+export const CURATION_ANSWER_EXAMPLE = {
+  op: 'answer',
+  notes: [{ sources: ['decision-a'], observation_type: 'decision', agent_line: 'When delivery stalls, retain queued capture.', content: 'When delivery stalls, retain queued capture until the destination acknowledges it.' }],
+  keep: ['gotcha-b'],
+  retire: [],
+  reason: 'One note needed a focused opening; the other already covers one situation.',
+};
+export const CURATION_ANSWER_BOUNDS = `Write 0–${CURATION_NEW_NOTES} notes. Each has 1–${CURATION_CLUSTER_CAP} distinct exact source ids, observation_type (${CURATION_TYPES.join('|')}), nonempty content of at most ${CURATION_BODY_CHARS} characters, and agent_line normalized to one nonempty line of at most ${AGENT_LINE_MAX_CHARS} characters. The line names no file path, flag or code symbol; deterministic validation rejects explicit rooted paths, backticks, double-dash flags and call syntax. Keep uses exact member ids. Retire entries have id, reason (1–${CURATION_REASON_CHARS} characters), and made_unnecessary_by (a kept member id or new:<zero-based note index>). Every assigned id occurs in exactly one disposition; a source may recur across new notes only for a split. reason is 1–${CURATION_REASON_CHARS} characters. Dates are derived by the server from sources; omit observed. Correct a refused answer once, at most ${CURATION_ANSWER_ATTEMPTS} submissions. Example: ${JSON.stringify(CURATION_ANSWER_EXAMPLE)}`;
+
+export interface CurationNote {
+  sources: string[];
+  observation_type: string;
+  agent_line: string;
+  content: string;
+}
+export interface CurationAnswer {
+  notes: CurationNote[];
+  keep: string[];
+  retire: { id: string; reason: string; made_unnecessary_by: string }[];
+  reason: string;
+}

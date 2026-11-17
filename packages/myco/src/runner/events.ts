@@ -62,6 +62,7 @@ export interface RunSpec {
   sourceFilesOnly?: boolean;
   /** The run's work is its server's tools alone, so its harness offers its model no tool of its own. */
   serverToolsOnly?: boolean;
+  singleAnswer?: boolean;
 }
 
 /**

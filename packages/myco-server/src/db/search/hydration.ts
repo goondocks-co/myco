@@ -1,3 +1,4 @@
+import { SPORE_SUCCESSOR_LIMIT } from '../spores/lineage-limit.js';
 import { sporeLearnedAtSql } from './spore-dates.js';
 import { SEARCH_CURRENT_STATUSES } from '@goondocks/myco-shared/search-types';
 import type { RelationalStore } from '../../core/adapters.js';
@@ -84,9 +85,10 @@ const HYDRATE = [
   read<Slots, HydratedDocument>({ name: 'searchHydration.spores', sql:
     `SELECT d.doc_id, 'spore' AS kind, d.project_id, s.id, NULL AS plan, COALESCE(NULLIF(s.agent_line, ''), s.observation_type) AS title, s.agent_line AS line, ${textOf('s.content')},
       s.status, s.observation_type, s.session_id, s.prompt_id, s.created_at, se.agent, ${sporeLearnedAtSql('s', 'se')} AS learned_at,
-      (SELECT e.new_spore_id FROM resolution_events e WHERE e.project_id=s.project_id AND e.spore_id=s.id
-        AND e.action=CASE s.status WHEN 'superseded' THEN 'supersede' WHEN 'consolidated' THEN 'consolidate' END
-        AND e.new_spore_id IS NOT NULL ORDER BY e.created_at DESC,e.id DESC LIMIT 1) AS successor_id, ${NO_TURN}
+      (SELECT json_group_array(target) FROM (
+        SELECT e.new_spore_id AS target FROM resolution_events e WHERE e.project_id=s.project_id AND e.spore_id=s.id
+          AND e.action=CASE s.status WHEN 'superseded' THEN 'supersede' WHEN 'consolidated' THEN 'consolidate' END AND e.new_spore_id IS NOT NULL
+          GROUP BY e.new_spore_id ORDER BY MAX(e.created_at) DESC,MAX(e.id) DESC LIMIT ${SPORE_SUCCESSOR_LIMIT})) AS successor_id, ${NO_TURN}
     FROM ${IDS} CROSS JOIN spores s ON s.project_id = d.project_id AND s.id = d.source_key ${sessionOf('s.session_id')}
     WHERE d.kind = 'spore' AND ${currentStatus('spore', 's.status')} AND ${admitted({ agent: 'se.agent', branch: 'se.branch', status: 's.status', session: 's.session_id', created: 's.created_at', liveSession: null })}` }),
   read<Slots, HydratedDocument>({ name: 'searchHydration.plans', sql:

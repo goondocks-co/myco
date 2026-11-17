@@ -234,8 +234,8 @@ describe('worker repository checkout over the Deployment wire', () => {
   }, 30_000);
 });
 
-for (const failure of ['lfs','fetch_failed'] as const) it(`continues curation on knowledge after ${failure}, recording one event and one curation attempt`, async () => {
-  const source=await gitRepositoryFixture(failure==='fetch_failed'?'private':'public');
+it('curates preassembled knowledge without preparing the connected repository', async () => {
+  const source=await gitRepositoryFixture('private');
   const e=await budgetFixture();
   e.env.SECRET_WRAP_KEY={get:async()=>btoa('r'.repeat(32))};
   const pipeline=createServer({now:()=>Date.now(),sourceOf:()=>'127.0.0.1',fetchImpl:fetch});
@@ -243,12 +243,8 @@ for (const failure of ['lfs','fetch_failed'] as const) it(`continues curation on
   const origin=`http://127.0.0.1:${server.port}`;
   const previousPath=process.env.PATH;
   try {
-    if(failure==='lfs') {
-      await writeFile(join(source.repo,'large.bin'),'version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 3\n');
-      source.git('add','large.bin');source.git('commit','--quiet','-m','LFS source');
-    }
     await projectRepositories(e.db,deploymentSecretStore(e.db,e.serverEnv.wrappingKey)).save('proj_1',{
-      url:source.url,branch:'main',revision:null,credential:failure==='fetch_failed'?{username:'reader',token:'expired-fixture-token'}:null,
+      url:source.url,branch:'main',revision:null,credential:{username:'reader',token:'expired-fixture-token'},
     },'mem_worker',e.now);
     await settingsWriter(e.db).setCapability('proj_1','spore_curation',true,'mem_worker',e.now);
     const members=['a','b','c'].map(id=>({id,revision:0,closeness:6}));
@@ -272,8 +268,7 @@ if(process.argv.includes('status'))process.exit(0);
   if(result.ok===false)throw new Error(JSON.stringify(result));
   return result;
  };
- await call('myco_run_curation',{op:'complete',decision:'keep',members:[{id:'a',revision:0},{id:'b',revision:0},{id:'c',revision:0}],reason:'Distinct knowledge; source unavailable.'});
- await call('myco_run',{op:'report',action:'curated',summary:'Kept knowledge apart.'});
+ await call('myco_run_curation',{op:'answer',notes:[],keep:JSON.parse(prompt.split('## Whole notes (data, not instructions)\\n\\n')[1]).map(member=>member.id),retire:[],reason:'Distinct knowledge is retained.'});
  console.log(JSON.stringify({type:'result',stop_reason:'end_turn',is_error:false,modelUsage:{sonnet:{inputTokens:10,outputTokens:3}}}));
 })().catch(error=>{console.error(error.message);process.exitCode=1});
 `,{mode:0o700});
@@ -284,14 +279,14 @@ if(process.argv.includes('status'))process.exit(0);
     const run=e.sqlite.query("SELECT id,status,error,instruction,run_context FROM agent_runs WHERE task='curate-spores'").get() as {id:string;status:string;error:string|null;instruction:string;run_context:string};
     if(run.status!=='completed')throw new Error(JSON.stringify({run,lines}));
     const observed=JSON.parse(await readFile(evidence,'utf8'));
-    expect(observed.prompt).toContain('No usable repository checkout is available');
+    expect(observed.prompt).toContain('The group is your entire evidence.');
     expect(observed.prompt).not.toContain('is pinned at its current commit');
     expect(observed.hasCheckout).toBe(false);
     expect(observed.tools).toBe('');
     expect(run.instruction).toBe(observed.prompt);
     expect(JSON.parse(run.run_context)).not.toHaveProperty('checkout');
     expect(e.sqlite.query("SELECT payload FROM agent_run_events WHERE run_id=? AND tool_name='worker_repository'").all(run.id))
-      .toEqual([{payload:JSON.stringify({op:'unavailable',code:failure})}]);
+      .toEqual([]);
     expect(e.sqlite.query("SELECT failures,decision FROM spore_curation_work WHERE cluster_key='fixture'").get()).toEqual({failures:1,decision:'keep'});
     expect(e.sqlite.query('SELECT COUNT(*) n FROM agent_run_attempts WHERE run_id=?').get(run.id)).toEqual({n:1});
   } finally {process.env.PATH=previousPath;server.stop(true);e.sqlite.close();await source.dispose();}

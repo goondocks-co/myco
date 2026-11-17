@@ -52,8 +52,7 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
   const context = spore.context?.trim() ?? '';
   const current = spore.status === DEFAULT_SPORE_STATUS;
   const retired = spore.status === RETIRED_SPORE_STATUS;
-  // A merge is recorded on the merged spore's own change, so its replacement is read from there when no supersede names one.
-  const replacedBy = current || retired || supersededBy.length > 0 || resolution?.newSporeId == null ? supersededBy : [resolution.newSporeId];
+  const replacedBy = supersededBy;
   return (
     <article data-spore-article="" className="flex w-full flex-col gap-s5">
       <div className="flex flex-wrap items-center justify-between gap-s3">
@@ -69,7 +68,7 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
             <p className="flex flex-wrap items-center gap-x-s2 gap-y-s1 t-small text-muted">
               <TypeChip>{sporeTypeWord(spore.observationType)}</TypeChip>
               {!current && <StatusChip tone={sporeStatusTone(spore.status)} data-spore-status="">{sporeStatusWord(spore.status)}</StatusChip>}
-              <span>Saved <time dateTime={new Date(spore.createdAt).toISOString()}>{dayHeading(spore.createdAt, now)}</time></span>
+              <span>Observed <time dateTime={new Date(spore.createdAt).toISOString()}>{dayHeading(spore.createdAt, now)}</time></span>
               {admin && <span className="ml-auto"><SporeStatusControl projectId={projectId} answer={answer} /></span>}
             </p>
             <h1 className={cn('t-headline', headline.lined ? 'text-ink' : 'text-ink-2')} data-spore-title="">{headline.text}</h1>
@@ -103,7 +102,7 @@ function Article({ answer, projectId, projectName, now }: { answer: SporeArticle
             <FactRow term="Type">{sporeTypeWord(spore.observationType)}</FactRow>
             <FactRow term="Status">{sporeStatusWord(spore.status)}</FactRow>
             <FactRow term="Importance">{spore.importance} of {MAX_IMPORTANCE}</FactRow>
-            <FactRow term="Saved">{dateTimeWords(spore.createdAt, now)}</FactRow>
+            <FactRow term="Observed">{dateTimeWords(spore.createdAt, now)}</FactRow>
             {spore.updatedAt !== null && spore.updatedAt !== spore.createdAt && <FactRow term="Changed">{dateTimeWords(spore.updatedAt, now)}</FactRow>}
             {current && restored !== null && <FactRow term="Restored">{restored}</FactRow>}
             {spore.filePath !== null && spore.filePath.trim() !== '' && <FactRow term="File" mono>{spore.filePath}</FactRow>}

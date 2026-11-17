@@ -67,11 +67,11 @@ export const SPORE_STATUS_FILTER: FilterDefinition = {
 /** When a spore was saved: any time, or within a recent period. */
 export const SPORE_WINDOW_FILTER: FilterDefinition = {
   key: 'window',
-  label: 'Saved',
+  label: 'Observed',
   options: [
-    { value: 'all', label: 'Saved any time', short: 'Any time' },
-    { value: 'week', label: 'Saved in the past 7 days', short: 'Past 7 days' },
-    { value: 'month', label: 'Saved in the past 30 days', short: 'Past 30 days' },
+    { value: 'all', label: 'Observed any time', short: 'Any time' },
+    { value: 'week', label: 'Observed in the past 7 days', short: 'Past 7 days' },
+    { value: 'month', label: 'Observed in the past 30 days', short: 'Past 30 days' },
   ],
 };
 

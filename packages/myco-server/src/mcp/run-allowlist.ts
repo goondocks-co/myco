@@ -22,9 +22,8 @@ export const RUN_TOOL_MAP: Readonly<Record<string, readonly RunSurfaceTarget[]>>
   vault_session_summary_material: [{ tool: 'myco_run_sessions', op: 'material' }],
   vault_update_session: [{ tool: 'myco_run_sessions', op: 'title' }],
   vault_learning: [{ tool: 'myco_run_learning', op: 'material' }, { tool: 'myco_run_learning', op: 'get' }, { tool: 'myco_run_learning', op: 'complete' }],
-  vault_spore_curation: [{ tool: 'myco_run_curation', op: 'material' }, { tool: 'myco_run_curation', op: 'complete' }],
+  vault_spore_curation: [{ tool: 'myco_run_curation', op: 'answer' }],
   vault_plan_curation: [{ tool: 'myco_run_plans', op: 'resolve' }],
-  vault_curate_spore: [{ tool: 'myco_spores', op: 'obsolete' }, { tool: 'myco_spores', op: 'supersede' }, { tool: 'myco_spores', op: 'consolidate' }],
   vault_turn_cards: [{ tool: 'myco_run_cards', op: 'material' }, { tool: 'myco_run_cards', op: 'get' }, { tool: 'myco_run_cards', op: 'write' }],
   vault_create_spore: [{ tool: 'myco_spores', op: 'save' }],
   vault_resolve_spore: [
@@ -42,10 +41,11 @@ export type RunAllowlist = ReadonlyMap<AnyTool, ReadonlySet<string>>;
 
 /** The allowlist for a task's declared tools; a dry run keeps its reads and loses every write. Every run holds `report`. */
 export function runAllowlist(tools: readonly string[], options: { dryRun: boolean }): RunAllowlist {
-  const allow = new Map<AnyTool, Set<string>>([[ALWAYS_ALLOWED.tool, new Set([ALWAYS_ALLOWED.op])]]);
+  const answerOnly = tools.length === 1 && tools[0] === 'vault_spore_curation';
+  const allow = new Map<AnyTool, Set<string>>(answerOnly ? [] : [[ALWAYS_ALLOWED.tool, new Set([ALWAYS_ALLOWED.op])]]);
   for (const name of tools) {
     for (const target of RUN_TOOL_MAP[name] ?? []) {
-      if (options.dryRun && isWriteOp(target.tool, target.op)) continue;
+      if (options.dryRun && isWriteOp(target.tool, target.op) && target.tool !== 'myco_run_curation') continue;
       const ops = allow.get(target.tool) ?? new Set<string>();
       ops.add(target.op);
       allow.set(target.tool, ops);

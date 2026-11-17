@@ -29,10 +29,10 @@ export async function seedDeployment(target: SeedTarget): Promise<SeededDeployme
   const sessions = await seedSessions(target, stamp);
   const knowledge = await seedKnowledge(target, sessions.captured.sessionId, sessions.word, stamp);
   await seedLearning(target, stamp);
+  await seedCuration(target);
   const machines = await seedMachines(target, stamp);
   const runs = await seedRuns(target, stamp, sessions.sibling.sessionId);
   const release = await seedRelease(target, stamp);
-  await seedCuration(target);
   const seeded = { sessions, knowledge, machines, runs, release };
   const result = { ...seeded, observed: await observe(target, seeded) };
   SEEDED.set(target.deploymentId, result);

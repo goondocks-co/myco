@@ -73,6 +73,7 @@ export const RUN_INSTRUCTIONS = runInstructionsFor(null);
 
 /** The run instructions, naming the actions its task's close rule accepts where the task has one, so the refusal is the backstop rather than the channel. */
 export function runInstructionsFor(accepted: readonly string[] | null): string {
+  if (accepted?.length === 0) return 'You maintain project memory from the offered group only. Use the single answer tool. After an accepted answer, end your response; no report or other closing call is needed.';
   const close = accepted === null
     ? 'Close by filing `myco_run` op "report" with what this pass did. A pass that found nothing to do reports that.'
     : `Close by filing \`myco_run\` op "report" with what this pass did, under action ${accepted.map((a) => `"${a}"`).join(' or ')}; no other action is accepted.`;

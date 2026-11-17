@@ -20,7 +20,7 @@ const markRetiring = write<[project: string, runs: string, now: number]>({ name:
   `INSERT INTO run_retirements (project_id, run_id, marked_at) SELECT ?1, value, ?3 FROM json_each(?2) WHERE true ON CONFLICT DO NOTHING` });
 
 /** Every table holding a run's own evidence, keyed by `run_id`. */
-export const RUN_CHILD_TABLES = ['agent_run_steps', 'agent_turns', 'agent_run_events', 'agent_run_write_intents', 'run_reads', 'run_served_material', 'spore_curation_candidates', 'agent_reports', 'agent_run_attempts'] as const;
+export const RUN_CHILD_TABLES = ['agent_run_steps', 'agent_turns', 'agent_run_events', 'agent_run_write_intents', 'run_reads', 'run_served_material', 'spore_curation_candidates', 'spore_curation_answers', 'agent_reports', 'agent_run_attempts'] as const;
 const statementName = (table: string) => table.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
 const childDeletes = RUN_CHILD_TABLES.map((table) => write<[project: string, runs: string, limit: number], { gone: number }>({ name: `runs.retire.${statementName(table)}`, sql:
   `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE project_id = ?1 AND run_id IN (${RUNS}) LIMIT ?3) RETURNING 1 AS gone` }));

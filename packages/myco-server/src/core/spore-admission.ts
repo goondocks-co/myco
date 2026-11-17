@@ -1,8 +1,6 @@
+import { admitAgentLine } from './agent-line.js';
 import { OPTIONAL_TEXT_BOUNDS, MAX_SPORE_ID_CHARS, MAX_SPORE_TAG_CHARS, MAX_FILE_PATH_CHARS, PROVENANCE_REF_MAX, COMMIT_REF_MIN_CHARS, COMMIT_REF_MAX_CHARS } from './spore-input-contract.js';
-import { runRefusal, type RefuseRunWrite } from './run-tool-contract.js';
-import { withCurationWrite } from './spore-curation.js';
-import { curationChangedReason } from '../db/spores/curation-run.js';
-import { CURATION_TASK } from './task-catalogue.js';
+import { runRefusal } from './run-tool-contract.js';
 import { memberWriteStore, MemberWriteRefused } from '../auth/member-write-store.js';
 import { SPORE_STATUSES, MAX_SPORE_CONTENT_BYTES, type ResolutionAction, type SporeProvenance, type SporeStatus } from './spores.js';
 import { consolidateSpores, resolveSpore, restoreSpore, type ResolveOutcome, type SporeExpectation } from '../db/spores/lifecycle.js';
@@ -16,7 +14,7 @@ import {
   sessions_sessionHeldByMachine as sessionHeldByMachine,
 } from '../read/catalog/sessions.js';
 import { EXTRACTION_TASK } from './task-catalogue.js';
-import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from './injection.js';
+import { AGENT_LINE_GUIDANCE } from './injection.js';
 import { nearSpores } from './spore-near-matches.js';
 import { USER_AGENT_ID } from '../constants.js';
 import { importPolicy, sporeImportEnabled, SPORE_IMPORT_DISABLED, SPORE_IMPORT_NOT_ADMIN, SPORE_IMPORT_MACHINE_REQUIRED } from './import-policy.js';
@@ -82,11 +80,8 @@ async function sourceOf(input: SporeWriteInput, ctx: SporeWriteContext, scope: R
 const PROVENANCE_KINDS: ReadonlySet<string> = new Set(['pr', 'commit']);
 /** The agent line a write carries, null where it carries none, or the one thing wrong with it. */
 function agentLineOf(input: SporeWriteInput): { ok: true; agentLine: string | null } | SporeWriteFailure {
-  const line = str(input.agent_line);
-  if (line === undefined) return failure(`agent_line is missing; expected nonempty text within ${AGENT_LINE_MAX_CHARS} characters. ${AGENT_LINE_GUIDANCE}`);
-  const oneLine = line.replace(/\s+/g, ' ').trim();
-  if (oneLine.length === 0 || oneLine.length > AGENT_LINE_MAX_CHARS) return failure(`agent_line is ${oneLine.length} characters after whitespace normalization; the limit is ${AGENT_LINE_MAX_CHARS}. ${AGENT_LINE_GUIDANCE}`);
-  return { ok: true, agentLine: oneLine };
+  const admitted = admitAgentLine(input.agent_line);
+  return 'error' in admitted ? failure(admitted.error + '. ' + AGENT_LINE_GUIDANCE) : { ok: true, agentLine: admitted.line };
 }
 const COMMIT_REF = new RegExp(`^[0-9a-f]{${COMMIT_REF_MIN_CHARS},${COMMIT_REF_MAX_CHARS}}$`);
 
@@ -112,7 +107,7 @@ function successorFailure(ctx: SporeWriteContext, state: string, newSporeId: str
   if (state === 'self') return failure('new_spore_id names the same spore as the source; a spore cannot replace itself. Name a different active spore.');
   const id = newSporeId === null ? {} : { id: newSporeId };
   const next = ctx.principal.kind !== 'run' ? { tool: 'myco_spores', op: 'get', ...id }
-    : ctx.principal.task === CURATION_TASK ? { tool: 'myco_run', op: 'report' } : { tool: 'myco_run_spores', op: 'get', ...id };
+    : { tool: 'myco_run_spores', op: 'get', ...id };
   return failure(`new_spore_id ${JSON.stringify(newSporeId)} is ${state}, not active; it cannot take the source's place. Nothing was saved. Reread it and name its active successor.`, next);
 }
 
@@ -158,47 +153,21 @@ function sporeMetadataError(input: SporeWriteInput): string | null {
 }
 
 export async function writeSpore(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
-  const apply = async (db: RelationalStore, refuse: RefuseRunWrite = async (refusal) => runRefusal(refusal)) => {
-    const result = await admittedSporeWrite(input, { ...ctx, env: { ...ctx.env, db } });
-    if (
-      ctx.principal.kind === 'run' &&
-      result !== null &&
-      typeof result === 'object' &&
-      'ok' in result &&
-      result.ok === false &&
-      'error' in result
-    ) {
-      const { repairCall, ...refused } = result as SporeWriteFailure;
-      const stale = result.error === 'stale';
-      const id =
-        (stale && 'spore_id' in result && typeof result.spore_id === 'string' ? result.spore_id : undefined) ??
-        input.id ??
-        input.old_spore_id ??
-        (Array.isArray(input.source_spore_ids) ? (input.source_spore_ids[0]?.id ?? input.source_spore_ids[0]) : undefined);
-      const curation = ctx.principal.task === CURATION_TASK;
-      return {
-        ...refused,
-        ...(await refuse({
-          what: `myco_spores op ${String(input.op)}${typeof id === 'string' ? ' for ' + JSON.stringify(id) : ''}`,
-          actual: stale && 'reason' in result ? String(result.reason) : String(result.error),
-          next: stale
-            ? curation
-              ? { tool: 'myco_run', op: 'report' }
-              : { tool: 'myco_run_spores', op: 'get', id }
-            : (repairCall ?? { tool: 'myco_spores', op: String(input.op) }),
-          repair: stale
-            ? curation
-              ? 'Assigned sources changed; report the failure.'
-              : 'Re-read the source and reassess its current status and revision before deciding again.'
-            : 'Correct the named input and retain the same sources.',
-        })),
-      };
-    }
-    return result;
+  const result = await admittedSporeWrite(input, ctx);
+  if (ctx.principal.kind !== 'run' || result === null || typeof result !== 'object' || !('ok' in result) || result.ok !== false || !('error' in result)) return result;
+  const { repairCall, ...refused } = result as SporeWriteFailure;
+  const stale = result.error === 'stale';
+  const id = (stale && 'spore_id' in result && typeof result.spore_id === 'string' ? result.spore_id : undefined)
+    ?? input.id ?? input.old_spore_id ?? (Array.isArray(input.source_spore_ids) ? (input.source_spore_ids[0]?.id ?? input.source_spore_ids[0]) : undefined);
+  return {
+    ...refused,
+    ...runRefusal({
+      what: `myco_spores op ${String(input.op)}${typeof id === 'string' ? ' for ' + JSON.stringify(id) : ''}`,
+      actual: stale && 'reason' in result ? String(result.reason) : String(result.error),
+      next: stale ? { tool: 'myco_run_spores', op: 'get', id } : (repairCall ?? { tool: 'myco_spores', op: String(input.op) }),
+      repair: stale ? 'Re-read the source and reassess its current status and revision before deciding again.' : 'Correct the named input and retain the same sources.',
+    }),
   };
-  return ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK
-    ? withCurationWrite(ctx.env.db, ctx.projectId, ctx.principal.runId, input, apply)
-    : apply(ctx.env.db);
 }
 
 async function admittedSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext): Promise<unknown> {
@@ -206,8 +175,6 @@ async function admittedSporeWrite(input: SporeWriteInput, ctx: SporeWriteContext
   if (invalid !== null) return failure(invalid);
   try { return await admitSporeWrite(input, ctx); }
   catch (error) {
-    const changed = curationChangedReason(error);
-    if (changed !== null) return failure(`assigned spores changed: ${changed}; nothing was saved`, { tool: 'myco_run', op: 'report' });
     if (input.channel === 'import') {
       if (error instanceof MemberWriteRefused) return importFailure(SPORE_IMPORT_NOT_ADMIN);
       if (importRefused(error)) return importFailure(SPORE_IMPORT_DISABLED);

@@ -2,6 +2,7 @@
  * The backup engine: table dispositions drift-guarded against the DDL, the
  * round trip, the refusal gates, and the retention rule.
  */
+import { readCurationCoverage } from '@myco-server-worker/db/spores/curation-answer.js';
 import { restoreStoredBackup } from './helpers/stored-restore.js';
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
@@ -182,6 +183,10 @@ describe('portable machine identities', () => {
       source.sqlite.query(`INSERT INTO prompt_context_answers
         (project_id, session_id, prompt_id, id, outcome, context_chars, parts, skipped, failures, selection, created_at)
         VALUES ('proj_bk', 'sess_1', 'prompt_1', 'answer_1', 'empty', 0, '[]', '["spores"]', '[{"contributor":"spores","error":"constraint","operation":"record"}]', '{"budgetKept":0}', ?)`).run(source.now);
+      source.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,decision,reason,decided_at) VALUES('proj_bk','review','[]','keep','Distinct guidance.',1)");
+      source.sqlite.run("INSERT INTO spore_curation_receipts(project_id,spore_id,revision,cluster_key) VALUES('proj_bk','reviewed',0,'review')");
+      for (const id of ['reviewed', 'unconsidered']) source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES('proj_bk',?,'agent_bk','gotcha','Retain this guidance.',1)", [id]);
+      expect(await readCurationCoverage(source.db, 'proj_bk')).toBe(1);
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
@@ -199,6 +204,10 @@ describe('portable machine identities', () => {
         VALUES ('machine_backup_cache', 'mem_backup_cache', 1, 'm1', '{"capture.plan_dirs":["notes"]}', 5, 1)`).run();
       source.sqlite.query(`INSERT INTO machine_settings_snapshots (machine_id, revision, leaves, sent_order)
         VALUES ('machine_backup_cache', 'm1', '{"capture.plan_dirs":["notes"]}', 1)`).run();
+      source.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,decision,reason,decided_at) VALUES('proj_bk','review','[]','keep','Distinct guidance.',1)");
+      source.sqlite.run("INSERT INTO spore_curation_receipts(project_id,spore_id,revision,cluster_key) VALUES('proj_bk','reviewed',0,'review')");
+      for (const id of ['reviewed', 'unconsidered']) source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES('proj_bk',?,'agent_bk','gotcha','Retain this guidance.',1)", [id]);
+      expect(await readCurationCoverage(source.db, 'proj_bk')).toBe(1);
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       const lines = artifact.text.trim().split('\n').map((line) => JSON.parse(line) as { t?: string; r?: Record<string, unknown> });
@@ -476,21 +485,28 @@ describe('apply refusals', () => {
 });
 
 describe('spore revision recovery', () => {
-  it('backs up revisions with spores and defaults an older artifact lacking the column to zero', async () => {
+  it('restores spore revisions and curation coverage, including older artifacts without consideration receipts', async () => {
     const source = seeded(), target = seeded(), legacy = seeded();
     try {
       source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,status,content,revision,created_at) VALUES ('proj_bk','revision','agent_bk','gotcha','superseded','kept',7,1)");
+      source.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,decision,reason,decided_at) VALUES('proj_bk','review','[]','keep','Distinct guidance.',1)");
+      source.sqlite.run("INSERT INTO spore_curation_receipts(project_id,spore_id,revision,cluster_key) VALUES('proj_bk','reviewed',0,'review')");
+      for (const id of ['reviewed', 'unconsidered']) source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES('proj_bk',?,'agent_bk','gotcha','Retain this guidance.',1)", [id]);
+      expect(await readCurationCoverage(source.db, 'proj_bk')).toBe(1);
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
       expect(target.sqlite.query("SELECT status,content,revision FROM spores WHERE id='revision'").get())
         .toEqual({ status: 'superseded', content: 'kept', revision: 7 });
-      const rows = artifact.text.trim().split('\n').map(line => JSON.parse(line));
+      expect(await readCurationCoverage(target.db, 'proj_bk')).toBe(1);
+      const rows = artifact.text.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.t !== 'spore_curation_considerations');
+      delete rows[0].counts.spore_curation_considerations;
       rows[0].schemaVersion = 100;
       for (const row of rows) if (row.t === 'spores') delete row.r.revision;
       await restoreArtifact(legacy.db, { authorization: { kind: 'recovery' }, text: rows.map(row => JSON.stringify(row)).join('\n') + '\n', allowForeignLineage: true });
       expect(legacy.sqlite.query("SELECT status,content,revision FROM spores WHERE id='revision'").get())
         .toEqual({ status: 'superseded', content: 'kept', revision: 0 });
+      expect(await readCurationCoverage(legacy.db, 'proj_bk')).toBe(1);
     } finally { source.sqlite.close(); target.sqlite.close(); legacy.sqlite.close(); }
   });
 });

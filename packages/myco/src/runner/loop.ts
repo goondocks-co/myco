@@ -539,6 +539,7 @@ async function drive(
   if (options.signal.aborted) onAbort();
   let lost = false;
   let overran = false;
+  const singleAnswer = run.task === 'curate-spores';
   const preparationAllowance = run.repository !== undefined && REPOSITORY_TASKS.includes(run.task) ? REPOSITORY_PREPARATION_TIMEOUT_MS : 0;
   const cleanupDeadline = clock() + preparationAllowance + run.timeoutSeconds * 1000 + RUN_OVERRUN_GRACE_MS + RUN_CLEANUP_TIMEOUT_MS;
   /**
@@ -572,7 +573,7 @@ async function drive(
   const originalInstruction=run.instruction;
   let prompt = originalInstruction;
   const prepare = async (): Promise<void> => {
-    if (run.repository !== undefined && !repositoryUnavailable) {
+    if (run.repository !== undefined && !singleAnswer && !repositoryUnavailable) {
       preparing = true;
       try {
         checkout = await prepareWorkerCheckout(run.repository, scratchDir, stopping.signal, async (input, signal) => {
@@ -606,6 +607,7 @@ async function drive(
       return driver.run({
         prompt, scratchDir, mcpConfigPath, credentialEnv: run.credentialEnv,
         profile: run.profile,
+        singleAnswer,
         sourceReadOnly: checkout !== undefined,
         sourceFilesOnly: KNOWLEDGE_REPOSITORY_TASKS.includes(run.task),
         serverToolsOnly: KNOWLEDGE_REPOSITORY_TASKS.includes(run.task) ? checkout === undefined : !REPOSITORY_TASKS.includes(run.task),
