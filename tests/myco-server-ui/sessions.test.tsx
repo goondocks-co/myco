@@ -105,6 +105,7 @@ function server(routes: Routes): { requested: string[] } {
 
 const base = (extra: Routes = {}, me: unknown = ADMIN): Routes => ({
   '/auth/me': () => Response.json(dashboardMe(me)),
+  '/api/status': () => Response.json({ target: 'bun' }),
   '/api/projects': () => Response.json(PROJECTS),
   '/api/members': () => Response.json(MEMBERS),
   ...extra,
@@ -818,6 +819,9 @@ describe('the session reading page', () => {
     // Delete: names what goes and what stays, keeps the dialog open on a failure, and leaves for the list once done.
     fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: 'Delete session' }));
     dialog = await screen.findByRole('dialog', { name: 'Delete this session?' });
+    await within(dialog).findByRole('button', { name: 'Delete permanently' });
+    expect(dialog.textContent).toContain('Permanently removes');
+    expect(dialog.textContent).not.toContain('30 days');
     expect(dialog.textContent).toContain('The spores learned from it, and other sessions');
     expect(dialog.querySelector('[data-delete-impact]')!.textContent).toBe('1 prompt · 3 tool calls · 0 plans · 2 attachments');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete permanently' }));
@@ -833,6 +837,18 @@ describe('the session reading page', () => {
     mount('/p/x/sessions/s1');
     await screen.findByRole('heading', { level: 1 });
     expect(screen.queryByRole('button', { name: 'Session actions' })).toBeNull();
+  });
+
+  it('explains the hosted storage hold before deleting a session', async () => {
+    server(routes({ '/api/status': () => Response.json({ target: 'cloudflare' }) }));
+    mount('/p/x/sessions/s1');
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'Session actions' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Delete session' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete this session?' });
+    await waitFor(() => expect(dialog.textContent).toContain('from Myco now'));
+    expect(dialog.textContent).toContain('Its stored data is kept for at least 30 days before removal.');
+    expect(dialog.textContent).not.toContain('permanently');
+    expect(within(dialog).getByRole('button', { name: 'Delete session' }).hasAttribute('disabled')).toBe(false);
   });
 
   it('shows a failed model call and how to ask again, keeping the dialog open', async () => {

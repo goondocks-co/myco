@@ -1,4 +1,5 @@
 import { recoveryCredentialLines } from '../server/recovery-secret-report.js';
+import { HOSTED_BACKUP_PAUSE_NOTICE, NATIVE_BACKUP_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { cloudflareWrappingKeyLine } from '../server/cloudflare-wrapping-key.js';
 import { localBudgetStatus, cloudflareBudgetStatus, operatorBudgetLine } from '../server/budget-status.js';
 import { REJOIN_HINT } from '@goondocks/myco-shared/member-protocol';
@@ -92,6 +93,8 @@ Commands (--target local runs the Deployment from this binary; --target cloudfla
   backup --to <dir> [--target local|cloudflare]
                                           Snapshot the database and blobs. Local/Cloudflare backups
                                           resume an incomplete directory and verify every blob.
+                                          ${HOSTED_BACKUP_PAUSE_NOTICE}
+                                          ${NATIVE_BACKUP_NOTICE}
                                           Credentials require separate secure recovery storage.
                                           Local/Cloudflare backups hold every object the snapshot
                                           names against deletion until the artifact completes, so
@@ -608,7 +611,9 @@ export async function run(args: string[], deps: { readRetry?: LifecycleOptions['
       if (positionals.length > 0 || [...flags.keys()].some((key) => key !== 'target')) fail('backup-credential accepts only --target cloudflare. Use the hidden prompt or pipe the key on stdin; never pass it as an argument.');
       if (flags.get('target') !== 'cloudflare') fail('backup-credential needs --target cloudflare.');
       await installBackupCredential({ runner: deps.runner, fetchImpl: deps.fetchImpl, readSecret: deps.readSecret });
-      console.log('Backup access key saved. Automatic backups can run now; when “Back up every” is set, the next one starts at the next due wake.');
+      console.log('Backup access key saved. Automatic backups can run now.');
+      console.log(HOSTED_BACKUP_PAUSE_NOTICE);
+      console.log('“Back up every” in Settings controls the schedule.');
       return;
     }
 

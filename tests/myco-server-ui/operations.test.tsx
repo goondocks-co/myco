@@ -197,6 +197,7 @@ describe('automatic recovery on Health', () => {
     });
     mount();
     expect((await screen.findByTestId('recovery-cadence')).textContent).toContain('Every 6 h');
+    expect(screen.getByText(/Each hosted backup pauses database requests/).textContent).toContain('capture waits on members’ machines for later delivery');
     expect(screen.getByTestId('recovery-cadence').textContent).toContain('Next due in 3h');
     expect(screen.getByTestId('recovery-latest').textContent).toContain('Attempt 7');
     const available = screen.getByTestId('recovery-available').textContent ?? '';

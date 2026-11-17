@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { HOSTED_BACKUP_PAUSE_NOTICE } from '@goondocks/myco-shared/backup-words';
 import { permissionOf, useMe } from '../../../hooks/use-me';
 import { Button, buttonVariants, Card, ConfirmDialog, ErrorState, ExternalLink, Link, LoadingState, MoreMenu, errorWords, StatusChip, Switch } from '../../../design';
 import { useBackups, useRestoreJob, type BackupRow, type RestoreJob, type RestorePreview } from '../../../hooks/use-backups';
@@ -66,6 +67,11 @@ export function BackupsSection({ target }: { target?: string | null }) {
       </p>
       {target === 'cloudflare' && <p className="max-w-measure t-small text-muted" data-testid="stored-data-hold">
         Deleted session data, attachments and backups are kept for 30 days before they are removed. Released full recovery copies are not kept.
+      </p>}
+      {target === 'cloudflare' && <p className="max-w-measure t-small text-muted">
+        Cloudflare Time Travel can put this database back to a recent point: up to 30 days on Workers Paid or 7 days on Free.
+        It restores in place; keep a separate copy for losing the database or account.
+        Read the operator recovery procedure before restoring: Myco does not yet coordinate this with work in progress.
       </p>}
       {retention?.state === 'failed' && (
         <Card role="status" className="t-body text-warn" data-backup-retention-failed="">
@@ -240,6 +246,7 @@ function RecoveryCard() {
       {producer?.error === 'export_unsettled' && <ForgetUnsettledExport forgettableAt={producer.unsettledExport?.forgettableAt ?? null} now={now} />}
       {schedule !== null && (
         <>
+          {form === 'staging' && <p className="t-small text-warn">{HOSTED_BACKUP_PAUSE_NOTICE}</p>}
           <p className="t-body text-ink" data-testid="recovery-cadence">{cadenceBefore}{cadenceAfter !== undefined && <><code className="t-mono text-ink-2">{BACKUP_ACCESS_COMMAND}</code>{cadenceAfter}</>}</p>
           <p className="t-body text-muted" data-testid="recovery-latest">{latestWords(schedule, form)}</p>
           <p className={cn('t-body', schedule.available.state === 'staged' ? 'text-warn' : 'text-muted')} data-testid="recovery-available">
