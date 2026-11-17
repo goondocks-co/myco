@@ -64,14 +64,14 @@ export const SPORE_STATUS_FILTER: FilterDefinition = {
   ],
 };
 
-/** When a spore was saved: any time, or within a recent period. */
+/** The observation or saved day, within a recent period or any time. */
 export const SPORE_WINDOW_FILTER: FilterDefinition = {
   key: 'window',
-  label: 'Saved',
+  label: 'Date',
   options: [
-    { value: 'all', label: 'Saved any time', short: 'Any time' },
-    { value: 'week', label: 'Saved in the past 7 days', short: 'Past 7 days' },
-    { value: 'month', label: 'Saved in the past 30 days', short: 'Past 30 days' },
+    { value: 'all', label: 'Any date', short: 'Any time' },
+    { value: 'week', label: 'Dated in the past 7 days', short: 'Past 7 days' },
+    { value: 'month', label: 'Dated in the past 30 days', short: 'Past 30 days' },
   ],
 };
 
@@ -99,15 +99,17 @@ export function typeFacetRows(facets: Readonly<Record<string, number>> | undefin
   return [...known, ...extra].map((type) => ({ type, n: facets === undefined ? undefined : facets[type] ?? 0 }));
 }
 
-/**
- * A spore's headline: the line written for agents, else its type and the day
- * it was saved, as in "Gotcha saved Sep 29". `lined` says which it is, so a
- * page can set the fallback apart.
- */
-export function sporeHeadline(spore: { agentLine: string | null; observationType: string; createdAt: number }, now: number): { text: string; lined: boolean } {
+/** A retained observation date, or the saved date when no observation is stored. */
+export function sporeDate(spore: { createdAt: number; observedAt?: number | null }): { label: 'Saved' | 'Observed'; at: number } {
+  return spore.observedAt == null ? { label: 'Saved', at: spore.createdAt } : { label: 'Observed', at: spore.observedAt };
+}
+
+/** The agent line, or the type and its labelled date. */
+export function sporeHeadline(spore: { agentLine: string | null; observationType: string; createdAt: number; observedAt?: number | null }, now: number): { text: string; lined: boolean } {
   const line = spore.agentLine?.trim() ?? '';
   if (line !== '') return { text: line, lined: true };
-  return { text: `${sporeTypeWord(spore.observationType)} saved ${dayWords(spore.createdAt, now)}`, lined: false };
+  const date = sporeDate(spore);
+  return { text: `${sporeTypeWord(spore.observationType)} ${date.label.toLowerCase()} ${dayWords(date.at, now)}`, lined: false };
 }
 
 /** The first line of a spore's body, without its Markdown marker: what a spore without its one line shows under its headline. */

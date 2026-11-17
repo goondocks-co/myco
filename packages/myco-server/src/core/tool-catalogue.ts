@@ -121,7 +121,7 @@ export const WRITE_OPS: Readonly<Partial<Record<AnyTool, readonly string[]>>> = 
   myco_run_map: ['write'],
   myco_run_cards: ['write'],
   myco_run_learning: ['complete'],
-  myco_run_curation: ['material', 'complete'],
+  myco_run_curation: ['answer'],
   myco_run_plans: ['resolve'],
 };
 

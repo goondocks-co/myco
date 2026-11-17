@@ -46,5 +46,3 @@ export const curationClaimWrite = write<readonly unknown[]>({name:'claim.curatio
       WHERE project_id=? AND cluster_key=? AND EXISTS (SELECT 1 FROM agent_runs WHERE project_id=? AND id=? AND dispatched_by=?)`});
 export const curationDirtyWrite = write<readonly unknown[]>({name:'claim.curationDirtyWrite',sql:`UPDATE spore_curation_changes SET dirty=1 WHERE project_id=? AND dirty=0
         AND EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND cluster_key=? AND run_id=?)`});
-export const curationCandidateWrite = write<readonly unknown[]>({name:'claim.curationCandidateWrite',sql:`INSERT OR IGNORE INTO spore_curation_candidates(project_id,run_id,spore_id,revision,read)
-        SELECT ?,?,?,?,1 WHERE EXISTS (SELECT 1 FROM spore_curation_work WHERE project_id=? AND cluster_key=? AND run_id=?)`});

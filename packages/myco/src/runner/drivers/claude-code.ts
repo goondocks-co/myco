@@ -128,23 +128,25 @@ export const claudeCodeDriver: Driver = {
   id: 'claude-code',
   launch: claudeLaunch,
   async *run(spec: RunSpec, signal: AbortSignal): AsyncIterable<RunEvent> {
+    if (spec.singleAnswer && spec.sourceReadOnly) throw new Error('An answer-only run cannot read source.');
     const harness = harnessById('claude-code')!;
     const isolation = harness.isolation.kind === 'flag' ? harness.isolation.args : [];
     const permissions = runGrant(spec, harness);
     const { rules: grant, env, shellSetup } = permissions;
     const launch = claudeLaunch(spec);
     const omitInherited = launch.omitInherited;
-    const harnessEnv = { ...launch.env, ...env, ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) };
+    const harnessEnv = { ...launch.env, ...env, ...(spec.singleAnswer ? { CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } : {}), ...(shellSetup === null ? {} : { [SHELL_SETUP_VARIABLE]: shellSetup }) };
     const started = permissions.source === null ? startHarness(harness.binary, [
       '-p', spec.prompt,
       ...(spec.profile === undefined ? [] : ['--model', spec.profile.model, ...(spec.profile.effort === null ? [] : ['--effort', spec.profile.effort])]),
-      '--setting-sources', 'project,local',
+      '--setting-sources', spec.singleAnswer ? '' : 'project,local',
+      ...(spec.singleAnswer ? ['--disable-slash-commands', '--system-prompt', 'You maintain project memory. Follow the task prompt and use only its answer tool.'] : []),
       '--no-session-persistence',
       '--output-format', 'stream-json',
       '--verbose',
       '--mcp-config', spec.mcpConfigPath,
       ...isolation,
-      ...(spec.serverToolsOnly === true ? NO_HARNESS_TOOLS : []),
+      ...(spec.serverToolsOnly === true || spec.singleAnswer === true ? NO_HARNESS_TOOLS : []),
       ...RUN_PERMISSIONS,
       '--allowedTools', ...grant,
     ], { cwd: spec.scratchDir, env: harnessEnv, signal, omitInherited }) : await startClaudeSource(spec, permissions, launchEnvironment(harnessEnv, omitInherited), signal);

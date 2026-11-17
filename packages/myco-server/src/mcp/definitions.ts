@@ -14,7 +14,6 @@ import { searchRepairCall, searchRepairCause, type ListNarrowing } from '../core
  */
 import { PROJECT_PIVOT, type ServedTool } from '../core/tool-catalogue.js';
 import { DEFAULT_PAGE, MAX_PAGE } from '../read/scope.js';
-import { CURATION_CLUSTER_CAP, CURATION_CONSOLIDATE_MIN } from '../core/spore-curation-contract.js';
 import { AGENT_LINE_MAX_CHARS, AGENT_LINE_GUIDANCE } from '../core/injection.js';
 import { OBSERVATION_TYPES } from '@goondocks/myco-shared/member-protocol';
 import { ARTIFACT_KINDS } from '../core/session-artifacts.js';
@@ -65,7 +64,7 @@ interface ToolAnnotations {
 
 export interface ToolDefinition {
   inputRepair?: string;
-  /** Fields whose domain validator must consult persisted state before judging their shape. */
+  /** Fields whose domain validator consults persisted state before judging shape; '*' delegates the entire input. */
   handlerValidated?: readonly string[];
   /** Arguments the tool no longer takes, each refused by name with why and the call that replaces it, both built from the refused call's own input; never declared in the schema. */
   retiredArguments?: Readonly<Record<string, (input: Readonly<Record<string, unknown>>) => { actual: string; next: { tool: string } & Record<string, unknown> }>>;
@@ -99,7 +98,7 @@ const listFilters = (input: Readonly<Record<string, unknown>>) => Object.fromEnt
 const definitions: readonly ServedToolDefinition[] = [
   {
     "name": "myco_search",
-    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Queries must contain 1–${SEARCH_QUERY_MAX_CHARS} characters; longer queries are refused. Semantic search embeds the whole question. Word search ignores common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) and searches the first ${SEARCH_MAX_TERMS} meaningful words; wordTruncation reports actual and searched word counts when shortened, including semantic fallback. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
+    "description": `Search project sessions, spores, plans and conversation cards (one per turn). Hits include lifecycle status, learned_at (ISO source occurrence date), stable IDs and retrieve hints; spores include observation_type and lead with agent_line and retired spores name successor_id for one replacement or successor_ids for a split. With no status filter, spores are active and plans active or in_progress. Use status "all" for every status, or name a status explicitly to search history. Use before making design decisions or debugging non-obvious issues. A word search ranks the newest ${SEARCH_WINDOW} matches, records whose title or line hold the words first; partial: true means older matches exist, and nextCursor continues into them. An answer never counts its matches. Queries must contain 1–${SEARCH_QUERY_MAX_CHARS} characters; longer queries are refused. Semantic search embeds the whole question. Word search ignores common words (${SEARCH_STOPWORDS.slice(0, 5).join(', ')}, …) and searches the first ${SEARCH_MAX_TERMS} meaningful words; wordTruncation reports actual and searched word counts when shortened, including semantic fallback. A search's later pages last ${SEARCH_WINDOW_TTL_MS / 60_000} minutes; an expired one answers cursor_expired: request the first page again. Example: {"query":"cobalt cache","type":"spore","mode":"fts"}`,
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
@@ -533,7 +532,7 @@ const definitions: readonly ServedToolDefinition[] = [
             "required": ["id"],
             "additionalProperties": false
           },
-          "description": `Sources to consolidate as ids or {id, revision?}. Curation runs require ${CURATION_CONSOLIDATE_MIN} to ${CURATION_CLUSTER_CAP} distinct whole-read sources with their exact nonnegative safe integer revisions. Every source moves together or none does. A source no longer active or past the supplied revision refuses with stale and saves nothing; reread it with get before deciding again.`
+          "description": `Sources to consolidate as ids or {id, revision?}. Every source moves together or none does. A source no longer active or past the supplied revision refuses with stale and saves nothing; reread it with get before deciding again.`
         },
         "consolidated_content": {
           "type": "string",

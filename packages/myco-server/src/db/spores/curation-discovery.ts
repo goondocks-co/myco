@@ -1,3 +1,4 @@
+import { curationConsiderationWrite } from './curation-answer.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import { capabilityOnSql, curationEnabledAtSql } from '../../db/settings/admission.js';
 import { curationChangeSql } from '../curation-changes.js';
@@ -163,7 +164,7 @@ const offerOwners = write<[project: string, key: string, members: string]>({
 /** Records a new assignment and its exclusive ownership in one commit; false when a member moved on or another group owns one. */
 export async function offerCurationCluster(db: RelationalStore, project: string, key: string, members: readonly CurationSeedMember[], now: number): Promise<boolean> {
   const encoded = JSON.stringify(members);
-  const committed = await commitNamed(db, { work: offerWork.bind(project, key, encoded, now), owners: offerOwners.bind(project, key, encoded) });
+  const committed = await commitNamed(db, { work: offerWork.bind(project, key, encoded, now), owners: offerOwners.bind(project, key, encoded), considered: curationConsiderationWrite({ project, members, outcome: 'offered', at: now }) });
   return committed.work.results.length === 1;
 }
 

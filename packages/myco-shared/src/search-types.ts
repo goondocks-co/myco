@@ -81,6 +81,7 @@ export interface SearchResult {
   learned_at: string;
   /** The recorded replacement of a superseded or consolidated spore. */
   successor_id?: string;
+  successor_ids?: string[];
   observation_type?: string;
   session_id?: string;
   prompt_id?: string;

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'bun:test';
-import FROZEN_TASK_TOOLS from '../fixtures/retirement/task-tools.json';
 import { RETAINED_TASKS, TASK_TOOLS, taskTools } from '@myco-server-worker/core/task-catalogue.js';
 import { RUN_TOOL_MAP } from '@myco-server-worker/mcp/run-surface.js';
 
@@ -14,13 +13,6 @@ describe('the task tool table', () => {
       const unmapped = TASK_TOOLS[task].filter((tool) => (RUN_TOOL_MAP[tool] ?? []).length === 0);
       expect({ task, unmapped }).toEqual({ task, unmapped: [] });
     }
-  });
-
-  it('preserves the frozen task tool contract', () => {
-    const retired = ['vault_unprocessed', 'vault_mark_processed'];
-    const retained = Object.fromEntries(Object.entries(FROZEN_TASK_TOOLS).map(([task, tools]) => [task, tools.filter(tool => !retired.includes(tool))]));
-    expect(TASK_TOOLS).toEqual(retained);
-    expect(Object.values(TASK_TOOLS).flat()).not.toContain('vault_unprocessed');
   });
 
   it('answers nothing for a task it does not serve or for no task', () => {

@@ -1,10 +1,22 @@
 import { expect } from 'bun:test';
 import { putCapability } from '../clients/requests.ts';
-import { owner, type RouteTarget } from './requests.ts';
+import { type SeedTarget } from './requests.ts';
+import { offerCurationGroup, curationMembers } from '../clients/curation.ts';
+import { endRun, putSetting, runTool } from '../clients/requests.ts';
+import { failRun, takeRun } from '../clients/runs.ts';
 
 /** The owner enables curation, lets it visit the knowledge, then pauses it with its discovery checkpoint retained. */
-export async function seedCuration(target: RouteTarget): Promise<void> {
-  expect((await putCapability(target, 'spore_curation', true)).status).toBe(200);
-  expect((await owner(target, '/api/wake', { method: 'POST' })).status).toBe(200);
+export async function seedCuration(target: SeedTarget): Promise<void> {
+  expect((await putSetting(target, 'agent.scheduled_tasks_enabled', false)).status).toBe(200);
+  await offerCurationGroup(target);
+  let reviewed = false;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const run = await takeRun(target);
+    if (run.task !== 'curate-spores') { await failRun(target, run); continue; }
+    expect(await runTool(target, run, 'myco_run_curation', { op: 'answer', notes: [], keep: curationMembers(run).map(member => member.id), retire: [], reason: 'Distinct single-situation guidance is retained.' })).toMatchObject({ completed: true });
+    expect(await endRun(target, run)).toMatchObject({ ended: true, status: 'completed' });
+    reviewed = true; break;
+  }
+  expect(reviewed).toBe(true);
   expect((await putCapability(target, 'spore_curation', false)).status).toBe(200);
 }

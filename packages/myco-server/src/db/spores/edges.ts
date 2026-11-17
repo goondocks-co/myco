@@ -1,3 +1,4 @@
+import { SPORE_SUCCESSOR_LIMIT } from './lineage-limit.js';
 import type { RelationalStore } from '../../core/adapters.js';
 import type { ReadScope } from '../../read/scope.js';
 import { readSet, read, rows, write } from '../index.js';
@@ -32,7 +33,7 @@ const edgesReady = read<[], { done: number }>({ name: 'sporeEdges.ready', sql: `
 
 const successors = read<[project: string, source: string, limit: number], { id: string }>({
   name: 'sporeEdges.successors',
-  sql: `SELECT target_id AS id FROM spore_resolution_edges INDEXED BY idx_spore_edges_successors WHERE project_id=?1 AND source_id=?2 AND action='supersede' ORDER BY last_event_at DESC,last_event_id DESC LIMIT ?3`,
+  sql: `SELECT target_id AS id FROM spore_resolution_edges INDEXED BY idx_spore_edges_successors WHERE project_id=?1 AND source_id=?2 AND action IN ('supersede','consolidate') GROUP BY target_id ORDER BY MAX(last_event_at) DESC,MAX(last_event_id) DESC LIMIT ?3`,
 });
 const predecessors = read<[project: string, target: string, limit: number], { id: string }>({
   name: 'sporeEdges.predecessors',
@@ -41,7 +42,7 @@ const predecessors = read<[project: string, target: string, limit: number], { id
 });
 const eventSuccessors = read<[project: string, source: string, limit: number], { id: string }>({
   name: 'sporeEdges.eventSuccessors',
-  sql: `SELECT new_spore_id AS id FROM resolution_events WHERE project_id=?1 AND spore_id=?2 AND action='supersede' AND new_spore_id IS NOT NULL
+  sql: `SELECT new_spore_id AS id FROM resolution_events WHERE project_id=?1 AND spore_id=?2 AND action IN ('supersede','consolidate') AND new_spore_id IS NOT NULL
     GROUP BY new_spore_id ORDER BY MAX(created_at) DESC,MAX(id) DESC LIMIT ?3`,
 });
 const eventPredecessors = read<[project: string, target: string, limit: number], { id: string }>({
@@ -59,7 +60,7 @@ async function lineage(db: RelationalStore, scope: ReadScope, sporeId: string, l
 }
 
 /** Every spore recorded as superseding this one, newest first. */
-export const listSupersedingSporeIds = (db: RelationalStore, scope: ReadScope, sporeId: string, limit = 10): Promise<string[]> =>
+export const listSupersedingSporeIds = (db: RelationalStore, scope: ReadScope, sporeId: string, limit = SPORE_SUCCESSOR_LIMIT): Promise<string[]> =>
   lineage(db, scope, sporeId, limit, successors, eventSuccessors);
 
 /** Every spore this one replaced, newest first: a supersede names one predecessor and a consolidate every source it merged. */

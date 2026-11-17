@@ -607,6 +607,7 @@ describe('versioned schema steps', () => {
     writerRows.set('task_due', { run_id: 'grammar-run', task: 'title-summary', origin: 'manual', claimable: 1 });
     writerRows.set('run_live', { run_id: 'grammar-run', task: 'title-summary', status: 'pending', origin: 'manual', claimable: 1 });
     writerRows.set('spore_curation_work', { cluster_key: 'grammar-fixture', members: '[]' });
+    writerRows.set('spore_curation_answers', { run_id: 'grammar-run', cluster_key: 'grammar-fixture', answer: null });
     writerRows.set('session_served_items', { session_id: 'grammar-session', kind: 'spore', item_id: 'grammar-spore' });
     writerRows.set('search_documents', { kind: 'spore', source_key: 'grammar-spore', record_at: 0, facets: 'grammar' });
     writerRows.set('search_blobs', { blob_key: 'grammar-blob', live_refs: 1, state: 'pending' });
@@ -700,7 +701,7 @@ describe('versioned schema steps', () => {
        'prompt_context_answers', 'prompt_identity_conflicts',  'publish_queue', 'raw_archive_refs', 'raw_resources', 'registered_content_proofs', 'release_check_due', 'release_propagation_due', 'release_state_unresolved', 'release_work_due', 'resolution_events',  'retired_objects', 'run_reads', 'run_served_material', 'search_blob_refs', 'search_blobs', 'search_documents', 'search_index_status', 'session_artifacts', 'session_chunks', 'session_documents', 'session_edit_paths', 'session_path_build', 'session_turn_entries', 'session_turn_totals', 'session_injections', 'session_pages', 'session_paths', 'session_prompts', 'session_read_facts', 'session_sealed_records', 'session_tombstones',
       'spore_count_facts', 'spore_counts', 'spore_session_counts', 'spore_daily', 'plan_count_facts', 'plan_counts', 'plan_metadata', 'project_activity', 'spore_resolution_edges', 'learning_project_counts', 'learning_ready_projects', 'session_served_items',
       'session_deletion_jobs', 'transcript_reread_jobs', 'spore_injections', 'spores', 'storage_cleanup_omissions', 'storage_cleanup_queue', 'storage_usage', 'tags',   'transcript_publication', 'transcript_segments', 'transcripts',
-      'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',
+      'learning_sessions', 'turn_cards', 'project_settings', 'spore_curation_answers', 'spore_curation_considerations', 'spore_curation_coverage', 'spore_curation_work', 'spore_curation_candidates', 'spore_curation_changes', 'spore_curation_cursor', 'spore_curation_owners', 'spore_curation_receipts',
     ].sort());
   });
 });

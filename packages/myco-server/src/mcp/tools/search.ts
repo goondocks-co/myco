@@ -1,8 +1,6 @@
 import { SEARCH_TOOL_LIMIT, type SearchOptions } from '@goondocks/myco-shared/search-types';
 import { searchDeployment } from '../../core/search.js';
 import { SearchRefused } from '../../core/search-query.js';
-import { searchCuration } from '../../core/spore-curation.js';
-import { CURATION_TASK } from '../../core/task-catalogue.js';
 import { failure, scopeOf, type ToolContext } from '../context.js';
 import { ToolError, type ToolInput } from '../validate.js';
 
@@ -22,7 +20,6 @@ export async function handleSearch(input: ToolInput, ctx: ToolContext): Promise<
   if (typeof input.cursor === 'string') options.cursor = input.cursor;
   for (const key of ['since', 'until'] as const) if (typeof input[key] === 'number') options[key] = input[key];
   try {
-    if (ctx.principal.kind === 'run' && ctx.principal.task === CURATION_TASK) return await searchCuration(ctx.env, scope.projectId, ctx.principal.runId, options.query);
     return await searchDeployment(ctx.env, scope, options, readerOf(ctx), ctx.now);
   }
   catch (error) {

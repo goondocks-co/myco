@@ -157,7 +157,7 @@ describe('the spore stream', () => {
     await waitFor(() => expect(cards()).toHaveLength(1));
     expect(cards()[0]!.textContent).toContain('Replaced');
     expect(cards()[0]!.getAttribute('data-spore')).toBe('superseded');
-    await pick('Saved', 'Saved in the past 7 days');
+    await pick('Date', 'Dated in the past 7 days');
     await asked(requested, `/api/spores?status=superseded&since=${since}&limit=25`);
     fireEvent.change(screen.getByRole('searchbox', { name: 'Filter spores' }), { target: { value: 'port' } });
     await asked(requested, `/api/search?q=port&type=spore&limit=20&since=${Math.floor(since! / 1000)}&status=superseded`);
@@ -315,6 +315,18 @@ describe('a spore’s article', () => {
   });
   const neighbour = (id: string, line: string) => () => Response.json({ spore: { ...spore({ id, agentLine: line }), sourceCreatedAt: null }, supersededBy: [], supersedes: [], resolution: null, authorTask: null });
 
+  it('shows both replacements when a consolidated note was split', async () => {
+    server(base({
+      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article({status:'consolidated',sessionId:null}, {supersededBy:['gotcha-7a8b9c0d','decision-2b3c4d5e'], supersedes:[]}),
+      [`/api/projects/${MYCO}/spores/gotcha-7a8b9c0d`]: neighbour('gotcha-7a8b9c0d','When checking out a branch, clear the cache.'),
+      [`/api/projects/${MYCO}/spores/decision-2b3c4d5e`]: neighbour('decision-2b3c4d5e','When delivery stalls, retain queued capture.'),
+      [`/api/projects/${MYCO}/sessions/s1`]: () => sessionAnswer,
+    }));
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+    expect(await screen.findByRole('link',{name:'When checking out a branch, clear the cache.'})).toBeTruthy();
+    expect(await screen.findByRole('link',{name:'When delivery stalls, retain queued capture.'})).toBeTruthy();
+  });
+
   it('reads as an article: the replacement first, the one line, the body, context, tags, how it changed, where it came from and the facts', async () => {
     server(base({
       [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article(),
@@ -375,9 +387,22 @@ describe('a spore’s article', () => {
     mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Decision saved Sep 29');
     expect(await screen.findByText('Saved by Ada.')).toBeTruthy();
+    expect(document.querySelector('[data-facts]')!.textContent).toContain('Saved');
     expect(document.querySelector('[data-spore-replaced]')).toBeNull();
     expect(document.querySelector('[data-spore-lineage]')).toBeNull();
     expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('labels a curated source date Observed and its application time Changed', async () => {
+    server(base({
+      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article({ createdAt: NOW - HOUR, observedAt: NOW - DAY, updatedAt: NOW, agentLine: null }, { supersededBy: [], supersedes: [] }),
+    }));
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+    expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Gotcha observed Sep 28');
+    const facts=document.querySelector('[data-facts]') as HTMLElement;
+    expect(facts.textContent).toContain('Observed');
+    expect(facts.textContent).toContain('Changed');
+    expect(facts.textContent).not.toContain('Saved');
   });
 
   it('says a spore Myco 1.4 wrote was imported, by the kind the server names, never by the author id’s shape', async () => {

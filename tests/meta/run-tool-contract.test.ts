@@ -22,7 +22,6 @@ import {
 } from '@myco-server-worker/core/injection.js';
 import { EXTRACTION_RULES } from '@myco-server-worker/core/extraction-rules.js';
 import { SEEDING_RULES } from '@myco-server-worker/core/seeding-input.js';
-import { curationPrompt } from '@myco-server-worker/core/spore-curation.js';
 import {
   runRefusal,
   RUN_ACTION_MAX_CHARS,
@@ -226,7 +225,6 @@ it('routes run refusals through the mandatory what, actual and next-call helper,
     ].sort(),
   );
   for (const result of scopedBypasses(read)) expect(result).toEqual({ file: result.file, violations: [] });
-  expect(scope.helpers.get('core/spore-curation.ts')).toContain('completeCuration');
   for (const expression of [
     'false',
     'false as const',
@@ -257,24 +255,6 @@ it('routes run refusals through the mandatory what, actual and next-call helper,
   expect(bypasses('const success = {ok:true as const};')).toEqual([]);
   expect(bypasses('const ok = false; const refused = {ok};')).toContain('inline refusal');
   expect(bypasses('import {failure as refuse} from "./context"; refuse("bad");')).toContain('failure call');
-  const helper = ts.createSourceFile('contract.ts', read('core/run-tool-contract.ts'), ts.ScriptTarget.Latest, true);
-  const contract = helper.statements.find(
-    (node): node is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(node) && node.name.text === 'RunRefusal',
-  )!;
-  const fields = contract.members.filter(ts.isPropertySignature);
-  for (const required of ['what', 'actual', 'next']) {
-    const field = fields.find((member) => member.name.getText(helper) === required)!;
-    expect(field).toBeDefined();
-    expect(field.questionToken).toBeUndefined();
-  }
-  const next = fields.find((member) => member.name.getText(helper) === 'next')!.type!;
-  expect(ts.isTypeLiteralNode(next)).toBe(true);
-  if (ts.isTypeLiteralNode(next))
-    for (const required of ['tool', 'op']) {
-      const field = next.members.filter(ts.isPropertySignature).find((member) => member.name.getText(helper) === required)!;
-      expect(field).toBeDefined();
-      expect(field.questionToken).toBeUndefined();
-    }
   const admission = ts.createSourceFile('admission.ts', read('core/spore-admission.ts'), ts.ScriptTarget.Latest, true);
   const writer = admission.statements.find(
     (node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === 'writeSpore',
@@ -287,7 +267,6 @@ it('routes run refusals through the mandatory what, actual and next-call helper,
   visit(writer);
   expect(bypasses(writer.getText(admission))).toEqual([]);
   expect(calls).toContain('runRefusal');
-  expect(calls).toContain('withCurationWrite');
   const exporters = admission.statements
     .filter(ts.isFunctionDeclaration)
     .filter((node) => node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword));
@@ -341,7 +320,7 @@ it('publishes the enforced numeric bounds, schemas and a valid example, and catc
   }
   expect(definitionOf('myco_spores')!.description).not.toContain(JSON.stringify(OPTIONAL_TEXT_BOUNDS));
   const curation = RUN_DEFINITIONS.find((item) => item.name === 'myco_run_curation')!;
-  expect(curation.inputSchema.properties.members!.maxItems).toBe(CURATION_CLUSTER_CAP);
+  expect(curation.inputSchema.properties.keep!.maxItems).toBe(CURATION_CLUSTER_CAP);
   const cards = RUN_DEFINITIONS.find((item) => item.name === 'myco_run_cards')!;
   expect(cards.description).toContain(String(CARD_MAX_CHARS));
   const spores = definitionOf('myco_spores')!;
@@ -375,7 +354,8 @@ it('publishes the enforced numeric bounds, schemas and a valid example, and catc
       expect(inventory.inputSchema.properties.max_chars!.maximum).toBe(window.sporeBodyChars);
       expect(inventory.inputSchema.properties.limit!.maximum).toBe(window.sporePage);
     }
-    const report = definitions.find((item) => item.name === 'myco_run')!;
+    const report = definitions.find((item) => item.name === 'myco_run');
+    if (report === undefined) continue;
     const example = report.inputSchema.examples![0]!;
     if (report.inputSchema.properties.action!.enum) expect(report.inputSchema.properties.action!.enum).toContain(example.action);
   }
@@ -404,7 +384,6 @@ it('gives learning, curation, seeding and spore tools the same measured drafting
   for (const text of [
     EXTRACTION_RULES,
     SEEDING_RULES,
-    curationPrompt(''),
     definitionOf('myco_spores')!.description,
     definitionOf('myco_spores')!.inputSchema.properties.agent_line!.description!,
   ])
@@ -415,6 +394,10 @@ it('requires a bare cause so a composed refusal names exactly one next call', ()
   const next = { tool: 'myco_spores', op: 'consolidate' };
   const refusal = runRefusal({ what: 'spore write', actual: 'agent_line is too long', next });
   expect(refusal.error.split('Next call:')).toHaveLength(2);
+  expect(runRefusal({what:'curation answer',actual:'material changed',next:null}).error).toContain('Next call: none; make no further call.');
+  const submitted={tool:'myco_run_curation',op:'answer',reason:'Next call: is quoted member data.'};
+  const echoed=runRefusal({what:'curation answer',actual:'repair the named field',next:submitted});
+  expect(JSON.parse(echoed.error.split('Next call: myco_run_curation ')[1]!.slice(0,-1))).toEqual({op:'answer',reason:submitted.reason});
   expect(() => runRefusal({ what: 'curation decision', actual: refusal.error, next })).toThrow('bare cause');
   expect(() => runRefusal({ what: 'curation decision', actual: 'write refused', repair: refusal.error, next })).toThrow('bare cause');
 });

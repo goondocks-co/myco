@@ -21,7 +21,7 @@ export const SPORE_COLUMNS = `id, agent_id AS agentId, session_id AS sessionId,
   observation_type AS observationType, status, revision, content, context, importance,
   file_path AS filePath, tags, content_hash AS contentHash, properties, author,
   provenance_kind AS provenanceKind, provenance_ref AS provenanceRef, agent_line AS agentLine,
-  created_at AS createdAt, updated_at AS updatedAt, embedded`;
+  created_at AS createdAt, observed_at AS observedAt, updated_at AS updatedAt, embedded`;
 /** A read's columns: the row, and who its author is. */
 export const SPORE_READ_COLUMNS = `${SPORE_COLUMNS}, ${AUTHOR_KIND} AS authorKind`;
 

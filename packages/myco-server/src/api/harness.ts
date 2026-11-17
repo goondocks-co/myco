@@ -27,7 +27,7 @@ import { deploymentTaskCeilingWindow } from '../db/runs/claim.js';
 import { memberRunsPerDay } from '../core/schedule-rules.js';
 import { isAdmin } from '../auth/roles.js';
 import { emit } from '../telemetry.js';
-import { runTimeoutForTask } from '../core/task-catalogue.js';
+import { CURATION_TASK, runTimeoutForTask } from '../core/task-catalogue.js';
 import { buildTaskInput } from '../core/task-inputs.js';
 import { badRequest, ok, readJsonObject } from './scope.js';
 
@@ -90,13 +90,15 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
   }
   const dryRun = body.dryRun === true;
   const fresh = body.fresh === true;
+  if (task === CURATION_TASK && (!dryRun || !isAdmin(ctx.member.role))) return badRequest('curate-spores hand starts require an administrator and dryRun:true; normal groups are pulled by runners');
+  const params = task === CURATION_TASK && typeof body.group === 'string' ? { group: body.group } : undefined;
   // A fresh run is one over input that has not moved; only an admin spends on that.
   if (fresh && !isAdmin(ctx.member.role)) return Response.json({ error: 'fresh_needs_admin' }, { status: 403 });
   const prepared = await prepareDispatch(env, task, projectId);
   if (!prepared.ok) return refuseAdmission(prepared.refusal, prepared.capability);
   const ceiling = await memberCeiling(env, ctx, task);
   // Unchanged input returns without dispatching a run.
-  const built = await buildTaskInput(env, task, projectId, ctx.now, { fresh });
+  const built = await buildTaskInput(env, task, projectId, ctx.now, { fresh, params });
   if (built !== null && built.unchanged) {
     emit({ kind: 'harness_unchanged', task, projectId, actor: ctx.member.id });
     return ok({ outcome: 'unchanged' });
@@ -105,7 +107,7 @@ export async function handleHarnessDispatch(env: ServerEnv, ctx: OwnerContext): 
     ? {}
     : { instruction: built.input.instruction, inputHash: built.input.inputHash, counts: built.input.counts };
   try {
-    return ok(await dispatchPrepared(env, prepared.prepared, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } }));
+    return ok(await dispatchPrepared(env, prepared.prepared, { serverUrl: ctx.url.origin, actor: ctx.member.id, timeoutSeconds, ...input, params, options: { dryRun, fresh } }, ctx.now, { ceiling, actor: { memberId: ctx.member.id, authority: isAdmin(ctx.member.role) ? 'admin' : 'member' } }));
   } catch (error) {
     if (error instanceof CeilingReached && ceiling !== undefined) return dailyLimit(env, ceiling, ctx.now);
     if (error instanceof DispatchAdmissionRefused) return refuseAdmission(error.refusal, error.capability);
