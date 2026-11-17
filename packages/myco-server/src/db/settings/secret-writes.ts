@@ -12,6 +12,14 @@ export const removeSecret = write<[string], { name: string }>({
   name: 'settings.removeSecret',
   sql: 'DELETE FROM deployment_secrets WHERE name=? RETURNING name',
 });
+/**
+ * Sealed rows of names this release admits nowhere: the retired global GitHub key and the per-Project repository and
+ * release tokens, which a previous release serving during an update can write after the schema step removed them.
+ */
+export const removeRetiredSecrets = write<[], { name: string }>({
+  name: 'settings.removeRetiredSecrets',
+  sql: "DELETE FROM deployment_secrets WHERE name='github' OR substr(name,1,11)='repository:' OR substr(name,1,19)='release-provenance:' RETURNING name",
+});
 
 /** Record a committed deletion without exposing the stored value. */
 export function recordSecretDeletion(name: string, actor: string, nowMs: number, deleted: boolean): void {

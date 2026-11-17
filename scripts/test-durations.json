@@ -1021,7 +1021,7 @@
     "recall gold set: real prompts served through the shipped path hold to the recorded baseline": 230000,
     "recall: semantic configuration, independent guidance and capability admission": 19000,
     "receipt snapshots: served plan metadata survives edits and source tombstones redact it": 60000,
-    "repositories: App-backed connection refusals, repository notices and retired run route": 14000,
+    "repositories: approve and connect through the App, a stranger refused, notices and retired run route": 14000,
     "repository preparation failure: leased worker metadata reaches runs and work on both targets": 18000,
     "retired schema: backup restore-upload skips retired tables and refuses unknown tables": 15000,
     "run reads: a run's read of its session is recorded, and a member reads it off the session and the run": 22000,

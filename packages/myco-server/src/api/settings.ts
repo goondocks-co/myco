@@ -1,6 +1,4 @@
 import type { ServerEnv } from '../core/adapters.js';
-import { removeRetiredSecrets } from '../db/settings/retired-secrets.js';
-import { recordSecretDeletion } from '../db/settings/secret-writes.js';
 import { INTERVAL_SETTING, stopDisabledRecovery } from '../core/recovery-schedule.js';
 import { machineBlockFor } from '../core/machine-settings.js';
 import type { CredentialContext } from '../context.js';
@@ -448,8 +446,8 @@ export const handleSetProjectCapability = settingRevisionRoute(ctx => `project.$
  * A stored row under a name no slot admits any more is removed first.
  */
 export async function handleSecrets(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  for (const name of await removeRetiredSecrets(env.db)) recordSecretDeletion(name, ctx.member.id, ctx.now, true);
   const store = deploymentSecretStore(env.db, env.wrappingKey);
+  await store.removeRetired(ctx.member.id, ctx.now);
   const described = await Promise.all(SECRET_SLOTS.map(async (name) => ({ name, ...(await store.describe(name)) })));
   return ok({ secrets: described });
 }

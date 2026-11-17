@@ -16,7 +16,7 @@ export const GITHUB_APP_PROJECT_STEPS: readonly SchemaStep[] = [
   {
     version: NEXT_GITHUB_APP_PROJECTS,
     // The previous release can still write one of these names until the new Worker serves; the new release's admin read of
-    // stored keys removes any it finds (`db/settings/retired-secrets.ts`).
+    // stored keys removes any it finds (`SecretStore.removeRetired`).
     statements: ["DELETE FROM deployment_secrets WHERE name='github' OR substr(name,1,11)='repository:' OR substr(name,1,19)='release-provenance:'"],
     reaches: changing(['deployment_secrets'], 'Repository and release tokens and the retired global GitHub slot are no longer read by anything.'),
   },
