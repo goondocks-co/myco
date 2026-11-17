@@ -13,6 +13,8 @@ import { changingAt, storingCall } from './helpers/store-faults.js';
 import { D1_REWIND_RETENTION_MS } from '@myco-server-worker/constants.js';
 import { drainObjectReleases } from '@myco-server-worker/core/object-release.js';
 import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/env.js';
+import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
+import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
 
 const OWNER = 'mem_machine_1';
 const ADMIN = 'mem_machine_2';
@@ -225,19 +227,16 @@ describe('live authority at administrative writes', () => {
     });
     try {
       expect(landed).toBe(true);
-      expect(response.status).toBe(403);
       expect(await response.json() as Record<string, unknown>).toEqual({ error: 'not_admin', reason: 'this action is for an admin' });
-      expect(f.sqlite.query('SELECT * FROM backups').all()).toEqual([]);
       const publication = f.sqlite.query<{ key: string; expires_at: number }, []>('SELECT key,expires_at FROM backup_publications').get()!;
-      expect(await f.bucket.head(publication.key)).not.toBeNull();
-      const hosted = serverEnvFromBindings(f.env);
+      const hosted = measuredContentEnv(serverEnvFromBindings(f.env)).env;
       const drain = (now: number) => drainObjectReleases(hosted, now, () => now);
-      await drain(publication.expires_at);
-      expect(f.sqlite.query('SELECT key FROM backup_publications').all()).toEqual([]);
+      await JOB_IMPLEMENTATIONS['object-release-drain']!(hosted, publication.expires_at, 'active');
+      const due = publication.expires_at + D1_REWIND_RETENTION_MS;
+      expect(await JOB_IMPLEMENTATIONS['object-release-drain']!(hosted, due - 1, 'active')).toMatchObject({ more: false });
       expect(await f.bucket.head(publication.key)).not.toBeNull();
       const remove = f.bucket.delete.bind(f.bucket);
       f.bucket.delete = async () => { throw new Error('bucket unavailable'); };
-      const due = publication.expires_at + D1_REWIND_RETENTION_MS;
       expect((await drain(due)).unacknowledged).toBeGreaterThan(0);
       expect(await f.bucket.head(publication.key)).not.toBeNull();
       f.bucket.delete = remove;

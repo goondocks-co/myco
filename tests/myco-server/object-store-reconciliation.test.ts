@@ -7,17 +7,15 @@ import { serverEnvFromBindings } from '@myco-server-worker/platform/cloudflare/e
 import { SCHEMA_STEPS } from '@myco-server-worker/db/schema.js';
 import { createProject } from '@myco-server-worker/db/storage/projects.js';
 import type { BlobListOptions, ObjectReleaseStore, RelationalStore } from '@myco-server-worker/core/adapters.js';
-import { measuredContentEnv } from '@myco-server-worker/core/content-budget.js';
-import { JOB_IMPLEMENTATIONS } from '@myco-server-worker/core/jobs-run.js';
-import { BLOB_RESERVATION_TTL_MS, D1_REWIND_RETENTION_MS } from '@myco-server-worker/constants.js';
+import { BLOB_RESERVATION_TTL_MS } from '@myco-server-worker/constants.js';
 import { blobObjectKey } from '@myco-server-worker/core/blob-objects.js';
 import { DRAIN_PAGE, drainObjectReleases, objectReleaseBacklogged, resetRecoveryLedger } from '@myco-server-worker/core/object-release.js';
 import { acquireRecoveryHold } from '@myco-server-worker/db/recovery/holds.js';
 import { OBJECT_RECONCILE_PASS_MS, OBJECT_WALK_QUARANTINE_MS, reconcileStoredObjects } from '@myco-server-worker/db/storage/object-reconciliation.js';
-import { RELEASE_PAGE, releaseAgedOrphans, recordObservedCandidates } from '@myco-server-worker/db/storage/release-queue.js';
+import { RELEASE_PAGE, recordObservedCandidates } from '@myco-server-worker/db/storage/release-queue.js';
 import { readDeploymentStorageUsage } from '@myco-server-worker/db/storage/usage.js';
 import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
-import { recordingLimiter, memoryBlobStore, type MemoryBlobStore } from './helpers/fixtures.js';
+import { memoryBlobStore, type MemoryBlobStore } from './helpers/fixtures.js';
 import { withDocumentStores } from './helpers/document-stores.js';
 
 const NOW = 1_800_000_000_000;
@@ -374,24 +372,3 @@ describe('the drain owes its backlog', () => {
     expect(waiting).toEqual({ n: DRAIN_PAGE + 2, due: NOW - 1_000 + BLOB_RESERVATION_TTL_MS });
   }));
 });
-
-
-it('the measured hosted drain job holds released bytes and retries an unacknowledged delete', () => withDocumentStores(async (db) => {
-  const bucket = memoryBlobStore();
-  seeded(bucket, objectOf(1));
-  await register(db, 1);
-  const hosted = serverEnvFromBindings({ MYCO_DB: db, BUCKET: bucket, SOURCE_LIMIT: recordingLimiter(), TOKEN_LIMIT: recordingLimiter() });
-  const measured = measuredContentEnv(hosted).env;
-  const drain = (now: number) => JOB_IMPLEMENTATIONS['object-release-drain']!(measured, now, 'active');
-  await releaseAgedOrphans(db, [{ projectId: 'project', key: key(1), generation: generation(1) }], NOW, AGED.getTime());
-  const retained = await drain(NOW + D1_REWIND_RETENTION_MS - 1);
-  expect(await bucket.head(objectOf(1))).not.toBeNull();
-  expect(retained).toMatchObject({ more: false });
-  const remove = bucket.delete.bind(bucket);
-  bucket.delete = async () => { throw new Error('bucket unavailable'); };
-  await drain(NOW + D1_REWIND_RETENTION_MS);
-  expect(await bucket.head(objectOf(1))).not.toBeNull();
-  bucket.delete = remove;
-  await drain(NOW + D1_REWIND_RETENTION_MS + 60 * 60 * 1000);
-  expect(await bucket.head(objectOf(1))).toBeNull();
-}));
