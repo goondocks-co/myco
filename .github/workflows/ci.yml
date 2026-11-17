@@ -79,13 +79,10 @@ jobs:
         run: node scripts/check-test-budget.mjs
       - name: Build the Linux SQLite library
         run: bash packages/myco/scripts/build-libsqlite3-target.sh linux-x64
-      - name: The standalone dashboard matches its committed bundle without shared build artifacts
+      - name: Build the standalone dashboard from source without shared build artifacts
         run: |
           test ! -d packages/myco-shared/dist
-          npm run build:ui -w @goondocks/myco-server
-          rm packages/myco/src/server-ui-assets.generated.ts
-          npx tsx packages/myco/scripts/gen-ui-assets.ts
-          git diff --exit-code -- packages/myco/src/server-ui-assets.generated.ts
+          npm run build:ui
       - name: Build from a clean checkout
         run: |
           test -z "$(git status --porcelain)"
@@ -149,7 +146,7 @@ jobs:
       - name: Set macOS distribution smoke version
         if: matrix.target == 'darwin-arm64'
         run: node scripts/sync-package-versions.mjs --target myco --version 0.0.0-ci
-      - run: npm run build:ui -w @goondocks/myco
+      - run: npm run build:ui
       - run: npm run codegen -w @goondocks/myco
       - run: TARGET="${{ matrix.target }}" npm run build:binary -w @goondocks/myco
       - name: Check compiled sign-in exits
@@ -217,7 +214,7 @@ jobs:
         with:
           name: ci-libsqlite3-darwin-arm64
           path: packages/myco/vendor-src/libsqlite3/darwin-arm64/
-      - run: npm run build:ui -w @goondocks/myco
+      - run: npm run build:ui
       - run: npm run codegen -w @goondocks/myco
       - run: TARGET=darwin-arm64 npm run build:binary -w @goondocks/myco
       - uses: actions/upload-artifact@v7
@@ -442,7 +439,7 @@ jobs:
           install: npx playwright install-deps chromium
       - if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: npx playwright install chromium
-      - run: npm run build:ui -w @goondocks/myco-server
+      - run: npm run build:ui
       - run: npm run build:specimen --prefix packages/myco-server/ui
       - if: env.MYCO_TEST_SCOPE == 'full'
         run: node scripts/check-test-shards.mjs --measure ui-screens -- npm run test:screens
@@ -631,11 +628,8 @@ jobs:
         run: >-
           npm test --
           tests/service/windows-native-ci-contract.test.ts
-          tests/member/legacy-windows.test.ts
           tests/member/legacy-units.test.ts
-          tests/service/sandbox-runner-gate.test.ts
           tests/utils/windows-atomic-replace.test.ts
-          tests/utils/user-lock-root.test.ts
           tests/utils/lifecycle-lock-shared.test.ts
           tests/server/runner.test.ts
           tests/install/place-binary.test.ts

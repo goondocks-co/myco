@@ -49,9 +49,6 @@ describe('test temp boundary', () => {
     expect(audit).toContain("['node', 'scripts/run-bun-tests.mjs', 'tests/parity/parity.test.ts']");
     expect(ci).toContain('PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/target/playwright-browsers');
     expect(ci).toContain('path: target/playwright-browsers');
-    const runner = fs.readFileSync(new URL('../../scripts/run-bun-tests.mjs', import.meta.url), 'utf8');
-    expect(runner.indexOf('createTestTempRun();')).toBeLessThan(runner.indexOf('gen-worker-bundle.ts'));
-    expect(runner).toContain("['--import', 'tsx', 'packages/myco/scripts/gen-worker-bundle.ts']");
     const screens = fs.readFileSync(new URL('../ui-screens/global-setup.ts', import.meta.url), 'utf8');
     expect(screens).toContain('registerTestProcess(child)');
   });

@@ -53,3 +53,7 @@ packages/myco/src/worker-bundle.generated.ts
 
 # Bun compile scratch binaries (#1954)
 *.bun-build
+
+# Dashboard build carrier and its local content cache
+packages/myco/src/server-ui-assets.generated.ts
+packages/myco/src/server-ui-assets.generated.ts.inputs.json

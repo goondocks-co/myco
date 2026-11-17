@@ -26,6 +26,15 @@ function buildSingleTarget() {
   }
 
   const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const dashboard = spawnSync(process.execPath, ['--import', 'tsx', path.join(pkgRoot, 'scripts', 'gen-ui-assets.ts')], {
+    cwd: pkgRoot, stdio: 'inherit', env: process.env,
+  });
+  if (dashboard.error || dashboard.status !== 0) {
+    throw new Error('[build:binary] Dashboard preparation failed. Run `npm run build:ui` from the repository root.', { cause: dashboard.error });
+  }
+  if (!fs.existsSync(path.join(pkgRoot, 'src', 'server-ui-assets.generated.ts'))) {
+    throw new Error('[build:binary] Dashboard bundle is absent. Run `npm run build:ui` from the repository root.');
+  }
   const entry = path.join(pkgRoot, 'src', 'entries', `cli.${target}.ts`);
   if (!fs.existsSync(entry)) {
     process.stderr.write(`[build:binary] missing entry: ${entry}\n`);
