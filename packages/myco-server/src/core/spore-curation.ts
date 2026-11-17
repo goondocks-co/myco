@@ -19,7 +19,7 @@ import { VECTOR_LOST_MS } from './embedding/provider.js';
 import { CURATION_BODY_CHARS, CURATION_ANSWER_BOUNDS, CURATION_MATERIAL_BYTES } from './spore-curation-contract.js';
 import { runRefusal } from './run-tool-contract.js';
 import { checkCurationAnswer } from './curation-answer.js';
-import { CURATION_ANSWER_ATTEMPTS, CURATION_ANSWER_EXAMPLE } from './spore-curation-contract.js';
+import { CURATION_ANSWER_ATTEMPTS } from './spore-curation-contract.js';
 import { getRun } from '../db/runs/lifecycle.js';
 import { commitCurationAnswer, curationAnswerChanged, reserveCurationAnswer, readCurationAnswer, type CheckedCuration } from '../db/spores/curation-answer.js';
 import { recordCurationConsidered } from '../db/spores/curation-answer.js';
@@ -34,7 +34,7 @@ import { readCurationDueHead } from '../db/spores/curation-run.js';
 export const CURATION_SEED_CLOSENESS = 5.0;
 /** Topic candidates must be at least three standard deviations closer than usual on both sides. */
 const CURATION_GROUP_CLOSENESS = 3.0;
-const CURATION_SEED_CAP = 8;
+export const CURATION_SEED_CAP = 8;
 export const CURATION_SEEDS_PER_TICK = 8;
 const CURATION_NEIGHBORS = 48;
 
@@ -152,7 +152,7 @@ export async function buildCurationInput(env: Pick<ServerEnv, 'db'>, projectId: 
   const kept=seeds.map((member,i)=>({member,spore:spores[i]!}));
   const materialFor = () => JSON.stringify(kept.map(({ spore }) => ({
     id: spore.id, revision: spore.revision, observation_type: spore.observationType,
-    observed: new Date(spore.observedAt).toISOString(),
+    observed: new Date(spore.learnedAt).toISOString(),
     agent_line: spore.agentLine, content: spore.content,
   })));
   let material=materialFor(), materialBytes=new TextEncoder().encode(material).length;
@@ -214,10 +214,11 @@ export async function answerSporeCuration(input: Record<string, unknown>, ctx: {
 }): Promise<unknown> {
   const assignment = curationAssignment(ctx.runContext);
   const ids = assignment?.members.map(member => member.id) ?? [];
-  const next = { tool: 'myco_run_curation', ...CURATION_ANSWER_EXAMPLE, notes: [], keep: ids, reason: 'The group contains distinct single-situation notes.' };
-  const refuse = (actual: string) => runRefusal({ what: 'curation answer', actual, next,
-    repair: 'No note, lifecycle change or review receipt was saved. Send notes, keep, retire and reason using exact offered ids. Correct once; after the second refusal, end this attempt.' });
-  if (assignment === null) return refuse('this run has no offered group; wait for an assigned group before answering');
+  const refuse = (actual: string, { terminal = false }: { terminal?: boolean } = {}) => runRefusal({ what: 'curation answer', actual,
+    next: terminal ? null : { ...input, tool: TOOL, op: 'answer' },
+    repair: terminal ? 'No note, lifecycle change or review receipt was saved. End this attempt.'
+      : 'No note, lifecycle change or review receipt was saved. Repair only the named field or disposition in your submitted answer below, preserving the rest; submit that correction once.' });
+  if (assignment === null) return refuse('this run has no offered group; wait for an assigned group before answering', { terminal: true });
   const submission = await reserveCurationAnswer(ctx.db, ctx.projectId, ctx.runId, assignment.key);
   if (submission === null) {
     const stored = await readCurationAnswer(ctx.db, ctx.projectId, ctx.runId);
@@ -226,25 +227,25 @@ export async function answerSporeCuration(input: Record<string, unknown>, ctx: {
       const repeated = checkCurationAnswer(input, ids);
       if (typeof repeated !== 'string' && JSON.stringify(repeated) === JSON.stringify(checked.answer))
         return { completed: true, applied: stored.applied === 1, notes: checked.notes.map(note => ({ id: note.id, observed: new Date(note.createdAt).toISOString() })) };
-      return refuse('an accepted answer already stands; this call cannot replace it');
+      return refuse('an accepted answer already stands; this call cannot replace it', { terminal: true });
     }
-    return refuse(`answer submissions have reached ${CURATION_ANSWER_ATTEMPTS} of ${CURATION_ANSWER_ATTEMPTS}; end this attempt and wait for the next offered group`);
+    return refuse(`answer submissions have reached ${CURATION_ANSWER_ATTEMPTS} of ${CURATION_ANSWER_ATTEMPTS}; end this attempt and wait for the next offered group`, { terminal: true });
   }
   const answer = checkCurationAnswer(input, ids);
-  if (typeof answer === 'string') return refuse(`${answer}; submission ${submission.submissions} of ${CURATION_ANSWER_ATTEMPTS}`);
+  if (typeof answer === 'string') return refuse(`${answer}; submission ${submission.submissions} of ${CURATION_ANSWER_ATTEMPTS}`, { terminal: submission.submissions >= CURATION_ANSWER_ATTEMPTS });
   const scope = { projectId: ctx.projectId };
   const work = await readCurationWork(ctx.db, ctx.projectId, assignment.key);
   const run = await getRun(ctx.db, scope, ctx.runId);
-  if (work === null || run === null) return refuse('the offered group or run is missing; end this attempt');
+  if (work === null || run === null) return refuse('the offered group or run is missing; end this attempt', { terminal: true });
   const sources = await sporesWithSourceById(ctx.db, scope, ids);
   const missing = assignment.members.find(member => { const source = sources.get(member.id); return source === undefined || source.revision !== member.revision || source.status !== 'active'; });
-  if (missing !== undefined) return { ...refuse(`member ${JSON.stringify(missing.id)} is ${sources.get(missing.id)?.status ?? 'missing'} at revision ${sources.get(missing.id)?.revision ?? 'missing'}; offered active revision ${missing.revision}; end this attempt, the group will be offered again`), code: 'material_changed' };
+  if (missing !== undefined) return { ...refuse(`member ${JSON.stringify(missing.id)} is ${sources.get(missing.id)?.status ?? 'missing'} at revision ${sources.get(missing.id)?.revision ?? 'missing'}; offered active revision ${missing.revision}; end this attempt, the group will be offered again`, { terminal: true }), code: 'material_changed' };
   const notes = answer.notes.map(note => {
-    const observed = Math.max(...note.sources.map(id => sources.get(id)!.observedAt));
+    const observed = Math.max(...note.sources.map(id => sources.get(id)!.learnedAt));
     return {
       id: `${note.observation_type}-${crypto.randomUUID()}`, agentId: ctx.agentId, sessionId: null, observationType: note.observation_type,
       content: note.content, agentLine: note.agent_line, context: null, filePath: null, tags: null, contentHash: null, properties: null, author: ctx.runId,
-      createdAt: observed, observedAt: observed,
+      createdAt: observed, observedAt: observed, updatedAt: ctx.now,
     };
   });
   try {
@@ -254,6 +255,6 @@ export async function answerSporeCuration(input: Record<string, unknown>, ctx: {
   } catch (error) {
     const changed = curationAnswerChanged(error);
     if (changed === null) throw error;
-    return { ...refuse(`${changed}; end this attempt, the group will be offered again`), code: 'material_changed' };
+    return { ...refuse(`${changed}; end this attempt, the group will be offered again`, { terminal: true }), code: 'material_changed' };
   }
 }

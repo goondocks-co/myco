@@ -58,7 +58,7 @@ async function expectStream(page: Page, viewport: ViewportName): Promise<void> {
   await expect(bar).toHaveCount(1);
   await expect(bar).toBeInViewport();
   await expect(bar.getByRole('searchbox', { name: 'Filter spores' })).toBeVisible();
-  for (const name of ['Status', 'Observed']) await expect(bar.getByRole('combobox', { name })).toBeVisible();
+  for (const name of ['Status', 'Date']) await expect(bar.getByRole('combobox', { name })).toBeVisible();
   await expect(cards(page).first()).toBeInViewport();
   if (viewport === 'desktop') {
     await expect(page.getByRole('region', { name: 'Type' })).toBeInViewport();

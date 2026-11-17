@@ -157,7 +157,7 @@ describe('the spore stream', () => {
     await waitFor(() => expect(cards()).toHaveLength(1));
     expect(cards()[0]!.textContent).toContain('Replaced');
     expect(cards()[0]!.getAttribute('data-spore')).toBe('superseded');
-    await pick('Observed', 'Observed in the past 7 days');
+    await pick('Date', 'Dated in the past 7 days');
     await asked(requested, `/api/spores?status=superseded&since=${since}&limit=25`);
     fireEvent.change(screen.getByRole('searchbox', { name: 'Filter spores' }), { target: { value: 'port' } });
     await asked(requested, `/api/search?q=port&type=spore&limit=20&since=${Math.floor(since! / 1000)}&status=superseded`);
@@ -387,9 +387,22 @@ describe('a spore’s article', () => {
     mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
     expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Decision saved Sep 29');
     expect(await screen.findByText('Saved by Ada.')).toBeTruthy();
+    expect(document.querySelector('[data-facts]')!.textContent).toContain('Saved');
     expect(document.querySelector('[data-spore-replaced]')).toBeNull();
     expect(document.querySelector('[data-spore-lineage]')).toBeNull();
     expect(rawIdsInPage()).toEqual([]);
+  });
+
+  it('labels a curated source date Observed and its application time Changed', async () => {
+    server(base({
+      [`/api/projects/${MYCO}/spores/gotcha-1a2b3c4d`]: () => article({ createdAt: NOW - HOUR, observedAt: NOW - DAY, updatedAt: NOW, agentLine: null }, { supersededBy: [], supersedes: [] }),
+    }));
+    mount(`/p/${MYCO}/spores/gotcha-1a2b3c4d`);
+    expect((await screen.findByRole('heading', { level: 1 })).textContent).toBe('Gotcha observed Sep 28');
+    const facts=document.querySelector('[data-facts]') as HTMLElement;
+    expect(facts.textContent).toContain('Observed');
+    expect(facts.textContent).toContain('Changed');
+    expect(facts.textContent).not.toContain('Saved');
   });
 
   it('says a spore Myco 1.4 wrote was imported, by the kind the server names, never by the author id’s shape', async () => {

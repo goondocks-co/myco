@@ -186,7 +186,7 @@ describe('portable machine identities', () => {
       source.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,decision,reason,decided_at) VALUES('proj_bk','review','[]','keep','Distinct guidance.',1)");
       source.sqlite.run("INSERT INTO spore_curation_receipts(project_id,spore_id,revision,cluster_key) VALUES('proj_bk','reviewed',0,'review')");
       for (const id of ['reviewed', 'unconsidered']) source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES('proj_bk',?,'agent_bk','gotcha','Retain this guidance.',1)", [id]);
-      expect(await readCurationCoverage(source.db, 'proj_bk')).toBe(1);
+      expect(await readCurationCoverage(source.db, 'proj_bk')).toEqual({unconsidered:1,unevaluated:0});
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
@@ -207,7 +207,7 @@ describe('portable machine identities', () => {
       source.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,decision,reason,decided_at) VALUES('proj_bk','review','[]','keep','Distinct guidance.',1)");
       source.sqlite.run("INSERT INTO spore_curation_receipts(project_id,spore_id,revision,cluster_key) VALUES('proj_bk','reviewed',0,'review')");
       for (const id of ['reviewed', 'unconsidered']) source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES('proj_bk',?,'agent_bk','gotcha','Retain this guidance.',1)", [id]);
-      expect(await readCurationCoverage(source.db, 'proj_bk')).toBe(1);
+      expect(await readCurationCoverage(source.db, 'proj_bk')).toEqual({unconsidered:1,unevaluated:0});
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       const lines = artifact.text.trim().split('\n').map((line) => JSON.parse(line) as { t?: string; r?: Record<string, unknown> });
@@ -492,13 +492,13 @@ describe('spore revision recovery', () => {
       source.sqlite.run("INSERT INTO spore_curation_work(project_id,cluster_key,members,decision,reason,decided_at) VALUES('proj_bk','review','[]','keep','Distinct guidance.',1)");
       source.sqlite.run("INSERT INTO spore_curation_receipts(project_id,spore_id,revision,cluster_key) VALUES('proj_bk','reviewed',0,'review')");
       for (const id of ['reviewed', 'unconsidered']) source.sqlite.run("INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) VALUES('proj_bk',?,'agent_bk','gotcha','Retain this guidance.',1)", [id]);
-      expect(await readCurationCoverage(source.db, 'proj_bk')).toBe(1);
+      expect(await readCurationCoverage(source.db, 'proj_bk')).toEqual({unconsidered:1,unevaluated:0});
       const saved = await createBackup(source.db, source.bucket, { producer: 'test', now: source.now });
       const artifact = (await backupArtifact(source.db, source.bucket, saved.id))!;
       await restoreArtifact(target.db, { authorization: { kind: 'recovery' }, text: artifact.text, allowForeignLineage: true });
       expect(target.sqlite.query("SELECT status,content,revision FROM spores WHERE id='revision'").get())
         .toEqual({ status: 'superseded', content: 'kept', revision: 7 });
-      expect(await readCurationCoverage(target.db, 'proj_bk')).toBe(1);
+      expect(await readCurationCoverage(target.db, 'proj_bk')).toEqual({unconsidered:1,unevaluated:0});
       const rows = artifact.text.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.t !== 'spore_curation_considerations');
       delete rows[0].counts.spore_curation_considerations;
       rows[0].schemaVersion = 100;
@@ -506,7 +506,7 @@ describe('spore revision recovery', () => {
       await restoreArtifact(legacy.db, { authorization: { kind: 'recovery' }, text: rows.map(row => JSON.stringify(row)).join('\n') + '\n', allowForeignLineage: true });
       expect(legacy.sqlite.query("SELECT status,content,revision FROM spores WHERE id='revision'").get())
         .toEqual({ status: 'superseded', content: 'kept', revision: 0 });
-      expect(await readCurationCoverage(legacy.db, 'proj_bk')).toBe(1);
+      expect(await readCurationCoverage(legacy.db, 'proj_bk')).toEqual({unconsidered:1,unevaluated:0});
     } finally { source.sqlite.close(); target.sqlite.close(); legacy.sqlite.close(); }
   });
 });

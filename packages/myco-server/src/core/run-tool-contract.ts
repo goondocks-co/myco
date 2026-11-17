@@ -2,14 +2,17 @@
 export interface RunRefusal {
   what: string;
   actual: string;
-  next: { tool: string; op: string; [argument: string]: unknown };
+  next: { tool: string; op: string; [argument: string]: unknown } | null;
   repair?: string;
   read?: boolean;
 }
 
 export function runRefusal({ what, actual, next, repair, read }: RunRefusal): { ok: false; error: string } {
-  const { tool, ...args } = next;
-  const error = `${read ? 'Not read' : 'Not saved'}: ${what}; ${actual.replace(/\.+$/, '')}. ${repair === undefined ? '' : `${repair} `}Next call: ${tool} ${JSON.stringify(args)}.`;
+  const call = next === null ? 'none; make no further call' : (() => {
+    const { tool, ...args } = next;
+    return `${tool} ${JSON.stringify(args).replaceAll('Next call:', 'Next call\\u003a')}`;
+  })();
+  const error = `${read ? 'Not read' : 'Not saved'}: ${what}; ${actual.replace(/\.+$/, '')}. ${repair === undefined ? '' : `${repair} `}Next call: ${call}.`;
   if (error.split('Next call:').length !== 2) throw new Error('A run refusal requires a bare cause and one next call.');
   return { ok: false, error };
 }

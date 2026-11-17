@@ -11,7 +11,7 @@ import { useNow } from '../../hooks/use-today';
 import { cn } from '../../lib/cn';
 import { KNOWLEDGE_SUFFIX, keptFilters, projectPath } from '../../routes/nav';
 import type { SporeFacets, SporeStreamRow } from './wire';
-import { count, DEFAULT_SPORE_STATUS, firstLine, SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTypePlural, sporeTypeWord, typeFacetRows, typeFilter, windowSince,  } from './words';
+import { count, DEFAULT_SPORE_STATUS, firstLine, SPORE_STATUS_FILTER, SPORE_WINDOW_FILTER, sporeDate, sporeHeadline, sporeStatusTone, sporeStatusWord, sporeTypePlural, sporeTypeWord, typeFacetRows, typeFilter, windowSince,  } from './words';
 import { agoWords } from '@goondocks/myco-shared/time-words';
 
 /** How long the search box waits after the last keystroke before the stream is read again. */
@@ -29,7 +29,7 @@ export interface SporeStreamProps {
 
 /**
  * The spore stream: spores headlined by their one line, newest first, under
- * the day each was saved. One filter bar holds the search, the status and the
+ * their observation or saved day. One filter bar holds the search, the status and the
  * period; beside the stream the type and project facets say how many each
  * value holds, and on a narrow screen the type moves into the bar. Every value
  * lives in the query string and the server does the filtering; "Show more"
@@ -120,11 +120,11 @@ export function SporeStream({ projectId, projectName }: SporeStreamProps) {
   );
 }
 
-/** The rows under the day each was saved, in the order the server gave them. */
+/** The rows under their observation or saved day, in the order the server gave them. */
 function byDay(rows: readonly SporeStreamRow[], now: number): Array<{ key: string; label: string; rows: SporeStreamRow[] }> {
   const groups: Array<{ key: string; label: string; rows: SporeStreamRow[] }> = [];
   for (const row of rows) {
-    const label = dayLabel(row.createdAt, now);
+    const label = dayLabel(sporeDate(row).at, now);
     const last = groups[groups.length - 1];
     if (last !== undefined && last.label === label) last.rows.push(row);
     else groups.push({ key: String(groups.length), label, rows: [row] });
@@ -140,6 +140,7 @@ function byDay(rows: readonly SporeStreamRow[], now: number): Array<{ key: strin
  */
 function SporeCard({ spore, project, now }: { spore: SporeStreamRow; project: string | null; now: number }) {
   const headline = sporeHeadline(spore, now);
+  const date = sporeDate(spore);
   const current = spore.status === DEFAULT_SPORE_STATUS;
   const excerpt = headline.lined ? '' : firstLine(spore.content);
   return (
@@ -166,7 +167,7 @@ function SporeCard({ spore, project, now }: { spore: SporeStreamRow; project: st
         {!current && <StatusChip tone={sporeStatusTone(spore.status)}>{sporeStatusWord(spore.status)}</StatusChip>}
         {project !== null && <span className="font-medium text-ink-2">{project}</span>}
         <span aria-hidden>·</span>
-        <time className="whitespace-nowrap" dateTime={new Date(spore.createdAt).toISOString()}>{agoWords(spore.createdAt, now)}</time>
+        <time className="whitespace-nowrap" dateTime={new Date(date.at).toISOString()}>{date.label} {agoWords(date.at, now)}</time>
       </p>
     </li>
   );

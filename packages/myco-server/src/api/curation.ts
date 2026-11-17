@@ -13,5 +13,5 @@ export async function handleCurationAnswer(env: ServerEnv, ctx: OwnerContext): P
 
 export async function handleCurationCoverage(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
   const scope = await resolveProjectScope(env.db, ctx.member, ctx.params.projectId);
-  return scope === null ? notFound() : ok({ unconsidered: await readCurationCoverage(env.db, scope.projectId) });
+  return scope === null ? notFound() : ok(await readCurationCoverage(env.db, scope.projectId));
 }

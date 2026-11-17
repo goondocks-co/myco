@@ -20,7 +20,7 @@ async function setup(db: RelationalStore): Promise<void> {
 const grow = (db: RelationalStore, from: number, to: number) => eachUnit(db,from,to,
   "INSERT INTO spores(project_id,id,agent_id,observation_type,content,created_at) SELECT 'proj_a','noise-'||i,'curator','gotcha','Unrelated history',10+i FROM n");
 const cases: CostCase[] = [
-  {name:'unconsidered coverage', run:async db=>expect(await readCurationCoverage(db,project)).toBeGreaterThan(0)},
+  {name:'unconsidered coverage', run:async db=>expect((await readCurationCoverage(db,project)).unconsidered).toBeGreaterThan(0)},
   {name:'the changed-seed page', run:async db=>expect((await readCurationSeeds(db,project,{after_at:0,after_id:'',priority_at:0,history_at:0,history_id:''},8)).length).toBeGreaterThan(0)},
   {name:'a no-group consideration',run:async(db,{scale})=>recordCurationConsidered(db,{project,members:[{id:'noise-'+scale,revision:0}],outcome:'no_group',at:2})},
   {name:'one checked split and all its receipts',run:async(db,{scale})=>{

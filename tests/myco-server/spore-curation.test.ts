@@ -1,69 +1,54 @@
 import { searchDeployment } from '@myco-server-worker/core/search.js';
-import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { expect, test } from 'bun:test';
-import { createServer } from '@myco-server-worker/pipeline.js';
-import { memberHeaders } from './helpers/fixtures.js';
-import { budgetFixture } from './helpers/budget-fixture.js';
-import { offeredHarness } from './helpers/offered-harness.js';
-import { indexFixture } from './helpers/vector-index.js';
-import { cloudflareVectorStore } from '@myco-server-worker/platform/cloudflare/vectors.js';
-import { vectorId } from '@myco-server-worker/core/embedding/vectors.js';
-import { settingsWriter } from '@myco-server-worker/core/settings.js';
-import { claimNextRun, endLeasedRun, dispatchTask } from '@myco-server-worker/core/harness.js';
+import { endLeasedRun, dispatchTask } from '@myco-server-worker/core/harness.js';
 import { getRun } from '@myco-server-worker/db/runs/lifecycle.js';
-import { runToolContext } from '@myco-server-worker/mcp/context.js';
-import { curationAssignment, discoverSporeClusters } from '@myco-server-worker/core/spore-curation.js';
+import { curationAssignment } from '@myco-server-worker/core/spore-curation.js';
 import { runCloseRefusal } from '@myco-server-worker/core/run-postconditions.js';
-import { type ToolDefinition } from '@myco-server-worker/mcp/definitions.js';
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES } from '@myco-server-worker/core/spore-curation-contract.js';
 import { getSpore } from '@myco-server-worker/db/spores/records.js';
 import { listSupersedingSporeIds, listSupersededSporeIds } from '@myco-server-worker/db/spores/edges.js';
 import { readCurationAnswer, readCurationCoverage } from '@myco-server-worker/db/spores/curation-answer.js';
+import { CURATION_ANSWER_STEPS } from '@myco-server-worker/db/schema-steps-curation-answer.js';
+import { curationFixture as fixture, keepAnswer, note, scope } from './helpers/curation.js';
 
-async function fixture(deferred = false) {
-  const f = await budgetFixture();
-  const index = indexFixture({deferred:true});
-  const vectors = cloudflareVectorStore(index);
-  const calls = { get: 0, query: 0, embed: 0 };
-  const visits: string[] = [];
-  const get = vectors.get.bind(vectors), query = vectors.query.bind(vectors);
-  vectors.get = async (...args) => { calls.get++; const found=await get(...args); visits.push(...found.map(row=>row.metadata.record_id)); return found; };
-  vectors.query = (...args) => { calls.query++; return query(...args); };
-  const env = { ...f.serverEnv, vectors, embeddingProvider: async () => ({ modelKey: 'curation-fixture', embed: async (query: string): Promise<number[]> => { calls.embed++; return query==='other-topic'?[0,1]:[1,0]; } }) };
-  const enable = () => settingsWriter(f.db).setCapability('proj_1', 'spore_curation', true, 'test', f.now - 10);
-  const add = async (id: string, values = [1, 0], created = f.now, content = `Whole content for ${id}`, stats: {mean:number;std:number}|null = {mean:0.4,std:0.04}) => {
-    f.sqlite.run(`INSERT OR IGNORE INTO spores(project_id,id,agent_id,content,observation_type,agent_line,created_at)
-      VALUES('proj_1',?,'myco-agent',?,'decision','Use the named seam.',?)`, [id, content, created]);
-    const source = f.sqlite.query<{ revision: string }, [string]>("SELECT revision FROM embedding_versions WHERE project_id='proj_1' AND type='spore' AND record_id=?").get(id)!;
-    const partition = { projectId: 'proj_1', modelKey: 'curation-fixture' };
-    const key = await vectorId(partition, 'spore', id, source.revision);
-    await vectors.upsert(partition, [{ id: key, values, metadata: { type: 'spore', record_id: id, revision: source.revision, status: 'active', session_id: '', created_at: created, observation_type: 'decision', release_state: '', release_confidence: '' } }]);
-    if(!deferred) index.apply();
-    f.sqlite.run(`INSERT OR REPLACE INTO embedding_receipts(project_id,model_key,id,type,record_id,revision,ready,updated_at,neighbor_mean,neighbor_std)
-      VALUES('proj_1','curation-fixture',?,'spore',?,?,1,?,?,?)`, [key, id, source.revision, f.now,stats?.mean??null,stats?.std??null]);
-  };
-  const discover = async () => { for (let i=0; i<4; i++) await discoverSporeClusters(env, f.now); };
-  const poll = (now = f.now) => claimNextRun(env, { principal: f.principal, harnesses: [offeredHarness('claude-code')], capabilities: WORKER_CAPABILITIES, now });
-  const ctx = async (runId: string, tokenId: string) => runToolContext(env, { projectId: 'proj_1', run: { ...(await getRun(f.db, { projectId: 'proj_1' }, runId))!, projectId: 'proj_1' }, tokenId, now: f.now, body: '' });
-  const server = createServer({ now: () => f.now, sourceOf: () => '127.0.0.1', fetchImpl: fetch });
-  const request = async (token: string, method: string, params?: unknown) => {
-    const response = await server.handleRequest(new Request('https://fixture.test/mcp', { method: 'POST', headers: memberHeaders(token),
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }), env);
-    const body = await response.json() as { error?: unknown; result?: { content?: { text?: string }[]; tools?: ToolDefinition[] } };
-    if (body.error !== undefined) throw new Error(JSON.stringify(body.error));
-    return body.result;
-  };
-  const call = async (token: string, name: string, args: Record<string,unknown>) =>
-    JSON.parse((await request(token,'tools/call',{name,arguments:{project:'proj_1',...args}}))?.content?.[0]?.text ?? '{}') as unknown;
-  const list = async (token: string) => (await request(token,'tools/list'))!.tools!;
+test('guidance admits routes and prose while refusing deterministic file, identifier, flag and call notation', async () => {
+  const refused = ['see packages/myco-server/src/core/x.ts', 'read core/spore-curation.ts', 'look at worker-steps.test.ts',
+    'call capture_spool', 'When MYCO_HOME is unset', 'call retry() on the queue', 'pass --force to the CLI', 'see ~/myco/config'];
+  const accepted = ['a path like /api/projects', 'Node.js(22)', 'exit code 1(retry)', 'check outboxLease', 'run npm run check:pr',
+    'measure myco hook startup', 'When a session (or its turns) is retried, keep the canonical identity.',
+    'When budgets hit the cap (5 per day), wait for the next window.', 'When guidance is short-lived (e.g. hotfix), retire it soon.',
+    'When the CI run fails, rerun just the failed shard.', 'When D1 batches exceed 100 statements, split them.'];
+  for (const line of [...refused, ...accepted]) {
+    const f=await fixture();
+    try {
+      await f.enable(); await f.add('decision-a'); await f.add('gotcha-b'); await f.discover();
+      await dispatchTask(f.env,'curate-spores','proj_1',{serverUrl:'https://fixture.test',actor:'mem_worker',options:{dryRun:true}},f.now);
+      const claim=await f.poll(); if(!claim.claimed)throw new Error('preview not claimed');
+      const result=await f.call(claim.run.runToken,'myco_run_curation',{...keepAnswer(['gotcha-b']),notes:[{...note(['decision-a']),agent_line:line}]});
+      expect(result).toMatchObject(refused.includes(line) ? {ok:false,error:expect.stringContaining('contains code notation')} : {completed:true,applied:false});
+    } finally {f.sqlite.close();}
+  }
+});
 
-  return { ...f, env, enable, add, discover, poll, ctx, call, list, calls, visits, applyVectors:()=>index.apply() };
-}
-
-const keepAnswer = (ids: string[]) => ({ op: 'answer', notes: [], keep: ids, retire: [], reason: 'Distinct situations.' });
-const note = (sources: string[], content = 'When delivery stalls, retain queued capture.') =>
-  ({ sources, observation_type: 'gotcha', agent_line: 'When delivery stalls, retain queued capture.', content });
-const scope = {projectId:'proj_1'};
+test('the curation schema can reapply twice with existing decisions and recompute live coverage', async () => {
+  const f=await fixture();
+  try {
+    await f.enable(); await f.add('decision-a'); await f.add('gotcha-b'); await f.discover();
+    const claim=await f.poll();if(!claim.claimed)throw new Error('group not claimed');
+    await f.call(claim.run.runToken,'myco_run_curation',keepAnswer(['decision-a','gotcha-b']));
+    await f.add('wisdom-c',[0,1],f.now+1,'No calibration yet.',null); await f.discover();
+    const original=await getSpore(f.db,scope,'decision-a');
+    for(let replay=0;replay<2;replay++) {
+      f.sqlite.run('UPDATE spore_curation_coverage SET unconsidered=0,unevaluated=0');
+      for(const statement of CURATION_ANSWER_STEPS[0]!.statements) {
+        try {f.sqlite.exec(statement);}
+        catch(error) {if(!/duplicate column name/i.test((error as Error).message))throw error;}
+      }
+      expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:1,unevaluated:1});
+      expect(await getSpore(f.db,scope,'decision-a')).toEqual(original);
+    }
+  }finally{f.sqlite.close();}
+});
 
 test('one answer merges, splits, keeps and retires atomically with observed dates and all lineage', async () => {
   const f = await fixture();
@@ -85,7 +70,8 @@ test('one answer merges, splits, keeps and retires atomically with observed date
     expect(await f.call(claim.run.runToken,'myco_run_curation', answer)).toMatchObject({completed:true,applied:true});
     expect(await f.call(claim.run.runToken,'myco_run_curation', answer)).toMatchObject({completed:true,applied:true});
     const stored = await readCurationAnswer(f.db,'proj_1',claim.run.id);
-    const checked = JSON.parse(stored!.answer!) as { notes: {id:string;createdAt:number}[] };
+    const checked = JSON.parse(stored!.answer!) as { notes: {id:string;createdAt:number;updatedAt:number}[] };
+    expect(checked.notes.every(item=>item.updatedAt===f.now)).toBe(true);
     expect(checked.notes.map(item=>item.createdAt)).toEqual([20,15,15]);
     expect((await getSpore(f.db,scope,checked.notes[0]!.id))!.sourceCreatedAt).toBeNull();
     expect(await getSpore(f.db,scope,'gotcha-d')).toEqual(before);
@@ -97,7 +83,7 @@ test('one answer merges, splits, keeps and retires atomically with observed date
     expect(found.hits.find(hit=>hit.id===checked.notes[0]!.id)?.learned_at).toBe(new Date(20).toISOString());
     const historical=await searchDeployment(f.env,scope,{query:'wisdom',type:'spore',status:'all',mode:'fts'},'member:fixture');
     expect(historical.hits.find(hit=>hit.id==='wisdom-c')?.successor_ids?.sort()).toEqual(checked.notes.slice(1).map(item=>item.id).sort());
-    expect(await readCurationCoverage(f.db,'proj_1')).toBe(0);
+    expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:0,unevaluated:0});
     expect(await runCloseRefusal(f.db,scope,(await getRun(f.db,scope,claim.run.id))!)).toBeNull();
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'});
     await f.discover(); expect(await f.poll()).toMatchObject({claimed:false});
@@ -112,11 +98,12 @@ test('an invalid answer changes no notes and its one correction may succeed', as
     const before=await getSpore(f.db,scope,'decision-a');
     const refused=await f.call(claim.run.runToken,'myco_run_curation',{...keepAnswer(['gotcha-b']),notes:[note(['a'])]}) as {error:string};
     expect(refused.error).toContain('id "a" is not an exact assigned member id');
-    expect(refused.error).toContain('Next call: myco_run_curation {"op":"answer"');
+    expect(refused.error).toContain('Repair only the named field or disposition');
+    expect(JSON.parse(refused.error.split('Next call: myco_run_curation ')[1]!.slice(0,-1))).toMatchObject({notes:[note(['a'])],keep:['gotcha-b']});
     expect(await getSpore(f.db,scope,'decision-a')).toEqual(before);
-    expect(await readCurationCoverage(f.db,'proj_1')).toBe(0);
+    expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:0,unevaluated:0});
     expect(await f.call(claim.run.runToken,'myco_run_curation',keepAnswer(['decision-a','gotcha-b']))).toMatchObject({completed:true});
-    expect(await readCurationCoverage(f.db,'proj_1')).toBe(0);
+    expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:0,unevaluated:0});
   } finally { f.sqlite.close(); }
 });
 
@@ -141,7 +128,7 @@ test('refusals name coverage, bounds and lexical code notation; exhausted attemp
       expect(result.error).toContain('Not saved: curation answer');
       expect(result.error).toContain('Next call: myco_run_curation');
       await f.call(claim.run.runToken,'myco_run_curation',input);
-      expect(await f.call(claim.run.runToken,'myco_run_curation',keepAnswer(['decision-a','gotcha-b']))).toMatchObject({ok:false,error:expect.stringContaining('2 of 2')});
+      expect(await f.call(claim.run.runToken,'myco_run_curation',keepAnswer(['decision-a','gotcha-b']))).toMatchObject({ok:false,error:expect.stringContaining('make no further call')});
       expect((await getSpore(f.db,scope,'decision-a'))!.status).toBe('active');
       expect((await readCurationAnswer(f.db,'proj_1',claim.run.id))!.answer).toBeNull();
       await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'});
@@ -156,10 +143,10 @@ test('a stale group saves no answer and is offered again at the changed revision
     await f.enable(); await f.add('decision-a'); await f.add('gotcha-b'); await f.discover();
     const claim=await f.poll(); if(!claim.claimed)throw new Error('group not claimed');
     f.sqlite.run("UPDATE spores SET revision=revision+1,content='New guidance',updated_at=? WHERE id='decision-a'",[f.now+1]);
-    expect(await f.call(claim.run.runToken,'myco_run_curation',{...keepAnswer([]),notes:[note(['decision-a','gotcha-b'])]})).toMatchObject({code:'material_changed'});
+    expect(await f.call(claim.run.runToken,'myco_run_curation',{...keepAnswer([]),notes:[note(['decision-a','gotcha-b'])]})).toMatchObject({code:'material_changed',error:expect.stringContaining('make no further call')});
     expect((await getSpore(f.db,scope,'gotcha-b'))!.status).toBe('active');
     expect((await readCurationAnswer(f.db,'proj_1',claim.run.id))!.answer).toBeNull();
-    expect(await readCurationCoverage(f.db,'proj_1')).toBe(1);
+    expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:1,unevaluated:0});
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'failed'});
     f.sqlite.run('UPDATE spore_curation_work SET due_at=?',[f.now]);
     await f.poll(); await f.add('decision-a'); await f.discover();
@@ -180,7 +167,7 @@ test('a dry run stores its checked group answer without lifecycle changes or rev
     expect(await f.call(claim.run.runToken,'myco_run_curation',{...keepAnswer([]),notes:[note(['decision-a','gotcha-b'])]})).toMatchObject({completed:true,applied:false});
     expect((await readCurationAnswer(f.db,'proj_1',claim.run.id))!.applied).toBe(0);
     expect((await getSpore(f.db,scope,'decision-a'))!.status).toBe('active');
-    expect(await readCurationCoverage(f.db,'proj_1')).toBe(0);
+    expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:0,unevaluated:0});
     expect(await runCloseRefusal(f.db,scope,(await getRun(f.db,scope,claim.run.id))!)).toBeNull();
     await endLeasedRun(f.env,{principal:f.principal,now:f.now+1},{projectId:'proj_1',runId:claim.run.id,attemptId:claim.run.attemptId,status:'completed'});
     expect((await f.poll()).claimed).toBe(true);
@@ -192,7 +179,7 @@ test('a seed offered no group records consideration at its revision; later vecto
   try {
     await f.enable();await f.add('decision-a');await f.discover();
     expect(await f.poll()).toMatchObject({claimed:false});
-    expect(await readCurationCoverage(f.db,'proj_1')).toBe(0);
+    expect(await readCurationCoverage(f.db,'proj_1')).toEqual({unconsidered:0,unevaluated:0});
     await f.add('gotcha-b'); await f.discover(); expect((await f.poll()).claimed).toBe(true);
   }finally{f.sqlite.close();}
 });

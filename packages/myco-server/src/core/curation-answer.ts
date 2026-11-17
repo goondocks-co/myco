@@ -1,4 +1,5 @@
 import { admitAgentLine } from './agent-line.js';
+import { CURATION_CODE_NOTATION } from './curation-guidance.js';
 import { AGENT_LINE_MAX_CHARS } from './injection.js';
 import { CURATION_BODY_CHARS, CURATION_NEW_NOTES, CURATION_REASON_CHARS, CURATION_TYPES, type CurationAnswer, type CurationNote } from './spore-curation-contract.js';
 
@@ -7,9 +8,6 @@ const text = (value: unknown, limit: number): value is string => typeof value ==
 const size = (value: unknown): string => typeof value === 'string' ? value.trim().length === 0 ? `0 non-whitespace (${value.length} raw)` : String(value.length) : 'missing or not text';
 const shown = (value: unknown): string => JSON.stringify(value)?.replaceAll(':', '\\u003a') ?? 'missing';
 const keys = (value: Record<string, unknown>, allowed: string[]): string | null => Object.keys(value).find(key => !allowed.includes(key)) ?? null;
-
-/** Lexical code notation is rejected; ordinary words require editorial judgment. */
-const CODE_NOTATION = /[\x60]|(?:^|\s)(?:[A-Za-z]:[\\/]|[~.]?\/|\.\.\/|--[A-Za-z])|[\w.]+\(/;
 
 export function checkCurationAnswer(input: Record<string, unknown>, memberIds: readonly string[]): CurationAnswer | string {
   const extra = keys(input, ['op', 'project', 'notes', 'keep', 'retire', 'reason']);
@@ -41,7 +39,7 @@ export function checkCurationAnswer(input: Record<string, unknown>, memberIds: r
     const admitted = admitAgentLine(raw.agent_line);
     if ('error' in admitted) return `notes[${index}].${admitted.error}; limit ${AGENT_LINE_MAX_CHARS}`;
     const line = admitted.line;
-    const notation = CODE_NOTATION.exec(line);
+    const notation = CURATION_CODE_NOTATION.exec(line);
     if (notation !== null) return `notes[${index}].agent_line contains code notation ${shown(notation[0])}; use plain situation and guidance, with no path, flag or symbol`;
     notes.push({ sources: raw.sources as string[], observation_type: raw.observation_type, agent_line: line, content: raw.content });
   }

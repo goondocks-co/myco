@@ -4,6 +4,7 @@ import type { CurationAnswer } from '../../core/spore-curation-contract.js';
 import { CURATION_ANSWER_ATTEMPTS } from '../../core/spore-curation-contract.js';
 import { assertion, commitNamed, first, read, refusalCode, refusalDetail, rows, write } from '../index.js';
 import { sporeInsertWrite } from './records.js';
+import { curationDecisionSql } from './curation-consideration.js';
 import { curationCloseWrites, type CurationMember, type CurationWork } from './curation-work.js';
 
 const ANSWER_CHANGED = refusalCode('curation_answer_changed');
@@ -34,7 +35,8 @@ const considered = write<[project: string, members: string, outcome: string, at:
   sql: `INSERT INTO spore_curation_considerations(project_id,spore_id,revision,outcome,considered_at)
     SELECT ?1,s.id,s.revision,?3,?4 FROM json_each(?2) j CROSS JOIN spores s ON s.project_id=?1 AND s.id=json_extract(j.value,'$.id')
     WHERE s.revision=json_extract(j.value,'$.revision')
-    ON CONFLICT(project_id,spore_id) DO UPDATE SET revision=excluded.revision,outcome=excluded.outcome,considered_at=excluded.considered_at`,
+    ON CONFLICT(project_id,spore_id) DO UPDATE SET revision=excluded.revision,outcome=excluded.outcome,considered_at=excluded.considered_at
+    WHERE spore_curation_considerations.revision<>excluded.revision OR ${curationDecisionSql('excluded')} OR NOT (${curationDecisionSql('spore_curation_considerations')})`,
 });
 interface Considered { project: string; members: readonly CurationMember[]; outcome: string; at: number }
 export const curationConsiderationWrite = (options: Considered) => considered.bind(options.project, JSON.stringify(options.members), options.outcome, options.at);
@@ -100,7 +102,7 @@ const answer = read<[project: string, run: string], { cluster_key: string; submi
   name: 'curationAnswer.answer', sql: 'SELECT cluster_key,submissions,answer,applied FROM spore_curation_answers WHERE project_id=?1 AND run_id=?2',
 });
 export const readCurationAnswer = (db: RelationalStore, project: string, run: string) => first(db, answer.bind(project, run));
-const coverage = read<[project: string], { unconsidered: number }>({ name: 'curationAnswer.coverage', sql: 'SELECT unconsidered FROM spore_curation_coverage WHERE project_id=?1' });
-export const readCurationCoverage = async (db: RelationalStore, project: string) => (await first(db, coverage.bind(project)))?.unconsidered ?? 0;
+const coverage = read<[project: string], { unconsidered: number; unevaluated: number }>({ name: 'curationAnswer.coverage', sql: 'SELECT unconsidered,unevaluated FROM spore_curation_coverage WHERE project_id=?1' });
+export const readCurationCoverage = async (db: RelationalStore, project: string) => await first(db, coverage.bind(project)) ?? { unconsidered: 0, unevaluated: 0 };
 export const curationAnswerPresent = async (db: RelationalStore, scope: { projectId: string }, run: { id: string }): Promise<boolean> =>
   (await readCurationAnswer(db, scope.projectId, run.id))?.answer != null;
