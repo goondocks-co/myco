@@ -2,6 +2,7 @@ import { expect } from 'bun:test';
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
 import { type ParityScenario, type ParityTarget } from '../harness.ts';
 import { allowWorkerClaims, claimRun, endRun, event, owner, putCapability, putSetting, resetSetting, wake } from '../clients/requests.ts';
+import { repository } from '../clients/runs.ts';
 
 const MAP_INSTRUCTION = "Keep this project's repository map";
 
@@ -27,10 +28,7 @@ export const cortex: ParityScenario = {
       const saved = await putCapability(target, capability, true);
       expect({ capability, status: saved.status, body: saved.body }).toMatchObject({ status: 200 });
     }
-    const repository = await owner(target, `/api/projects/${target.projectId}/repository`, {
-      method: 'PUT', body: JSON.stringify({ url: 'https://example.test/parity-cortex.git', branch: 'main', revision: null }),
-    });
-    expect(repository.status).toBe(200);
+    await repository(target, 'example/repo');
     const first = await ask('Map the repository.');
     expect(first.queued).toBe(true);
     expect(first.runId).toBeDefined();

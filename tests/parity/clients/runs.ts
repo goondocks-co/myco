@@ -2,7 +2,8 @@ import { expect } from 'bun:test';
 import { WORKER_CAPABILITIES } from '@goondocks/myco-shared/repository';
 import { offeredHarness } from '../../myco-server/helpers/offered-harness.ts';
 import { RUN_AUDIT } from '../../helpers/run-audit.ts';
-import { connectRepository, memberHeadersFor, type ParityTarget } from '../harness.ts';
+import { memberHeadersFor, type ParityTarget } from '../harness.ts';
+import { PARITY_OPERATOR } from '../github-fixture.ts';
 import { person } from './identity.ts';
 import { event, owner, runTool, untilPublished, type ClaimedRun, type RouteTarget } from './requests.ts';
 
@@ -39,8 +40,20 @@ export async function failRun(target: RouteTarget, run: ClaimedRun, extra: Recor
 export async function cancelRun(target: RouteTarget, id: string): Promise<void> {
   expect((await owner(target, `/api/projects/${target.projectId}/runs/${id}/cancel`, { method: 'POST' })).status).toBe(200);
 }
-export async function repository(target: Pick<ParityTarget, 'sql' | 'projectId'>, source = { url: 'https://github.com/example/repo', branch: 'main' }): Promise<void> {
-  await connectRepository(target, source);
+/**
+ * Connects the Project to one of the operator installation's repositories the way an admin does: approve the
+ * installing account, choose the repository from the App's list, save. Answers the stored connection.
+ */
+export async function repository(target: RouteTarget, fullName = 'example/repo', branch = 'main'): Promise<{ url: string; branch: string; revision: string }> {
+  expect((await owner(target, '/api/github-app/accounts', { method: 'POST', body: JSON.stringify({ installationId: PARITY_OPERATOR.installationId }) })).status).toBe(200);
+  const listed = await owner<{ repositories: Array<{ id: number; fullName: string }> }>(target, `/api/github-app/installations/${PARITY_OPERATOR.installationId}/repositories`);
+  const chosen = listed.body.repositories.find(entry => entry.fullName === fullName);
+  if (chosen === undefined) throw new Error(`the operator installation does not list ${fullName}`);
+  const path = `/api/projects/${target.projectId}/repository`;
+  const revision = (await owner(target, path)).body.repository?.revision ?? null;
+  const saved = await owner(target, path, { method: 'PUT', body: JSON.stringify({ installationId: PARITY_OPERATOR.installationId, repositoryId: chosen.id, branch, revision }) });
+  expect(saved.status).toBe(200);
+  return saved.body.repository;
 }
 export async function captureSession(target: RouteTarget, id: string, text: string, options: { ended?: boolean; at?: number; channel?: string } = {}): Promise<void> {
   const at = options.at ?? Date.now(), extra = { channel: options.channel ?? 'cli' };

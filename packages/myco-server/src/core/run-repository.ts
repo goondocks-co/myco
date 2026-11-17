@@ -1,16 +1,29 @@
-import { REPOSITORY_COMMIT_PATTERN, REPOSITORY_TOKEN_MIN_LIFETIME_MS, RepositoryInputError, type RepositoryAccess, type RepositoryIdentity, type RepositoryPin } from '@goondocks/myco-shared/repository';
+import { REPOSITORY_COMMIT_PATTERN, REPOSITORY_TOKEN_MIN_LIFETIME_MS, RepositoryInputError, type RepositoryAccess, type RepositoryComparison, type RepositoryIdentity, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import type { ServerEnv } from './adapters.js';
 import { projectRepositories } from './repositories.js';
-import { GitHubAccessRefused, githubAppProjects } from './github-app.js';
+import { GitHubAccessRefused, githubAppProjects, HandedOver } from './github-app.js';
 import { pinRepositoryForRun, repositoryPinOfRun } from '../db/runs/preparation.js';
 import { type RunRow } from '../db/runs/lifecycle.js';
 import { type RunLease } from '../db/runs/leases.js';
 
-/** Prepare or pin the connected source for an admitted run. */
-export async function prepareRunRepository(
-  env: ServerEnv, projectId: string, run: RunRow, input: Record<string, unknown>, expected?: RepositoryIdentity, lease?: RunLease,
-  pinCommit?: (pin: RepositoryPin) => Promise<RepositoryPin | null>,
-) {
+/** A source read's answer: the source with its token, or why there is none. */
+type SourceAnswer = { persisted: true; held: true; repository?: RepositoryAccess; comparison?: RepositoryComparison; error?: string };
+
+/** What a preparation checks its answer against, and adds to a source read before handing its token over. */
+export interface RunRepositoryOptions {
+  expected?: RepositoryIdentity;
+  lease?: RunLease;
+  pinCommit?: (pin: RepositoryPin) => Promise<RepositoryPin | null>;
+  /** Evidence the answer carries beside its source; read while the token is still this preparation's to revoke. */
+  comparison?: () => Promise<RepositoryComparison | null>;
+}
+
+/**
+ * Prepare or pin the connected source for an admitted run. A source read's token is handed over only inside a
+ * complete answer; any failure before that, the comparison read included, revokes it.
+ */
+export async function prepareRunRepository(env: ServerEnv, projectId: string, run: RunRow, input: Record<string, unknown>, options: RunRepositoryOptions = {}) {
+  const { expected, lease, pinCommit } = options;
   const repositories = projectRepositories(env);
   const current = await repositories.describe(projectId);
   if (current === null) return { persisted: true, held: true, repository: null };
@@ -30,24 +43,25 @@ export async function prepareRunRepository(
       : pinCommit(candidate));
     return { persisted: true, held: pinned !== null, pin: pinned };
   }
-  const access = githubAppProjects(env, () => lease?.now ?? Date.now());
-  let issued;
-  try { issued = await access.issue(current, 'checkout'); }
-  catch (error) {
-    if (error instanceof GitHubAccessRefused) return { persisted: true, held: true, error: error.message };
+  const now = () => lease?.now ?? Date.now();
+  try {
+    const answer = await githubAppProjects(env, now).withToken<SourceAnswer>(current, 'checkout', async (issued) => {
+      // The connection is read again after GitHub's answer: a token for a repository the Project no longer names is never handed out.
+      const after = await repositories.describe(projectId);
+      if (after?.revision !== current.revision) return { persisted: true, held: true, error: 'Repository connection changed. Retry preparation.' } as const;
+      if (issued.expiresAt - now() < REPOSITORY_TOKEN_MIN_LIFETIME_MS) return { persisted: true, held: true, error: 'GitHub issued a token too close to expiry. Retry preparation.' } as const;
+      const repository: RepositoryAccess = {
+        url: current.url, branch: current.branch, remote: issued.repository.url, expiresAt: issued.expiresAt,
+        credential: { username: 'x-access-token', token: issued.token }, ...(pin === null ? {} : { commit: pin.commit }),
+      };
+      const comparison = await options.comparison?.() ?? null;
+      return new HandedOver<SourceAnswer>({ persisted: true, held: true, repository, ...(comparison === null ? {} : { comparison }) });
+    });
+    return answer instanceof HandedOver ? answer.value : answer;
+  } catch (error) {
+    if (error instanceof GitHubAccessRefused) return { persisted: true, held: true, error: error.message } as const;
     throw error;
   }
-  // The connection is read again after GitHub's answer: a token for a repository the Project no longer names is never handed out.
-  const after = await repositories.describe(projectId);
-  if (after?.revision !== current.revision || issued.expiresAt - (lease?.now ?? Date.now()) < REPOSITORY_TOKEN_MIN_LIFETIME_MS) {
-    await access.revoke(issued.token, 'checkout');
-    return { persisted: true, held: true, error: after?.revision !== current.revision ? 'Repository connection changed. Retry preparation.' : 'GitHub issued a token too close to expiry. Retry preparation.' };
-  }
-  const repository: RepositoryAccess = {
-    url: current.url, branch: current.branch, remote: issued.repository.url, expiresAt: issued.expiresAt,
-    credential: { username: 'x-access-token', token: issued.token }, ...(pin === null ? {} : { commit: pin.commit }),
-  };
-  return { persisted: true, held: true, repository };
 }
 
 /** Ends a token minted for an answer that is not delivered. */

@@ -9,11 +9,13 @@ import { stopRaceFixture } from './owner-review/stop-race.ts';
 import {serverEnvFromBindings} from '../../packages/myco-server/src/platform/cloudflare/env.ts';
 import {reconcileEmbedding} from '../../packages/myco-server/src/core/embedding/reconcile.ts';
 import {reconcileReleaseProvenance} from '../../packages/myco-server/src/core/release-provenance.ts';
-import {fakeGithub, REPO} from '../myco-server/helpers/github-fake.ts';
+import {installParityGitHub} from './github-fixture.ts';
 import {cloudflareEmbeddingLaunch} from '../../packages/myco-server/src/platform/cloudflare/embedding-runtime.ts';
 import {createServer} from '../../packages/myco-server/src/pipeline.ts';
 import type {ServerEnv} from '../../packages/myco-server/src/core/adapters.ts';
 
+// The Worker's outbound requests reach the controlled GitHub.
+installParityGitHub();
 const spans = new AsyncLocalStorage<StatementFrame>();
 let nextSpan=0;
 let fixture: ReturnType<typeof embeddingBindings> | undefined;
@@ -33,29 +35,8 @@ export async function primeObservedEmbedding(env:ServerEnv,projectId:string){
  throw new Error('Fixture embedding did not settle');
 }
 
-/**
- * Runs the release checks due, as the clock's job runs them, against a modelled GitHub instead of the network: each
- * enabled Project reads its repository through an App installation this answers for, with a key generated here.
- */
-export async function checkObservedRelease(env:ServerEnv){
- const pair=await crypto.subtle.generateKey({name:'RSASSA-PKCS1-v1_5',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['sign','verify']) as CryptoKeyPair;
- const key=btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('pkcs8',pair.privateKey))));
- const repository={id:1296269,full_name:'example/source',default_branch:'main'};
- // https://docs.github.com/en/rest/apps/apps#get-an-installation-for-the-authenticated-app and #create-an-installation-access-token-for-an-app
- const app=async(input:RequestInfo|URL,init?:RequestInit):Promise<Response>=>{
-  const url=new URL(new Request(input,init).url);
-  if(url.pathname==='/app/installations/41')return Response.json({id:41,account:{id:9001,login:'operator-org',type:'Organization'},suspended_at:null});
-  if(url.pathname==='/app/installations/41/access_tokens')return Response.json({token:'ghs_parity',expires_at:new Date(Date.now()+3_600_000).toISOString(),
-   permissions:{contents:'read',pull_requests:'read',metadata:'read'},repositories:[repository]},{status:201});
-  if(url.pathname==='/installation/token')return new Response(null,{status:204});
-  return fakeGithub(REPO)(input,init);
- };
- await env.db.batch([
-  env.db.prepare("INSERT OR IGNORE INTO github_app_accounts(account_id,login,account_type,approved_by,approved_at) VALUES(9001,'operator-org','Organization','parity',0)"),
-  env.db.prepare("INSERT OR IGNORE INTO project_repositories(project_id,revision,url,branch,github_repository_id,github_installation_id,updated_at,updated_by) SELECT project_id,'parity','https://github.com/example/source','main',1296269,41,0,'parity' FROM project_release_provenance WHERE enabled=1"),
- ]);
- await reconcileReleaseProvenance({...env,secrets:{...env.secrets,GITHUB_CLIENT_ID:'parity-client',GITHUB_APP_PRIVATE_KEY:key},outbound:app},Date.now());
-}
+/** Runs the release checks due, as the clock's job runs them; GitHub is the controlled fixture this Worker reaches. */
+export async function checkObservedRelease(env:ServerEnv){await reconcileReleaseProvenance(env,Date.now());}
 
 /** A local run-control transport serves the canonical embedding runtime under its dispatch span. */
 export function installObservedEmbeddingRuntime(env:ServerEnv,pending=new Set<Promise<void>>()){

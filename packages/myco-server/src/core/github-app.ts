@@ -12,7 +12,11 @@ import { emit } from '../telemetry.js';
  * is offered, saved or minted for, and the account is re-read from GitHub at each of those moments.
  *
  * **Tokens are narrow and short.** Every token names one purpose's read permissions and, outside discovery, exactly one
- * repository by its numeric id. A token is never stored or logged, and is revoked once its work no longer needs it.
+ * repository by its numeric id. A token is never stored or logged.
+ *
+ * **Every token has one owner on every exit.** A token exists only inside `withToken`'s scope, from the moment GitHub's
+ * answer carries it: the scope revokes it on any exit unless the work returns it as a `HandedOver` answer, whose
+ * receiver then owns revoking it.
  */
 
 /** Why repository access is refused, each named in the reader's words. */
@@ -22,6 +26,7 @@ export const GITHUB_ACCESS_FAILURES = {
   installation_unavailable: 'The App installation was removed or suspended in GitHub. Install the App again or unsuspend it, then connect the repository again.',
   repository_not_granted: 'The App installation does not include this repository. Add the repository to the installation in GitHub, then check again.',
   permissions_missing: 'The App installation has not granted the read access this needs. Approve the App’s requested permissions in GitHub, then check again.',
+  access_refused: 'GitHub refused access to this repository through the App installation. Check in GitHub that the installation includes it and its requested permissions are approved, then check again.',
   rate_limited: 'GitHub’s rate limit for this App was reached. Check again after it resets.',
   github_unavailable: 'GitHub did not answer as expected. Check again later.',
 } as const;
@@ -32,6 +37,8 @@ export class GitHubAccessRefused extends Error {
 }
 
 export interface InstallationAccount { id: number; login: string; type: 'User' | 'Organization' }
+/** One page of the App's installations, and whether GitHub holds another after it. */
+export interface InstallationsPage { installations: InstallationView[]; accounts: ApprovedAccount[]; page: number; more: boolean }
 export interface InstallationView {
   installationId: number;
   account: InstallationAccount;
@@ -43,8 +50,14 @@ export interface RepositoryChoice { id: number; fullName: string; defaultBranch:
 export interface VerifiedRepository { id: number; fullName: string; url: string }
 export interface IssuedToken { token: string; expiresAt: number; repository: VerifiedRepository }
 
+/** A complete answer carrying a token, whose receiver now owns revoking it. */
+export class HandedOver<T> {
+  constructor(readonly value: T) {}
+}
+
 /** Up to this many installations, and repositories per page, are read in one request; GitHub's own page ceiling. */
 const GITHUB_PAGE_SIZE = 100;
+/** The last page of installations or of one installation's repositories an admin can ask for. */
 export const MAX_REPOSITORY_PAGE = 100;
 const OWNER_NAME = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 
@@ -81,7 +94,8 @@ async function refusalOf(response: Response, notFound: GitHubAccessFailure): Pro
     return new GitHubAccessRefused('rate_limited');
   }
   if (status === 404) return new GitHubAccessRefused(notFound);
-  if (status === 422) return new GitHubAccessRefused('repository_not_granted');
+  // A validation refusal names no cause Myco can rely on; it is never read as a repository leaving the installation.
+  if (status === 422) return new GitHubAccessRefused('access_refused');
   return new GitHubAccessRefused('github_unavailable');
 }
 
@@ -90,12 +104,16 @@ async function bodyOf(response: Response): Promise<unknown> {
 }
 
 /** https://docs.github.com/en/rest/apps/apps#get-an-installation-for-the-authenticated-app */
-function installationOf(value: unknown): { installationId: number; account: InstallationAccount; suspended: boolean } {
+function installationOf(value: unknown): { installationId: number; account: InstallationAccount; suspended: boolean; permissions: Record<string, unknown> } {
   const account = isRecord(value) ? value.account : null;
   if (!isRecord(value) || !positiveId(value.id) || !isRecord(account) || !positiveId(account.id) || typeof account.login !== 'string'
     || (account.type !== 'User' && account.type !== 'Organization')) throw new GitHubAccessRefused('github_unavailable');
-  return { installationId: value.id, account: { id: account.id, login: account.login, type: account.type }, suspended: value.suspended_at != null };
+  return { installationId: value.id, account: { id: account.id, login: account.login, type: account.type }, suspended: value.suspended_at != null,
+    permissions: isRecord(value.permissions) ? value.permissions : {} };
 }
+
+/** An installation as an admin's list shows it, without the grant it carries. */
+const viewOf = ({ installationId, account, suspended }: ReturnType<typeof installationOf>) => ({ installationId, account, suspended });
 
 /** https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation */
 function repositoryOf(value: unknown): RepositoryChoice {
@@ -143,53 +161,71 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
   };
 
   /**
-   * A token for one purpose, on an installation re-read and approved at this moment. With a repository, the token
-   * names exactly that one, and GitHub must confirm the same id; the granted permissions must cover the purpose.
+   * Runs `work` with a token for one purpose, on an installation re-read and approved at this moment, whose grant
+   * covers the purpose. With a repository, the token names exactly that one, and GitHub must confirm the same id.
+   * The token is revoked on every exit from this scope, its own validation included, unless `work` hands it over.
    * https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
    */
-  const mint = async (installationId: number, purpose: GitHubTokenPurpose, repositoryId?: number): Promise<{ token: string; expiresAt: number; repository: VerifiedRepository | null }> => {
-    await approvedInstallation(installationId);
+  const scoped = async <T>(installationId: number, purpose: GitHubTokenPurpose, repositoryId: number | undefined,
+    work: (issued: { token: string; expiresAt: number; repository: VerifiedRepository | null }) => Promise<T | HandedOver<T>>): Promise<T | HandedOver<T>> => {
+    const installation = await approvedInstallation(installationId);
     const requested = GITHUB_TOKEN_PERMISSIONS[purpose];
+    if (Object.keys(requested).some(permission => installation.permissions[permission] !== 'read')) throw new GitHubAccessRefused('permissions_missing');
     const response = await asApp(`/app/installations/${installationId}/access_tokens`, {
       method: 'POST', body: { permissions: requested, ...(repositoryId === undefined ? {} : { repository_ids: [repositoryId] }) },
     });
     if (response.status !== 201) throw await refusalOf(response, 'installation_unavailable');
     const body = await bodyOf(response);
-    const expiresAt = isRecord(body) && typeof body.expires_at === 'string' ? Date.parse(body.expires_at) : Number.NaN;
-    if (!isRecord(body) || typeof body.token !== 'string' || body.token === '' || !Number.isFinite(expiresAt)) throw new GitHubAccessRefused('github_unavailable');
+    if (!isRecord(body) || typeof body.token !== 'string' || body.token === '') throw new GitHubAccessRefused('github_unavailable');
     const token = body.token;
+    let handedOver = false;
     try {
+      const expiresAt = typeof body.expires_at === 'string' ? Date.parse(body.expires_at) : Number.NaN;
+      if (!Number.isFinite(expiresAt)) throw new GitHubAccessRefused('github_unavailable');
       const granted = isRecord(body.permissions) ? body.permissions : {};
       if (Object.keys(requested).some(permission => granted[permission] !== 'read')) throw new GitHubAccessRefused('permissions_missing');
-      if (repositoryId === undefined) return { token, expiresAt, repository: null };
-      let named = Array.isArray(body.repositories) ? body.repositories : null;
-      if (named === null) {
-        // GitHub's answer lists the repositories only conditionally; the token itself is then asked which one it reads.
-        const read = await asInstallation(token, `/repositories/${repositoryId}`);
-        if (read.status !== 200) throw await refusalOf(read, 'repository_not_granted');
-        named = [await bodyOf(read)];
+      let repository: VerifiedRepository | null = null;
+      if (repositoryId !== undefined) {
+        let named = Array.isArray(body.repositories) ? body.repositories : null;
+        if (named === null) {
+          // GitHub's answer lists the repositories only conditionally; the token itself is then asked which one it reads.
+          const read = await asInstallation(token, `/repositories/${repositoryId}`);
+          if (read.status !== 200) throw await refusalOf(read, 'repository_not_granted');
+          named = [await bodyOf(read)];
+        }
+        const repositories = named.map(repositoryOf);
+        if (repositories.length !== 1 || repositories[0]!.id !== repositoryId) throw new GitHubAccessRefused('repository_not_granted');
+        repository = verified(repositories[0]!);
       }
-      const repositories = named.map(repositoryOf);
-      if (repositories.length !== 1 || repositories[0]!.id !== repositoryId) throw new GitHubAccessRefused('repository_not_granted');
-      return { token, expiresAt, repository: verified(repositories[0]!) };
-    } catch (error) {
-      await revoke(token, purpose);
-      throw error;
+      const result = await work({ token, expiresAt, repository });
+      handedOver = result instanceof HandedOver;
+      return result;
+    } finally {
+      if (!handedOver) await revoke(token, purpose);
     }
+  };
+  const used = async <T>(result: Promise<T | HandedOver<T>>): Promise<T> => {
+    const value = await result;
+    if (value instanceof HandedOver) throw new Error('a token used inside the Deployment is never handed over');
+    return value;
   };
 
   return {
-    /** Every installation of the App, with each account's approval here. Admin refresh only. */
-    async installations(): Promise<{ installations: InstallationView[]; accounts: ApprovedAccount[] }> {
-      const response = await asApp(`/app/installations?per_page=${GITHUB_PAGE_SIZE}`);
+    /**
+     * One page of the App's installations, with each account's approval here. Admin refresh only. The next page is
+     * asked for by number on the fixed origin; GitHub's own link only says whether one exists.
+     * https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
+     */
+    async installations(page = 1): Promise<InstallationsPage> {
+      const response = await asApp(`/app/installations?per_page=${GITHUB_PAGE_SIZE}&page=${page}`);
       if (response.status !== 200) throw await refusalOf(response, 'github_unavailable');
       const body = await bodyOf(response);
       if (!Array.isArray(body)) throw new GitHubAccessRefused('github_unavailable');
       const accounts = await approvedAccounts(env.db);
       const approved = new Set(accounts.map(account => account.accountId));
       return {
-        installations: body.map(installationOf).map(installation => ({ ...installation, approved: approved.has(installation.account.id) })),
-        accounts,
+        installations: body.map(installationOf).map(installation => ({ ...viewOf(installation), approved: approved.has(installation.account.id) })),
+        accounts, page, more: /rel="next"/.test(response.headers.get('link') ?? '') && page < MAX_REPOSITORY_PAGE,
       };
     },
     /** Approves the account that holds `installationId`, as GitHub names it now; the request names only the installation. */
@@ -201,27 +237,25 @@ export function githubAppProjects(env: Pick<ServerEnv, 'db' | 'secrets' | 'outbo
     },
     withdraw: (accountId: number) => withdrawAccount(env.db, accountId),
     /** One page of an approved installation's repositories, read with a metadata-only token that never leaves here. */
-    async repositories(installationId: number, page: number): Promise<{ repositories: RepositoryChoice[]; more: boolean }> {
-      const { token } = await mint(installationId, 'discovery');
-      try {
+    repositories: (installationId: number, page: number): Promise<{ repositories: RepositoryChoice[]; more: boolean }> =>
+      used(scoped(installationId, 'discovery', undefined, async ({ token }) => {
         const response = await asInstallation(token, `/installation/repositories?per_page=${GITHUB_PAGE_SIZE}&page=${page}`);
         if (response.status !== 200) throw await refusalOf(response, 'installation_unavailable');
         const body = await bodyOf(response);
         if (!isRecord(body) || !Array.isArray(body.repositories) || !Number.isSafeInteger(body.total_count)) throw new GitHubAccessRefused('github_unavailable');
         return { repositories: body.repositories.map(repositoryOf), more: page * GITHUB_PAGE_SIZE < Number(body.total_count) && page < MAX_REPOSITORY_PAGE };
-      } finally { await revoke(token, 'discovery'); }
-    },
+      })),
     /** Confirms an admin's choice before it is saved: an approved installation, granting reads on exactly this repository. */
-    async verify(installationId: number, repositoryId: number): Promise<VerifiedRepository> {
-      const { token, repository } = await mint(installationId, 'checkout', repositoryId);
-      await revoke(token, 'checkout');
-      return repository!;
-    },
-    /** A token for a stored connection's one repository, for one purpose. The caller revokes it when its work is done. */
-    async issue(connection: { installationId: number; repositoryId: number }, purpose: Exclude<GitHubTokenPurpose, 'discovery'>): Promise<IssuedToken> {
-      const issued = await mint(connection.installationId, purpose, connection.repositoryId);
-      return { token: issued.token, expiresAt: issued.expiresAt, repository: issued.repository! };
-    },
+    verify: (installationId: number, repositoryId: number): Promise<VerifiedRepository> =>
+      used(scoped(installationId, 'checkout', repositoryId, async ({ repository }) => repository!)),
+    /**
+     * Runs `work` with a token for a stored connection's one repository. The token is revoked when `work` ends, however
+     * it ends, unless `work` returns a complete answer as `HandedOver`, whose receiver then owns revoking it.
+     */
+    withToken: <T>(connection: { installationId: number; repositoryId: number }, purpose: Exclude<GitHubTokenPurpose, 'discovery'>,
+      work: (issued: IssuedToken) => Promise<T | HandedOver<T>>): Promise<T | HandedOver<T>> =>
+      scoped(connection.installationId, purpose, connection.repositoryId, (issued) => work({ ...issued, repository: issued.repository! })),
+    /** Ends a token a `HandedOver` receiver could not deliver. */
     revoke,
   };
 }

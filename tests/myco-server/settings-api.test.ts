@@ -374,6 +374,16 @@ describe('provider credentials through the surface', () => {
     for (const name of ['not_a_provider', 'github']) expect((await worker.fetch(await put(e.db, `/api/secrets/${name}`, { value: 'x' }), e.all)).status).toBe(404);
   });
 
+  it('removes a stored row a previous release wrote under a name no slot admits, and keeps every provider key', async () => {
+    const e = env();
+    await worker.fetch(await put(e.db, '/api/secrets/openai', { value: 'sk-aaaaaaaaaaaaaaaaaaaa' }), e.all);
+    for (const name of ['github', 'repository:proj_1:rev', 'release-provenance:proj_1:rev']) {
+      e.sqlite.run("INSERT INTO deployment_secrets(name,ciphertext,iv,key_version,updated_at,updated_by) SELECT ?,ciphertext,iv,key_version,updated_at,updated_by FROM deployment_secrets WHERE name='openai'", [name]);
+    }
+    expect((await worker.fetch(await asOwner(e.db, '/api/secrets'), e.all)).status).toBe(200);
+    expect(e.sqlite.query('SELECT name FROM deployment_secrets ORDER BY name').all()).toEqual([{ name: 'openai' }]);
+  });
+
   it('refuses an empty value rather than storing one nothing can authenticate with', async () => {
     const e = env();
     expect((await worker.fetch(await put(e.db, '/api/secrets/anthropic', { value: '' }), e.all)).status).toBe(400);

@@ -34,8 +34,8 @@ for (const [viewport, mode] of [['desktop', 'light'], ['phone', 'dark']] as cons
       await expectAxeClean(page, ['[role="dialog"]']);
       await page.screenshot({ path: path.join(evidence, `run-now-repository-refusal-${viewport}-${mode}.png`) });
       await page.route(`**/api/projects/${project.projectId}/repository`, route => route.fulfill({ json: { repository: null, appConfigured: true } }));
-      await page.route('**/api/github-app/installations', route => route.fulfill({ json: {
-        installations: [{ installationId: 666, account: { id: 6660, login: 'someone-else', type: 'User' }, approved: false, suspended: false }], accounts: [],
+      await page.route(/\/api\/github-app\/installations(?:\?|$)/, route => route.fulfill({ json: {
+        installations: [{ installationId: 666, account: { id: 6660, login: 'someone-else', type: 'User' }, approved: false, suspended: false }], accounts: [], page: 1, more: false,
       } }));
       await dialog.getByRole('link', { name: 'Connect repository →' }).click();
       await expect(page.getByRole('dialog', { name: 'Connect a repository' })).toBeVisible();

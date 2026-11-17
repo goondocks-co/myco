@@ -49,6 +49,7 @@ const INSTALLATIONS = {
     { installationId: 666, account: { id: 6660, login: 'go0ndocks-co', type: 'Organization' }, approved: false, suspended: false },
   ],
   accounts: [{ accountId: 9001, login: 'goondocks-co', type: 'Organization', approvedBy: ADA, approvedAt: NOW - HOUR }],
+  page: 1, more: true,
 };
 const CHOICES = { repositories: [{ id: 1296269, fullName: 'goondocks-co/myco', defaultBranch: 'main', private: true }], more: false };
 
@@ -396,6 +397,7 @@ describe('the repository', () => {
     const stranger = await within(dialog).findByText('Installed by an account this server has not approved: go0ndocks-co (an organization)');
     fireEvent.click(within(stranger.parentElement as HTMLElement).getByRole('button', { name: 'Approve' }));
     await waitFor(() => expect(sent).toEqual([{ method: 'POST', path: '/api/github-app/accounts', body: { installationId: 666 } }]));
+    expect(within(dialog).getByRole('button', { name: 'Show the next accounts' })).toBeTruthy();
     fireEvent.click(await within(dialog).findByLabelText(/^Account(?::|$)/));
     expect((await screen.findAllByRole('option')).map((option) => option.textContent)).toEqual(['goondocks-co']);
     fireEvent.click(await screen.findByRole('option', { name: 'goondocks-co' }));

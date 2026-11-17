@@ -127,6 +127,18 @@ describe('a worker preparing its claimed source', () => {
     for (const github of [r.github, fresh.github]) expect(github.state.revoked).toContain(github.state.issued.at(-1)!.token);
   });
 
+  it('revokes a token GitHub issued when the answer fails before it is complete: a later read fails, or the expiry is unreadable', async () => {
+    const failing = await rig();
+    await failing.claim();
+    failing.intercept(path => { if (path.endsWith('/access_tokens')) failing.e.sqlite.run('DROP TABLE project_repositories'); });
+    await expect(failing.prepare()).rejects.toThrow(/project_repositories/);
+    const unreadable = await rig();
+    await unreadable.claim();
+    unreadable.github.state.expiresAt = 'not a time';
+    expect(await unreadable.prepare()).toMatchObject({ held: true, error: expect.stringContaining('GitHub did not answer as expected') });
+    for (const github of [failing.github, unreadable.github]) expect(github.state.revoked).toContain(github.state.issued.at(-1)!.token);
+  });
+
   it('refuses other workers, other projects and expired leases before opening credentials', async () => {
     const r = await rig();
     await r.claim();

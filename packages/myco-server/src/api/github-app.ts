@@ -21,9 +21,11 @@ export async function handleGitHubApp(env: ServerEnv, ctx: OwnerContext): Promis
   return Response.json(await githubAppStatus(env, ctx.now), { headers: NO_STORE });
 }
 
-/** Every installation of the App and which accounts this server approved: asked of GitHub on an admin's refresh. */
+/** One page of the App's installations and which accounts this server approved: asked of GitHub on an admin's refresh. */
 export async function handleGitHubAppInstallations(env: ServerEnv, ctx: OwnerContext): Promise<Response> {
-  try { return Response.json(await githubAppProjects(env, () => ctx.now).installations(), { headers: NO_STORE }); }
+  const page = positiveId(new URL(ctx.request.url).searchParams.get('page') ?? '1');
+  if (page === null || page > MAX_REPOSITORY_PAGE) return badRequest(`page is a whole number from 1 to ${MAX_REPOSITORY_PAGE}.`);
+  try { return Response.json(await githubAppProjects(env, () => ctx.now).installations(page), { headers: NO_STORE }); }
   catch (error) { return githubRefusal(error); }
 }
 

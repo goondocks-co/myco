@@ -32,32 +32,32 @@ export async function prepareWorkerCheckout(
   const revoke = async () => {
     if (typeof token === 'string' && !await revokeInstallationToken(options.fetchImpl ?? fetch, token, runnerRequestSignal())) options.log?.('the repository token could not be revoked; it expires within the hour');
   };
-  let remote: string;
+  // From here the runner owns the token: every exit before checkout ends, cancellation included, revokes it.
+  let checkout: RepositoryCheckout;
+  let comparison: ReturnType<typeof parseRepositoryComparison>;
   try {
     if (repository == null || repository.url !== spec.url || repository.branch !== spec.branch) throw new Error('The run repository is unavailable or changed.');
     if (repository.commit !== undefined && !REPOSITORY_COMMIT_PATTERN.test(repository.commit)) throw new Error('The run repository commit is invalid.');
     if (typeof token !== 'string' || typeof repository.credential.username !== 'string') throw new Error('The repository read credential is invalid.');
-    remote = repositoryUrl(String(repository.remote));
-  } catch (error) { await revoke(); throw error; }
-  const credential = repository.credential;
-  checkoutSignal.throwIfAborted();
-  const comparison = parseRepositoryComparison(answer.comparison);
-  let checkout: RepositoryCheckout;
-  try { checkout = await prepareRepositoryCheckout({
-    url: remote, branch: spec.branch, historyDepth: spec.historyDepth,
-    compareCommit: comparison?.commit,
-    credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.task !== undefined && KNOWLEDGE_REPOSITORY_TASKS.includes(options.task) ? options.cacheRoot : undefined,
-    destination: join(scratchDir, RUN_REPOSITORY_DIR),
-    removeDestination: () => removeOwnedRunDirectoryEntry(scratchDir, RUN_REPOSITORY_DIR),
-    pin: async (commit) => {
-      const result = await request({ url: spec.url, branch: spec.branch, commit }, checkoutSignal);
-      const pin = result.pin as { url?: unknown; branch?: unknown; commit?: unknown } | null;
-      if (pin?.url !== spec.url || pin.branch !== spec.branch || typeof pin.commit !== 'string' || !REPOSITORY_COMMIT_PATTERN.test(pin.commit)) {
-        throw new Error('The run could not retain its repository commit.');
-      }
-      return pin.commit;
-    },
-  }); } finally { await revoke(); }
+    const remote = repositoryUrl(String(repository.remote));
+    checkoutSignal.throwIfAborted();
+    comparison = parseRepositoryComparison(answer.comparison);
+    checkout = await prepareRepositoryCheckout({
+      url: remote, branch: spec.branch, historyDepth: spec.historyDepth,
+      compareCommit: comparison?.commit,
+      credential: repository.credential, commit: repository.commit, signal: checkoutSignal, gitPath: options.gitPath, digests: options.digests, cacheRoot:options.task !== undefined && KNOWLEDGE_REPOSITORY_TASKS.includes(options.task) ? options.cacheRoot : undefined,
+      destination: join(scratchDir, RUN_REPOSITORY_DIR),
+      removeDestination: () => removeOwnedRunDirectoryEntry(scratchDir, RUN_REPOSITORY_DIR),
+      pin: async (commit) => {
+        const result = await request({ url: spec.url, branch: spec.branch, commit }, checkoutSignal);
+        const pin = result.pin as { url?: unknown; branch?: unknown; commit?: unknown } | null;
+        if (pin?.url !== spec.url || pin.branch !== spec.branch || typeof pin.commit !== 'string' || !REPOSITORY_COMMIT_PATTERN.test(pin.commit)) {
+          throw new Error('The run could not retain its repository commit.');
+        }
+        return pin.commit;
+      },
+    });
+  } finally { await revoke(); }
   try {
     if (comparison !== null) {
       const candidate = { ...comparison, ...checkout.changes };

@@ -32,10 +32,10 @@ describe('a Project repository connected through the Deployment’s GitHub App',
   it('an admin approves the operator’s account, connects a repository it chose, and no token reaches a response or a stored row', async () => {
     const r = rig();
     const listed = await r.call('GET', '/api/github-app/installations');
-    expect(listed.body.installations).toEqual([
+    expect(listed.body).toMatchObject({ page: 1, more: false, installations: [
       { installationId: OPERATOR.installationId, account: OPERATOR.account, approved: false, suspended: false },
       { installationId: STRANGER.installationId, account: STRANGER.account, approved: false, suspended: false },
-    ]);
+    ] });
     const choices = `/api/github-app/installations/${OPERATOR.installationId}/repositories`;
     expect((await r.call('GET', choices)).body).toMatchObject({ failure: 'account_not_approved' });
     const approved = await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
@@ -66,8 +66,27 @@ describe('a Project repository connected through the Deployment’s GitHub App',
     expect(r.github.state.issued.filter(entry => entry.installationId === STRANGER.installationId)).toEqual([]);
     const saved = (await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId))).body.repository;
     expect((await r.call('DELETE', `/api/github-app/accounts/${OPERATOR.account.id}`)).body).toEqual({ withdrawn: true });
-    await expect(githubAppProjects(r.env()).issue(saved, 'checkout')).rejects.toEqual(new GitHubAccessRefused('account_not_approved'));
+    await expect(githubAppProjects(r.env()).withToken(saved, 'checkout', async () => 'used')).rejects.toEqual(new GitHubAccessRefused('account_not_approved'));
     expect(r.github.state.issued).toHaveLength(1);
+  });
+
+  it('pages installations by number on GitHub’s own origin, and names what to fix in GitHub before any token exists', async () => {
+    const r = rig();
+    const later = { installationId: 77, account: { id: 7700, login: 'second-page-org', type: 'Organization' as const } };
+    r.github.state.laterInstallations.push(later);
+    expect((await r.call('GET', '/api/github-app/installations')).body).toMatchObject({ page: 1, more: true });
+    expect((await r.call('GET', '/api/github-app/installations?page=2')).body).toMatchObject({ page: 2, more: false, installations: [{ installationId: 77, account: later.account }] });
+    expect(r.github.state.requests.filter(line => line.startsWith('GET /app/installations?'))).toEqual(['GET /app/installations?per_page=100&page=1', 'GET /app/installations?per_page=100&page=2']);
+    expect((await r.call('GET', '/api/github-app/installations?page=0')).status).toBe(400);
+    await r.call('POST', '/api/github-app/accounts', { installationId: OPERATOR.installationId });
+    r.github.state.granted = { metadata: 'read' };
+    expect(await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId))).toMatchObject({ status: 409, body: { failure: 'permissions_missing', reason: expect.stringContaining('Approve the App’s requested permissions') } });
+    expect(r.github.state.issued).toEqual([]);
+    r.github.state.granted = { contents: 'read', pull_requests: 'read', metadata: 'read' };
+    r.github.state.mintStatus = 422;
+    const refused = await r.call('PUT', REPOSITORY, choose(OPERATOR.installationId));
+    expect(refused).toMatchObject({ status: 409, body: { failure: 'access_refused' } });
+    expect(refused.text).not.toContain('upstream validation detail');
   });
 
   it('refuses the token-era body by name, a stale writer and a keyless Deployment, and disconnects only the current revision', async () => {

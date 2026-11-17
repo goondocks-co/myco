@@ -120,7 +120,8 @@ function InstallationLine({ installation, onApprove, pending }: { installation: 
 function RepositoryForm({ projectId, connection, onClose }: { projectId: string; connection: RepositoryRow | null; onClose: () => void }) {
   const actions = useRepositoryActions(projectId);
   const accounts = useGitHubAccountActions();
-  const installations = useGitHubInstallations(true);
+  const [installationPage, setInstallationPage] = useState(1);
+  const installations = useGitHubInstallations(true, installationPage);
   const usable = (installations.data?.installations ?? []).filter((installation) => installation.approved && !installation.suspended);
   const [installationId, setInstallationId] = useState<number | null>(connection?.installationId ?? null);
   const chosenInstallation = usable.some((installation) => installation.installationId === installationId) ? installationId : null;
@@ -155,6 +156,8 @@ function RepositoryForm({ projectId, connection, onClose }: { projectId: string;
               pending={accounts.approve.isPending && accounts.approve.variables === installation.installationId}
               onApprove={() => accounts.approve.mutate(installation.installationId)} />
           ))}
+      {installations.data?.more && <Button variant="ghost" onClick={() => setInstallationPage(installationPage + 1)}>Show the next accounts</Button>}
+      {installationPage > 1 && <Button variant="ghost" onClick={() => setInstallationPage(1)}>Back to the first accounts</Button>}
       {accounts.approve.error && <p role="alert" className="t-small text-bad">{settingsRefusalText(accounts.approve.error)}</p>}
       {usable.length > 0 && (
         <Select

@@ -219,10 +219,10 @@ export function useRepositoryActions(projectId: string) {
 const INSTALLATIONS_KEY = ['github-app', 'installations'] as const;
 
 /** The App's installations and the accounts approved here, asked of GitHub only when an admin opens or refreshes them. */
-export function useGitHubInstallations(enabled: boolean) {
+export function useGitHubInstallations(enabled: boolean, page = 1) {
   return useQuery({
-    queryKey: [...INSTALLATIONS_KEY], enabled, retry: false,
-    queryFn: ({ signal }) => fetchJson<InstallationsAnswer>('/api/github-app/installations', signal),
+    queryKey: [...INSTALLATIONS_KEY, 'page', page], enabled, retry: false,
+    queryFn: ({ signal }) => fetchJson<InstallationsAnswer>(`/api/github-app/installations?page=${page}`, signal),
     ...live('still'),
   });
 }

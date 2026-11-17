@@ -33,6 +33,10 @@ export function githubFixture() {
     /** The name GitHub reports for a repository id now. */
     names: new Map<number, string>(),
     suspended: new Set<number>(),
+    /** Installations GitHub lists on its second page, after the first. */
+    laterInstallations: [] as Array<typeof OPERATOR>,
+    /** The `expires_at` GitHub answers with instead of an hour from now. */
+    expiresAt: null as string | null,
   };
   const repositoryAnswer = (repository: typeof SOURCE) => ({ ...repository, full_name: state.names.get(repository.id) ?? repository.full_name });
   const fetchImpl: OutboundFetch = async (input, init) => {
@@ -40,14 +44,18 @@ export function githubFixture() {
     const request = new Request(input, init);
     const url = new URL(request.url);
     if (url.origin !== 'https://api.github.com') throw new Error(`fixture GitHub: unexpected origin ${url.origin}`);
-    state.requests.push(`${request.method} ${url.pathname}`);
+    state.requests.push(`${request.method} ${url.pathname}${url.search}`);
     const bearer = request.headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
-    const installation = (id: number) => installations.find(entry => entry.installationId === id);
+    const installation = (id: number) => [...installations, ...state.laterInstallations].find(entry => entry.installationId === id);
     // https://docs.github.com/en/rest/apps/apps#get-an-installation-for-the-authenticated-app
     const installationBody = (entry: typeof OPERATOR) => ({ id: entry.installationId, account: entry.account, repository_selection: 'selected',
       permissions: state.granted, suspended_at: state.suspended.has(entry.installationId) ? '2026-11-01T00:00:00Z' : null });
     // https://docs.github.com/en/rest/apps/apps#list-installations-for-the-authenticated-app
-    if (request.method === 'GET' && url.pathname === '/app/installations') return Response.json(installations.map(installationBody));
+    if (request.method === 'GET' && url.pathname === '/app/installations') {
+      const later = url.searchParams.get('page') === '2';
+      return Response.json((later ? state.laterInstallations : installations).map(installationBody),
+        { headers: !later && state.laterInstallations.length > 0 ? { link: '<https://api.github.com/app/installations?per_page=100&page=2>; rel="next"' } : {} });
+    }
     let match = /^\/app\/installations\/(\d+)$/.exec(url.pathname);
     if (request.method === 'GET' && match) {
       const entry = installation(Number(match[1]));
@@ -59,12 +67,12 @@ export function githubFixture() {
       const installationId = Number(match[1]);
       const body = await request.json() as { permissions: Record<string, string>; repository_ids?: number[] };
       const held = repositories.get(installationId) ?? [];
-      if (state.mintStatus !== 201) return Response.json({ message: 'refused' }, { status: state.mintStatus });
+      if (state.mintStatus !== 201) return Response.json({ message: 'upstream validation detail' }, { status: state.mintStatus });
       if (body.repository_ids?.some(id => !held.some(repository => repository.id === id))) return Response.json({ message: 'There is at least one repository that does not exist or is not accessible to the parent installation.' }, { status: 422 });
       const token = `ghs_${'f'.repeat(36)}${state.issued.length}`;
       state.issued.push({ token, installationId, body });
       const named = body.repository_ids === undefined ? held : held.filter(repository => body.repository_ids!.includes(repository.id));
-      return Response.json({ token, expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      return Response.json({ token, expires_at: state.expiresAt ?? new Date(Date.now() + 3_600_000).toISOString(),
         permissions: Object.fromEntries(Object.keys(body.permissions).filter(name => state.granted[name] === 'read').map(name => [name, 'read'])),
         repository_selection: 'selected', repositories: named.map(repositoryAnswer) }, { status: 201 });
     }

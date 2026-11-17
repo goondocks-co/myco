@@ -126,6 +126,16 @@ describe('committed repository checkout', () => {
     expect(github.revoked).toEqual([token, token]);
   });
 
+  it('revokes a token it received when the run is stopped before checkout starts', async () => {
+    const controller = new AbortController();
+    const github = tokenRevocations();
+    await expect(prepareWorkerCheckout({ url, branch: 'main', historyDepth: 1 }, home, controller.signal, async () => {
+      controller.abort();
+      return { repository: { url, branch: 'main', remote: url, expiresAt: Date.now() + 3_600_000, credential: { username: 'x-access-token', token } } };
+    }, { gitPath, fetchImpl: github.fetchImpl })).rejects.toThrow();
+    expect(github.revoked).toEqual([token]);
+  });
+
   it('preserves worker checkout files until their registered harness owner exits', async () => {
     const allocation = await mkdtemp(join(tmpdir(), 'myco-worker-checkout-'));
     const { scratchDir } = writeRunDir(allocation, 'run_owned_checkout', { serverUrl: 'https://server.example.test', runToken: 'synthetic-run-token', projectId: 'project_fixture' });

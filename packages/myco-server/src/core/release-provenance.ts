@@ -342,19 +342,17 @@ export async function checkProject(
   const connection = settings === null ? null : await repositoryConnection(db, projectId);
   if (settings !== null && connection === null) failure = REPOSITORY_NOT_CONNECTED;
   if (settings !== null && connection !== null) {
-    const access = githubAppProjects(env, () => now);
-    let token: string | null = null;
-    try { token = (await access.issue(connection, 'release')).token; }
-    catch (error) { if (!(error instanceof GitHubAccessRefused)) throw error; failure = error.failure; }
-    if (token !== null) {
-      try {
-        const reads = githubReads({ repositoryId: connection.repositoryId, token, maxLookups: settings.maxLookups, fetcher: env.outbound });
-        const outcome = await classifyProject(db, reads, { claim, settings, counts, repositoryId: connection.repositoryId, now });
-        lookups = reads.lookupsUsed();
-        if (outcome === null) superseded = true;
-        else failure = outcome.failure;
-      } finally { await access.revoke(token, 'release'); }
-    }
+    const { maxLookups } = settings;
+    try {
+      await githubAppProjects(env, () => now).withToken(connection, 'release', async ({ token }) => {
+        const reads = githubReads({ repositoryId: connection.repositoryId, token, maxLookups, fetcher: env.outbound });
+        try {
+          const outcome = await classifyProject(db, reads, { claim, settings: settings!, counts, repositoryId: connection.repositoryId, now });
+          if (outcome === null) superseded = true;
+          else failure = outcome.failure;
+        } finally { lookups = reads.lookupsUsed(); }
+      });
+    } catch (error) { if (!(error instanceof GitHubAccessRefused)) throw error; failure = error.failure; }
   }
 
   const status: ReleaseCheckStatus = failure === null

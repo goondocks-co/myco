@@ -22,7 +22,8 @@ export const CHECK_FAILURE_LABEL: Record<string, string> = {
   account_not_approved: 'the account that installed the App is not approved here',
   installation_unavailable: 'the App installation was removed or suspended in GitHub',
   repository_not_granted: 'the App installation no longer includes this repository',
-  permissions_missing: 'the App installation has not granted read access',
+  permissions_missing: 'the App installation has not granted read access; approve its requested permissions in GitHub',
+  access_refused: 'GitHub refused access through the App installation',
   github_unavailable: 'GitHub did not answer as expected',
 };
 

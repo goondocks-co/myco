@@ -1,14 +1,16 @@
 import { expect } from 'bun:test';
-import { connectRepository, memberHeadersFor, type ParityScenario } from '../harness.ts';
+import { memberHeadersFor, type ParityScenario } from '../harness.ts';
 import { putCapability } from '../clients/requests.ts';
+import { repository } from '../clients/runs.ts';
+import { PARITY_OPERATOR, PARITY_STRANGER } from '../github-fixture.ts';
 
 /**
- * A Project's repository connection on both targets: the notices that ask for one, the owner reads and refusals of the
- * App-backed route, and the retired run route. Parity holds an App key that cannot sign, so every refusal that would
- * need GitHub is named without asking it.
+ * A Project's repository connection on both targets, through the controlled GitHub: the notices that ask for one, an
+ * installation by an account this server never approved refused at choice and save, the operator's account approved
+ * and its repository connected through the real routes, and the retired run route.
  */
 export const repositories: ParityScenario = {
-  name: 'repositories: App-backed connection refusals, repository notices and retired run route',
+  name: 'repositories: approve and connect through the App, a stranger refused, notices and retired run route',
   async run(target) {
     const endpoint = `/api/projects/${target.projectId}/repository`;
     const owner = async (method: string, body?: unknown, path = endpoint) => {
@@ -43,16 +45,18 @@ export const repositories: ParityScenario = {
     expect(await setupNeeded()).toEqual([{ projectId: target.projectId }]);
     expect(await owner('GET')).toEqual({ status: 200, body: { repository: null, appConfigured: true } });
     try {
-      // The token-era body is refused by name; a choice GitHub cannot confirm stores nothing.
+      // The token-era body is refused by name.
       expect(await owner('PUT', { url: 'https://github.com/example/source', branch: 'main', revision: null }))
         .toMatchObject({ status: 400, body: { reason: expect.stringContaining('`url` is no longer accepted') } });
-      expect(await owner('PUT', { installationId: 41, repositoryId: 1296269, branch: 'main', revision: null }))
-        .toMatchObject({ status: 503, body: { failure: 'github_unavailable' } });
-      expect(await owner('GET', undefined, '/api/github-app/installations')).toMatchObject({ status: 503, body: { failure: 'github_unavailable' } });
+      const listed = await owner('GET', undefined, '/api/github-app/installations');
+      expect(listed.body.installations.find((entry: { installationId: number }) => entry.installationId === PARITY_STRANGER.installationId)).toMatchObject({ approved: false });
+      expect((await owner('GET', undefined, `/api/github-app/installations/${PARITY_STRANGER.installationId}/repositories`)).body).toMatchObject({ failure: 'account_not_approved' });
+      expect(await owner('PUT', { installationId: PARITY_STRANGER.installationId, repositoryId: 1296269, branch: 'main', revision: null }))
+        .toMatchObject({ status: 409, body: { failure: 'account_not_approved' } });
       expect((await owner('GET')).body.repository).toBeNull();
-      await connectRepository(target, { url: 'https://github.com/example/source', branch: 'main' });
-      const connected = (await owner('GET')).body.repository;
-      expect(connected).toMatchObject({ url: 'https://github.com/example/source', branch: 'main', repositoryId: 1296269, installationId: 41 });
+      const connected = await repository(target, 'example/source');
+      expect(connected).toMatchObject({ url: 'https://github.com/example/source', branch: 'main', repositoryId: 1296269, installationId: PARITY_OPERATOR.installationId });
+      expect((await owner('GET')).body).toEqual({ repository: connected, appConfigured: true });
       expect(await needed()).toEqual([]);
       expect(await setupNeeded()).toEqual([]);
       const retired = await fetch(target.url + '/runs/repository', {

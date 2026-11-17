@@ -968,7 +968,7 @@
     "tests/member/prompt-files-killed.test.ts": 2000
   },
   "parity": {
-    "github app: sign-in independent of the App key, and admin-only setup status": 500,
+    "github app: sign-in beside the App, and admin-only setup status": 500,
     "1.4 vault import: a vault-sourced session takes no transcript, the probe, a title-only end, a replayed resolution": 7000,
     "Codex recording: custom call and array result through segment upload and wake": 7000,
     "schema upgrade: a Deployment populated by its users upgrades from the previous schema with every record, refusal and write unchanged": 125000,

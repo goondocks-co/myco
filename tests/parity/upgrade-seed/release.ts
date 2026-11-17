@@ -1,6 +1,7 @@
 import { expect } from 'bun:test';
 import { A, B } from '../../myco-server/helpers/github-fake.ts';
 import { event, owner, pick, type RouteTarget, type SeedTarget } from './requests.ts';
+import { repository } from '../clients/runs.ts';
 
 /** The session release tracking classified, by the id its member captured. */
 export interface ReleaseSeed { sessionId: string }
@@ -19,6 +20,8 @@ export async function seedRelease(target: SeedTarget, stamp: number): Promise<Re
     packageMap: [], includeUnknown: true, maxLookups: 20,
   }) });
   expect(saved.status).toBe(200);
+  // The Project's repository, which release tracking reads, connected through the App as an admin connects it.
+  await repository(target, 'example/repo');
   const sessionId = `upgrade-release-${stamp}`;
   await event(target, sessionId, 'session.start', { agent: 'claude-code', branch: 'release', headSha: B, startedAt: stamp + 50 }, stamp + 50);
   await event(target, sessionId, 'session.end', { endedAt: stamp + 51, headSha: A, dirty: false }, stamp + 51);

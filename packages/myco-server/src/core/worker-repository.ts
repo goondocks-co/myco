@@ -1,5 +1,5 @@
 import { MAP_TASK } from '@goondocks/myco-shared/canopy';
-import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, RepositoryInputError } from '@goondocks/myco-shared/repository';
+import { KNOWLEDGE_REPOSITORY_TASKS, REPOSITORY_TASKS, RepositoryInputError, type RepositoryPin } from '@goondocks/myco-shared/repository';
 import { parseRepositoryFailure } from '@goondocks/myco-shared/run-text';
 import type { ServerEnv } from './adapters.js';
 import { carryMapForward, mapRepositoryComparison } from './canopy-carry-forward.js';
@@ -32,14 +32,11 @@ const prepare = async (env: ServerEnv, worker: WorkerLeaseOwner, input: WorkerRu
     && input.body.comparison !== undefined && await carryMapForward(env.db, {
     scope: { projectId: input.projectId }, run: row, evidence: input.body.comparison, lease,
   })) return { persisted: true, held: true, alreadyCurrent: true };
-  const answer = await prepareRunRepository(env, input.projectId, row, input.body, expected, lease,
-    row.task === MAP_TASK
-      ? (pin) => pinMapRepositoryAtCommit(env.db, { projectId: input.projectId }, row, pin, lease)
-      : undefined);
-  if ('repository' in answer && answer.repository != null) {
-    const comparison = await mapRepositoryComparison(env.db, { projectId: input.projectId }, row, lease.now);
-    if (comparison !== null) return { ...answer, comparison };
-  }
+  const answer = await prepareRunRepository(env, input.projectId, row, input.body, {
+    expected, lease,
+    ...(row.task === MAP_TASK ? { pinCommit: (pin: RepositoryPin) => pinMapRepositoryAtCommit(env.db, { projectId: input.projectId }, row, pin, lease) } : {}),
+    comparison: () => mapRepositoryComparison(env.db, { projectId: input.projectId }, row, lease.now),
+  });
   return hadRepositoryPin && 'pin' in answer && answer.pin === null
     ? { persisted: true, held: false, reason: 'the run no longer holds its map input' }
     : answer;

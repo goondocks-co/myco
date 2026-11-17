@@ -43,11 +43,11 @@ export interface RepositoryAnswer {
   appConfigured: boolean;
 }
 
-/** `GET /api/github-app/installations`: every installation of the server's App, and the accounts approved here. */
+/** `GET /api/github-app/installations?page=`: one page of the server's App installations, and the accounts approved here. */
 export interface InstallationAccount { id: number; login: string; type: 'User' | 'Organization' }
 export interface InstallationRow { installationId: number; account: InstallationAccount; approved: boolean; suspended: boolean }
 export interface ApprovedAccountRow { accountId: number; login: string; type: 'User' | 'Organization'; approvedBy: string; approvedAt: number }
-export interface InstallationsAnswer { installations: InstallationRow[]; accounts: ApprovedAccountRow[] }
+export interface InstallationsAnswer { installations: InstallationRow[]; accounts: ApprovedAccountRow[]; page: number; more: boolean }
 
 /** `GET /api/github-app/installations/{id}/repositories?page=`: one page of an approved installation's repositories. */
 export interface RepositoryChoice { id: number; fullName: string; defaultBranch: string; private: boolean }

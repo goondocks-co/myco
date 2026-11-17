@@ -10,8 +10,7 @@
  * keeps the file a test Bun collects.
  */
 import { describe, expect, it } from 'bun:test';
-import type { InstallationView, RepositoryChoice } from '@myco-server-worker/core/github-app.js';
-import type { ApprovedAccount } from '@myco-server-worker/db/github-app/accounts.js';
+import type { InstallationsPage, RepositoryChoice } from '@myco-server-worker/core/github-app.js';
 import type * as Settings from '../../packages/myco-server/ui/src/features/admin/settings/wire.ts';
 import type * as Project from '../../packages/myco-server/ui/src/features/admin/project/wire.ts';
 import type { SecretDescription } from '../../packages/myco-server/src/core/secrets.ts';
@@ -47,7 +46,7 @@ const READS: [
   Reads<Awaited<ReturnType<typeof projectSettingsEditor>>, Project.CapabilitiesAnswer>,
   Reads<RepositoryConnection, Project.RepositoryRow>,
   Reads<{ repository: RepositoryConnection | null; appConfigured: boolean }, Project.RepositoryAnswer>,
-  Reads<{ installations: InstallationView[]; accounts: ApprovedAccount[] }, Project.InstallationsAnswer>,
+  Reads<InstallationsPage, Project.InstallationsAnswer>,
   Reads<{ repositories: RepositoryChoice[]; more: boolean }, Project.RepositoryChoicesAnswer>,
   Reads<ReleaseProvenanceView, Project.ReleaseProvenanceRow>,
   Reads<{ releaseProvenance: ReleaseProvenanceView }, Project.ReleaseProvenanceAnswer>,
