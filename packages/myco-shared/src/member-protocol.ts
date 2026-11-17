@@ -224,11 +224,18 @@ export const MAX_FILE_PATH_CHARS = 1024;
 const FILE_KEYS = ['file_path', 'path', 'notebook_path'] as const;
 const MYCO_TOOL_FIELD_CHARS = 64;
 
-/** Myco tool metadata from a bare or MCP-prefixed name and its input. */
+/** Myco tool metadata from the Myco server's named call or wrapped MCP request. */
 export function mycoToolFields(toolName: string, input: unknown): { mycoTool?: string; mycoOp?: string } {
-  const leaf = toolName.split('__').pop() ?? toolName;
-  if (!/^myco_[a-z_]+$/.test(leaf)) return {};
-  const op = input !== null && typeof input === 'object' ? (input as Record<string, unknown>).op : undefined;
+  if (toolName === 'call_mcp_tool') {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) return {};
+    const request = input as Record<string, unknown>;
+    if (request.ServerName !== 'myco' || typeof request.ToolName !== 'string') return {};
+    toolName = request.ToolName;
+    input = request.Arguments;
+  }
+  const leaf = /^(?:mcp__myco__|myco-)?(myco_[a-z_]+)$/.exec(toolName)?.[1];
+  if (leaf === undefined) return {};
+  const op = input !== null && typeof input === 'object' && !Array.isArray(input) ? (input as Record<string, unknown>).op : undefined;
   return { mycoTool: leaf.slice(0, MYCO_TOOL_FIELD_CHARS), ...(typeof op === 'string' ? { mycoOp: op.slice(0, MYCO_TOOL_FIELD_CHARS) } : {}) };
 }
 

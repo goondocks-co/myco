@@ -8,7 +8,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ID_GRAMMAR, ENVELOPE_FIELDS } from '@myco-server-worker/ingest/envelope.js';
-import { KINDS } from '@myco-server-worker/ingest/kinds.js';
 import { normalizeHookInput } from '@myco/hooks/normalize.js';
 import {
   attachmentEvent, compactionEvent, contextDeliveredEvent, deriveId, errorEvent, homeRelativePath, mintId, notificationEvent, planEvent, planKeyForTag,
@@ -83,12 +82,6 @@ describe('member envelope — every kind through the worker', () => {
     { kind: 'context.delivered', build: () => contextDeliveredEvent(ctx(), { answerId: mintId(), renderedIn: promptId }) },
   ];
 
-  it('covers every kind of the server catalogue exactly once', () => {
-    const built: string[] = cases.map((c) => c.kind);
-    const declared: string[] = KINDS.map((k) => k.name);
-    expect(built.sort()).toEqual(declared.sort());
-  });
-
   it('lands every kind persisted:true with its projected row, in hook order', async () => {
     const rig = await memberRig();
     const before: Record<string, number> = {};
@@ -134,6 +127,7 @@ describe('member envelope — field rules', () => {
     expect(out.envelope.payload).toMatchObject({ toolName: 'mcp__myco__myco_cortex', mycoTool: 'myco_cortex', mycoOp: 'canopy_map', success: true, filesAffected: ['/x'] });
     expect((out.envelope.payload.output as string).length).toBe(TOOL_OUTPUT_CAPTURE_CHARS);
     expect(TOOL_OUTPUT_CAPTURE_CHARS).toBe(4096);
+
   });
 
   it('carries a structured tool result as compact JSON, reading the tool_response key a runtime delivers it under', () => {

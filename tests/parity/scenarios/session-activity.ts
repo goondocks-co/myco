@@ -42,6 +42,17 @@ export const sessionActivityParity: ParityScenario = {
     expect((await turns.json() as { rows: { promptId: string; failedTools: number }[] }).rows).toEqual([
       expect.objectContaining({ promptId: prompt, failedTools: 1 }),
     ]);
+    for (const [toolName, input] of [
+      ['myco-myco_search', { query: 'orchard' }],
+      ['call_mcp_tool', { ServerName: 'myco', ToolName: 'myco_spores', Arguments: { op: 'get' } }],
+      ['mcp__other__myco_search', {}],
+      ['call_mcp_tool', { ServerName: 'other', ToolName: 'myco_search', Arguments: {} }],
+    ] as const) await post('tool.use', stamp + 10, { toolCallId: crypto.randomUUID(), promptId: prompt, toolName, input, success: true });
+    await documentsPublished(target, session);
+    const counted = await fetch(`${target.url}/api/projects/${target.projectId}/sessions/${session}/turns`, { headers: target.ownerHeaders() });
+    expect((await counted.json() as { rows: unknown[] }).rows).toEqual([expect.objectContaining({ mycoCalls: 2, toolRollup: expect.objectContaining({ myco: [
+      { name: 'myco_search', count: 1, failed: 0 }, { name: 'myco_spores:get', count: 1, failed: 0 },
+    ] }) })]);
     await post('tool.use', stamp + 20, { toolCallId: ids[1], toolName: 'Bash', input: {}, output: 'success', success: true });
     await documentsPublished(target, session);
     expect((await read()).rows.map(row => row.id)).not.toContain(ids[1]);
