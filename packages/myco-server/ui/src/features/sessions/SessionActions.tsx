@@ -3,6 +3,7 @@ import { CircleStop, PenLine, Trash2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmDialog, Link, MoreMenu, type MoreMenuItem } from '../../design';
 import { useRunDetail } from '../../hooks/use-work';
+import { useStatus } from '../../hooks/use-status';
 import {
   TITLING_OUTCOME_TEXT, TITLING_WATCH_MS, useDeleteSession, useEndSession, useTitleSession,
   type SessionCounts, type SessionRow,
@@ -32,6 +33,9 @@ export interface SessionActionsProps {
  */
 export function SessionActions({ projectId, session, counts, onDeleted }: SessionActionsProps) {
   const [confirming, setConfirming] = useState<Confirming>(null);
+  const status = useStatus({ enabled: confirming === 'delete' });
+  const target = status.error === null ? status.data?.target : null;
+  const retentionKnown = target === 'cloudflare' || target === 'bun';
   const open = session.endedAt === null;
   const heading = sessionHeadingText(session);
   const retitle = useRetitle(projectId, session);
@@ -93,12 +97,15 @@ export function SessionActions({ projectId, session, counts, onDeleted }: Sessio
         open={confirming === 'delete'}
         onOpenChange={close(deletion.isPending, deletion.reset)}
         title="Delete this session?"
-        description={`Permanently removes “${heading}”: its conversation, plans, transcripts and attachments. The spores learned from it, and other sessions, including sessions it started, stay. Capture and imports can’t bring it back.`}
-        confirmLabel="Delete permanently"
+        description={!retentionKnown ? 'Reading how this server removes stored data…'
+          : `${target === 'cloudflare' ? `Removes “${heading}” from Myco now: its conversation, plans, transcripts and attachments. Its stored data is kept for at least 30 days before removal.` : `Permanently removes “${heading}”: its conversation, plans, transcripts and attachments.`} The spores learned from it, and other sessions, including sessions it started, stay. Capture and imports can’t bring it back.`}
+        confirmLabel={target === 'bun' ? 'Delete permanently' : 'Delete session'}
+        confirmDisabled={!retentionKnown}
         pending={deletion.isPending}
-        error={deletion.error ? 'The deletion couldn’t be confirmed. Try again to finish deleting this session.' : null}
+        error={deletion.error ? 'The deletion couldn’t be confirmed. Try again to finish deleting this session.'
+          : status.error !== null ? 'The storage policy couldn’t be read. Close this dialog and try again.' : null}
         onConfirm={() => {
-          if (deletion.isPending) return;
+          if (deletion.isPending || !retentionKnown) return;
           deletion.mutate({ projectId, sessionId: session.sessionId }, { onSuccess: onDeleted });
         }}
       >

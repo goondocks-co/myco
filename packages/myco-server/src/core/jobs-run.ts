@@ -311,7 +311,7 @@ export const JOB_IMPLEMENTATIONS: Readonly<Record<string, JobRun>> = {
     const prepared = await reconcileArchivePreparations(env.db, now);
     const drained = await drainObjectReleases(env, now);
     return { changed: prepared + drained.expired + drained.deleted + drained.decided,
-      more: await objectReleaseBacklogged(env.db, now, drained) || await archivePreparationsPending(env.db, now) };
+      more: await objectReleaseBacklogged(env, now, drained) || await archivePreparationsPending(env.db, now) };
   },
   [MAINTENANCE_JOB.optimize]: scheduledMaintenance('optimize'),
   [MAINTENANCE_JOB.integrity]: scheduledMaintenance('integrity'),

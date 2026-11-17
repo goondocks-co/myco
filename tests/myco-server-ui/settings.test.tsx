@@ -261,6 +261,7 @@ describe('Settings, in five sections', () => {
       ['Backups', 'backup.auto_interval_hours', 'Myco uses 6 hours'],
     ]) {
       await section(label!);
+      if (label === 'Backups') expect(screen.getByText(/Each hosted backup pauses database requests/).textContent).toContain('larger databases take longer');
       await waitFor(() => expect(statusOf(leaf!)).toContain(words!));
       const status = document.querySelector(`[data-setting-status="${leaf}"]`)!;
       expect(status.getAttribute('role')).toBeNull();

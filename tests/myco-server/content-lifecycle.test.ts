@@ -83,7 +83,7 @@ describe('a server-derived body has one owner at every step', () => {
     const left = ownership(e);
     expect(left.reservations).toHaveLength(1);
     expect(left.intents).toHaveLength(1);
-    await drainObjectReleases({ db, blobs }, NOW + BLOB_RESERVATION_TTL_MS + 1);
+    await drainObjectReleases({ releaseRetention: 'journal-due', db, blobs }, NOW + BLOB_RESERVATION_TTL_MS + 1);
     expect(ownership(e).reservations).toEqual([]);
     e.sqlite.close();
   });

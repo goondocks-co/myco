@@ -1,3 +1,7 @@
+/** The availability cost of the hosted database export used by manual and scheduled backups. */
+export const HOSTED_BACKUP_PAUSE_NOTICE = 'Each hosted backup pauses database requests while it exports the database: the dashboard and tools cannot read or save data, capture waits on members’ machines for later delivery, and larger databases take longer.';
+export const NATIVE_BACKUP_NOTICE = 'A native backup copies the database and stored objects while Myco keeps serving.';
+
 /** Retired backup tables and the names their data has for an owner. */
 export const RETIRED_BACKUP_TABLES: ReadonlyMap<string, { version: number; name: string; namespaces?: readonly string[] }> = new Map([
   ['skill_candidates', { version: 86, name: 'generated skills' }],

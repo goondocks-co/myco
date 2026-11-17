@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { NATIVE_BACKUP_NOTICE } from '@goondocks/myco-shared/backup-words';
 import fs from 'node:fs';
 import { diskBlobStore } from '@myco-server-worker/platform/bun/blobs.js';
 import { configureSqliteLibrary } from '@myco-server-worker/platform/bun/sqlite-library.js';
@@ -64,6 +65,7 @@ export async function backupLocalDeployment(options: {
   destination: string; paths?: LocalDeploymentPaths; report?: (line: string) => void; native?: NativeSqlite; retry?: RecoveryRetryPolicy;
 }): Promise<RecoveryManifest> {
   const paths = options.paths ?? resolveLocalPaths();
+  options.report?.(NATIVE_BACKUP_NOTICE);
   const source = diskBlobStore(paths.blobDir);
   return new LocalVolume(paths).reading(() => createRecoveryBundle(options.destination, {
     source: { target: 'local', locator: fs.realpathSync(paths.databasePath) },
